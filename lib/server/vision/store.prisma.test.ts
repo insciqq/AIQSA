@@ -7,15 +7,16 @@ import { prisma } from "../prisma";
 import { createVisionAnalysisStore } from "./store";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
-import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { loadChatUsageTotals } from "../chats/usageTotals";
-import { persistCompletedAnswerUsage } from "../runs/prismaRepositoryAnswer";
+import { createNativeRunStore } from "../engine/runStore";
+import { normalizeTokenUsage } from "../../domain/usage";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import { createVisionAnalysisService } from "./service";
 import { createConversationImageSource } from "./conversationImages";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { createMemoryStorageAdapter } from "../../../tests/support/storage";
+import { runAttributionUsageWhere } from "../runs/prismaRepositoryUsage";
 
 afterAll(() => prisma.$disconnect());
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -101,12 +102,10 @@ describe("durable auxiliary Vision accounting", () => {
     expect(await f.store.settle(f.context, f.result, usage, false)).toEqual(f.result);
     expect(await f.db.usageEvent.count({ where: { modelRunId: f.context.runId } })).toBe(1);
     const settledReceipt = await f.db.usageEvent.findUniqueOrThrow({ where: { id: receipt.id } });
-    await f.db.$transaction(async tx => {
-      await lockRunSettlementScope(tx, f.context.runId);
-      await persistCompletedAnswerUsage(tx, { ...f.context, assistantMessageId: "unused-by-accounting",
-        finalText: "Synthetic answer", provider: "fake", modelId: "text-only", estimatedCostMicros: null,
-        usage: { inputTokens: 11, outputTokens: 3 } });
-    });
+    // The answer's own usage rows never touch the Vision receipt.
+    await createNativeRunStore(f.db).writeUsageRows({ assistantMessageId: "unused-by-accounting", chatId: f.context.chatId,
+      runId: f.context.runId, userId: f.context.userId }, [{ key: "answer", attribution: { modelId: "text-only", operationCount: 1,
+      provider: "fake", purpose: "chat_answer", usage: normalizeTokenUsage({ inputTokens: 11, outputTokens: 3 }) } }]);
     expect(await f.db.usageEvent.findUnique({ where: { id: receipt.id } })).toEqual(settledReceipt);
     expect(await f.db.usageEvent.findMany({ where: { modelRunId: f.context.runId, visionAnalysis: false } }))
       .toEqual([expect.objectContaining({ provider: "fake", modelId: "text-only", inputTokens: 11, outputTokens: 3 })]);
@@ -180,7 +179,7 @@ describe("durable auxiliary Vision accounting", () => {
     expect(await f.db.$transaction(tx => loadChatUsageTotals(tx, f.context.chatId))).toMatchObject({
       recordCount: 1, knownCostRecordCount: 1, totalTokens: 5, estimatedCostMicros: 7
     });
-    expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.context.runId, userId: f.context.userId })).toEqual([]);
+    expect(await f.db.usageEvent.count({ where: runAttributionUsageWhere(f.context.runId) })).toBe(0);
   }));
   it("settles received usage after Stop without publishing success or permitting another dispatch", async () => fixture(async f => {
     await f.store.dispatch(f.context, f.plan, inputs);

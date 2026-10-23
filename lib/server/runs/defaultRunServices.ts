@@ -1,7 +1,6 @@
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
-import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { admitMemorySearch } from "../memory/search/admission";
 import { createPrismaMemorySearchService } from "../memory/search/runtime";
 import { prisma } from "../prisma";
@@ -22,7 +21,6 @@ export function defaultRunServices(storage: StorageAdapter) {
   return {
     artifacts: artifactServiceForStorage(storage),
     images: imageGenerationForStorage(storage),
-    memoryEgress: defaultMemoryToolEgressReceiptService,
     memorySearch: createPrismaMemorySearchService(),
     memorySearchAdmission: { async admit(userId: string, assistantId?: string | null) {
       const policy = await prisma.modelPolicy.findUniqueOrThrow({

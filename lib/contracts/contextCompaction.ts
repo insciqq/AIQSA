@@ -1,54 +1,3 @@
-export type ContextPlanOutcome = "already_fits" | "masking_applied" | "needs_summary" | "irreducible_overflow";
-
-export type ContextSummaryAttemptState =
-  | "claim"
-  | "dispatched"
-  | "settled"
-  | "committed"
-  | "invalid"
-  | "unknown"
-  | "failed";
-
-/** Content-free provider usage kept with a summary attempt. */
-export type ContextSummaryUsage = Readonly<{
-  inputTokens: number | null;
-  outputTokens: number | null;
-  totalTokens: number | null;
-}>;
-
-/** A bounded, model-derived note set. Exact pins and source handles remain
- * outside this object and continue to be owned by the planner/reader. */
-export type ContextSummary = Readonly<{
-  formatVersion: 1;
-  id: string;
-  notes: string;
-  sourceDigest: string;
-  sourceRefs: readonly string[];
-}>;
-
-export type ContextSummaryAttempt = Readonly<{
-  attempt: number;
-  bindingDigest: string;
-  errorCode?: string;
-  id: string;
-  state: ContextSummaryAttemptState;
-  sourceDigest: string;
-  usage?: ContextSummaryUsage;
-}>;
-
-/** Content-free planner measurement. The source transcript and observation
- * descriptors remain server-owned and are never part of this projection. */
-export type ContextPlanMeasurement = Readonly<{
-  version: 1;
-  outcome: ContextPlanOutcome;
-  beforeTokens: number;
-  afterTokens: number;
-  budgetTokens: number | null;
-  maskedBatches: number;
-  maskedObservations: number;
-  legacyFallback: boolean;
-}>;
-
 /** Content-free status shared by the run event feed and Chat disclosure. */
 export type ContextCompactionStatus = Readonly<{
   cycle: number;
@@ -136,54 +85,8 @@ export function mergeContextCompactionStatus(
 
 /** A terminal run cannot still be compacting, and the browser never invents
  * the outcome: an unsettled cycle stays unshown unless the server publishes
- * its settlement. Not every open cycle is settled (the boot orphan sweep
+ * its settlement. Not every open cycle is settled (an interrupted run
  * leaves it running), so a terminal run may keep a hidden running cycle. */
 export function terminalContextCompactionStatus(status: ContextCompactionStatus | null | undefined): ContextCompactionStatus | null {
   return status?.state === "running" ? null : status ?? null;
 }
-
-/** Notes of an earlier turn's compaction checkpoint, frozen at admission as a
- * candidate for this run. They may stand only for the branch prefix through
- * `coveredMessageId`; later branch messages always stay exact. */
-export type ContextSummaryReuse = Readonly<{
-  /** The run whose checkpoint supplied the notes. */
-  runId: string;
-  coveredMessageId: string;
-  summary: ContextSummary;
-}>;
-
-export type ConversationContextPolicy = Readonly<{
-  version: 1;
-  mode: "legacy_compatible" | "hybrid";
-  source: Readonly<{ leafMessageId: string | null; digest: string; messageCount: number }>;
-  reuse?: ContextSummaryReuse;
-}>;
-
-/** The run's one bounded rebuild after a provider rejected a round for context
- * length before any accepted output: the round it rebuilt and the tightened
- * estimated budget that round and every later request of the run keep.
- * Content-free; checkpoints written before it existed simply omit it. */
-export type ContextRejectionRebuild = Readonly<{
-  version: 1;
-  round: number;
-  budgetTokens: number;
-}>;
-
-export type ContextCompactionCheckpoint = Readonly<{
-  version: 1;
-  ownerId: string;
-  runId: string;
-  branchId: string;
-  policyRevision: "legacy-compatible-v1" | "hybrid-v1";
-  sourceDigest: string;
-  pinDigest: string;
-  followupRevision: number;
-  followupDigest: string;
-  observationRefs: readonly string[];
-  recentTailCallIds: readonly string[];
-  providerProjectionRevision: number;
-  measurement: ContextPlanMeasurement;
-  rebuild?: ContextRejectionRebuild;
-  summary?: ContextSummary;
-  summaryAttempts?: readonly ContextSummaryAttempt[];
-}>;

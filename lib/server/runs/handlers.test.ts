@@ -16,22 +16,17 @@ import {
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
 import { NEUTRAL_FAMILY_PROMPT } from "../engine/prompts/neutral";
 import { nativeEngineFake } from "@/tests/support/nativeEngine";
-import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
   ProviderModelCapabilities,
-  ProviderRunRequest,
-  ProviderRunRefreshResult
+  ProviderRunRequest
 } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
-import { activeRunControllerRegistry } from "./runExecution";
+import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { runWithContext } from "../observability";
 import { createPrismaRunRepository } from "./prismaRepository";
-import {
-  activeRunControllersForTest,
-  resetBootOrphanSweepForTest
-} from "@/tests/support/runExecution";
+import { activeRunControllersForTest } from "@/tests/support/runExecution";
 import {
   createCancelModelRunHandler,
   createGetModelRunHandler as createProductionGetModelRunHandler,
@@ -39,27 +34,16 @@ import {
   createSendMessageHandler as createProductionSendMessageHandler,
   type RunHandlerDeps
 } from "./handlers";
-import { reconcileStaleRuns, sweepBootOrphanedRunsOnce } from "./runRecovery";
-import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
-import { answerReviewCallSubmitted } from "../tools/answerReview";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
-  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   type DurableRunControlRecord,
   type RunRepository
 } from "./runRepositoryContract";
-import {
-  toolLoopCheckpoint,
-  type CheckpointedToolLoopRun,
-  type PersistedToolLoopCall
-} from "./toolLoopPersistence";
-import { conversationContextPolicy } from "./contextCompactionContract";
-import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { decodeUsageLimitRefusal, type UsageLimitRefusalCode } from "../../contracts/usageLimits";
 
@@ -108,6 +92,8 @@ const repositoryHarnesses = new WeakMap<
   Readonly<{
     entitlements: ResolvedEntitlements;
     modelCapabilities: ProviderModelCapabilities;
+    /** The answers the agent engine published for runs of this repository. */
+    published: string[];
   }>
 >();
 
@@ -203,12 +189,14 @@ const NO_USAGE_LIMITS: UsageLimitStatus = {
 };
 
 /** Handler deps of a test; usage limits default to none. */
-type TestRunHandlerDeps = Omit<RunHandlerDeps, "usageLimits"> & Partial<Pick<RunHandlerDeps, "usageLimits">>;
+type TestRunHandlerDeps = Omit<RunHandlerDeps, "nativeEngine" | "usageLimits"> &
+  Partial<Pick<RunHandlerDeps, "nativeEngine" | "usageLimits">>;
 
 function withTestRuntime(deps: TestRunHandlerDeps): RunHandlerDeps {
   const harness = repositoryHarnesses.get(deps.repository);
   return {
     ...deps,
+    nativeEngine: deps.nativeEngine ?? nativeEngineFake({ ...(harness ? { published: harness.published } : {}) }).deps,
     usageLimits: deps.usageLimits ?? { loadUsageLimitStatus: async () => NO_USAGE_LIMITS },
     allowFakeProvider: deps.allowFakeProvider ?? true,
     providerAdmission: deps.providerAdmission ?? {
@@ -387,52 +375,44 @@ function createMemoryRepository(
     parallelToolCalls: false,
     pdf: true,
     reasoning: true,
-    toolCalling: false,
+    toolCalling: true,
     vision: true
   }
 ) {
   const state: {
     assistantText: string;
     assistantTextWrites: number;
-    bootSweeps: { liveRunIds: string[]; sweptRunIds: string[] }[];
     cancelled: Parameters<RunRepository["cancelRun"]>[0]["payload"] | null;
-    completed: Parameters<RunRepository["completeRun"]>[0] | null;
+    /** A completed answer a test plants; the agent engine fake completes nothing here. */
+    completed: Readonly<{ finalText: string; modelId: string; provider: string; runId: string }> | null;
     created: Parameters<RunRepository["createRun"]>[0] | null;
     events: { event: ModelRunSseEvent; sequence: number }[];
     failed: { error: { code: string; message: string }; runId: string } | null;
     providerResponseId: string | null;
+    published: string[];
     recoverySettled: boolean;
     recentActiveRun: (ReturnType<typeof activeRunRecord> & { updatedAt: Date }) | null;
     regenerated: Parameters<RunRepository["createRegenerationRun"]>[0] | null;
     searchRuns: Parameters<RunRepository["createSearchRun"]>[0][];
-    staleActiveRuns: (ReturnType<typeof activeRunRecord> & { updatedAt: Date })[];
-    toolCalls: PersistedToolLoopCall[];
   } = {
     assistantText: "",
     assistantTextWrites: 0,
-    bootSweeps: [],
     cancelled: null,
     completed: null,
     created: null,
     events: [],
     failed: null,
     providerResponseId: null,
+    published: [],
     recoverySettled: false,
     recentActiveRun: null,
     regenerated: null,
-    searchRuns: [],
-    staleActiveRuns: [],
-    toolCalls: []
+    searchRuns: []
   };
   const repository: RunRepository = {
     admitPreparingRun: async () => {
       throw new Error("preparing_run_not_supported_by_handler_harness");
     },
-    advanceToolLoopCallBatch: async ({ roundIndex }) =>
-      state.toolCalls.some((call) => call.roundIndex === roundIndex &&
-        call.state !== "complete" && call.state !== "error")
-        ? "incomplete"
-        : "advanced",
     appendAssistantText: async (_assistantMessageId, text) => {
       state.assistantText = text;
       state.assistantTextWrites += 1;
@@ -443,54 +423,6 @@ function createMemoryRepository(
       return event;
     },
     beginPreparingRunAttempt: async () => false,
-    beginToolLoopProviderRound: async () => "started",
-    cancelPendingToolLoopCalls: async () => {
-      let cancelled = 0;
-      state.toolCalls = state.toolCalls.map((call) => {
-        if (call.state !== "pending") return call;
-        cancelled += 1;
-        return { ...call, completedAt: new Date().toISOString(), state: "cancelled" };
-      });
-      return cancelled;
-    },
-    claimToolLoopCall: async ({ callId }) => {
-      const call = state.toolCalls.find((candidate) => candidate.id === callId);
-      if (!call) return { kind: "not_found" };
-      if (call.state === "complete" || call.state === "error") return { call, kind: "settled" };
-      if (call.state === "running") return { call, kind: "ambiguous" };
-      if (call.state === "cancelled") return { call, kind: "cancelled" };
-      const claimed = { ...call, startedAt: new Date().toISOString(), state: "running" as const };
-      state.toolCalls = state.toolCalls.map((candidate) => candidate.id === call.id ? claimed : candidate);
-      return { call: claimed, kind: "claimed" };
-    },
-    sweepBootOrphanedRuns: async ({ liveRunIds }) => {
-      const liveRunIdSet = new Set(liveRunIds);
-      const sweptRuns = [
-        ...(state.recentActiveRun && !liveRunIdSet.has(state.recentActiveRun.id)
-          ? [state.recentActiveRun]
-          : []),
-        ...state.staleActiveRuns.filter((run) => !liveRunIdSet.has(run.id))
-      ];
-
-      state.bootSweeps.push({
-        liveRunIds,
-        sweptRunIds: sweptRuns.map((run) => run.id)
-      });
-
-      if (state.recentActiveRun && !liveRunIdSet.has(state.recentActiveRun.id)) {
-        state.failed = {
-          error: {
-            code: "run_orphaned_on_boot",
-            message: "Run was active when this server process started and was marked failed."
-          },
-          runId: state.recentActiveRun.id
-        };
-        state.recentActiveRun = null;
-      }
-
-      state.staleActiveRuns = state.staleActiveRuns.filter((run) => liveRunIdSet.has(run.id));
-      return sweptRuns.length;
-    },
     cancelRun: async (input) => {
       if (input.runId !== "run-1" || input.userId !== config.bootstrapUserId) {
         return { kind: "not_found" };
@@ -526,20 +458,6 @@ function createMemoryRepository(
       };
     },
     completePreparingRunAttempt: async () => false,
-    completeRun: async (input) => {
-      if (state.cancelled || state.completed || state.recoverySettled) {
-        return false;
-      }
-
-      state.completed = input;
-      state.providerResponseId = input.providerResponseId ?? null;
-      let sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
-      for (const event of input.outputEvents ?? []) {
-        state.events.push({ event, sequence });
-        sequence += 1;
-      }
-      return true;
-    },
     createRun: async (input) => {
       state.created = input;
       state.cancelled = null;
@@ -605,15 +523,6 @@ function createMemoryRepository(
       state.recentActiveRun.updatedAt > since
         ? state.recentActiveRun
         : null,
-    findStaleActiveRunsForUser: async (input) =>
-      input.userId === config.bootstrapUserId
-        ? state.staleActiveRuns.filter(
-            (run) =>
-              run.updatedAt < input.staleBefore &&
-              (!input.chatId || run.chatId === input.chatId) &&
-              (!input.runId || run.id === input.runId)
-          )
-        : [],
     findRegenerationSource: async (sourceMessageId, userId) =>
       (sourceMessageId === "assistant-message-1" || sourceMessageId === "user-message-1") &&
       userId === config.bootstrapUserId
@@ -723,8 +632,6 @@ function createMemoryRepository(
           }
         : null,
     recoverPreparingRun: async () => "not_preparing",
-    isSearchStrategyEnabled: async () => true,
-    loadConversationContext: async () => conversationContext,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, expectedActiveLeafMessageId) =>
       expectedActiveLeafMessageId === (conversationContext.at(-1)?.id ?? null)
         ? conversationContext
@@ -757,85 +664,12 @@ function createMemoryRepository(
     loadEntitlements: async () => entitlements,
     loadModelPricing: async () => modelPricing,
     loadProviderModelCostBasis: async () => null,
-    loadRunUsageAttributions: async () => [],
-    loadCheckpointedToolLoopRun: async () => null,
-    persistToolLoopCallBatch: async (input) => {
-      const existing = state.toolCalls.filter((call) => call.roundIndex === input.roundIndex);
-      if (existing.length > 0) return { calls: existing, kind: "reused" };
-      const calls = input.calls.map((call, index): PersistedToolLoopCall => ({
-        arguments: call.arguments,
-        completedAt: null,
-        id: `tool-call-${input.roundIndex}-${index}`,
-        mcpBinding: call.runtimeGenerationFingerprint
-          ? {
-              id: `binding-${index}`,
-              runtimeGenerationFingerprint: call.runtimeGenerationFingerprint,
-              runtimeGenerationId: "generation-1"
-            }
-          : null,
-        ordinal: call.ordinal,
-        providerCallId: call.providerCallId,
-        // Like the durable repository, a blocked repeat settles with its batch.
-        result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
-          repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
-        roundIndex: input.roundIndex,
-        startedAt: null,
-        state: call.repeatBlocked ? "error" : "pending",
-        toolName: call.toolName,
-        ...(call.repeatBlocked ? { completedAt: "2026-07-12T09:00:00.000Z" } : {})
-      }));
-      state.toolCalls.push(...calls);
-      return { calls, kind: "persisted" };
-    },
-    recordRunUsageEvents: async () => true,
-    settleRecoveredRunError: async (input) => {
-      if (
-        input.runId !== "run-1" ||
-        input.userId !== config.bootstrapUserId ||
-        state.cancelled ||
-        state.completed ||
-        state.recoverySettled
-      ) {
-        return false;
-      }
-
-      state.failed = {
-        error: input.error,
-        runId: input.runId
-      };
-      state.providerResponseId = input.providerResponseId ?? state.providerResponseId;
-      state.recoverySettled = true;
-      let sequence = state.events.reduce((max, event) => Math.max(max, event.sequence), -1) + 1;
-      for (const event of input.outputEvents) {
-        state.events.push({ event, sequence });
-        sequence += 1;
-      }
-      return true;
-    },
-    settleToolLoopCall: async ({ callId, result, state: callState }) => {
-      const call = state.toolCalls.find((candidate) => candidate.id === callId);
-      if (!call) return "not_found";
-      state.toolCalls = state.toolCalls.map((candidate) => candidate.id === callId
-        ? {
-            ...candidate,
-            completedAt: new Date().toISOString(),
-            result,
-            state: callState
-          }
-        : candidate);
-      return "settled";
-    },
-    resetToolLoopAssistantDraft: async () => true,
     markRunAnswerStarted: async () => undefined,
     retryPreparingRunAttempt: async () => null,
     settlePreparingRunFailure: async () => false,
-    updateRunProviderResponseId: async (_runId, providerResponseId) => {
-      state.providerResponseId = providerResponseId;
-      return "published";
-    }
   };
 
-  repositoryHarnesses.set(repository, { entitlements, modelCapabilities });
+  repositoryHarnesses.set(repository, { entitlements, modelCapabilities, published: state.published });
 
   return { repository, state };
 }
@@ -860,13 +694,6 @@ function activeRunRecord(input: Partial<{
   };
 }
 
-function staleRunRecord(input: Parameters<typeof activeRunRecord>[0] = {}) {
-  return {
-    ...activeRunRecord(input),
-    updatedAt: new Date(0)
-  };
-}
-
 function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
   return {
     chatId: "chat-1",
@@ -884,13 +711,13 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
       attachmentIds: [],
       chatId: "chat-1",
       content: { blocks: [] },
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
         nativeSearch: true,
         pdf: true,
         reasoning: true,
+        toolCalling: true,
         vision: true
       },
       modelId: "gpt-5.5",
@@ -909,9 +736,6 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
 }
 
 describe("model run route handlers", () => {
-  beforeEach(() => {
-    resetBootOrphanSweepForTest();
-  });
 
   it.each(["send", "regenerate"] as const)("reauthorizes the request owner and source during optional catalog relevance for %s", async kind => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
@@ -962,7 +786,6 @@ describe("model run route handlers", () => {
       : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-1" } });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "artifact_edit_invalid" });
-    expect(state.bootSweeps).toEqual([]);
     expect(state.created).toBeNull();
     expect(state.regenerated).toBeNull();
   });
@@ -997,8 +820,7 @@ describe("model run route handlers", () => {
       await expect(response.json()).resolves.toMatchObject({ error: "request_body_too_large" });
       expect(findOwnedChat).not.toHaveBeenCalled();
       expect(findRegenerationSource).not.toHaveBeenCalled();
-      expect(state.bootSweeps).toEqual([]);
-      expect(state.created).toBeNull();
+        expect(state.created).toBeNull();
       expect(state.regenerated).toBeNull();
     }
   );
@@ -1840,6 +1662,7 @@ describe("model run route handlers", () => {
         nativeSearch: true,
         pdf: false,
         reasoning: true,
+        toolCalling: true,
         vision: true
       }
     );
@@ -2014,6 +1837,7 @@ describe("model run route handlers", () => {
         nativeSearch: true,
         pdf: false,
         reasoning: true,
+        toolCalling: true,
         vision: true
       }
     );
@@ -2181,11 +2005,6 @@ describe("model run route handlers", () => {
       normalizedRequest: { answerReviewStep: { kind: "review", modelName: "fake-qsa", reviewer: 0, round: 1, version: 1 } },
       systemTurnKind: "answer_review_request"
     });
-    // The step's report is the run's own tool: settled with its card, which the answer publishes.
-    const report = state.toolCalls.find((call) => call.toolName === "submit_answer_review");
-    expect(report).toMatchObject({ state: "complete" });
-    expect(answerReviewCallSubmitted(state.created!.normalizedRequest, report!)).toBe(true);
-    expect(JSON.stringify(state.events.map((entry) => entry.event))).toContain("\"artifactType\":\"answer_review\"");
   });
 
   it("refuses an answer review step at a reached budget and when its step was already claimed", async () => {
@@ -2320,116 +2139,6 @@ describe("model run route handlers", () => {
   });
 
 
-
-  it("streams a complete fake provider SSE run and persists run artifacts", async () => {
-    const { repository, state } = createMemoryRepository();
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          content: {
-            blocks: [
-              { text: "Hello QSA", type: "text" },
-              { attachmentId: "attachment-1", fileName: "brief.pdf", type: "file" }
-            ]
-          },
-          modelId: "fake-qsa",
-          params: {
-            temperature: 0
-          },
-          provider: "fake",
-          searchPlan: { mode: "all_selected", optionIds: [] },
-          timeZone: "Europe/Berlin"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("text/event-stream");
-
-    const events = parseSse(await response.text());
-    const eventTypes = events.map((event) => event.type);
-
-    expect(eventTypes.slice(0, 3)).toEqual(["run_start", "message_start", "artifact"]);
-    expect(eventTypes).toContain("token");
-    expect(eventTypes.slice(-3)).toEqual(["usage", "chat_update", "done"]);
-    expect(events.find((event) => event.type === "chat_update")?.data).toMatchObject({
-      chat: {
-        activeLeafMessageId: "assistant-message-1",
-        id: "chat-1",
-        messageCount: 3
-      },
-      messages: [
-        {
-          id: "user-message-1",
-          role: "user",
-          status: "complete"
-        },
-        {
-          id: "assistant-message-1",
-          modelRunId: "run-1",
-          role: "assistant",
-          status: "complete"
-        }
-      ]
-    });
-    expect(state.created?.normalizedRequest).toMatchObject({
-      attachmentIds: ["attachment-1"],
-      context: {
-        messages: [
-          {
-            role: "user"
-          }
-        ],
-        mode: "branch_path"
-      },
-      modelId: "fake-qsa",
-      params: {
-        temperature: 0
-      },
-      prompt: {
-        baseline: {
-          source: "standard_chat",
-          timeZone: "Europe/Berlin",
-          timeZoneSource: "client"
-        },
-        developer: expect.stringContaining("Visible answer contract"),
-        system: expect.stringContaining("You are a helpful AI assistant. Today is ")
-      },
-      provider: "fake",
-      searchPlan: { mode: "all_selected", options: [] }
-    });
-    expect(state.created?.normalizedRequest.prompt.system).not.toContain(
-      "Project memory:\nProject prefers short bullet answers."
-    );
-    expect(state.completed?.usage.outputTokens).toBeGreaterThan(0);
-    expect(state.completed?.provider).toBe("fake");
-    expect(state.completed?.modelId).toBe("fake-qsa");
-    expect(state.completed?.finalText).toBe("Fake answer: Hello QSA");
-    expect(state.completed?.estimatedCostMicros).toBe(
-      state.completed!.usage.inputTokens! * 2 + state.completed!.usage.outputTokens! * 8
-    );
-    expect(state.events).toHaveLength(2);
-    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
-      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
-      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
-    ]);
-  });
 
   it("passes accepted run defaults from the accepted send", async () => {
     const { repository, state } = createMemoryRepository();
@@ -2646,180 +2355,6 @@ describe("model run route handlers", () => {
     }
   });
 
-  it("persists normalized OpenAI streaming token, artifact, usage, and done events", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set(["openai-native-web-search"])
-    });
-    const openaiAdapter: ProviderAdapter = {
-      buildRequestPreview: (runRequest) => ({
-        body: {
-          model: runRequest.modelId,
-          stream: runRequest.params.stream
-        },
-        provider: "openai"
-      }),
-      async *stream(runRequest) {
-        expect(runRequest.params.stream).toBe(true);
-        expect(runRequest.searchPlan).toMatchObject({
-          mode: "model_choice",
-          options: [{ optionId: "openai-native-web-search" }]
-        });
-        yield {
-          data: {
-            artifactType: "summary",
-            payload: {
-              provider: "openai",
-              responseId: "resp-stream-route",
-              status: "in_progress",
-              stream: true
-            }
-          },
-          type: "artifact"
-        };
-        yield {
-          data: {
-            artifactType: "search",
-            payload: {
-              provider: "openai",
-              responseId: "resp-stream-route",
-              status: "searching",
-              type: "web_search_call"
-            }
-          },
-          type: "artifact"
-        };
-        yield {
-          data: {
-            delta: "Hel"
-          },
-          type: "token"
-        };
-        yield {
-          data: {
-            delta: "lo"
-          },
-          type: "token"
-        };
-
-        return {
-          finalProviderResponsePreview: {
-            provider: "openai",
-            text: "Hello"
-          },
-          finalText: "Hello",
-          providerResponseId: "resp-stream-route",
-          usage: {
-            inputTokens: 4,
-            outputTokens: 2,
-            reasoningTokens: 0
-          }
-        };
-      }
-    };
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providerAdmission: {
-        async load(input) {
-          const plan = currentAdmissionPlan(input, {
-            nativePdfInput: false,
-            nativeSearch: true,
-            pdf: true,
-            reasoning: true,
-            streaming: true,
-            vision: true
-          });
-          const optionId = "openai-native-web-search";
-          return {
-            ...plan,
-            searches: [{
-              bindingKey: null,
-              configuration: {
-                adapterKind: "answer_provider_hosted",
-                config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
-                credentialMode: "answer_provider",
-                displayName: "OpenAI Web Search",
-                executionModes: ["model_choice"],
-                kind: "openai_native_web_search",
-                modelId: null,
-                protocol: "openai_responses_web_search",
-                provider: "openai",
-                providerModelId: null,
-                revisionId: "revision-hosted",
-                searchStrategyRowId: "integration-hosted",
-                strategyId: optionId
-              },
-              integrationId: "integration-hosted",
-              optionId,
-              ordinal: 0,
-              revisionId: "revision-hosted"
-            }]
-          };
-        }
-      },
-      providers: {
-        openai: openaiAdapter
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "gpt-5.5",
-          params: {
-            maxOutputTokens: 64,
-            reasoning: {
-              effort: "medium"
-            },
-            stream: true
-          },
-          provider: "openai",
-          searchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search"] },
-          text: "Stream with search"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    const liveEvents = parseSse(await response.text());
-
-    expect(liveEvents.filter((event) => event.type === "token").map((event) => event.data)).toEqual([
-      { delta: "Hel" },
-      { delta: "lo" }
-    ]);
-    expect(state.created?.providerRequestPreview).toMatchObject({
-      body: {
-        stream: true
-      }
-    });
-    expect(state.providerResponseId).toBe("resp-stream-route");
-    expect(state.completed).toMatchObject({
-      finalText: "Hello",
-      provider: "openai",
-      providerResponseId: "resp-stream-route",
-      usage: {
-        inputTokens: 4,
-        outputTokens: 2,
-        reasoningTokens: 0
-      }
-    });
-    expect(state.events).toHaveLength(2);
-    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
-      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
-      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
-    ]);
-  });
-
   it.each([
     ["temperature", { temperature: 999 }],
     ["maxOutputTokens", { maxOutputTokens: -5 }],
@@ -2904,126 +2439,6 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
-  it("uses null estimated cost metadata for models with unknown prices", async () => {
-    const { repository, state } = createMemoryRepository(entitledFakeModel, [], {
-      inputTokenPriceUsdPerMillion: null,
-      outputTokenPriceUsdPerMillion: null
-    });
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Zero price"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(state.completed?.estimatedCostMicros).toBeNull();
-    expect(state.events).toHaveLength(2);
-    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
-      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
-      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
-    ]);
-  });
-
-  it("never drops branch turns for a tiny context window and fails explicitly when no summary call fits", async () => {
-    const conversationContext: ProviderConversationMessage[] = [
-      {
-        content: { blocks: [{ text: "old user ".repeat(50), type: "text" }] },
-        id: "old-user",
-        role: "user"
-      },
-      {
-        content: { blocks: [{ text: "old assistant ".repeat(50), type: "text" }] },
-        id: "old-assistant",
-        role: "assistant"
-      },
-      {
-        content: { blocks: [{ text: "recent user", type: "text" }] },
-        id: "recent-user",
-        role: "user"
-      },
-      {
-        content: { blocks: [{ text: "recent assistant", type: "text" }] },
-        id: "recent-assistant",
-        role: "assistant"
-      }
-    ];
-    const { repository, state } = createMemoryRepository(entitledFakeModel, conversationContext, null, {
-      contextWindow: 400,
-      defaultMaxOutputTokens: 20,
-      nativePdfInput: false,
-      nativeSearch: true,
-      pdf: true,
-      reasoning: true,
-      vision: true
-    });
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "current"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    const liveEvents = parseSse(await response.text());
-    // Admission freezes the notes policy and keeps the exact branch: no turn is dropped.
-    expect(state.created?.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
-    expect(state.created?.normalizedRequest.context?.messages.map((message) => message.id)).toEqual([
-      "old-user",
-      "old-assistant",
-      "recent-user",
-      "recent-assistant",
-      "current-user-message"
-    ]);
-    expect(state.created?.normalizedRequest.context?.summary).toBeUndefined();
-    expect(liveEvents.some((event) => event.type === "artifact" &&
-      (event.data as { artifactType?: string }).artifactType === "context_truncated")).toBe(false);
-    // A 400-token window cannot hold even one bounded summary call: the run
-    // fails explicitly instead of answering without the start of the chat.
-    expect(state.completed).toBeNull();
-    expect(state.failed?.error).toEqual({ code: "context_compaction_summary_failed",
-      message: "The admitted model window cannot hold a bounded summary call." });
-  });
-
   it("fails before run creation when irreducible context exceeds the budget", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
       contextWindow: 20,
@@ -3084,7 +2499,8 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: "context_too_large",
-      message: "Prompt, pinned context, current message, and tools exceed the model context budget (13 estimated tokens available)."
+      message: "Prompt, pinned context, current message, tools, and selected attachments exceed the model context budget " +
+        "(13 estimated tokens available)."
     });
     expect(state.created).toBeNull();
     expect(buildRequestPreview).not.toHaveBeenCalled();
@@ -3160,159 +2576,6 @@ describe("model run route handlers", () => {
     expect(persistedTokenEvents).toEqual([]);
     expect(state.assistantText).toBe("x".repeat(tokenCount));
     expect(state.events.map(({ sequence }) => sequence)).toEqual(state.events.map((_event, index) => index));
-  });
-
-  it("flushes buffered tokens before marking a provider stream error", async () => {
-    const { repository, state } = createMemoryRepository();
-    const failingProvider: ProviderAdapter = {
-      buildRequestPreview: () => ({
-        provider: "fake"
-      }),
-      async *stream() {
-        yield {
-          data: {
-            delta: "partial "
-          },
-          type: "token"
-        };
-        yield {
-          data: {
-            delta: "answer"
-          },
-          type: "token"
-        };
-        throw new Error("provider exploded");
-      }
-    };
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: failingProvider
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Fail after tokens"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-    const liveEvents = parseSse(await response.text());
-
-    expect(liveEvents.filter((event) => event.type === "token")).toHaveLength(2);
-    expect(state.assistantText).toBe("partial answer");
-    expect(state.events).toHaveLength(1);
-    expect(state.events[0]).toMatchObject({ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "request" }) }
-    } });
-    expect(state.failed).toMatchObject({
-      error: {
-        code: "provider_stream_failed",
-        message: "The response could not be completed. The cause is unconfirmed; do not repeat an uncertain action."
-      },
-      runId: "run-1"
-    });
-    expect(JSON.stringify(liveEvents)).not.toContain("provider exploded");
-  });
-
-  it("does not refresh a safety-failed run after its provider response id was published", async () => {
-    const warning = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const { repository, state } = createMemoryRepository();
-    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
-      events: [],
-      status: "in_progress",
-      terminal: false
-    }));
-    const provider: ProviderAdapter = {
-      buildRequestPreview: () => ({ provider: "fake" }),
-      refresh,
-      async *stream() {
-        yield {
-          data: {
-            artifactType: "summary",
-            payload: { responseId: "response-before-safety-failure" }
-          },
-          type: "artifact"
-        };
-        yield { data: { delta: "durable partial" }, type: "token" };
-        throw new ProviderStreamTooLargeError({
-          maxBytes: 2048,
-          observedBytes: 2049,
-          snapshot: { durationMs: 40, totalStreamBytes: 2049 }
-        });
-      }
-    };
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: { fake: provider },
-      repository
-    });
-    const postResponse = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Fail safely after publishing an id"
-        }),
-        headers: { cookie: authCookie() },
-        method: "POST"
-      }),
-      { params: { chatId: "chat-1" } }
-    );
-    const liveEvents = parseSse(await postResponse.text());
-
-    expect(state.providerResponseId).toBe("response-before-safety-failure");
-    expect(state.assistantText).toBe("durable partial");
-    expect(state.assistantTextWrites).toBe(1);
-    expect(state.recoverySettled).toBe(true);
-    expect(liveEvents.at(-1)).toEqual({
-      data: {
-        code: "provider_stream_too_large",
-        message: "The provider stream exceeded a safety limit."
-      },
-      type: "error"
-    });
-
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: { fake: provider },
-      repository
-    });
-    const getResponse = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: { cookie: authCookie() }
-      }),
-      { params: { runId: "run-1" } }
-    );
-
-    expect(getResponse.status).toBe(200);
-    await expect(getResponse.json()).resolves.toEqual({
-      run: {
-        id: "run-1",
-        status: "error"
-      },
-      version: 1
-    });
-    expect(refresh).not.toHaveBeenCalled();
-    expect(state.assistantTextWrites).toBe(1);
-    expect(state.completed).toBeNull();
-    expect(state.events.map(({ event }) => event.type)).not.toContain("done");
-    expect(warning.mock.calls.filter(([chunk]) => {
-      try { return JSON.parse(String(chunk)).event === "provider_stream_safety_terminated"; } catch { return false; }
-    })).toHaveLength(1);
-    warning.mockRestore();
   });
 
   it("starts a first-message stream only after atomic run persistence resolves", async () => {
@@ -3468,7 +2731,7 @@ describe("model run route handlers", () => {
     ]);
     expect(JSON.stringify(state.created?.providerRequestPreview)).toContain("prior-user-1");
     expect(JSON.stringify(state.created?.providerRequestPreview)).toContain("violet harbor");
-    expect(state.completed?.finalText).toContain("Context memory: First turn secret: violet harbor");
+    expect(state.published.at(-1)).toContain("Context memory: First turn secret: violet harbor");
   });
 
   it("carries a typed tool observation through the ordinary send HTTP boundary", async () => {
@@ -3586,7 +2849,7 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     const eventTypes = parseSse(await response.text()).map((event) => event.type);
     expect(eventTypes).not.toContain("chat_update");
-    expect(eventTypes.slice(-2)).toEqual(["usage", "done"]);
+    expect(eventTypes.slice(-2)).toEqual(["answer_complete", "done"]);
   });
 
   it("rejects unavailable models before creating a run", async () => {
@@ -3671,6 +2934,7 @@ describe("model run route handlers", () => {
       const outcome = await getRunOutcomeForUser(runId, userId);
       return outcome
         ? Object.assign(outcome, {
+            status: "complete" as const,
             chatId: "forbidden-chat-sentinel",
             events: [{ payload: { secret: "forbidden-event-sentinel" } }],
             finalProviderResponsePreview: {
@@ -3791,85 +3055,6 @@ describe("model run route handlers", () => {
     });
   });
 
-  it.each([true, false])("uses the handler's effective attachment limits during stale GET-assisted recovery (accepted policy: %s)", async (policy) => {
-    const { repository, state } = createMemoryRepository();
-    const created = openAiCreatedRun();
-    const normalizedRequest = {
-      ...created.normalizedRequest,
-      // A run accepted before the notes policy ends as retired before any
-      // attachment, budget or provider step; one with it reaches the limit check.
-      ...(policy ? { contextCompactionPolicy: conversationContextPolicy({
-        leafMessageId: null, messages: created.normalizedRequest.context?.messages ?? [] }) } : {}),
-      attachmentIds: ["one", "two"],
-      content: {
-        blocks: [
-          { attachmentId: "one", type: "image" },
-          { attachmentId: "two", type: "image" }
-        ]
-      }
-    };
-    state.created = { ...created, normalizedRequest };
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      modelId: created.modelId,
-      provider: created.provider
-    })];
-    const checkpoint = toolLoopCheckpoint({
-      phase: "tools_pending",
-      providerContinuation: {},
-      roundIndex: 1
-    });
-    if (!checkpoint) throw new Error("invalid_test_checkpoint");
-    repository.loadCheckpointedToolLoopRun = async () => ({
-      assistantMessageId: "assistant-message-1",
-      assistantText: "",
-      calls: [],
-      chatId: "chat-1",
-      checkpoint,
-      id: "run-1",
-      modelId: created.modelId,
-      normalizedRequest,
-      provider: created.provider,
-      providerResponseId: null,
-      status: "streaming",
-      userId: config.bootstrapUserId
-    } satisfies CheckpointedToolLoopRun);
-    const loadAttachments = vi.fn(repository.loadAttachments);
-    repository.loadAttachments = loadAttachments;
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      getAttachmentLimits: () => ({
-        maxCount: 1,
-        maxEncodedBytes: 100_663_296,
-        maxMaterializedBytes: 67_108_864,
-        readConcurrency: 2
-      }),
-      providers: {
-        openai: createFakeProviderAdapter()
-      },
-      repository
-    });
-
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: { cookie: authCookie() }
-      }),
-      { params: { runId: "run-1" } }
-    );
-
-    expect(response.status).toBe(200);
-    expect(loadAttachments).not.toHaveBeenCalled();
-    expect(state.failed?.error).toMatchObject(policy ? {
-      code: "attachment_count_limit_exceeded",
-      message: "This run contains 2 attachments; the limit is 1."
-    } : {
-      code: "context_compaction_policy_retired",
-      message: "This answer was interrupted by an application update. Regenerate to try again."
-    });
-  });
-
   it("regenerates an assistant message by streaming a sibling assistant run", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [
       {
@@ -3930,26 +3115,8 @@ describe("model run route handlers", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream");
 
     const events = parseSse(await response.text());
-    expect(events.map((event) => event.type).slice(0, 3)).toEqual(["run_start", "message_start", "artifact"]);
-    expect(events.map((event) => event.type).slice(-3)).toEqual(["usage", "chat_update", "done"]);
-    expect(events.find((event) => event.type === "chat_update")?.data).toMatchObject({
-      chat: {
-        activeLeafMessageId: "assistant-regen-1",
-        id: "chat-1"
-      },
-      messages: [
-        {
-          id: "user-message-1",
-          role: "user"
-        },
-        {
-          id: "assistant-regen-1",
-          modelRunId: "run-1",
-          role: "assistant",
-          status: "complete"
-        }
-      ]
-    });
+    expect(events.map((event) => event.type).slice(0, 3)).toEqual(["run_start", "artifact", "message_start"]);
+    expect(events.map((event) => event.type).slice(-2)).toEqual(["answer_complete", "done"]);
     expect(events.some((event) => event.type === "token")).toBe(true);
     expect(state.regenerated).toMatchObject({
       chatId: "chat-1",
@@ -3975,7 +3142,7 @@ describe("model run route handlers", () => {
       },
       userId: config.bootstrapUserId
     });
-    expect(state.completed?.finalText).toBe("Fake answer: Original question\nContext memory: Earlier context");
+    expect(state.published).toEqual(["Fake answer: Original question\nContext memory: Earlier context"]);
     expect(routeOrder).toEqual(["createRegenerationRun", "providerStream"]);
   });
 
@@ -4012,7 +3179,7 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const events = parseSse(await response.text());
-    expect(events.map((event) => event.type).slice(-3)).toEqual(["usage", "chat_update", "done"]);
+    expect(events.map((event) => event.type).slice(-2)).toEqual(["answer_complete", "done"]);
     expect(events.some((event) => event.type === "token")).toBe(true);
     expect(state.regenerated).toMatchObject({
       chatId: "chat-1",
@@ -4021,7 +3188,7 @@ describe("model run route handlers", () => {
       provider: "fake",
       userMessageId: "user-message-1"
     });
-    expect(state.completed?.finalText).toContain("Fake answer: Original question");
+    expect(state.published.at(-1)).toContain("Fake answer: Original question");
   });
 
   it("regenerates with the chat's binding and refuses a different request Assistant", async () => {
@@ -4317,773 +3484,6 @@ describe("model run route handlers", () => {
     expect(state.regenerated).toBeNull();
   });
 
-  it("keeps a fresh active provider run read-only even when a response id exists", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = openAiCreatedRun();
-    state.providerResponseId = "resp-fresh-1";
-    const refresh = vi.fn();
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh,
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "",
-              usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }
-            };
-          }
-        }
-      },
-      repository
-    });
-
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: { cookie: authCookie() }
-      }),
-      { params: { runId: "run-1" } }
-    );
-
-    expect(response.status).toBe(200);
-    expect(refresh).not.toHaveBeenCalled();
-    expect(state.completed).toBeNull();
-    await expect(response.json()).resolves.toMatchObject({
-      run: { id: "run-1", status: "streaming" }
-    });
-  });
-
-  it("refreshes and finalizes a stale provider run when a provider response id exists", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = {
-      chatId: "chat-1",
-      content: { blocks: [] },
-      expectedActiveLeafId: null,
-      defaults: {
-        controlDefaults: {},
-        modelId: "gpt-5.5",
-        provider: "openai",
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        userId: config.bootstrapUserId
-      },
-      modelId: "gpt-5.5",
-      normalizedRequest: {
-        attachmentIds: [],
-        chatId: "chat-1",
-        content: { blocks: [] },
-        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-        toolMode: "auto",
-        modelCapabilities: {
-          nativePdfInput: false,
-          nativeSearch: true,
-          pdf: true,
-          reasoning: true,
-          vision: true
-        },
-        modelId: "gpt-5.5",
-        params: {},
-        prompt: {
-          developer: null,
-          system: null
-        },
-        provider: "openai",
-        searchPlan: { mode: "all_selected", options: [] }
-      },
-      provider: "openai",
-      providerRequestPreview: {},
-      userId: config.bootstrapUserId
-    };
-    state.providerResponseId = "resp-refresh-1";
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      modelId: "gpt-5.5",
-      provider: "openai",
-      providerResponseId: state.providerResponseId
-    })];
-
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh: async (providerResponseId) => ({
-            events: [
-              {
-                data: {
-                  artifactType: "summary",
-                  payload: {
-                    provider: "openai",
-                    responseId: providerResponseId,
-                    status: "completed"
-                  }
-                },
-                type: "artifact"
-              },
-              {
-                data: {
-                  delta: "Recovered answer"
-                },
-                type: "token"
-              }
-            ],
-            providerResponseId,
-            result: {
-              finalProviderResponsePreview: {
-                provider: "openai",
-                text: "Recovered answer"
-              },
-              finalText: "Recovered answer",
-              providerResponseId,
-              usage: {
-                inputTokens: 3,
-                outputTokens: 2,
-                reasoningTokens: 1
-              }
-            },
-            status: "completed",
-            terminal: true
-          }),
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "",
-              usage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                reasoningTokens: 0
-              }
-            };
-          }
-        }
-      },
-      repository
-    });
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: {
-          cookie: authCookie()
-        }
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    expect(state.completed).toMatchObject({
-      chatId: "chat-1",
-      estimatedCostMicros: 22,
-      finalText: "Recovered answer",
-      modelId: "gpt-5.5",
-      provider: "openai",
-      providerResponseId: "resp-refresh-1",
-      usage: {
-        inputTokens: 3,
-        outputTokens: 2,
-        reasoningTokens: 1
-      }
-    });
-    expect(state.events).toEqual([]);
-    await expect(response.json()).resolves.toEqual({
-      run: {
-        id: "run-1",
-        status: "complete"
-      },
-      version: 1
-    });
-  });
-
-  it("skips provider refresh while a local foreground stream owns the run", async () => {
-    const { repository, state } = createMemoryRepository();
-    const refresh = vi.fn(async () => {
-      throw new Error("GET should not refresh a locally owned stream");
-    });
-    const foregroundProvider: ProviderAdapter = {
-      buildRequestPreview: () => ({
-        provider: "fake"
-      }),
-      refresh,
-      async *stream(_request, options = {}) {
-        yield {
-          data: {
-            artifactType: "summary",
-            payload: {
-              provider: "fake",
-              responseId: "resp-live-foreground",
-              status: "in_progress"
-            }
-          },
-          type: "artifact"
-        };
-        await new Promise<void>((resolve) => {
-          options.signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-
-        return {
-          finalProviderResponsePreview: {},
-          finalText: "",
-          usage: {
-            inputTokens: 0,
-            outputTokens: 0,
-            reasoningTokens: 0
-          }
-        };
-      }
-    };
-    const send = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: foregroundProvider
-      },
-      repository
-    });
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        fake: foregroundProvider
-      },
-      repository
-    });
-    const cancel = createCancelModelRunHandler({
-      ...authDeps,
-      providers: {
-        fake: foregroundProvider
-      },
-      repository
-    });
-
-    const streamResponse = await send(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Keep running"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-    for (let attempt = 0; attempt < 10 && state.providerResponseId !== "resp-live-foreground"; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    expect(state.providerResponseId).toBe("resp-live-foreground");
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      providerResponseId: state.providerResponseId
-    })];
-    const getResponse = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: {
-          cookie: authCookie()
-        }
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-
-    expect(getResponse.status).toBe(200);
-    expect(refresh).not.toHaveBeenCalled();
-
-    await cancel(
-      new Request("http://app.local/api/model-runs/run-1/cancel", {
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-    await streamResponse.text();
-  });
-
-  it("does not append terminal refresh events when another writer already completed", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = openAiCreatedRun();
-    state.providerResponseId = "resp-refresh-lost";
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      modelId: "gpt-5.5",
-      provider: "openai",
-      providerResponseId: state.providerResponseId
-    })];
-    repository.completeRun = async () => false;
-
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh: async (providerResponseId) => ({
-            events: [
-              {
-                data: {
-                  delta: "Duplicate final answer"
-                },
-                type: "token"
-              }
-            ],
-            providerResponseId,
-            result: {
-              finalProviderResponsePreview: {
-                provider: "openai",
-                text: "Duplicate final answer"
-              },
-              finalText: "Duplicate final answer",
-              providerResponseId,
-              usage: {
-                inputTokens: 1,
-                outputTokens: 2,
-                reasoningTokens: 0
-              }
-            },
-            status: "completed",
-            terminal: true
-          }),
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "",
-              usage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                reasoningTokens: 0
-              }
-            };
-          }
-        }
-      },
-      repository
-    });
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: {
-          cookie: authCookie()
-        }
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    expect(state.events).toEqual([]);
-    expect(state.completed).toBeNull();
-  });
-
-  it("completes a refreshed run without relying on chronological event appends", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = openAiCreatedRun();
-    state.providerResponseId = "resp-refresh-append-race";
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      modelId: "gpt-5.5",
-      provider: "openai",
-      providerResponseId: state.providerResponseId
-    })];
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh: async (providerResponseId) => ({
-            events: [
-              {
-                data: {
-                  delta: "Recovered despite append race"
-                },
-                type: "token"
-              }
-            ],
-            providerResponseId,
-            result: {
-              finalProviderResponsePreview: {
-                provider: "openai",
-                text: "Recovered despite append race"
-              },
-              finalText: "Recovered despite append race",
-              providerResponseId,
-              usage: {
-                inputTokens: 1,
-                outputTokens: 2,
-                reasoningTokens: 0
-              }
-            },
-            status: "completed",
-            terminal: true
-          }),
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "",
-              usage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                reasoningTokens: 0
-              }
-            };
-          }
-        }
-      },
-      repository
-    });
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: {
-          cookie: authCookie()
-        }
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      run: {
-        status: "complete"
-      }
-    });
-  });
-
-  it("recovers an errored background provider run when the stored response later completes", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = {
-      chatId: "chat-1",
-      content: { blocks: [] },
-      expectedActiveLeafId: null,
-      defaults: {
-        controlDefaults: {},
-        modelId: "gpt-5.5",
-        provider: "openai",
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        userId: config.bootstrapUserId
-      },
-      modelId: "gpt-5.5",
-      normalizedRequest: {
-        attachmentIds: [],
-        chatId: "chat-1",
-        content: { blocks: [] },
-        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-        toolMode: "auto",
-        modelCapabilities: {
-          nativePdfInput: false,
-          nativeSearch: true,
-          pdf: true,
-          reasoning: true,
-          vision: true
-        },
-        modelId: "gpt-5.5",
-        params: {},
-        prompt: {
-          developer: null,
-          system: null
-        },
-        provider: "openai",
-        searchPlan: { mode: "all_selected", options: [] }
-      },
-      provider: "openai",
-      providerRequestPreview: {},
-      userId: config.bootstrapUserId
-    };
-    state.providerResponseId = "resp-recover-after-503";
-    state.failed = {
-      error: {
-        code: "provider_stream_failed",
-        message: "OpenAI request failed with status 503"
-      },
-      runId: "run-1"
-    };
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      modelId: "gpt-5.5",
-      provider: "openai",
-      providerResponseId: state.providerResponseId,
-      status: "error"
-    })];
-
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh: async (providerResponseId) => ({
-            events: [
-              {
-                data: {
-                  artifactType: "summary",
-                  payload: {
-                    provider: "openai",
-                    responseId: providerResponseId,
-                    status: "completed"
-                  }
-                },
-                type: "artifact"
-              },
-              {
-                data: {
-                  delta: "Recovered after retry"
-                },
-                type: "token"
-              }
-            ],
-            providerResponseId,
-            result: {
-              finalProviderResponsePreview: {
-                provider: "openai",
-                text: "Recovered after retry"
-              },
-              finalText: "Recovered after retry",
-              providerResponseId,
-              usage: {
-                inputTokens: 5,
-                outputTokens: 3,
-                reasoningTokens: 0
-              }
-            },
-            status: "completed",
-            terminal: true
-          }),
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "",
-              usage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                reasoningTokens: 0
-              }
-            };
-          }
-        }
-      },
-      repository
-    });
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: {
-          cookie: authCookie()
-        }
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    expect(state.completed).toMatchObject({
-      finalText: "Recovered after retry",
-      providerResponseId: "resp-recover-after-503"
-    });
-    expect(state.events).toEqual([]);
-    await expect(response.json()).resolves.toEqual({
-      run: {
-        id: "run-1",
-        status: "complete"
-      },
-      version: 1
-    });
-  });
-
-  it("settles a terminal recovery error once across repeated GET reads", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = openAiCreatedRun();
-    state.providerResponseId = "resp-terminal-error";
-    state.failed = {
-      error: {
-        code: "provider_stream_failed",
-        message: "Transient local failure"
-      },
-      runId: "run-1"
-    };
-    state.staleActiveRuns = [staleRunRecord({
-      assistantMessageId: "assistant-message-1",
-      chatId: "chat-1",
-      id: "run-1",
-      modelId: "gpt-5.5",
-      provider: "openai",
-      providerResponseId: state.providerResponseId,
-      status: "error"
-    })];
-    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
-      error: {
-        code: "provider_terminal_error",
-        message: "Provider stopped"
-      },
-      events: [
-        {
-          data: {
-            artifactType: "summary",
-            payload: { status: "failed" }
-          },
-          type: "artifact"
-        }
-      ],
-      status: "failed",
-      terminal: true
-    }));
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh,
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "",
-              usage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                reasoningTokens: 0
-              }
-            };
-          }
-        }
-      },
-      repository
-    });
-
-    const responses = [];
-    for (let index = 0; index < 2; index += 1) {
-      responses.push(
-        await GET(
-          new Request("http://app.local/api/model-runs/run-1", {
-            headers: { cookie: authCookie() }
-          }),
-          { params: { runId: "run-1" } }
-        )
-      );
-    }
-
-    expect(refresh).toHaveBeenCalledOnce();
-    expect(state.events).toEqual([]);
-    for (const response of responses) {
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({
-        run: {
-          id: "run-1",
-          status: "error"
-        },
-        version: 1
-      });
-    }
-  });
-
-  it("sweeps fresh orphaned active runs before the send gate", async () => {
-    const { repository, state } = createMemoryRepository();
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    state.recentActiveRun = {
-      ...activeRunRecord({
-        chatId: "chat-1",
-        id: "run-orphaned-on-boot"
-      }),
-      updatedAt: new Date()
-    };
-
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Send after restart"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(state.bootSweeps).toEqual([
-      {
-        liveRunIds: [],
-        sweptRunIds: ["run-orphaned-on-boot"]
-      }
-    ]);
-    expect(state.failed).toEqual({
-      error: {
-        code: "run_orphaned_on_boot",
-        message: "Run was active when this server process started and was marked failed."
-      },
-      runId: "run-orphaned-on-boot"
-    });
-    expect(state.created?.content).toEqual({
-      blocks: [{ text: "Send after restart", type: "text" }]
-    });
-  });
-
   it("returns one active-run conflict when concurrent sends race at insert", async () => {
     const { repository, state } = createMemoryRepository();
     const originalCreateRun = repository.createRun;
@@ -5264,137 +3664,6 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
-  it("reconciles stale active runs before creating a new send", async () => {
-    const { repository, state } = createMemoryRepository();
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const warmupResponse = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Warm up boot sweep"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-    expect(warmupResponse.status).toBe(200);
-    await warmupResponse.text();
-
-    state.failed = null;
-    state.events = [];
-    state.staleActiveRuns = [
-      {
-        ...activeRunRecord({
-          assistantMessageId: "assistant-stale",
-          chatId: "chat-1",
-          id: "run-stale-before-insert"
-        }),
-        updatedAt: new Date(Date.now() - 11 * 60 * 1000)
-      }
-    ];
-
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Send after stale reconcile"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(state.failed).toEqual({
-      error: {
-        code: "run_orphaned",
-        message: "Run stopped reporting progress and was marked failed."
-      },
-      runId: "run-stale-before-insert"
-    });
-    expect(state.created?.content).toEqual({
-      blocks: [{ text: "Send after stale reconcile", type: "text" }]
-    });
-  });
-
-  it.each(["send", "regenerate"] as const)("admits a %s while stale runs of another chat cannot be recovered", async (kind) => {
-    const { repository, state } = createMemoryRepository();
-    const deps = { ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository };
-    const send = createSendMessageHandler(deps);
-    const warmup = await send(new Request("http://app.local/api/chats/chat-1/messages", {
-      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", text: "Warm up boot sweep" }),
-      headers: { cookie: authCookie() }, method: "POST"
-    }), { params: { chatId: "chat-1" } });
-    expect(warmup.status).toBe(200);
-    await warmup.text();
-    state.failed = null;
-    const stale = [
-      staleRunRecord({ assistantMessageId: "assistant-unavailable", chatId: "chat-other", id: "run-unavailable" }),
-      staleRunRecord({ assistantMessageId: "assistant-unreadable", chatId: "chat-other", id: "run-unreadable" })
-    ];
-    state.staleActiveRuns = stale;
-    const failed: string[] = [];
-    const failRun = repository.failRun;
-    repository.failRun = async (...args) => {
-      failed.push(`fail:${args[0]}:${args[2].code}`);
-      return failRun(...args);
-    };
-    repository.settleRecoveredRunError = async (input) => {
-      failed.push(`recovered:${input.runId}:${input.error.code}`);
-      return true;
-    };
-    const getRunControlForUser = repository.getRunControlForUser;
-    repository.getRunControlForUser = async (id, userId) =>
-      stale.find((run) => run.id === id) ?? getRunControlForUser(id, userId);
-    repository.loadCheckpointedToolLoopRun = async ({ runId }) => {
-      if (runId === "run-unreadable") throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
-      if (runId === "run-unavailable") throw new Error("synthetic database timeout");
-      return null;
-    };
-    const request = kind === "send"
-      ? new Request("http://app.local/api/chats/chat-1/messages", {
-          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", text: "Send beside unrecoverable runs" }),
-          headers: { cookie: authCookie() }, method: "POST"
-        })
-      : new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
-          headers: { cookie: authCookie(), "content-type": "application/json" }, method: "POST"
-        });
-    const response = kind === "send"
-      ? await send(request, { params: { chatId: "chat-1" } })
-      : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-message-1" } });
-
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(failed).toEqual(["recovered:run-unreadable:tool_loop_checkpoint_invalid_in_storage"]);
-    if (kind === "send") {
-      expect(state.created?.content).toEqual({ blocks: [{ text: "Send beside unrecoverable runs", type: "text" }] });
-    } else expect(state.regenerated).toMatchObject({ chatId: "chat-1", modelId: "fake-qsa" });
-  });
-
   it("rejects new sends while a recent active run exists and ignores stale active runs", async () => {
     const { repository, state } = createMemoryRepository();
     const POST = createSendMessageHandler({
@@ -5541,269 +3810,6 @@ describe("model run route handlers", () => {
     });
   });
 
-  it("marks stale active runs without provider refresh as orphaned", async () => {
-    const { repository, state } = createMemoryRepository();
-    state.staleActiveRuns = [
-      {
-        ...activeRunRecord({
-          assistantMessageId: "assistant-orphan",
-          chatId: "chat-1",
-          id: "run-orphan"
-        }),
-        updatedAt: new Date("2026-06-10T00:00:00.000Z")
-      }
-    ];
-
-    await reconcileStaleRuns(
-      {
-        registry: activeRunControllerRegistry,
-        providers: {
-          fake: createFakeProviderAdapter()
-        },
-        repository
-      },
-      {
-        now: new Date("2026-06-10T00:11:00.000Z"),
-        userId: config.bootstrapUserId
-      }
-    );
-
-    expect(state.failed).toEqual({
-      error: {
-        code: "run_orphaned",
-        message: "Run stopped reporting progress and was marked failed."
-      },
-      runId: "run-orphan"
-    });
-    expect(state.events).toEqual([]);
-  });
-
-  it("skips stale active runs that still have a local foreground controller", async () => {
-    const { repository, state } = createMemoryRepository();
-    const controllers = activeRunControllersForTest();
-    const controller = new AbortController();
-    state.staleActiveRuns = [
-      {
-        ...activeRunRecord({
-          assistantMessageId: "assistant-live",
-          chatId: "chat-1",
-          id: "run-live"
-        }),
-        updatedAt: new Date("2026-06-10T00:00:00.000Z")
-      }
-    ];
-    controllers.set("run-live", controller);
-
-    try {
-      await reconcileStaleRuns(
-        {
-          registry: activeRunControllerRegistry,
-          providers: {
-            fake: createFakeProviderAdapter()
-          },
-          repository
-        },
-        {
-          now: new Date("2026-06-10T00:11:00.000Z"),
-          userId: config.bootstrapUserId
-        }
-      );
-    } finally {
-      controllers.delete("run-live");
-    }
-
-    expect(state.failed).toBeNull();
-    expect(state.events).toEqual([]);
-  });
-
-  it("leaves fresh active runs untouched during stale reconciliation", async () => {
-    const { repository, state } = createMemoryRepository();
-    state.staleActiveRuns = [
-      {
-        ...activeRunRecord({
-          assistantMessageId: "assistant-fresh",
-          chatId: "chat-1",
-          id: "run-fresh"
-        }),
-        updatedAt: new Date("2026-06-10T00:05:00.000Z")
-      }
-    ];
-
-    await reconcileStaleRuns(
-      {
-        registry: activeRunControllerRegistry,
-        providers: {
-          fake: createFakeProviderAdapter()
-        },
-        repository
-      },
-      {
-        now: new Date("2026-06-10T00:11:00.000Z"),
-        userId: config.bootstrapUserId
-      }
-    );
-
-    expect(state.failed).toBeNull();
-    expect(state.events).toEqual([]);
-  });
-
-  it("refreshes stale active provider runs that can report background status", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = openAiCreatedRun();
-    state.providerResponseId = "resp-stale-complete";
-    state.staleActiveRuns = [
-      {
-        ...activeRunRecord({
-          assistantMessageId: "assistant-message-1",
-          chatId: "chat-1",
-          id: "run-1",
-          modelId: "gpt-5.5",
-          provider: "openai",
-          providerResponseId: "resp-stale-complete"
-        }),
-        updatedAt: new Date("2026-06-10T00:00:00.000Z")
-      }
-    ];
-
-    await reconcileStaleRuns(
-      {
-        registry: activeRunControllerRegistry,
-        providers: {
-          openai: {
-            buildRequestPreview: () => ({}),
-            refresh: async (providerResponseId) => ({
-              events: [
-                {
-                  data: {
-                    delta: "Recovered stale answer"
-                  },
-                  type: "token"
-                }
-              ],
-              providerResponseId,
-              result: {
-                finalProviderResponsePreview: {
-                  provider: "openai",
-                  text: "Recovered stale answer"
-                },
-                finalText: "Recovered stale answer",
-                providerResponseId,
-                usage: {
-                  inputTokens: 2,
-                  outputTokens: 3,
-                  reasoningTokens: 0
-                }
-              },
-              status: "completed",
-              terminal: true
-            }),
-            async *stream() {
-              return {
-                finalProviderResponsePreview: {},
-                finalText: "",
-                usage: {
-                  inputTokens: 0,
-                  outputTokens: 0,
-                  reasoningTokens: 0
-                }
-              };
-            }
-          }
-        },
-        repository
-      },
-      {
-        now: new Date("2026-06-10T00:11:00.000Z"),
-        userId: config.bootstrapUserId
-      }
-    );
-
-    expect(state.failed).toBeNull();
-    expect(state.completed).toMatchObject({
-      finalText: "Recovered stale answer",
-      provider: "openai",
-      providerResponseId: "resp-stale-complete",
-      runId: "run-1"
-    });
-    expect(state.events).toEqual([]);
-  });
-
-  it("keeps refreshable stale provider runs active when provider status is not terminal", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set()
-    });
-    state.created = openAiCreatedRun();
-    state.providerResponseId = "resp-stale-running";
-    state.staleActiveRuns = [
-      {
-        ...activeRunRecord({
-          assistantMessageId: "assistant-message-1",
-          chatId: "chat-1",
-          id: "run-1",
-          modelId: "gpt-5.5",
-          provider: "openai",
-          providerResponseId: "resp-stale-running"
-        }),
-        updatedAt: new Date("2026-06-10T00:00:00.000Z")
-      }
-    ];
-
-    await reconcileStaleRuns(
-      {
-        registry: activeRunControllerRegistry,
-        providers: {
-          openai: {
-            buildRequestPreview: () => ({}),
-            refresh: async (providerResponseId) => ({
-              events: [
-                {
-                  data: {
-                    artifactType: "summary",
-                    payload: {
-                      provider: "openai",
-                      responseId: providerResponseId,
-                      status: "in_progress"
-                    }
-                  },
-                  type: "artifact"
-                }
-              ],
-              providerResponseId,
-              status: "in_progress",
-              terminal: false
-            }),
-            async *stream() {
-              return {
-                finalProviderResponsePreview: {},
-                finalText: "",
-                usage: {
-                  inputTokens: 0,
-                  outputTokens: 0,
-                  reasoningTokens: 0
-                }
-              };
-            }
-          }
-        },
-        repository
-      },
-      {
-        now: new Date("2026-06-10T00:11:00.000Z"),
-        userId: config.bootstrapUserId
-      }
-    );
-
-    expect(state.failed).toBeNull();
-    expect(state.completed).toBeNull();
-    expect(state.events).toEqual([]);
-  });
-
   it("cancels active runs without provider-native cancellation or a provider response id", async () => {
     const { repository, state } = createMemoryRepository();
     state.created = {
@@ -5822,13 +3828,13 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
-        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
           nativeSearch: true,
           pdf: true,
           reasoning: true,
+          toolCalling: true,
           vision: true
         },
         modelId: "fake-qsa",
@@ -5888,120 +3894,6 @@ describe("model run route handlers", () => {
     );
     expect(missingResponse.status).toBe(404);
     await expect(missingResponse.json()).resolves.toEqual({ error: "model_run_not_found" });
-  });
-
-  it("aborts the active provider stream and suppresses tokens after cancellation", async () => {
-    const { repository, state } = createMemoryRepository();
-    let signal: AbortSignal | undefined;
-    let attemptedLateToken = false;
-    const abortAwareProvider: ProviderAdapter = {
-      buildRequestPreview: () => ({
-        provider: "fake"
-      }),
-      async *stream(_request, options = {}) {
-        signal = options.signal;
-        yield {
-          data: {
-            artifactType: "summary",
-            payload: {
-              provider: "fake"
-            }
-          },
-          type: "artifact"
-        };
-        yield {
-          data: {
-            delta: "before "
-          },
-          type: "token"
-        };
-        await new Promise<void>((resolve) => {
-          options.signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-        attemptedLateToken = true;
-        yield {
-          data: {
-            delta: "after "
-          },
-          type: "token"
-        };
-
-        return {
-          finalProviderResponsePreview: {},
-          finalText: "before after",
-          usage: {
-            inputTokens: 1,
-            outputTokens: 2,
-            reasoningTokens: 0
-          }
-        };
-      }
-    };
-    const send = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: abortAwareProvider
-      },
-      repository
-    });
-    const cancel = createCancelModelRunHandler({
-      ...authDeps,
-      providers: {
-        fake: abortAwareProvider
-      },
-      repository
-    });
-
-    const response = await send(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          text: "Cancel me"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-    for (let attempt = 0; attempt < 10 && !signal; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    expect(signal).toBeDefined();
-    const cancelResponse = await cancel(
-      new Request("http://app.local/api/model-runs/run-1/cancel", {
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          runId: "run-1"
-        }
-      }
-    );
-
-    expect(cancelResponse.status).toBe(200);
-    expect(signal?.aborted).toBe(true);
-    await response.text();
-    expect(attemptedLateToken).toBe(true);
-    expect(state.assistantText).toBe("before ");
-    expect(state.completed).toBeNull();
-    expect(state.cancelled).toMatchObject({
-      code: "model_run_cancelled"
-    });
-    expect(state.events).toHaveLength(1);
-    expect(state.events[0]).toMatchObject({ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "request" }) }
-    } });
   });
 
   it("settles Workspace when a cancelled PDF worker has a controller but no answer settlement promise", async () => {
@@ -6341,54 +4233,6 @@ describe("model run route handlers", () => {
     await expect(regenerateResponse.json()).resolves.toEqual({ error: "mcp_not_ready" });
   });
 
-  it("maps send and regeneration Knowledge acceptance races to privacy-neutral conflicts", async () => {
-    const memory = createMemoryRepository();
-    const repository: RunRepository = {
-      ...memory.repository,
-      createRegenerationRun: async () => {
-        throw new KnowledgeRunPlanConflictError();
-      },
-      createRun: async () => {
-        throw new KnowledgeRunPlanConflictError();
-      }
-    };
-    const deps = {
-      ...authDeps,
-      providers: { fake: createFakeProviderAdapter() },
-      repository
-    };
-    const send = createSendMessageHandler(deps);
-    const regenerate = createRegenerateModelRunHandler(deps);
-
-    const sendResponse = await send(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          searchPlan: { mode: "all_selected", optionIds: [] },
-          text: "Race"
-        }),
-        headers: { cookie: authCookie() },
-        method: "POST"
-      }),
-      { params: { chatId: "chat-1" } }
-    );
-    const regenerateResponse = await regenerate(
-      new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-        body: JSON.stringify({ searchPlan: { mode: "all_selected", optionIds: [] } }),
-        headers: { cookie: authCookie() },
-        method: "POST"
-      }),
-      { params: { messageId: "assistant-message-1" } }
-    );
-
-    expect(sendResponse.status).toBe(409);
-    await expect(sendResponse.json()).resolves.toEqual({
-      error: "knowledge_base_not_available"
-    });
-    expect(regenerateResponse.status).toBe(409);
-    await expect(regenerateResponse.json()).resolves.toEqual({
-      error: "knowledge_base_not_available"
-    });
-  });
 });
 
 describe("Stop diagnostics", () => {
@@ -6571,9 +4415,6 @@ describe("run HTTP failure containment", () => {
 });
 
 describe("usage limit admission", () => {
-  beforeEach(() => {
-    resetBootOrphanSweepForTest();
-  });
 
   const minute = 60_000;
   /** The start of the UTC month after `now`, when budgets reset. */
@@ -6631,7 +4472,6 @@ describe("usage limit admission", () => {
     "refuses a send at %s with its facts and retry-after, before any run, provider call or usage",
     async (code) => {
       const { repository, state } = createMemoryRepository();
-      const recordUsage = vi.spyOn(repository, "recordRunUsageEvents");
       const adapter = createFakeProviderAdapter();
       const stream = vi.spyOn(adapter, "stream");
       const usageLimits = limitsReading(reached[code].status);
@@ -6650,7 +4490,6 @@ describe("usage limit admission", () => {
       expect(decodeUsageLimitRefusal(body)).toEqual(body);
       expect(state.created).toBeNull();
       expect(stream).not.toHaveBeenCalled();
-      expect(recordUsage).not.toHaveBeenCalled();
     }
   );
 
@@ -6713,8 +4552,6 @@ describe("usage limit admission", () => {
     repository.findOwnedChat = async () => null;
     await expectRefusal(await POST(send(), { params: { chatId: "chat-1" } }), 404, { error: "chat_not_found" });
     repository.findOwnedChat = findOwnedChat;
-    // The boot sweep would settle the fixture's active run; in a live process it ran long before.
-    await sweepBootOrphanedRunsOnce({ registry: activeRunControllerRegistry, repository });
     state.recentActiveRun = { ...activeRunRecord({ chatId: "chat-1" }), updatedAt: new Date() };
     await expectRefusal(await POST(send(), { params: { chatId: "chat-1" } }), 409, { error: "active_run_in_progress" });
     const REGENERATE = createRegenerateModelRunHandler(deps);
@@ -6776,15 +4613,12 @@ describe("usage limit admission", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.created).toMatchObject({ chatId: "chat-1", userId: config.bootstrapUserId });
-    expect(state.completed).not.toBeNull();
+    expect(state.published).toHaveLength(1);
     expect(usageLimits.loadUsageLimitStatus).toHaveBeenCalledOnce();
   });
 });
 
-describe("native engine routing of interactive sends", () => {
-  beforeEach(() => {
-    resetBootOrphanSweepForTest();
-  });
+describe("interactive sends on the agent engine", () => {
 
   const toolCallingModel = { contextWindow: 32_768, nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: true,
     streaming: true, toolCalling: true, vision: true };
@@ -6794,19 +4628,19 @@ describe("native engine routing of interactive sends", () => {
     headers: { cookie: authCookie() }, method: "POST"
   }), { params: { chatId: "chat-1" } });
 
-  it("admits a listed user's send with the native engine marker and answers on it", async () => {
+  it("admits a send with the agent engine marker and answers on it", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
-    const native = nativeEngineFake([config.bootstrapUserId]);
+    const native = nativeEngineFake();
     const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() }, repository });
     const events = parseSse(await response.text());
-    expect(state.created).toMatchObject({ engine: "native" });
+    expect(state.created).not.toBeNull();
     expect(native.published).toEqual(["Fake answer: Hello QSA"]);
     expect(events.map((event) => event.type)).toContain("answer_complete");
     expect(events.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
     expect(state.completed).toBeNull();
   });
 
-  it("admits a listed user's quick send behind a settling answer as a native Workspace follow-up, which nothing runs before", async () => {
+  it("admits a quick send behind a settling answer as a Workspace follow-up, which nothing runs before", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [{
       id: "previous-answer", role: "assistant", content: { blocks: [{ type: "text", text: "File saved." }] }
     }], null, toolCallingModel);
@@ -6817,7 +4651,7 @@ describe("native engine routing of interactive sends", () => {
     const create = repository.createRun;
     repository.createRun = vi.fn(async (input) => ({ ...await create(input), deferredWorkspace: true as const }));
     repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", workspacePreparation: true });
-    const native = nativeEngineFake([config.bootstrapUserId]);
+    const native = nativeEngineFake();
     const provider = recordingProvider();
     const kick = vi.fn();
     const response = await createSendMessageHandler({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter },
@@ -6827,23 +4661,21 @@ describe("native engine routing of interactive sends", () => {
     }), { params: { chatId: "chat-1" } });
     expect(response.status).toBe(202);
     // The native engine takes it once the follow-up starts it, after the predecessor's hand-off.
-    expect(state.created).toMatchObject({ engine: "native", workspaceFollowup: { predecessorRunId: "previous-run",
+    expect(state.created).toMatchObject({ workspaceFollowup: { predecessorRunId: "previous-run",
       snapshot: { native: {}, version: 1 } } });
     expect(provider.requests).toEqual([]);
     expect(native.published).toEqual([]);
     expect(kick).toHaveBeenCalled();
   });
 
-  it("keeps an unlisted user, and a model without verified tool calling, on the old core", async () => {
-    for (const [listed, capabilities] of [[["someone-else"], toolCallingModel], [[config.bootstrapUserId],
-      { ...toolCallingModel, toolCalling: false }]] as const) {
-      const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, capabilities);
-      const native = nativeEngineFake(listed);
-      const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() }, repository });
-      await response.text();
-      expect(state.created?.engine).toBeUndefined();
-      expect(native.published).toEqual([]);
-    }
+  it("refuses a model without verified tool calling visibly, before creating a run", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, { ...toolCallingModel, toolCalling: false });
+    const native = nativeEngineFake();
+    const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() }, repository });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "model_tool_calling_required" });
+    expect(state.created).toBeNull();
+    expect(native.published).toEqual([]);
   });
 
   /** The fake provider, recording every request it is sent. */
@@ -6858,10 +4690,10 @@ describe("native engine routing of interactive sends", () => {
   }
   const toolNames = (request: ProviderRunRequest | undefined) => (request?.tools ?? []).map((tool) => tool.name);
 
-  it("runs a listed user's Assistant chat natively, under the Assistant's own instructions and rows", async () => {
+  it("runs Assistant chat natively, under the Assistant's own instructions and rows", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
     repository.loadAssistantRowContext = assistantRowContextLoader({ defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" } });
-    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const native = nativeEngineFake({ tools: true });
     const provider = recordingProvider();
     const response = await createSendMessageHandler({ ...authDeps, assistants: { resolveForRun: async () => handlerAssistant() },
       nativeEngine: native.deps, providers: { fake: provider.adapter }, repository
@@ -6869,7 +4701,7 @@ describe("native engine routing of interactive sends", () => {
       body: JSON.stringify({ assistantId: "assistant-1", text: "Assistant run" }), headers: { cookie: authCookie() }, method: "POST"
     }), { params: { chatId: "chat-1" } });
     await response.text();
-    expect(state.created).toMatchObject({ assistant: expect.objectContaining({ assistantId: "assistant-1" }), engine: "native" });
+    expect(state.created).toMatchObject({ assistant: expect.objectContaining({ assistantId: "assistant-1" }) });
     expect(native.published).toHaveLength(1);
     // The family prompt is the persona; the Assistant's instructions follow it.
     const system = provider.requests[0]!.prompt.system!;
@@ -6883,18 +4715,18 @@ describe("native engine routing of interactive sends", () => {
     expect(tools).not.toContain("manage_assistant");
   });
 
-  it("gives a listed user's personal chat the self-service tools", async () => {
+  it("gives personal chat the self-service tools", async () => {
     const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
-    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const native = nativeEngineFake({ tools: true });
     const provider = recordingProvider();
     const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository });
     await response.text();
     expect(toolNames(provider.requests[0])).toEqual(expect.arrayContaining(["read_secret", "manage_assistant", "manage_secret"]));
   });
 
-  it("gives a listed user's Telegram turn no self-service tools, whose cards the bridge cannot show, and keeps read_secret", async () => {
+  it("gives Telegram turn no self-service tools, whose cards the bridge cannot show, and keeps read_secret", async () => {
     const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
-    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const native = nativeEngineFake({ tools: true });
     const provider = recordingProvider();
     const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository,
       telegramTurn: true });
@@ -6904,11 +4736,11 @@ describe("native engine routing of interactive sends", () => {
     for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant"]) expect(tools).not.toContain(name);
   });
 
-  it("continues a listed user's turn natively after an Allow, naming the approval, as the web and Telegram send it", async () => {
+  it("continues turn natively after an Allow, naming the approval, as the web and Telegram send it", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
     repository.loadMcpApprovalContinuation = vi.fn(async (input: { approvalId: string }) => input.approvalId === "approval-1"
       ? { serverName: "Records", toolName: "create_record" } : null);
-    const native = nativeEngineFake([config.bootstrapUserId]);
+    const native = nativeEngineFake();
     const response = await createSendMessageHandler({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() },
       repository })(new Request("http://app.local/api/chats/chat-1/messages", {
       body: JSON.stringify({ content: { blocks: [] }, modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
@@ -6916,16 +4748,16 @@ describe("native engine routing of interactive sends", () => {
       headers: { cookie: authCookie() }, method: "POST"
     }), { params: { chatId: "chat-1" } });
     await response.text();
-    expect(state.created).toMatchObject({ engine: "native", systemTurnKind: "mcp_approval_continuation" });
+    expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation" });
     // The native run looks the Allow up itself; the body only names it.
     expect(native.deps.engine.approvedCall).toHaveBeenCalledWith({ approvalId: "approval-1", chatId: "chat-1",
       userId: config.bootstrapUserId });
     expect(native.published).toHaveLength(1);
   });
 
-  it("runs a listed user's answer review step natively with the step's reserved report", async () => {
+  it("runs answer review step natively with the step's reserved report", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
-    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const native = nativeEngineFake({ tools: true });
     const provider = recordingProvider();
     const response = await createSendMessageHandler({ ...authDeps, answerReviewStep: {
       preparation: { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 }, turnKind: "answer_review_request"
@@ -6935,7 +4767,7 @@ describe("native engine routing of interactive sends", () => {
       headers: { cookie: authCookie() }, method: "POST"
     }), { params: { chatId: "chat-1" } });
     await response.text();
-    expect(state.created).toMatchObject({ answerReviewStep: { round: 1, sessionId: "session-1", step: 0 }, engine: "native" });
+    expect(state.created).toMatchObject({ answerReviewStep: { round: 1, sessionId: "session-1", step: 0 } });
     const tools = toolNames(provider.requests[0]);
     expect(tools).toContain("submit_answer_review");
     expect(tools).not.toContain("manage_secret");

@@ -8,9 +8,6 @@ import {
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memory";
 import type { MemoryActionIntent } from "../../contracts/memoryActionIntent";
-import {
-  calculateContextBudgetLimits
-} from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
   MEMORY_DECAY_POLICY_VERSION,
@@ -84,7 +81,7 @@ import {
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { applyMemoryScopeTargetDeletion } from "../memory/scopeLifecycle";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { applyProviderRequestContextBudget, providerRequestTokenEstimate } from "./runContextBudget";
+import { applyProviderRequestContextBudget } from "./requestContextBudget";
 import {
   MemoryPreparingRunConflictError,
   dormantMemoryAttemptResult
@@ -93,6 +90,7 @@ import { finalizePreparingRunWithClient } from "./prismaRepositoryPreparation";
 import type { PreparingRunMemoryMaterializer } from "./runRepositoryContract";
 import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../contracts/runs";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 const suppressionKeyring = MemorySuppressionKeyring.parse(
   `current=preparing-test-v1,preparing-test-v1=${Buffer.from(
@@ -228,7 +226,6 @@ function normalizedRequest(
       }],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -2430,16 +2427,8 @@ describe("PREPARING run orchestration", () => {
       const text = queued ? "ordinary-answer-canary" : "/memory ordinary-answer-canary";
       const expectedAnswerResult = queued ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT;
       const initialRequest = normalizedRequest(chat.id, text);
-      const requiredTokens = providerRequestTokenEstimate({
-        ...initialRequest,
-        attachments: [],
-        prompt: { ...initialRequest.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT }
-      });
-      let contextWindow = 1;
-      while (calculateContextBudgetLimits({ contextWindow }).budgetTokens < requiredTokens) {
-        contextWindow += 1;
-      }
-      const reservedRequest: NormalizedRunRequest = {
+      // The smallest window that fits the request with its answer contract: any addition overflows it.
+      const reserved = (contextWindow: number): NormalizedRunRequest => ({
         ...initialRequest,
         modelCapabilities: {
           ...initialRequest.modelCapabilities,
@@ -2450,7 +2439,12 @@ describe("PREPARING run orchestration", () => {
           ...initialRequest.prompt,
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
         }
-      };
+      });
+      let contextWindow = 1;
+      while (!applyProviderRequestContextBudget({ request: { ...reserved(contextWindow), attachments: [] } }).ok) {
+        contextWindow += 1;
+      }
+      const reservedRequest = reserved(contextWindow);
       const initiallyBudgeted = applyProviderRequestContextBudget({
         request: { ...reservedRequest, attachments: [] }
       });
@@ -3134,7 +3128,7 @@ describe("PREPARING run orchestration", () => {
         });
         expect(binding).toMatchObject({ outcome: "DISABLED", contextTokenCount: 0 });
         expect(await prisma.modelRunMemoryItem.count({ where: { bindingId: binding.id } })).toBe(0);
-        await expect(repository.completeRun({
+        await expect(completeNativeRun(prisma, {
           assistantMessageId: created.assistantMessageId, chatId, estimatedCostMicros: null,
           finalText: "No personal memory used.", modelId: request.modelId, provider: request.provider,
           runId: created.runId, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, userId

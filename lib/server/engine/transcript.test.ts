@@ -98,7 +98,6 @@ function request(target: TranscriptTarget, history: readonly ProviderHistoryItem
     chatId: "chat-spike",
     content: { blocks: [{ text: "Which first?", type: "text" }] },
     history,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true,
       reasoningEfforts: ["minimal", "low", "medium", "high"], streaming: true, toolCalling: true, vision: true

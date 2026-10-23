@@ -137,7 +137,7 @@ describe("existing-installation Jev upgrade", () => {
       expect(await adopt()).toBe("applied");
       const roles = createDecisionModelRoleResolver(prisma);
       expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
-      expect(await roles.resolve("knowledgeRelevance")).toMatchObject({ ok: true });
+      expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: true });
     });
   });
 

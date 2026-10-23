@@ -14,7 +14,6 @@ export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatMessagesPageH
   resolveAuth: resolveRequestAuth
 });
 
-// The default send services carry the native engine, which takes the pilot's runs (`AIQSA_NATIVE_ENGINE_USERS`).
 export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>> = createSendMessageHandler({
   ...createDefaultSendMessageDeps(),
   resolveAuth: resolveRequestAuth

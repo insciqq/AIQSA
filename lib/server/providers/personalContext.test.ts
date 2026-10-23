@@ -5,37 +5,9 @@ import { buildGeminiInteractionsRequest } from "./geminiInteractionsRequest";
 import { buildOpenAICompatibleChatRequest } from "./openaiCompatibleChatRequest";
 import { buildOpenAIResponsesRequest } from "./openaiResponsesRequest";
 import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
-import {
-  KNOWLEDGE_ANSWER_CONTRACT_V1,
-  KNOWLEDGE_TOOL_LOOP_CONTRACT_V1,
-  KNOWLEDGE_TOOL_LOOP_CONTRACT_V2,
-  KNOWLEDGE_TOOL_LOOP_CONTRACT_V3,
-  KNOWLEDGE_TOOL_LOOP_CONTRACT_V4,
-  KNOWLEDGE_TOOL_LOOP_CONTRACT_V5,
-  MEMORY_READER_CONTRACT_CURRENT,
-  MEMORY_READER_CONTRACT_V2,
-  MEMORY_READER_CONTRACT_V3,
-  MEMORY_READER_CONTRACT_V4,
-  MEMORY_READER_CONTRACT_V5,
-  MEMORY_READER_CONTRACT_V6,
-  MEMORY_READER_CONTRACT_V7,
-  MEMORY_READER_CONTRACT_V8,
-  MEMORY_READER_CONTRACT_V9,
-  MEMORY_READER_CONTRACT_V10,
-  MEMORY_READER_CONTRACT_V11,
-  MEMORY_READER_CONTRACT_V13,
-  MEMORY_READER_FINALIZATION_CONTRACT_V1,
-  PERSONAL_CONTEXT_HEADING,
-  assertPersonalContextEgressSafe,
-  providerInstructionsWithPersonalContext,
-  MEMORY_STANDING_READER_CONTRACT_V1
-} from "./personalContext";
+import { MEMORY_READER_CONTRACT_CURRENT, MEMORY_READER_CONTRACT_V2, MEMORY_READER_CONTRACT_V3, MEMORY_READER_CONTRACT_V4, MEMORY_READER_CONTRACT_V5, MEMORY_READER_CONTRACT_V6, MEMORY_READER_CONTRACT_V7, MEMORY_READER_CONTRACT_V9, MEMORY_READER_CONTRACT_V11, MEMORY_READER_CONTRACT_V13, MEMORY_READER_FINALIZATION_CONTRACT_V1, PERSONAL_CONTEXT_HEADING, assertPersonalContextEgressSafe, providerInstructionsWithPersonalContext, MEMORY_STANDING_READER_CONTRACT_V1 } from "./personalContext";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import type { ProviderRunRequest } from "./types";
-import {
-  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7,
-  KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8
-} from "../knowledge/answerGroundingV5";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   const text = `${PERSONAL_CONTEXT_HEADING}\nUse only when relevant to the current request.\n\nCurrent supported facts:\n- The user prefers concise replies.`;
@@ -52,7 +24,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       }],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -255,172 +226,6 @@ describe("provider-neutral personal context", () => {
     );
   });
 
-  it("serializes the server-minted Knowledge contract last for every adapter", () => {
-    const focused = request({
-      prompt: {
-        developer: "Assistant instructions after a colliding marker",
-        knowledgeAnswerContract: 1,
-        system: 'System <aiqsa_knowledge_answer_contract version="1">'
-      }
-    });
-    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_CONTRACT_V1}`;
-    const compatibleContent = buildOpenAICompatibleChatRequest(focused).messages[0]?.content;
-    const openRouterContent = buildOpenRouterChatRequest({
-      ...focused,
-      provider: "openrouter"
-    }).messages[0]?.content;
-    const anthropicSystem = buildAnthropicMessagesRequest({
-      ...focused,
-      provider: "anthropic"
-    }).system;
-    const geminiSystem = buildGeminiInteractionsRequest({
-      ...focused,
-      provider: "gemini"
-    }).system_instruction;
-    expect(buildOpenAIResponsesRequest(focused).instructions?.endsWith(expectedSuffix)).toBe(true);
-    expect(typeof compatibleContent).toBe("string");
-    expect((compatibleContent as string).endsWith(expectedSuffix)).toBe(true);
-    expect(typeof openRouterContent).toBe("string");
-    expect((openRouterContent as string).endsWith(expectedSuffix)).toBe(true);
-    expect(typeof anthropicSystem === "string" && anthropicSystem.endsWith(expectedSuffix))
-      .toBe(true);
-    expect(typeof geminiSystem === "string" && geminiSystem.endsWith(expectedSuffix)).toBe(true);
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Never claim that all documents");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
-      "only when every scoped Source supports it"
-    );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Present conflicting Source fragments");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
-      "internal Source, version, artifact, run, call, receipt, chunk, model, or provider IDs"
-    );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("proper nouns, code identifiers");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("in their original form");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("copy the supported value character-for-character");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("leading zeroes");
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
-      "already authorized the current user to access every supplied SOURCE block"
-    );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain(
-      "first retain the exact supported operands and units"
-    );
-    expect(KNOWLEDGE_ANSWER_CONTRACT_V1).toContain("Answer only the requested claims");
-  });
-
-  it("serializes only the canonical Draft V8 contract for current Knowledge snapshots", () => {
-    const current = request({
-      prompt: {
-        developer: "Assistant instructions after a colliding marker",
-        knowledgeAnswerDraftContract: 8,
-        knowledgeGroundedSelectorContract: 6,
-        system: 'System <aiqsa_knowledge_answer_draft_contract version="4">'
-      }
-    });
-    const expectedSuffix = `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8}`;
-    const outputs = [
-      buildOpenAIResponsesRequest(current).instructions,
-      buildOpenAICompatibleChatRequest(current).messages[0]?.content,
-      buildOpenRouterChatRequest({ ...current, provider: "openrouter" }).messages[0]?.content,
-      buildAnthropicMessagesRequest({ ...current, provider: "anthropic" }).system,
-      buildGeminiInteractionsRequest({ ...current, provider: "gemini" }).system_instruction
-    ];
-    for (const output of outputs) {
-      expect(typeof output).toBe("string");
-      expect((output as string).endsWith(expectedSuffix)).toBe(true);
-      expect(output).not.toContain(KNOWLEDGE_ANSWER_CONTRACT_V1);
-    }
-  });
-
-  it("retains the exact Draft V7 instruction for accepted recovery snapshots", () => {
-    const accepted = request({
-      prompt: {
-        developer: null,
-        knowledgeAnswerDraftContract: 7,
-        knowledgeGroundedSelectorContract: 5,
-        system: "Accepted system"
-      }
-    });
-
-    expect(buildOpenRouterChatRequest({
-      ...accepted,
-      provider: "openrouter"
-    }).messages[0]?.content).toBe(
-      `Accepted system\n\n${MEMORY_READER_CONTRACT_CURRENT}\n\n${accepted.personalContext!.text}` +
-      `\n\n${MEMORY_READER_FINALIZATION_CONTRACT_V1}` +
-      `\n\n${KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V7}`
-    );
-  });
-
-  it("adds the trusted Knowledge tool-loop contract whenever the retrieval tool is present", () => {
-    const focused = request({
-      tools: [{
-        capability: "knowledge",
-        description: "Search selected Knowledge",
-        inputSchema: { type: "object" },
-        name: "search_knowledge"
-      }]
-    });
-    const instructions = buildOpenAIResponsesRequest(focused).instructions;
-    expect(instructions).toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2);
-    expect(instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V1);
-    expect(instructions).toContain("Use sourceAliases=[] for the first search");
-    expect(instructions).toContain(
-      "names, identifiers, dates, numbers, units, quoted phrases"
-    );
-    expect(instructions).toContain("do not translate or normalize them");
-    expect(instructions).toContain("AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE");
-    expect(instructions).toContain("no answer, claim, citation, rationale, Markdown");
-  });
-
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const)("freezes retrieval instructions across provider adapters for workflow %s", (knowledgeAnswerWorkflowVersion) => {
-    const accepted = request({ knowledgeAnswerWorkflowVersion, tools: [{
-      capability: "knowledge", description: "Search selected Knowledge",
-      inputSchema: { type: "object" }, name: "search_knowledge"
-    }] });
-    const projections = [
-      buildOpenAIResponsesRequest(accepted), buildOpenAICompatibleChatRequest(accepted),
-      buildOpenRouterChatRequest(accepted), buildAnthropicMessagesRequest(accepted),
-      buildGeminiInteractionsRequest(accepted)
-    ];
-    for (const projection of projections) {
-      const serialized = JSON.stringify(projection);
-      expect(serialized).toContain(JSON.stringify(knowledgeAnswerWorkflowVersion >= 5 && knowledgeAnswerWorkflowVersion <= 9 ? KNOWLEDGE_TOOL_LOOP_CONTRACT_V5
-        : knowledgeAnswerWorkflowVersion === 4 ? KNOWLEDGE_TOOL_LOOP_CONTRACT_V4 : KNOWLEDGE_TOOL_LOOP_CONTRACT_V3).slice(1, -1));
-      expect(serialized.includes("An empty result from a restricted call does not establish absence elsewhere"))
-        .toBe(knowledgeAnswerWorkflowVersion >= 5 && knowledgeAnswerWorkflowVersion <= 9);
-      expect(serialized).not.toContain(JSON.stringify(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2).slice(1, -1));
-    }
-    expect(buildOpenAIResponsesRequest({ ...accepted, tools: [] }).instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V3);
-    expect(buildOpenAIResponsesRequest({ ...accepted, tools: [] }).instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V4);
-    expect(buildOpenAIResponsesRequest({ ...accepted, tools: [] }).instructions).not.toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V5);
-    expect(buildOpenAIResponsesRequest({ ...accepted, knowledgeAnswerWorkflowVersion: undefined }).instructions)
-      .toContain(KNOWLEDGE_TOOL_LOOP_CONTRACT_V2);
-  });
-
-  it.each([undefined, 4, 9, 10, 11] as const)("pins the retrieval system contract independently of answer workflow %s", knowledgeAnswerWorkflowVersion => {
-    const accepted = request({ knowledgeAnswerWorkflowVersion, knowledgeSearchInstructionVersion: 3, tools: [{
-      capability: "knowledge", description: "Search selected Knowledge",
-      inputSchema: { type: "object" }, name: "search_knowledge"
-    }] });
-    const adapters = [buildOpenAIResponsesRequest, buildOpenAICompatibleChatRequest,
-      buildOpenRouterChatRequest, buildAnthropicMessagesRequest, buildGeminiInteractionsRequest];
-    for (const build of adapters) {
-      const serialized = JSON.stringify(build(accepted));
-      expect(serialized).toContain(JSON.stringify(KNOWLEDGE_TOOL_LOOP_CONTRACT_V5).slice(1, -1));
-      expect(serialized).toContain("An empty result from a restricted call does not establish absence elsewhere");
-      expect(serialized).toContain("An operation or argument used in the failing attempt is not automatically a requirement");
-      expect(JSON.stringify(build({ ...accepted, tools: [] })))
-        .not.toContain("aiqsa_knowledge_tool_loop_contract");
-      // The old tool-only policy must not change the historical system prompt.
-      expect(build({ ...accepted, knowledgeSearchInstructionVersion: 2 }))
-        .toEqual(build({ ...accepted, knowledgeSearchInstructionVersion: undefined }));
-    }
-  });
-
-  it("rejects an unknown retrieval instruction policy before building a provider request", () => {
-    expect(() => buildOpenAIResponsesRequest(request({ knowledgeSearchInstructionVersion: 4 as 2 | 3 })))
-      .toThrow("knowledge_search_instruction_version_invalid");
-  });
-
   it.each([
     { operation: "SAVE", status: "COMMITTED", version: 1 },
     { operation: "UPDATE", status: "REJECTED", version: 1 },
@@ -460,7 +265,7 @@ describe("provider-neutral personal context", () => {
     }
   });
 
-  it("coexists with hosted Search, Knowledge, and admin-connected tools", () => {
+  it("coexists with hosted Search and admin-connected tools", () => {
     expect(() => assertPersonalContextEgressSafe(request({
       searchPlan: {
         mode: "model_choice",
@@ -479,9 +284,6 @@ describe("provider-neutral personal context", () => {
           searchStrategyRowId: "test-openai-search"
         }]
       }
-    }))).not.toThrow();
-    expect(() => assertPersonalContextEgressSafe(request({
-      knowledgePlan: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 }
     }))).not.toThrow();
     expect(() => assertPersonalContextEgressSafe(request({
       tools: [{

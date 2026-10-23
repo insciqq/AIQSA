@@ -8,8 +8,8 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { NativeRunStore } from "./runStore";
 
 /**
- * Recovery of native runs only (the old core recovers its own): a native run
- * still active in the database that no execution of this process owns was
+ * Recovery of the engine's runs: a run still active in the database that no
+ * execution of this process owns was
  * cut off by a restart or a crash. Nothing is sent again: its transcript,
  * files and outputs stay, its open calls keep an unknown outcome, and the run
  * ends interrupted with an answer that offers Continue (an ordinary next
@@ -35,8 +35,8 @@ export type NativeOrphanRun = Readonly<{
 export type NativeRecoveryDeps = Readonly<{
   /** When this process started; runs created before it have no execution here. */
   bootedAt: Date;
-  findOrphans(input: Readonly<{ bootedBefore: Date; limit: number; liveRunIds: readonly string[]; staleBefore: Date;
-    userId?: string }>): Promise<readonly NativeOrphanRun[]>;
+  findOrphans(input: Readonly<{ bootedBefore: Date; chatId?: string; limit: number; liveRunIds: readonly string[];
+    staleBefore: Date; userId?: string }>): Promise<readonly NativeOrphanRun[]>;
   liveRunIds(): readonly string[];
   now?: () => Date;
   repository: Pick<RunRepository, "failRun">;
@@ -56,10 +56,12 @@ function runWorkspace(normalizedRequest: unknown): NormalizedRunWorkspace | unde
 }
 
 /** Settles native runs no execution owns; returns how many it settled. */
-export async function reconcileNativeRuns(deps: NativeRecoveryDeps, input: Readonly<{ userId?: string }> = {}): Promise<number> {
+export async function reconcileNativeRuns(deps: NativeRecoveryDeps, input: Readonly<{ chatId?: string; userId?: string }> = {}):
+  Promise<number> {
   const now = deps.now?.() ?? new Date();
   const orphans = await deps.findOrphans({ bootedBefore: deps.bootedAt, limit: RECOVERY_BATCH, liveRunIds: deps.liveRunIds(),
-    staleBefore: new Date(now.getTime() - NATIVE_RUN_STALE_MS), ...(input.userId ? { userId: input.userId } : {}) });
+    staleBefore: new Date(now.getTime() - NATIVE_RUN_STALE_MS), ...(input.chatId ? { chatId: input.chatId } : {}),
+    ...(input.userId ? { userId: input.userId } : {}) });
   let settled = 0;
   for (const run of orphans) {
     // A run that started executing here after the query keeps its execution.
@@ -85,7 +87,12 @@ export async function reconcileNativeRuns(deps: NativeRecoveryDeps, input: Reado
   return settled;
 }
 
-/** The native runs still active that no execution of this process owns. */
+/**
+ * The engine's runs still active that no execution of this process owns. A
+ * run whose document preparation or Workspace hand-off is still pending
+ * belongs to that job, which starts, expires or fails it, after a restart
+ * too (`lib/server/uploads/chatPdfCoordinator.ts`, `lib/server/runs/workspaceFollowupCoordinator.ts`).
+ */
 export function createNativeOrphanFinder(client: Pick<PrismaClient, "modelRun">): NativeRecoveryDeps["findOrphans"] {
   return (input) => client.modelRun.findMany({
     orderBy: { updatedAt: "asc" },
@@ -95,11 +102,13 @@ export function createNativeOrphanFinder(client: Pick<PrismaClient, "modelRun">)
       engine: "native",
       status: { in: activeModelRunStatuses },
       ...(input.liveRunIds.length > 0 ? { id: { notIn: [...input.liveRunIds] } } : {}),
+      ...(input.chatId ? { chatId: input.chatId } : {}),
       ...(input.userId ? { userId: input.userId } : {}),
       OR: [{ createdAt: { lt: input.bootedBefore } }, { updatedAt: { lt: input.staleBefore } }],
-      // A successor still waiting behind the previous answer's Workspace belongs to its follow-up job, which starts,
-      // expires or fails it, after a restart too (`workspaceFollowupCoordinator.ts`).
-      NOT: { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
+      NOT: [
+        { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
+        { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
+      ]
     }
   });
 }

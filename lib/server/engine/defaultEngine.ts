@@ -12,7 +12,6 @@ import type { NativeEngineDeps } from "./execution";
 import { engineTestFaults } from "./faults";
 import type { NativeEngineHandlerDeps } from "./handlerSupport";
 import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } from "./recovery";
-import { NATIVE_ENGINE_USERS_ENV, parseNativeEngineUsers } from "./routing";
 import { createNativeRunStore } from "./runStore";
 import { createToolCallStore } from "./toolCallStore";
 import type { ToolRegistryServices } from "./toolRegistry";
@@ -104,7 +103,6 @@ export function defaultNativeToolServices(storage: StorageAdapter, client: Prism
 /** The native engine as every send entry point and the regenerate route admit it. */
 export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: PrismaClient = prisma): NativeEngineHandlerDeps {
   return {
-    allowlist: () => parseNativeEngineUsers(process.env[NATIVE_ENGINE_USERS_ENV]),
     engine: defaultNativeEngineDeps(storage, client),
     findOrphans: createNativeOrphanFinder(client),
     mcpRuntime: () => getDefaultMcpRuntimeCoordinator(),
@@ -112,7 +110,7 @@ export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: 
   };
 }
 
-/** The installation-wide recovery pass of native runs, beside the old core's. */
+/** The installation-wide recovery pass of the engine's runs. */
 export function defaultNativeRecoveryDeps(input: Readonly<{
   repository: Pick<RunRepository, "failRun">;
   workspace?: WorkspaceCoordinator;

@@ -1,25 +1,13 @@
+import { createHash } from "node:crypto";
 import { decodeToolObservationDescriptor } from "../toolObservations/contract";
-import type { ToolExecutionResult } from "../tools/types";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
-import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolCall";
-import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
-import { contextDigest } from "./contextCompactionContract";
 import { mcpApprovalGated } from "./mcpApprovalGate";
-import type { ToolRoundCall } from "./providerToolLoop";
-import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import { unknownToolCall } from "./unknownToolCall";
-import {
-  toolLoopPersistenceLimits,
-  type PersistedToolLoopCall,
-  type PersistedToolLoopCallState,
-  type ToolLoopJsonValue
-} from "./toolLoopPersistence";
-import type { ToolLoopSettledCall } from "./toolLoop";
+import type { PersistedToolLoopCall, PersistedToolLoopCallState, ToolLoopJsonValue } from "./toolLoopPersistence";
 
 /**
- * Repeated identical calls without progress. Every decision derives from
- * persisted call rows of the run (live keeps the same rows it persisted and
- * settled), so recovery reaches the same decisions without process memory.
+ * Repeated identical calls without progress. Every decision derives from the
+ * run's call rows (the run keeps the rows it persisted and settled).
  *
  * - Hint: an executed success equal to the newest earlier success of the same
  *   call is marked as such in the provider projection only.
@@ -27,10 +15,24 @@ import type { ToolLoopSettledCall } from "./toolLoop";
  *   equal and no call that may change state ran since the older one (nor
  *   runs beside it in its batch), a further call is persisted already settled
  *   as an undispatched `tool_call_repeat_blocked` error.
- * - No progress: a round of only calls that did not run (`toolRoundCall`)
- *   ends in tool-free synthesis (`stalledToolRound`).
  */
 export const TOOL_CALL_REPEAT_BLOCKED = "tool_call_repeat_blocked";
+
+/** The JSON value with object keys in sorted order at every depth: rows round-trip through `jsonb`, which reorders keys. */
+function canonicalJson(value: unknown): unknown {
+  const plain = value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function"
+    ? (value as { toJSON(): unknown }).toJSON() : value;
+  if (Array.isArray(plain)) return plain.map(canonicalJson);
+  if (plain !== null && typeof plain === "object") {
+    return Object.fromEntries(Object.keys(plain).sort()
+      .map((key) => [key, canonicalJson((plain as Record<string, unknown>)[key])]));
+  }
+  return plain;
+}
+
+function contextDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(canonicalJson(value)) ?? "null").digest("hex");
+}
 const WORKSPACE_EXEC_POLL = namespacedWorkspaceToolName("sandbox_exec_poll");
 
 export type ToolCallRepeatRow = Pick<PersistedToolLoopCall,
@@ -104,11 +106,6 @@ export function toolCallOutcomeFingerprint(row: ToolCallRepeatRow): string | nul
   if (row.toolName === WORKSPACE_EXEC_POLL) return null;
   const result = row.result;
   if (row.state !== "complete" || !isRecord(result) || result.status !== "complete") return null;
-  // A call read keeps only a receipt: its output hash identifies what it returned.
-  if (row.toolName === READ_TOOL_CALL_NAME) {
-    const hash = readToolCallReceiptHash(result);
-    return hash ? `read:${hash}` : null;
-  }
   if (result.observation !== undefined) {
     const observation = decodeToolObservationDescriptor(result.observation);
     return observation ? `observation:${observation.checksum}` : null;
@@ -215,30 +212,4 @@ export function repeatIdenticalNote(round: number): string {
 
 export function repeatBlockedNote(rounds: ToolCallRepeatRounds): string {
   return `Not executed: this call already returned the same data twice (rounds ${rounds[0]}, ${rounds[1]}). Use those results.`;
-}
-
-/**
- * How a persisted call counts for its round's progress (`stalledToolRound`):
- * a blocked repeat, an unknown tool and a call gated for the user's approval
- * did not run. `gated`: its claim gated it after this row was read.
- */
-export function toolRoundCall(row: Pick<ToolCallRepeatRow,
-  "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">, gated = false): ToolRoundCall {
-  if (repeatBlockedRounds(row)) return "repeat_blocked";
-  if (unknownToolCall(row)) return "unknown_tool";
-  return gated || mcpApprovalGated(row) ? "approval_gated" : "executed";
-}
-
-/** The persisted form of an outcome this process settled: what its row now holds. */
-export function settledRepeatOutcome(entry: ToolLoopSettledCall<ToolExecutionResult>): Readonly<{
-  result: ToolLoopJsonValue | null;
-  state: "complete" | "error";
-}> {
-  if (entry.result.status !== "complete") return { result: null, state: "error" };
-  const settled = entry.call.name === READ_TOOL_CALL_NAME
-    ? readToolCallReceipt({ arguments: isRecord(entry.call.arguments) ? entry.call.arguments : {}, id: entry.call.id,
-      name: entry.call.name }, entry.result.value)
-    : entry.result.value;
-  const snapshot = snapshotToolExecutionResult(settled, toolLoopPersistenceLimits.resultBytes);
-  return snapshot ? { result: snapshot, state: settled.status } : { result: null, state: "error" };
 }

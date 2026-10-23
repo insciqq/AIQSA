@@ -18,7 +18,7 @@ import {
 import type { ParsedBoundingBox, ParsedDocument } from "../parsing/types";
 import type { ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
-import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
+import { applyProviderRequestContextBudget } from "../runs/requestContextBudget";
 import { type ChatPdfAttachmentAdmission, chatPdfFingerprint } from "./chatPdfAdmission";
 import { getPdfExtractionConfig } from "./pdfConfig";
 

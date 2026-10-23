@@ -75,7 +75,6 @@ function createRunInput(input: {
       attachmentIds: [],
       chatId: input.chatId,
       content,
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,

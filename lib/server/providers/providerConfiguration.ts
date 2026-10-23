@@ -482,7 +482,6 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
   }
 
   const optional = [
-    "codexStandaloneWebSearch",
     "backgroundStreaming",
     "nativeBackground",
     "nativeForcedToolChoice",
@@ -559,7 +558,6 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     ...(typeof value.imageEditing === "boolean" ? { imageEditing: value.imageEditing } : {}),
     nativeSearch: value.nativeSearch as boolean,
     ...(typeof value.nativeForcedToolChoice === "boolean" ? { nativeForcedToolChoice: value.nativeForcedToolChoice } : {}),
-    ...(typeof value.codexStandaloneWebSearch === "boolean" ? { codexStandaloneWebSearch: value.codexStandaloneWebSearch } : {}),
     ...(typeof value.parallelToolCalls === "boolean" ? { parallelToolCalls: value.parallelToolCalls } : {}),
     pdf: value.pdf as boolean,
     reasoning: value.reasoning as boolean,

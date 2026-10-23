@@ -1,3 +1,11 @@
+import {
+  DOCUMENT_PROCESSING_WARNING_CODES as KNOWLEDGE_PROCESSING_WARNING_CODES,
+  type DocumentProcessingWarningCode as KnowledgeProcessingWarningCode
+} from "./uploads";
+
+export { KNOWLEDGE_PROCESSING_WARNING_CODES };
+export type { KnowledgeProcessingWarningCode };
+
 export const KNOWLEDGE_BASE_NAME_MAX_LENGTH = 80;
 export const KNOWLEDGE_BASE_DESCRIPTION_MAX_LENGTH = 2000;
 export const KNOWLEDGE_SELECTION_VERSION = 1 as const;
@@ -13,21 +21,6 @@ export const KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES = 128;
 export const KNOWLEDGE_CITATION_V2_MAX = 2_048;
 export const KNOWLEDGE_CITATION_INVOCATION_MAX = 256;
 export const KNOWLEDGE_CITATION_RESULT_MAX = 8;
-export const KNOWLEDGE_PROCESSING_WARNING_CODES = Object.freeze([
-  "partial_parse",
-  "unreadable_pages",
-  "low_page_coverage",
-  "low_text_density",
-  "low_ocr_confidence",
-  "truncated_oversized_section",
-  "table_extraction_degraded",
-  "embedded_object_unsupported",
-  "repeated_header_footer",
-  "parser_fallback_failed"
-] as const);
-
-export type KnowledgeProcessingWarningCode =
-  (typeof KNOWLEDGE_PROCESSING_WARNING_CODES)[number];
 
 type KnowledgeSelectionCommon = Readonly<{
   baseIds: string[];

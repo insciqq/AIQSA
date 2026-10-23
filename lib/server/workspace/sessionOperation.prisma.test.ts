@@ -34,6 +34,8 @@ import { createWorkspaceRunnerServer } from "./runnerServer";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createChatContinuationRepository } from "../chats/continuationRepository";
 import { createWorkspaceLifecycleService } from "./lifecycle";
+import { createNativeRunStore } from "../engine/runStore";
+import { createToolCallStore } from "../engine/toolCallStore";
 
 function barrier() {
   let release!: () => void;
@@ -101,8 +103,7 @@ async function fixture() {
       admissionKind: "NORMAL_SEND", chatId: chat.id, content, expectedActiveLeafId: leaf.activeLeafMessageId,
       modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, userId, workspaceEnabled: true,
       normalizedRequest: {
-        attachmentIds: [], chatId: chat.id, content, knowledgePlan: { baseIds: [], sourceIds: [], mode: "none", version: 1 },
-        modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+        attachmentIds: [], chatId: chat.id, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
         modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
         searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", workspace: normalized
       },
@@ -125,7 +126,8 @@ async function publishedPredecessor() {
   const completion = { ...previous, chatId: value.chatId, userId: value.userId, finalText: "File saved.",
     provider: request.provider, modelId: request.modelId, estimatedCostMicros: null,
     usage: normalizeTokenUsage({ inputTokens: 2, outputTokens: 1, totalTokens: 3 }) };
-  expect(await repository.publishRunAnswer!(completion)).toBe(true);
+  // The agent engine publishes the answer before the Workspace hand-off and completes the run after it.
+  expect(await createNativeRunStore(prisma).publishAnswer(completion, { followupRevision: 0, text: completion.finalText })).toBe(true);
   const nextRequest = async () => ({ ...await value.plan(), workspaceFollowup: {
     admissionKey: randomBytes(32).toString("hex"), predecessorRunId: previous.runId, snapshot: { version: 1 }
   } });
@@ -133,7 +135,7 @@ async function publishedPredecessor() {
     // This fixture proves database transfer, not runtime quiescence. Runtime
     // and real-file handoff remain separate coordinator/KVM evidence.
     await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { operationOwner: null, state: "STOPPED" } });
-    expect(await repository.completeRun(completion)).toBe(true);
+    expect(await createNativeRunStore(prisma).complete(completion)).toBe(true);
   };
   return { ...value, completion, nextRequest, previous, releasePrevious, repository };
 }
@@ -168,7 +170,7 @@ describe("Prisma Workspace operation admission", () => {
     await prisma.$disconnect();
   });
 
-  it("keeps dispatched commands fenced but excludes superseded decisions from quiescence and stop receipts", async () => {
+  it("keeps a dispatched command fenced through quiescence and stop receipts whatever its recorded outcome", async () => {
     const value = await fixture();
     await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { state: "STOPPED" } });
     const request = await value.plan();
@@ -184,20 +186,16 @@ describe("Prisma Workspace operation admission", () => {
     const scope = { runId: run.runId, userId: value.userId };
     const session = await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } });
     expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).toMatchObject({ followupMode: "workspace" });
-    expect(await repository.beginToolLoopProviderRound({ ...scope, roundIndex: 1, providerContinuation: null })).toBe("started");
-    const batch = await repository.persistToolLoopCallBatch({ ...scope, roundIndex: 1, providerContinuation: null,
-      calls: ["first", "second"].map((providerCallId, ordinal) => ({ providerCallId, ordinal,
-        arguments: {}, toolName: namespacedWorkspaceToolName("sandbox_exec"), workspace: true as const })) });
-    if (batch.kind !== "persisted") throw new Error("workspace_tool_fixture_failed");
-    const first = { ...scope, callId: batch.calls[0]!.id, followupRevision: 0 };
-    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "claimed" });
+    const calls = createToolCallStore(prisma);
+    const begun = await calls.begin({ ...scope, arguments: {}, chatId: value.chatId, ordinal: 0, providerCallId: "first",
+      roundIndex: 1, toolName: namespacedWorkspaceToolName("sandbox_exec"), workspaceRunBindingId: run.runId });
+    if (begun.kind !== "running") throw new Error("workspace_tool_fixture_failed");
+    const first = { callId: begun.row.id };
     expect(await createPrismaRunFollowupOperations(prisma).accept({ ...scope, chatId: value.chatId,
       assistantMessageId: run.assistantMessageId, nonce: randomUUID(), text: "Use CSV" })).toMatchObject({ kind: "accepted" });
-    const skipped = await repository.claimToolLoopCall({ ...scope, callId: batch.calls[1]!.id, followupRevision: 0 });
-    expect(skipped).toMatchObject({ kind: "settled", call: { startedAt: null, state: "error" } });
-    if (skipped.kind !== "settled") throw new Error("expected_superseded_decision");
-    // Even identical result content cannot prove a claimed command never ran.
-    expect(await repository.settleToolLoopCall({ ...first, state: "error", result: skipped.call.result! })).toBe("settled");
+    // Even a recorded error cannot prove a sent command never ran.
+    expect(await calls.settle({ ...first, runId: run.runId, state: "error", result: { callId: "first", content: [],
+      name: namespacedWorkspaceToolName("sandbox_exec"), status: "error" } })).toBe(true);
     const coordinator = createPrismaWorkspaceCoordinatorRepository(prisma);
     expect(await coordinator.unregisteredCommands(scope)).toBe(1);
     expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toEqual(session);
@@ -467,7 +465,7 @@ describe("Prisma Workspace operation admission", () => {
     const request = await value.nextRequest();
     await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { operationOwner: null, state: "STOPPED" } });
     const results = await Promise.allSettled([
-      admitPreparingRunWithClient(prisma, request), value.repository.completeRun(value.completion)
+      admitPreparingRunWithClient(prisma, request), createNativeRunStore(prisma).complete(value.completion)
     ]);
     expect(results.every(({ status }) => status === "fulfilled")).toBe(true);
     expect(await prisma.modelRun.count({ where: { chatId: value.chatId } })).toBe(2);

@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { SKILL_CONTEXT_PREVIEW_PLACEHOLDER } from "../skills/userContext";
-import { KNOWLEDGE_EVIDENCE_PREVIEW_PLACEHOLDER } from "../knowledge/evidenceContext";
 import type { ProviderConversationMessage, ProviderRunRequest } from "./types";
 
 export type TextConversationMessage = {
   content: string;
   id: string;
-  purpose?: "knowledge_evidence" | "skill_context" | "skill_catalog";
+  purpose?: "skill_context" | "skill_catalog";
   role: "assistant" | "user";
 };
 
@@ -41,20 +40,16 @@ export function conversationMessagesForRequest(request: ProviderRunRequest): Pro
   return messages;
 }
 
-/** `redactSkillContext` builds a preview: private Skill and Knowledge context
- * becomes a placeholder, and tool-call history records are left out. */
+/** `redactSkillContext` builds a preview: private Skill context becomes a placeholder. */
 export function textConversationForRequest(
   request: ProviderRunRequest,
   options: Readonly<{ redactSkillContext?: boolean }> = {}
 ): TextConversationMessage[] {
   return conversationMessagesForRequest(request)
-    .filter((message) => !(options.redactSkillContext && message.historyClass === "tool_history"))
     .map((message) => ({
       content: options.redactSkillContext && (message.purpose === "skill_context" || message.purpose === "skill_catalog")
         ? SKILL_CONTEXT_PREVIEW_PLACEHOLDER
-        : options.redactSkillContext && message.purpose === "knowledge_evidence"
-          ? KNOWLEDGE_EVIDENCE_PREVIEW_PLACEHOLDER
-          : textFromConversationMessage(message),
+        : textFromConversationMessage(message),
       hasAttachmentContent: hasAttachmentContent(message),
       id: message.id,
       ...(message.purpose ? { purpose: message.purpose } : {}),

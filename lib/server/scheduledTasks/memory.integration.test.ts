@@ -309,7 +309,6 @@ describe("scheduled task Memory", () => {
       const request: NormalizedRunRequest = {
         attachmentIds: [], chatId: chat.id, content,
         context: { messages: [{ content, id: "current-user-message", role: "user" }], mode: "branch_path" },
-        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         memorySearch: { comparisonResultTokens: 12000, destinations: [], maxCalls: 3, memoryGeneration: settings.memoryGeneration,
           referenceChatHistory: true, resultTokens: 6000, timeoutSeconds: 30, version: "memory-search-v1" },
         memoryStandingVersion: 1,

@@ -35,7 +35,6 @@ async function createOwnedRun(userId: string) {
   const question = await prisma.message.create({ data: { chatId: chat.id, role: "user", content } });
   const request: NormalizedRunRequest = {
     attachmentIds: [], chatId: chat.id, content,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
     modelId: "fixture-model", provider: "fake", params: {}, prompt: { developer: null, system: null },
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"

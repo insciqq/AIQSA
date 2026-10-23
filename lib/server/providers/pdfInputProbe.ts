@@ -166,7 +166,6 @@ function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
     chatId: "provider-pdf-input-probe",
     content: { blocks: [{ text: PDF_INPUT_PROBE_PROMPT, type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       ...input.model.capabilities,
       nativePdfInput: true

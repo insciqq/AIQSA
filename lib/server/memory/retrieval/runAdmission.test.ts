@@ -100,7 +100,6 @@ function request(text: string): NormalizedRunRequest {
   return {
     attachmentIds: [], chatId: "chat-current", content,
     context: { messages: [{ content, id: "current", role: "user" }], mode: "branch_path" },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: false, toolCalling: true, vision: false },
     modelId: "model-1", params: {}, prompt: { developer: null, system: null },
@@ -3905,33 +3904,6 @@ describe("Personal Memory v1 run admission", () => {
     expect(accepted.map(({ itemId }) => itemId)).toEqual([
       "state-z", "state-b", "state-a"
     ]);
-  });
-
-  it("never feeds a provider-only tool-history record to Memory control or its refs", async () => {
-    const local = repository({});
-    const control = { decide: vi.fn(async () => ({ bindingId: "binding-control", intent: {
-      ...currentControlContract, action: "NONE" as const, applyResponsePreferences: false, category: null, categoryHint: null,
-      confidenceBand: "HIGH" as const, entityMentions: [], memoryUseful: false,
-      pastChatsUseful: false, profileRequested: false, queryText: null, reasonCode: "none" as const, recencyRequested: false,
-      referencedMemoryRef: null, replacementStatement: null, responsePreference: false, sensitiveDomainHint: null,
-      sensitivity: "NORMAL" as const, statement: null, targetQuery: null, thisChatOnly: false
-    }, status: "READY" as const })) };
-    const controlRefs = { load: vi.fn(async () => []) };
-    const original = runInput("/memory Remember that I prefer concise answers.");
-    const normalizedRequest: NormalizedRunRequest = { ...original.normalizedRequest, context: { mode: "branch_path", messages: [
-      { content: textMessageContent("Prior answer."), id: "assistant-prior", role: "assistant" },
-      // A record may only ever reach a provider request; even if one were
-      // present here, it is neither a control message nor a control ref.
-      { content: textMessageContent("[AIQSA record] - [tcr1_x] MCP write executed. Arguments: {\"secret\":1}"),
-        historyClass: "tool_history", id: "tch1_assistant-prior", role: "assistant" },
-      ...(original.normalizedRequest.context?.messages ?? [])
-    ] } };
-    await createMemoryRunRetrievalService(local.value, { actionExecutor: { execute: vi.fn() }, control, controlRefs })
-      .retrieve({ ...original, normalizedRequest });
-    expect(controlRefs.load).toHaveBeenCalledWith(expect.objectContaining({ assistantMessageIds: ["assistant-prior"] }));
-    const context = (control.decide.mock.calls[0] as unknown as [{ context: { recentMessages: { text: string }[] } }])[0].context;
-    expect(context.recentMessages.map(message => message.text)).toEqual(["Prior answer.", expect.any(String)]);
-    expect(JSON.stringify(context)).not.toContain("tcr1_x");
   });
 
   it("does not replay a resolved Memory action across a preparing retry", async () => {

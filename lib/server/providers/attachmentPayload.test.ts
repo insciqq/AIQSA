@@ -48,7 +48,7 @@ describe("provider attachment payload helpers", () => {
       content: { blocks: [{ type: "text", text: "Read the report" }] }, chatId: "chat",
       modelId: "fixture", provider: "fake", modelCapabilities: { ...textCapabilities, nativePdfInput: true },
       params: {}, prompt: { system: null, developer: null }, searchPlan: { mode: "all_selected", options: [] },
-      knowledgePlan: { baseIds: [], sourceIds: [], mode: "none", version: 1 }, toolMode: "none" };
+      toolMode: "none" };
     const payload = JSON.stringify(build(request));
     expect(payload).toContain("PREPARED_TEXT_CANARY");
     expect(payload).not.toContain("ORIGINAL_PDF_CANARY");

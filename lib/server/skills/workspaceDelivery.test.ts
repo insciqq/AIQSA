@@ -1,15 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
-import { openAIResponsesToolBridge } from "../tools/bridges";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { SkillBundleError } from "./bundleErrors";
-import { createSkillToolResultBudget } from "./toolResultBudget";
 import { deliverSkillWorkspaceBundle } from "./workspaceDelivery";
 
 function fixture() {
   const request = { attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ type: "text", text: "Question" }] },
-    knowledgePlan: { baseIds: [], sourceIds: [], mode: "none", version: 1 },
     modelCapabilities: { contextWindow: 6_000, defaultMaxOutputTokens: 512, nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
     modelId: "model", provider: "openai", params: {}, prompt: { system: null, developer: null },
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", workspace: {
@@ -30,17 +27,6 @@ function fixture() {
 }
 
 describe("post-budget Workspace Skill delivery", () => {
-  it("performs no runtime I/O for a context-rejected Skill", async () => {
-    const f = fixture();
-    const result: ToolExecutionResult = { ...f.result, content: [{ type: "json", value: { instructions: "x".repeat(100_000), workspacePath: f.path } }] };
-    const budget = createSkillToolResultBudget();
-    budget.begin({ request: f.request, calls: [f.call], bridge: openAIResponsesToolBridge });
-    const admitted = budget.accept(result);
-    expect(admitted).toMatchObject({ status: "error", content: [{ value: { error: "skill_too_large_for_context" } }] });
-    expect(await deliverSkillWorkspaceBundle({ ...f, result: admitted })).toBe(admitted);
-    expect(f.skillBundlePath).not.toHaveBeenCalled();
-  });
-
   it("awaits successful installation before exposing the path, and only checks preparation for binary reads", async () => {
     const f = fixture();
     expect(await deliverSkillWorkspaceBundle(f)).toBe(f.result);

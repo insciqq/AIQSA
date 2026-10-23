@@ -5,8 +5,7 @@ import {
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
-import { CONTEXT_COMPACTION_LIMITS } from "./contextCompactionContract";
-import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
+import { requestHeadroomTokens } from "./requestContextBudget";
 
 export type RunFollowupAdmission = Readonly<{
   budgetTokens: number;
@@ -55,37 +54,28 @@ export function followupTokenCost(text: string): number {
   return estimateApproxTokens(text) + 32;
 }
 
-/** Room left beside the request as dispatched (session status never counts a
- * follow-up reserve). */
-export function followupRequestHeadroom(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
-  const context = measureSessionContext({ bridge, request });
-  return context.contextWindow === null ? RUN_FOLLOWUP_MAX_TOTAL_CHARS : Math.max(0,
-    context.contextWindow - context.maxOutputTokens - context.safetyMarginTokens - context.approximateInputTokens);
+/** Room left beside the request as dispatched, without the earlier turns the
+ * engine compacts. An unknown window bounds clarifications by their own size. */
+function followupRequestHeadroom(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+  return requestHeadroomTokens(request, bridge) ?? RUN_FOLLOWUP_MAX_TOTAL_CHARS;
 }
 
-function followupBudgetTokens(headroom: number): number {
-  return Math.min(8_192, Math.floor(Math.max(0, headroom) / 2));
-}
-
-/** Clarification budget admitted with a run, before its first dispatch. A
- * hybrid request that needs a summary is never dispatched uncompacted, so its
- * room is measured at the planner's target instead of on the admitted branch;
- * the budget is kept only while that reserve neither makes the request
- * irreducible nor pushes a fitting request over its budget. The planner
- * measures without the reserve, so the reserve is added back here. */
+/** Clarification budget admitted with a run, before its first dispatch: half
+ * the room its request leaves, at most 8,192 tokens. */
 export function followupAdmissionBudgetTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
-  const measured = followupBudgetTokens(followupRequestHeadroom(request, bridge));
-  const plan = request.contextCompaction;
-  if (request.contextCompactionPolicy?.mode !== "hybrid" || plan?.outcome !== "needs_summary" ||
-    plan.budgetTokens === null) return measured;
-  const planned = followupBudgetTokens(
-    plan.budgetTokens - Math.ceil(plan.budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio));
-  if (planned <= measured) return measured;
-  const reserved = applyProviderRequestContextBudget({ bridge, request: { ...request, followupContextReserveTokens: planned } });
-  const fitting = plan.afterTokens <= plan.budgetTokens;
-  return reserved.ok && (!fitting ||
-    (reserved.request.contextCompaction?.afterTokens ?? Number.POSITIVE_INFINITY) + planned <= plan.budgetTokens)
-    ? planned : measured;
+  return Math.min(8_192, Math.floor(followupRequestHeadroom(request, bridge) / 2));
+}
+
+/** A regeneration's inherited clarifications as user turns, so admission
+ * measures them with its request; accepted instructions stay intact. */
+export function requestWithRunFollowups(request: ProviderRunRequest, entries: readonly RunFollowup[]): ProviderRunRequest {
+  if (!entries.length) return request;
+  return { ...request, providerToolMessages: [...(request.providerToolMessages ?? []), ...entries.map(entry =>
+    request.provider === "gemini"
+      ? { type: "user_input", content: [{ type: "text", text: entry.text }] }
+      : request.provider === "anthropic"
+        ? { role: "user", content: [{ type: "text", text: entry.text }] }
+      : { role: "user", content: entry.text })] };
 }
 
 export type AcceptRunFollowupResult =

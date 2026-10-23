@@ -28,7 +28,7 @@ async function plan(userId: string): Promise<PreparingRunAdmissionInput> {
   return { admissionKind: "NORMAL_SEND", chatId: chat.id, userId, content, expectedActiveLeafId: null,
     modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, normalizedRequest: {
       attachmentIds: [], chatId: chat.id, content, instructionPreset,
-      knowledgePlan: { mode: "none", baseIds: [], sourceIds: [], version: 1 }, toolMode: "none",
+      toolMode: "none",
       modelCapabilities: { vision: false, pdf: false, nativePdfInput: false, nativeSearch: false, reasoning: false },
       modelId: "fake-qsa", params: {}, provider: "fake", searchPlan: { mode: "all_selected", options: [] },
       prompt: { system: "Server baseline", developer: null, personalInstructions: systemInstructions, responseReminder }

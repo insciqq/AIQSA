@@ -307,14 +307,3 @@ export function executeAnswerReviewCall(
   return result(call, "complete", [{ type: "json", value: { decisions: decisions.length, recorded: true } }],
     [{ data: { artifactType: "answer_review_decisions", payload: card }, type: "artifact" }]);
 }
-
-/** Whether a persisted call of the run settled its step's report (its result holds the card). */
-export function answerReviewCallSubmitted(
-  request: AnswerReviewRequest,
-  call: Readonly<{ result?: unknown; state?: string; toolName: string }>
-): boolean {
-  if (!isAnswerReviewCall(request, call.toolName) || call.state !== "complete" || !record(call.result)) return false;
-  const artifacts = call.result.artifacts;
-  return Array.isArray(artifacts) && artifacts.some((artifact) => record(artifact) && record(artifact.data) &&
-    (artifact.data.artifactType === "answer_review" || artifact.data.artifactType === "answer_review_decisions"));
-}

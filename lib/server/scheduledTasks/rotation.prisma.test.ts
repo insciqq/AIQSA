@@ -63,8 +63,7 @@ async function runInput(userId: string, chatId: string, scheduledOccurrence: Sch
     chatId, content, expectedActiveLeafId: leaf, modelId: "fake-qsa", provider: "fake", providerRequestPreview: {},
     providerAdmissionPlan: await loadProviderAdmissionPlan(prisma, { providerConnectionId: providerTemplateIds.fakeConnection,
       providerModelId: providerTemplateIds.fakeModel, searchPlan: { mode: "all_selected", optionIds: [] }, userId }),
-    normalizedRequest: { attachmentIds: [], chatId, content, knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+    normalizedRequest: { attachmentIds: [], chatId, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
       modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
       searchPlan: { mode: "all_selected", options: [] }, toolMode: "none" },
     ...(create ? { personalChat: { defaultProviderModelId: providerTemplateIds.fakeModel, folderId: null, memoryMode: "EXCLUDED" as const } }

@@ -1,7 +1,6 @@
 import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import { decodeDecisionEvidence } from "./decisionEvidence";
 import { decisionResponseModelMatches } from "../../domain/decisionModels";
-import { createAgentResponsesTransport, type AgentResponsesTransport } from "./agentResponses";
 import { createAnthropicMessagesSearchAdapter } from "./anthropicMessagesSearch";
 import {
   createDeepSeekResponsesAdapter,
@@ -144,7 +143,6 @@ function droppedRoundRetry(
 }
 
 export type ProviderRuntimeBinding = ProviderRuntimeComponents & Readonly<{
-  agentResponses?: AgentResponsesTransport;
   responseTimeoutMs: number;
 }>;
 
@@ -714,14 +712,10 @@ export function createProviderRuntimeBinding(input: Readonly<{
   snapshot: ProviderExecutionSnapshot;
 }>): ProviderRuntimeBinding {
   const snapshot = normalizeProviderExecutionSnapshot(input.snapshot);
-  const runtime = withProviderStreamSafetyObservability(
+  return withProviderStreamSafetyObservability(
     createProviderRuntimeBindingUnobserved({ ...input, snapshot }),
     snapshot
   );
-  const agentResponses = input.options.fetchFn ? createAgentResponsesTransport({
-    snapshot, secret: input.secret, fetch: input.options.fetchFn
-  }) : undefined;
-  return { ...runtime, ...(agentResponses ? { agentResponses } : {}) };
 }
 
 export function createProviderPreviewRuntimeBinding(

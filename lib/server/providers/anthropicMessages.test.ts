@@ -112,7 +112,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Answer briefly.", type: "text" }]
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

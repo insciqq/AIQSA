@@ -2,26 +2,25 @@ import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createArchiveChatHandler, createGetChatHandler, createUpdateChatHandler } from "@/lib/server/chats/handlers";
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
-import { defaultRunServices } from "@/lib/server/runs/defaultRunServices";
-import { activeRunControllerRegistry } from "@/lib/server/runs/runExecution";
+import { defaultNativeRecoveryDeps } from "@/lib/server/engine/defaultEngine";
+import { reconcileNativeRuns } from "@/lib/server/engine/recovery";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
-import { reconcileStaleRuns } from "@/lib/server/runs/runRecovery";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
+import { workspaceCoordinatorForStorage } from "@/lib/server/workspace/defaultServices";
 
 export const runtime = "nodejs";
 
 const chatRepository = createPrismaChatRepository();
-const runRepository = createPrismaRunRepository();
-const runServices = defaultRunServices(createS3StorageAdapter());
+// Opening a chat ends its runs that no execution owns any more (a restart cut them off), so it never stays "running".
+const runRecovery = defaultNativeRecoveryDeps({
+  repository: createPrismaRunRepository(),
+  workspace: workspaceCoordinatorForStorage(createS3StorageAdapter())
+});
 
 export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatHandler>> = createGetChatHandler({
-  reconcileRuns: (input) =>
-    reconcileStaleRuns({
-      ...runServices,
-      providers: {},
-      registry: activeRunControllerRegistry,
-      repository: runRepository
-    }, input),
+  reconcileRuns: async (input) => {
+    await reconcileNativeRuns(runRecovery, input);
+  },
   repository: chatRepository,
   resolveAuth: resolveRequestAuth
 });

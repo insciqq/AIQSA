@@ -524,12 +524,3 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
     return input.provider === "anthropic";
   }
 };
-
-export const providerToolBridges = {
-  anthropic: anthropicMessagesToolBridge,
-  deepseek: deepSeekResponsesToolBridge,
-  fake: fakeProviderToolBridge,
-  gemini: geminiInteractionsToolBridge,
-  openai: openAIResponsesToolBridge,
-  openrouter: openRouterChatToolBridge
-} satisfies Record<string, ProviderToolBridge>;

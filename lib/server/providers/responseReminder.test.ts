@@ -18,8 +18,7 @@ function request(): ProviderRunRequest {
       { id: "old-question", role: "user", content: { blocks: [{ type: "text", text: "Earlier question" }] } },
       { id: "old-answer", role: "assistant", content: { blocks: [{ type: "text", text: "Earlier answer" }] } },
       { id: "current", role: "user", content }
-    ] }, knowledgePlan: { mode: "none", baseIds: [], sourceIds: [], version: 1 },
-    modelCapabilities: { vision: false, pdf: false, nativePdfInput: false, nativeSearch: false, reasoning: false },
+    ] }, modelCapabilities: { vision: false, pdf: false, nativePdfInput: false, nativeSearch: false, reasoning: false },
     modelId: "fixture-model", provider: "openai", params: { maxOutputTokens: 64 }, toolMode: "none",
     prompt: { system: "SERVER_BASELINE", developer: "SERVER_BOUNDARY", personalInstructions: instructions, responseReminder: reminder },
     searchPlan: { mode: "all_selected", options: [] } };

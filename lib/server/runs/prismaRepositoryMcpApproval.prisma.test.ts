@@ -18,7 +18,7 @@ import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { mcpApprovalGated } from "./mcpApprovalGate";
 import { createPrismaRunRepository } from "./prismaRepository";
 import type { CreateRunInput, CreatedRun } from "./runRepositoryContract";
-import type { PersistedToolLoopCall } from "./toolLoopPersistence";
+import { createToolCallStore, type ToolCallRow } from "../engine/toolCallStore";
 
 const repository = createPrismaRunRepository(prisma);
 const cancelPayload = { code: "model_run_cancelled", message: "Model run cancelled" };
@@ -27,7 +27,8 @@ type Fixture = Readonly<{
   chatId: string; otherId: string; serverId: string; userId: string;
   create(input?: Partial<CreateRunInput>): Promise<CreatedRun>;
   request(args: Record<string, string>): McpApprovalRequest;
-  persist(runId: string, calls: readonly Record<string, string>[]): Promise<readonly PersistedToolLoopCall[]>;
+  /** Records each call as the agent engine does before sending it: running, or gated with a card. */
+  persist(runId: string, calls: readonly Record<string, string>[]): Promise<readonly ToolCallRow[]>;
 }>;
 
 /** A personal chat with one bound synthetic MCP server whose tool may change data. */
@@ -64,7 +65,6 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
         providerConnectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel,
         searchPlan: { mode: "all_selected", optionIds: [] } }),
       normalizedRequest: { attachmentIds: [], chatId: chat.id, content, toolMode: "auto",
-        knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
         mcpApproval: mcpApprovalAdmission([]),
         modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
         modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
@@ -83,13 +83,15 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
         return run;
       },
       async persist(runId, calls) {
-        expect(await repository.beginToolLoopProviderRound({ userId, runId, roundIndex: 1, providerContinuation: null }))
-          .toBe("started");
-        const batch = await repository.persistToolLoopCallBatch({ userId, runId, roundIndex: 1, providerContinuation: null,
-          calls: calls.map((args, ordinal) => ({ arguments: args, mcpApproval: request(args), ordinal,
-            providerCallId: `provider-call-${ordinal}`, runtimeGenerationFingerprint: fingerprint, toolName })) });
-        if (batch.kind !== "persisted") throw new Error("mcp_approval_batch_fixture_failed");
-        return batch.calls;
+        const store = createToolCallStore(prisma);
+        const rows: ToolCallRow[] = [];
+        for (const [ordinal, args] of calls.entries()) {
+          const begun = await store.begin({ approval: request(args), arguments: args, chatId: chat.id, ordinal,
+            providerCallId: `provider-call-${ordinal}`, roundIndex: 1, runId, toolName, userId });
+          if (begun.kind === "inactive") throw new Error("mcp_approval_call_fixture_failed");
+          rows.push(begun.row);
+        }
+        return rows;
       }
     });
   } finally {
@@ -124,7 +126,7 @@ function continueAfter(f: Fixture, first: CreatedRun) {
 describe("MCP write approval storage", () => {
   afterAll(() => prisma.$disconnect());
 
-  it("persists an unapproved write settled and undispatched with one pending card no claim or replay dispatches", async () => fixture(async f => {
+  it("records an unapproved write settled and undispatched with one pending card", async () => fixture(async f => {
     const run = await f.create();
     const [gated] = await f.persist(run.runId, [{ id: "r-1" }]);
     expect(gated).toMatchObject({ state: "error", startedAt: null });
@@ -132,17 +134,6 @@ describe("MCP write approval storage", () => {
     expect(await prisma.mcpToolApproval.findMany({ where: { modelRunId: run.runId } })).toEqual([expect.objectContaining({
       chatId: f.chatId, decision: null, expiresAt: null, serverId: f.serverId, source: "model", toolCallId: gated!.id,
       toolTitle: "delete_record", userId: f.userId })]);
-    // Recovery after a restart replays the same claim: the gated row stays settled, nothing starts.
-    const claim = await repository.claimToolLoopCall({ callId: gated!.id, followupRevision: 0, mcpApproval: f.request({ id: "r-1" }),
-      runId: run.runId, userId: f.userId });
-    expect(claim).toMatchObject({ kind: "settled", call: { state: "error", startedAt: null } });
-    // A replayed batch reuses the rows and keeps the one card.
-    const replay = await repository.persistToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 1,
-      providerContinuation: null, calls: [{ arguments: { id: "r-1" }, mcpApproval: f.request({ id: "r-1" }), ordinal: 0,
-        providerCallId: "provider-call-0", runtimeGenerationFingerprint: gated!.mcpBinding?.runtimeGenerationFingerprint ?? null,
-        toolName: gated!.toolName }] });
-    expect(replay).toMatchObject({ kind: "reused" });
-    expect(await prisma.mcpToolApproval.count({ where: { modelRunId: run.runId } })).toBe(1);
   }));
 
   it("decides once per nonce, only as the initiator after the answer settles; Deny starts nothing", async () => fixture(async f => {
@@ -165,7 +156,7 @@ describe("MCP write approval storage", () => {
     expect(await prisma.modelRun.count({ where: { chatId: f.chatId } })).toBe(1);
   }));
 
-  it("lets one later claim of exactly the approved call consume an Allow once, in the claim transaction", async () => fixture(async f => {
+  it("lets one later call of exactly the approved arguments consume an Allow once, in the transaction that records it", async () => fixture(async f => {
     const { card, first } = await askedFirst(f);
     expect(await decide(f, first.runId, card.id, "allow_once", "nonce-0001")).toMatchObject({ continuation: true, kind: "decided",
       card: { state: "allowed_once" } });
@@ -174,15 +165,10 @@ describe("MCP write approval storage", () => {
       .toEqual({ systemTurnKind: "mcp_approval_continuation" });
     // One approval serves one call: a repeat of it and another argument ask again.
     const [approved, repeated, other] = await f.persist(second.runId, [{ id: "r-1" }, { id: "r-1" }, { id: "r-2" }]);
-    expect(approved).toMatchObject({ state: "pending", startedAt: null });
+    expect(approved).toMatchObject({ state: "running", startedAt: expect.any(String) });
     expect([mcpApprovalGated(repeated!), mcpApprovalGated(other!)]).toEqual([true, true]);
-    const claim = { callId: approved!.id, followupRevision: 0, mcpApproval: f.request({ id: "r-1" }), runId: second.runId,
-      userId: f.userId };
-    expect(await repository.claimToolLoopCall(claim)).toMatchObject({ kind: "claimed" });
     expect(await prisma.mcpToolApproval.findUniqueOrThrow({ where: { id: card.id } })).toMatchObject({
       consumedAt: expect.any(Date), consumedByRunId: second.runId });
-    // The claimed call is in flight; claiming again never consumes or dispatches twice.
-    expect(await repository.claimToolLoopCall(claim)).toMatchObject({ kind: "ambiguous", call: { state: "running" } });
     expect(await countAvailableMcpApprovals(prisma, { chatId: f.chatId, runId: randomUUID(), userId: f.userId },
       f.request({ id: "r-1" }))).toBe(0);
     expect(await prisma.mcpToolApproval.count({ where: { modelRunId: second.runId, decision: null } })).toBe(2);
@@ -192,17 +178,15 @@ describe("MCP write approval storage", () => {
     const { card, first } = await askedFirst(f);
     await decide(f, first.runId, card.id, "allow_once", "nonce-0001");
     const second = await continueAfter(f, first);
-    const [pending] = await f.persist(second.runId, [{ id: "r-1" }]);
-    const [claim, elsewhere] = await Promise.all([
-      repository.claimToolLoopCall({ callId: pending!.id, followupRevision: 0, mcpApproval: f.request({ id: "r-1" }),
-        runId: second.runId, userId: f.userId }),
+    const [[call], elsewhere] = await Promise.all([
+      f.persist(second.runId, [{ id: "r-1" }]),
       consumeMcpApproval(prisma, { chatId: f.chatId, runId: randomUUID(), userId: f.userId }, f.request({ id: "r-1" }))
     ]);
-    expect([claim.kind === "claimed", elsewhere].filter(Boolean)).toHaveLength(1);
-    if (claim.kind !== "claimed") {
+    expect([call!.state === "running", elsewhere].filter(Boolean)).toHaveLength(1);
+    if (call!.state !== "running") {
       // Lost: settled undispatched, asking again with a card of its own.
-      expect(claim).toMatchObject({ kind: "settled", call: { state: "error", startedAt: null } });
-      expect(await prisma.mcpToolApproval.count({ where: { modelRunId: second.runId, toolCallId: pending!.id } })).toBe(1);
+      expect(mcpApprovalGated(call!)).toBe(true);
+      expect(await prisma.mcpToolApproval.count({ where: { modelRunId: second.runId, toolCallId: call!.id } })).toBe(1);
     }
   }));
 

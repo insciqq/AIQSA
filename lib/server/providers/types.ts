@@ -11,11 +11,7 @@ import type {
   SearchProtocol,
   ValidatedSearchQuery
 } from "../../domain/search";
-import type { KnowledgePlan } from "../../contracts/knowledge";
-import type { KnowledgeFocusedRequestV1 } from "../knowledge/focusedRequest";
 import type { MemoryActionAnswerResult } from "./memoryActionAnswer";
-import type { KnowledgeAnswerPolicySnapshot } from "../knowledge/answerPolicy";
-import type { KnowledgeAnswerRoute } from "../knowledge/fullContext";
 import type { ArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 
 export type NormalizedSearchPlanOption = Readonly<{
@@ -55,8 +51,6 @@ export type ProviderModelCapabilities = {
   imageGeneration?: boolean;
   imageEditing?: boolean;
   nativeSearch: boolean;
-  /** Native Codex /alpha/search, independent of AIQSA Search. */
-  codexStandaloneWebSearch?: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
@@ -185,46 +179,8 @@ export type NormalizedRunRequest = {
       truncation?: ContextTruncationSummary;
     };
   };
-  /** Accepted branch/prefix identity captured before provider-facing trimming. */
-  contextCompactionPolicy?: import("../../contracts/contextCompaction").ConversationContextPolicy;
-  /** Exact immutable request for the single internal focused Knowledge
-   * retrieval operation. It is never exposed as an answer-model tool. */
-  knowledgeFocusedRequest?: KnowledgeFocusedRequestV1;
-  /** Exact answer route and policy frozen at acceptance. Full-context evidence
-   * itself lives in the private context plus durable evidence rows. */
-  knowledgeAnswering?: Readonly<{
-    answerPolicy: KnowledgeAnswerPolicySnapshot;
-    approximateDocumentTokens: number;
-    evidenceCount?: number;
-    exactDocumentTokens?: number;
-    route: KnowledgeAnswerRoute;
-    version: 1;
-  }>;
-  /** Durable evidence-packing policy for Knowledge tool-loop recovery. Older
-   * accepted requests omit it and retain chronological V1 packing. V5 also
-   * reserves reviewed correction premises when packing a retrieval revision. */
-  knowledgeEvidencePackingVersion?: 2 | 3 | 4 | 5;
-  /** Frozen instructions, Scope anchor projection and publication rendering.
-   * Omission preserves the previously accepted Knowledge workflow. */
-  knowledgeAnswerWorkflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
-  /** Closed review-field validation feedback. Omission preserves historical
-   * prompts and rejection receipts; only evidence-review workflow 11 uses it. */
-  knowledgeReviewRepairFeedbackVersion?: 1;
-  /** Admitted utility allowance for workflow 11; omission retains historical requests. */
-  knowledgeGenerationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
-  /** Workflow 11 only: the frozen route describing the current message's images
-   * once before the grounded answer. Absent without images (and on older runs). */
-  knowledgeImageObservation?: import("../knowledge/imageObservation").KnowledgeImageObservationPlan;
   /** Accepted model output allowance used by internal compaction utilities. */
   generationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
-  /** Frozen retrieval instructions, independent of answer-stage versions.
-   * V2 pins the tool descriptor; V3 also pins the retrieval system contract.
-   * Omission retains historical descriptor and workflow-based selection. */
-  knowledgeSearchInstructionVersion?: 2 | 3;
-  /** Bounded original-question projection for retrieval. Omission retains
-   * historical rejection of overlong anchors during execution/recovery. */
-  knowledgeQueryAnchorVersion?: 2;
-  knowledgePlan: KnowledgePlan;
   /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
    * admission rejects it and execution/recovery terminalize it. */
   memoryActionTools?: Readonly<{ version: "model-driven-v2" }>;
@@ -280,12 +236,6 @@ export type NormalizedRunRequest = {
       timeZoneSource: "client" | "utc_fallback";
     };
     developer: string | null;
-    /** Server-minted fixed contract serialized after every other instruction
-     * and untrusted personal-context block for one-shot Knowledge answers. */
-    /** @deprecated Decode-only compatibility for accepted V1 requests. */
-    knowledgeAnswerContract?: 1;
-    knowledgeAnswerDraftContract?: 7 | 8;
-    knowledgeGroundedSelectorContract?: 5 | 6;
     /** Server-owned, content-free result of the bounded Memory control/action
      * stage. Provider adapters render the corresponding fixed answer contract. */
     memoryActionAnswerResult?: MemoryActionAnswerResult;
@@ -352,13 +302,6 @@ export type NormalizedRunRequest = {
   fetchUrl?: import("../tools/fetchUrlPlan").FetchUrlPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;
-  /** Server-owned admission marker for `read_tool_call`, independent of the
-   * observation policy. Old runs retain their accepted tool set. */
-  toolCallReader?: true;
-  /** Cross-turn tool history frozen at admission: references and digests of
-   * the branch's eligible calls only, never their arguments or results. Its
-   * presence also makes this run's own calls eligible for later turns. */
-  toolHistory?: import("../../contracts/toolHistory").ToolHistorySnapshot;
   /** Frozen store/reader policy. Absent on accepted historical runs; 0 is a
    * newly accepted explicit Off mode and 1 is the observation-store contract. */
   toolObservationVersion?: 0 | 1;
@@ -437,15 +380,9 @@ export type ProviderConversationMessage = {
     blocks: unknown[];
   };
   id: string;
-  /** Provider-only third class: a server-rendered tool-call record of its
-   * turn. Neither a pin (`purpose`) nor a chat message; never persisted in
-   * the frozen context, previews, Memory control or utility prompts. */
-  historyClass?: "tool_history";
   /** Internal provider-facing context that is never rendered as a chat message. */
-  purpose?: "knowledge_evidence" | "skill_context" | "skill_catalog";
+  purpose?: "skill_context" | "skill_catalog";
   role: "assistant" | "user";
-  /** Ephemeral render data of a `tool_history` message. */
-  toolHistory?: import("../../contracts/toolHistory").ToolHistoryMessageData;
 };
 
 export type ProviderRunRequest = NormalizedRunRequest & {
@@ -456,18 +393,6 @@ export type ProviderRunRequest = NormalizedRunRequest & {
    * (`lib/server/engine/compaction/native.ts`). Only with `history`; other
    * adapters do not compact natively and are never sent one. */
   compactionTrigger?: true;
-  /** Ephemeral server-owned planner measurement. It is never accepted from a
-   * browser or written into the normalized run snapshot. */
-  contextCompaction?: import("../../contracts/contextCompaction").ContextPlanMeasurement;
-  /** Ephemeral model-derived notes produced under the accepted hybrid policy;
-   * never accepted from a browser or copied into the normalized request. */
-  contextCompactionSummary?: import("../../contracts/contextCompaction").ContextSummary;
-  /** Bounded attempt receipts carried into the next durable tool-loop fence. */
-  contextCompactionSummaryAttempts?: readonly import("../../contracts/contextCompaction").ContextSummaryAttempt[];
-  /** Ephemeral server-owned record of the run's one context-rejection
-   * rebuild. Its tightened budget applies to the rebuilt round and every later
-   * round; tool-loop checkpoints carry it so recovery re-derives the budget. */
-  contextCompactionRebuild?: import("../../contracts/contextCompaction").ContextRejectionRebuild;
   forceNonStreaming?: boolean;
   /** Ephemeral server-owned name of the advertised tool a `required` round
    * exists to obtain. Only `toolChoice: "required"` rounds carry it. Adapters
@@ -485,10 +410,6 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;
   providerToolMessages?: unknown[];
-  /** Ephemeral server-minted index of this run's persisted calls by provider
-   * call id: the only authority for a summary's `call_ref` provenance of a
-   * transcript result. Never accepted from a browser or persisted. */
-  toolCallRefs?: readonly import("../../contracts/toolHistory").ToolCallRefEntry[];
   toolChoice?: "auto" | "none" | "required";
   tools?: RunTool[];
 };

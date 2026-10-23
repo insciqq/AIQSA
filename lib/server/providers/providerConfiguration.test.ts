@@ -259,6 +259,17 @@ describe("provider connection configuration", () => {
 });
 
 describe("provider model configuration", () => {
+  it("decodes a stored model that still names the removed Codex web search flag, without it", () => {
+    const stored = normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities: { ...capabilities, codexStandaloneWebSearch: true },
+      defaultParams: {},
+      upstreamModelId: "codex-model"
+    });
+    expect(stored.capabilities).not.toHaveProperty("codexStandaloneWebSearch");
+    expect(stored.capabilities).toMatchObject({ nativeSearch: capabilities.nativeSearch });
+  });
+
   it("inherits the connection deadline or preserves a bounded model override", () => {
     const connection = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: false,

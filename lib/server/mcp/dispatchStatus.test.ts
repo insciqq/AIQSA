@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { McpReadiness } from "@/lib/contracts/mcp";
 import { observedFailureCode } from "../providers/providerObservability";
-import { executionFailure } from "../runs/executionFailure";
 import { currentMcpDispatchFailure, isMcpDispatchError, mcpDispatchError } from "./dispatchStatus";
 import type { McpRunPlanResult, McpRunPlanSnapshot } from "./runPlan";
 import { resolveMcpRunTool } from "./toolExecutor";
@@ -58,7 +57,6 @@ describe("MCP dispatch causes", () => {
     "registers %s as an observable code with its own message", (code) => {
       const error = mcpDispatchError(code);
       expect(observedFailureCode(error)).toBe(code);
-      expect(executionFailure(error)).toEqual({ code, message: error.message });
       expect(error.message).not.toBe(mcpDispatchError("mcp_accepted_generation_changed").message);
       expect(isMcpDispatchError(error, code)).toBe(true);
       expect(isMcpDispatchError(error, "mcp_runtime_unavailable")).toBe(false);

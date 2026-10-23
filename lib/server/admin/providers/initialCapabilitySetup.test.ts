@@ -305,6 +305,12 @@ describe("universal initial capability setup", () => {
     }
   });
 
+  it("decodes stored evidence of the removed Codex web search check without it, so provider pages keep opening", () => {
+    const stored = { policyVersion: 2, checks: { modelAccess: "verified", codexWebSearch: "verified" },
+      attempts: { codexWebSearch: { attempts: 1, status: "verified", reason: "verified" } } };
+    expect(decodeCapabilitySetupEvidence(stored)).toEqual({ policyVersion: 2, checks: { modelAccess: "verified" }, attempts: {} });
+  });
+
   it.each([true, false])("gives later capabilities a fresh deadline and ignores a late JSON result (initial=%s)", async (initialSetup) => {
     vi.useFakeTimers();
     const f = fixture();

@@ -1,8 +1,3 @@
-import { filterMcpProviderRequest } from "./toolAccessProjection";
-import { mcpFindToolsTool } from "./discovery";
-import { mcpRunTools } from "./toolExecutor";
-import type { ProviderRunRequest } from "../providers/types";
-import type { McpRunPlanSnapshot } from "./runPlan";
 import { describe, expect, it, vi } from "vitest";
 import { decodeMcpToolAccessPolicy } from "@/lib/contracts/mcp";
 import { assertMcpToolAccess, filterMcpToolsForHub, filterMcpToolsForUser, resolveMcpToolAccess } from "./toolAccess";
@@ -79,23 +74,4 @@ describe("optional MCP tool access", () => {
       expect(decodeMcpToolAccessPolicy(invalid)).toBeNull();
     }
   });
-});
-
-
-it("removes revoked schemas while keeping built-in discovery and immutable accepted evidence", async () => {
-  const snapshot: McpRunPlanSnapshot = { version: 1, servers: [{ serverId: "tracker", serverName: "Tracker", fingerprint: "a".repeat(64), revisionId: "rev" }],
-    tools: ["read", "write"].map((name) => ({ serverId: "tracker", serverName: "Tracker", name, originalName: name,
-      namespacedName: `mcp_tracker_${name}`, description: null, definitionHash: "b".repeat(64), inputSchema: { type: "object" } })) };
-  const request = { mcp: snapshot, tools: [mcpFindToolsTool, ...mcpRunTools(snapshot)],
-    mcpDiscovery: { version: 2, epochs: [], catalog: { version: 1, servers: [{ serverId: "tracker", serverName: "Tracker", namespace: "tracker", revisionId: "rev", description: "",
-      tools: snapshot.tools.map(({ originalName, namespacedName, description }) => ({ originalName, namespacedName, description })) }] } } } as unknown as ProviderRunRequest;
-  const original = structuredClone(request);
-  const filtered = await filterMcpProviderRequest(request, "alice", async (_userId, tools) => tools.filter(({ originalName }) => originalName !== "write"));
-  expect(filtered.tools?.map(({ name }) => name)).toEqual(["find_tools", "mcp_tracker_read"]);
-  expect(filtered.mcp?.tools.map(({ originalName }) => originalName)).toEqual(["read"]);
-  expect(filtered.mcpDiscovery?.catalog.servers[0]?.tools.map(({ originalName }) => originalName)).toEqual(["read"]);
-  expect(request).toEqual(original);
-  const empty = await filterMcpProviderRequest(request, "alice", async () => []);
-  expect(empty.tools?.map(({ name }) => name)).toEqual(["find_tools"]);
-  expect(empty.mcpDiscovery?.catalog.servers).toEqual([]);
 });

@@ -42,7 +42,6 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
-import { decodeCodexWebSearchEvidence } from "../../providers/codexWebSearch";
 import { decodeHostedSearchVerificationEvidence } from "./hostedSearchCapability";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
@@ -139,7 +138,6 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(value.parallelToolCalls);
   const dedicatedProbe = value.detail === "ok" && value.method !== "models_catalog";
   const decisions = dedicatedProbe ? decodeDecisionEvidence(value.decisions) : null;
-  const codexWebSearch = dedicatedProbe ? decodeCodexWebSearchEvidence(value.codexWebSearch) : null;
   const hostedSearch = dedicatedProbe ? decodeHostedSearchVerificationEvidence(value.hostedSearch) : null;
   const embedding = dedicatedProbe && isRecord(value.embedding) &&
     value.embedding.probeVersion === 1 && value.embedding.document === true && value.embedding.query === true &&
@@ -151,7 +149,6 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     ? { probeVersion: 1 as const, completeScores: true as const } : null;
   return {
     ...(capabilitySetup ? { capabilitySetup } : {}),
-    ...(codexWebSearch?.upstreamModelId === value.upstreamModelId ? { codexWebSearch } : {}),
     ...(hostedSearch?.upstreamModelId === value.upstreamModelId ? { hostedSearch } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),
     ...(compatibility ? { compatibility } : {}),

@@ -13,7 +13,6 @@ describe("provider wire tool choice", () => {
   ] as const)("keeps an explicit route restriction consistent with the %s wire body", (provider, build) => {
     const request: ProviderRunRequest = { provider, modelId: "test-model", chatId: "test-chat",
       attachmentIds: [], attachments: [], content: { blocks: [{ type: "text", text: "Use the result tool." }] },
-      knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
       searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", toolChoice: "required", forcedToolName: "result",
       modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false,
         toolCalling: true, nativeForcedToolChoice: false }, params: { maxOutputTokens: 128 },

@@ -33,7 +33,6 @@ import { DEEPSEEK_SEARCH_API_MODEL_ID } from "../providers/deepSeekSearchApi";
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
 import { hasVerifiedToolChoiceMode } from "../providers/forcedToolCallEvidence";
-import { hasVerifiedCodexWebSearch } from "../providers/codexWebSearch";
 import { hasVerifiedPdfInput } from "../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../providers/visionInputEvidence";
 
@@ -199,7 +198,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function withResolvedModelCapabilities(
   snapshot: ProviderExecutionSnapshot,
-  options: Readonly<{ nativePdfInput?: boolean; codexStandaloneWebSearch?: boolean }> = {}
+  options: Readonly<{ nativePdfInput?: boolean }> = {}
 ): ProviderExecutionSnapshot {
   if (
     snapshot.model.adapterKind !== "fake" &&
@@ -218,8 +217,7 @@ function withResolvedModelCapabilities(
           providerFamily: snapshot.providerFamily,
           upstreamModelId: snapshot.model.upstreamModelId
         }),
-        nativePdfInput: options.nativePdfInput ?? false,
-        ...(snapshot.model.capabilities.codexStandaloneWebSearch !== undefined ? { codexStandaloneWebSearch: options.codexStandaloneWebSearch ?? false } : {})
+        nativePdfInput: options.nativePdfInput ?? false
       }
     }
   });
@@ -493,8 +491,7 @@ async function loadRole(
     version: 1
   });
   const resolvedSnapshot = input.modelClass === "answer"
-    ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput,
-        codexStandaloneWebSearch: modelConfig.capabilities.codexStandaloneWebSearch === true && hasVerifiedCodexWebSearch(check.evidence, modelConfig) })
+    ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput })
     : normalizedSnapshot;
   const snapshot = (structuredOutput || forcedToolCalling || validatedAutoToolCalling) &&
     resolvedSnapshot.model.adapterKind !== "fake"

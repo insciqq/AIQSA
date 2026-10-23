@@ -20,16 +20,13 @@
  * that reaches it by another name. Each test first runs the disposable-target
  * guard (`scripts/stateful-test-target.ts`).
  *
- * The stand's app must put the operator on the native engine:
- * AIQSA_NATIVE_ENGINE_USERS=* (or the operator's id or email); every test
- * asserts `ModelRun.engine = 'native'`, so a stand without it fails visibly
- * instead of proving the old core. Telegram uses the loopback fake Bot API
+ * Every test asserts `ModelRun.engine = 'native'`. Telegram uses the loopback fake Bot API
  * that `playwright.config.ts` gives the web server it starts
  * (AIQSA_TELEGRAM_API_ORIGIN, test mode only); a reused server
  * (PLAYWRIGHT_REUSE_SERVER=1) must run with it too, else the Telegram test is
  * skipped with that reason.
  *
- *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE AIQSA_NATIVE_ENGINE_USERS='*'   # plus the CODEX_LB_* pair
+ *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE   # plus the CODEX_LB_* pair
  *   npx playwright test --project=chromium tests/e2e/native-rollout-paid.spec.ts
  *
  * Inside the disposable Compose stand, pass the same variables with `-e` to
@@ -141,7 +138,7 @@ async function settledNativeRun(runId: string): Promise<ModelRun> {
     return ACTIVE_RUN_STATUSES.includes(current.status) ? null : current;
   }, "native_run_timeout");
   const code = (run.errorPayload as { code?: unknown } | null)?.code;
-  expect(run.engine, "the run ran on the native engine (the stand's app needs AIQSA_NATIVE_ENGINE_USERS)").toBe("native");
+  expect(run.engine, "the run ran on the agent engine").toBe("native");
   expect(run.status, `the run completes (${typeof code === "string" ? code : run.status})`).toBe("complete");
   return run;
 }

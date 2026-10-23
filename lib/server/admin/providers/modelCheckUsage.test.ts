@@ -189,7 +189,7 @@ describe("administrator model-check usage", () => {
       providerModelId: "image-1", usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } })));
   });
 
-  it("charges hosted and Codex search probes, and a failed search that reported usage", async () => {
+  it("charges hosted search probes, and a failed search that reported usage", async () => {
     const reuse: AdminProviderTestEvidence = {
       detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: "synthetic-model",
       capabilitySetup: { activation: "initial", policyVersion: 2, checks: {
@@ -221,13 +221,6 @@ describe("administrator model-check usage", () => {
       // The billed search is counted: the writer charges the answer model's per-search price for it.
       for (const row of rows) expect(row.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15, webSearchCount: 1 });
     }
-    const { recordUsage, rows } = writer();
-    await createAdminProviderDraftTester({ recordUsage, createFetch: () => async () => Response.json({ encrypted_output: "opaque",
-      output: "OpenAI home page", results: [{ url: "https://openai.com/", ref_id: "source1" }] }) }).test({ ...search,
-      connection: { apiRoot: "https://gateway.example.test/backend-api/codex", allowPrivateNetwork: false,
-        authenticationMode: "bearer", responseTimeoutMs: 300_000 } });
-    // Codex search reports no usage: the call stays recorded with unknown usage.
-    expect(rows).toEqual([expect.objectContaining({ userId: ADMIN, providerModelId: "model" })]);
   });
 });
 

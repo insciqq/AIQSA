@@ -1,7 +1,19 @@
-import {
-  KNOWLEDGE_PROCESSING_WARNING_CODES,
-  type KnowledgeProcessingWarningCode
-} from "./knowledge";
+
+/** Warnings document parsing reports for an upload, in priority order. */
+export const DOCUMENT_PROCESSING_WARNING_CODES = Object.freeze([
+  "partial_parse",
+  "unreadable_pages",
+  "low_page_coverage",
+  "low_text_density",
+  "low_ocr_confidence",
+  "truncated_oversized_section",
+  "table_extraction_degraded",
+  "embedded_object_unsupported",
+  "repeated_header_footer",
+  "parser_fallback_failed"
+] as const);
+
+export type DocumentProcessingWarningCode = (typeof DOCUMENT_PROCESSING_WARNING_CODES)[number];
 
 export type AttachmentPreviewKind = "image" | "text" | "pdf" | null;
 
@@ -26,7 +38,7 @@ export type DocumentProcessingWire = {
   extractedTextMaxChars: number;
   status: "complete" | "partial" | "no_text";
   truncated: boolean;
-  warnings: KnowledgeProcessingWarningCode[];
+  warnings: DocumentProcessingWarningCode[];
 };
 
 export type UploadedAttachmentWire = {
@@ -245,10 +257,10 @@ export function decodeDocumentProcessing(value: unknown): DocumentProcessingWire
   const warnings = value.warnings === undefined ? [] : value.warnings;
   if (
     !Array.isArray(warnings) ||
-    warnings.length > KNOWLEDGE_PROCESSING_WARNING_CODES.length ||
+    warnings.length > DOCUMENT_PROCESSING_WARNING_CODES.length ||
     new Set(warnings).size !== warnings.length ||
     !warnings.every((warning) =>
-      (KNOWLEDGE_PROCESSING_WARNING_CODES as readonly unknown[]).includes(warning))
+      (DOCUMENT_PROCESSING_WARNING_CODES as readonly unknown[]).includes(warning))
   ) {
     return null;
   }
@@ -257,7 +269,7 @@ export function decodeDocumentProcessing(value: unknown): DocumentProcessingWire
     extractedTextMaxChars: value.extractedTextMaxChars,
     status: value.status,
     truncated: value.truncated,
-    warnings: [...warnings as KnowledgeProcessingWarningCode[]]
+    warnings: [...warnings as DocumentProcessingWarningCode[]]
   };
 }
 

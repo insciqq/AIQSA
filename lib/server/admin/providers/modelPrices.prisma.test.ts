@@ -6,7 +6,7 @@ import { createAdminProviderService } from "./service";
 import { adminProviderModelConfiguration } from "./adminConfiguration";
 import { EMPTY_ADMIN_MODEL_PRICES, type AdminModelPriceChange } from "../../../contracts/adminProviderModelPrices";
 import { createPrismaRunRepository } from "../../runs/prismaRepository";
-import { usageWithEstimatedCost } from "../../runs/runFinalization";
+import { usageAttributionsWithEstimatedCost } from "../../runs/usagePricing";
 
 afterAll(() => prisma.$disconnect());
 const NOW = new Date("2026-09-30T01:00:00.000Z");
@@ -149,13 +149,14 @@ describe("Prisma admin model prices", () => {
       const repository = createPrismaRunRepository(prisma);
       const input = { providerModelId: f.modelId, modelId: "fixture/model", provider: "openai_compatible",
         usage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 } };
-      const earlier = await usageWithEstimatedCost(repository, input);
+      const priced = async () => (await usageAttributionsWithEstimatedCost(repository, [{ ...input, purpose: "chat_answer" }]))[0]!;
+      const earlier = await priced();
       expect(earlier.estimatedCostMicros).toBe(450);
       const receipt = await prisma.usageEvent.create({ data: { userId, purpose: "chat_answer", provider: input.provider, modelId: input.modelId,
         inputTokens: 1000, outputTokens: 100, totalTokens: 1100, usageCompleteness: "COMPLETE", estimatedCostMicros: earlier.estimatedCostMicros } });
       for (const field of ["inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"] as const) {
         await f.save({ mode: "manual", prices: { ...prices, [field]: null } });
-        expect((await usageWithEstimatedCost(repository, input)).estimatedCostMicros).toBeNull();
+        expect((await priced()).estimatedCostMicros).toBeNull();
         expect((await prisma.usageEvent.findUniqueOrThrow({ where: { id: receipt.id } })).estimatedCostMicros).toBe(450);
       }
     } finally { await prisma.user.delete({ where: { id: userId } }); }

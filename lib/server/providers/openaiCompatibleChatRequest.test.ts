@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderRunRequest } from "./types";
+import type { ProviderHistoryItem } from "./history";
+import type { ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
 import {
   buildOpenAICompatibleChatRequest,
   buildOpenAICompatibleChatRequestPreview
 } from "./openaiCompatibleChatRequest";
+import { streamOpenAICompatibleChatJsonResponse } from "./openaiCompatibleChatResponse";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -31,7 +33,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       ],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -328,5 +329,88 @@ describe("OpenAI-compatible Chat Completions request", () => {
       "message-2",
       "message-3"
     ]);
+  });
+});
+
+describe("OpenAI-compatible Chat Completions on the agent engine", () => {
+  const image: ProviderAttachment = { byteSize: 3, dataUrl: "data:image/png;base64,AAAA", extractedText: null, fileName: "chart.png",
+    id: "attachment-1", kind: "image", metadata: {}, mimeType: "image/png", status: "ready" };
+  const agent = (history: readonly ProviderHistoryItem[], overrides: Partial<ProviderRunRequest> = {}) =>
+    request({ context: undefined, history, previousProviderResponseId: undefined, ...overrides });
+
+  it("renders the agent's conversation, its current input with this run's attachments and reminder", () => {
+    const body = buildOpenAICompatibleChatRequest(agent([
+      { text: "Earlier question", type: "user" },
+      { text: "Earlier answer", type: "assistant_text" },
+      { currentInput: true, text: "What is on it?", type: "user" }
+    ], { attachmentIds: [image.id], attachments: [image], prompt: { developer: null, responseReminder: "Answer briefly.", system: "Be concise." } }));
+    expect(body.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(body.messages[1]).toEqual({ content: "Earlier question", role: "user" });
+    expect(body.messages[2]).toEqual({ content: "Earlier answer", role: "assistant" });
+    const current = JSON.stringify(body.messages.at(-1));
+    expect(current).toContain("What is on it?");
+    expect(current).toContain(image.dataUrl);
+    expect(current).toContain("Answer briefly.");
+    // Text from the request's own context never rides beside the history.
+    expect(JSON.stringify(body.messages)).not.toContain("Current question");
+  });
+
+  it("sends a round's calls and their results back as one assistant message and tool messages, with the reasoning it returned", () => {
+    const body = buildOpenAICompatibleChatRequest(agent([
+      { text: "Look up A-17", type: "user" },
+      { native: { fields: { reasoning: "Check the order." }, format: "chat_completions" }, type: "reasoning" },
+      { text: "Checking.", type: "assistant_text" },
+      { arguments: "{\"query\":\"A-17\"}", callId: "call_1", name: "lookup", type: "tool_call" },
+      { callId: "call_1", name: "lookup", output: "A-17: open", type: "tool_result" },
+      { currentInput: true, text: "And now?", type: "user" }
+    ]));
+    expect(body.messages.slice(1)).toEqual([
+      { content: "Look up A-17", role: "user" },
+      { content: "Checking.", reasoning: "Check the order.", role: "assistant",
+        tool_calls: [{ function: { arguments: "{\"query\":\"A-17\"}", name: "lookup" }, id: "call_1", type: "function" }] },
+      { content: "A-17: open", name: "lookup", role: "tool", tool_call_id: "call_1" },
+      { content: "And now?", role: "user" }
+    ]);
+  });
+
+  it("joins consecutive user turns into one message", () => {
+    const body = buildOpenAICompatibleChatRequest(agent([
+      { text: "<turn_context>local time</turn_context>", type: "user" },
+      { currentInput: true, text: "Hello", type: "user" }
+    ]));
+    expect(body.messages.slice(1)).toEqual([{ content: "<turn_context>local time</turn_context>\n\nHello", role: "user" }]);
+  });
+
+  it("refuses mixed continuation sources and redacts arguments, reasoning and tool output in previews", () => {
+    expect(() => buildOpenAICompatibleChatRequest(agent([{ currentInput: true, text: "Hi", type: "user" }],
+      { previousProviderResponseId: "response-1" }))).toThrow("provider_history_request_invalid");
+    const preview = buildOpenAICompatibleChatRequestPreview(agent([
+      { text: "Look up A-17", type: "user" },
+      { native: { fields: { reasoning: "PRIVATE-REASONING" }, format: "chat_completions" }, type: "reasoning" },
+      { arguments: "{\"query\":\"PRIVATE-ARG\"}", callId: "call_1", name: "lookup", type: "tool_call" },
+      { callId: "call_1", name: "lookup", output: "PRIVATE-OUTPUT", type: "tool_result" }
+    ]));
+    expect(JSON.stringify(preview)).not.toMatch(/PRIVATE-(?:REASONING|ARG|OUTPUT)/u);
+    expect(preview.replayedContext).toEqual([{ id: "history-0", role: "user", text: "Look up A-17" }]);
+  });
+
+  it("captures the endpoint's response as history the next request replays", async () => {
+    const stream = streamOpenAICompatibleChatJsonResponse({
+      choices: [{ finish_reason: "tool_calls", message: { content: "Checking.", role: "assistant",
+        tool_calls: [{ function: { arguments: "{\"query\":\"A-17\"}", name: "lookup" }, id: "call_1", type: "function" }] } }],
+      id: "completion-1", model: "vendor/model-1", object: "chat.completion",
+      usage: { completion_tokens: 5, prompt_tokens: 11, total_tokens: 16 }
+    }, { modelId: "vendor/model-1", provider: "custom-connection-1" });
+    let next = await stream.next();
+    while (!next.done) next = await stream.next();
+    const result: ProviderRunResult = next.value;
+    expect(result.history).toEqual([
+      { text: "Checking.", type: "assistant_text" },
+      { arguments: "{\"query\":\"A-17\"}", callId: "call_1", name: "lookup", type: "tool_call" }
+    ]);
+    const body = buildOpenAICompatibleChatRequest(agent([{ text: "Look up A-17", type: "user" }, ...result.history!,
+      { callId: "call_1", name: "lookup", output: "A-17: open", type: "tool_result" }]));
+    expect(body.messages.at(-2)).toMatchObject({ role: "assistant", tool_calls: [{ id: "call_1" }] });
+    expect(body.messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: "call_1" });
   });
 });

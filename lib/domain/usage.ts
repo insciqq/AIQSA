@@ -120,23 +120,6 @@ export function sumEstimatedCostMicros(costs: readonly (number | null | undefine
   return Number.isFinite(total) ? total : null;
 }
 
-/** Web search counts subtract exactly like tokens. */
-export function subtractTokenUsage(total: TokenUsage, subtrahend: TokenUsage): NormalizedTokenUsage | null {
-  const left = normalizeTokenUsage(total);
-  const right = normalizeTokenUsage(subtrahend);
-  if (TOKEN_USAGE_FIELDS.some((field) => left[field] !== null && right[field] !== null && right[field] > left[field])) return null;
-  const searches = (left.webSearchCount ?? 0) - (right.webSearchCount ?? 0);
-  if (searches < 0) return null;
-  const fields = Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) =>
-    [field, left[field] === null ? null : left[field] - (right[field] ?? 0)])) as Record<TokenUsageField, number | null>;
-  return {
-    ...fields,
-    completeness: TOKEN_USAGE_FIELDS.every((field) => fields[field] === null) ? "unavailable"
-      : left.completeness === "complete" && right.completeness === "complete" ? "complete" : "partial",
-    ...searchCount(reportedSearchCount(searches))
-  };
-}
-
 // Durable cost columns are signed 32-bit integers. Unrepresentable cost is unknown.
 const MAX_COST_MICROS = 2_147_483_647n;
 

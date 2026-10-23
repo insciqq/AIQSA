@@ -19,7 +19,6 @@ function artifactReadRequest(chatId: string, reference?: ArtifactReference): Pro
   return {
     artifactTool: true, artifactReferences: reference ? [reference] : [], attachmentIds: [], attachments: [], chatId,
     content: { blocks: [{ type: "text", text: "Read the accepted artifact version." }] },
-    knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: false, streaming: false, toolCalling: true, vision: false },
     modelId: "artifact-read-fixture", provider: "fake", params: {},

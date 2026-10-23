@@ -91,7 +91,6 @@ describe("Gemini setup API version", () => {
     const stream = adapter.stream({
       attachmentIds: [], attachments: [], chatId: "synthetic-chat",
       content: { blocks: [{ type: "text", text: "hello" }] },
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       modelCapabilities: model.capabilities, modelId: argon,
       params: { maxTokens: 256, stream: false }, prompt: { developer: null, system: null },
       provider: "gemini", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"

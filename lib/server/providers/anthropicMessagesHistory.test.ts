@@ -38,7 +38,6 @@ function request(history: readonly ProviderHistoryItem[], overrides: Partial<Pro
     chatId: "chat-anthropic",
     content: { blocks: [{ text: "ignored", type: "text" }] },
     history,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: true, nativeSearch: false, pdf: true, reasoning: true, streaming: true, toolCalling: true,
       vision: true },
     modelId: "claude-haiku-5-5",

@@ -155,33 +155,6 @@ export function enforceAttachmentReferenceLimit(
   }
 }
 
-export function validatePersistedAttachmentReferences(
-  blocks: readonly unknown[],
-  persistedAttachmentIds: readonly string[],
-  limits: Pick<RunAttachmentLimits, "maxCount">
-): string[] {
-  const contentAttachmentIds = attachmentIdsFromContentBlocks(blocks);
-  enforceAttachmentReferenceLimit(contentAttachmentIds, limits);
-
-  if (
-    contentAttachmentIds.length !== persistedAttachmentIds.length ||
-    contentAttachmentIds.some(
-      (attachmentId, index) => attachmentId !== persistedAttachmentIds[index]
-    )
-  ) {
-    throw referenceError({
-      actual: {
-        contentCount: contentAttachmentIds.length,
-        persistedCount: persistedAttachmentIds.length
-      },
-      code: "attachment_reference_invalid",
-      message: "Persisted attachment references do not match the normalized run content."
-    });
-  }
-
-  return contentAttachmentIds;
-}
-
 function safeByteSize(record: RunAttachmentRecord): number {
   if (!Number.isSafeInteger(record.byteSize) || record.byteSize <= 0) {
     throw new AttachmentMaterializationError({

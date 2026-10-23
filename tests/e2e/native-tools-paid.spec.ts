@@ -11,16 +11,12 @@
  * `setupCodexLbAnswerModel`). Each test first runs the disposable-target
  * guard (`scripts/stateful-test-target.ts`).
  *
- * The stand's app must put the test user on the native engine:
- * AIQSA_NATIVE_ENGINE_USERS=* (or the operator's id or email), exported for
- * `playwright test` (a reused server, PLAYWRIGHT_REUSE_SERVER=1, must already
- * run with it). Every test asserts `ModelRun.engine = 'native'`, so a stand
- * without the allowlist fails visibly instead of proving the old core. The
- * Playwright process also decrypts the saved secret it plants, so it needs the
+ * Every test asserts `ModelRun.engine = 'native'`. The Playwright process
+ * also decrypts the saved secret it plants, so it needs the
  * stand's secret encryption key in its environment, as the Workspace secrets
  * spec does.
  *
- *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE AIQSA_NATIVE_ENGINE_USERS='*'   # plus the CODEX_LB_* pair
+ *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE   # plus the CODEX_LB_* pair
  *   npx playwright test --project=chromium tests/e2e/native-tools-paid.spec.ts
  *
  * Inside the disposable Compose stand, pass the same variables with `-e` to
@@ -233,7 +229,7 @@ async function settledRun(runId: string): Promise<ModelRun> {
     return ACTIVE_RUN_STATUSES.includes(current.status) ? null : current;
   }, "native_tools_run_timeout");
   const code = (run.errorPayload as { code?: unknown } | null)?.code;
-  expect(run.engine, "the run ran on the native engine (the stand's app needs AIQSA_NATIVE_ENGINE_USERS)").toBe("native");
+  expect(run.engine, "the run ran on the agent engine").toBe("native");
   expect(run.status, `the run completes (${typeof code === "string" ? code : run.status})`).toBe("complete");
   return run;
 }

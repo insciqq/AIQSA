@@ -44,7 +44,6 @@
   "admin_health_failed",
   "admission_failed",
   "agent_mode_removed",
-  "agent_search_failed",
   "ambiguous_after_data",
   "animated_gif_not_supported",
   "announcements_action_failed",
@@ -753,9 +752,6 @@
   "model_run_cancelled",
   "model_run_not_active",
   "model_unavailable",
-  "native_engine_users_all",
-  "native_engine_users_list",
-  "native_engine_users_none",
   "native_pdf_excessive_fragmentation",
   "native_pdf_excessive_visual_groups",
   "native_pdf_image_heavy_low_text",
@@ -1493,5 +1489,9 @@
   "connect_view_queue_full",
   "connect_view_seq_gap",
   "connect_reply_invalid",
-  "self_service_change_failed"
+  "self_service_change_failed",
+  "retired_engine_run_failed",
+  "retired_engine_runs_ended",
+  "model_tool_calling_required",
+  "model_adapter_unsupported"
 ]

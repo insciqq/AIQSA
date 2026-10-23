@@ -10,14 +10,7 @@
  * that reaches it by another name. Each test first runs the disposable-target
  * guard (`scripts/stateful-test-target.ts`).
  *
- * The stand's app must put the test user on the native engine:
- * AIQSA_NATIVE_ENGINE_USERS=* (or the operator's id or email). Playwright's
- * webServer starts `next dev` with the Playwright process environment merged
- * under `playwright.config.ts`'s own `env` (which sets neither variable), so
- * exporting it for `playwright test` is enough; a reused server
- * (PLAYWRIGHT_REUSE_SERVER=1) must already run with the same values. Every
- * test asserts `ModelRun.engine = 'native'`, so a stand without the
- * allowlist fails visibly instead of proving the old core.
+ * Every test asserts `ModelRun.engine = 'native'`.
  *
  * Injected faults (`lib/server/engine/faults.ts`) are read from the app's
  * environment for every run, apply only with AIQSA_TEST_MODE=1 outside
@@ -28,7 +21,7 @@
  * file runs three times, each start resetting the disposable database
  * (the webServer command runs `prisma migrate reset`):
  *
- *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE AIQSA_NATIVE_ENGINE_USERS='*'   # plus the CODEX_LB_* pair
+ *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE   # plus the CODEX_LB_* pair
  *   # 1. Core scenarios: streaming, MCP write with approval, Stop then Continue.
  *   npx playwright test --project=chromium tests/e2e/native-engine-paid.spec.ts
  *   # 2. Transport faults: a synthetic 502 before the first request, then a stream drop after the first text.
@@ -316,7 +309,7 @@ async function settledRun(runId: string, status: ModelRun["status"] = "complete"
     return ACTIVE_RUN_STATUSES.includes(current.status) ? null : current;
   }, "native_run_timeout");
   const code = (run.errorPayload as { code?: unknown } | null)?.code;
-  expect(run.engine, "the run ran on the native engine (the stand's app needs AIQSA_NATIVE_ENGINE_USERS)").toBe("native");
+  expect(run.engine, "the run ran on the agent engine").toBe("native");
   expect(run.status, `the run ends ${status} (${typeof code === "string" ? code : run.status})`).toBe(status);
   return run;
 }

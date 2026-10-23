@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { memoryNativeEngine, nativePrepared, nativeRunRepository, scriptedNativeAdapter } from "@/tests/support/nativeRunExecution";
 import type { NativeEngineHandlerDeps } from "../engine/handlerSupport";
-import { parseNativeEngineUsers } from "../engine/routing";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
@@ -12,25 +11,21 @@ import { createWorkspaceFollowupContinuation } from "./workspaceFollowupContinua
 import { createWorkspaceFollowupCoordinator, type WorkspaceFollowupLoaded } from "./workspaceFollowupCoordinator";
 import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 
-const oldCore = vi.hoisted(() => vi.fn());
-vi.mock("./runExecution", async (importOriginal) => ({ ...await importOriginal<typeof import("./runExecution")>(),
-  createRunExecutionResponse: oldCore }));
-
 /**
- * A native successor admitted behind the previous answer's Workspace hand-off
- * (a quick follow-up): the Workspace follow-up starts it on the native engine,
- * only once the predecessor finished, and never on the old core.
+ * A successor admitted behind the previous answer's Workspace hand-off (a
+ * quick follow-up): the Workspace follow-up starts it on the agent engine,
+ * only once the predecessor finished.
  */
 const claim = { claimToken: "claim-token", runId: "follow-run", userId: "owner" };
 const admitted = { assistantMessageId: "answer-2", runId: "follow-run", userMessageId: "question-2" };
 const workspaceRequest = { workspace: { enabled: true, syncToolTimeoutSeconds: 30, turnTimeoutSeconds: 600 } as ProviderRunRequest["workspace"] };
 
-function loadedFollowup(input: Readonly<{ native?: Readonly<{ approvalId?: string; telegram?: true }>;
+function loadedFollowup(input: Readonly<{ engine?: "native" | "v1"; native?: Readonly<{ approvalId?: string; telegram?: true }>;
   status?: "preparing" | "streaming" }> = {}): WorkspaceFollowupLoaded {
   return {
     admissionResult: { ...admitted },
     deadlineAt: new Date(Date.now() + 60_000),
-    modelRun: { chatId: "chat", createdAt: new Date(), engine: "native", normalizedRequest: null, status: input.status ?? "preparing",
+    modelRun: { chatId: "chat", createdAt: new Date(), engine: input.engine ?? "native", normalizedRequest: null, status: input.status ?? "preparing",
       workspaceWaitPending: true },
     predecessor: { status: "complete" },
     snapshot: { ...(input.native ? { native: input.native } : {}), prepared: nativePrepared(workspaceRequest), version: 1 }
@@ -51,7 +46,7 @@ function recordingWorkspace(order: string[]) {
 
 function continuation(input: Readonly<{ adapter: ProviderAdapter; memory: ReturnType<typeof memoryNativeEngine>; order: string[] }>) {
   const secrets: RunSecretSource = { list: vi.fn(async () => []), read: vi.fn() };
-  const nativeEngine: NativeEngineHandlerDeps = { allowlist: () => parseNativeEngineUsers("*"), engine: input.memory.engine,
+  const nativeEngine: NativeEngineHandlerDeps = { engine: input.memory.engine,
     findOrphans: async () => [], tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } } };
   const repository = { ...nativeRunRepository(), continueWorkspacePreparedRun: vi.fn(async (activation: { created: typeof admitted }) => {
     input.order.push("activated");
@@ -66,12 +61,11 @@ function continuation(input: Readonly<{ adapter: ProviderAdapter; memory: Return
 }
 
 afterEach(() => {
-  oldCore.mockReset();
   for (const id of registry.ids()) if (id === claim.runId) registry.abort(id);
 });
 
-describe("a native successor behind the previous answer's Workspace hand-off", () => {
-  it("starts on the native engine with its entry facts, never on the old core", async () => {
+describe("a successor behind the previous answer's Workspace hand-off", () => {
+  it("starts on the agent engine with its entry facts", async () => {
     const order: string[] = [];
     const memory = memoryNativeEngine();
     const { adapter, requests } = scriptedNativeAdapter([{ text: "Updated." }]);
@@ -80,7 +74,6 @@ describe("a native successor behind the previous answer's Workspace hand-off", (
     await continueRun({ claim, loaded: loadedFollowup({ native: { approvalId: "approval-1", telegram: true } }),
       releaseRegistry: released, signal: new AbortController().signal });
     await vi.waitFor(() => expect(memory.published()).toBe("Updated."));
-    expect(oldCore).not.toHaveBeenCalled();
     expect(followups.markAnswerDispatched).toHaveBeenCalledWith(claim);
     expect(released).toHaveBeenCalled();
     // The Allow it named and the Telegram turn it came from hold as if it had started at once.
@@ -133,7 +126,6 @@ describe("a native successor behind the previous answer's Workspace hand-off", (
     await expect(continueRun({ claim, loaded: loadedFollowup(), releaseRegistry: vi.fn(), signal: stop.signal })).rejects.toBeDefined();
     expect(followups.markAnswerDispatched).not.toHaveBeenCalled();
     expect(requests).toEqual([]);
-    expect(oldCore).not.toHaveBeenCalled();
   });
 
   it("is never resumed once it was activated: it fails visibly for the user to send again", async () => {
@@ -144,6 +136,16 @@ describe("a native successor behind the previous answer's Workspace hand-off", (
     await expect(continueRun({ claim, loaded: loadedFollowup({ status: "streaming" }), releaseRegistry: vi.fn(),
       signal: new AbortController().signal })).rejects.toEqual(new WorkspaceFollowupError("workspace_followup_invalid"));
     expect(requests).toEqual([]);
-    expect(oldCore).not.toHaveBeenCalled();
+  });
+
+  it("fails visibly, starting nothing, when the old core admitted it before the upgrade", async () => {
+    const order: string[] = [];
+    const memory = memoryNativeEngine();
+    const { adapter, requests } = scriptedNativeAdapter([{ text: "Updated." }]);
+    const { continueRun, repository } = continuation({ adapter, memory, order });
+    await expect(continueRun({ claim, loaded: loadedFollowup({ engine: "v1" }), releaseRegistry: vi.fn(),
+      signal: new AbortController().signal })).rejects.toEqual(new WorkspaceFollowupError("workspace_followup_unavailable"));
+    expect(repository.continueWorkspacePreparedRun).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
   });
 });

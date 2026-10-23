@@ -3,15 +3,13 @@ import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
 import { getDefaultWorkspaceFollowup } from "./defaultWorkspaceFollowup";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
-import { defaultRunServices } from "./defaultRunServices";
-import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { reconcileInstallationRuns } from "./runRecovery";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
+import { createRetiredEngineRunSweep } from "./retiredEngineRuns";
 import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
 import { defaultNativeRecoveryDeps } from "../engine/defaultEngine";
-import { logNativeEngineAllowlist } from "../engine/routing";
 import { reconcileNativeRuns } from "../engine/recovery";
+import { prisma } from "../prisma";
 
 const globalForRecoveryScheduler = globalThis as unknown as {
   __aiqsaRunRecoveryScheduler?: RunRecoveryScheduler;
@@ -23,31 +21,26 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
     const titles = createPrismaChatTitleWorker();
     // The application owns export recovery and orphan settlement, using the
     // same Workspace coordinator as run routes and independent worker slots.
-    // Recovery composes the same tool services as the run routes: a run left
-    // to this scheduler keeps its image, artifact and Skill tools.
-    const deps = {
-      ...defaultRunServices(storage),
-      providers: {},
-      registry: activeRunControllerRegistry,
-      repository: createPrismaRunRepository(),
-      workspace: workspaceCoordinatorForStorage(storage)
-    };
-    // Each engine recovers only its own runs.
-    const native = defaultNativeRecoveryDeps({ repository: deps.repository, workspace: deps.workspace });
+    const repository = createPrismaRunRepository();
+    const workspace = workspaceCoordinatorForStorage(storage);
+    const native = defaultNativeRecoveryDeps({ repository, workspace });
+    // The old core's runs still active after the upgrade end first, so their
+    // document and Workspace jobs never wait for an engine that is gone.
+    const retired = createRetiredEngineRunSweep({ client: prisma, repository, workspace });
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
       recoverChatTitles: (signal) => titles.reconcile(signal),
       reconcile: async () => {
-        getDefaultChatPdf().kick();
-        getDefaultWorkspaceFollowup().kick();
         try {
-          await reconcileInstallationRuns(deps);
+          await retired();
         } finally {
+          getDefaultChatPdf().kick();
+          getDefaultWorkspaceFollowup().kick();
           await reconcileNativeRuns(native);
         }
       },
       recoverWorkspaceExports: async (signal) => {
         await (await defaultWorkspaceCheckpoints()).recover(signal);
-        await deps.workspace.recoverExports({ limit: 10, signal });
+        await workspace.recoverExports({ limit: 10, signal });
       }
     });
   }
@@ -55,12 +48,10 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
 }
 
 /**
- * Starts recovery at startup: each engine settles the runs this process does
- * not own (the old core ends or resumes its own, `reconcileInstallationRuns`;
- * the native engine ends its own interrupted, `reconcileNativeRuns`), and the
- * log names which users the native engine takes.
+ * Starts recovery at startup: runs the old core left active end once, and the
+ * agent engine's runs this process does not own end interrupted
+ * (`reconcileNativeRuns`), on every pass.
  */
 export function startDefaultRunRecoveryScheduler(): void {
-  logNativeEngineAllowlist();
   getDefaultRunRecoveryScheduler().start();
 }

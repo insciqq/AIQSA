@@ -7,17 +7,16 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunServices } from "./execution";
 import { processBootedAt, reconcileNativeRuns, type NativeRecoveryDeps } from "./recovery";
-import { nativeEngineRoute, type NativeEngineAllowlist, type NativeEngineRoute } from "./routing";
 import type { ToolRegistryServices } from "./toolRegistry";
 
 /**
- * What a send or regenerate handler adds to admit native runs. Every entry
- * point that admits through the ordinary send handler carries it (the chat
- * routes, the scheduled task runner, Telegram and answer review, through
- * `createDefaultSendMessageDeps`); `nativeEngineRoute` decides per run.
+ * The agent engine a send or regenerate handler runs its admitted runs on.
+ * Every entry point that admits through the ordinary send handler carries it
+ * (the chat routes, the scheduled task runner, Telegram and answer review,
+ * through `createDefaultSendMessageDeps`), as do the document and Workspace
+ * follow-up jobs that start a run admitted behind them.
  */
 export type NativeEngineHandlerDeps = Readonly<{
-  allowlist(): NativeEngineAllowlist;
   engine: NativeEngineDeps;
   findOrphans: NativeRecoveryDeps["findOrphans"];
   mcpRuntime?: ToolRegistryServices["mcpRuntime"];
@@ -39,12 +38,11 @@ export function selfServiceChat(prepared: MaterializedPreparedRunData,
     !prepared.chatAssistant && !request.answerReviewStep && !request.monitoringVerdictTool;
 }
 
-/** Before a user's admission: their native runs no execution owns end interrupted, so the chat is free. */
-export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps | undefined, deps: Readonly<{
+/** Before a user's admission: their runs no execution owns end interrupted, so the chat is free. */
+export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps, deps: Readonly<{
   repository: Pick<RunRepository, "failRun">;
   workspaceCoordinator?: WorkspaceCoordinator;
 }>, userId: string): Promise<void> {
-  if (!native) return;
   await reconcileNativeRuns({ bootedAt: processBootedAt(), findOrphans: native.findOrphans,
     liveRunIds: () => activeRunControllerRegistry.ids(), repository: deps.repository, runs: native.engine.runs,
     ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}) }, { userId }).catch((error: unknown) => {
@@ -53,13 +51,31 @@ export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps | un
   });
 }
 
-/** The engine of a run about to be admitted; the old core without native deps. */
-export function routeRun(native: NativeEngineHandlerDeps | undefined, input: Readonly<{
-  prepared: MaterializedPreparedRunData;
-  user: Readonly<{ email: string | null; id: string }>;
-}>): NativeEngineRoute {
-  if (!native) return { engine: "v1", reason: "not_listed" };
-  return nativeEngineRoute({ ...input, allowlist: native.allowlist() });
+/** Answer adapters that render the neutral history (`lib/server/providers/history.ts`). */
+export const NATIVE_ENGINE_ADAPTER_KINDS: ReadonlySet<string> = new Set([
+  "anthropic_messages",
+  "deepseek_responses_native",
+  "fake",
+  "gemini_interactions_native",
+  "openai_chat_completions_compatible",
+  "openai_responses_compatible",
+  "openai_responses_native",
+  "openrouter_chat_completions"
+]);
+
+/**
+ * Why the agent cannot run an admitted chat model, checked before the run is
+ * created so nothing is accepted that no engine would answer: the model must
+ * have verified tool calling (`agent_docs/PROVIDERS.md`), and its adapter
+ * must render the agent's conversation. Null admits.
+ */
+export function engineAdmissionRefusal(prepared: MaterializedPreparedRunData):
+  Readonly<{ code: "model_adapter_unsupported" | "model_tool_calling_required"; status: 409 }> | null {
+  if (!NATIVE_ENGINE_ADAPTER_KINDS.has(prepared.providerAdmissionPlan.answer.snapshot.model.adapterKind)) {
+    return { code: "model_adapter_unsupported", status: 409 };
+  }
+  if (prepared.normalizedRequest.modelCapabilities.toolCalling !== true) return { code: "model_tool_calling_required", status: 409 };
+  return null;
 }
 
 /**
