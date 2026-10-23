@@ -291,6 +291,16 @@ export type NormalizedRunRequest = {
      * stage. Provider adapters render the corresponding fixed answer contract. */
     memoryActionAnswerResult?: MemoryActionAnswerResult;
     system: string | null;
+    /**
+     * The parts appended to `system` that hold only for this turn (its paths,
+     * the current message's facts, the chat's images, files and artifacts as
+     * they stand now), in order and exactly as appended. The old core sends
+     * `system` whole; the native engine sends it without them and them with
+     * the run's input, so its system prompt stays the same across a chat's
+     * turns (`lib/server/engine/systemPrompt.ts`). Requests admitted before
+     * the record lack it.
+     */
+    turnGuidance?: readonly string[];
   };
   provider: string;
   /** Server-owned admission marker of an ordinary personal run (never a

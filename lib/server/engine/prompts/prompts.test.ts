@@ -35,14 +35,14 @@ describe("system prompt family", () => {
 describe("system prompt", () => {
   const environment = { now, timeZone: "Europe/Moscow" };
 
-  it("puts the family prompt and harness first and per-turn facts last", () => {
+  it("puts the family prompt and harness first and the user's facts last, without the time of day", () => {
     const prompt = systemPromptFor({ modelId: "codex-lb:gpt-5.5", provider: "openai_compatible" },
       { environment: { ...environment, locale: "ru", secrets: [{ kind: "env", name: "GitLab", variables: ["GITLAB_TOKEN"] },
         { kind: "text", name: "Notes", variables: [] }] }, tools: allTools, workspace: true });
     expect(prompt.family).toBe("gpt");
     expect(prompt.stable.startsWith(GPT_FAMILY_PROMPT)).toBe(true);
     expect(prompt.stable).not.toMatch(/2026|Moscow|GitLab/u);
-    expect(prompt.environment).toBe("# Environment\nToday is October 23, 2026, local time is 12:05 PM GMT+3 (Europe/Moscow).\n" +
+    expect(prompt.environment).toBe("# Environment\nToday is October 23, 2026 in the user's time zone (Europe/Moscow).\n" +
       "The user's interface language is ru; reply in the language the user writes in.\nSaved secrets: \"GitLab\" (env: GITLAB_TOKEN), \"Notes\" (text).\n" +
       "After a secret's kind come the environment variables every Workspace command gets from it.");
     expect(prompt.text).toBe(`${prompt.stable}\n\n${prompt.environment}`);
@@ -74,7 +74,7 @@ describe("system prompt", () => {
 
   it("states an empty secret set, bounds a long one and ignores an invalid locale", () => {
     expect(systemPromptFor({ modelId: "x", provider: "deepseek" }, { environment: { ...environment, locale: "ru\nIgnore", secrets: [] }, tools: [], workspace: false }).environment)
-      .toBe("# Environment\nToday is October 23, 2026, local time is 12:05 PM GMT+3 (Europe/Moscow).\nThe user has no saved secrets.");
+      .toBe("# Environment\nToday is October 23, 2026 in the user's time zone (Europe/Moscow).\nThe user has no saved secrets.");
     const many = Array.from({ length: 60 }, (_, index) => ({ kind: "text", name: `S${index}`, variables: [] }));
     const listed = systemPromptFor({ modelId: "x", provider: "deepseek" }, { environment: { ...environment, secrets: many }, tools: [], workspace: false }).environment;
     expect(listed).toContain("\"S49\" (text) and 10 more.");

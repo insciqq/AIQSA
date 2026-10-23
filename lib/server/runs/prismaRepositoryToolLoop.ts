@@ -659,6 +659,9 @@ export type PrismaRunToolLoopOperations = Pick<
   | "updateRunProviderResponseId"
 >;
 
+/** Admission records at most one turn guidance part per kind (`NormalizedRunRequest.prompt.turnGuidance`). */
+const MAX_TURN_GUIDANCE_PARTS = 16;
+
 const normalizedRequestKeys = new Set([
   "followupContextReserveTokens",
   "agent",
@@ -1137,8 +1140,12 @@ function decodeProviderDispatchRecoveryRequest(
       !nonBlank(value.reasoningEffort, 32) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
       "baseline", "developer", "knowledgeAnswerContract", "knowledgeAnswerDraftContract",
-      "knowledgeGroundedSelectorContract", "memoryActionAnswerResult", "system", "personalInstructions", "responseReminder"
+      "knowledgeGroundedSelectorContract", "memoryActionAnswerResult", "system", "personalInstructions", "responseReminder",
+      "turnGuidance"
     ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
+    value.prompt.turnGuidance !== undefined && !(Array.isArray(value.prompt.turnGuidance) &&
+      value.prompt.turnGuidance.length <= MAX_TURN_GUIDANCE_PARTS &&
+      value.prompt.turnGuidance.every((part) => typeof part === "string")) ||
     value.prompt.knowledgeAnswerContract !== undefined &&
       value.prompt.knowledgeAnswerContract !== 1 ||
     value.prompt.knowledgeAnswerDraftContract !== undefined &&
