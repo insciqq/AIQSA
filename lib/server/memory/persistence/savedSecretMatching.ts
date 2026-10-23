@@ -10,12 +10,12 @@ import type { AcceptedWorkspaceSecret } from "../../workspace/secrets/store";
  * already holds (`../savedSecretScrub.ts`). Matching is exact and literal, on
  * each value and its trimmed form, so it behaves the same in every language.
  *
- * Only values that look like secrets are screened (operator review
- * 2026-10-23): at least 20 characters of any kind, or at least 8 characters
- * with a character that is neither a letter nor whitespace (a digit,
- * punctuation or a symbol). Plain words such as `localhost` or `production`,
- * which settings often hold, stay ordinary text, so a fact or chat turn that
- * mentions them is kept. Lengths count Unicode code points.
+ * Only values that look like secrets are screened (review 2026-10-23): at
+ * least 20 characters of any kind, or at least 8 characters with one that is
+ * neither a letter nor whitespace (a digit, punctuation or a symbol). Plain
+ * words such as `localhost` or `production`, which settings often hold, stay
+ * ordinary text, so a fact or chat turn that mentions them is kept. Lengths
+ * count Unicode code points.
  */
 const SCREENED_ANY_MIN_LENGTH = 20;
 const SCREENED_MIXED_MIN_LENGTH = 8;

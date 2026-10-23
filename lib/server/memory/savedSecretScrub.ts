@@ -32,7 +32,9 @@ import { loadMemorySuppressionKeyring } from "./suppressionKeyring";
  * lock. A pass changes at most a bounded number of facts and chats and leaves
  * a fresh obligation for the rest.
  */
-export const MEMORY_SAVED_SECRET_SCRUB_PASS_LIMIT = 100;
+/** Facts, and chats, one commit changes: each is a Forget fence or a history
+ * reset, and the commit must stay well inside the deletion commit timeout. */
+export const MEMORY_SAVED_SECRET_SCRUB_PASS_LIMIT = 25;
 const SCAN_PAGE = 500;
 const FORGETTABLE_FACT_STATES = ["ACTIVE", "CONFLICTED", "ORPHANED"] as const;
 
