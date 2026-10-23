@@ -184,6 +184,71 @@ describe("run streaming", () => {
     expect(onAnswerComplete).toHaveBeenCalledOnce();
   });
 
+  it("keeps a text-less answer's steps and image once the next run took the chat before it settled", async () => {
+    // The image answer's steps and picture lived on the chat's live surface,
+    // which the next send resets; only the settled projection brings them back.
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "next-answer",
+      messages: [
+        { content: "Draw a cat", id: "question", parentMessageId: null, role: "user", status: "complete" },
+        { content: "", id: "image-answer", parentMessageId: "question", role: "assistant", runId: "previous",
+          status: "complete", workspaceSettling: true },
+        { content: "Now make it black", id: "next-question", parentMessageId: "image-answer", role: "user", status: "complete" },
+        { content: "", id: "next-answer", parentMessageId: "next-question", role: "assistant", status: "streaming" }
+      ],
+      usageStats: null
+    });
+    const applyChatUpdate = vi.fn(() => false);
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate }));
+    let writer!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(new ReadableStream<Uint8Array>({ start(controller) { writer = controller; } }));
+    const emit = (type: string, data: object) => writer.enqueue(new TextEncoder().encode(
+      `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
+    let publish!: () => void;
+    const published = new Promise<void>((resolve) => { publish = resolve; });
+    let current = true;
+    const running = result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      isCurrent: () => current, onAnswerComplete: () => publish(), onRunId: vi.fn(), onMessageIds: vi.fn(), response,
+      tokenBuffer: { flush: vi.fn(), push: vi.fn() } });
+    emit("message_start", { runId: "previous", assistantMessageId: "image-answer", userMessageId: "question" });
+    emit("answer_complete", { runId: "previous", assistantMessageId: "image-answer" });
+    await published;
+    current = false;
+    applyChatUpdate.mockClear();
+    const image = { attachmentId: "image-1", byteSize: 2048, fileName: "cat.png", height: 512, mimeType: "image/png",
+      sourceAttachmentIds: [], width: 512 };
+    const settled = (id: string, role: "assistant" | "user", parentMessageId: string | null, extra: object) => ({
+      artifactSummary: null, citationMessageId: null, content: { blocks: [] }, createdAt: "2026-07-12T08:00:30.000Z",
+      errorMessage: null, id, modelId: "gpt-5.5", modelRunId: role === "assistant" ? "previous" : null, parentMessageId,
+      provider: "openai", role, status: "complete", ...extra
+    });
+    emit("chat_update", {
+      // The server's leaf when the projection was read: never the thread's now.
+      chat: { ...chat("chat-a", "Cats"), activeLeafMessageId: "image-answer", contextStats: { approximateActiveBranchInputTokens: 40 },
+        pinned: false, usageStats: null },
+      messages: [
+        settled("question", "user", null, { content: { blocks: [{ text: "Draw a cat", type: "text" }] } }),
+        settled("image-answer", "assistant", "question", {
+          artifactSummary: { citations: [], generatedImages: [image], reasoningText: [], sources: [] },
+          toolActivity: { calls: [{ durationMs: 900, round: 1, serverName: "Images", status: "complete", toolName: "generate_image" }] }
+        })
+      ]
+    });
+    emit("done", { runId: "previous", status: "complete" });
+    writer.close();
+    await running;
+
+    const thread = selectThreadSnapshot(useThreadStore.getState(), "chat-a");
+    expect(applyChatUpdate).not.toHaveBeenCalled();
+    expect(thread.activeLeafId).toBe("next-answer");
+    expect(thread.messages.map((message) => message.id)).toEqual(["question", "image-answer", "next-question", "next-answer"]);
+    const answer = thread.messages.find((message) => message.id === "image-answer");
+    expect(answer?.artifactSummary?.generatedImages).toEqual([image]);
+    expect(answer?.toolActivity?.calls).toMatchObject([{ status: "complete", toolName: "generate_image" }]);
+    expect(answer?.workspaceSettling).toBeUndefined();
+    expect(thread.messages.find((message) => message.id === "next-answer")).toMatchObject({ status: "streaming" });
+  });
+
   it("does not publish a completion for another answer", async () => {
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: vi.fn(() => false) }));
     const onAnswerComplete = vi.fn();

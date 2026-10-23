@@ -27,6 +27,12 @@ type UseRunStreamInput = {
   appendRunEventView(event: RunEventView, chatId: string): void;
   appendSseParseWarningOnce(event: RunEventView, chatId: string, warningLogged: boolean): boolean;
   applyChatUpdate(event: RunEventView, expectedChatId: string): boolean;
+  /**
+   * Takes a published answer's settled projection after a successor took the
+   * chat's stream: only that answer's own messages, never the chat's leaf,
+   * summary, stats or live surface, which the successor owns.
+   */
+  applySettledAnswerUpdate?(event: RunEventView, chatId: string, assistantMessageId: string): void;
   onStreamEnded?(chatId: string, status: RunStreamTerminalStatus | "interrupted"): void;
 };
 
@@ -55,6 +61,7 @@ export function useRunStream({
   appendRunEventView,
   appendSseParseWarningOnce,
   applyChatUpdate,
+  applySettledAnswerUpdate,
   onStreamEnded
 }: UseRunStreamInput) {
   return useCallback(
@@ -116,6 +123,13 @@ export function useRunStream({
             receivedChatUpdate = event.data.messages.some(message => isRecord(message) &&
               message.id === assistantMessageId && ["complete", "cancelled", "error"].includes(String(message.status))) || receivedChatUpdate;
           }
+        } else if (answerPublished && assistantMessageId && event.type === "chat_update") {
+          // Send is released once the answer is published, so the next run can
+          // take this chat's stream and reset its live surface while this run
+          // still settles (Workspace hand-off). The steps and outputs this
+          // answer showed lived on that surface; its settled projection is the
+          // only place they come back from.
+          applySettledAnswerUpdate?.(event, chatId, assistantMessageId);
         }
 
         const maybeRunId = runIdFromEvent(event);
@@ -187,6 +201,6 @@ export function useRunStream({
         if (isCurrent()) onStreamEnded?.(chatId, terminalStatus ?? "interrupted");
       }
     },
-    [appendRunEventView, appendSseParseWarningOnce, applyChatUpdate, onStreamEnded]
+    [appendRunEventView, appendSseParseWarningOnce, applyChatUpdate, applySettledAnswerUpdate, onStreamEnded]
   );
 }

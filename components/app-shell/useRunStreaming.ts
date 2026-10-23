@@ -2,7 +2,8 @@ import {
   isSseParseError,
   sseParseWarningEvent
 } from "@/components/app-shell/shellApi";
-import { appendAssistantDelta, resetAssistantDraft } from "@/components/app-shell/runState";
+import { chatUpdateFromEvent } from "@/components/app-shell/powerAppShellData";
+import { appendAssistantDelta, mergeThreadMessages, resetAssistantDraft } from "@/components/app-shell/runState";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import type { RunEventView } from "@/components/app-shell/types";
 import { useRunStream } from "@/components/app-shell/useRunStream";
@@ -17,6 +18,23 @@ export function useRunStreaming({ applyChatUpdate }: RunStreamingInput) {
     if (event.type !== "chat_update") {
       useRunSurfaceStore.getState().appendEvent(chatId, event);
     }
+  }
+
+  /**
+   * A published answer's settled projection that arrived after the next run
+   * took the chat's stream. It replaces only messages the thread still holds
+   * and only once the server reports the answer settled; the chat's leaf,
+   * summary and stats stay with the run that now owns the chat.
+   */
+  function applySettledAnswerUpdate(event: RunEventView, chatId: string, assistantMessageId: string) {
+    const update = chatUpdateFromEvent(event);
+    if (!update || update.chat.id !== chatId) return;
+    const answer = update.messages.find((message) => message.id === assistantMessageId);
+    if (!answer || answer.status === "streaming") return;
+    const held = new Set(useThreadStore.getState().threadsByChatId[chatId]?.messages.map((message) => message.id) ?? []);
+    const settled = update.messages.filter((message) => held.has(message.id));
+    if (!held.has(assistantMessageId)) return;
+    useThreadStore.getState().updateMessages(chatId, (current) => mergeThreadMessages(current, settled));
   }
 
   function appendSseParseWarningOnce(event: RunEventView, chatId: string, warningLogged: boolean): boolean {
@@ -101,6 +119,7 @@ export function useRunStreaming({ applyChatUpdate }: RunStreamingInput) {
     appendRunEventView,
     appendSseParseWarningOnce,
     applyChatUpdate,
+    applySettledAnswerUpdate,
     onStreamEnded: (chatId, status) => useRunSurfaceStore.getState().endArtifactStream(chatId, status)
   });
 
