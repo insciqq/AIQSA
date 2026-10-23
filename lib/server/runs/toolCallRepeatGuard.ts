@@ -1,7 +1,5 @@
 import { decodeToolObservationDescriptor } from "../toolObservations/contract";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
-import { readToolCallReceiptHash } from "../tools/readToolCall";
-import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { contextDigest } from "./contextCompactionContract";
 import { mcpApprovalGated } from "./mcpApprovalGate";
 import { unknownToolCall } from "./unknownToolCall";
@@ -92,11 +90,6 @@ export function toolCallOutcomeFingerprint(row: ToolCallRepeatRow): string | nul
   if (row.toolName === WORKSPACE_EXEC_POLL) return null;
   const result = row.result;
   if (row.state !== "complete" || !isRecord(result) || result.status !== "complete") return null;
-  // A call read keeps only a receipt: its output hash identifies what it returned.
-  if (row.toolName === READ_TOOL_CALL_NAME) {
-    const hash = readToolCallReceiptHash(result);
-    return hash ? `read:${hash}` : null;
-  }
   if (result.observation !== undefined) {
     const observation = decodeToolObservationDescriptor(result.observation);
     return observation ? `observation:${observation.checksum}` : null;

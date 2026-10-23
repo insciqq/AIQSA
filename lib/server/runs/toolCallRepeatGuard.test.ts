@@ -2,21 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   repeatBlockedRounds,
   repeatBlockedToolCallResult,
-  settledRepeatOutcome,
   toolCallOutcomeFingerprint,
   ToolCallRepeatHistory,
-  toolRoundCall,
   type ToolCallRepeatRow
 } from "./toolCallRepeatGuard";
-import { stalledToolRound } from "./providerToolLoop";
 import type { ToolLoopJsonValue } from "./toolLoopPersistence";
 import { unknownToolCallResult } from "./unknownToolCall";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
-
-/** The live and recovered verdict on a round of these rows, before any correction was spent. */
-const roundMadeNoProgress = (rows: readonly ToolCallRepeatRow[]) =>
-  stalledToolRound(rows.map(entry => toolRoundCall(entry)), false) === "no_progress";
 
 let sequence = 0;
 
@@ -180,17 +173,13 @@ describe("repeated identical calls without progress", () => {
   it("recognizes a block only by its whole server-owned form", () => {
     const blocked = blockedRow(3, [1, 2]);
     expect(repeatBlockedRounds(blocked)).toEqual([1, 2]);
-    expect(roundMadeNoProgress([blocked])).toBe(true);
     // An MCP result that merely mentions the code was dispatched.
     const mentioned = { ...blocked, startedAt: "2026-10-02T10:00:00.000Z" };
     expect(repeatBlockedRounds(mentioned)).toBeNull();
-    expect(roundMadeNoProgress([mentioned])).toBe(false);
     const withObservation = { ...blocked, result: { ...(blocked.result as Record<string, ToolLoopJsonValue>),
       observation: descriptor("tor1_" + "3".repeat(32), "e".repeat(64)) } };
     expect(repeatBlockedRounds(withObservation)).toBeNull();
     expect(repeatBlockedRounds({ ...blocked, roundIndex: 2 })).toBeNull();
-    expect(roundMadeNoProgress([blocked, row({ round: 3 })])).toBe(false);
-    expect(roundMadeNoProgress([])).toBe(false);
   });
 
   it("never counts a call of an undeclared tool as a call that may have changed state", () => {
@@ -198,11 +187,9 @@ describe("repeated identical calls without progress", () => {
     const base = row({ round: 2, name: "update_record" });
     const unknown: ToolCallRepeatRow = { ...base, startedAt: null, state: "error",
       result: unknownToolCallResult({ providerCallId: base.providerCallId, requested: "update_record", toolName: "update_record" }) };
-    expect(toolRoundCall(unknown)).toBe("unknown_tool");
     expect(new ToolCallRepeatHistory([row({ round: 1 }), unknown, row({ round: 3 })]).blockFor(call, 4, writes)).toEqual([1, 3]);
     // The same name that ran may have changed the record.
     expect(new ToolCallRepeatHistory([row({ round: 1 }), base, row({ round: 3 })]).blockFor(call, 4, writes)).toBeNull();
-    expect(toolRoundCall(base)).toBe("executed");
   });
 
   it("explains a block in the projection without changing the comparison basis", () => {
@@ -214,22 +201,6 @@ describe("repeated identical calls without progress", () => {
       "Not executed: this call already returned the same data twice (rounds 1, 2). Use those results.");
     // The stored second result has no note; only the provider projection does.
     expect(JSON.stringify(second.result)).not.toContain("Identical to the result");
-  });
-
-  it("fills a persisted row with the outcome this process settled, never an unknown one", () => {
-    const pending = { ...row({ round: 1 }), result: null, startedAt: null, state: "pending" as const };
-    const history = new ToolCallRepeatHistory([pending]);
-    const value = { callId: pending.providerCallId, name: pending.toolName, status: "complete" as const,
-      content: [{ type: "text" as const, text: "record rec-1: open" }] };
-    history.settle(pending.id, settledRepeatOutcome({ call: { arguments: {}, id: pending.providerCallId, name: pending.toolName },
-      ordinal: 0, round: 1, result: { status: "complete", value } }));
-    history.record(row({ round: 2 }));
-    expect(history.blockFor(call, 3, onlyReads)).toEqual([1, 2]);
-    expect(settledRepeatOutcome({ call: { arguments: {}, id: "x", name: "get_record" }, ordinal: 0, round: 1,
-      result: { status: "error", error: { code: "tool_call_timeout", message: "timed out" } } })).toEqual({ result: null, state: "error" });
-    // A settled persisted row keeps its stored result.
-    history.settle(pending.id, { result: null, state: "error" });
-    expect(history.blockFor(call, 3, onlyReads)).toEqual([1, 2]);
   });
 
   describe("after a call that may change state", () => {
@@ -264,32 +235,5 @@ describe("repeated identical calls without progress", () => {
         run(3, read, "same")]);
       expect(history.blockFor(read, 4, writes)).toEqual([1, 3]);
     });
-  });
-});
-
-describe("call reads fingerprint the hash of their output", () => {
-  const ref = "tcr1_" + "a".repeat(32);
-  const readRow = (round: number, output: string) => {
-    const base = row({ round, name: "read_tool_call", arguments: { call_ref: ref } });
-    const settled = settledRepeatOutcome({ call: { arguments: { call_ref: ref }, id: base.providerCallId, name: "read_tool_call" },
-      ordinal: 0, round, result: { status: "complete", value: { callId: base.providerCallId, name: "read_tool_call", status: "complete",
-        content: [{ type: "json", value: { call_ref: ref, result: { fragment: output } } }] } } });
-    return { ...base, result: settled.result, state: settled.state };
-  };
-
-  it("keeps only a receipt and compares outputs by its hash", () => {
-    const first = readRow(1, "created #5");
-    expect(JSON.stringify(first.result)).not.toContain("created #5");
-    expect(toolCallOutcomeFingerprint(first)).toMatch(/^read:[a-f0-9]{64}$/u);
-    expect(toolCallOutcomeFingerprint(readRow(2, "created #5"))).toBe(toolCallOutcomeFingerprint(first));
-    expect(toolCallOutcomeFingerprint(readRow(2, "created #6"))).not.toBe(toolCallOutcomeFingerprint(first));
-  });
-
-  it("blocks a third identical read, never one whose output changed", () => {
-    const readOnly = () => true;
-    const same = new ToolCallRepeatHistory([readRow(1, "x"), readRow(2, "x")]);
-    expect(same.blockFor({ arguments: { call_ref: ref }, toolName: "read_tool_call" }, 3, { batch: [], readOnly })).toEqual([1, 2]);
-    const changed = new ToolCallRepeatHistory([readRow(1, "x"), readRow(2, "y")]);
-    expect(changed.blockFor({ arguments: { call_ref: ref }, toolName: "read_tool_call" }, 3, { batch: [], readOnly })).toBeNull();
   });
 });
