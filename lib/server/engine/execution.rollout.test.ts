@@ -181,23 +181,25 @@ describe("the tools a native run is offered by kind", () => {
     tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } }
   });
 
-  async function offered(data: Partial<MaterializedPreparedRunData>, extra: Partial<ProviderRunRequest> = {}, scheduled = false) {
+  async function offered(data: Partial<MaterializedPreparedRunData>, extra: Partial<ProviderRunRequest> = {},
+    entry: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}) {
     const { adapter, requests } = scriptedNativeAdapter([{ text: "Hi." }]);
     const memory = memoryNativeEngine();
     await nativeSseEvents(nativeRunResponse(native(memory), { adapter, created, prepared: nativePrepared(extra, data),
-      repository: asRepository(nativeRunRepository()), ...(scheduled ? { scheduled: true } : {}), services: {}, userId: "user" }));
+      repository: asRepository(nativeRunRepository()), ...entry, services: {}, userId: "user" }));
     return { request: requests[0]!, tools: toolNames(requests[0]) };
   }
 
-  it("gives a personal chat the self-service tools, and an Assistant chat or a scheduled run none of them", async () => {
+  it("gives a web personal chat the self-service tools, and an Assistant chat, a scheduled run or a Telegram turn none", async () => {
     expect((await offered({})).tools).toEqual(expect.arrayContaining(["read_secret", "manage_secret", "manage_skill", "manage_assistant"]));
-    for (const run of [await offered({ assistant: {} as never }), await offered({ chatAssistant: {} as never }), await offered({}, {}, true)]) {
+    for (const run of [await offered({ assistant: {} as never }), await offered({ chatAssistant: {} as never }),
+      await offered({}, {}, { scheduled: true }), await offered({}, {}, { telegram: true })]) {
       expect(run.tools).toContain("read_secret");
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");
     }
     // A scheduled monitoring check takes its verdict tool, never a self-service one.
-    const check = await offered({}, { monitoringVerdictTool: true }, true);
+    const check = await offered({}, { monitoringVerdictTool: true }, { scheduled: true });
     expect(check.tools).toContain(VERDICT);
     expect(check.tools).not.toContain("manage_skill");
   });

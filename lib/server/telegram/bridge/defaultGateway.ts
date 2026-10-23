@@ -100,7 +100,7 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
     async send({ body, chatId, userId }) {
       // As a browser session does, the user's MCP runtime is woken for the run.
       kickDefaultMcpRuntime(userId);
-      return createSendMessageHandler({ ...sendDeps, resolveAuth: telegramAuth(userId) })(
+      return createSendMessageHandler({ ...sendDeps, resolveAuth: telegramAuth(userId), telegramTurn: true })(
         internalRequest(`/api/chats/${encodeURIComponent(chatId)}/messages`, "POST", body), { params: { chatId } }
       );
     },
