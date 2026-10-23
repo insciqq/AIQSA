@@ -24,7 +24,7 @@ Environment variables, secrets and key rotation, and Compose topology selection.
 - Keep `.env` out of Git, images, logs, transcripts and support bundles. Production provisioning and rotation belong to the infrastructure operator.
 - Session and flow signing, `AIQSA_ENCRYPTION_KEY`, the Memory fingerprint and routing keys and the Workspace token are independent; never derive one from another. The encryption and Memory keys are backed up separately from data.
 - Replacing `AIQSA_ENCRYPTION_KEY` without a migration makes every encrypted provider, SMTP, MCP, OAuth, TOTP and sign-in secret unreadable.
-- Memory fingerprint rotation is additive, and a missing historical key version blocks the affected state. Rotating the routing key requires a full rebuild of the derived lexical index before readiness; mixed keys are never a fallback.
+- Memory fingerprint rotation is additive, and a missing historical key version blocks the affected state. Rotating the routing key requires a full rebuild of the derived lexical index before readiness; mixed keys are never a fallback. The routing key also derives, under its own label, the gateway routing keys of native runs' model calls (`lib/server/providers/gatewayRouting.ts`); rotating it costs them only prompt-cache hits.
 - The trusted base URL decides callback and email origins, cookie defaults and same-origin policy; request Host and forwarding headers never select it. Changing it is an identity and security migration.
 
 ## Running Compose

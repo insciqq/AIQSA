@@ -517,6 +517,13 @@ export type ProviderToolArgumentObserver = (event: ProviderToolArgumentEvent) =>
 
 export type ProviderRunOptions = {
   onToolArguments?: ProviderToolArgumentObserver;
+  /**
+   * The stable gateway routing key of the call's lane (`gatewayRouting.ts`): an
+   * isolated compatible Responses connection sends it with the call's first
+   * POST and a fresh key with any replay. Pass it only where no other request
+   * with it can be in flight; without it every POST gets a fresh key.
+   */
+  routingKey?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
