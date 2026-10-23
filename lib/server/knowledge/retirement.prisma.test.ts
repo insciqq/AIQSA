@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { drainKnowledgeDeletionJobs } from "./deletionProcessor";
 import { createKnowledgeRetirement } from "./retirement";
@@ -24,12 +24,9 @@ describe("Knowledge retirement over PostgreSQL", () => {
       const base = await prisma.knowledgeBase.create({ data: { name: "PRIVATE_BASE", ownerUserId } });
       const source = await prisma.knowledgeSource.create({ data: { name: "PRIVATE_SOURCE", ownerUserId } });
       await prisma.knowledgeBaseSource.create({ data: { knowledgeBaseId: base.id, ownerUserId, sourceId: source.id } });
-      const searchDeletion = vi.fn(async () => undefined);
-      const dropSearchIndex = vi.fn(async () => undefined);
       const retire = createKnowledgeRetirement({
         client: prisma,
-        drain: () => drainKnowledgeDeletionJobs({ client: prisma, limit: 100, searchDeletion }),
-        dropSearchIndex,
+        drain: () => drainKnowledgeDeletionJobs({ client: prisma, limit: 100 }),
         ownerBatch: 100
       });
 

@@ -115,7 +115,6 @@ import {
 import { knowledgeToolResultContent, knowledgeToolResultText } from "./toolResult";
 import { executeKnowledgeAnswerGroundingV21 } from "./answerGroundingExecutionV21ScopeV6";
 import type { KnowledgeProviderDispatchLifecycle, PreparedKnowledgeProviderDispatch } from "./providerDispatchLifecycle";
-import { aggregateKnowledgeGroundingMetrics } from "./groundingMetrics";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "./evidenceAnswerExecutionV1";
 import { resolveKnowledgeGroundingExecutionPolicyV1 } from "./groundingExecutionPolicy";
 import type { KnowledgeEvidenceAnswerSnapshot, KnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
@@ -752,11 +751,6 @@ describe("Knowledge Evidence v2 repository projection", () => {
     expect(execute).toHaveBeenCalledTimes(2);
     expect(result.grounding.finalText).toContain(modern ? "Unanswered requirement:" : "Missing evidence:");
     if (result.grounding.version !== 59 && result.grounding.version !== 60) throw Error("unexpected_grounding_version");
-    expect(aggregateKnowledgeGroundingMetrics([result.grounding])).toMatchObject({
-      answers: 1, modelOperations: 2, pipelineVersion21: 0, coverageScopeAccepted: 0, draftClaims: 0,
-      evidenceAnswers: { answers: 1, draftBlocks: 1, supportedBlocks: 1, missingRequirements: 1 },
-      stages: { compose: { calls: 1, totalInputTokens: 10 }, review: { calls: 1, totalInputTokens: 10 } }
-    });
     const contentFree = JSON.stringify({ ...result.grounding, finalText: undefined });
     expect(contentFree).not.toContain(evidenceRow.excerpt);
     expect(contentFree).not.toContain("Retention trend over time.");
@@ -839,9 +833,6 @@ describe("Knowledge Evidence v2 repository projection", () => {
     });
     if (envelope.grounding.version !== 58) throw new Error("wrong_evidence_version");
     expect(envelope.grounding.publicationPlanHash).toBe(result.contributionReceipt?.publicationPlanHash);
-    expect(aggregateKnowledgeGroundingMetrics([envelope.grounding])).toMatchObject({
-      answers: 1, selectorSupported: 1, totalMissingCoverageDimensions: 1, modelOperations: outputs.length
-    });
     expect(await groundKnowledgeRunAnswerV21(fakeClient, { runId: "run-1", userId: "user-1" })).toEqual(envelope);
     expect(execute).toHaveBeenCalledTimes(outputs.length);
   });

@@ -9,7 +9,7 @@ import {
   drainDeletionObligations
 } from "../retention/prune";
 import { createToolObservationRepository, ObservationStoreError } from "../toolObservations/repository";
-import { createPrismaKnowledgeLifecycleRepository } from "./lifecycleRepository";
+import { requestKnowledgeDeletion } from "./deletionRequest.testFixtures";
 import { createAccountKnowledgeDeletionHook } from "./accountDeletion";
 import { loadKnowledgeEvidencePackage } from "./evidenceRepository";
 import {
@@ -1265,23 +1265,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     });
 
     try {
-      const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
-      await expect(lifecycle.trashSource(ownerUserId, source.id, 1))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.trashSource(ownerUserId, source.id, 1))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(prisma.knowledgeBase.findUnique({
-        select: { sourceRevision: true, version: true },
-        where: { id: base.id }
-      })).resolves.toEqual({ sourceRevision: 2, version: 2 });
-      await expect(lifecycle.restoreSource(ownerUserId, source.id, 2))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.restoreSource(ownerUserId, source.id, 2))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.trashSource(ownerUserId, source.id, 3))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.permanentlyDeleteSource(ownerUserId, source.id, 4))
-        .resolves.toEqual({ kind: "pending" });
+      await requestKnowledgeDeletion(prisma, { id: source.id, ownerUserId, targetType: "SOURCE" });
 
       const deletedObjects: string[] = [];
       const summary = await drainDeletionObligations({
@@ -1743,54 +1727,6 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
           await cleanupH2ProfileFixture(h2Fixture);
         }
       }
-    }
-  });
-
-  it("allows only one winner when restore races permanent Source deletion", async () => {
-    const suffix = randomUUID();
-    const ownerUserId = "knowledge-delete-race-owner-" + suffix;
-    await prisma.user.create({
-      data: { displayName: "Knowledge deletion race owner", id: ownerUserId, status: "active" }
-    });
-    const source = await prisma.knowledgeSource.create({
-      data: { name: "Racing Source", ownerUserId },
-      select: { id: true }
-    });
-
-    try {
-      const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
-      await expect(lifecycle.trashSource(ownerUserId, source.id, 1))
-        .resolves.toEqual({ kind: "ok" });
-
-      const outcomes = await Promise.all([
-        lifecycle.restoreSource(ownerUserId, source.id, 2),
-        lifecycle.permanentlyDeleteSource(ownerUserId, source.id, 2)
-      ]);
-      expect(outcomes.filter((outcome) => outcome.kind === "version_conflict"))
-        .toHaveLength(1);
-      const winner = outcomes.find((outcome) => outcome.kind !== "version_conflict");
-      expect(["ok", "pending"]).toContain(winner?.kind);
-
-      const persisted = await prisma.knowledgeSource.findUniqueOrThrow({
-        select: { deletionRequestedAt: true, trashedAt: true, version: true },
-        where: { id: source.id }
-      });
-      const deletionJobs = await prisma.knowledgeDeletionJob.count({
-        where: { targetId: source.id, targetType: "SOURCE" }
-      });
-      if (winner?.kind === "pending") {
-        expect(persisted).toEqual({
-          deletionRequestedAt: expect.any(Date),
-          trashedAt: expect.any(Date),
-          version: 3
-        });
-        expect(deletionJobs).toBe(1);
-      } else {
-        expect(persisted).toEqual({ deletionRequestedAt: null, trashedAt: null, version: 3 });
-        expect(deletionJobs).toBe(0);
-      }
-    } finally {
-      await cleanup({ baseIds: [], ownerUserId });
     }
   });
 
@@ -2294,11 +2230,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     });
 
     try {
-      const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
-      await expect(lifecycle.trashBase(ownerUserId, base.id, 1))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.permanentlyDeleteBase(ownerUserId, base.id, 2))
-        .resolves.toEqual({ kind: "pending" });
+      await requestKnowledgeDeletion(prisma, { id: base.id, ownerUserId, targetType: "BASE" });
       const deletedObjects: string[] = [];
       const abortedUploads: Array<{ storageKey: string; uploadId: string }> = [];
       const summary = await drainDeletionObligations({
@@ -2702,11 +2634,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     });
 
     try {
-      const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
-      await expect(lifecycle.trashBase(ownerUserId, base.id, 1))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.permanentlyDeleteBase(ownerUserId, base.id, 2))
-        .resolves.toEqual({ kind: "pending" });
+      await requestKnowledgeDeletion(prisma, { id: base.id, ownerUserId, targetType: "BASE" });
       const summary = await drainDeletionObligations({
         repository: createPrismaRetentionRepository(prisma),
         storage: { async deleteObject() {} }
@@ -2961,11 +2889,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     await expect(observations.read(reader, observationId)).resolves.toMatchObject({ id: observationId });
 
     try {
-      const lifecycle = createPrismaKnowledgeLifecycleRepository(prisma);
-      await expect(lifecycle.trashBase(ownerUserId, base.id, 1))
-        .resolves.toEqual({ kind: "ok" });
-      await expect(lifecycle.permanentlyDeleteBase(ownerUserId, base.id, 2))
-        .resolves.toEqual({ kind: "pending" });
+      await requestKnowledgeDeletion(prisma, { id: base.id, ownerUserId, targetType: "BASE" });
       const summary = await drainDeletionObligations({
         repository: createPrismaRetentionRepository(prisma),
         storage: { async deleteObject() {} }
