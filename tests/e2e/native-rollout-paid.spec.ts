@@ -41,8 +41,8 @@
  * requests each: the verdict call, then the answer); the Telegram write turn
  * (one or two requests up to the call) and its continuation (one); the Auto
  * read turn (three: `find_tools`, the read, the answer); the Auto write turn
- * (two up to the approval) and its continuation (three when it finds the
- * tool again, one when it sends the approved call itself); the scheduled
+ * (two up to the approval) and its continuation (one: the server loads the
+ * tool and sends the approved call, then the model answers); the scheduled
  * write occurrence (three).
  *
  * Oracles are persisted runs, occurrences, approvals, tool calls, discovery
@@ -612,8 +612,8 @@ test("a web chat in Auto asks before a data-changing MCP call, and Allow once se
       const continuedCalls = await toolCallFacts(continued.id);
       const write = continuedCalls.find((call) => recordsCall(call, "delete_record") && call.state === "complete");
       const refind = continuedCalls.findIndex((call) => call.toolName === "find_tools");
-      // Direct: the continuation sent the approved call itself. Re-found: it admitted no MCP tool (Auto), so the agent
-      // loaded the tool with find_tools and made the call again, which the Allow covered.
+      // Direct: the continuation sent the approved call itself, once the server had loaded its tool from the run's catalog
+      // (Auto admits none). Re-found would mean the model loaded the tool and made the call again.
       const sent = !write ? "not_sent" : write.providerCallId === asked?.providerCallId ? "direct"
         : refind >= 0 && refind < continuedCalls.indexOf(write) ? "re-found" : "other";
       const text = await answerText(continued);
@@ -637,6 +637,8 @@ test("a web chat in Auto asks before a data-changing MCP call, and Allow once se
       expect(records.endpoint.dispatches("delete_record", { id: recordId }), "the allowed write was sent once").toBe(1);
       expect(records.endpoint.dispatches("delete_record"), "the peer saw exactly one write").toBe(1);
       expect(write, "the continuation's write completed").toBeTruthy();
+      expect(discoveryEpochs(continued), "the server loaded the approved tool through a discovery epoch").toBeGreaterThanOrEqual(1);
+      expect(sent, "the continuation sent the approved call itself").toBe("direct");
       expect(continuationTurns, "the Allow continued the chat with the server's turn").toBe(1);
       expect(text.includes(receipt), "the continued answer used the tool's result").toBe(true);
       await expect(lastAnswer(page)).toContainText(receipt, { timeout: 60_000 });

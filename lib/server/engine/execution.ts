@@ -3,7 +3,6 @@ import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
-import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { logEvent, runWithContext } from "../observability";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderDeadlineExceededError } from "../providers/network";
@@ -305,14 +304,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             userId: input.userId });
           const callItem = approved ? [...conversation.items].reverse().find((item) => item.kind === "tool_call" &&
             item.callId === approved.providerCallId && item.name === approved.toolName) : undefined;
-          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call. The run sends
-          // the call only with its tool admitted: an Auto run admits no MCP tool and loads it anew (`find_tools`).
-          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id) &&
-            resolveMcpRunTool(input.prepared.providerRequest.mcp, callItem.name)) {
+          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call.
+          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id)) {
             approvedCall = { arguments: parsedArguments(callItem.arguments), id: callItem.callId, name: callItem.name };
           } else {
-            // The old core stopped that turn, the user wrote again since, or the tool is not loaded yet: the server's turn
-            // is the instruction, and the call it allows is made again.
+            // The old core stopped that turn, or the user wrote again since: the server's turn is the instruction, and
+            // the call it allows is made again.
             conversation = conversationFor("input");
           }
         }
@@ -408,8 +405,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         };
 
         if (approvedCall && input.approvalContinuation) {
+          const approvalId = input.approvalContinuation.approvalId;
+          // Auto admitted no MCP tool: the server first loads the approved one from the run's frozen catalog, by its own
+          // `find_tools` call through the same epoch, binding rows and registry as the model's, recorded in round 0 but no
+          // part of the conversation. Exactly the approved call is sent then; one whose tool did not load is refused.
+          const load = registry.resolve(approvedCall.name) ? undefined
+            : registry.mcpLoadCall?.(approvedCall.name, `aiqsa_approved_load_${approvalId}`);
+          if (load) await runToolBatch(batchDeps, toolState, { calls: [load], round: 0 });
           const batch = await runToolBatch(batchDeps, toolState, {
-            approved: { approvalId: input.approvalContinuation.approvalId, callId: approvedCall.id }, calls: [approvedCall], round: 0
+            approved: { approvalId, callId: approvedCall.id, ...(registry.resolve(approvedCall.name) ? {} : { unavailable: true as const }) },
+            calls: [approvedCall], firstOrdinal: load ? 1 : 0, round: 0
           });
           await append(batch.results);
           if (batch.approvals.length > 0) await emitApprovalCards();
