@@ -7,7 +7,8 @@ import type { TranscriptItem } from "./transcript";
  * branch admission froze (earlier turns, the run's internal context such as
  * the Skills index, then the run's own message), with every earlier answer of
  * a native run replaced by that run's own items. Earlier answers of the old
- * core enter as their text; their tool steps are not fed again. A turn the
+ * core, and a native answer stopped before its first round completed, enter
+ * as their saved text; old-core tool steps are not fed again. A turn the
  * server wrote after an approval that a native run continued is no user
  * speech: the approved call's result continues that turn instead.
  */
@@ -53,7 +54,7 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
       continue;
     }
     const native = source.nativeAnswers.get(message.id);
-    if (native) {
+    if (native && native.length > 0) {
       items.push(...native);
       continue;
     }
