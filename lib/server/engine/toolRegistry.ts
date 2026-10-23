@@ -103,7 +103,7 @@ export type ToolRegistryServices = Readonly<{
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
   fetchPage?: FetchUrlSessionDeps["fetchPage"];
-  images?: Pick<ImageGenerationService, "execute">;
+  images?: Pick<ImageGenerationService, "execute" | "withConversationPixels">;
   mcp?: Readonly<{
     filterTools: McpToolAccessFilter;
     materialize?(userId: string, tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[]):
