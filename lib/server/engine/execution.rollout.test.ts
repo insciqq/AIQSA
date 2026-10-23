@@ -25,6 +25,7 @@ import {
   APPROVED_CALL_IN_FLIGHT_OUTPUT, APPROVED_TOOL_UNAVAILABLE, APPROVED_TOOL_UNAVAILABLE_OUTPUT, UNKNOWN_OUTCOME_REPEAT_OUTPUT
 } from "./toolBatch";
 import type { TranscriptItem } from "./transcript";
+import { unknownEffectsOf } from "./unknownEffects";
 
 /**
  * The native engine on the runs the rollout moves to it: a scheduled
@@ -338,6 +339,27 @@ describe("an Auto MCP run on the native engine", () => {
         roundIndex: 0 }));
       expect(run.callTool).not.toHaveBeenCalled();
       expect(run.output).toBe(APPROVED_TOOL_UNAVAILABLE_OUTPUT);
+    });
+
+    // Regression (codex review): a definite "not sent" settles the in-flight record, so standing consent keeps working.
+    it("lets the approved call's own definite result settle its in-flight record", async () => {
+      const run = autoDiscovery(catalogOf("create_issue"), { admitted: true });
+      const { adapter, requests } = scriptedNativeAdapter([{ text: "It was not sent." }]);
+      vi.mocked(run.memory.engine.approvedCall).mockResolvedValue({ providerCallId: "call-1", toolName: "mcp_jira_create_issue" });
+      run.memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"]]));
+      run.memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", stopped]]));
+      // Always allow; the server's runtime refuses before anything is sent.
+      await nativeSseEvents(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
+        engine: run.memory.engine, mcpRuntime: () => ({ callTool: run.callTool, ensureAcceptedGeneration: async () => false }) as never,
+        prepared: nativePrepared({ context: { messages: [nativeSay("user-1", "user", "Create the issue"), nativeSay("answer-0", "assistant", ""),
+          nativeSay("current-user-message", "user", "The user approved `Create` on `Jira`. Continue the task.")], mode: "branch_path" },
+        mcp: NATIVE_MCP_SNAPSHOT, mcpApproval: mcpApprovalAdmission(["jira"]) }),
+        repository: asRepository(run.repo as unknown as ReturnType<typeof nativeRunRepository>), services: {}, userId: "owner" }));
+      expect(run.callTool).not.toHaveBeenCalled();
+      expect(run.memory.transcriptRows.at(-2)).toMatchObject({ callId: "call-1", kind: "tool_result", outcome: "error" });
+      expect(JSON.stringify(requests[0]!.history)).not.toContain(APPROVED_CALL_IN_FLIGHT_OUTPUT);
+      expect(unknownEffectsOf([...stopped, ...run.memory.transcriptRows], () => false)
+        .find({ arguments: { summary: "x" }, name: "mcp_jira_create_issue" })).toBeNull();
     });
 
     // Regression (codex review): the continuation's write went out, then Stop, a deadline or a restart ended the answer

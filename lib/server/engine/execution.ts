@@ -419,8 +419,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           // interruption before its own result lands must leave its effect unknown, and an equivalent call later needs the
           // user's decision again, whatever the server's consent. Its own result, recorded later, supersedes this one.
           if (!unavailable) {
-            await appendCalls([{ callId: approvedCall.id, id: randomUUID(), kind: "tool_result", name: approvedCall.name,
-              outcome: "unknown", output: APPROVED_CALL_IN_FLIGHT_OUTPUT }]);
+            await appendCalls([{ callId: approvedCall.id, id: randomUUID(), inFlight: true, kind: "tool_result",
+              name: approvedCall.name, outcome: "unknown", output: APPROVED_CALL_IN_FLIGHT_OUTPUT }]);
           }
           const batch = await runToolBatch(batchDeps, toolState, {
             approved: { approvalId, callId: approvedCall.id, ...(unavailable ? { unavailable: true as const } : {}) },

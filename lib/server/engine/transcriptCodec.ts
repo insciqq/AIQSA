@@ -96,7 +96,8 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
         return { arguments: item.arguments, name: item.name, ...optional("native", item.native),
           ...optional("origin", item.origin), ...optional("outputTokens", item.outputTokens) };
       case "tool_result":
-        return { name: item.name, outcome: item.outcome, output: item.output, ...optional("handle", item.handle) };
+        return { name: item.name, outcome: item.outcome, output: item.output, ...optional("handle", item.handle),
+          ...(item.inFlight ? { inFlight: true } : {}) };
       case "compaction":
         return { origin: item.origin, ...optional("keepFromId", item.keepFromId), ...optional("native", item.native),
           ...optional("outputTokens", item.outputTokens), ...optional("retained", item.retained), ...optional("summary", item.summary) };
@@ -146,8 +147,10 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
     case "tool_result": {
       if (!boundedString(body.name, TRANSCRIPT_ITEM_LIMITS.nameLength) ||
         !OUTCOMES.includes(body.outcome as typeof OUTCOMES[number]) ||
-        (body.handle !== undefined && !boundedString(body.handle, TRANSCRIPT_ITEM_LIMITS.identityLength))) return invalid();
-      return { callId: row.callId!, ...(typeof body.handle === "string" ? { handle: body.handle } : {}), id, kind,
+        (body.handle !== undefined && !boundedString(body.handle, TRANSCRIPT_ITEM_LIMITS.identityLength)) ||
+        (body.inFlight !== undefined && (body.inFlight !== true || body.outcome !== "unknown"))) return invalid();
+      return { callId: row.callId!, ...(typeof body.handle === "string" ? { handle: body.handle } : {}), id,
+        ...(body.inFlight === true ? { inFlight: true as const } : {}), kind,
         name: body.name, outcome: body.outcome as typeof OUTCOMES[number], output: text(body.output) };
     }
     case "compaction": {
