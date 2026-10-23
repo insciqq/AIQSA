@@ -466,8 +466,9 @@ export type RetainedContextOptions = StateBlockOptions & RetainedBudgets & Reado
 export const RETAINED_PREAMBLE = "Kept from the earlier, compacted part of this conversation:";
 
 /** The handoff's last words: how the agent resumes from the verbatim part that follows (as Codex bridges its compaction). */
-export const RETAINED_CLOSING = "The most recent part of the conversation follows word for word. Continue from where it ends: keep " +
-  "the user's latest constraints, carry on with the open work in order, and do not redo work recorded as done.";
+export const RETAINED_CLOSING = "The most recent part of the conversation follows word for word. Build on the work recorded as done " +
+  "instead of redoing it, keep the user's latest constraints and corrections, and carry the open work on where the conversation " +
+  "calls for it.";
 
 /** The retained text of a compaction: the record, the Skills in use and the earlier user messages, then how to resume. */
 export function buildRetainedContext(options: RetainedContextOptions): string {
