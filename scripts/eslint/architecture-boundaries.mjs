@@ -37,6 +37,8 @@ const messages = {
   providerConsumer: "Provider adapters must not import app or component modules.",
   providerPrisma: "Provider adapters must not import Prisma.",
   providerRun: "Provider adapters must not import run orchestration, handlers, or repositories.",
+  runnerGatewayAgent:
+    "The runner gateway and the guest-code MCP path must not depend on the Codex Agent modules.",
   appShellAdmin: "The app shell must not depend on the admin feature."
 };
 
@@ -210,6 +212,10 @@ const policyViolation = (policy, dependency) => {
     return null;
   }
 
+  if (policy === "runner-gateway") {
+    return targets(dependency.target, "lib/server/agents") ? messages.runnerGatewayAgent : null;
+  }
+
   return null;
 };
 
@@ -378,7 +384,7 @@ const architectureBoundariesRule = {
         type: "object",
         properties: {
           policy: {
-            enum: ["components", "app-shell", "contracts", "domain", "api", "providers"]
+            enum: ["components", "app-shell", "contracts", "domain", "api", "providers", "runner-gateway"]
           }
         },
         required: ["policy"],

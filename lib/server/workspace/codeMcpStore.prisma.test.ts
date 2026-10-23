@@ -4,7 +4,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
-import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { agentTokenHash } from "../agents/store";
 import {
   createPrismaWorkspaceCodeGatewayStore,
@@ -88,7 +88,7 @@ describe("Workspace code MCP grants", () => {
   it("stores only the bearer hash, rotates it per initialization and never reissues after revocation", async () => {
     const f = await fixture();
     const first = await grants.issueCodeGrant(f.binding);
-    expect(first.environment).toEqual({ AIQSA_GATEWAY_URL: AGENT_GATEWAY_ORIGIN, AIQSA_RUN_TOKEN: first.token });
+    expect(first.environment).toEqual({ AIQSA_GATEWAY_URL: RUNNER_GATEWAY_ORIGIN, AIQSA_RUN_TOKEN: first.token });
     expect(workspaceCodeTokenHash(first.token!)).toBe(agentTokenHash(first.token!));
     const row = await prisma.workspaceCodeGrant.findUniqueOrThrow({ where: { modelRunId: f.runId } });
     expect(row).toMatchObject({ revokedAt: null, tokenHash: workspaceCodeTokenHash(first.token!), workspaceSessionId: f.session.id });

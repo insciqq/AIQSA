@@ -13,7 +13,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { bindContext, logEvent, type EventFields } from "../observability";
 import { readBoundedResponseText } from "../providers/network";
 import { markProviderErrorCode, markProviderErrorDetail, providerErrorCode, providerErrorCodeOfBody } from "../providers/providerErrorCode";
-import { AGENT_LEASE_CANCELLED } from "./lease";
+import { RUNNER_GATEWAY_LEASE_CANCELLED } from "../workspace/runnerGatewayLease";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -227,7 +227,7 @@ export function createAgentModelGateway(input: Readonly<{
     /** The user's Stop or the lease's expiry, an interruption, the deadline, a turn budget, else the provider. */
     const endedBy = (code: string): AgentRequestReason => {
       const lease = input.signal.aborted ? input.signal.reason : undefined;
-      if (lease instanceof Error && lease.message === AGENT_LEASE_CANCELLED) return "cancelled";
+      if (lease instanceof Error && lease.message === RUNNER_GATEWAY_LEASE_CANCELLED) return "cancelled";
       if (code === "agent_authority_expired") return "authority_expired";
       if (code === "agent_provider_interrupted" || code === "agent_execution_interrupted" || request.signal.aborted) return "interrupted";
       if (timeoutSignal.aborted || code === "agent_time_limit") return "deadline";
@@ -262,7 +262,7 @@ export function createAgentModelGateway(input: Readonly<{
         const reason = endedBy(code);
         // The request ended because AIQSA or Codex ended it, not because the provider failed.
         const ended = reason === "cancelled" || reason === "interrupted" || reason === "authority_expired";
-        observeOutcome(ended ? "cancelled" : "failed", { action: "stop", code: reason === "cancelled" ? AGENT_LEASE_CANCELLED : code,
+        observeOutcome(ended ? "cancelled" : "failed", { action: "stop", code: reason === "cancelled" ? RUNNER_GATEWAY_LEASE_CANCELLED : code,
           reason, error });
       }
       return code;

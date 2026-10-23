@@ -8,37 +8,26 @@ import { createAgentSearchGateway } from "./searchGateway";
 import { createAgentMcpGateway } from "./mcpGateway";
 import { validNormalizedAgent, type NormalizedRunAgent } from "./config";
 import { agentFailureCode } from "./failures";
-import { withAgentLease } from "./lease";
+import { withRunnerGatewayLease } from "../workspace/runnerGatewayLease";
 import { runWithContext } from "../observability";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { usageAttributionsWithEstimatedCost } from "../runs/runFinalization";
-import { AGENT_RELAY_PROOF_HEADER, agentRelayProofKey, verifyAgentRelayProof } from "./relayProof";
-import { handleWorkspaceCodeMcpRequest } from "../workspace/codeMcpGateway";
+import type { RunnerGatewayBearerHandler } from "../workspace/runnerGateway";
 
 const refused = () => Response.json({ error: "agent_authorization_required" }, { status: 401 });
 
 /**
- * Works across app/worker processes. Requests never extend the executor's lease.
- * Only requests relayed by the Workspace runner carry a valid relay proof; any
- * other request is refused before its bearer is looked up, like a bad bearer.
- * A bearer that is no Agent grant may be a Workspace code grant: MCP only.
+ * The Agent's share of the runner gateway (`handleRunnerGatewayRequest`
+ * checks the relay proof first). Works across app/worker processes. Requests
+ * never extend the executor's lease. Null means the bearer is no Agent grant,
+ * so the runner gateway may still serve it as a Workspace code grant.
  */
-export async function handleAgentGatewayRequest(request: Request, path: string): Promise<Response> {
-  const auth = request.headers.get("authorization");
-  const token = auth?.match(/^Bearer ([a-zA-Z0-9_-]{43})$/u)?.[1];
-  if (!token || request.headers.has("origin") || !verifyAgentRelayProof(
-    agentRelayProofKey(process.env.AIQSA_WORKSPACE_RUNNER_TOKEN), request.headers.get(AGENT_RELAY_PROOF_HEADER),
-    { bearer: token, method: request.method, path })) return refused();
+export const handleAgentGatewayRequest: RunnerGatewayBearerHandler = async (request, path, token) => {
   try {
     const tokenHash = agentTokenHash(token);
     const binding = await prisma.agentRunBinding.findUnique({ where: { tokenHash },
       include: { workspaceRun: { include: { modelRun: { select: { userId: true, normalizedRequest: true } } } } } });
-    if (!binding) {
-      // A Workspace code bearer reaches its run's MCP authority alone, never
-      // the model or Search endpoints, which therefore refuse it here.
-      if (request.method === "POST" && path === "mcp") return await handleWorkspaceCodeMcpRequest(request, tokenHash);
-      throw new Error("denied");
-    }
+    if (!binding) return null;
     const normalized = binding.workspaceRun.modelRun.normalizedRequest as unknown as NormalizedRunRequest;
     const configuration = binding.configuration as unknown as NormalizedRunAgent;
     if (!normalized?.agent || !validNormalizedAgent(configuration) ||
@@ -63,11 +52,11 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
       if (!runtime.agentResponses || runtime.agentResponses.snapshot.model.upstreamModelId !== normalized.modelId) throw new Error("denied");
       const transport = runtime.agentResponses;
       const createGateway = path === "v1/alpha/search" ? createAgentSearchGateway : createAgentModelGateway;
-      return await runWithContext({ run_id: binding.modelRunId, user_id: userId }, () => withAgentLease(request, store.assertLeaseActive, (signal) =>
+      return await runWithContext({ run_id: binding.modelRunId, user_id: userId }, () => withRunnerGatewayLease(request, store.assertLeaseActive, (signal) =>
         createGateway({ configuration, transport, store, signal, onFailure, onUsage })(request)));
     }
     if (request.method === "POST" && path === "mcp") {
-      return await runWithContext({ user_id: userId }, () => withAgentLease(request, store.assertLeaseActive, async (signal) => {
+      return await runWithContext({ user_id: userId }, () => withRunnerGatewayLease(request, store.assertLeaseActive, async (signal) => {
         const handler = await createAgentMcpGateway({ request: normalized, runId: binding.modelRunId, store, userId,
           incarnation: tokenHash, signal, onFailure, onUsage });
         return handler(request);
@@ -77,4 +66,4 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
   } catch {
     return refused();
   }
-}
+};
