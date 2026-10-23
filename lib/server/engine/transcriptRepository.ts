@@ -7,7 +7,30 @@ import type { TranscriptItem } from "./transcript";
 /** One native run, named with the owner and chat every read and write carries. */
 export type TranscriptRunScope = Readonly<{ chatId: string; runId: string; userId: string }>;
 
-type TranscriptClient = Pick<PrismaClient, "message" | "modelRun" | "runTranscriptItem">;
+type TranscriptClient = Pick<PrismaClient, "message" | "modelRun" | "modelRunToolCall" | "runTranscriptItem">;
+
+/**
+ * One run of the old core on a branch, with the effect records of its tool
+ * calls (`retiredRunEffects`): what an equivalent native call must respect.
+ */
+export type RetiredRunEffects = Readonly<{
+  assistantMessageId: string;
+  /** Tool call and result items in the run's call order, for the unknown-effect guard only; never sent to a model. */
+  items: readonly TranscriptItem[];
+  userMessageId: string;
+}>;
+
+/** Old-core calls one branch read takes of each kind: more unknown outcomes than this are beyond any chat. */
+const RETIRED_EFFECT_CALL_LIMIT = 2_000;
+
+/**
+ * An old-core call whose outcome is unknown: still running, or closed with an
+ * unknown outcome (`runEndedToolCallResult`, which retirement writes for a
+ * call its run left running, or the old core's own interrupted calls).
+ */
+const unknownOldCoreCall = {
+  OR: [{ state: "running" as const }, { result: { equals: "unknown", path: ["outcome"] }, state: "error" as const }]
+};
 
 /** Runs one transcript load may read: a branch longer than this is beyond any context window. */
 export const TRANSCRIPT_LOAD_RUN_LIMIT = 2_000;
@@ -96,6 +119,59 @@ export function createTranscriptRepository(client: TranscriptClient) {
     },
 
     /**
+     * The old core's runs that answered this branch, each with its calls
+     * whose outcome is unknown and the completed calls of the same tools,
+     * which settle an earlier equivalent one. The native conversation carries
+     * those answers only as text, or not at all when they stopped without
+     * text, so this is how a native run still respects an effect the old core
+     * left unknown (`unknownEffects.ts`). A run is on the branch when it
+     * answered one of the branch's answers (`assistantMessageIds`) or the
+     * message one of the branch's user messages (`userMessageIds`) follows: an
+     * answer that stopped without text is left out of the context but stays
+     * the parent of the next turn. Every query names the owner and chat.
+     */
+    async retiredRunEffects(input: Readonly<{ assistantMessageIds: readonly string[]; chatId: string; userId: string;
+      userMessageIds: readonly string[] }>): Promise<RetiredRunEffects[]> {
+      const answerIds = [...new Set(input.assistantMessageIds)];
+      const userIds = [...new Set(input.userMessageIds)];
+      if (answerIds.length === 0 && userIds.length === 0) return [];
+      if (answerIds.length > TRANSCRIPT_LOAD_RUN_LIMIT || userIds.length > TRANSCRIPT_LOAD_RUN_LIMIT) {
+        throw new Error("transcript_load_too_large");
+      }
+      const runs = await client.modelRun.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { assistantMessageId: true, id: true, userMessageId: true },
+        where: { chatId: input.chatId, engine: "v1", userId: input.userId, OR: [
+          { assistantMessageId: { in: answerIds } },
+          { assistantMessage: { chatId: input.chatId, children: { some: { chatId: input.chatId, id: { in: userIds } } } } }
+        ] }
+      });
+      if (runs.length === 0) return [];
+      const runIds = runs.map((run) => run.id);
+      const orderBy = [{ modelRunId: "asc" as const }, { roundIndex: "asc" as const }, { ordinal: "asc" as const }];
+      const select = { arguments: true, id: true, modelRunId: true, ordinal: true, roundIndex: true, toolName: true };
+      const unknown = await client.modelRunToolCall.findMany({ orderBy, select, take: RETIRED_EFFECT_CALL_LIMIT,
+        where: { modelRunId: { in: runIds }, ...unknownOldCoreCall } });
+      if (unknown.length === 0) return [];
+      const completed = await client.modelRunToolCall.findMany({ orderBy, select, take: RETIRED_EFFECT_CALL_LIMIT,
+        where: { modelRunId: { in: runIds }, state: "complete", toolName: { in: [...new Set(unknown.map((call) => call.toolName))] } } });
+      const unknownIds = new Set(unknown.map((call) => call.id));
+      const calls = [...unknown, ...completed].sort((a, b) => a.roundIndex - b.roundIndex || a.ordinal - b.ordinal);
+      return runs.flatMap((run) => {
+        const items = calls.filter((call) => call.modelRunId === run.id && isJsonObject(call.arguments)).flatMap((call) => {
+          const callId = `retired-${call.id}`;
+          return [
+            { arguments: JSON.stringify(call.arguments), callId, id: `${callId}-call`, kind: "tool_call", name: call.toolName },
+            { callId, id: `${callId}-result`, kind: "tool_result", name: call.toolName,
+              outcome: unknownIds.has(call.id) ? "unknown" : "complete", output: "" }
+          ] satisfies TranscriptItem[];
+        });
+        return items.length > 0 && run.assistantMessageId
+          ? [{ assistantMessageId: run.assistantMessageId, items, userMessageId: run.userMessageId }] : [];
+      });
+    },
+
+    /**
      * The run is still on record and its chat is not being deleted: what a
      * compaction finishing after its run checks before it records anything.
      */
@@ -121,3 +197,7 @@ export function createTranscriptRepository(client: TranscriptClient) {
 }
 
 export type TranscriptRepository = ReturnType<typeof createTranscriptRepository>;
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

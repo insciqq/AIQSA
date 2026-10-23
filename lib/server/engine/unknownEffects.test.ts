@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptItem, TranscriptUserItem } from "./transcript";
-import { unknownEffectsOf } from "./unknownEffects";
+import { unknownEffectsOf, withRetiredEffects } from "./unknownEffects";
 
 const create = (callId: string, title = "one issue"): TranscriptItem =>
   ({ arguments: JSON.stringify({ title }), callId, id: `call-${callId}`, kind: "tool_call", name: "mcp_jira_create" });
@@ -51,5 +51,50 @@ describe("unknown effects on a branch", () => {
     const effects = unknownEffectsOf(items, userAuthored);
     effects.userSpoke();
     expect(effects.find(call())).toEqual({ userSpokeSince: true });
+  });
+});
+
+// Regression (codex review): an old-core write reached its server, then the upgrade retired its run with the outcome
+// unknown; the native conversation carries that answer as text alone, so the guard must still find the effect.
+describe("unknown effects the old core left on a branch", () => {
+  const say = (id: string, role: "assistant" | "user") => ({ id, role });
+  const messages = [say("q1", "user"), say("a1", "assistant"), say("q2", "user"), say("a2", "assistant"), say("current", "user")];
+  const question = (id: string): TranscriptItem => ({ id: `msg-${id}`, kind: "user", text: "x" });
+  const answer = (id: string): TranscriptItem => ({ id: `msg-${id}`, kind: "assistant_text", text: "x" });
+  const branch = [question("q1"), answer("a1"), question("q2"), answer("a2"), question("current")];
+  const retired = (userMessageId: string) => [{ items: [create("r1"), result("r1", "unknown")], userMessageId }];
+
+  it("finds an old answer's unknown write, which its text alone hides", () => {
+    expect(unknownEffectsOf(branch, userAuthored).find(call())).toBeNull();
+    const items = withRetiredEffects(branch, messages, retired("q1"));
+    // Its records follow the old turn and come before the branch's next question.
+    expect(items.map((item) => item.id)).toEqual(["msg-q1", "msg-a1", "call-r1", "result-r1-unknown", "msg-q2", "msg-a2",
+      "msg-current"]);
+    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ userSpokeSince: true });
+    // Only the user's later words count: a turn the server wrote right after the old one leaves it unspoken.
+    const last = withRetiredEffects(branch, messages, retired("q2"));
+    expect(last.map((item) => item.id).slice(-3)).toEqual(["call-r1", "result-r1-unknown", "msg-current"]);
+    expect(unknownEffectsOf(last, (item) => item.id !== "msg-current").find(call())).toEqual({ userSpokeSince: false });
+  });
+
+  it("lets a later equivalent call that completed settle it, and keeps it when the old answer stopped without text", () => {
+    const settled = withRetiredEffects([...branch.slice(0, 3), create("n1"), result("n1", "complete"), ...branch.slice(3)], messages,
+      retired("q1"));
+    expect(unknownEffectsOf(settled, userAuthored).find(call())).toBeNull();
+    // An answer left out of the context (no text) still places its records after its question.
+    const kept = withRetiredEffects(branch.filter((item) => item.id !== "msg-a1"),
+      messages.filter((message) => message.id !== "a1"), retired("q1"));
+    expect(kept.map((item) => item.id).slice(0, 3)).toEqual(["msg-q1", "call-r1", "result-r1-unknown"]);
+    expect(unknownEffectsOf(kept, userAuthored).find(call())).toEqual({ userSpokeSince: true });
+  });
+
+  it("puts a run whose question left the branch first, passes follow-ups, and adds nothing without old runs", () => {
+    expect(withRetiredEffects(branch, messages, retired("gone")).slice(0, 2).map((item) => item.id))
+      .toEqual(["call-r1", "result-r1-unknown"]);
+    expect(withRetiredEffects(branch, messages, [])).toEqual(branch);
+    // A follow-up into the old answer is not a turn of its own: the records still go before the next real question.
+    const withFollowup = withRetiredEffects([branch[0]!, question("f1"), ...branch.slice(1)],
+      [messages[0]!, { contextTurnId: "q1", id: "f1", role: "user" }, ...messages.slice(1)], retired("q1"));
+    expect(withFollowup.map((item) => item.id).slice(0, 5)).toEqual(["msg-q1", "msg-f1", "msg-a1", "call-r1", "result-r1-unknown"]);
   });
 });

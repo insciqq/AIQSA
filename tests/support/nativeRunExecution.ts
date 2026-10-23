@@ -5,7 +5,7 @@ import type { NativeEngineDeps } from "@/lib/server/engine/execution";
 import type { NativeRunStore } from "@/lib/server/engine/runStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "@/lib/server/engine/toolCallStore";
 import type { TranscriptItem } from "@/lib/server/engine/transcript";
-import type { TranscriptRepository } from "@/lib/server/engine/transcriptRepository";
+import type { RetiredRunEffects, TranscriptRepository } from "@/lib/server/engine/transcriptRepository";
 import type { McpRunPlanSnapshot } from "@/lib/server/mcp/runPlan";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "@/lib/server/providers/types";
 import type { MaterializedPreparedRunData } from "@/lib/server/runs/runPreparation";
@@ -64,6 +64,7 @@ export function memoryNativeEngine(options: Readonly<{ allowed?: boolean; approv
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
     loadRuns: vi.fn(async () => new Map<string, TranscriptItem[]>()),
     nativeRunsForAnswers: vi.fn(async () => new Map<string, string>()),
+    retiredRunEffects: vi.fn(async (): Promise<RetiredRunEffects[]> => []),
     nextSequence: vi.fn(async () => transcriptRows.length),
     runLive: vi.fn(async () => true)
   } satisfies TranscriptRepository;

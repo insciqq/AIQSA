@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
+import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { createTranscriptRepository } from "./transcriptRepository";
 import type { TranscriptItem } from "./transcript";
 
@@ -99,6 +101,69 @@ describe("native transcript repository", () => {
       .resolves.toEqual(new Set([native.questionId]));
     await expect(transcripts.approvalContinuationTurns({ chatId: oldCore.chatId, messageIds: [oldCore.questionId] }))
       .resolves.toEqual(new Set());
+  });
+
+  // Regression (codex review): an old-core write reached its server and the upgrade retired its run; the native guard must
+  // still find that unknown effect through the answer's branch, though the answer stopped without text.
+  it("finds the unknown calls of an old-core run retirement ended on the branch, and only there", async () => {
+    const userId = await owner();
+    const strangerId = await owner();
+    const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Old core", userId } });
+    const message = (role: "assistant" | "user", parentMessageId?: string) => prisma.message.create({ data: {
+      chatId: chat.id, content: textMessageContent(role === "user" ? "Synthetic question" : ""), role,
+      status: role === "user" ? "complete" : "streaming", ...(parentMessageId ? { parentMessageId } : {}) } });
+    const oldRun = async (questionId: string, answerId: string) => prisma.modelRun.create({ data: {
+      assistantMessageId: answerId, chatId: chat.id, engine: "v1", modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+      status: "streaming", userId, userMessageId: questionId } });
+    const call = (modelRunId: string, ordinal: number, state: "cancelled" | "complete" | "running", summary: string,
+      toolName = "mcp_jira_create_issue") => prisma.modelRunToolCall.create({ data: {
+      arguments: { summary }, modelRunId, ordinal, providerCallId: `call-${ordinal}`, roundIndex: 0, startedAt: new Date(), state,
+      toolName, ...(state === "running" ? {} : { completedAt: new Date(), result: { callId: `call-${ordinal}`, content: [],
+        name: toolName, status: "complete" } }) } });
+
+    const question = await message("user");
+    const answer = await message("assistant", question.id);
+    const run = await oldRun(question.id, answer.id);
+    const done = await call(run.id, 0, "complete", "earlier");
+    const sent = await call(run.id, 1, "running", "x");
+    // Another tool's completed call settles nothing here.
+    await call(run.id, 2, "complete", "read", "mcp_jira_get_issue");
+    await call(run.id, 3, "cancelled", "never sent");
+    // A sibling answer to the same question, which the branch does not follow.
+    const sibling = await message("assistant", question.id);
+    const siblingRun = await oldRun(question.id, sibling.id);
+    await call(siblingRun.id, 0, "running", "sibling");
+    // The upgrade retires both runs (`endRetiredEngineRuns`' own settlement, here only for this test's runs): each running
+    // call keeps an unknown outcome.
+    const runs = createPrismaRunRepository(prisma);
+    await runs.failRun(run.id, answer.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
+    await runs.failRun(siblingRun.id, sibling.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
+    await expect(prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: sent.id } })).resolves.toMatchObject({ state: "error" });
+    // Continue: the answer stopped without text, so the context leaves it out; the next turn still follows it.
+    const next = await message("user", answer.id);
+
+    const expected = [{ assistantMessageId: answer.id, userMessageId: question.id, items: [
+      { arguments: "{\"summary\":\"earlier\"}", callId: `retired-${done.id}`, id: `retired-${done.id}-call`, kind: "tool_call",
+        name: "mcp_jira_create_issue" },
+      { callId: `retired-${done.id}`, id: `retired-${done.id}-result`, kind: "tool_result", name: "mcp_jira_create_issue",
+        outcome: "complete", output: "" },
+      { arguments: "{\"summary\":\"x\"}", callId: `retired-${sent.id}`, id: `retired-${sent.id}-call`, kind: "tool_call",
+        name: "mcp_jira_create_issue" },
+      { callId: `retired-${sent.id}`, id: `retired-${sent.id}-result`, kind: "tool_result", name: "mcp_jira_create_issue",
+        outcome: "unknown", output: "" }
+    ] }];
+    await expect(transcripts.retiredRunEffects({ assistantMessageIds: [], chatId: chat.id, userId,
+      userMessageIds: [question.id, next.id] })).resolves.toEqual(expected);
+    await expect(transcripts.retiredRunEffects({ assistantMessageIds: [answer.id], chatId: chat.id, userId,
+      userMessageIds: [question.id] })).resolves.toEqual(expected);
+    // Off the branch, for another owner or in another chat: nothing.
+    await expect(transcripts.retiredRunEffects({ assistantMessageIds: [], chatId: chat.id, userId, userMessageIds: [question.id] }))
+      .resolves.toEqual([]);
+    await expect(transcripts.retiredRunEffects({ assistantMessageIds: [answer.id], chatId: chat.id, userId: strangerId,
+      userMessageIds: [next.id] })).resolves.toEqual([]);
+    const other = await chatWithRun(userId);
+    await expect(transcripts.retiredRunEffects({ assistantMessageIds: [answer.id], chatId: other.chatId, userId,
+      userMessageIds: [next.id] })).resolves.toEqual([]);
   });
 
   it("goes with its run", async () => {

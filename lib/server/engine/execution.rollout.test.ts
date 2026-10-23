@@ -521,3 +521,44 @@ describe("the tools a native run is offered by kind", () => {
     expect(request.prompt).toMatchObject({ developer: "Answer in haiku.", responseReminder: "Remember: haiku." });
   });
 });
+
+// Regression (codex review): an old-core write reached its server and the upgrade retired its run with the outcome
+// unknown. After Continue, the model asks for the same write on a server with Always allow.
+describe("an unknown write the old core left on the branch", () => {
+  const write = { arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" };
+  const retired = [{ assistantMessageId: "old-answer", userMessageId: "old-question", items: [
+    { arguments: "{\"summary\":\"x\"}", callId: "retired-row-1", id: "retired-row-1-call", kind: "tool_call", name: write.name },
+    { callId: "retired-row-1", id: "retired-row-1-result", kind: "tool_result", name: write.name, outcome: "unknown", output: "" }
+  ] satisfies TranscriptItem[] }];
+
+  async function continueOverRetired(effects: typeof retired) {
+    const { adapter } = scriptedNativeAdapter([{ calls: [write] }, { text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.retiredRunEffects.mockResolvedValue(effects);
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { ...created, userMessageId: "current-user-message" },
+      engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: nativePrepared({ context: { messages: [nativeSay("old-question", "user", "Create the issue"),
+        nativeSay("old-answer", "assistant", "Creating it now."), nativeSay("current-user-message", "user", "Continue")],
+      mode: "branch_path" }, mcp: NATIVE_MCP_SNAPSHOT, mcpApproval: mcpApprovalAdmission(["jira"]) }),
+      repository: asRepository(nativeRunRepository()), services: {}, userId: "owner" }));
+    return { callTool, memory };
+  }
+
+  it("waits for the user's approval of exactly that call, whatever the server's consent", async () => {
+    const run = await continueOverRetired(retired);
+    expect(run.memory.transcripts.retiredRunEffects).toHaveBeenCalledWith({ assistantMessageIds: ["old-answer"], chatId: "chat",
+      userId: "owner", userMessageIds: ["current-user-message", "old-question"] });
+    expect(run.callTool).not.toHaveBeenCalled();
+    expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(),
+      toolName: write.name }));
+    // The old answer stays text: its records never reach the model's history or the transcript.
+    expect(run.memory.transcriptRows.some((item) => item.id.startsWith("retired-"))).toBe(false);
+  });
+
+  it("sends it under Always allow when the old core left nothing unknown", async () => {
+    const run = await continueOverRetired([]);
+    expect(run.callTool).toHaveBeenCalledTimes(1);
+    expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.not.objectContaining({ approval: expect.anything() }));
+  });
+});
