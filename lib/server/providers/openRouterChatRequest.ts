@@ -28,10 +28,14 @@ import type {
 } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
 import { isOpenAIChatRecord as isRecord } from "./openaiChatCompletions";
+import { assertProviderHistoryRequest, chatMessagesFromHistory, providerHistoryPreview } from "./history";
 
 export type OpenRouterMessage = {
   content?: null | string | Record<string, unknown>[];
   name?: string;
+  /** Reasoning a model produced, returned with its own assistant message. */
+  reasoning?: string;
+  reasoning_details?: unknown[];
   role: "assistant" | "system" | "tool" | "user";
   tool_call_id?: string;
   tool_calls?: unknown[];
@@ -303,9 +307,6 @@ function providerToolPreviewMessages(messages: unknown[] | undefined): OpenRoute
 function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions): OpenRouterMessage[] {
   const messages: OpenRouterMessage[] = [];
   const instructions = combineInstructions(request, options.preview);
-  const conversation = textConversationForRequest(request, {
-    redactSkillContext: options.preview
-  });
 
   if (instructions) {
     messages.push({
@@ -313,6 +314,25 @@ function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions
       role: "system"
     });
   }
+
+  if (request.history) {
+    // The native engine's neutral history; its current input takes this
+    // run's attachments and response reminder.
+    messages.push(...chatMessagesFromHistory(assertProviderHistoryRequest(request), {
+      currentInput: (text) => withResponseReminder(
+        request,
+        buildUserContent({ ...request, content: { blocks: [{ text, type: "text" }] } }, options),
+        (reminder) => ({ text: reminder, type: "text" as const }),
+        options.preview
+      ),
+      preview: options.preview
+    }));
+    return mergeAdjacentOpenRouterMessages(messages);
+  }
+
+  const conversation = textConversationForRequest(request, {
+    redactSkillContext: options.preview
+  });
 
   conversation.forEach((message, index) => {
     const isLatestUser = index === conversation.length - 1 && message.role === "user";
@@ -519,7 +539,7 @@ export function buildOpenRouterChatRequestPreview(
       redactImages: true
     }),
     provider: "openrouter",
-    replayedContext: conversationPreview(request),
+    replayedContext: request.history ? providerHistoryPreview(request.history) : conversationPreview(request),
     redactions: [
       "attachment_extracted_text",
       "attachment_filename",

@@ -23,6 +23,7 @@ import {
 } from "./streamSafety";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
+import { responsesHistoryFromOutput } from "./history";
 
 const responseStatuses = new Set([
   "cancelled",
@@ -408,6 +409,7 @@ function normalizeOpenAIResponseResult(
   const rawFinalText = terminalRawText || streamedRawText || "";
   const finalText = visibleAnswerText(rawFinalText);
   const toolCalls = openAIResponsesToolBridge.parseToolCalls(response);
+  const history = responsesHistoryFromOutput(response.output);
 
   return {
     artifacts: extractArtifacts(response, provider),
@@ -420,6 +422,7 @@ function normalizeOpenAIResponseResult(
         normalizedProviderResponseId
       ),
       finalText,
+      ...(history.length > 0 ? { history } : {}),
       // A completed answer may need one required-tool correction. Preserve
       // the actual private reasoning and answer for that continuation.
       providerToolCallMessage: toolContinuationItems(response, toolCalls.length === 0),
@@ -625,6 +628,10 @@ export async function* parseOpenAIResponsesSse(
   let terminalSeen = false;
   let latestSnapshot: ProviderStreamSafetySnapshot | null = null;
   const toolItems = new Map<string, { callIndex: number; callId: string; name: string; arguments: BoundedTextAccumulator }>();
+  // Completed items by output index: a terminal response without `output`
+  // (the Codex backend sends its items only as `output_item.done`) is
+  // assembled from them, as a streamed create is.
+  const doneItems = new Map<number, Record<string, unknown>>();
 
   for await (const event of parseProviderSseStream(input.responseBody, {
     idleTimeoutMs: streamLimits.idleTimeoutMs,
@@ -757,6 +764,11 @@ export async function* parseOpenAIResponsesSse(
       }
     }
 
+    if (eventType === "response.output_item.done" && isRecord(parsed.item) && Number.isSafeInteger(parsed.output_index) &&
+      Number(parsed.output_index) >= 0 && Number(parsed.output_index) < 1024 && !doneItems.has(Number(parsed.output_index))) {
+      doneItems.set(Number(parsed.output_index), parsed.item);
+    }
+
     if (reasoningSummaryProgress.has(eventType)) {
       const heading = reasoningSummaryHeading(eventType, parsed);
       if (heading) yield reasoningHeadingEvent(heading);
@@ -793,6 +805,9 @@ export async function* parseOpenAIResponsesSse(
 
   if (!terminalSeen || !finalResponse) {
     throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+  }
+  if ((!Array.isArray(finalResponse.output) || finalResponse.output.length === 0) && doneItems.size > 0) {
+    finalResponse = { ...finalResponse, output: [...doneItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item) };
   }
 
   // A terminal of another response proves nothing about this one: no usage.
