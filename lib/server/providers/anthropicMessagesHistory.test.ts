@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { estimateCostMicros } from "../../domain/usage";
 import type { RunTool } from "../tools/types";
 import {
   buildAnthropicMessagesRequest,
@@ -7,7 +8,7 @@ import {
   type AnthropicMessagesClient,
   type AnthropicStreamEvent
 } from "./anthropicMessages";
-import { anthropicMessagesFromHistory, type AnthropicHistoryRenderOptions } from "./anthropicMessagesHistory";
+import { anthropicMessagesFromHistory, anthropicPromptCache, type AnthropicHistoryRenderOptions } from "./anthropicMessagesHistory";
 import type { ProviderHistoryItem } from "./history";
 import type { ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
 
@@ -28,7 +29,7 @@ const lookup: RunTool = {
 const discovered: RunTool = { ...lookup, description: "Cancel one synthetic order.", name: "cancel_order" };
 
 type Message = { content: Record<string, unknown>[]; role: "assistant" | "user" };
-type Body = { messages: Message[]; system?: string; tool_choice?: unknown; tools?: Record<string, unknown>[] };
+type Body = { messages: Message[]; system?: unknown; tool_choice?: unknown; tools?: Record<string, unknown>[] };
 
 function request(history: readonly ProviderHistoryItem[], overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -54,6 +55,14 @@ function request(history: readonly ProviderHistoryItem[], overrides: Partial<Pro
 }
 
 const body = (value: ProviderRunRequest) => buildAnthropicMessagesRequest(value) as Body;
+
+/** A value without its prompt cache markers, for assertions about everything else (the markers have their own tests). */
+function unmarked<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((entry) => unmarked(entry)) as T;
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "cache_control")
+    .map(([key, entry]) => [key, unmarked(entry)])) as T;
+}
 
 type Block =
   | Readonly<{ signature: string; thinking: string; type: "thinking" }>
@@ -173,7 +182,7 @@ describe("Anthropic Messages history rendering", () => {
       input("Which file?")
     ]));
     expect(sent.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
-    expect(sent.messages[2]!.content).toEqual([{ content: "a.txt", tool_use_id: "toolu_1", type: "tool_result" },
+    expect(unmarked(sent.messages[2]!.content)).toEqual([{ content: "a.txt", tool_use_id: "toolu_1", type: "tool_result" },
       { text: "Which file?", type: "text" }]);
   });
 
@@ -226,8 +235,8 @@ describe("Anthropic Messages history rendering", () => {
       { attachmentIds: [pdf.id, image.id], attachments: [pdf, image], prompt: { developer: null, responseReminder: "Answer briefly.",
         system: "You are Claude in AIQSA." } });
     const sent = body(value);
-    expect(sent.messages[0]).toEqual({ content: [{ text: "Earlier", type: "text" }], role: "user" });
-    expect(sent.messages[2]!.content).toEqual([
+    expect(unmarked(sent.messages[0])).toEqual({ content: [{ text: "Earlier", type: "text" }], role: "user" });
+    expect(unmarked(sent.messages[2]!.content)).toEqual([
       { source: { data: "JVBERi0xLjQK", media_type: "application/pdf", type: "base64" }, type: "document" },
       { text: "What is in them?", type: "text" },
       { source: { data: "AAAA", media_type: "image/png", type: "base64" }, type: "image" },
@@ -277,14 +286,14 @@ describe("Anthropic thinking replay", () => {
 
     const second = request([...first.history!, ...round1.result.history!, result("toolu_1", "A-17: shipped")]);
     const round2 = await respond(second, [thinking("It shipped.", "SIG-2"), { text: "A-17 shipped.", type: "text" }], "end_turn");
-    expect(round2.body.messages).toEqual([
+    expect(unmarked(round2.body.messages)).toEqual([
       { content: [{ text: "Look up A-17", type: "text" }], role: "user" },
       { content: [{ signature: "SIG-1", thinking: "I should look the order up.", type: "thinking" },
         { text: "Checking.", type: "text" }, { id: "toolu_1", input: { order_id: "A-17" }, name: "lookup_order", type: "tool_use" }],
       role: "assistant" },
       { content: [{ content: "A-17: shipped", tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }
     ]);
-    expect(round2.body.system).toBe(round1.body.system);
+    expect(round2.body.system).toEqual(round1.body.system);
     expect(round2.body.tools).toEqual(round1.body.tools);
 
     // A follow-up in the same turn replays both blocks, in order, as one unbroken run.
@@ -362,6 +371,92 @@ describe("Anthropic thinking replay", () => {
     expect(JSON.stringify(preview)).not.toMatch(/PRIVATE-(?:THOUGHT|SIG|ARG|OUTPUT)/u);
     expect(preview.body.messages[1]!.content).toEqual([{ type: "thinking" },
       { id: "toolu_1", name: "lookup_order", type: "tool_use" }]);
-    expect(preview.body.messages[2]!.content).toEqual([{ content: "[tool output omitted]", tool_use_id: "toolu_1", type: "tool_result" }]);
+    expect(unmarked(preview.body.messages[2]!.content)).toEqual([{ content: "[tool output omitted]", tool_use_id: "toolu_1",
+      type: "tool_result" }]);
+  });
+});
+
+/** Where a body carries prompt cache markers: `tools[i]`, `system[i]`, `messages[i].content[j]`. */
+function markers(value: Body): string[] {
+  const at = (blocks: readonly unknown[] | undefined, path: string) => (blocks ?? []).flatMap((block, index) =>
+    typeof block === "object" && block !== null && "cache_control" in block ? [`${path}[${index}]`] : []);
+  return [...at(value.tools, "tools"), ...at(Array.isArray(value.system) ? value.system : undefined, "system"),
+    ...value.messages.flatMap((message, index) => at(message.content, `messages[${index}].content`))];
+}
+
+describe("Anthropic prompt caching", () => {
+  it("marks the last tool, the system prompt and the ends of the two latest user turns, so each round reads the one before", async () => {
+    const first = request([input("Look up A-17 and B-2")]);
+    const round1 = await respond(first, [thinking("Look up A-17.", "SIG-1"), call("toolu_1", "A-17")], "tool_use");
+    const second = request([...first.history!, ...round1.result.history!, result("toolu_1", "A-17: shipped")]);
+    const round2 = await respond(second, [thinking("Now B-2.", "SIG-2"), call("toolu_2", "B-2")], "tool_use");
+    const third = request([...second.history!, ...round2.result.history!, result("toolu_2", "B-2: open")]);
+    const round3 = await respond(third, [thinking("Both known.", "SIG-3"), { text: "A-17 shipped, B-2 is open.", type: "text" }],
+      "end_turn");
+
+    expect(markers(round1.body)).toEqual(["tools[0]", "system[0]", "messages[0].content[0]"]);
+    expect(markers(round2.body)).toEqual(["tools[0]", "system[0]", "messages[0].content[0]", "messages[2].content[0]"]);
+    expect(markers(round3.body)).toEqual(["tools[0]", "system[0]", "messages[2].content[0]", "messages[4].content[0]"]);
+    expect(round3.body.system).toEqual([{ cache_control: { type: "ephemeral" }, text: "You are Claude in AIQSA.", type: "text" }]);
+    for (const sent of [round1.body, round2.body, round3.body]) {
+      // The API's limit, and never a thinking block.
+      expect(markers(sent).length).toBeLessThanOrEqual(4);
+      for (const block of thinkingIn(sent)) expect(block).not.toHaveProperty("cache_control");
+    }
+    // Each request marks again the block the previous one marked last: the previous round's cache is read there.
+    expect(unmarked(round2.body.messages[0]!.content.at(-1))).toEqual(unmarked(round1.body.messages.at(-1)!.content.at(-1)));
+    expect(unmarked(round3.body.messages[2]!.content.at(-1))).toEqual(unmarked(round2.body.messages.at(-1)!.content.at(-1)));
+    // Moving markers are no edit for the thinking check: every block of the turn is still replayed.
+    expect(thinkingIn(round3.body).map((block) => block.signature)).toEqual(["SIG-1", "SIG-2"]);
+  });
+
+  it("puts a marker on the nearest block that can carry one, never on thinking or empty text", () => {
+    const question = { content: [{ text: "Question", type: "text" }, { text: " ", type: "text" }], role: "user" as const };
+    const answer = { content: [{ text: "Answer", type: "text" }, { signature: "SIG", thinking: "", type: "thinking" },
+      { data: "REDACTED", type: "redacted_thinking" }], role: "assistant" as const };
+    const next = { content: [{ text: "Next", type: "text" }, { text: "\n", type: "text" }], role: "user" as const };
+    const tools = [{ input_schema: { type: "object" }, name: "lookup_order" }];
+    const flags = (content: readonly Record<string, unknown>[]) => content.map((block) => "cache_control" in block);
+
+    const cached = anthropicPromptCache({ messages: [question, answer, next], system: undefined, tools });
+    expect(cached.messages.map((message) => flags(message.content))).toEqual([[true, false], [false, false, false], [true, false]]);
+    expect(cached.system).toBeUndefined();
+    expect(cached.tools).toEqual([{ cache_control: { type: "ephemeral" }, input_schema: { type: "object" }, name: "lookup_order" }]);
+    // A latest message that ends in thinking is marked on the block before it.
+    const answered = anthropicPromptCache({ messages: [question, answer], system: undefined, tools });
+    expect(answered.messages.map((message) => flags(message.content))).toEqual([[false, false], [true, false, false]]);
+  });
+
+  it("leaves requests without tools and the old core's requests uncached", () => {
+    const summary = buildAnthropicMessagesRequest(request([{ text: "<conversation>…", type: "user" }],
+      { toolChoice: "none", toolMode: "none", tools: [] }));
+    expect(JSON.stringify(summary)).not.toContain("cache_control");
+    expect(summary.system).toBe("You are Claude in AIQSA.");
+    const { history: _history, ...oldCore } = request([]);
+    const legacy = buildAnthropicMessagesRequest({ ...oldCore, content: { blocks: [{ text: "Hi", type: "text" }] } });
+    expect(JSON.stringify(legacy)).not.toContain("cache_control");
+    expect(legacy.system).toBe("You are Claude in AIQSA.");
+  });
+
+  it("records cache reads and writes in the usage fields their prices apply to", async () => {
+    const client: AnthropicMessagesClient = {
+      async *stream() {
+        yield { message: { id: "msg_1", usage: { cache_creation_input_tokens: 2_000, cache_read_input_tokens: 10_000, input_tokens: 100,
+          output_tokens: 1 } }, type: "message_start" };
+        yield { content_block: { text: "", type: "text" }, index: 0, type: "content_block_start" };
+        yield { delta: { text: "Done.", type: "text_delta" }, index: 0, type: "content_block_delta" };
+        yield { index: 0, type: "content_block_stop" };
+        yield { delta: { stop_reason: "end_turn" }, type: "message_delta", usage: { output_tokens: 500 } };
+        yield { type: "message_stop" };
+      }
+    };
+    const stream = createAnthropicMessagesAdapter({ client }).stream(request([input("Hi")]));
+    let next = await stream.next();
+    while (!next.done) next = await stream.next();
+    expect(next.value.usage).toMatchObject({ cachedInputTokens: 10_000, cacheWriteInputTokens: 2_000, completeness: "complete",
+      inputTokens: 12_100, outputTokens: 500 });
+    // Claude Haiku 5.5's prices: the uncached remainder at the input price, reads and writes at their own.
+    expect(estimateCostMicros(next.value.usage, { cacheWriteInputTokenPriceUsdPerMillion: 0.125, cachedInputTokenPriceUsdPerMillion: 0.01,
+      inputTokenPriceUsdPerMillion: 0.1, outputTokenPriceUsdPerMillion: 0.5 })).toBe(100 * 0.1 + 10_000 * 0.01 + 2_000 * 0.125 + 500 * 0.5);
   });
 });

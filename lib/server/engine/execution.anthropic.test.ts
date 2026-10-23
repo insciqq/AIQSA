@@ -10,7 +10,7 @@ import {
 } from "../providers/anthropicMessages";
 import type { ProviderRunRequest } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
-import type { RunRepository } from "../runs/runRepositoryContract";
+import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
 import { createNativeRunExecutionResponse } from "./execution";
 import { modelCallRetryDecision } from "./modelCall";
 import { CLAUDE_FAMILY_PROMPT } from "./prompts/claude";
@@ -26,7 +26,8 @@ import type { TranscriptItem } from "./transcript";
 
 const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
 const ORIGIN = Object.freeze({ model: "claude-haiku-5-5", provider: "connection-anthropic" });
-type Body = { messages: { content: Record<string, unknown>[]; role: string }[]; system?: string; tools?: { name: string }[] };
+type Body = { messages: { content: Record<string, unknown>[]; role: string }[]; system?: { text: string; type: string }[];
+  tools?: { name: string }[] };
 
 function anthropicPrepared(extra: Partial<ProviderRunRequest> = {}): MaterializedPreparedRunData {
   return nativePrepared({
@@ -45,11 +46,12 @@ function anthropicPrepared(extra: Partial<ProviderRunRequest> = {}): Materialize
 }
 
 /** One recorded Messages response: `thinking` (with its signature), then text, then tool calls. */
-function response(input: Readonly<{ calls?: readonly Readonly<{ id: string; input: Record<string, unknown> }>[]; signature: string;
-  text?: string; thought: string }>): AnthropicStreamEvent[] {
+function response(input: Readonly<{ cache?: Readonly<{ read: number; write: number }>; calls?: readonly Readonly<{ id: string;
+  input: Record<string, unknown> }>[]; signature: string; text?: string; thought: string }>): AnthropicStreamEvent[] {
   const events: AnthropicStreamEvent[] = [
     { message: { id: `msg_${input.signature}`, model: ORIGIN.model,
-      usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: 0, input_tokens: 900, output_tokens: 1 } }, type: "message_start" },
+      usage: { cache_creation_input_tokens: input.cache?.write ?? 0, cache_read_input_tokens: input.cache?.read ?? 0,
+        input_tokens: input.cache ? 50 : 900, output_tokens: 1 } }, type: "message_start" },
     { content_block: { signature: "", thinking: "", type: "thinking" }, index: 0, type: "content_block_start" },
     { delta: { thinking: input.thought, type: "thinking_delta" }, index: 0, type: "content_block_delta" },
     { delta: { signature: input.signature, type: "signature_delta" }, index: 0, type: "content_block_delta" },
@@ -106,7 +108,7 @@ describe("native Anthropic on the engine", () => {
     expect(callTool).toHaveBeenCalledTimes(1);
     expect(memory.published()).toBe("Checking A-1.\n\nA-1 is open.");
     expect(bodies).toHaveLength(2);
-    expect(bodies[0]!.system!.startsWith(CLAUDE_FAMILY_PROMPT)).toBe(true);
+    expect(bodies[0]!.system![0]!.text.startsWith(CLAUDE_FAMILY_PROMPT)).toBe(true);
     expect(bodies[0]!.tools!.map((tool) => tool.name)).toContain("mcp_jira_get_issue");
     expect(bodies[1]!.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
     expect(bodies[1]!.messages[1]!.content).toEqual([
@@ -117,7 +119,7 @@ describe("native Anthropic on the engine", () => {
     expect(bodies[1]!.messages[2]!.content).toEqual([expect.objectContaining({ tool_use_id: "toolu_1", type: "tool_result" })]);
     expect(bodies[1]!.messages[2]!.content[0]!.content).toContain("A-1: open");
     // The run's requests repeat one system prompt and tool set, so the replayed block's prefix holds.
-    expect(bodies[1]!.system).toBe(bodies[0]!.system);
+    expect(bodies[1]!.system).toEqual(bodies[0]!.system);
     expect(bodies[1]!.tools).toEqual(bodies[0]!.tools);
 
     const reasoning = memory.transcriptRows.filter((item) => item.kind === "reasoning");
@@ -127,6 +129,33 @@ describe("native Anthropic on the engine", () => {
     }
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(expect.arrayContaining(["tool_call", "tool_result",
       "assistant_text"]));
+  });
+
+  it("records each round's cache reads and writes and prices them at the model's cache prices", async () => {
+    const { adapter, bodies } = recordedAdapter([
+      response({ cache: { read: 0, write: 850 }, calls: [{ id: "toolu_1", input: { key: "A-1" } }], signature: "SIG-1",
+        thought: "Read the issue." }),
+      response({ cache: { read: 850, write: 300 }, signature: "SIG-2", text: "A-1 is open.", thought: "It is open." })
+    ]);
+    const memory = memoryNativeEngine();
+    // Claude Haiku 5.5's prices.
+    const repository = { ...nativeRunRepository(), loadModelPricing: vi.fn(async () => ({ cacheWriteInputTokenPriceUsdPerMillion: 0.125,
+      cachedInputTokenPriceUsdPerMillion: 0.01, inputTokenPriceUsdPerMillion: 0.1, outputTokenPriceUsdPerMillion: 0.5 })) };
+    const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never, prepared: anthropicPrepared(),
+      repository: repository as unknown as RunRepository, services: {}, userId: "user-1" }));
+
+    // The second round reads the first round's prompt at the marker the first one wrote last.
+    expect(bodies[1]!.messages[0]!.content.at(-1)).toHaveProperty("cache_control", { type: "ephemeral" });
+    const written = (memory.runs.writeUsageRows.mock.calls as unknown as [unknown, readonly { attribution: RunUsageAttribution }[]][])
+      .flatMap(([, rows]) => rows.map((row) => row.attribution)).filter((attribution) => attribution.purpose === "chat_answer");
+    expect(written.map((attribution) => [attribution.usage, attribution.estimatedCostMicros])).toEqual([
+      [expect.objectContaining({ cachedInputTokens: 0, cacheWriteInputTokens: 850, inputTokens: 900, outputTokens: 60 }),
+        Math.round(50 * 0.1 + 850 * 0.125 + 60 * 0.5)],
+      [expect.objectContaining({ cachedInputTokens: 850, cacheWriteInputTokens: 300, inputTokens: 1_200, outputTokens: 60 }),
+        Math.round(50 * 0.1 + 850 * 0.01 + 300 * 0.125 + 60 * 0.5)]
+    ]);
   });
 
   it("sends a later turn its earlier turns' calls, results and text but none of their thinking", async () => {
