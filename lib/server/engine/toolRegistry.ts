@@ -8,7 +8,7 @@ import type { McpRunPlanBinding, McpRunPlanResult, McpRunPlanSnapshot } from "..
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
 import { dispatchMcpTool, mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor";
-import type { McpApprovalRequest } from "../mcp/writeApproval";
+import { mcpApprovalRequest, type McpApprovalRequest } from "../mcp/writeApproval";
 import { memorySearchTool } from "../memory/search/contract";
 import type { MemorySearchService } from "../memory/search/runtime";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
@@ -93,6 +93,12 @@ export type EngineTool = Readonly<{
    * and the source's authority is rechecked (Memory, `agent_docs/MEMORY.md`).
    */
   runScopedResult?: true;
+  /**
+   * The approval request of exactly this call, whatever standing consent the
+   * initiator gave: the card in which the user decides whether a call whose
+   * earlier equivalent has an unknown outcome is sent again (MCP tools).
+   */
+  retryApproval?(call: ModelToolCall): McpApprovalRequest | undefined;
   /** The call's own records after it ran (Search rows and their usage). */
   settled?(execution: EngineToolExecution, result: ToolExecutionResult): Promise<void>;
 }>;
@@ -148,6 +154,14 @@ export type ToolRegistryInput = Readonly<{
 
 function unavailable(call: ModelToolCall, code: string): ToolExecutionResult {
   return { callId: call.id, content: [{ type: "json", value: { error: code } }], name: call.name, status: "error" };
+}
+
+/** A call refused before it was sent (a stale runtime, invalid arguments): its outcome is known, nothing happened. */
+function notSent(call: ModelToolCall, error: unknown): ToolExecutionResult {
+  const own = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
+  const code = typeof own === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(own) ? own : "mcp_call_not_sent";
+  return { callId: call.id, content: [{ type: "json", value: { error: code, message: "Nothing was sent." } }], name: call.name,
+    status: "error" };
 }
 
 /** Builds the registry of one run. */
@@ -336,6 +350,14 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
       },
       approval: (call) => mcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot }),
       definition,
+      retryApproval: (call) => {
+        const current = request.mcpApproval ? route() : null;
+        if (!current) return undefined;
+        const annotatedTitle = typeof current.tool.annotations?.title === "string" ? current.tool.annotations.title : undefined;
+        return mcpApprovalRequest({ arguments: call.arguments, definitionHash: current.tool.definitionHash,
+          originalName: current.originalName, serverId: current.serverId, serverName: current.tool.serverName,
+          title: current.tool.title ?? annotatedTitle, toolName: call.name });
+      },
       effects: readOnly ? "none" : "external",
       links: () => {
         const current = route();
@@ -347,19 +369,27 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
         const current = route();
         const binding = current ? input.mcpBindings.get(current.serverId) : undefined;
         if (!current || !binding || !runtime) return unavailable(execution.call, "mcp_run_binding_unavailable");
-        const raw = await dispatchMcpTool({
-          arguments: execution.call.arguments,
-          // Entitlement was checked at admission. The accepted runtime is
-          // started on demand, and it refuses a definition that changed since.
-          assertCurrent: async () => {
-            if (!await runtime().ensureAcceptedGeneration(binding.runtimeGenerationId)) throw mcpDispatchError("mcp_runtime_unavailable");
-          },
-          callTool: (call) => runtime().callTool(call),
-          generationId: binding.runtimeGenerationId,
-          route: current,
-          signal: execution.signal
-        });
-        return mcpToolExecutionResult(execution.call, raw);
+        let dispatched = false;
+        try {
+          const raw = await dispatchMcpTool({
+            arguments: execution.call.arguments,
+            // Entitlement was checked at admission. The accepted runtime is
+            // started on demand, and it refuses a definition that changed since.
+            assertCurrent: async () => {
+              if (!await runtime().ensureAcceptedGeneration(binding.runtimeGenerationId)) throw mcpDispatchError("mcp_runtime_unavailable");
+            },
+            callTool: (call) => runtime().callTool(call),
+            generationId: binding.runtimeGenerationId,
+            onDispatch: () => { dispatched = true; },
+            route: current,
+            signal: execution.signal
+          });
+          return mcpToolExecutionResult(execution.call, raw);
+        } catch (error) {
+          // A write refused before it was sent has a known outcome; a read-only call fails for the batch to try again.
+          if (!readOnly && !dispatched && !execution.signal.aborted) return notSent(execution.call, error);
+          throw error;
+        }
       }
     });
   };

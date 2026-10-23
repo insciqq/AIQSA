@@ -10,11 +10,14 @@ import {
   runToolBatch,
   ToolBatchInactiveError,
   transcriptRecord,
+  UNKNOWN_OUTCOME_APPROVAL_OUTPUT,
+  UNKNOWN_OUTCOME_REPEAT_OUTPUT,
   type ToolBatchDeps
 } from "./toolBatch";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
 import { TOOL_RESULT_LIMITS } from "./toolResults";
+import { createUnknownEffects } from "./unknownEffects";
 
 function definition(name: string): RunTool {
   return { capability: "mcp", description: name, inputSchema: { type: "object" }, name };
@@ -61,7 +64,8 @@ function deps(registry: Record<string, EngineTool>, store: ToolCallStore, overri
     chatId: "chat", history: new ToolCallRepeatHistory(), maxToolCalls: 10, onEvent: vi.fn(async () => undefined),
     onLiveEvent: vi.fn(), registry: registryValue, runId: "run",
     saveResult: vi.fn(async () => ({ handle: `tor1_${"b".repeat(32)}` })),
-    signal: new AbortController().signal, sleep: vi.fn(async () => undefined), store, userId: "user", ...overrides
+    signal: new AbortController().signal, sleep: vi.fn(async () => undefined), store, unknownEffects: createUnknownEffects(), userId: "user",
+    ...overrides
   };
 }
 
@@ -114,6 +118,67 @@ describe("native tool batch", () => {
     expect(outcome.results[0]!.outcome).toBe("complete");
     expect(outcome.results[1]!.outcome).toBe("unknown");
     expect(outcome.results[1]!.output).toContain("effect is unknown");
+  });
+
+  it("never sends an external call again after an identical one's outcome became unknown", async () => {
+    // Regression: a write whose transport failed was sent a second time when the model asked again.
+    const write = vi.fn(async () => { throw new TypeError("fetch failed"); });
+    const { store } = fakeStore();
+    const batch = deps({ write: tool("write", "external", write) }, store);
+    const state = { calls: 0 };
+    const first = await runToolBatch(batch, state, { calls: [{ arguments: { title: "one issue" }, id: "c1", name: "write" }], round: 1 });
+    expect(first.results[0]!.outcome).toBe("unknown");
+    const again = await runToolBatch(batch, state, { calls: [{ arguments: { title: "one issue" }, id: "c2", name: "write" }], round: 2 });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(again.results[0]).toMatchObject({ outcome: "error", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT });
+    expect(JSON.stringify((store.refuse.mock.calls.at(-1)![0] as { result: unknown }).result)).toContain("tool_outcome_unknown_repeat");
+    // Other arguments are another effect; after the user wrote, the model may send it again.
+    await runToolBatch(batch, state, { calls: [{ arguments: { title: "another issue" }, id: "c3", name: "write" }], round: 3 });
+    expect(write).toHaveBeenCalledTimes(2);
+    batch.unknownEffects.userSpoke();
+    await runToolBatch(batch, state, { calls: [{ arguments: { title: "one issue" }, id: "c4", name: "write" }], round: 4 });
+    expect(write).toHaveBeenCalledTimes(3);
+  });
+
+  it("asks the user in the approval card before an MCP call equivalent to one with an unknown outcome, whatever the consent", async () => {
+    const create = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const { store } = fakeStore({ gated: true });
+    // Always allowed: the tool asks for no approval of its own.
+    const batch = deps({ create: tool("create", "external", create, { retryApproval: () => approval }) }, store);
+    batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown");
+    batch.unknownEffects.userSpoke();
+    const outcome = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: { title: "x" }, id: "c1", name: "create" }], round: 1 });
+    expect(create).not.toHaveBeenCalled();
+    expect(store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval }));
+    expect(outcome.approvals).toEqual(["approval-1"]);
+    expect(outcome.results[0]).toMatchObject({ outcome: "error", output: UNKNOWN_OUTCOME_APPROVAL_OUTPUT });
+  });
+
+  it("sends the continuation's approved call with the Allow that names it, and a completed call settles the effect", async () => {
+    const create = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const { store } = fakeStore();
+    const batch = deps({ create: tool("create", "external", create, { retryApproval: () => approval }) }, store);
+    batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown");
+    await runToolBatch(batch, { calls: 0 }, { approved: { approvalId: "approval-9", callId: "c1" },
+      calls: [{ arguments: { title: "x" }, id: "c1", name: "create" }], round: 0 });
+    expect(store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval, approvedBy: "approval-9", providerCallId: "c1" }));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(batch.unknownEffects.find({ arguments: { title: "x" }, name: "create" })).toBeNull();
+  });
+
+  it("hands the model the result even when the call's record cannot be settled", async () => {
+    const write = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "created"));
+    const { store } = fakeStore();
+    store.settle.mockRejectedValueOnce(new Error("database restarted"));
+    const retried = await runToolBatch(deps({ write: tool("write", "external", write) }, store), { calls: 0 },
+      { calls: [{ arguments: { title: "a" }, id: "c1", name: "write" }], round: 1 });
+    expect(retried.results[0]).toMatchObject({ outcome: "complete", output: "created" });
+    expect(store.settle).toHaveBeenCalledTimes(2);
+    store.settle.mockRejectedValue(new Error("database down"));
+    const unsettled = await runToolBatch(deps({ write: tool("write", "external", write) }, store), { calls: 0 },
+      { calls: [{ arguments: { title: "b" }, id: "c2", name: "write" }], round: 2 });
+    expect(unsettled.results[0]).toMatchObject({ outcome: "complete", output: "created" });
+    expect(write).toHaveBeenCalledTimes(2);
   });
 
   it("refuses calls beyond the run's call budget", async () => {

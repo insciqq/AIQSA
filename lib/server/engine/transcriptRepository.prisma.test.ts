@@ -29,9 +29,10 @@ async function chatWithRun(userId: string, engine: "native" | "v1" = "native", s
   const answer = await prisma.message.create({ data: {
     chatId: chat.id, content: textMessageContent(""), parentMessageId: question.id, role: "assistant", status: "complete"
   } });
+  // Only a preparing run lacks its normalized request (ModelRun_memory_request_shape_check).
   const run = await prisma.modelRun.create({ data: {
-    assistantMessageId: answer.id, chatId: chat.id, engine, modelId: "fake-qsa", provider: "fake", status: "complete",
-    userId, userMessageId: question.id
+    assistantMessageId: answer.id, chatId: chat.id, engine, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+    status: "complete", userId, userMessageId: question.id
   } });
   return { answerId: answer.id, chatId: chat.id, questionId: question.id, runId: run.id };
 }
@@ -65,6 +66,9 @@ describe("native transcript repository", () => {
     // A taken sequence refuses the whole batch.
     await expect(transcripts.append(scope, 2, turn())).rejects.toThrow();
     await expect(transcripts.nextSequence(scope)).resolves.toBe(3);
+    // Repeating a batch that committed (its outcome was lost) succeeds without a second copy.
+    await expect(transcripts.append(scope, 2, [answer!])).resolves.toBeUndefined();
+    await expect(prisma.runTranscriptItem.count({ where: { modelRunId: run.runId } })).resolves.toBe(3);
   });
 
   it("never reads or writes another owner's or another chat's run", async () => {

@@ -4,6 +4,7 @@ import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { engineTestFaults } from "./faults";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
@@ -12,7 +13,8 @@ import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCall
 import type { TranscriptItem } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 
-type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; heading?: string; text?: string }>;
+/** `silent`: the text arrives only with the completed response, never as deltas. */
+type Step = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; heading?: string; silent?: boolean; text?: string }>;
 
 const snapshot: McpRunPlanSnapshot = {
   servers: [{ fingerprint: "fp-1", revisionId: "rev-1", serverId: "jira", serverName: "Jira" }],
@@ -33,7 +35,7 @@ function scriptedAdapter(steps: readonly Step[]) {
       requests.push(request);
       const step = steps[Math.min(requests.length - 1, steps.length - 1)]!;
       if (step.heading) yield { data: { artifactType: "summary", payload: { reasoningHeading: step.heading } }, type: "artifact" };
-      for (const word of (step.text ?? "").split(/(?<= )/u)) if (word) yield { data: { delta: word }, type: "token" };
+      if (!step.silent) for (const word of (step.text ?? "").split(/(?<= )/u)) if (word) yield { data: { delta: word }, type: "token" };
       if (step.fail) throw step.fail;
       return { finalProviderResponsePreview: {}, finalText: step.text ?? "", toolCalls: [...(step.calls ?? [])],
         usage: { inputTokens: 100, outputTokens: 10 } };
@@ -71,6 +73,7 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     applyUsageTotals: vi.fn(async () => { order.push("usage-totals"); }),
     complete: vi.fn(async () => { order.push("complete"); return true; }),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { order.push("publish"); published = input.text; return true; }),
+    saveStoppedText: vi.fn(async () => true),
     writeUsageRows: vi.fn(async () => { order.push("usage-rows"); })
   } satisfies NativeRunStore;
   const engine: NativeEngineDeps = {
@@ -79,7 +82,7 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never), runs, savedResults: { read: vi.fn(async () => null) },
     toolCalls, transcripts, ...overrides
   };
-  return { engine, order, published: () => published, rows, transcriptRows };
+  return { engine, order, published: () => published, rows, runs, transcriptRows, transcripts };
 }
 
 function repository() {
@@ -250,6 +253,92 @@ describe("native run execution", () => {
     expect(history.map((item) => item.type)).toEqual(["user", "assistant_text", "user"]);
     expect(history.at(-1)).toMatchObject({ currentInput: true, type: "user" });
     expect(memory.engine.toolCalls.begin).not.toHaveBeenCalled();
+  });
+
+  it("publishes text that came only with the completed response although its transcript write failed", async () => {
+    // Regression: the round's text was taken only after its transcript row, so a failed insert lost the answer.
+    const { adapter } = scriptedAdapter([{ silent: true, text: "Full answer." }]);
+    const memory = memoryEngine();
+    memory.transcripts.append.mockRejectedValueOnce(new Error("database restarted"));
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.published()).toBe("Full answer.");
+    expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    // The record was written on its next attempt, once.
+    expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text"]);
+    expect(memory.transcripts.append).toHaveBeenCalledTimes(2);
+  });
+
+  it("still answers when the transcript cannot be written at all", async () => {
+    const { adapter } = scriptedAdapter([{ silent: true, text: "Full answer." }]);
+    const memory = memoryEngine();
+    memory.transcripts.append.mockRejectedValue(new Error("database down"));
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.published()).toBe("Full answer.");
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+  });
+
+  it("never sends a tool call whose record could not be written, and keeps the round's text", async () => {
+    const { adapter } = scriptedAdapter([{ calls: [{ arguments: { key: "A-1" }, id: "call-1", name: "mcp_jira_get_issue" }],
+      silent: true, text: "Let me look." }]);
+    const memory = memoryEngine();
+    memory.transcripts.append.mockRejectedValue(new Error("database down"));
+    const callTool = vi.fn();
+    const repo = repository();
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot }), repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(callTool).not.toHaveBeenCalled();
+    expect(memory.engine.toolCalls.begin).not.toHaveBeenCalled();
+    expect(result.at(-1)).toMatchObject({ type: "error" });
+    expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", "Let me look.", { runId: "run-1" });
+  });
+
+  it("asks the user again before repeating a write whose earlier outcome is unknown, even under Always allow", async () => {
+    const origin = { model: "fake-qsa", provider: "connection-1" };
+    const earlier: TranscriptItem[] = [
+      { arguments: "{\"summary\":\"x\"}", callId: "call-0", id: "n1", kind: "tool_call", name: "mcp_jira_create_issue", origin },
+      { callId: "call-0", id: "n2", kind: "tool_result", name: "mcp_jira_create_issue", outcome: "unknown", output: "Effect unknown." }
+    ];
+    const { adapter } = scriptedAdapter([
+      { calls: [{ arguments: { summary: "x" }, id: "call-1", name: "mcp_jira_create_issue" }], text: "" }
+    ]);
+    const memory = memoryEngine();
+    memory.engine.transcripts.nativeRunsForAnswers = vi.fn(async () => new Map([["answer-0", "run-0"]]));
+    memory.engine.transcripts.loadRuns = vi.fn(async () => new Map([["run-0", earlier]]));
+    const callTool = vi.fn();
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ context: { messages: [
+        { content: { blocks: [{ text: "Create the issue", type: "text" }] }, id: "user-0", role: "user" },
+        { content: { blocks: [] }, id: "answer-0", role: "assistant" },
+        { content: { blocks: [{ text: "Did it work? Try again", type: "text" }] }, id: "current-user-message", role: "user" }
+      ], mode: "branch_path" }, mcp: snapshot, mcpApproval: mcpApprovalAdmission(["jira"]) }),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(callTool).not.toHaveBeenCalled();
+    expect(memory.engine.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({
+      approval: expect.objectContaining({ serverId: "jira", toolName: "mcp_jira_create_issue" }) }));
+    expect(result.some((event) => event.type === "artifact" && event.data.artifactType === "mcp_approval")).toBe(true);
+  });
+
+  it("keeps the text streamed before Stop with the stopped answer", async () => {
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(_request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        yield { data: { delta: "Partial " }, type: "token" };
+        // Stop: the durable cancellation won, then the run's controller is aborted.
+        activeRunControllerRegistry.abort("run-1");
+        options.signal?.throwIfAborted();
+        return { finalProviderResponsePreview: {}, finalText: "Partial never", toolCalls: [], usage: {} };
+      }
+    };
+    const memory = memoryEngine();
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "cancelled" }, type: "done" });
+    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), "Partial ");
+    expect(memory.published()).toBeNull();
   });
 
   it("fails visibly with a stable code when the request cannot fit", async () => {
