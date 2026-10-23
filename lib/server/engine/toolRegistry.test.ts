@@ -37,10 +37,12 @@ function input(extra: Partial<ToolRegistryInput> & { request: ProviderRunRequest
 }
 
 describe("native tool registry", () => {
-  it("always offers the saved-result reader", async () => {
+  it("always offers the saved-result reader, and the plan wherever tools are on", async () => {
     const registry = await buildToolRegistry(input({ request: request() }));
-    expect(registry.definitions().map((tool) => tool.name)).toEqual([READ_TOOL_RESULT_NAME]);
+    expect(registry.definitions().map((tool) => tool.name)).toEqual([READ_TOOL_RESULT_NAME, "update_plan"]);
     expect(registry.resolve(READ_TOOL_RESULT_NAME)?.effects).toBe("none");
+    const off = await buildToolRegistry(input({ request: request({ toolMode: "none" }) }));
+    expect(off.definitions().map((tool) => tool.name)).toEqual([READ_TOOL_RESULT_NAME]);
   });
 
   it("keeps Memory search results within the run that searched", async () => {

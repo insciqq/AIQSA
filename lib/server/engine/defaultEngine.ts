@@ -1,4 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
+import { defaultAssistantDeletionHandlerDeps } from "../assistants/defaultAssistantDeletion";
+import { defaultAssistantHandlerDeps } from "../assistants/defaultAssistants";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { MCP_APPROVAL_TTL_MS } from "../mcp/writeApproval";
 import { prisma } from "../prisma";
@@ -7,6 +9,7 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import { defaultToolObservations } from "../toolObservations/defaultService";
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { createRunSecretSource } from "../workspace/secrets/runSecrets";
 import type { NativeEngineDeps } from "./execution";
 import { engineTestFaults } from "./faults";
 import type { NativeEngineHandlerDeps } from "./handlerSupport";
@@ -14,6 +17,7 @@ import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } fr
 import { NATIVE_ENGINE_USERS_ENV, parseNativeEngineUsers } from "./routing";
 import { createNativeRunStore } from "./runStore";
 import { createToolCallStore } from "./toolCallStore";
+import type { ToolRegistryServices } from "./toolRegistry";
 import { createSavedToolResultReader } from "./toolResults";
 import { createTranscriptRepository } from "./transcriptRepository";
 
@@ -52,13 +56,32 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
   };
 }
 
+/**
+ * The owners behind the harness and self-service tools: the saved secrets
+ * `read_secret` reads in any chat, and the Studio paths the self-service
+ * tools change secrets, Skills and Assistants through.
+ */
+export function defaultNativeToolServices(storage: StorageAdapter, client: PrismaClient = prisma):
+  Required<Pick<ToolRegistryServices, "secrets" | "selfService">> {
+  return {
+    secrets: createRunSecretSource(client),
+    selfService: {
+      assistants: { deletion: defaultAssistantDeletionHandlerDeps.repository, loadCatalogData: defaultAssistantHandlerDeps.loadCatalogData,
+        repository: defaultAssistantHandlerDeps.repository },
+      db: client,
+      storage
+    }
+  };
+}
+
 /** The native engine as the interactive send and regenerate routes admit it. */
 export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: PrismaClient = prisma): NativeEngineHandlerDeps {
   return {
     allowlist: () => parseNativeEngineUsers(process.env[NATIVE_ENGINE_USERS_ENV]),
     engine: defaultNativeEngineDeps(storage, client),
     findOrphans: createNativeOrphanFinder(client),
-    mcpRuntime: () => getDefaultMcpRuntimeCoordinator()
+    mcpRuntime: () => getDefaultMcpRuntimeCoordinator(),
+    tools: defaultNativeToolServices(storage, client)
   };
 }
 

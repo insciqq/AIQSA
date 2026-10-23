@@ -244,6 +244,11 @@ export async function executeApplyPatch(files: ApplyPatchFiles, call: ModelToolC
 export type WorkspaceToolCaller = (name: WorkspaceMcpToolName, args: Record<string, unknown>,
   signal?: AbortSignal) => Promise<ToolExecutionResult>;
 
+/** The Workspace tools `workspaceApplyPatchFiles` calls; `apply_patch` is offered only where the run has all of them. */
+export const APPLY_PATCH_WORKSPACE_TOOLS: readonly WorkspaceMcpToolName[] = Object.freeze([
+  "sandbox_exec", "sandbox_fs_exists", "sandbox_fs_read", "sandbox_fs_remove", "sandbox_fs_write"
+]);
+
 type Envelope = Readonly<{ data?: unknown; error?: { message?: unknown }; ok?: unknown; truncated?: unknown }>;
 
 function envelope(result: ToolExecutionResult): Envelope | null {
