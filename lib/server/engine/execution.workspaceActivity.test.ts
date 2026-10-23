@@ -123,7 +123,8 @@ function engine(): NativeEngineDeps {
   } satisfies ToolCallStore;
   const transcripts = {
     append: vi.fn(async () => undefined), approvalContinuationTurns: vi.fn(async () => new Set<string>()), loadRuns: vi.fn(async () => new Map()),
-    nativeRunsForAnswers: vi.fn(async () => new Map()), nextSequence: vi.fn(async () => 0), retiredRunEffects: vi.fn(async () => []),
+    nativeRunsForAnswers: vi.fn(async () => new Map()), nextSequence: vi.fn(async () => 0), nativeRunsBeforeTurns: vi.fn(async () => []),
+    retiredRunEffects: vi.fn(async () => []),
     runLive: vi.fn(async () => true)
   } satisfies TranscriptRepository;
   return {
