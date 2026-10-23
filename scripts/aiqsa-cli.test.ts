@@ -589,6 +589,23 @@ describe("doctor", () => {
     expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm|image rm) /mu);
   });
 
+  it("names a leftover knowledge-search-worker container and the command that removes it", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    const clean = fixture.run(["doctor", "--stack-only"]);
+    expect(clean.status).toBe(0);
+    expect(clean.stdout).not.toContain("knowledge-worker-leftover");
+    fixture.rules.push({
+      match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=knowledge-search-worker",
+      stdout: "c42\n"
+    });
+    const result = fixture.run(["doctor", "--stack-only"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("WARN knowledge-worker-leftover: Knowledge was removed");
+    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the knowledge-search-worker container");
+    expect(fixture.dockerLog).not.toMatch(/^rm /mu);
+  });
+
   it("reads .env strictly: quotes, CRLF, spaces, export and shell metacharacters", () => {
     const fixture = new Fixture();
     const secret = "pa$$ word`id`$(touch pwned)\"'";
