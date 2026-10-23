@@ -136,6 +136,16 @@ describe("workspace activity contract", () => {
     expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "command", text: "unrelated" })).toBeNull();
   });
 
+  it("marks a plan's step in progress only as an unfinished step", () => {
+    const plan = { id: "plan:fixture", kind: "plan", phase: "running" };
+    const entry = { ...plan, items: [{ completed: true, text: "Read" }, { active: true, completed: false, text: "Chart" }] };
+    expect(decodeThreadWorkspaceActivityEntry(entry)).toEqual(entry);
+    for (const item of [{ active: true, completed: true, text: "Chart" }, { active: false, completed: false, text: "Chart" },
+      { active: "yes", completed: false, text: "Chart" }]) {
+      expect(decodeThreadWorkspaceActivityEntry({ ...plan, items: [item] })).toBeNull();
+    }
+  });
+
   it("admits export skips only as positive counts by known reason on the export row", () => {
     const exported = { count: 1, id: "outputs_export:fixture", kind: "outputs_export", phase: "succeeded", skipped: { link: 2, special: 1 } };
     expect(decodeThreadWorkspaceActivityEntry(exported)).toEqual(exported);

@@ -147,6 +147,47 @@ describe("Workspace activity publication", () => {
 
 });
 
+describe("resource change card publication", () => {
+  /** Stored events, matched as PostgreSQL compares JSON values: by content, whatever the key order. */
+  function cardStore() {
+    const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) =>
+        `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
+    const modelRunEvent = {
+      aggregate: async () => ({ _max: { sequence: Math.max(-1, ...rows.map((row) => row.sequence)) } }),
+      createMany: vi.fn(async ({ data }: { data: typeof rows }) => { rows.push(...data); }),
+      findFirst: async ({ where }: { where: { eventType: string; modelRunId: string; payload: { equals: unknown } } }) =>
+        rows.find((row) => row.eventType === where.eventType && canonical(row.payload) === canonical(where.payload.equals)) ?? null
+    };
+    return { rows, tx: { modelRunEvent } as unknown as Prisma.TransactionClient };
+  }
+  const secret = (action: "created" | "delete_proposed" | "updated", versionId: string, proposalId: string | null = null): RunOutputArtifactEvent => ({
+    type: "artifact", data: { artifactType: "resource_change", payload: { action, envNames: [], kind: "text", name: "GitLab",
+      previousName: null, proposalId, resource: "secret", secretId: "10000000-0000-4000-8000-000000000001", valueReplaced: action === "updated",
+      version: 1, versionId } }
+  });
+
+  it("keeps a change's card once when its settlement and then the engine publish it", async () => {
+    const { rows, tx } = cardStore();
+    const created = secret("created", "20000000-0000-4000-8000-000000000001");
+    await appendRunOutputEvents(tx, "run", [created], { settlement: true });
+    expect(await appendRunOutputEvents(tx, "run", [created])).toEqual([created]);
+    expect(rows).toHaveLength(1);
+    // The next change of the same secret names its own version, so it is its own card.
+    await appendRunOutputEvents(tx, "run", [secret("updated", "20000000-0000-4000-8000-000000000002")]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it("keeps each proposal of an answer, and one card once within a batch", async () => {
+    const { rows, tx } = cardStore();
+    const version = "20000000-0000-4000-8000-000000000001";
+    const first = secret("delete_proposed", version, "proposal-1");
+    await appendRunOutputEvents(tx, "run", [first, secret("delete_proposed", version, "proposal-2"), first]);
+    expect(rows.map((row) => (row.payload as { payload: { proposalId: string } }).payload.proposalId)).toEqual(["proposal-1", "proposal-2"]);
+  });
+});
+
 type ToolCallRow = {
   completedAt: Date | null;
   id: string;

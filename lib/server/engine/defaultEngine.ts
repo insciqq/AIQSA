@@ -7,6 +7,7 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import { defaultToolObservations } from "../toolObservations/defaultService";
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { createRunSecretSource } from "../workspace/secrets/runSecrets";
 import type { NativeEngineDeps } from "./execution";
 import { engineTestFaults } from "./faults";
 import type { NativeEngineHandlerDeps } from "./handlerSupport";
@@ -14,6 +15,7 @@ import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } fr
 import { NATIVE_ENGINE_USERS_ENV, parseNativeEngineUsers } from "./routing";
 import { createNativeRunStore } from "./runStore";
 import { createToolCallStore } from "./toolCallStore";
+import type { ToolRegistryServices } from "./toolRegistry";
 import { createSavedToolResultReader } from "./toolResults";
 import { createTranscriptRepository } from "./transcriptRepository";
 
@@ -52,13 +54,61 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
   };
 }
 
+type AssistantOwners = NonNullable<ToolRegistryServices["selfService"]>["assistants"];
+
+async function loadAssistantOwners() {
+  const [{ defaultAssistantHandlerDeps }, { defaultAssistantDeletionHandlerDeps }] = await Promise.all([
+    import("../assistants/defaultAssistants"), import("../assistants/defaultAssistantDeletion")
+  ]);
+  return { deletion: defaultAssistantDeletionHandlerDeps.repository, handlers: defaultAssistantHandlerDeps };
+}
+
+/**
+ * The Studio Assistant routes' own dependencies, imported on first use: the
+ * recovery scheduler loads this module at startup and must not pull in the
+ * routes' defaults (sign-in, mail, MCP repositories) with it.
+ */
+function lazyAssistantOwners(): AssistantOwners {
+  let loaded: ReturnType<typeof loadAssistantOwners> | null = null;
+  const load = () => loaded ??= loadAssistantOwners().catch((error: unknown) => {
+    loaded = null;
+    throw error;
+  });
+  const repository = async () => (await load()).handlers.repository;
+  return {
+    deletion: { loadConsequences: async (userId, assistantId) => (await load()).deletion.loadConsequences(userId, assistantId) },
+    loadCatalogData: async (userId) => (await load()).handlers.loadCatalogData(userId),
+    repository: {
+      getDetail: async (userId, assistantId, options) => (await repository()).getDetail(userId, assistantId, options),
+      listForUser: async (userId) => (await repository()).listForUser(userId),
+      listPublishableGroups: async (userId) => (await repository()).listPublishableGroups(userId),
+      loadUserAccessibleMcpServerIds: async (userId) => (await repository()).loadUserAccessibleMcpServerIds(userId),
+      loadUserMcpRunPlanView: async (userId) => (await repository()).loadUserMcpRunPlanView(userId)
+    }
+  };
+}
+
+/**
+ * The owners behind the harness and self-service tools: the saved secrets
+ * `read_secret` reads in any chat, and the Studio paths the self-service
+ * tools change secrets, Skills and Assistants through.
+ */
+export function defaultNativeToolServices(storage: StorageAdapter, client: PrismaClient = prisma):
+  Required<Pick<ToolRegistryServices, "secrets" | "selfService">> {
+  return {
+    secrets: createRunSecretSource(client),
+    selfService: { assistants: lazyAssistantOwners(), db: client, storage }
+  };
+}
+
 /** The native engine as the interactive send and regenerate routes admit it. */
 export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: PrismaClient = prisma): NativeEngineHandlerDeps {
   return {
     allowlist: () => parseNativeEngineUsers(process.env[NATIVE_ENGINE_USERS_ENV]),
     engine: defaultNativeEngineDeps(storage, client),
     findOrphans: createNativeOrphanFinder(client),
-    mcpRuntime: () => getDefaultMcpRuntimeCoordinator()
+    mcpRuntime: () => getDefaultMcpRuntimeCoordinator(),
+    tools: defaultNativeToolServices(storage, client)
   };
 }
 
