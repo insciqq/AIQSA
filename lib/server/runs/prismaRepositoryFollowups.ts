@@ -16,7 +16,7 @@ export function admittedFollowupFields(input: PreparingRunAdmissionInput) {
     budget < 0 || budget > 8_192 || (input.normalizedRequest.followupContextReserveTokens ?? 0) < budget) {
     throw new ActiveLeafConflictError();
   }
-  return { followupMode: input.normalizedRequest.agent ? "agent" : input.normalizedRequest.workspace?.enabled ? "workspace" : "chat", followupBudgetTokens: budget };
+  return { followupMode: input.normalizedRequest.workspace?.enabled ? "workspace" : "chat", followupBudgetTokens: budget };
 }
 
 export async function insertAdmittedRunFollowups(tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput, runId: string) {
@@ -121,8 +121,7 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
       await lockRun(tx, input.runId);
       const run = await tx.modelRun.findFirst({ where: { id: input.runId, userId: input.userId,
         status: { in: activeModelRunStatuses }, answerCompletedAt: null, followupClosedAt: null,
-        followupMode: input.confirmedThrough ? "agent" : { not: null },
-        followupRevision: input.confirmedThrough ? { gte: input.revision } : input.revision },
+        followupMode: { not: null }, followupRevision: input.revision },
         select: { assistantMessageId: true, followupBudgetTokens: true,
           followups: { where: { deliveredAt: null, ordinal: { lte: input.revision } }, orderBy: { ordinal: "asc" } } } });
       if (!run) return false;
@@ -136,8 +135,7 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
           data: { content: json(textMessageContent("")), status: "streaming" } });
       }
       await tx.modelRun.update({ where: { id: input.runId }, data: {
-        followupBudgetTokens: Math.max(0, Math.floor(input.confirmedThrough
-          ? Math.min(run.followupBudgetTokens, input.budgetTokens) : input.budgetTokens)),
+        followupBudgetTokens: Math.max(0, Math.floor(input.budgetTokens)),
         ...(first ? { providerResponseId: null } : {})
       } });
       return true;

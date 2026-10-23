@@ -35,7 +35,7 @@ function pendingText(card: McpApprovalCard): string {
   if (card.source === "code") {
     return "Code in the Workspace called this tool, which may change data. Nothing was sent. If you allow it, the next run repeats the script.";
   }
-  if (card.source === "agent") return "Agent called this tool, which may change data. Nothing was sent. If you allow it, Agent continues.";
+  if (card.source === "agent") return "Agent called this tool, which may change data. Nothing was sent.";
   return "This tool may change data, so nothing was sent. If you allow it, the answer continues.";
 }
 

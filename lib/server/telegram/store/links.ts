@@ -21,7 +21,6 @@ export type TelegramLinkRecord = Readonly<{
   selectedProvider: string | null;
   searchEnabled: boolean;
   workspaceEnabled: boolean;
-  agentEnabled: boolean;
   linkedAt: Date;
   lastSeenAt: Date;
 }>;
@@ -33,7 +32,6 @@ export type TelegramLinkPreferences = Partial<Readonly<{
   selectedModel: Readonly<{ modelId: string; provider: string }> | null;
   searchEnabled: boolean;
   workspaceEnabled: boolean;
-  agentEnabled: boolean;
 }>>;
 
 export type TelegramLinkStore = Readonly<{
@@ -50,7 +48,6 @@ const TOUCH_INTERVAL_MS = 60_000;
 
 export function telegramLinkRecord(row: TelegramLink): TelegramLinkRecord {
   return {
-    agentEnabled: row.agentEnabled,
     botId: Number(row.botId),
     currentChatId: row.currentChatId,
     displayName: row.displayName,

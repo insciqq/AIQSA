@@ -48,12 +48,11 @@ const AGENT_SEARCH_TOOL_NAME = "aiqsa_search";
  * The class of one persisted call from its run's accepted request: MCP tools
  * of the accepted plan (including Auto discoveries merged into it), the run's
  * Workspace, Search, Knowledge, Memory, Skill, artifact and image tools.
- * Agent runs name MCP tools by their admitted tool id (`agentMcpToolIds`).
+ * Turns of the retired Codex Agent named MCP tools by admitted tool ids whose
+ * records went with it: those calls stay plain tools.
  */
 export function toolHistoryKind(input: Readonly<{
   agent: boolean;
-  /** Agent MCP tools this run admitted, by tool id, with their accepted names. */
-  agentMcpTools?: ReadonlyMap<string, Readonly<{ originalName: string; serverName: string }>>;
   normalizedRequest: unknown;
   toolName: string;
 }>): Readonly<{ kind: ToolHistoryKind; label: string }> {
@@ -65,8 +64,6 @@ export function toolHistoryKind(input: Readonly<{
   if (toolName === VIEW_WORKSPACE_IMAGE || toolName === CHECKPOINT_OUTPUTS_TOOL_NAME) return { kind: "workspace", label: `Workspace ${toolName}` };
   if (input.agent) {
     if (toolName === AGENT_SEARCH_TOOL_NAME) return { kind: "web_search", label: "Web search" };
-    const admitted = input.agentMcpTools?.get(toolName);
-    if (admitted) return { kind: "mcp", label: `MCP ${plain(admitted.serverName, "MCP server")} › ${plain(admitted.originalName, "tool")} (tool ${toolName})` };
     return { kind: "tool", label: `Tool ${plain(toolName, "tool")}` };
   }
   const descriptor = toolActivityDescriptors(input.normalizedRequest).get(toolName);

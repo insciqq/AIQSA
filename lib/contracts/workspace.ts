@@ -41,7 +41,6 @@ export type WorkspaceUnavailableReason = (typeof WORKSPACE_UNAVAILABLE_REASONS)[
 export type WorkspaceErrorCode = (typeof WORKSPACE_ERROR_CODES)[number];
 
 export type ChatWorkspaceState = Readonly<{
-  agentAvailable?: boolean;
   available: boolean;
   enabled: boolean;
   internetEnabled: boolean | null;
@@ -118,7 +117,6 @@ function isBoundedString(value: unknown, maximum = 128): value is string {
 export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | null {
   if (
     !isRecord(value) ||
-    (value.agentAvailable !== undefined && typeof value.agentAvailable !== "boolean") ||
     typeof value.available !== "boolean" ||
     typeof value.enabled !== "boolean" ||
     (value.internetEnabled !== null && typeof value.internetEnabled !== "boolean") ||
@@ -144,7 +142,6 @@ export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | n
   }
 
   return {
-    ...(typeof value.agentAvailable === "boolean" ? { agentAvailable: value.agentAvailable } : {}),
     available: value.available,
     enabled: value.enabled,
     internetEnabled: value.internetEnabled,

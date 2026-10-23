@@ -12,7 +12,6 @@ import {
   workspaceToolFailure
 } from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
-import { AgentExecutionError } from "../agents/failures";
 import { parseWorkspaceOperation } from "./operationFence";
 import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
@@ -45,14 +44,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function workspaceError(value: unknown): WorkspaceRuntimeError | AgentExecutionError {
+function workspaceError(value: unknown): WorkspaceRuntimeError {
   const code = isRecord(value) && typeof value.error === "string" ? value.error : "";
   if (isWorkspaceOperationFailureCode(code)) return new WorkspaceRuntimeError(code);
   switch (code) {
-    // The runner refused the Agent profile it was sent: the turn's settings
-    // do not fit the model, so the user is not told to check Workspace.
-    case "agent_profile_invalid":
-      return new AgentExecutionError(code);
     case "workspace_capture_source_busy":
     case "workspace_capture_source_invalid":
     case "workspace_capture_unsupported":
@@ -63,7 +58,6 @@ function workspaceError(value: unknown): WorkspaceRuntimeError | AgentExecutionE
     case "workspace_skill_bundle_invalid":
     case "workspace_skill_bundle_limit_exceeded":
     case "workspace_archive_limit_exceeded":
-    case "workspace_agent_output_invalid":
     case "workspace_archive_invalid":
     case "workspace_archive_restore_failed":
     case "workspace_execution_cleanup_failed":
@@ -431,23 +425,6 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     return value as WorkspaceToolCatalog & { tools: readonly WorkspaceBoundTool[] };
   }
 
-  async startAgent(input: Parameters<NonNullable<WorkspaceRuntime["startAgent"]>>[0]): Promise<void> {
-    const { signal, sessionId, ...body } = input;
-    await this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/agent/start`, {
-      body: JSON.stringify({ ...body, operation: parseWorkspaceOperation(input.operation) }),
-      method: "POST", signal
-    });
-  }
-
-  async interruptAgent(input: Parameters<NonNullable<WorkspaceRuntime["interruptAgent"]>>[0]): Promise<boolean> {
-    const { signal, sessionId, ...body } = input;
-    const value = await this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/agent/interrupt`, {
-      body: JSON.stringify({ ...body, operation: parseWorkspaceOperation(input.operation) }), method: "POST", signal
-    });
-    if (!isRecord(value) || typeof value.interrupted !== "boolean") throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-    return value.interrupted;
-  }
-
   async prepareSkillRun(input: Parameters<WorkspaceRuntime["prepareSkillRun"]>[0]) {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     validateSkillIdentity(input);
@@ -489,26 +466,6 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         runtimeSandboxId: input.runtimeSandboxId, operation: parseWorkspaceOperation(input.operation) }),
       method: "POST", signal: input.signal
     });
-  }
-
-  async pollAgent(input: Parameters<NonNullable<WorkspaceRuntime["pollAgent"]>>[0]) {
-    const { signal, sessionId, ...body } = input;
-    const value = await this.json(`/v1/sessions/${encodeURIComponent(sessionId)}/agent/poll`, {
-      body: JSON.stringify({ ...body, operation: parseWorkspaceOperation(input.operation) }),
-      method: "POST", signal
-    });
-    if (!isRecord(value) || value.cursor !== input.cursor ||
-      typeof value.nextCursor !== "number" || !Number.isSafeInteger(value.nextCursor) ||
-      value.nextCursor < input.cursor || value.nextCursor > input.cursor + 65536 ||
-      typeof value.stdoutBase64 !== "string" || value.stdoutBase64.length > 87384 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value.stdoutBase64) ||
-      Buffer.from(value.stdoutBase64, "base64").byteLength !== value.nextCursor - input.cursor ||
-      typeof value.done !== "boolean" || (value.exitCode !== null &&
-        (typeof value.exitCode !== "number" || !Number.isSafeInteger(value.exitCode)))) {
-      throw new WorkspaceRuntimeError("workspace_agent_output_invalid");
-    }
-    return { cursor: input.cursor, nextCursor: value.nextCursor, stdoutBase64: value.stdoutBase64,
-      done: value.done, exitCode: value.exitCode as number | null };
   }
 
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {

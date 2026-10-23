@@ -321,7 +321,7 @@ export function providerRequestContextRebuild(input: Readonly<{
 }>): ContextRejectionRebuild | null {
   const { request } = input;
   const limits = modelContextBudgetLimits(request);
-  if (!limits || request.agent || request.toolObservationVersion !== 1 || request.contextCompactionRebuild) return null;
+  if (!limits || request.toolObservationVersion !== 1 || request.contextCompactionRebuild) return null;
   const maximumTokens = input.rejection.maximumTokens;
   return contextRejectionRebuild({
     budgetTokens: limits.budgetTokens,
@@ -484,8 +484,7 @@ function hybridRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolB
 }
 
 function usesHybridBudget(request: ProviderRunRequest): boolean {
-  return request.contextCompactionPolicy?.mode === "hybrid" && !request.agent &&
-    contextCompactionBudgetLimits(request) !== null;
+  return request.contextCompactionPolicy?.mode === "hybrid" && contextCompactionBudgetLimits(request) !== null;
 }
 
 function planProviderRequestContext(input: Readonly<{
@@ -745,7 +744,6 @@ export function applyProviderRequestContextBudget(input: ProviderRequestBudgetIn
   const plannedInput = { bridge: input.bridge, request: planned.request };
   const result = applyProviderRequestContextBudgetCore(plannedInput);
   if (result.ok) return { ...result, request: { ...result.request, contextCompaction: planned.measurement } };
-  if (input.request.agent) return result;
   const skills = withoutSkillPins(planned.request);
   if (!skills.pinned.length && !skills.catalog.length) return result;
   const withoutSkills = applyProviderRequestContextBudgetCore({ ...plannedInput, request: skills.request });
@@ -856,9 +854,6 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
 }>): ProviderRequestContextBudgetResult {
-  // Agent turns retain their accepted branch. Codex owns compaction; deferred
-  // PDF/Workspace continuations must not apply a second, app-side truncation.
-  if (input.request.agent) return { ok: true, request: { ...input.request, tools: [] }, contextTruncation: null };
   const contextMessages = input.request.context?.messages ?? [];
   const syntheticCurrentMessageId = "__provider-current-message__";
   const budgetMessages = contextMessages.length > 0

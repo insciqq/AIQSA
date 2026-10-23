@@ -11,8 +11,7 @@ import type { TelegramAccessResolver } from "./control/access";
 import { reachTelegramChat } from "./control/reach";
 import type { TelegramSessionProvider } from "./control/session";
 import {
-  TELEGRAM_COPY, telegramAgentFinishedText, telegramAgentWorkingText, telegramWorkActivityText, telegramWorkFailedText,
-  telegramWorkspaceWorkingText
+  TELEGRAM_COPY, telegramWorkActivityText, telegramWorkFailedText, telegramWorkFinishedText, telegramWorkspaceWorkingText
 } from "./copy";
 import type { TelegramBotSession } from "./dispatcher";
 import type { TelegramMessageRefStore } from "./store/messageRefs";
@@ -20,10 +19,9 @@ import type { TelegramRunLinkStore } from "./store/runLinks";
 import type { TelegramFailure, TelegramOutcome } from "./transport";
 
 /**
- * The status of a Telegram run that works in Workspace, with or without
- * Agent (D-16): one message per run from its first Workspace activity, "Agent
- * is working · 3 min — <activity>" (or "Working in Workspace · …") with a
- * Stop button, edited at most every 5 s and only when its text changed (a
+ * The status of a Telegram run that works in Workspace (D-16): one message
+ * per run from its first Workspace activity, "Working in Workspace · 3 min —
+ * <activity>" with a Stop button, edited at most every 5 s and only when its text changed (a
  * newer activity, another minute), and finally "Finished in N min", "Stopped"
  * or the failure, without the button. The answer itself is the bridge's
  * separate message. The message is recorded on the run's link, so a restart's
@@ -45,7 +43,6 @@ const RUNS_KEPT = 500;
 /** Every code this module logs besides Telegram's transport codes. */
 export const TELEGRAM_STATUS_LOG_CODES = ["telegram_status_failed"] as const;
 
-export type TelegramWorkMode = "agent" | "workspace";
 export type TelegramWorkEnding = TelegramRunDeliveredEvent["status"];
 
 export type TelegramAgentStatusDeps = Readonly<{
@@ -53,8 +50,6 @@ export type TelegramAgentStatusDeps = Readonly<{
   sessions: TelegramSessionProvider;
   runLinks: Pick<TelegramRunLinkStore, "find" | "setStatusMessage">;
   messageRefs: Pick<TelegramMessageRefStore, "record">;
-  /** Whether the run was admitted with Agent or with Workspace alone. */
-  runMode(input: Readonly<{ runId: string; userId: string }>): Promise<TelegramWorkMode>;
   now?: () => number;
 }>;
 
@@ -69,7 +64,6 @@ export type TelegramAgentStatus = Readonly<{
 type RunStatus = {
   readonly context: TelegramRunEventContext;
   readonly entries: Map<string, ThreadWorkspaceActivityEntry>;
-  mode: TelegramWorkMode;
   startedAt: number;
   activity: string | null;
   messageId: number | null;
@@ -109,10 +103,6 @@ async function once<T>(send: () => Promise<TelegramOutcome<T>>): Promise<Telegra
   return first.ok || first.kind !== "network_before_send" ? first : send();
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** What a status names: the newest step still running, else the newest step worth naming. */
 export function telegramWorkActivity(entries: readonly ThreadWorkspaceActivityEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -129,22 +119,13 @@ export function telegramWorkActivity(entries: readonly ThreadWorkspaceActivityEn
   return null;
 }
 
-export function telegramWorkStatusText(input: Readonly<{ mode: TelegramWorkMode; elapsedMs: number; activity: string | null }>): string {
-  const activity = input.activity ?? undefined;
-  return input.mode === "agent" ? telegramAgentWorkingText(input.elapsedMs, activity) : telegramWorkspaceWorkingText(input.elapsedMs, activity);
+export function telegramWorkStatusText(input: Readonly<{ elapsedMs: number; activity: string | null }>): string {
+  return telegramWorkspaceWorkingText(input.elapsedMs, input.activity ?? undefined);
 }
 
 export function telegramWorkEndingText(ending: TelegramWorkEnding, elapsedMs: number): string {
-  return ending === "complete" ? telegramAgentFinishedText(elapsedMs) : ending === "cancelled" ? TELEGRAM_COPY.stopped
+  return ending === "complete" ? telegramWorkFinishedText(elapsedMs) : ending === "cancelled" ? TELEGRAM_COPY.stopped
     : telegramWorkFailedText(elapsedMs);
-}
-
-/** Whether the run was admitted with Agent, from its frozen request. */
-export async function telegramRunWorkMode(input: Readonly<{ runId: string; userId: string }>): Promise<TelegramWorkMode> {
-  const { prisma } = await import("../prisma");
-  const run = await prisma.modelRun.findFirst({ select: { normalizedRequest: true }, where: { id: input.runId, userId: input.userId } });
-  const request = run?.normalizedRequest;
-  return isRecord(request) && isRecord(request.agent) ? "agent" : "workspace";
 }
 
 export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): TelegramAgentStatus {
@@ -209,7 +190,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
   }
 
   function working(status: RunStatus): string {
-    return telegramWorkStatusText({ activity: status.activity, elapsedMs: now() - status.startedAt, mode: status.mode });
+    return telegramWorkStatusText({ activity: status.activity, elapsedMs: now() - status.startedAt });
   }
 
   async function edit(
@@ -244,14 +225,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
   /** Sends the run's one status message: working with Stop, or already how the run ended. */
   async function open(status: RunStatus): Promise<void> {
     const { context } = status;
-    const [mode, link] = await Promise.all([
-      deps.runMode({ runId: context.runId, userId: context.userId }).catch((error: unknown) => {
-        log({ code: "telegram_status_failed", error, outcome: "degraded", runId: context.runId });
-        return "workspace" as const;
-      }),
-      deps.runLinks.find(context.runId).catch(() => null)
-    ]);
-    status.mode = mode;
+    const link = await deps.runLinks.find(context.runId).catch(() => null);
     // The run started when its link was recorded, before its first activity.
     if (link) status.startedAt = Math.min(status.startedAt, link.createdAt.getTime());
     const bot = await reach(status);
@@ -321,7 +295,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     if (!status) {
       status = {
         activity: null, broken: false, chain: Promise.resolve(), context, ending: null, entries: new Map(), lastEditAt: 0,
-        markup: undefined, messageId: null, mode: "workspace", shown: null, startedAt: now(), ticker: null, timer: null
+        markup: undefined, messageId: null, shown: null, startedAt: now(), ticker: null, timer: null
       };
       runs.set(context.runId, status);
       while (runs.size > RUNS_KEPT) forget(runs.values().next().value as RunStatus);
@@ -396,11 +370,9 @@ export function registerTelegramAgentStatus(deps: Readonly<{
   sessions: TelegramSessionProvider;
   messageRefs: Pick<TelegramMessageRefStore, "record">;
   runLinks: Pick<TelegramRunLinkStore, "find" | "setStatusMessage">;
-  runMode?: TelegramAgentStatusDeps["runMode"];
 }>): () => void {
   const status = createTelegramAgentStatus({
-    access: deps.access, messageRefs: deps.messageRefs, runLinks: deps.runLinks, runMode: deps.runMode ?? telegramRunWorkMode,
-    sessions: deps.sessions
+    access: deps.access, messageRefs: deps.messageRefs, runLinks: deps.runLinks, sessions: deps.sessions
   });
   const unsubscribe = onTelegramRunEvent(status.listener);
   return () => {

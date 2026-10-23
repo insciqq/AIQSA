@@ -333,19 +333,16 @@ describe("context compaction planner", () => {
     expect(fragments.join("")).toBe(JSON.stringify(original));
   });
 
-  it("does not mask skills, unsupported shapes, agents, or legacy/off requests", () => {
+  it("does not mask skills, unsupported shapes, or legacy/off requests", () => {
     const skill = result("skill-1", "b");
     const skillValue = { ...skill, observation: { ...skill.observation, source: "skill" as const, maskable: false } as typeof skill.observation };
-    const agentResult = result("agent-1", "c");
     const offResult = result("off-1", "d");
-    const agentRequest = { ...request([openAIResponsesToolBridge.appendToolResult(undefined, agentResult)]), agent: {} as NonNullable<ProviderRunRequest["agent"]> };
     for (const candidate of [
       request([openAIResponsesToolBridge.appendToolResult(undefined, skillValue)]),
       request([{ role: "tool", content: "unrecognized result" }]),
-      agentRequest,
       request([openAIResponsesToolBridge.appendToolResult(undefined, offResult)], 0)
     ]) {
-      const planned = plan(openAIResponsesToolBridge, candidate, [skillValue, agentResult, offResult]);
+      const planned = plan(openAIResponsesToolBridge, candidate, [skillValue, offResult]);
       expect(planned.measurement.maskedObservations).toBe(0);
       expect(planned.request.providerToolMessages).toEqual(candidate.providerToolMessages);
     }

@@ -134,7 +134,7 @@ const HOST_GATEWAY_ALIASES: ReadonlySet<string> = new Set([
 /** Docker bridges a host install denies whole: `docker0`, `docker_gwbridge` and `br-<network>`. */
 const DOCKER_BRIDGE_INTERFACE = /^(?:docker|br-)/u;
 
-/** Runner-internal Agent gateway relay; never resolvable by the app, denied by name. */
+/** Runner-internal gateway relay (`AIQSA_AGENT_GATEWAY_URL`); never resolvable by the app, denied by name. */
 const AGENT_GATEWAY_HOSTNAME = "host.microsandbox.internal";
 
 type EndpointMatch = "any_port" | "name_only" | "own_port";
@@ -441,7 +441,7 @@ export async function buildPersonalMcpNetworkEnvironment(
     if (!url || !port) return null;
     const hostname = normalizedHostname(url.hostname);
     const literal = isIP(hostname) !== 0;
-    // The Agent gateway is runner-internal: denied by name, never resolved.
+    // The runner gateway is runner-internal: denied by name, never resolved.
     const resolved = endpoint.match !== "name_only" && !literal && !isLocalhostName(hostname);
     const addresses = endpoint.match === "name_only" ? []
       : literal ? [parseAddress(hostname)].filter((address): address is Address => address !== null)

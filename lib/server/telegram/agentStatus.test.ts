@@ -6,7 +6,7 @@ import {
 import type { ThreadWorkspaceActivityEntry, WorkspaceActivityPhase } from "../../contracts/workspace";
 import failureCodes from "../observability/failureCodes.json";
 import {
-  createTelegramAgentStatus, TELEGRAM_STATUS_LOG_CODES, telegramWorkActivity, type TelegramAgentStatus, type TelegramWorkMode
+  createTelegramAgentStatus, TELEGRAM_STATUS_LOG_CODES, telegramWorkActivity, type TelegramAgentStatus
 } from "./agentStatus";
 import { createTelegramBotApi, createTelegramPacer } from "./botApi";
 import type { TelegramRunEvent, TelegramRunEventContext } from "./bridge/events";
@@ -37,7 +37,7 @@ function activity(entry: ThreadWorkspaceActivityEntry): TelegramRunEvent {
 }
 
 /** The status against the fake Bot API on a fake clock, for runs linked at START. */
-async function setup(mode: TelegramWorkMode = "workspace") {
+async function setup() {
   vi.useFakeTimers({ now: START });
   const fake = createFakeTelegramBotApi({ now: () => Date.now() });
   closers.push(() => fake.close());
@@ -59,22 +59,21 @@ async function setup(mode: TelegramWorkMode = "workspace") {
   for (const runId of ["run-1", "run-2"]) {
     await runLinks.store.create({ draftId: 7, linkId: "link-1", now: new Date(START), runId, telegramChatId: user.id, userId: "user-1" });
   }
-  const runMode = vi.fn(async () => mode);
   const link: TelegramLinkRecord = {
-    agentEnabled: false, botId: fake.bot.id, currentChatId: "chat-1", displayName: null, id: "link-1", lastSeenAt: new Date(START),
+    botId: fake.bot.id, currentChatId: "chat-1", displayName: null, id: "link-1", lastSeenAt: new Date(START),
     linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
     telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1", workspaceEnabled: false
   };
   let decision: TelegramAccessDecision = { allowed: true, control: {} as never, link };
   const access = { resolveTelegramAccess: vi.fn(async () => decision) };
   const status = createTelegramAgentStatus({
-    access, messageRefs: refs.store, runLinks: runLinks.store, runMode, sessions: { current: async () => session }
+    access, messageRefs: refs.store, runLinks: runLinks.store, sessions: { current: async () => session }
   });
   const context: TelegramRunEventContext = {
     bot: session, chatId: "chat-1", linkId: "link-1", runId: "run-1", source: "live", telegramChatId: user.id, userId: "user-1"
   };
   return {
-    access, fake, hooks, refs, runLinks, runMode, session, status, user,
+    access, fake, hooks, refs, runLinks, session, status, user,
     /** The user unlinks: the run's link no longer reaches its chat. */
     unlink() { decision = { allowed: false, link: null, reasonCode: "telegram_not_linked" }; },
     emit(event: TelegramRunEvent, runId = "run-1") {
@@ -92,7 +91,7 @@ async function settle(status: TelegramAgentStatus): Promise<void> {
   await status.idle();
 }
 
-describe("Telegram Agent and Workspace status", () => {
+describe("Telegram Workspace status", () => {
   it("sends one status with Stop at the first activity, then edits it at most every 5 s and only when its text changed", async () => {
     const h = await setup();
     await vi.advanceTimersByTimeAsync(1_000);
@@ -107,7 +106,6 @@ describe("Telegram Agent and Workspace status", () => {
     const status = h.fake.botMessages(h.user.id)[0]!;
     expect(h.runLinks.rows.get("run-1")?.statusMessageId).toBe(status.message_id);
     expect(h.refs.refs).toContainEqual(expect.objectContaining({ chatId: "chat-1", linkId: "link-1", telegramMessageId: status.message_id }));
-    expect(h.runMode).toHaveBeenCalledWith({ runId: "run-1", userId: "user-1" });
 
     // A newer step waits until 5 s passed since the message was last written.
     h.emit(activity(fileRead("read-1", "running", "src/app.ts")));
@@ -153,11 +151,11 @@ describe("Telegram Agent and Workspace status", () => {
     expect(h.edits()).toHaveLength(edits);
   });
 
-  it("says Agent is working for an Agent run, Stopped when it is stopped and that it failed when it fails", async () => {
-    const h = await setup("agent");
-    h.emit(activity({ id: "note-1", kind: "agent_note", phase: "succeeded", text: "Reading the repository layout" }));
+  it("says the run is working in Workspace, Stopped when it is stopped and that it failed when it fails", async () => {
+    const h = await setup();
+    h.emit(activity(command("cmd-0", "running", "ls")));
     await settle(h.status);
-    expect(h.sends()[0]!.params.text).toBe("Agent is working · 1 min — Reading the repository layout");
+    expect(h.sends()[0]!.params.text).toBe("Working in Workspace · 1 min — Running ls");
     h.emit({ status: "cancelled", type: "done" });
     await settle(h.status);
     expect(h.edits().at(-1)!.params).toMatchObject({ text: TELEGRAM_COPY.stopped });
@@ -166,7 +164,7 @@ describe("Telegram Agent and Workspace status", () => {
     h.emit(activity(command("cmd-1", "running", "pytest")), "run-2");
     await settle(h.status);
     await vi.advanceTimersByTimeAsync(3 * 60_000);
-    h.emit({ code: "agent_time_limit", message: "Agent ran out of time", type: "failed" }, "run-2");
+    h.emit({ code: "workspace_turn_time_limit", message: "The run ran out of time", type: "failed" }, "run-2");
     await settle(h.status);
     expect(h.edits().at(-1)!.params.text).toBe("Failed after 3 min");
   });
@@ -228,7 +226,7 @@ describe("Telegram Agent and Workspace status", () => {
 
   it("ends a status a previous process left working when recovery delivers its run", async () => {
     const h = await setup();
-    const left = await h.session.api.sendMessage({ chat_id: h.user.id, text: "Agent is working · 2 min" });
+    const left = await h.session.api.sendMessage({ chat_id: h.user.id, text: "Working in Workspace · 2 min" });
     if (!left.ok) throw new Error("fake send failed");
     await h.runLinks.store.setStatusMessage({ runId: "run-1", statusMessageId: left.result.message_id });
     await vi.advanceTimersByTimeAsync(6 * 60_000);
@@ -269,7 +267,7 @@ describe("Telegram Agent and Workspace status in the chat bridge", () => {
     const h = createBridgeHarness({ bridge: { publish: async (event, context) => { await status?.listener(event, context); } }, gateway });
     closers.push(h.close);
     status = createTelegramAgentStatus({
-      access: h.access, messageRefs: h.messageRefs.store, runLinks: h.runLinks.store, runMode: async () => "workspace", sessions: h.sessions
+      access: h.access, messageRefs: h.messageRefs.store, runLinks: h.runLinks.store, sessions: h.sessions
     });
     const user = h.fake.inject.addUser({ firstName: "Alex" });
     h.link(user, "user-1", { workspaceEnabled: true });

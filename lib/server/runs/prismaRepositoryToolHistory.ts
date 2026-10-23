@@ -4,8 +4,6 @@ import { canAccessSearchStrategy } from "../auth/entitlements";
 import { acceptedMcpCallIdentity, canReadAcceptedMcpCall, mcpDetailRecord as record,
   type AcceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { mcpCallRedactionEvidence, type McpRedactionEvidence } from "../mcp/callDetailsRedaction";
-import type { McpRunPlanSnapshot } from "../mcp/runPlan";
-import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { resolveChatAccess } from "../projects/access";
 import { decodeToolObservationSourceBinding, ObservationStoreError } from "../toolObservations/contract";
 import { branchPathMessageIds, observationRunAuthority, runOnBranchPath } from "../toolObservations/repository";
@@ -67,15 +65,14 @@ const ADMISSION_TRANSACTION = { maxWait: TOOL_HISTORY_LIMITS.transactionWaitMs, 
 const REQUEST_TRANSACTION = { maxWait: TOOL_HISTORY_LIMITS.requestTransactionWaitMs,
   timeout: TOOL_HISTORY_LIMITS.requestTransactionMs } as const;
 
-async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryActor,
-  options: Readonly<{ unarmedAgent?: boolean }> = {}): Promise<ReadingContext> {
+async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryActor): Promise<ReadingContext> {
   let chatId: string;
   let leafMessageId: string | null;
   let runId: string | null = null;
   let currentUserMessageId: string | null = null;
   if ("runId" in actor) {
     // Only a refusal makes the history unavailable; a database failure stays one.
-    const run = await observationRunAuthority(tx, actor, false, options).catch((error: unknown) => {
+    const run = await observationRunAuthority(tx, actor, false).catch((error: unknown) => {
       throw error instanceof ObservationStoreError ? new ToolHistoryUnavailable() : error;
     });
     chatId = run.chatId;
@@ -128,8 +125,8 @@ type CallValues = Readonly<{
 type LoadedCall = CallHead & CallValues;
 
 type AcceptedRun = Readonly<{
+  /** Accepted as a Codex Agent turn (retired): its calls stay history without retained results. */
   agent: boolean;
-  agentMcpTools: ReadonlyMap<string, Readonly<{ identity: AcceptedMcpCallIdentity; originalName: string; serverName: string }>>;
   eligible: boolean;
   normalizedRequest: Record<string, unknown>;
 }>;
@@ -163,22 +160,9 @@ async function acceptedRuns(tx: Prisma.TransactionClient, runIds: readonly strin
       s."accepted" -> 'toolHistory' ->> 'version' AS "historyVersion"
     FROM (SELECT r."id", r."normalizedRequest" || '{}'::jsonb AS "accepted" FROM "ModelRun" r
       WHERE r."id" = ANY(${missing}::text[]) OFFSET 0) s`;
-  const agentIds = rows.filter(row => row.agent).map(row => row.id);
-  const agentTools = agentIds.length ? await tx.agentMcpTool.findMany({ where: { modelRunId: { in: agentIds } },
-    select: { modelRunId: true, toolId: true, snapshot: true } }) : [];
   for (const row of rows) {
-    const tools = new Map<string, Readonly<{ identity: AcceptedMcpCallIdentity; originalName: string; serverName: string }>>();
-    for (const tool of agentTools.filter(entry => entry.modelRunId === row.id)) {
-      const snapshot = tool.snapshot as unknown as McpRunPlanSnapshot;
-      const route = record(snapshot) ? resolveMcpRunTool(snapshot, tool.toolId) : null;
-      const server = route && snapshot.servers.find(entry => entry.serverId === route.serverId);
-      if (!route || !server) continue;
-      tools.set(tool.toolId, { identity: { serverId: route.serverId, originalName: route.originalName,
-        revisionId: server.revisionId, fingerprint: route.fingerprint }, originalName: route.originalName, serverName: server.serverName });
-    }
     const accepted: AcceptedRun = {
       agent: row.agent === true,
-      agentMcpTools: tools,
       eligible: row.historyVersion === String(TOOL_HISTORY_VERSION),
       normalizedRequest: {
         ...(row.mcp !== null ? { mcp: row.mcp } : {}),
@@ -190,8 +174,7 @@ async function acceptedRuns(tx: Prisma.TransactionClient, runIds: readonly strin
       }
     };
     runs.set(row.id, accepted);
-    // An Agent's admitted tools grow while it runs: only a settled reading is kept.
-    if (!accepted.agent) cache?.set(`run:${row.id}`, accepted);
+    cache?.set(`run:${row.id}`, accepted);
   }
   return runs;
 }
@@ -244,12 +227,10 @@ function observationFact(call: CallHead, identity: AcceptedMcpCallIdentity | nul
 
 /** The server-owned class of one call and, for MCP, its exact accepted identity. */
 function classify(call: CallHead, run: AcceptedRun) {
-  const classified = toolHistoryKind({ agent: run.agent, agentMcpTools: run.agentMcpTools, normalizedRequest: run.normalizedRequest,
-    toolName: call.toolName });
+  const classified = toolHistoryKind({ agent: run.agent, normalizedRequest: run.normalizedRequest, toolName: call.toolName });
   let identity: AcceptedMcpCallIdentity | null = null;
   if (classified.kind === "mcp") {
-    identity = run.agent ? run.agentMcpTools.get(call.toolName)?.identity ?? null
-      : call.mcpRunBinding?.modelRunId === call.modelRunId
+    identity = call.mcpRunBinding?.modelRunId === call.modelRunId
         ? acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, call.mcpRunBinding.runtimeGenerationFingerprint)
         : null;
   }
@@ -518,8 +499,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
       const turns = input.toolHistory.turns;
       if (turns.length === 0) return { blocks: [] };
       return prisma.$transaction(async tx => {
-        // A run's own Agent binding is armed only after its first prompt is built.
-        const context = await readingContext(tx, input.actor, { unarmedAgent: true }).catch((error: unknown) => {
+        const context = await readingContext(tx, input.actor).catch((error: unknown) => {
           if (error instanceof ToolHistoryUnavailable) return null;
           throw error;
         });

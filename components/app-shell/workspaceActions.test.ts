@@ -1362,7 +1362,6 @@ describe("workspace actions", () => {
   it("reports a readable Project chat's Project from one detail read, without admitting it", async () => {
     const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
     const workspace = {
-      agentAvailable: false,
       available: false,
       enabled: false,
       internetEnabled: true,

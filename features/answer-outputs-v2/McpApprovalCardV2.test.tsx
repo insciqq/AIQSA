@@ -85,6 +85,7 @@ describe("McpApprovalCardsV2", () => {
     const [code, agent] = screen.getAllByTestId("mcp-approval-card");
     expect(code).toHaveTextContent("Code in the Workspace called this tool, which may change data. Nothing was sent.");
     expect(agent).toHaveTextContent("Agent called this tool, which may change data. Nothing was sent.");
+    expect(agent).not.toHaveTextContent(/continues/u);
     expect(screen.getByRole("region", { name: "Tool approvals" })).toBeVisible();
   });
 

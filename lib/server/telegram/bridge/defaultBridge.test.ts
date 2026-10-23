@@ -40,10 +40,12 @@ describe("default chat bridge", () => {
     expect(registry.messageHandlers()).toHaveLength(2);
     expect(registry.stopHandlers()).toHaveLength(1);
     for (const kind of ["select_chat", "select_assistant", "select_model", "model_page", "toggle_search", "toggle_workspace",
-      "toggle_agent", "open_settings", "stop_run", "approval_allow_once", "approval_allow_server", "approval_deny"] as const) {
+      "open_settings", "stop_run", "approval_allow_once", "approval_allow_server", "approval_deny"] as const) {
       expect(registry.callbackHandler(kind), kind).toBeTruthy();
     }
-    // Approvals, the Agent/Workspace status and answer files follow every run.
+    // A removed Agent toggle's old buttons find no handler and answer as expired.
+    expect(registry.callbackHandler("toggle_agent")).toBeUndefined();
+    // Approvals, the Workspace status and answer files follow every run.
     expect(runListeners()).toBe(3);
     // Recovery starts at once and waits while the bot is off.
     await vi.waitFor(() => expect(first.sessions.current).toHaveBeenCalled());

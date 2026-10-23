@@ -40,9 +40,6 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
       if (!["streaming", "in_progress"].includes(run.status)) throw unavailable();
       const session = await tx.workspaceSession.findUnique({ where: { id: run.workspaceRunBinding.workspaceSessionId } });
       if (!session || session.operationOwner !== workspaceRunOperationOwner(run.id)) throw unavailable();
-      const agent = await tx.agentRunBinding.findUnique({ where: { modelRunId: run.id } });
-      if (agent && (agent.revokedAt || agent.completedAt || agent.failureCode || agent.followupInterruptAt ||
-        !agent.leaseExpiresAt || agent.leaseExpiresAt <= new Date() || agent.expiresAt && agent.expiresAt <= new Date())) throw unavailable();
     }
     const tool = await tx.modelRunToolCall.findFirst({ where: { id: context.toolCallId, modelRunId: run.id,
       providerCallId: context.call.id, toolName: CHECKPOINT_OUTPUTS_TOOL_NAME } });

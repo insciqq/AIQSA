@@ -891,7 +891,6 @@ export function PowerAppShellV2({
     );
   });
   const contextConfigurationKey = useComposerContextConfigurationKey({
-    agentEnabled: composerSession.agentEnabled,
     // Kept on the ambient value (installation and model) by the sync below.
     workspaceEnabled: composerSession.workspaceEnabled,
     memoryMode: chats.find(chat => chat.id === activeChatId)?.pendingInitialMemoryMode ??
@@ -2391,7 +2390,6 @@ export function PowerAppShellV2({
   // Automatic answer review of the chat: the next send's frozen choice, the header glyph and the picker's row.
   const answerReview = useAnswerReviewAutoV2({
     activeChat,
-    agentEnabled: composerSession.agentEnabled === true,
     assistantChat: Boolean(composerAssistantState),
     authorModel: effectiveCurrentModel,
     defaults: catalog?.defaults.answerReview ?? ANSWER_REVIEW_AUTO_DEFAULT,
@@ -2535,8 +2533,6 @@ export function PowerAppShellV2({
   const workspaceUnavailableReason = workspaceInstallation?.available === true
     ? effectiveCurrentModel?.capabilities.toolCalling === true ? undefined : "model_tools_required" as const
     : workspaceInstallation?.unavailableReason;
-  const workspaceInternetEnabled = activeChat?.workspace?.internetEnabled ??
-    workspaceInstallation?.internetEnabled ?? null;
   const workspaceSessionState = activeChat?.workspace?.sessionState ??
     (workspaceUsable ? "not_started" as const : null);
 
@@ -2943,19 +2939,6 @@ export function PowerAppShellV2({
       : `Up to ${Number((uploadLimits.ordinaryMaxBytes / 1024 / 1024).toFixed(1))} MiB per file` : undefined,
     reuseFile: projectContext ? undefined : reuseComposerFile,
     uploading,
-    agent: {
-      enabled: composerSession.agentEnabled === true,
-      unavailableReason: projectContext ? "Agent is available in personal chats."
-        : !effectiveCurrentModel?.agentAvailable ? "Choose a model that supports Agent."
-        : !workspaceUsable ? "Agent is unavailable. Ask an administrator to check the Workspace runner."
-        : !workspaceInternetEnabled ? "Agent requires Workspace Internet access, managed by the administrator."
-        : workspaceInstallation?.agentAvailable !== true
-          ? "Agent is unavailable. Ask an administrator to check the Workspace runner."
-        : composerAssistantState ? "Remove the Assistant to use Agent." : undefined,
-      setEnabled: (value: boolean) => {
-        useComposerSessionStore.getState().updateSession(activeComposerSessionKey, { agentEnabled: value });
-      }
-    },
     workspace: {
       archive: archiveWorkspace,
       available: workspaceUsable,

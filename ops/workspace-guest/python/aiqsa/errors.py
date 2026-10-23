@@ -44,7 +44,7 @@ class GatewayUnavailable(McpUnavailable):
 
 
 class AgentModeUnsupported(McpUnavailable):
-    """The operation exists only for ordinary Workspace runs, not inside an Agent run."""
+    """Raised by no run since the Codex Agent was removed; kept so scripts that catch it still load."""
 
     code = "agent_mode_unsupported"
 

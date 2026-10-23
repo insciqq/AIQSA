@@ -78,7 +78,7 @@ async function main() {
     "lib/server/workspace/psdGuidance.ts", "lib/server/workspace/fileContext.ts", "lib/server/workspace/toolCatalog.ts",
     "lib/server/tools/checkpointOutputs.ts", "lib/server/tools/analyzeImage.ts", "lib/server/tools/imageGeneration.ts"];
   if (baseline) sourcePaths.push("lib/server/workspace/guides.ts", "lib/server/workspace/guideGuest.ts",
-    "lib/server/workspace/microsandboxRuntime.ts", "lib/server/workspace/promptContract.ts", "lib/server/agents/prompt.ts");
+    "lib/server/workspace/microsandboxRuntime.ts", "lib/server/workspace/promptContract.ts");
   const sourceHash = digest(sourcePaths.map(path => digest(readFileSync(path))).join("\n"));
   const docker = (args: string[], input?: string) => execFileSync("docker", args, {
     input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, maxBuffer: 4 * 1024 * 1024
@@ -538,7 +538,7 @@ async function main() {
       const response = await api.post(`/api/chats/${chatId}/messages`, { timeout: 720_000, data: {
         admissionId: randomUUID(), expectedActiveLeafId: null, provider: model.provider, modelId: model.modelId,
         content: { blocks: [{ type: "text", text: prompt.text }, ...attachmentBlocks] },
-        workspaceEnabled: catalog.defaults.workspaceEnabled, agentEnabled: false,
+        workspaceEnabled: catalog.defaults.workspaceEnabled,
         mcp: { mode: catalog.defaults.mcpMode ?? "auto" }, skills: { mode: catalog.defaults.skillsMode ?? "auto" },
         searchPlan: { mode: "all_selected", optionIds: search ? [search.strategyId] : [] },
         ...(cell.reasoning === "default" ? {} : { reasoningEffort: cell.reasoning }), timeZone: "Europe/Moscow"

@@ -12,7 +12,7 @@ import {
  * current catalog: the server applies no saved defaults of its own (only the
  * browser does), so every value the composer would send is named here —
  * model, Search plan reconciled with the model, MCP and Skills modes, the
- * saved controls as params, Workspace and Agent from the link — plus the
+ * saved controls as params, Workspace from the link — plus the
  * expected leaf and, for a first message, the personal draft. In an
  * Assistant chat the Assistant governs those rows, so none of them is sent.
  * Both kinds carry the zone the user's browser last reported, as a browser
@@ -127,7 +127,7 @@ export type TelegramSendTarget =
   | Readonly<{ kind: "existing"; activeLeafMessageId: string | null; assistantBound: boolean }>
   | Readonly<{ kind: "new"; assistantId: string | null }>;
 
-export type TelegramSendSettings = Readonly<{ agentEnabled: boolean; searchEnabled: boolean; workspaceEnabled: boolean }>;
+export type TelegramSendSettings = Readonly<{ searchEnabled: boolean; workspaceEnabled: boolean }>;
 
 export type TelegramSystemTurn = Readonly<{ approvalId: string; kind: "mcp_approval_continuation" }>;
 
@@ -163,7 +163,6 @@ export function buildTelegramSendBody(input: Readonly<{
   }
   const model = input.model;
   const toolCalling = model.capabilities.toolCalling;
-  const agent = settings.agentEnabled && model.agentAvailable === true;
   const controls = telegramRunControls(input.catalog, model);
   return {
     ...common,
@@ -175,7 +174,6 @@ export function buildTelegramSendBody(input: Readonly<{
     ...(controls ? { controlDefaults: controls.controlDefaults, params: controls.params } : {}),
     // Like the composer, a model without tool calling asks for no tools and has no Workspace.
     ...(toolCalling ? {} : { tools: "none" }),
-    workspace: { enabled: agent || (settings.workspaceEnabled && toolCalling) },
-    ...(agent ? { agentEnabled: true } : {})
+    workspace: { enabled: settings.workspaceEnabled && toolCalling }
   };
 }

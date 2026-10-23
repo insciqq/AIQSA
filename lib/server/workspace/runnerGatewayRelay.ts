@@ -7,14 +7,12 @@ import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from ".
 
 export const RUNNER_GATEWAY_PORT = 4311;
 export const RUNNER_GATEWAY_ORIGIN = `http://host.microsandbox.internal:${RUNNER_GATEWAY_PORT}`;
-/** Request body bound of the model and Search endpoints; MCP has its own. */
-export const RUNNER_GATEWAY_REQUEST_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
- * Runner-side relay, the guests' only route to the app gateway. It forwards
- * fresh headers plus its own relay proof; of the guest's headers only the
- * bearer and exactly formatted MCP protocol version and code invocation id
- * pass. No arbitrary target, cookie, or control API.
+ * Runner-side relay, the guests' only route to the app gateway, and only to
+ * its MCP endpoint. It forwards fresh headers plus its own relay proof; of the
+ * guest's headers only the bearer and exactly formatted MCP protocol version
+ * and code invocation id pass. No arbitrary target, cookie, or control API.
  */
 export function createRunnerGatewayRelay(appOrigin: string, runnerToken: string, fetchFn: typeof fetch = fetch) {
   const origin = new URL(appOrigin);
@@ -22,8 +20,7 @@ export function createRunnerGatewayRelay(appOrigin: string, runnerToken: string,
   if (!proofKey || !["http:", "https:"].includes(origin.protocol) || origin.username || origin.password ||
     origin.pathname !== "/" || origin.search || origin.hash) throw new Error("agent_relay_config_invalid");
   const server = createServer(async (request, response) => {
-    const path = request.url ?? "";
-    if (request.method !== "POST" || !["/v1/responses", "/v1/alpha/search", "/mcp"].includes(path)) {
+    if (request.method !== "POST" || request.url !== "/mcp") {
       response.writeHead(404).end(); return;
     }
     const bearer = request.headers.authorization?.match(/^Bearer ([a-zA-Z0-9_-]{43})$/u)?.[1];
@@ -36,30 +33,28 @@ export function createRunnerGatewayRelay(appOrigin: string, runnerToken: string,
     try {
       const chunks: Buffer[] = [];
       let total = 0;
-      const maxBytes = path === "/mcp" ? getMcpRequestMaxBytes() : RUNNER_GATEWAY_REQUEST_MAX_BYTES;
+      const maxBytes = getMcpRequestMaxBytes();
       for await (const chunk of request) {
         total += chunk.length;
         if (total > maxBytes) {
           response.writeHead(413, { "content-type": "application/json", "cache-control": "no-store" })
-            .end(JSON.stringify(path === "/mcp" ? mcpRequestSizeFailure(total, maxBytes) :
-              { code: "agent_request_too_large", maxBytes, observedBytes: String(total) }));
+            .end(JSON.stringify(mcpRequestSizeFailure(total, maxBytes)));
           return;
         }
         chunks.push(Buffer.from(chunk));
       }
       const headers = new Headers({ authorization: `Bearer ${bearer}`, "content-type": "application/json",
-        accept: path === "/v1/responses" ? "text/event-stream" : "application/json, text/event-stream" });
+        accept: "application/json, text/event-stream" });
       const protocol = request.headers["mcp-protocol-version"];
       if (typeof protocol === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(protocol)) headers.set("mcp-protocol-version", protocol);
       // Guest code names its command's invocation. Only the bearer authorizes;
       // the id attributes receipts within that run, so the proof omits it.
       const invocation = request.headers[WORKSPACE_CODE_INVOCATION_HEADER];
-      if (path === "/mcp" && isWorkspaceCodeInvocationId(invocation)) headers.set(WORKSPACE_CODE_INVOCATION_HEADER, invocation);
+      if (isWorkspaceCodeInvocationId(invocation)) headers.set(WORKSPACE_CODE_INVOCATION_HEADER, invocation);
       // Signed only now, after the guest's body is buffered, so a slow upload never ages the proof.
-      headers.set(RUNNER_RELAY_PROOF_HEADER, signRunnerRelayProof(proofKey, { bearer, method: "POST", path: path.slice(1) }));
-      const upstream = await fetchFn(`${origin.origin}/api/internal/agent${path}`, {
-        method: "POST", headers, body: Buffer.concat(chunks), redirect: "error",
-        signal: path === "/mcp" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(7_200_000)])
+      headers.set(RUNNER_RELAY_PROOF_HEADER, signRunnerRelayProof(proofKey, { bearer, method: "POST", path: "mcp" }));
+      const upstream = await fetchFn(`${origin.origin}/api/internal/agent/mcp`, {
+        method: "POST", headers, body: Buffer.concat(chunks), redirect: "error", signal: controller.signal
       });
       response.writeHead(upstream.status, {
         "content-type": upstream.headers.get("content-type") ?? "application/json",

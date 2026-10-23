@@ -17,7 +17,6 @@ import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceBoundTool, WorkspaceToolCatalog } from "./runtime";
 
 export type WorkspaceAdmissionErrorCode =
-  | "agent_unavailable"
   | "workspace_disabled"
   | "workspace_model_tools_required"
   | "workspace_runtime_incompatible"
@@ -50,7 +49,6 @@ export type WorkspaceAdmissionResult = WorkspaceAdmissionFailure | Readonly<{
 
 export type WorkspaceAdmissionService = Readonly<{
   prepare(input: Readonly<{
-    agentEnabled?: boolean;
     assistantMessageId: string;
     chatId: string;
     enabled: boolean;
@@ -144,9 +142,6 @@ export function createWorkspaceAdmissionService(input: Readonly<{
       if (health?.state !== "ready") {
         return { code: "workspace_runtime_unavailable", ok: false, status: 503 };
       }
-      if (request.agentEnabled && health.agentReady !== true) {
-        return { code: "agent_unavailable", ok: false, status: 503 };
-      }
 
       let catalog: WorkspaceToolCatalog;
       try {
@@ -169,9 +164,9 @@ export function createWorkspaceAdmissionService(input: Readonly<{
       const internetEnabled = existing?.internetEnabled ?? policy.internetEnabled;
       // Guest code reaches MCP only through the runner relay, which only an
       // Internet-On guest of a runner with the gateway enabled can reach.
-      // Agent runs keep their own bearer. Budgets freeze with the run; a
-      // Project run's stay unused, since minting refuses it from its chat.
-      const codeMcp = !request.agentEnabled && internetEnabled && health.agentReady === true
+      // Budgets freeze with the run; a Project run's stay unused, since
+      // minting refuses it from its chat.
+      const codeMcp = internetEnabled && health.agentReady === true
         ? { version: 1 as const, maxCalls: input.config.codeMcpMaxCalls,
           maxConcurrent: input.config.codeMcpMaxConcurrent, maxPerSecond: input.config.codeMcpMaxPerSecond }
         : undefined;

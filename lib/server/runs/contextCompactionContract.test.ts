@@ -84,7 +84,7 @@ describe("the one conversation policy", () => {
     expect(decodeConversationContextPolicy({ ...accepted.contextCompactionPolicy!, mode: "legacy_compatible" })).not.toBeNull();
   });
 
-  it("retires a non-Agent run without the policy, under the legacy mode or with a legacy checkpoint", () => {
+  it("retires a run without the policy, under the legacy mode or with a legacy checkpoint", () => {
     const accepted = request();
     const { contextCompactionPolicy: _policy, ...absent } = accepted;
     void _policy;
@@ -94,8 +94,9 @@ describe("the one conversation policy", () => {
       mode: "legacy_compatible" } })).toBe(true);
     expect(contextCompactionPolicyRetired(accepted, { policyRevision: "legacy-compatible-v1" })).toBe(true);
     expect(contextCompactionPolicyRetired(accepted, { policyRevision: "hybrid-v1" })).toBe(false);
-    // Agent runs never carry a policy: Codex owns their context.
-    expect(contextCompactionPolicyRetired({ ...absent, agent: {} })).toBe(false);
+    // A turn of the removed Codex Agent never carried a policy: it ends the same way.
+    const agentTurn = { ...absent, agent: {} };
+    expect(contextCompactionPolicyRetired(agentTurn)).toBe(true);
     expect(CONTEXT_COMPACTION_POLICY_RETIRED).toEqual({ code: "context_compaction_policy_retired",
       message: "This answer was interrupted by an application update. Regenerate to try again." });
   });

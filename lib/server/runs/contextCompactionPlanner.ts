@@ -405,7 +405,7 @@ export function toolTranscriptReduction(
   observations?: readonly ContextObservation[]
 ): ToolTranscriptReduction {
   const messages = request.providerToolMessages ?? [];
-  if (request.agent || request.previousProviderResponseId || messages.length === 0) return NO_TRANSCRIPT_REDUCTION;
+  if (request.previousProviderResponseId || messages.length === 0) return NO_TRANSCRIPT_REDUCTION;
   const units = toolTranscriptUnits(messages);
   let newest = -1;
   for (let index = units.length - 1; index >= 0; index -= 1) {
@@ -756,7 +756,7 @@ export function planContextCompaction(input: Readonly<{
     ...(extra.overflow ? { overflow: extra.overflow } : {})
   });
 
-  if (request.agent || request.contextCompactionPolicy?.mode !== "hybrid" || budgetTokens === null) {
+  if (request.contextCompactionPolicy?.mode !== "hybrid" || budgetTokens === null) {
     // Measurement only. The fit check owns any refusal; it never trims.
     return result(budgetTokens !== null && beforeTokens + reservedTokens > budgetTokens ? "irreducible_overflow" : "already_fits");
   }

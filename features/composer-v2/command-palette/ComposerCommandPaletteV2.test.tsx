@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatHeaderGalleryAssistants } from "@/app/ui-v2-fixture/_fixtures/ChatHeaderV2Gallery";
 import { composerGalleryAssistant, composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
-import { explicitKnowledgeSelection } from "@/lib/contracts/knowledge";
 import { ComposerV2 } from "../ComposerV2";
 import type { ComposerPaletteEntry } from "./paletteModel";
 
@@ -343,27 +342,15 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(within(list()).queryByRole("option", { name: /Product research/u })).toBeNull();
   });
 
-  it("turns web search off and Agent on or off, with the chips' reasons and no Workspace command", () => {
-    const onSelectSearchOptionIds = vi.fn(), onAgent = vi.fn();
-    const view = render(<Harness selectedSearchOptionIds={["web-primary"]} onSelectSearchOptionIds={onSelectSearchOptionIds}
-      agent={{ enabled: false, onToggle: onAgent }} />);
+  it("turns web search off, with no Workspace command", () => {
+    const onSelectSearchOptionIds = vi.fn();
+    render(<Harness selectedSearchOptionIds={["web-primary"]} onSelectSearchOptionIds={onSelectSearchOptionIds} />);
     type("/", "/turn off web");
     key("Enter");
     expect(onSelectSearchOptionIds).toHaveBeenCalledWith([]);
     // Workspace is ambient: the palette offers no command to switch it.
     type("/", "/workspace");
     expect(screen.queryByRole("option", { name: /Turn (on|off) Workspace/u })).toBeNull();
-    type("/", "/turn on agent");
-    key("Enter");
-    expect(onAgent).toHaveBeenCalledWith(true);
-    // A mode change speaks through the chip alone, not a status line.
-    expect(screen.queryByText(/^Agent (on|off)/u)).toBeNull();
-    view.rerender(<Harness selectedKnowledgeSelection={explicitKnowledgeSelection({ baseIds: ["kb-finance"] })}
-      agent={{ enabled: false, onToggle: onAgent }} />);
-    type("", "/");
-    expect(option(/Turn on Agent/u)).toHaveTextContent("Turn off Knowledge to use Agent.");
-    fireEvent.click(option(/Turn on Agent/u));
-    expect(onAgent).toHaveBeenCalledTimes(1);
   });
 
   it("creates an artifact and opens the file dialog like the + menu, with its blocking reasons", () => {

@@ -6908,14 +6908,14 @@ describe("usage limit admission", () => {
     }
   );
 
-  it("refuses an Agent turn before its Workspace is prepared", async () => {
+  it("refuses a Workspace turn before its Workspace is prepared", async () => {
     const { repository, state } = createMemoryRepository();
     const prepare = vi.fn();
     const usageLimits = limitsReading(reached.installation_budget_exhausted.status);
     const response = await createSendMessageHandler({
       ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository, usageLimits,
       workspace: { prepare } as unknown as NonNullable<RunHandlerDeps["workspace"]>
-    })(send({ agentEnabled: true, workspace: { enabled: true } }), { params: { chatId: "chat-1" } });
+    })(send({ workspace: { enabled: true } }), { params: { chatId: "chat-1" } });
 
     expect(response.status).toBe(429);
     // The pooled cap never discloses installation amounts.

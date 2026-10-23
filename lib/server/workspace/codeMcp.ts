@@ -1,7 +1,7 @@
 /**
  * MCP from Workspace guest code: the shared, dependency-free protocol of the
  * app, the runner relay and the runner. Guest code reaches the run's frozen
- * MCP authority through the same relay and gateway as Agent mode, with a
+ * MCP authority through the runner relay and the app gateway, with a
  * run-scoped bearer that never authorizes model or Search calls.
  */
 
@@ -28,7 +28,7 @@ export function isWorkspaceCodeInvocationId(value: unknown): value is string {
   return typeof value === "string" && INVOCATION_ID.test(value);
 }
 
-/** The bearer format the run gateway accepts, shared with Agent tokens. */
+/** The bearer format the run gateway accepts. */
 export function isWorkspaceCodeToken(value: unknown): value is string {
   return typeof value === "string" && TOKEN.test(value);
 }
@@ -36,7 +36,7 @@ export function isWorkspaceCodeToken(value: unknown): value is string {
 /**
  * Code-call budgets frozen at Workspace admission, separate from the model's
  * tool budgets. Their presence also records that the guest of this
- * Internet-On, non-Agent run can reach the runner relay.
+ * Internet-On run can reach the runner relay.
  */
 export type NormalizedWorkspaceCodeMcp = Readonly<{
   version: 1;
@@ -58,7 +58,6 @@ export function isNormalizedWorkspaceCodeMcp(value: unknown): value is Normalize
 
 /** The frozen parts of an accepted request that decide whether its code may call MCP. */
 export type WorkspaceCodeMcpRequest = Readonly<{
-  agent?: unknown;
   mcp?: Readonly<{ tools?: readonly unknown[] }> | null;
   mcpDiscovery?: Readonly<{ catalog?: Readonly<{ servers?: readonly Readonly<{ tools?: readonly unknown[] }>[] }> }> | null;
   /** The run's chat belongs to a Project. */
@@ -67,19 +66,16 @@ export type WorkspaceCodeMcpRequest = Readonly<{
 }>;
 
 export type WorkspaceCodeMcpEligibility =
-  | Readonly<{ kind: "agent" }>
   | Readonly<{ kind: "unavailable"; reason: WorkspaceCodeUnavailableReason }>
   | Readonly<{ kind: "eligible"; budgets: NormalizedWorkspaceCodeMcp }>;
 
 /**
- * Agent runs keep their own bearer and gateway surface. Project runs get
- * none: members share a Project chat's Workspace, so code one member left
- * there would run with another member's authority. Otherwise the run needs
- * Internet On, a reachable relay recorded at admission, and MCP authority:
- * an Auto catalog or a frozen plan with tools.
+ * Project runs get no bearer: members share a Project chat's Workspace, so
+ * code one member left there would run with another member's authority.
+ * Otherwise the run needs Internet On, a reachable relay recorded at
+ * admission, and MCP authority: an Auto catalog or a frozen plan with tools.
  */
 export function workspaceCodeMcpEligibility(request: WorkspaceCodeMcpRequest): WorkspaceCodeMcpEligibility {
-  if (request.agent !== undefined && request.agent !== null) return { kind: "agent" };
   if (request.project === true) return { kind: "unavailable", reason: "project_unsupported" };
   if (request.workspace?.internetEnabled !== true) return { kind: "unavailable", reason: "internet_off" };
   const budgets = request.workspace.codeMcp;

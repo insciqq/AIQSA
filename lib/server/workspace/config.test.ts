@@ -14,7 +14,7 @@ describe("Workspace configuration", () => {
       cpus: 2,
       diskMiB: 10_240,
       idleTtlSeconds: 1_800,
-      imageRef: "aiqsa-workspace:0.1.35",
+      imageRef: "aiqsa-workspace:0.1.36",
       maxToolCalls: 320,
       maxToolRounds: 160,
       mcpVersion: WORKSPACE_MCP_VERSION,

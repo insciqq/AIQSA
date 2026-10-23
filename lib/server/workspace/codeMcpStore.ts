@@ -19,7 +19,7 @@ import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOpera
 
 const ACTIVE_RUN_STATUSES = ["queued", "in_progress", "streaming"] as const;
 
-/** Same digest as Agent run bearers: the gateway hashes every bearer once. */
+/** The gateway hashes every bearer once and looks it up by this digest. */
 export function workspaceCodeTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -42,7 +42,6 @@ export type WorkspaceCodeRunIdentity = Readonly<{
 }>;
 
 type FrozenRow = {
-  agent: boolean;
   catalogTools: boolean;
   planTools: boolean;
   project: boolean;
@@ -60,8 +59,7 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
      */
     async issueCodeGrant(binding: WorkspaceCodeRunIdentity): Promise<WorkspaceCodeGrantIssue> {
       const [frozen] = await prisma.$queryRaw<FrozenRow[]>(Prisma.sql`
-        SELECT (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
-          run."normalizedRequest" -> 'workspace' AS "workspace",
+        SELECT run."normalizedRequest" -> 'workspace' AS "workspace",
           COALESCE((
             SELECT bool_or(CASE WHEN jsonb_typeof(server -> 'tools') = 'array'
               THEN jsonb_array_length(server -> 'tools') > 0 ELSE false END)
@@ -78,14 +76,12 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
       `);
       if (!frozen) return { environment: {} };
       const eligibility = workspaceCodeMcpEligibility({
-        ...(frozen.agent ? { agent: true } : {}),
         project: frozen.project,
         workspace: frozen.workspace && typeof frozen.workspace === "object" && !Array.isArray(frozen.workspace)
           ? frozen.workspace as Record<string, unknown> : null,
         mcp: { tools: frozen.planTools ? [true] : [] },
         mcpDiscovery: { catalog: { servers: frozen.catalogTools ? [{ tools: [true] }] : [] } }
       });
-      if (eligibility.kind === "agent") return { environment: {} };
       if (eligibility.kind === "unavailable") return { environment: { [WORKSPACE_CODE_UNAVAILABLE_ENV]: eligibility.reason } };
       const token = randomBytes(32).toString("base64url");
       const issued = await prisma.$transaction(async (tx) => {
@@ -262,7 +258,6 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
   return {
     async load(tokenHash) {
       const [row] = await prisma.$queryRaw<Array<{
-        agent: boolean;
         approval: Prisma.JsonValue | null;
         catalog: Prisma.JsonValue | null;
         chatId: string;
@@ -276,7 +271,6 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
       }>>(Prisma.sql`
         SELECT code_grant."modelRunId" AS "runId", code_grant."workspaceSessionId" AS "sessionId",
           run."userId", run."chatId", run."status"::text AS "status", chat."projectId" IS NOT NULL AS "project",
-          (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
           run."normalizedRequest" -> 'workspace' AS "workspace",
           run."normalizedRequest" -> 'mcp' AS "mcp",
           run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog",
@@ -289,7 +283,7 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
       if (!row || !(ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status)) return null;
       const workspace = record(row.workspace);
       const authority = decodeAuthority(row.mcp, row.catalog);
-      const eligibility = workspaceCodeMcpEligibility({ ...(row.agent ? { agent: true } : {}), project: row.project, workspace,
+      const eligibility = workspaceCodeMcpEligibility({ project: row.project, workspace,
         mcp: authority?.kind === "plan" ? authority.snapshot : null,
         mcpDiscovery: authority?.kind === "catalog" ? { catalog: authority.catalog } : null });
       if (eligibility.kind !== "eligible" || !authority) return null;

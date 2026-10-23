@@ -179,21 +179,20 @@ export function decodeConversationContextPolicy(value: unknown): ConversationCon
   return value as ConversationContextPolicy;
 }
 
-/** The retired-policy outcome: a non-Agent run accepted before its policy was
- * frozen (absent) or under the retired `legacy_compatible` mode or checkpoint
- * revision. It ends before any budget, provider or tool step. */
+/** The retired-policy outcome: a run accepted before its policy was frozen
+ * (absent, as on every turn of the removed Codex Agent) or under the retired
+ * `legacy_compatible` mode or checkpoint revision. It ends before any budget,
+ * provider or tool step. */
 export const CONTEXT_COMPACTION_POLICY_RETIRED = Object.freeze({
   code: "context_compaction_policy_retired",
   message: "This answer was interrupted by an application update. Regenerate to try again."
 } as const);
 
-/** The one retired-policy rule. Agent runs never carry a policy: Codex owns
- * their context. */
+/** The one retired-policy rule. */
 export function contextCompactionPolicyRetired(
-  request: Readonly<{ agent?: unknown; contextCompactionPolicy?: Readonly<{ mode: string }> }>,
+  request: Readonly<{ contextCompactionPolicy?: Readonly<{ mode: string }> }>,
   checkpoint?: Pick<ContextCompactionCheckpoint, "policyRevision"> | null
 ): boolean {
-  if (request.agent !== undefined) return false;
   return request.contextCompactionPolicy?.mode !== "hybrid" || checkpoint?.policyRevision === "legacy-compatible-v1";
 }
 

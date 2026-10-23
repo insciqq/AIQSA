@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorkspaceAdmissionService, type WorkspaceAdmissionRepository } from "./admission";
 import { getWorkspaceConfig, WORKSPACE_DEFAULT_IMAGE_REF } from "./config";
-import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 
 vi.mock("./microsandboxRuntime", () => ({
   loadPinnedOfficialWorkspaceToolCatalog: vi.fn(async () => ({
@@ -24,12 +23,11 @@ function fixture(agentReady?: boolean, internetEnabled = true, session: StoredSe
 }
 
 describe("Workspace guest-code MCP admission", () => {
-  it("freezes code-call budgets only for Internet-On, non-Agent runs whose runner relays the gateway", async () => {
+  it("freezes code-call budgets only for Internet-On runs whose runner relays the gateway", async () => {
     const admitted = await fixture(true).service.prepare(request);
     expect(admitted.ok && admitted.plan.normalized.codeMcp).toEqual({ version: 1, maxCalls: 50, maxConcurrent: 4, maxPerSecond: 10 });
-    for (const [agentReady, internetEnabled, agentEnabled] of [[false, true, false], [undefined, true, false], [true, false, false],
-      [true, true, true]] as const) {
-      const result = await fixture(agentReady, internetEnabled).service.prepare({ ...request, ...(agentEnabled ? { agentEnabled } : {}) });
+    for (const [agentReady, internetEnabled] of [[false, true], [undefined, true], [true, false]] as const) {
+      const result = await fixture(agentReady, internetEnabled).service.prepare(request);
       expect(result.ok && result.plan.normalized.codeMcp).toBeUndefined();
     }
   });
@@ -38,20 +36,10 @@ describe("Workspace guest-code MCP admission", () => {
 const request = { assistantMessageId: "answer", chatId: "chat", enabled: true,
   modelSupportsTools: true, runId: "run", userMessageId: "question" };
 
-describe("Workspace Agent admission", () => {
-  it.each([false, undefined])("rejects unsupported Agent before binding a session or loading tools: %s", async (agentReady) => {
-    vi.mocked(loadPinnedOfficialWorkspaceToolCatalog).mockClear();
-    const { read, service } = fixture(agentReady);
-    await expect(service.prepare({ ...request, agentEnabled: true })).resolves.toEqual({
-      code: "agent_unavailable", ok: false, status: 503
-    });
-    expect(read).toHaveBeenCalledWith({ fresh: true });
-    expect(loadPinnedOfficialWorkspaceToolCatalog).not.toHaveBeenCalled();
-  });
-
-  it("admits ordinary Workspace without Agent support and Agent with explicit support", async () => {
+describe("Workspace admission without the runner gateway", () => {
+  it("admits Workspace whether or not the runner relays the gateway", async () => {
     await expect(fixture(false).service.prepare(request)).resolves.toMatchObject({ ok: true });
-    await expect(fixture(true).service.prepare({ ...request, agentEnabled: true })).resolves.toMatchObject({ ok: true });
+    await expect(fixture(true).service.prepare(request)).resolves.toMatchObject({ ok: true });
   });
 });
 

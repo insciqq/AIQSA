@@ -59,7 +59,6 @@ export type ComposerSessionSnapshot = {
     inFlight: boolean;
     draftChanged?: boolean;
   }> | null;
-  agentEnabled?: boolean;
   /**
    * A blank chat's automatic answer review, chosen before its first send;
    * absent follows the Settings default. A saved chat keeps its own.
@@ -131,7 +130,6 @@ export type ComposerSessionPatch = Partial<
     | "editingMessageId"
     | "operationError"
     | "workspaceEnabled"
-    | "agentEnabled"
     | "answerReview"
     | "artifactEdit"
     | "artifactCreate"
@@ -201,7 +199,6 @@ const noRecoveries: readonly ComposerOperationRecovery[] = Object.freeze([]);
 
 export const emptyComposerSessionSnapshot = Object.freeze({
   followupSubmission: null,
-  agentEnabled: false,
   artifactCreate: null,
   artifactEdit: null,
   attachments: emptyAttachments,
@@ -351,7 +348,6 @@ function patchedSession(
   const recoveriesChanged = recoveries.length !== current.operationErrorRecoveries.length;
   const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
     (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
-  const agentChanged = hasOwn(patch, "agentEnabled") && patch.agentEnabled !== current.agentEnabled;
   const answerReviewChanged = hasOwn(patch, "answerReview") && patch.answerReview !== current.answerReview;
   const artifactEditChanged = hasOwn(patch, "artifactEdit") && patch.artifactEdit !== current.artifactEdit;
   const artifactCreateChanged = hasOwn(patch, "artifactCreate") && patch.artifactCreate !== current.artifactCreate;
@@ -367,7 +363,7 @@ function patchedSession(
     !errorChanged &&
     !retryabilityChanged &&
     !recoveriesChanged &&
-    !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged &&
+    !workspaceChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged &&
     !answerReviewChanged
   ) {
     return current;
@@ -378,7 +374,6 @@ function patchedSession(
     ...(followupChanged ? { followupSubmission: patch.followupSubmission } : {}),
     ...(!followupChanged && draftChanged && current.followupSubmission
       ? { followupSubmission: { ...current.followupSubmission, draftChanged: true } } : {}),
-    ...(agentChanged ? { agentEnabled: patch.agentEnabled ?? false } : {}),
     ...(answerReviewChanged ? { answerReview: patch.answerReview ?? null } : {}),
     ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
     ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),
@@ -389,14 +384,14 @@ function patchedSession(
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged || errorPatched
+    ...(attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged || artifactCreateChanged || errorPatched
       ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     ...(recoveriesChanged ? { operationErrorRecoveries: recoveries } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
+    revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
   };
 }
 

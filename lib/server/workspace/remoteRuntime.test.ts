@@ -13,7 +13,6 @@ import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
 import { WorkspaceRuntimeError, workspaceOutputCollection } from "./runtime";
-import { AgentExecutionError, agentFailureCode } from "../agents/failures";
 import { tarGzipStream } from "../chats/tarArchive";
 import { SKILL_RUNTIME_ARCHIVE_MAX_BYTES } from "./skillBundles";
 
@@ -98,31 +97,6 @@ describe("remote Workspace runner protocol", () => {
       await remote.releaseOutputCapture({ ...identity, operation: nextOperation, captureId: request.capture.id });
       await expect(remote.collectOutputs({ ...request, operation: nextOperation, capture: { ...request.capture, create: false } })).rejects.toMatchObject({ code: "workspace_output_export_failed" });
     } finally { await remote.removeSession({ ...identity, operation: cleanupOperation }); }
-  });
-
-  it("fences Agent interruption through the authenticated receiver operation", async () => {
-    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
-    const interruptAgent = vi.fn(async () => true);
-    Object.assign(local, { interruptAgent });
-    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
-    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
-    const sessionId = "ws_" + "e".repeat(40);
-    const session = await remote.ensureSession({ sessionId, runtimeSandboxId: null, operation,
-      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1, diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
-    const identity = { sessionId, runtimeSandboxId: session.runtimeSandboxId, operation, modelRunId: "run",
-      runtimeExecSessionId: "agent-00000000-0000-4000-8000-000000000001" };
-    expect(await remote.interruptAgent(identity)).toBe(true);
-    expect(interruptAgent).toHaveBeenCalledWith(expect.objectContaining({ runtimeExecSessionId: identity.runtimeExecSessionId, modelRunId: "run" }));
-    await remote.claimSessionOperation({ ...identity, operation: { generation: 2, owner: "next" } });
-    await expect(remote.interruptAgent(identity)).rejects.toMatchObject({ code: "workspace_operation_stale" });
-    expect(interruptAgent).toHaveBeenCalledOnce();
-    const unauthorized = await fetch(new URL(`/v1/sessions/${sessionId}/agent/interrupt`, runnerUrl), {
-      method: "POST", body: JSON.stringify(identity)
-    });
-    expect(unauthorized.status).toBe(401); await unauthorized.arrayBuffer();
-    expect(interruptAgent).toHaveBeenCalledOnce();
   });
 
   it("sends the run's own operation with an export claim so the receiver hands over without a stop", async () => {
@@ -340,21 +314,6 @@ describe("remote Workspace runner protocol", () => {
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,
       runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
     await expect(remote.listSessions({})).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
-  });
-
-  it("reports a refused Agent profile as its own Agent code, other start refusals as before", async () => {
-    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,
-      runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
-    const start = () => remote.startAgent({ modelRunId: "fixture", operation, runtimeExecSessionId: "agent-fixture",
-      runtimeSandboxId: "fixture", sessionId: "fixture", signal: new AbortController().signal, prompt: "fixture",
-      profile: {} as Parameters<RemoteWorkspaceRuntime["startAgent"]>[0]["profile"], skillManifestHash: "b".repeat(64),
-      runToken: "run_token_fixture", timeoutSeconds: null });
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "agent_profile_invalid" }, { status: 400 })));
-    const refused = await start().catch((error: unknown) => error);
-    expect(refused).toBeInstanceOf(AgentExecutionError);
-    expect(agentFailureCode(refused)).toBe("agent_profile_invalid");
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "field_invalid" }, { status: 400 })));
-    await expect(start()).rejects.toMatchObject({ code: "workspace_runtime_unavailable" });
   });
 
   it("rejects a receiver that did not confirm the requested durable capture", async () => {

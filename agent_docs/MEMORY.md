@@ -48,7 +48,7 @@ Maintenance runs whenever Memory and automatic learning are on (`lib/server/memo
 ## Retrieval
 
 - Ordinary personal turns get a small fixed standing set of current facts, with no dynamic retrieval or external call (`lib/server/memory/retrieval/readBudget.ts`). Deeper recall is an optional read-only tool for the answer model.
-- Codex Agent runs, temporary, Excluded and Project chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
+- Temporary, Excluded and Project chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
 - Every hit rejoins its current owner, source, content hash, lifecycle, generation, suppression, deletion and expiry proof before fusion and again before the evidence pack is frozen. An OpenSearch failure falls back to PostgreSQL without weakening those checks.
 - Empty, limited, failed and cancelled searches stay distinct, and none proves absence. The standing set is partial, so the model should search before calling a personal detail unknown.
 - Search permissions, destinations and budgets freeze at acceptance (`lib/server/memory/search/admission.ts`), and source authority is rechecked before every disclosure to a model. Exception: context notes may hold Memory search results and, like assistant answers in history, are not rechecked or scrubbed by Forget, edit, exclusion or reset.

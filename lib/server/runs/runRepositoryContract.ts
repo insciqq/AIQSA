@@ -1048,8 +1048,8 @@ export type RunRepository = {
   /** A deployment's own class and stored token prices, which price system
    * attributions it reported no cost for; null when the model no longer exists. */
   loadProviderModelCostBasis(providerModelId: string): Promise<ProviderModelCostBasis | null>;
-  interruptExpiredAgentRun?(input: { runId: string; userId: string; now: Date }): Promise<
-    { kind: "not_agent" } | { kind: "active" } | { kind: "interrupted"; failureCode: import("../agents/failures").AgentFailureCode; usage: RunUsageAttribution[] }>;
+  /** Whether the run was accepted as a Codex Agent turn, which nothing runs since the Agent was removed. */
+  isRetiredAgentRun?(input: { runId: string; userId: string }): Promise<boolean>;
   loadRunUsageAttributions(input: {
     runId: string;
     userId: string;

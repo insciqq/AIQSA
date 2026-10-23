@@ -10,11 +10,11 @@ import {
 } from "./writeApproval";
 import { consumeMcpApproval, requestMcpApproval, type McpApprovalScope } from "./writeApprovalRepository";
 
-/** Approval state the guest-code and Agent gateways consult; injectable for tests. */
+/** Approval state the guest-code gateway consults; injectable for tests. */
 export type McpGatewayApprovalStore = Readonly<{
   consume(scope: McpApprovalScope, key: McpApprovalCallKey): Promise<boolean>;
   request(scope: McpApprovalScope, request: McpApprovalRequest & Readonly<{
-    source: "agent" | "code";
+    source: "code";
     toolCallId: string | null;
   }>): Promise<string>;
 }>;
@@ -36,7 +36,7 @@ export class McpApprovalRequiredError extends Error {
 }
 
 /**
- * The approval gate of a guest-code or Agent call, after the shared pipeline
+ * The approval gate of a guest-code call, after the shared pipeline
  * prepared its exact current definition and before anything is dispatched.
  * Allowed when the run needs no approval for it (no marker, a read-only
  * tool, an "Always allow" frozen at admission) or one matching one-shot
@@ -48,7 +48,7 @@ export async function gateMcpGatewayCall(input: Readonly<{
   admission: McpApprovalAdmission | undefined;
   prepared: McpHubPreparedToolCall;
   scope: McpApprovalScope;
-  source: "agent" | "code";
+  source: "code";
   store: McpGatewayApprovalStore | undefined;
   toolCallId: string | null;
   toolName: string;

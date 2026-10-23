@@ -57,9 +57,7 @@ export type EmergencyFailure = CaughtError & Readonly<{
 type OperationOutcome = "started" | "completed" | "failed" | "cancelled";
 /** Only preparation reports a run that continued without optional Memory. */
 type PreparationOutcome = OperationOutcome | "degraded";
-/** `upstream`, `authority_expired` and `interrupted` name why an Agent model request or run ended. */
-type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response" |
-  "upstream" | "authority_expired" | "interrupted";
+type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
 type ProviderIdentity = Readonly<{ providerFamily?: string; adapterKind?: string; connectionId?: string; providerModelId?: string }>;
 type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   stage?: "answer" | "compaction" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" |

@@ -131,7 +131,7 @@ describe("personal MCP address policy in a container", async () => {
     ["the host gateway on the public application port", "https://host.docker.internal/", "172.17.0.1"],
     ["the public application name on its port", "https://aiqsa.example.test/mcp", "93.184.216.99"],
     ["the public application address on its port", "https://other-name.example.test/", "93.184.216.34"],
-    ["the Agent gateway", "http://host.microsandbox.internal:4311/", "93.184.216.36"],
+    ["the runner gateway", "http://host.microsandbox.internal:4311/", "93.184.216.36"],
     ["link-local metadata", "http://169.254.169.254/latest/meta-data", "169.254.169.254"],
     ["the Azure WireServer", "http://168.63.129.16/machine?comp=goalstate", "168.63.129.16"],
     ["ECS task metadata", "http://169.254.170.2/v2/metadata", "169.254.170.2"],
