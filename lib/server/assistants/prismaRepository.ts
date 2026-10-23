@@ -139,6 +139,8 @@ export type AssistantCreateResult =
 export type AssistantPublishInput = {
   actorIsAdmin: boolean;
   assistantId: string;
+  /** When given (a publication the user confirmed in an answer's card), the definition version it was proposed for. */
+  expectedVersion?: number;
   groupId: string | null;
   scope: "group" | "installation";
   userId: string;
@@ -148,6 +150,7 @@ export type AssistantPublishResult =
   | { kind: "forbidden" }
   | { kind: "invalid" }
   | { kind: "not_found" }
+  | { kind: "version_conflict" }
   | { kind: "skill_audience_mismatch"; skillNames?: string[] }
   | { kind: "ok"; publication: AssistantPublicationRow };
 
@@ -1225,15 +1228,19 @@ export function createPrismaAssistantRepository(
     async publish(input: AssistantPublishInput): Promise<AssistantPublishResult> {
       return client.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<
-          Array<{ archivedAt: Date | null; id: string }>
+          Array<{ archivedAt: Date | null; id: string; version: number }>
         >`
-          SELECT "id", "archivedAt"
+          SELECT "id", "archivedAt", "version"
           FROM "AssistantDefinition"
           WHERE "id" = ${input.assistantId} AND "ownerUserId" = ${input.userId}
           FOR UPDATE
         `;
         const definition = locked[0];
         if (!definition) return { kind: "not_found" as const };
+        // Checked under the row lock: a definition saved since the proposal is not published.
+        if (input.expectedVersion !== undefined && definition.version !== input.expectedVersion) {
+          return { kind: "version_conflict" as const };
+        }
         if (definition.archivedAt) return { kind: "invalid" as const };
 
         if (input.scope === "installation") {

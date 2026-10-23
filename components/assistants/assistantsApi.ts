@@ -222,9 +222,10 @@ export function deleteAssistant(
   );
 }
 
+/** With `expectedVersion`, the server publishes only that definition version and refuses with `assistant_version_conflict` otherwise. */
 export function publishAssistant(
   assistantId: string,
-  input: { groupId?: string; scope: "group" | "installation" }
+  input: { expectedVersion?: number; groupId?: string; scope: "group" | "installation" }
 ): Promise<AssistantApiResult<undefined>> {
   return requestJson(
     assistantPath(assistantId, "/publications"),

@@ -478,8 +478,13 @@ export async function withdrawSkillApproval(skillId: string, requestId: string):
   return detail;
 }
 
-export async function deleteSkill(skillId: string): Promise<void> {
-  await request(`/api/me/skills/${encodeURIComponent(skillId)}`, { method: "DELETE" });
+/** With `expectedVersion`, the server deletes only that version and refuses with `skill_version_conflict` otherwise. */
+export async function deleteSkill(skillId: string, expectedVersion?: number): Promise<void> {
+  await request(`/api/me/skills/${encodeURIComponent(skillId)}`, expectedVersion === undefined ? { method: "DELETE" } : {
+    body: JSON.stringify({ expectedVersion }),
+    headers: { "content-type": "application/json" },
+    method: "DELETE"
+  });
   await refreshCurrentSkillLibrary();
 }
 
