@@ -72,4 +72,29 @@ describe("failed runs on PostgreSQL", () => {
     await expect(readFailedRunLoad(prisma, { from: at(-60), to: at(-30), perCode: 2, groupLimit: 10 }))
       .resolves.toEqual({ runs: 0, users: 0, groups: [], groupsTruncated: false });
   });
+
+  it("leaves out the old core's runs the upgrade ended only when asked, never a native interruption", async () => {
+    const owner = await prisma.chat.findFirstOrThrow({ where: { userId: OWNERS[0] }, select: { id: true, messages: { select: { id: true } } } });
+    const runs = [
+      { minutes: 100, engine: "v1", code: "run_interrupted" },
+      { minutes: 105, engine: "v1", code: "agent_mode_removed" },
+      { minutes: 110, engine: "v1", code: "provider_server_error" },
+      { minutes: 115, engine: "native", code: "run_interrupted" }
+    ] as const;
+    for (const run of runs) {
+      await prisma.modelRun.create({
+        data: {
+          id: randomUUID(), chatId: owner.id, userId: OWNERS[0]!, userMessageId: owner.messages[0]!.id, provider: "failed-runs-provider",
+          modelId: "failed-runs-model", status: "error", createdAt: at(run.minutes), engine: run.engine, normalizedRequest: {},
+          errorPayload: { code: run.code, message: "Private failure detail" }
+        }
+      });
+    }
+    const window = { from: at(100), to: at(120), perCode: 1, groupLimit: 10 };
+    expect((await readFailedRunLoad(prisma, window)).runs).toBe(4);
+    const kept = await readFailedRunLoad(prisma, { ...window, withoutRetiredEngineEnds: true });
+    expect(kept.runs).toBe(2);
+    expect(kept.groups.map(({ code, runs: count }) => [code, count]).sort())
+      .toEqual([["provider_server_error", 1], ["run_interrupted", 1]]);
+  });
 });

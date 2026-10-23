@@ -29,6 +29,15 @@ describe("failed runs read", () => {
     expect(statement.values).toEqual([from, to, expect.arrayContaining(["context_too_large", "provider_refused"]), 2, 11]);
   });
 
+  it("leaves out the old core's runs the upgrade ended only when asked", () => {
+    const plain = adminHealthFailedRunsStatement({ from, to, perCode: 2, groupLimit: 10 });
+    expect(plain.text).not.toContain("ModelRunEngine");
+    const statement = adminHealthFailedRunsStatement({ from, to, perCode: 2, groupLimit: 10, withoutRetiredEngineEnds: true });
+    const sql = statement.text.replace(/\s+/gu, " ");
+    expect(sql).toContain(`AND NOT (run."engine" = 'v1'::"ModelRunEngine" AND COALESCE(run."errorPayload" ->> 'code', '') = ANY($3::text[]))`);
+    expect(statement.values[2]).toEqual(["agent_mode_removed", "run_interrupted"]);
+  });
+
   it.each([
     [{ from: to, to: from, perCode: 2, groupLimit: 10 }],
     [{ from, to, perCode: 0, groupLimit: 10 }],
