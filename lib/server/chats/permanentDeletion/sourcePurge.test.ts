@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryDeletionClaim } from "../../memory/coordinator/types";
+import { MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE } from "../../memory/savedSecretScrubRequest";
 import { PERMANENT_CHAT_DELETION_TARGET_TYPE } from "./contract";
 import { createSourcePurgeDeletionHandler } from "./sourcePurge";
 
@@ -24,12 +25,14 @@ const claim = (targetType: string): MemoryDeletionClaim => ({
 });
 
 describe("SOURCE_PURGE composition", () => {
-  it("routes only the exact permanent-chat target and retains history ownership", async () => {
+  it("routes only the exact permanent-chat and saved-secret targets and retains history ownership", async () => {
     const historyExecute = vi.fn(async () => ({}));
     const permanentExecute = vi.fn(async () => ({}));
+    const scrubExecute = vi.fn(async () => ({}));
     const handler = createSourcePurgeDeletionHandler({
       history: { execute: historyExecute, operation: "SOURCE_PURGE" },
-      permanentChat: { execute: permanentExecute, operation: "SOURCE_PURGE" }
+      permanentChat: { execute: permanentExecute, operation: "SOURCE_PURGE" },
+      savedSecretScrub: { execute: scrubExecute, operation: "SOURCE_PURGE" }
     });
     const context = {
       now: () => new Date(),
@@ -37,7 +40,9 @@ describe("SOURCE_PURGE composition", () => {
     };
     await handler.execute(claim(PERMANENT_CHAT_DELETION_TARGET_TYPE), context);
     await handler.execute(claim("HISTORY_SOURCE@memory-history-source-v1"), context);
+    await handler.execute(claim(MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE), context);
     expect(permanentExecute).toHaveBeenCalledOnce();
     expect(historyExecute).toHaveBeenCalledOnce();
+    expect(scrubExecute).toHaveBeenCalledOnce();
   });
 });

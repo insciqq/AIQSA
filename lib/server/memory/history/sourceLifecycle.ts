@@ -225,6 +225,25 @@ async function invalidateAffectedHistory(
           )
         ORDER BY tool_event."id"
       `;
+  return invalidateHistoryItems(tx, event.snapshot.userId, { chunks, rounds, toolEvents }, now);
+}
+
+type HistoryItemIds = Readonly<{
+  chunks: readonly Readonly<{ id: string }>[];
+  rounds: readonly Readonly<{ id: string }>[];
+  toolEvents: readonly Readonly<{ id: string }>[];
+}>;
+
+async function invalidateHistoryItems(
+  tx: MemoryTransaction,
+  userId: string,
+  { chunks, rounds, toolEvents }: HistoryItemIds,
+  now: Date
+): Promise<Readonly<{
+  chunks: number;
+  rounds: number;
+  toolEvents: number;
+}>> {
   if (chunks.length === 0 && rounds.length === 0 && toolEvents.length === 0) {
     return { chunks: 0, rounds: 0, toolEvents: 0 };
   }
@@ -236,7 +255,7 @@ async function invalidateAffectedHistory(
         { recallRoundId: { in: rounds.map((round) => round.id) } },
         { toolEventId: { in: toolEvents.map((toolEvent) => toolEvent.id) } }
       ],
-      userId: event.snapshot.userId
+      userId
     }
   });
   if (toolEvents.length > 0) {
@@ -245,7 +264,7 @@ async function invalidateAffectedHistory(
       where: {
         id: { in: toolEvents.map((toolEvent) => toolEvent.id) },
         state: "ACTIVE",
-        userId: event.snapshot.userId
+        userId
       }
     });
   }
@@ -255,7 +274,7 @@ async function invalidateAffectedHistory(
       where: {
         roundId: { in: rounds.map((round) => round.id) },
         state: { in: ["ACTIVE", "SUPPRESSED"] },
-        userId: event.snapshot.userId
+        userId
       }
     });
     await tx.memoryRecallRound.updateMany({
@@ -263,7 +282,7 @@ async function invalidateAffectedHistory(
       where: {
         id: { in: rounds.map((round) => round.id) },
         state: { in: ["ACTIVE", "SUPPRESSED"] },
-        userId: event.snapshot.userId
+        userId
       }
     });
   }
@@ -272,7 +291,7 @@ async function invalidateAffectedHistory(
     where: {
       id: { in: chunks.map((chunk) => chunk.id) },
       state: { in: ["ACTIVE", "SUPPRESSED"] },
-      userId: event.snapshot.userId
+      userId
     }
   });
   return {
@@ -280,6 +299,77 @@ async function invalidateAffectedHistory(
     rounds: rounds.length,
     toolEvents: toolEvents.length
   };
+}
+
+/** Purges a chat's non-active history items, again when an earlier purge finished. */
+async function reopenHistorySourcePurge(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  chatId: string
+): Promise<void> {
+  const deletion = await enqueueMemoryDeletion(tx, settings, {
+    operation: "SOURCE_PURGE",
+    targetId: chatId,
+    targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
+  });
+  if (deletion.created) return;
+  await tx.memoryDeletionOutbox.update({
+    data: {
+      completedAt: null,
+      errorCode: null,
+      lastAuditAt: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "PENDING"
+    },
+    where: { id: deletion.id }
+  });
+}
+
+/**
+ * Chats whose history holds a value the owner has since saved as a secret
+ * (`../savedSecretScrub.ts`). Each `visible` chat has every history item
+ * invalidated and purged, and its checkpoint asks for a full rebuild, which
+ * indexes the chat again with saved values redacted (`./sourceProjection.ts`).
+ * A `hidden` chat holds the value only in invalidated items, which its purge
+ * removes. The caller holds the owner's settings lock. Returns the number of
+ * chats.
+ */
+export async function invalidateMemoryHistoryHoldingSavedSecret(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  chatIds: Readonly<{ hidden: readonly string[]; visible: readonly string[] }>,
+  now: Date
+): Promise<number> {
+  const userId = settings.userId;
+  const chats = [...new Set(chatIds.visible)].sort();
+  const hidden = [...new Set(chatIds.hidden)].filter((chatId) => !chats.includes(chatId)).sort();
+  for (const chatId of hidden) await reopenHistorySourcePurge(tx, settings, chatId);
+  let visibilityChanged = false;
+  for (const chatId of chats) {
+    const visible = { chatId, state: { in: ["ACTIVE" as const, "SUPPRESSED" as const] }, userId };
+    const invalidated = await invalidateHistoryItems(tx, userId, {
+      chunks: await tx.memoryRecallChunk.findMany({ select: { id: true }, where: visible }),
+      rounds: await tx.memoryRecallRound.findMany({ select: { id: true }, where: visible }),
+      toolEvents: await tx.memoryToolEvent.findMany({
+        select: { id: true },
+        where: { chatId, state: "ACTIVE", userId }
+      })
+    }, now);
+    if (invalidated.chunks + invalidated.rounds + invalidated.toolEvents > 0) visibilityChanged = true;
+    await reopenHistorySourcePurge(tx, settings, chatId);
+    await tx.chatMemoryCheckpoint.updateMany({
+      data: { pipelineVersion: MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION },
+      where: { chatId, userId }
+    });
+    await tx.chatMemoryCheckpoint.updateMany({
+      data: { lastErrorCode: null, status: "PENDING" },
+      where: { chatId, status: "READY", userId }
+    });
+  }
+  if (visibilityChanged) await advanceMemoryMutation(tx, settings, "CHUNK_VISIBILITY_CHANGE");
+  return chats.length + hidden.length;
 }
 
 async function settleVisibleMutationCounter(
@@ -519,25 +609,7 @@ export async function applyMemoryHistorySourceMutation(
             invalidated.toolEvents > 0 ||
             event.snapshot.memoryMode !== "NORMAL"
         )) {
-          const deletion = await enqueueMemoryDeletion(tx, settings, {
-            operation: "SOURCE_PURGE",
-            targetId: event.snapshot.id,
-            targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
-          });
-          if (!deletion.created) {
-            await tx.memoryDeletionOutbox.update({
-              data: {
-                completedAt: null,
-                errorCode: null,
-                lastAuditAt: null,
-                leaseExpiresAt: null,
-                leaseToken: null,
-                nextAttemptAt: null,
-                state: "PENDING"
-              },
-              where: { id: deletion.id }
-            });
-          }
+          await reopenHistorySourcePurge(tx, settings, event.snapshot.id);
         }
       } else {
         await settleUnchangedIndexRevision(tx, settings, event);

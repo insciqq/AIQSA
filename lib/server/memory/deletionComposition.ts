@@ -10,6 +10,7 @@ import {
 } from "./accountDeletion/handler";
 import { MEMORY_DELETION_ADMISSION_POLICY } from "./capabilityPolicy";
 import { memoryHistorySourceDeletionHandler } from "./history/purge";
+import { memorySavedSecretScrubDeletionHandler } from "./savedSecretScrub";
 import {
   createPrismaPermanentChatDeletionHandler
 } from "../chats/permanentDeletion/cleanup";
@@ -141,7 +142,8 @@ const defaultPermanentChatDeletionHandler =
   );
 const defaultSourcePurgeHandler = createSourcePurgeDeletionHandler({
   history: memoryHistorySourceDeletionHandler,
-  permanentChat: defaultPermanentChatDeletionHandler
+  permanentChat: defaultPermanentChatDeletionHandler,
+  savedSecretScrub: memorySavedSecretScrubDeletionHandler
 });
 const defaultAccountDeletionHandler = createPrismaAccountMemoryDeletionHandler(prisma);
 let defaultKick: (() => void) | null = null;

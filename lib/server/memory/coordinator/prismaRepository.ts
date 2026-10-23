@@ -381,6 +381,16 @@ async function recoverEligibleMemoryJobs(
   return recovered;
 }
 
+/**
+ * A Memory command waits until the run of its message settles, so that what
+ * the agent saved in that run (a secret, `../persistence/savedSecrets.ts`) is
+ * in place before the command writes, and its notice may follow the answer.
+ * A longer run holds it at most this long after acceptance, short of the
+ * administrators' stalled-work threshold; a secret saved later still removes
+ * its value from Memory (`../savedSecretScrub.ts`).
+ */
+export const MEMORY_COMMAND_RUN_SETTLEMENT_WAIT_MS = 10 * 60_000;
+
 function jobEligibility(
   kinds: readonly MemoryJobKind[],
   now: Date,
@@ -398,6 +408,18 @@ function jobEligibility(
           AND preceding."commandSequence" < job."commandSequence"
           AND preceding."state" IN ('QUEUED', 'CLAIMED', 'RETRYABLE_FAILED',
             'WAITING_FOR_CONFIGURATION', 'WAITING_FOR_EGRESS_CONSENT')
+      )
+    )
+    AND (
+      job."kind" <> 'MEMORY_COMMAND'::"MemoryJobKind"
+      OR job."createdAt" <= ${new Date(now.getTime() - MEMORY_COMMAND_RUN_SETTLEMENT_WAIT_MS)}
+      OR NOT EXISTS (
+        SELECT 1 FROM "ModelRun" AS source_run
+        WHERE source_run."assistantMessageId" = job."activeLeafMessageId"
+          AND source_run."userId" = job."userId"
+          AND source_run."userMessageId" = job."sourceMessageId"
+          AND source_run."status" IN ('preparing'::"ModelRunStatus", 'queued'::"ModelRunStatus",
+            'streaming'::"ModelRunStatus", 'in_progress'::"ModelRunStatus")
       )
     )
     AND (

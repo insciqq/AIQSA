@@ -1,4 +1,8 @@
 import { memorySha256 } from "../persistence/lexical";
+import {
+  MEMORY_SAVED_SECRET_REDACTION_REASON,
+  redactMemorySavedSecretValues
+} from "../persistence/savedSecretMatching";
 import type { MemorySecretSourceMapEntry } from "../explicit/safety";
 import { detectMemoryTextLanguage, type MemoryTextLanguage } from "./language";
 import {
@@ -72,6 +76,10 @@ export type MemoryHistorySourceSnapshotInput = Readonly<{
   folderId: string | null;
   messages: readonly MemoryHistorySourceMessageInput[];
   mode: MemoryHistorySourceMode;
+  /** History only: the owner's saved secret values, replaced by a redaction
+   * marker before the safety scan (`../persistence/savedSecretMatching.ts`).
+   * Fact evidence keeps the plain projection its offsets were proven on. */
+  savedSecretValues?: readonly string[];
   sourceContentHash: string;
   sourceRevision: number;
   timeZone: string;
@@ -364,7 +372,8 @@ function emptySnapshot(
 }
 
 function evaluateMessages(
-  path: readonly MemoryHistorySourceMessageInput[]
+  path: readonly MemoryHistorySourceMessageInput[],
+  savedSecretValues: readonly string[]
 ): EvaluatedMessage[] {
   const pathIndex = new Map(path.map((message, index) => [message.id, index]));
   const evaluated: EvaluatedMessage[] = [];
@@ -446,7 +455,8 @@ function evaluateMessages(
       extracted &&
       (input.role === "user" || input.role === "assistant")
     ) {
-      const safety = projectMemoryHistorySourceText(extracted.text);
+      const saved = redactMemorySavedSecretValues(extracted.text, savedSecretValues);
+      const safety = projectMemoryHistorySourceText(saved.text);
       if (!safety.eligible) {
         for (const reason of safety.redactionReasonCodes) reasons.add(reason);
         sizeOnlyIneligible = safety.processingState === "OVERSIZE";
@@ -463,9 +473,11 @@ function evaluateMessages(
             modelRunId: provenance.modelRunId,
             origin: origin as "DIRECT_USER" | "VISIBLE_ASSISTANT"
           },
-          redactionReasonCodes: safety.redactionReasonCodes,
+          redactionReasonCodes: saved.redacted
+            ? uniqueSorted([...safety.redactionReasonCodes, MEMORY_SAVED_SECRET_REDACTION_REASON])
+            : safety.redactionReasonCodes,
           redactionSourceMap: safety.redactionSourceMap,
-          redactionState: safety.redactionState,
+          redactionState: saved.redacted ? "REDACTED" : safety.redactionState,
           role: input.role,
           safeText: safety.safeText,
           safeTextHash: memorySha256(safety.safeText),
@@ -602,7 +614,7 @@ export function buildMemorySafeSourceSnapshot(
     return emptySnapshot(input, timeZone);
   }
   const path = activePath(input.messages, input.chatId, input.activeLeafMessageId);
-  const evaluated = evaluateMessages(path);
+  const evaluated = evaluateMessages(path, input.savedSecretValues ?? []);
   const turnGroups = recallTurnGroups(evaluated);
   const factMessages = factEvidenceMessages(evaluated);
   const provenanceGraph = evaluated.map((message): MemoryHistoryProvenanceNode => ({
