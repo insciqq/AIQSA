@@ -1,0 +1,201 @@
+import { describe, expect, it } from "vitest";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "../../../domain/workspace";
+import { namespacedMcpToolName } from "../../mcp/runPlan";
+import { ARTIFACT_TOOL_NAME } from "../../tools/artifact";
+import { READ_TOOL_RESULT_NAME } from "../../tools/readToolResult";
+import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../../tools/scheduledTaskCreation";
+import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../../tools/scheduledTaskManagement";
+import { LOAD_SKILL_TOOL_NAME, READ_SKILL_FILE_TOOL_NAME } from "../../tools/skill";
+import { SAVE_SKILL_TOOL_NAME } from "../../tools/skillSave";
+import { namespacedWorkspaceToolName } from "../../workspace/toolCatalog";
+import { charTokens, handleFor, transcriptBuilder } from "./compaction.testFixtures";
+import {
+  buildRetainedContext,
+  buildStateBlock,
+  COMPACTION_PRODUCT_TOOLS,
+  defaultCompactionToolKind,
+  describeArguments,
+  earlierUserMessages,
+  estimateRetainedTokens,
+  RETAINED_PREAMBLE,
+  skillsInUse
+} from "./retained";
+
+const kind = (name: string, args: Record<string, unknown> = {}) => defaultCompactionToolKind({ arguments: JSON.stringify(args), name });
+const workspace = namespacedWorkspaceToolName;
+
+describe("default tool kinds", () => {
+  it("names the product tools exactly as the tool modules do", () => {
+    expect(COMPACTION_PRODUCT_TOOLS).toEqual({
+      artifact: ARTIFACT_TOOL_NAME,
+      loadSkill: LOAD_SKILL_TOOL_NAME,
+      manageScheduledTask: MANAGE_SCHEDULED_TASK_TOOL_NAME,
+      readSkillFile: READ_SKILL_FILE_TOOL_NAME,
+      readToolResult: READ_TOOL_RESULT_NAME,
+      saveSkill: SAVE_SKILL_TOOL_NAME,
+      scheduledTask: CREATE_SCHEDULED_TASK_TOOL_NAME
+    });
+  });
+
+  it("classifies every Workspace tool by its provider-facing alias and its original name", () => {
+    const expected: Record<string, string> = {
+      sandbox_exec: "workspace_command", sandbox_exec_start: "workspace_command", sandbox_shell: "workspace_command",
+      sandbox_fs_copy: "workspace_write", sandbox_fs_mkdir: "workspace_write", sandbox_fs_remove: "workspace_write",
+      sandbox_fs_rename: "workspace_write", sandbox_fs_write: "workspace_write",
+      sandbox_fs_exists: "workspace_read", sandbox_fs_list: "workspace_read", sandbox_fs_read: "workspace_read",
+      sandbox_fs_stat: "workspace_read"
+    };
+    for (const name of WORKSPACE_MCP_TOOL_ALLOWLIST) {
+      expect(kind(workspace(name)), name).toBe(expected[name] ?? "other");
+      expect(kind(name), name).toBe(expected[name] ?? "other");
+    }
+    expect(kind("sandbox_fs_teleport")).toBe("other");
+  });
+
+  it("classifies product tools, data-changing MCP tools, and secrets, Assistants and settings by verb", () => {
+    expect(kind(ARTIFACT_TOOL_NAME)).toBe("artifact");
+    expect(kind(LOAD_SKILL_TOOL_NAME)).toBe("skill_load");
+    expect(kind(SAVE_SKILL_TOOL_NAME)).toBe("skill_change");
+    expect(kind(CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe("scheduled_task");
+    expect(kind(MANAGE_SCHEDULED_TASK_TOOL_NAME, { action: "pause" })).toBe("scheduled_task");
+    expect(kind(MANAGE_SCHEDULED_TASK_TOOL_NAME, { action: "list" })).toBe("other");
+    expect(kind(namespacedMcpToolName("crm", "create_ticket"))).toBe("external_write");
+    expect(kind(namespacedMcpToolName("crm", "searchTickets"))).toBe("other");
+    expect(kind(namespacedMcpToolName("vault", "set_secret"))).toBe("secret");
+    expect(kind(namespacedMcpToolName("vault", "list_secrets"))).toBe("other");
+    expect(kind("update_assistant")).toBe("assistant");
+    expect(kind("save_preferences")).toBe("settings");
+    expect(kind("write_file")).toBe("workspace_write");
+    expect(kind("fetch_url")).toBe("other");
+  });
+
+  it("describes arguments by identity, never by bodies or secret values", () => {
+    expect(describeArguments(JSON.stringify({ content: "BODY", path: "/a.py", value: "sk_live_1", title: "T", tags: ["a", "b"] })))
+      .toBe("path=\"/a.py\" title=\"T\" tags=\"a, b\"");
+    expect(describeArguments("not json")).toBe("");
+  });
+});
+
+describe("state block", () => {
+  function workedChat() {
+    const chat = transcriptBuilder();
+    chat.user("Fix the merge stage");
+    chat.tool(workspace("sandbox_fs_read"), { path: "/workspace/project/data/ledger.csv" }, "a,b\n1,2");
+    chat.tool(workspace("sandbox_fs_write"), { content: "SECRET-BODY-1", path: "/workspace/project/etl/merge.py" }, "{\"ok\":true}");
+    chat.tool(workspace("sandbox_shell"), { command: "pytest -q" }, "{\"exit_code\":1,\"stdout\":\"1 failed\"}");
+    chat.tool(workspace("sandbox_fs_write"), { content: "SECRET-BODY-2", path: "/workspace/project/etl/merge.py" }, "{\"ok\":true}");
+    chat.tool(workspace("sandbox_fs_rename"), { from: "/workspace/project/old.csv", to: "/workspace/project/new.csv" }, "{}");
+    chat.tool(workspace("sandbox_shell"), { command: "pytest -q" }, "{\"exit_code\":0}");
+    chat.tool(ARTIFACT_TOOL_NAME, { files: [{ path: "index.html" }], intent: "create", kind: "html", title: "Q1 dashboard" },
+      "{\"artifactId\":\"art_42\",\"versionId\":\"ver_7\"}");
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "xlsx" }, "XLSX skill instructions");
+    chat.tool(SAVE_SKILL_TOOL_NAME, { changeNote: "add totals", target: "ledger-report" }, "{\"skillId\":\"sk_1\"}");
+    chat.tool(CREATE_SCHEDULED_TASK_TOOL_NAME, { prompt: "SECRET PROMPT", title: "Weekly margins" }, "{\"taskId\":\"task_9\"}");
+    chat.tool(namespacedMcpToolName("crm", "create_ticket"), { title: "Refund 1001" }, "{\"id\":\"T-1001\",\"status\":\"open\"}");
+    chat.tool(namespacedMcpToolName("crm", "send_email"), { to: "ops@example.test" }, "The process stopped", "unknown");
+    chat.tool(namespacedMcpToolName("vault", "set_secret"), { name: "STRIPE_KEY", value: "sk_live_SECRET" }, "{\"ok\":true}");
+    const handle = handleFor("margins");
+    chat.tool("run_sql", { query: "SELECT warehouse, net_margin FROM settlements" },
+      `| warehouse | net_margin |\n${"| W-1 | 1.00 |\n".repeat(200)}…[omitted; read_tool_result handle ${handle}]…`);
+    chat.tool("run_pipeline", { stage: "validate" }, "ERR_SCHEMA_DRIFT_0x3F2: column settled_at type mismatch\nat stage validate", "error");
+    chat.call(namespacedMcpToolName("crm", "update_deal"), { deal_id: "D-77" });
+    return { chat, handle };
+  }
+
+  it("records files, commands, artifacts, Skills, tasks, changes, pending calls, large results and errors from the tool log", () => {
+    const { chat, handle } = workedChat();
+    const block = buildStateBlock(chat.items);
+    expect(block.split("\n")[0]).toBe("## Recorded state (generated by the system from the tool log; exact)");
+    for (const line of [
+      "- /workspace/project/etl/merge.py: written ×2",
+      "- /workspace/project/new.csv: renamed from /workspace/project/old.csv",
+      "- /workspace/project/old.csv: renamed to /workspace/project/new.csv",
+      "Workspace files read:\n- /workspace/project/data/ledger.csv",
+      "Workspace commands (latest 2 of 2):\n- `pytest -q` → exit 1\n- `pytest -q` → exit 0",
+      `- ${ARTIFACT_TOOL_NAME} intent="create" kind="html" title="Q1 dashboard" → done (artifactId=art_42, versionId=ver_7)`,
+      "Skills loaded:\n- xlsx",
+      `- ${SAVE_SKILL_TOOL_NAME} changeNote="add totals" target="ledger-report" → done (skillId=sk_1)`,
+      `- ${CREATE_SCHEDULED_TASK_TOOL_NAME} title="Weekly margins" → done (taskId=task_9)`,
+      `- ${namespacedMcpToolName("vault", "set_secret")} name="STRIPE_KEY" → done`,
+      `- ${namespacedMcpToolName("crm", "create_ticket")} title="Refund 1001" → done (id=T-1001)`,
+      `- ${namespacedMcpToolName("crm", "send_email")} to="ops@example.test" → outcome unknown: check its effect before repeating it`,
+      `- ${namespacedMcpToolName("crm", "update_deal")} deal_id="D-77" (call call_16): approval or result pending`,
+      `- ${handle}: run_sql query="SELECT warehouse, net_margin FROM settlements" →`,
+      "Recent tool errors:\n- run_pipeline stage=\"validate\" → ERR_SCHEMA_DRIFT_0x3F2: column settled_at type mismatch"
+    ]) expect(block).toContain(line);
+    expect(block).not.toMatch(/SECRET|sk_live/u);
+    // Short results are not listed, whatever handle scheme the loop passes.
+    const everyHandle = buildStateBlock(chat.items, { resultHandle: (result) => handleFor(result.callId) });
+    expect(everyHandle.match(/^- tor1_/gmu)).toHaveLength(1);
+  });
+
+  it("records nothing for a conversation without tools, and takes the loop's classifier", () => {
+    const chat = transcriptBuilder();
+    chat.user("hello");
+    chat.answer("hi");
+    expect(buildStateBlock(chat.items)).toBe("");
+    const { chat: worked } = workedChat();
+    const quiet = buildStateBlock(worked.items, { classify: () => "other" });
+    expect(quiet).not.toContain("Workspace files changed");
+    expect(quiet).toContain("Waiting when this record was made:");
+    const throwing = buildStateBlock(worked.items, { classify: () => { throw new Error("classifier failed"); } });
+    expect(throwing).toContain("Recent tool errors:");
+  });
+});
+
+describe("earlier user messages and Skills in use", () => {
+  it("keeps the newest messages before the cut within the budget, oldest first, cutting the boundary one", () => {
+    const chat = transcriptBuilder();
+    chat.user(`first ${"1".repeat(2_000)}`);
+    chat.user(`second ${"2".repeat(600)}`);
+    chat.user("third, while working", true);
+    const keep = chat.user("kept in the tail");
+    const text = earlierUserMessages(chat.items, keep, 1_200, charTokens);
+    const lines = text.split("\n");
+    expect(lines[0]).toBe("## Earlier user messages (verbatim, oldest first; later ones follow in the conversation)");
+    expect(text).not.toContain("kept in the tail");
+    expect(text).toContain("[3, follow-up during the work] third, while working");
+    expect(text).toContain(`[2] second ${"2".repeat(600)}`);
+    expect(text).toMatch(/\[1\] first 1+\n…\[[\d,]+ characters omitted\]…\n1+\n\[2\] second/u);
+    expect(text.indexOf("[1]")).toBeLessThan(text.indexOf("[2]"));
+    // A budget too small for the boundary message drops it and says so.
+    const tight = earlierUserMessages(chat.items, keep, 700, charTokens);
+    expect(tight).toContain("(1 older user message is covered by the summary only.)");
+    expect(tight).not.toContain("[1]");
+    expect(earlierUserMessages(chat.items, "i1", 1_000, charTokens)).toBe("");
+  });
+
+  it("keeps the latest instructions of each Skill loaded before the cut, newest first within the budget", () => {
+    const chat = transcriptBuilder();
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "xlsx" }, "XLSX v1");
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "pdf" }, `PDF ${"p".repeat(500)}`);
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "xlsx" }, "XLSX v2");
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "broken" }, "not found", "error");
+    const keep = chat.user("tail");
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "docx" }, "DOCX in the tail");
+    const all = skillsInUse(chat.items, keep, 10_000, charTokens);
+    expect(all).toContain("### xlsx\nXLSX v2");
+    expect(all).not.toMatch(/XLSX v1|DOCX|broken/u);
+    expect(all.indexOf("### pdf")).toBeLessThan(all.indexOf("### xlsx"));
+    const tight = skillsInUse(chat.items, keep, 100, charTokens);
+    expect(tight).toContain("### xlsx\nXLSX v2");
+    expect(tight).toContain("Also loaded earlier, not repeated here: pdf (call load_skill again for the instructions).");
+  });
+
+  it("assembles the retained text and bounds its tokens for planning", () => {
+    const chat = transcriptBuilder();
+    chat.user(`question ${"q".repeat(3_000)}`);
+    chat.tool(LOAD_SKILL_TOOL_NAME, { skill: "xlsx" }, "x".repeat(4_000));
+    chat.tool("write_file", { path: "/workspace/project/a.txt" }, "ok");
+    const keep = chat.user("tail");
+    const retained = buildRetainedContext({ estimate: charTokens, items: chat.items, keepFromId: keep, skillTokens: 5_000,
+      userMessageTokens: 5_000 });
+    expect(retained.startsWith(`${RETAINED_PREAMBLE}\n\n## Recorded state`)).toBe(true);
+    expect(retained.indexOf("## Skills loaded earlier")).toBeLessThan(retained.indexOf("## Earlier user messages"));
+    const bound = estimateRetainedTokens(chat.items, keep, charTokens, { skillTokens: 5_000, stateTokens: 1_000, userMessageTokens: 2_000 });
+    expect(bound).toBe(2_000 + (4_000 + 12) + 1_000);
+    const empty = transcriptBuilder();
+    const only = empty.user("first");
+    expect(buildRetainedContext({ estimate: charTokens, items: empty.items, keepFromId: only, skillTokens: 1, userMessageTokens: 1 })).toBe("");
+  });
+});
