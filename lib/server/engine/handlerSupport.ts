@@ -27,14 +27,16 @@ export type NativeEngineHandlerDeps = Readonly<{
 
 /**
  * Whether a run takes the self-service tools: an interactive run of a
- * personal or temporary chat (from the web or Telegram). Project, Assistant,
- * Agent and review runs and scheduled occurrences never take them, and every
- * change fences its run again as it commits (`selfServiceRunAllowedInTransaction`).
+ * personal or temporary chat in the web. Project, Assistant, Agent and review
+ * runs, scheduled occurrences and Telegram turns (the bridge cannot show
+ * their confirmation cards or Undo) never take them, and every change fences
+ * its run again as it commits (`selfServiceRunAllowedInTransaction`).
  */
-export function selfServiceChat(prepared: MaterializedPreparedRunData, options: Readonly<{ scheduled?: boolean }> = {}): boolean {
+export function selfServiceChat(prepared: MaterializedPreparedRunData,
+  options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): boolean {
   const request = prepared.normalizedRequest;
-  return options.scheduled !== true && !prepared.project && !prepared.assistant && !prepared.chatAssistant && !request.agent &&
-    !request.answerReviewStep && !request.monitoringVerdictTool;
+  return options.scheduled !== true && options.telegram !== true && !prepared.project && !prepared.assistant &&
+    !prepared.chatAssistant && !request.agent && !request.answerReviewStep && !request.monitoringVerdictTool;
 }
 
 /** Before a user's admission: their native runs no execution owns end interrupted, so the chat is free. */
@@ -73,11 +75,14 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
   scheduled?: boolean;
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   services: Omit<NativeRunServices, "searchRuntimes">;
+  /** The run is a Telegram turn. */
+  telegram?: boolean;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>): Response {
   const tools = native.tools;
   const scheduled = input.scheduled === true;
+  const telegram = input.telegram === true;
   return createNativeRunExecutionResponse({
     adapter: input.adapter,
     ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),
@@ -92,7 +97,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
       ...(tools?.secrets ? { secrets: tools.secrets } : {}),
-      ...(tools?.selfService && selfServiceChat(input.prepared, { scheduled }) ? { selfService: tools.selfService } : {})
+      ...(tools?.selfService && selfServiceChat(input.prepared, { scheduled, telegram }) ? { selfService: tools.selfService } : {})
     },
     userId: input.userId,
     ...(input.workspace ? { workspace: input.workspace } : {})
