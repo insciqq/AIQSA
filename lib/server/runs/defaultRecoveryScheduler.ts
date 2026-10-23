@@ -5,7 +5,7 @@ import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
-import { createRetiredEngineRunSweep } from "./retiredEngineRuns";
+import { createRetiredEngineRunFinder, createRetiredEngineRunSweep } from "./retiredEngineRuns";
 import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
 import { defaultNativeRecoveryDeps } from "../engine/defaultEngine";
 import { reconcileNativeRuns } from "../engine/recovery";
@@ -26,7 +26,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
     const native = defaultNativeRecoveryDeps({ repository, workspace });
     // The old core's runs still active after the upgrade end first, so their
     // document and Workspace jobs never wait for an engine that is gone.
-    const retired = createRetiredEngineRunSweep({ client: prisma, repository, workspace });
+    const retired = createRetiredEngineRunSweep({ findRuns: createRetiredEngineRunFinder(prisma), repository, workspace });
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
       recoverChatTitles: (signal) => titles.reconcile(signal),
       reconcile: async () => {

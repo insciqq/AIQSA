@@ -3,6 +3,7 @@ import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { MCP_APPROVAL_TTL_MS } from "../mcp/writeApproval";
 import { prisma } from "../prisma";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { createRetiredEngineRunFinder } from "../runs/retiredEngineRuns";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { defaultToolObservations } from "../toolObservations/defaultService";
 import type { StorageAdapter } from "../uploads/storage";
@@ -105,6 +106,7 @@ export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: 
   return {
     engine: defaultNativeEngineDeps(storage, client),
     findOrphans: createNativeOrphanFinder(client),
+    findRetiredRuns: createRetiredEngineRunFinder(client),
     mcpRuntime: () => getDefaultMcpRuntimeCoordinator(),
     tools: defaultNativeToolServices(storage, client)
   };

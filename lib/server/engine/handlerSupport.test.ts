@@ -1,7 +1,8 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
-import { engineAdmissionRefusal, selfServiceChat } from "./handlerSupport";
+import { engineAdmissionRefusal, recoverUserNativeRuns, selfServiceChat, type NativeEngineHandlerDeps } from "./handlerSupport";
 
 const prepared = (extra: Record<string, unknown> = {}, request: Record<string, unknown> = {}) =>
   ({ normalizedRequest: { chatId: "chat-1", ...request }, ...extra }) as unknown as MaterializedPreparedRunData;
@@ -44,5 +45,30 @@ describe("what the agent engine can run", () => {
     expect(engineAdmissionRefusal(model("fake", false))).toEqual({ code: "model_tool_calling_required", status: 409 });
     expect(engineAdmissionRefusal(model("fake", undefined))).toEqual({ code: "model_tool_calling_required", status: 409 });
     expect(engineAdmissionRefusal(model("retired_adapter", true))).toEqual({ code: "model_adapter_unsupported", status: 409 });
+  });
+});
+
+// Regression (codex review): an old-core run the startup sweep could not end held its chat until a restart.
+describe("before a user's admission", () => {
+  it("ends the user's old-core runs and then their native orphans, and a failure of either never blocks the message", async () => {
+    const order: string[] = [];
+    const failRun = vi.fn(async (runId: string) => {
+      order.push(runId);
+      return true;
+    });
+    const native = {
+      engine: { runs: { complete: vi.fn(async () => true) } },
+      findOrphans: vi.fn(async () => [{ answerCompletedAt: null, assistantMessageId: "answer-native", chatId: "chat-1", id: "native-run",
+        normalizedRequest: {}, userId: "user-1" }]),
+      findRetiredRuns: vi.fn(async () => [{ assistantMessageId: "answer-old", id: "old-run", normalizedRequest: {}, userId: "user-1" }])
+    } as unknown as NativeEngineHandlerDeps;
+    await recoverUserNativeRuns(native, { repository: { failRun } }, "user-1");
+    expect(native.findRetiredRuns).toHaveBeenCalledWith({ limit: 100, skip: [], userId: "user-1" });
+    expect(failRun).toHaveBeenCalledWith("old-run", "answer-old", RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
+    expect(order).toEqual(["old-run", "native-run"]);
+
+    vi.mocked(native.findRetiredRuns).mockRejectedValueOnce(new Error("synthetic_read_failure"));
+    vi.mocked(native.findOrphans).mockRejectedValueOnce(new Error("synthetic_read_failure"));
+    await expect(recoverUserNativeRuns(native, { repository: { failRun } }, "user-1")).resolves.toBeUndefined();
   });
 });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import { textMessageContent } from "../../domain/content";
 import { chatExportDocument } from "../../domain/chatExportDocument";
 import { providerTemplateIds } from "../../domain/providerTemplates";
@@ -10,6 +11,7 @@ import { prisma } from "../prisma";
 import { createPrismaShareRepository } from "../shares/prismaRepository";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import { createRetiredEngineRunFinder, endRetiredEngineRuns, endRetiredEngineRunsFor } from "./retiredEngineRuns";
 import type { CreateRunInput } from "./runRepositoryContract";
 
 // Answers the old run core wrote before the upgrade stay ordinary chat
@@ -100,6 +102,42 @@ describe("answers the old run core completed", () => {
     await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: again.runId } })).resolves.toMatchObject({ engine: "native" });
     // The old answer stays as the earlier version beside the new one.
     await expect(prisma.message.findUniqueOrThrow({ where: { id: old.answerId } })).resolves.toMatchObject({ status: "complete" });
+  });
+
+  // Regression (codex review): a run the startup sweep could not end held its chat until a restart.
+  it("left running ends when its chat opens or its user sends, and only that chat's or user's", async () => {
+    const userId = await owner();
+    const otherId = await owner();
+    const active = async (ownerId: string) => {
+      const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Old core", userId: ownerId } });
+      const question = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Old question"),
+        role: "user", status: "complete" } });
+      const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(""), parentMessageId: question.id,
+        role: "assistant", status: "streaming" } });
+      const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine: "v1", modelId: "fake-qsa",
+        normalizedRequest: {}, provider: "fake", status: "streaming", userId: ownerId, userMessageId: question.id } });
+      return { answerId: answer.id, chatId: chat.id, runId: run.id };
+    };
+    const opened = await active(userId);
+    const sent = await active(userId);
+    const stranger = await active(otherId);
+    const deps = { findRuns: createRetiredEngineRunFinder(prisma), repository: runs };
+    const status = async (run: { answerId: string; runId: string }) => [
+      (await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).status,
+      (await prisma.message.findUniqueOrThrow({ where: { id: run.answerId } })).status];
+
+    await endRetiredEngineRunsFor(deps, { chatId: opened.chatId, userId });
+    await expect(status(opened)).resolves.toEqual(["error", "error"]);
+    await expect(status(sent)).resolves.toEqual(["streaming", "streaming"]);
+    await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: opened.runId } })).resolves.toMatchObject({
+      errorPayload: expect.objectContaining({ code: RUN_INTERRUPTED_FAILURE.code, recoveryTerminal: true }) });
+    // Another owner's chat id under this user's scope ends nothing.
+    await endRetiredEngineRunsFor(deps, { chatId: stranger.chatId, userId });
+    await endRetiredEngineRunsFor(deps, { userId });
+    await expect(status(sent)).resolves.toEqual(["error", "error"]);
+    await expect(status(stranger)).resolves.toEqual(["streaming", "streaming"]);
+    // Ending is idempotent: the sweep finds nothing left of this user's.
+    await expect(endRetiredEngineRuns(deps, { userId })).resolves.toEqual({ found: 0, unended: [] });
   });
 
   it("branches when its question is edited, keeping the old answer on its own branch", async () => {

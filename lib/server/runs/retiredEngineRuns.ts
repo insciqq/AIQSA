@@ -13,8 +13,12 @@ import type { RunRepository } from "./runRepositoryContract";
  * Each ends once, visibly: a Codex Agent turn as `agent_mode_removed`, every
  * other one interrupted with Continue (`RUN_INTERRUPTED_FAILURE`). Nothing is
  * sent again; partial text, files and usage stay, the Workspace keeps its
- * disk, and a document preparation or Workspace hand-off waiting for the run
- * ends with it. Logs carry counts only.
+ * disk, its calls still running keep an unknown outcome that later native
+ * turns respect (`TranscriptRepository.retiredRunEffects`), and a document
+ * preparation or Workspace hand-off waiting for the run ends with it. The
+ * startup sweep ends them all and keeps retrying a run whose settlement
+ * failed; opening its chat or the user's next message ends it at once, so
+ * one stuck run never holds a chat's next message. Logs carry counts only.
  */
 export const RETIRED_AGENT_FAILURE = {
   code: AGENT_MODE_REMOVED,
@@ -23,25 +27,40 @@ export const RETIRED_AGENT_FAILURE = {
 
 const RETIRED_RUN_BATCH = 100;
 
+export type RetiredEngineRun = Readonly<{ assistantMessageId: string | null; id: string; normalizedRequest: unknown; userId: string }>;
+
+/** Which old-core runs one pass ends: all of them, or one user's or one chat's. */
+export type RetiredEngineRunScope = Readonly<{ chatId?: string; userId?: string }>;
+
 export type RetiredEngineRunDeps = Readonly<{
-  client: Pick<PrismaClient, "modelRun">;
+  /** The old core's active runs in creation order, leaving out `skip`, within `scope`. */
+  findRuns(input: RetiredEngineRunScope & Readonly<{ limit: number; skip: readonly string[] }>): Promise<readonly RetiredEngineRun[]>;
   repository: Pick<RunRepository, "failRun">;
   workspace?: Pick<WorkspaceCoordinator, "settle">;
 }>;
 
-/**
- * Ends one batch of the old core's active runs, leaving out `skip` (runs an
- * earlier batch could not end); returns how many it found and which of them
- * it could not end.
- */
-export async function endRetiredEngineRuns(deps: RetiredEngineRunDeps, skip: ReadonlySet<string> = new Set()):
-  Promise<Readonly<{ found: number; unended: readonly string[] }>> {
-  const runs = await deps.client.modelRun.findMany({
+export function createRetiredEngineRunFinder(client: Pick<PrismaClient, "modelRun">): RetiredEngineRunDeps["findRuns"] {
+  return (input) => client.modelRun.findMany({
     orderBy: { createdAt: "asc" },
     select: { assistantMessageId: true, id: true, normalizedRequest: true, userId: true },
-    take: RETIRED_RUN_BATCH,
-    where: { engine: "v1", status: { in: activeModelRunStatuses }, ...(skip.size > 0 ? { id: { notIn: [...skip] } } : {}) }
+    take: input.limit,
+    where: { engine: "v1", status: { in: activeModelRunStatuses }, ...(input.skip.length > 0 ? { id: { notIn: [...input.skip] } } : {}),
+      ...(input.chatId ? { chatId: input.chatId } : {}), ...(input.userId ? { userId: input.userId } : {}) }
   });
+}
+
+/**
+ * Ends one batch of the old core's active runs within `scope`, leaving out
+ * `skip` (runs an earlier batch could not end); returns how many it found and
+ * which of them it could not end. Ending is idempotent: a run another pass
+ * ended meanwhile is no longer active and is skipped.
+ */
+export async function endRetiredEngineRuns(deps: RetiredEngineRunDeps,
+  options: RetiredEngineRunScope & Readonly<{ skip?: ReadonlySet<string> }> = {}):
+  Promise<Readonly<{ found: number; unended: readonly string[] }>> {
+  const scoped = Boolean(options.chatId || options.userId);
+  const runs = await deps.findRuns({ limit: RETIRED_RUN_BATCH, skip: [...options.skip ?? []],
+    ...(options.chatId ? { chatId: options.chatId } : {}), ...(options.userId ? { userId: options.userId } : {}) });
   const unended: string[] = [];
   let agentTurns = 0;
   for (const run of runs) {
@@ -60,38 +79,63 @@ export async function endRetiredEngineRuns(deps: RetiredEngineRunDeps, skip: Rea
         stage: "recovery", subsystem: "run_recovery" });
     }
   }
-  if (runs.length > 0) {
+  if (runs.length > unended.length) {
+    const stage = scoped ? "recovery" : "startup";
     logEvent("run_recovery", { code: "retired_engine_runs_ended", count: runs.length - unended.length, outcome: "completed",
-      stage: "startup", subsystem: "run_recovery" });
+      stage, subsystem: "run_recovery" });
     if (agentTurns > 0) {
-      logEvent("run_recovery", { code: AGENT_MODE_REMOVED, count: agentTurns, outcome: "completed", stage: "startup",
-        subsystem: "run_recovery" });
+      logEvent("run_recovery", { code: AGENT_MODE_REMOVED, count: agentTurns, outcome: "completed", stage, subsystem: "run_recovery" });
     }
   }
   return { found: runs.length, unended };
 }
 
-/** Passes a sweep makes before it leaves runs it could not end to the next process start. */
-const RETIRED_RUN_PASSES = 3;
+/**
+ * Before a chat opens or a user's message is admitted: that chat's or user's
+ * old-core runs end now, so a run the startup sweep could not end yet never
+ * holds the chat's next message. A failure is logged and left to the sweep;
+ * it never fails the read or the admission.
+ */
+export async function endRetiredEngineRunsFor(deps: RetiredEngineRunDeps, scope: RetiredEngineRunScope): Promise<void> {
+  try {
+    await endRetiredEngineRuns(deps, scope);
+  } catch (error) {
+    logEvent("run_recovery", { action: "retry", code: "retired_engine_runs_unavailable", error, outcome: "failed", stage: "recovery",
+      subsystem: "run_recovery" });
+  }
+}
+
+/** First and longest wait before the sweep tries runs it could not end again. */
+export const RETIRED_RUN_RETRY_MS = Object.freeze({ first: 10_000, max: 5 * 60_000 });
 
 /**
- * Ends every remaining run of the old core, a batch at a time, and then stops
- * asking. A run that could not be ended (a failed write) is left out for the
- * rest of the pass and tried again on the next one, up to three passes; a
- * failed read leaves the whole sweep for the next pass.
+ * Ends every remaining run of the old core, a batch at a time, and stops
+ * asking only once a pass found none left. A run that could not be ended (a
+ * failed write) is left out for the rest of the pass, and the sweep tries
+ * again after a wait that doubles up to `RETIRED_RUN_RETRY_MS.max`; a failed
+ * read leaves the sweep for the next pass. A pass runs on every recovery tick
+ * the wait allows.
  */
 export function createRetiredEngineRunSweep(deps: RetiredEngineRunDeps): () => Promise<void> {
-  let passes = 0;
+  let settled = false;
+  let failedPasses = 0;
+  let retryAt = 0;
   return async () => {
-    if (passes >= RETIRED_RUN_PASSES) return;
+    if (settled || Date.now() < retryAt) return;
     const skip = new Set<string>();
     for (;;) {
-      const batch = await endRetiredEngineRuns(deps, skip);
+      const batch = await endRetiredEngineRuns(deps, { skip });
       batch.unended.forEach((runId) => skip.add(runId));
-      if (batch.found === 0) {
-        passes = skip.size === 0 ? RETIRED_RUN_PASSES : passes + 1;
-        return;
-      }
+      if (batch.found === 0) break;
     }
+    if (skip.size === 0) {
+      settled = true;
+      return;
+    }
+    failedPasses += 1;
+    const delay = Math.min(RETIRED_RUN_RETRY_MS.first * 2 ** (failedPasses - 1), RETIRED_RUN_RETRY_MS.max);
+    retryAt = Date.now() + delay;
+    logEvent("run_recovery", { action: "retry", attempt: failedPasses, code: "retired_engine_runs_unsettled", count: skip.size,
+      delay_ms: delay, outcome: "waiting", stage: "recovery", subsystem: "run_recovery" });
   };
 }
