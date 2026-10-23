@@ -5,7 +5,10 @@ import { prisma } from "../../prisma";
 import { textMessageContent } from "../../../domain/content";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
-import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
+import {
+  createPrismaMemoryCoordinatorRepository,
+  MEMORY_COMMAND_RUN_SETTLEMENT_WAIT_MS
+} from "../coordinator/prismaRepository";
 import { createPrismaMemoryFactExtractionRepository } from "../learning/extraction/repository";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, memoryFactExtractionJobFingerprint } from "../learning/extraction/contract";
 import { enqueueMemoryCommand } from "./repository";
@@ -110,6 +113,41 @@ describe("Memory command durable ordering", () => {
       expect(await repository.claimJob({ claimToken: randomUUID(), kinds: ["MEMORY_COMMAND"], now,
         leaseExpiresAt: new Date(now.getTime() + 30_000) })).toMatchObject({ id: second.id });
     } finally { await f.cleanup(); }
+  });
+
+  it("holds a command until the run of its message settles, and a stuck run only for the bounded wait", async () => {
+    const f = await fixture();
+    try {
+      const reply = await prisma.message.create({ data: { chatId: f.chat.id, content: textMessageContent("Synthetic reply"),
+        parentMessageId: f.first.id, role: "assistant" } });
+      const command = await withLockedMemoryTransaction(prisma, f.userId, (tx, settings) =>
+        enqueueMemoryCommand(tx, settings, {
+          activeLeafMessageId: reply.id, branchGeneration: 0, chatId: f.chat.id,
+          sourceHash: "b".repeat(64), sourceMessageId: f.first.id, sourceRevision: 0
+        }));
+      const run = await prisma.modelRun.create({ data: { assistantMessageId: reply.id, chatId: f.chat.id,
+        modelId: "synthetic-model", normalizedRequest: {}, provider: "synthetic", status: "streaming",
+        userId: f.userId, userMessageId: f.first.id } });
+      const repository = createPrismaMemoryCoordinatorRepository(prisma);
+      const claim = (now: Date) => repository.claimJob({ claimToken: randomUUID(), kinds: ["MEMORY_COMMAND"],
+        now, leaseExpiresAt: new Date(now.getTime() + 30_000) });
+      const now = new Date();
+      // The agent may still save a secret in this run: the command waits.
+      expect(await claim(now)).toBeNull();
+      // A run that never settles holds it only for the bounded wait.
+      const late = new Date(now.getTime() + MEMORY_COMMAND_RUN_SETTLEMENT_WAIT_MS + 60_000);
+      expect(await claim(late)).toMatchObject({ id: command.id });
+      await prisma.memoryJob.update({ where: { id: command.id }, data: {
+        leaseExpiresAt: null, leaseToken: null, state: "QUEUED"
+      } });
+      expect(await claim(now)).toBeNull();
+      // Once the run is terminal the command runs at once.
+      await prisma.modelRun.update({ where: { id: run.id }, data: { status: "complete" } });
+      expect(await claim(now)).toMatchObject({ id: command.id });
+    } finally {
+      await prisma.modelRun.deleteMany({ where: { userId: f.userId } });
+      await f.cleanup();
+    }
   });
 
   it("keeps automatic extraction behind its source command", async () => {
