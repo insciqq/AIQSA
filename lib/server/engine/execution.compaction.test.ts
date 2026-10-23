@@ -92,7 +92,7 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
   } satisfies ToolCallStore;
   let published: string | null = null;
   const runs = {
-    answerStarted: vi.fn(async () => null as number | null),
+    workDurationMs: vi.fn(async () => null as number | null),
     applyUsageTotals: vi.fn(async () => undefined),
     complete: vi.fn(async () => true),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { published = input.text; return true; }),

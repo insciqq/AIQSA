@@ -82,13 +82,13 @@ describe("native run store", () => {
     await expect(prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: open.id } })).resolves.toMatchObject({ state: "error" });
   });
 
-  it("records the answer's start once and returns the work duration a reload reads", async () => {
+  it("measures the whole run to its published answer, as a reload reads it", async () => {
     const scope = await nativeRun();
-    const { createdAt } = await prisma.modelRun.findUniqueOrThrow({ select: { createdAt: true }, where: { id: scope.runId } });
-    await expect(store.answerStarted(scope, new Date(createdAt.getTime() + 6_400))).resolves.toBe(6_400);
-    // A later start (a reset after a follow-up) keeps the first.
-    await expect(store.answerStarted(scope, new Date(createdAt.getTime() + 9_000))).resolves.toBe(6_400);
-    await expect(store.answerStarted({ ...scope, userId: "someone-else" }, new Date())).resolves.toBeNull();
+    await expect(store.workDurationMs(scope)).resolves.toBeNull();
+    await expect(store.publishAnswer(scope, { followupRevision: 0, text: "Done." })).resolves.toBe(true);
+    const run = await prisma.modelRun.findUniqueOrThrow({ select: { answerCompletedAt: true, createdAt: true }, where: { id: scope.runId } });
+    await expect(store.workDurationMs(scope)).resolves.toBe(run.answerCompletedAt!.getTime() - run.createdAt.getTime());
+    await expect(store.workDurationMs({ ...scope, userId: "someone-else" })).resolves.toBeNull();
   });
 
   it("publishes nothing for a stopped run or a run of the old core", async () => {
