@@ -7,8 +7,17 @@ import {
   type HarnessPromptInput
 } from "./harness";
 import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
+import { selfServicePromptSection } from "./selfService";
 
 export { HARNESS_TOOL_NAMES, type EnvironmentPromptInput, type HarnessPromptInput } from "./harness";
+export {
+  AIQSA_GUIDE_TOPICS,
+  SELF_SERVICE_TOOL_NAMES,
+  aiqsaGuideText,
+  selfServicePromptSection,
+  type AiqsaGuideTopic,
+  type SelfServicePromptInput
+} from "./selfService";
 
 export type SystemPromptFamily = "claude" | "gpt" | "neutral";
 
@@ -59,13 +68,15 @@ export type SystemPrompt = Readonly<{
 /**
  * The system prompt for one request: the model family's prompt, AIQSA's
  * harness section (tools on this request, Workspace, when to stop and ask,
- * the self-service slot), then per-turn environment facts.
+ * the self-service section, by default `selfServicePromptSection` for the
+ * request's tools), then per-turn environment facts.
  */
 export function systemPromptFor(model: SystemPromptModel, input: HarnessPromptInput & Readonly<{
   environment: EnvironmentPromptInput;
 }>): SystemPrompt {
   const family = systemPromptFamily(model);
-  const stable = `${FAMILY_PROMPTS[family]}\n\n${harnessPromptSection(input)}`;
+  const harness = harnessPromptSection({ ...input, selfService: input.selfService ?? selfServicePromptSection(input) });
+  const stable = `${FAMILY_PROMPTS[family]}\n\n${harness}`;
   const environment = environmentPromptSection(input.environment);
   return { environment, family, stable, text: `${stable}\n\n${environment}` };
 }
