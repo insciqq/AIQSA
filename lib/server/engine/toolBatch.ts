@@ -78,6 +78,14 @@ export const UNKNOWN_OUTCOME_APPROVAL_OUTPUT =
   "if you can and tell the user what you found; the user decides in the approval card whether to send it again. Do not call it " +
   "again meanwhile.";
 
+/**
+ * What an approved call's record says while it may be on its way: its earlier result said it was not sent, so until its
+ * own result is recorded its effect is unknown, and an interruption leaves it so (`unknownEffects.ts`).
+ */
+export const APPROVED_CALL_IN_FLIGHT_OUTPUT =
+  "Sent after the user's approval, but its result was never recorded, so its effect is unknown and it is not sent again " +
+  "on its own. Check the current state first, tell the user what you found, and send it again only if the user approves.";
+
 /** The stable reason of an approved call the continuing run could not load (`ApprovedToolCall.unavailable`). */
 export const APPROVED_TOOL_UNAVAILABLE = "mcp_approved_tool_unavailable";
 

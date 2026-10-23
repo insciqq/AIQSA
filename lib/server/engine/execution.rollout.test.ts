@@ -11,6 +11,7 @@ import type { McpCapabilityCatalog, McpDiscoveryState, McpRunPlanSnapshot } from
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderRunRequest } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { monitoringCheckInstruction, monitoringVerdictReservedInstruction } from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
@@ -20,7 +21,9 @@ import { createNativeRunExecutionResponse } from "./execution";
 import { nativeRunResponse, type NativeEngineHandlerDeps } from "./handlerSupport";
 import { NEUTRAL_FAMILY_PROMPT } from "./prompts/neutral";
 import { parseNativeEngineUsers } from "./routing";
-import { APPROVED_TOOL_UNAVAILABLE, APPROVED_TOOL_UNAVAILABLE_OUTPUT, UNKNOWN_OUTCOME_REPEAT_OUTPUT } from "./toolBatch";
+import {
+  APPROVED_CALL_IN_FLIGHT_OUTPUT, APPROVED_TOOL_UNAVAILABLE, APPROVED_TOOL_UNAVAILABLE_OUTPUT, UNKNOWN_OUTCOME_REPEAT_OUTPUT
+} from "./toolBatch";
 import type { TranscriptItem } from "./transcript";
 
 /**
@@ -216,12 +219,14 @@ describe("an Auto MCP run on the native engine", () => {
 
   /**
    * A run's discovery as the repository keeps it: every epoch merges its servers into the run's snapshot and writes the
-   * binding rows of the servers it loaded, which the engine reads back (`mcpBindingRows`).
+   * binding rows of the servers it loaded, which the engine reads back (`mcpBindingRows`). `admitted`: the run admitted
+   * the server's binding (Load all). `allowed`: a call that needs the user's approval has it.
    */
-  function autoDiscovery(catalog: McpCapabilityCatalog) {
+  function autoDiscovery(catalog: McpCapabilityCatalog, options: Readonly<{ admitted?: boolean; allowed?: boolean }> = {}) {
     let snapshot: McpRunPlanSnapshot = { servers: [], tools: [], version: 1 };
     let discovery: McpDiscoveryState = { catalog, epochs: [], version: 2 };
-    const rows: Array<Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>> = [];
+    const rows: Array<Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>> =
+      options.admitted ? [{ id: "binding-jira", runtimeGenerationFingerprint: "fp-1", runtimeGenerationId: "gen-1" }] : [];
     const repo = { ...nativeRunRepository(), appendMcpDiscoveryEpoch: vi.fn(async (input: Readonly<{
       bindings: readonly Readonly<{ fingerprint: string; runtimeGenerationId: string; serverId: string }>[]; goal: string;
       modelRunToolCallId: string; roundIndex: number; snapshot: McpRunPlanSnapshot; toolIds: readonly string[];
@@ -235,7 +240,7 @@ describe("an Auto MCP run on the native engine", () => {
       }
       return { discovery, snapshot };
     }) };
-    const memory = memoryNativeEngine({ allowed: true });
+    const memory = memoryNativeEngine({ allowed: options.allowed ?? true });
     vi.mocked(memory.engine.mcpBindingRows).mockImplementation(async () => [...rows]);
     const callTool = vi.fn(async () => ({ isError: false, text: ["Done: A-2"], unsupportedContentTypes: [] }));
     return { callTool, discovery: () => discovery, memory, repo };
@@ -334,6 +339,73 @@ describe("an Auto MCP run on the native engine", () => {
       expect(run.callTool).not.toHaveBeenCalled();
       expect(run.output).toBe(APPROVED_TOOL_UNAVAILABLE_OUTPUT);
     });
+
+    // Regression (codex review): the continuation's write went out, then Stop, a deadline or a restart ended the answer
+    // before its result was recorded; under the server's standing consent (Always allow) a later turn sent it again.
+    it.each(["auto", "load_all"] as const)("never sends an approved write twice after its continuation was interrupted (%s)",
+      async (mode) => {
+        let writes = 0;
+        const auto = mode === "auto";
+        const catalog = catalogOf("create_issue");
+        // Both phases: the model asks for the same write, in Auto after loading its tool.
+        const script = [
+          ...(auto ? [{ calls: [{ arguments: { query: "select:mcp_jira_create_issue" }, id: "f1", name: "find_tools" }] }] : []),
+          { calls: [{ arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" }] },
+          { text: "Done" }
+        ];
+        const run = (phase: ReturnType<typeof autoDiscovery>) => ({
+          ...(auto ? { mcpDiscovery: phase.discovery() } : { mcp: NATIVE_MCP_SNAPSHOT }),
+          // Always allow: the server's writes need no approval.
+          mcpApproval: mcpApprovalAdmission(["jira"]), toolBudgets: autoBudgets
+        });
+        const services = { mcp: { filterTools: async (_userId: string, tools: readonly unknown[]) => [...tools],
+          materialize: vi.fn(async () => ({ bindings: [bound], ok: true, snapshot: loadedOf("create_issue") })) } } as never;
+        const say = {
+          answer0: nativeSay("answer-0", "assistant", ""), approved: nativeSay("continuation-turn", "user",
+            "The user approved `Create` on `Jira`. Continue the task."), user: nativeSay("user-1", "user", "Create the issue")
+        };
+
+        // Phase 0: the approval continuation; the write reaches the server, then the answer is stopped.
+        const sent = autoDiscovery(catalog, { admitted: !auto });
+        vi.mocked(sent.memory.engine.approvedCall).mockResolvedValue({ providerCallId: "call-1", toolName: "mcp_jira_create_issue" });
+        sent.memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"]]));
+        sent.memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", stopped]]));
+        const interrupted = vi.fn(async () => {
+          writes += 1;
+          activeRunControllers.get(created.runId)?.abort();
+          throw new Error("interrupted after remote write");
+        });
+        await nativeSseEvents(createNativeRunExecutionResponse({ adapter: scriptedNativeAdapter(script).adapter,
+          approvalContinuation: { approvalId: "approval-1" }, created, engine: sent.memory.engine,
+          mcpRuntime: () => ({ callTool: interrupted, ensureAcceptedGeneration: async () => true }) as never,
+          prepared: nativePrepared({ context: { messages: [say.user, say.answer0, { ...say.approved, id: "current-user-message" }],
+            mode: "branch_path" }, ...run(sent) }, auto ? { mcpBindings: [] } : {}),
+          repository: asRepository(sent.repo as unknown as ReturnType<typeof nativeRunRepository>), services, userId: "owner" }));
+        expect(writes).toBe(1);
+        // The attempt is on record with an unknown outcome, superseding the earlier "not sent".
+        expect(sent.memory.transcriptRows).toContainEqual(expect.objectContaining({ callId: "call-1", kind: "tool_result",
+          outcome: "unknown", output: APPROVED_CALL_IN_FLIGHT_OUTPUT }));
+
+        // Phase 1: the user's Continue over the interrupted answer's record; the model asks for the same write again.
+        const later = autoDiscovery(catalog, { admitted: !auto, allowed: false });
+        later.memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"], ["answer-1", "run-1"]]));
+        later.memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", stopped], ["run-1", [...sent.memory.transcriptRows]]]));
+        later.memory.transcripts.approvalContinuationTurns.mockResolvedValue(new Set(["continuation-turn"]));
+        const succeeded = vi.fn(async () => {
+          writes += 1;
+          return { isError: false, text: ["Created A-3"], unsupportedContentTypes: [] };
+        });
+        await nativeSseEvents(createNativeRunExecutionResponse({ adapter: scriptedNativeAdapter(script).adapter,
+          created: { assistantMessageId: "answer-2", runId: "run-2", userMessageId: "continue-1" }, engine: later.memory.engine,
+          mcpRuntime: () => ({ callTool: succeeded, ensureAcceptedGeneration: async () => true }) as never,
+          prepared: nativePrepared({ context: { messages: [say.user, say.answer0, say.approved, nativeSay("answer-1", "assistant", ""),
+            nativeSay("current-user-message", "user", "Continue")], mode: "branch_path" }, ...run(later) }, auto ? { mcpBindings: [] } : {}),
+          repository: asRepository(later.repo as unknown as ReturnType<typeof nativeRunRepository>), services, userId: "owner" }));
+        expect(writes).toBe(1);
+        // The equivalent call waits for the user's decision on exactly it, whatever the server's consent.
+        expect(later.memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(),
+          toolName: "mcp_jira_create_issue" }));
+      });
   });
 });
 
