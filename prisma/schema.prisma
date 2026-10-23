@@ -7164,8 +7164,8 @@ model MemorySearchEntry {
   @@index([userId, toolEventId])
 }
 
-/// Durable, content-free work for the derived Memory lexical OpenSearch
-/// projection. `sequence` is also the signed-64 external document version.
+/// Retired with the Memory lexical search index (operator decision
+/// 2026-10-23): nothing writes it and the next release drops it.
 model MemoryLexicalProjectionEvent {
   sequence               BigInt                            @id @default(autoincrement())
   id                     String                            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -7191,9 +7191,8 @@ model MemoryLexicalProjectionEvent {
   @@index([userId, state, sequence], map: "MemoryLexicalProjectionEvent_user_order_idx")
 }
 
-/// PostgreSQL-owned readiness proof for one Memory generation. OpenSearch is
-/// derived state; the contract and content fingerprints must both pass before
-/// this row can become READY.
+/// Retired with the Memory lexical search index (operator decision
+/// 2026-10-23): nothing writes it and the next release drops it.
 model MemoryLexicalProjectionState {
   id                         String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId                     String

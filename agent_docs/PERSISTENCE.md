@@ -12,11 +12,12 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 
 ## Authority
 
-- PostgreSQL is the authority for ownership, control state, accepted bindings, recovery and outputs. Object storage holds bytes, but relational rows decide who may read them and how long they live. OpenSearch indexes and Workspace guest disks are derived or operational state: they are not backed up, and rebuilds never repair canonical rows from them.
+- PostgreSQL is the authority for ownership, control state, accepted bindings, recovery and outputs. Object storage holds bytes, but relational rows decide who may read them and how long they live. Workspace guest disks are operational state: they are not backed up, and rebuilds never repair canonical rows from them.
 - Enforce tenant consistency in the database (composite keys that carry the owner) wherever it can be expressed. Keep the custom checks and deferred triggers that guard what relations cannot express, because raw SQL workers and destructive handlers bypass application code; simplify them only in forward migrations that tests prove.
 - The Memory history and round source guards validate each chat once per batch of deferred events. Every table their asserts read must carry the statement-level trigger that forgets checked keys, or a later write in the same batch escapes validation (`prisma/migrations/20261005180000_memory_source_guard_once_per_batch/migration.sql`).
 - Accepted revisions, bindings, generations and recovery evidence are immutable and protected by restrictive references while referenced. Skill revisions and bundle objects are append-only.
 - To retire stored data: remove the projections that read it, prove recovery no longer needs it, stop writes, then drop it in a forward migration. Retired values stay readable only where history or recovery needs them; new work never writes them.
+- The Memory lexical projection tables (`MemoryLexicalProjectionEvent`, `MemoryLexicalProjectionState`) lost their readers and writers with the search index (decision 2026-10-23) and are dropped in the next release, because this release's previous image still reads them while Compose replaces it and after a rollback.
 - Projects and Knowledge are disabled (root `AGENTS.md`). Their rows stay in place and Project chats stay readable; nothing deletes them implicitly, and retiring their tables follows the procedure above.
 
 ## Ownership rules that are easy to get wrong
@@ -70,4 +71,4 @@ Cutoffs and batch sizes live in code; these are the product decisions behind the
 
 - Backup stops every writer, fences claimed Memory, Knowledge and object-deletion work, copies PostgreSQL and private objects together, records the schema and the non-secret Memory key ids restore needs, and restarts exactly the writers it stopped. Keys from `.env` are backed up separately (`agent_docs/ENV_VARIABLES.md`).
 - Restore fills only an empty installation of the same version, through an isolated `aiqsa-restore-*` project with no published ports and no application writer, after preflighting format, schema, identities, keys and objects. Memory and Knowledge deletion reconciliation (`npm run memory:restore:reconcile`, `npm run knowledge:restore:reconcile`) must pass before any application role starts. Nothing cuts over a running installation automatically.
-- Restore rebuilds OpenSearch from PostgreSQL and passes integrity gates before enabling each retrieval mode. It clears guest disks and runtime identities and resets Workspace sessions so new runs restage originals.
+- Restore clears guest disks and runtime identities and resets Workspace sessions so new runs restage originals.

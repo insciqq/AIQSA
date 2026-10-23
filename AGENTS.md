@@ -4,7 +4,7 @@ AIQSA is a self-hosted, multi-user, model-agnostic agent workspace under the AGP
 
 Scope (operator decision 2026-10-22): Projects and Knowledge (document retrieval) are disabled until their code is removed, and existing Project chats stay readable. Native Anthropic stays (operator decision 2026-10-23). Memory is kept but frozen: simplify and stabilize only. Assistants, Telegram and Skills stay. The native agent engine replaces the old run core; the Codex Agent mode is removed ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
 
-Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL with pgvector, OpenSearch as a rebuildable search index, S3-compatible private object storage, parser sidecars, a KVM Microsandbox Workspace runner, and single-host Docker Compose. `connect/` is a separate Go client.
+Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL with pgvector (also the search store), S3-compatible private object storage, parser sidecars, a KVM Microsandbox Workspace runner, and single-host Docker Compose. `connect/` is a separate Go client.
 
 ## Repository map
 

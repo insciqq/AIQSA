@@ -69,7 +69,6 @@ describe("Unicode PostgreSQL Memory lexical candidate provider", () => {
 
     expect(result.candidates[0]).toMatchObject({ matchMode, searchEntryId: "entry-1" });
     expect(result.evidence).toMatchObject({
-      backend: "POSTGRES",
       fallbackUsed: lane.endsWith("_NGRAM"),
       lane,
       matchMode,

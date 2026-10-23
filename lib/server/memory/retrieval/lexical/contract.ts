@@ -6,9 +6,9 @@ export const MEMORY_LEXICAL_PROVIDER_MAX_CANDIDATES_PER_VARIANT = 500;
 export const MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES = 250;
 export const MEMORY_LEXICAL_PROVIDER_MAX_SOURCE_CHATS = 24;
 
-/** Lanes whose candidate source is the replaceable lexical-search provider.
- * Exact/entity/digest SQL lanes remain PostgreSQL authority reads and must not
- * be interpreted as a provider fallback during OpenSearch cutover health. */
+/** Lanes whose candidates come from the lexical candidate provider and are
+ * then rejoined to canonical rows. Exact/entity/digest SQL lanes read the
+ * canonical rows directly. */
 export const MEMORY_LEXICAL_CANDIDATE_PROVIDER_LANES = Object.freeze([
   "FACT_LEXICAL_UNICODE",
   "FACT_LEXICAL_NGRAM",
@@ -27,15 +27,8 @@ export function isMemoryLexicalCandidateProviderLane(
     );
 }
 
-/** Process-local identity shared only by lexical lanes derived from one
- * authoritative retrieval snapshot. Symbols keep the coordination token out
- * of provider payloads, diagnostics, persistence, and JSON contracts. */
-export const memoryLexicalProjectionReadinessScope = Symbol(
-  "memory-lexical-projection-readiness-scope"
-);
-
-/** Caller settlement signal for PostgreSQL candidate reads. Symbol-keyed like
- * the readiness scope, so it never reaches provider payloads or diagnostics. It
+/** Caller settlement signal for PostgreSQL candidate reads. Symbol-keyed, so
+ * it never reaches provider payloads, diagnostics or JSON contracts. It
  * withdraws a read still waiting for admission and never cancels started SQL. */
 export const memoryLexicalReadSignal = Symbol("memory-lexical-read-signal");
 
@@ -52,7 +45,6 @@ export type MemoryLexicalLogicalTerm = Readonly<{
 }>;
 
 export type MemoryLexicalSearchRequest = Readonly<{
-  [memoryLexicalProjectionReadinessScope]?: object;
   [memoryLexicalReadSignal]?: AbortSignal;
   activeGenerationId: string;
   analysisProfileVersion: string;
@@ -83,21 +75,7 @@ export type MemoryLexicalRawCandidate = Readonly<{
 
 export type MemoryLexicalFailureCode =
   | "memory_lexical_lane_unavailable"
-  | "memory_lexical_projection_not_ready"
-  | "memory_lexical_shadow_capacity"
   | "memory_lexical_settle_timeout"
-  | "memory_opensearch_authentication_failed"
-  | "memory_opensearch_canonical_guard"
-  | "memory_opensearch_circuit_open"
-  | "memory_opensearch_connection_failed"
-  | "memory_opensearch_index_incompatible"
-  | "memory_opensearch_index_missing"
-  | "memory_opensearch_rate_limited"
-  | "memory_opensearch_response_invalid"
-  | "memory_opensearch_response_too_large"
-  | "memory_opensearch_scope_too_large"
-  | "memory_opensearch_timeout"
-  | "memory_opensearch_unavailable"
   | "memory_read_admission_timeout"
   | "memory_read_connection_timeout"
   | "memory_read_deadline_exhausted"
@@ -105,20 +83,14 @@ export type MemoryLexicalFailureCode =
   | "memory_read_statement_timeout"
   | "memory_read_transaction_expired";
 
-/** Candidate-source evidence deliberately has no authority counters. Only the
- * PostgreSQL owner can add those after the canonical rejoin. */
+/** Candidate-source evidence deliberately has no canonical counters. Only the
+ * canonical rejoin can add those. */
 export type MemoryLexicalProviderEvidence = Readonly<{
-  backend: "OPENSEARCH" | "POSTGRES";
   durationMs: number;
   failureCode: MemoryLexicalFailureCode | null;
   fallbackUsed: boolean;
   lane: MemoryRetrievalLane;
   matchMode: MemoryLexicalMatchMode | null;
-  opaqueId: string | null;
-  projectionCaughtUp: boolean | null;
-  projectionEventLag: number | null;
-  projectionRevisionLag: number | null;
-  projectionVisibleAgeMs: number | null;
   rawCandidateCount: number;
   requestedLimit: number;
   timedOut: boolean;
@@ -126,9 +98,6 @@ export type MemoryLexicalProviderEvidence = Readonly<{
 
 export type MemoryLexicalLaneEvidence = MemoryLexicalProviderEvidence & Readonly<{
   canonicalAcceptedCount: number;
-  rejectedAuthorityCount: number;
-  rejectedGenerationCount: number;
-  rejectedHashCount: number;
 }>;
 
 export type MemoryLexicalSearchResult = Readonly<{
@@ -136,21 +105,12 @@ export type MemoryLexicalSearchResult = Readonly<{
   evidence: MemoryLexicalProviderEvidence;
 }>;
 
-export type MemoryLexicalProviderBackend =
-  | MemoryLexicalProviderEvidence["backend"]
-  | "ROUTED";
-
 export interface MemoryLexicalCandidateProvider {
-  readonly backend: MemoryLexicalProviderBackend;
-  /** Optional candidate-free admission fence. Retrieval invokes this before
-   * database lane fan-out; the provider may coalesce the proof through the
-   * process-local snapshot scope carried by the request. */
-  prepare?(request: MemoryLexicalSearchRequest): Promise<void>;
   search(request: MemoryLexicalSearchRequest): Promise<MemoryLexicalSearchResult>;
 }
 
 /** A fallback may be suppressed only by a complete logical-term match that
- * survived PostgreSQL canonicalization. Partial or rejected provider hits are
+ * survived canonicalization. Partial or rejected candidate hits are
  * not proof that a query variant has a usable lexical route. */
 export function hasAcceptedCompleteMemoryLexicalVariant(input: Readonly<{
   acceptedSearchEntryIds: readonly string[];
@@ -177,21 +137,7 @@ const normalizedTextPattern = /^[^\u0000-\u001f\u007f]{1,2000}$/u;
 const analysisProfilePattern = /^[A-Za-z0-9._:-]{1,64}$/u;
 const lexicalFailureCodes = new Set<MemoryLexicalFailureCode>([
   "memory_lexical_lane_unavailable",
-  "memory_lexical_projection_not_ready",
-  "memory_lexical_shadow_capacity",
   "memory_lexical_settle_timeout",
-  "memory_opensearch_authentication_failed",
-  "memory_opensearch_canonical_guard",
-  "memory_opensearch_circuit_open",
-  "memory_opensearch_connection_failed",
-  "memory_opensearch_index_incompatible",
-  "memory_opensearch_index_missing",
-  "memory_opensearch_rate_limited",
-  "memory_opensearch_response_invalid",
-  "memory_opensearch_response_too_large",
-  "memory_opensearch_scope_too_large",
-  "memory_opensearch_timeout",
-  "memory_opensearch_unavailable",
   "memory_read_admission_timeout",
   "memory_read_connection_timeout",
   "memory_read_deadline_exhausted",
@@ -290,14 +236,12 @@ export function assertMemoryLexicalSearchRequest(
 
 export function assertMemoryLexicalSearchResult(
   request: MemoryLexicalSearchRequest,
-  result: MemoryLexicalSearchResult,
-  backend: MemoryLexicalCandidateProvider["backend"]
+  result: MemoryLexicalSearchResult
 ): void {
   if (!result || typeof result !== "object" || !Array.isArray(result.candidates) ||
     result.candidates.length > request.variants.length *
       request.candidateLimitPerVariant ||
     !result.evidence || typeof result.evidence !== "object" ||
-    backend !== "ROUTED" && result.evidence.backend !== backend ||
     !Number.isSafeInteger(result.evidence.durationMs) ||
     result.evidence.durationMs < 0 || result.evidence.durationMs > 60_000 ||
     !Number.isSafeInteger(result.evidence.rawCandidateCount) ||
@@ -308,15 +252,7 @@ export function assertMemoryLexicalSearchResult(
     result.evidence.failureCode !== null &&
       !lexicalFailureCodes.has(result.evidence.failureCode) ||
     typeof result.evidence.fallbackUsed !== "boolean" ||
-    typeof result.evidence.timedOut !== "boolean" ||
-    result.evidence.projectionCaughtUp !== null &&
-      typeof result.evidence.projectionCaughtUp !== "boolean" ||
-    [result.evidence.projectionEventLag,
-      result.evidence.projectionRevisionLag,
-      result.evidence.projectionVisibleAgeMs].some((value) =>
-      value !== null && (!Number.isSafeInteger(value) || value < 0)) ||
-    result.evidence.opaqueId !== null &&
-      !validOpaqueToken(result.evidence.opaqueId)) {
+    typeof result.evidence.timedOut !== "boolean") {
     throw new Error("memory_lexical_search_result_invalid");
   }
   const requestedVariants = new Map(request.variants.map((variant) => [

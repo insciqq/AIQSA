@@ -199,12 +199,11 @@ export class AcceptanceDriver {
     let stable = 0;
     let failureCode: string | null = null;
     while (Date.now() - started < PROFILE.settlementTimeoutMs) {
-      const [jobs, deletions, projections, settings] = await Promise.all([
+      const [jobs, deletions, settings] = await Promise.all([
         this.prisma.memoryJob.findMany({ where: { userId: identity.userId },
           select: { id: true, kind: true, state: true, errorCode: true, sourceMessageId: true, chatId: true } }),
         this.prisma.memoryDeletionOutbox.count({ where: { userId: identity.userId, state: { not: "SUCCEEDED" },
           NOT: { operation: "TEMPORARY_DELETE", state: "PENDING", nextAttemptAt: { gt: new Date() } } } }),
-        this.prisma.memoryLexicalProjectionEvent.count({ where: { userId: identity.userId, state: { not: "SUCCEEDED" } } }),
         this.prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: identity.userId } })
       ]);
       const failed = jobs.filter((job) => ["TERMINAL_FAILED", "CANCELLED", "STALE"].includes(job.state) &&
@@ -231,7 +230,7 @@ export class AcceptanceDriver {
       const historyPresent = !required || !settings.referenceChatHistory || jobs.some((job) =>
         job.kind === "INDEX_HISTORY" && job.chatId === source.chat.id);
       const active = jobs.some((job) => (activeStates as readonly string[]).includes(job.state));
-      stable = !active && deletions === 0 && projections === 0 && extractPresent && historyPresent ? stable + 1 : 0;
+      stable = !active && deletions === 0 && extractPresent && historyPresent ? stable + 1 : 0;
       if (stable >= 2) {
         if (failureCode) throw new Error(failureCode);
         return Date.now() - started;

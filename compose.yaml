@@ -39,21 +39,7 @@ services:
       AIQSA_MEMORY_EMBEDDING_BATCH_SIZE: ${AIQSA_MEMORY_EMBEDDING_BATCH_SIZE:-16}
       AIQSA_MEMORY_IDENTITY_WRITE_PROFILE: ${AIQSA_MEMORY_IDENTITY_WRITE_PROFILE:-UNICODE_V2}
       AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Set AIQSA_MEMORY_FINGERPRINT_KEYRING in .env}
-      AIQSA_MEMORY_LEXICAL_BACKEND: ${AIQSA_MEMORY_LEXICAL_BACKEND:-POSTGRES}
-      AIQSA_MEMORY_OPENSEARCH_CANARY_PERCENT: ${AIQSA_MEMORY_OPENSEARCH_CANARY_PERCENT:-1}
-      AIQSA_MEMORY_OPENSEARCH_CIRCUIT_FAILURE_THRESHOLD: ${AIQSA_MEMORY_OPENSEARCH_CIRCUIT_FAILURE_THRESHOLD:-5}
-      AIQSA_MEMORY_OPENSEARCH_CIRCUIT_COOLDOWN_MS: ${AIQSA_MEMORY_OPENSEARCH_CIRCUIT_COOLDOWN_MS:-30000}
       AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY:?Set AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY in .env}
-      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID:-v1}
-      AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: ${AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID:-20260831a}
-      AIQSA_MEMORY_OPENSEARCH_READ_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_READ_ALIAS:-aiqsa-memory-lexical-read}
-      AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS:-aiqsa-memory-lexical-write}
-      AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS:-3000}
-      AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES: ${AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES:-4194304}
-      AIQSA_MEMORY_OPENSEARCH_SHARDS: ${AIQSA_MEMORY_OPENSEARCH_SHARDS:-1}
-      AIQSA_MEMORY_OPENSEARCH_REPLICAS: ${AIQSA_MEMORY_OPENSEARCH_REPLICAS:-0}
-      AIQSA_MEMORY_OPENSEARCH_SHADOW_MAX_CONCURRENCY: ${AIQSA_MEMORY_OPENSEARCH_SHADOW_MAX_CONCURRENCY:-2}
-      AIQSA_MEMORY_OPENSEARCH_SHADOW_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_SHADOW_TIMEOUT_MS:-1200}
       AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: ${AIQSA_MEMORY_COORDINATOR_INTERVAL_MS:-1000}
       AIQSA_MEMORY_COORDINATOR_LEASE_MS: ${AIQSA_MEMORY_COORDINATOR_LEASE_MS:-30000}
       AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: ${AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS:-64}
@@ -93,7 +79,6 @@ services:
       AIQSA_KNOWLEDGE_MAX_PAGES: ${AIQSA_KNOWLEDGE_MAX_PAGES:-2000}
       AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS: ${AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS:-5000000}
       AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT: ${AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:-10000}
-      AIQSA_OPENSEARCH_URL: http://opensearch:9200
       AIQSA_PDF_EXTRACTION_TIMEOUT_MS: ${AIQSA_PDF_EXTRACTION_TIMEOUT_MS:-300000}
       AIQSA_PDF_MAX_PAGES: ${AIQSA_PDF_MAX_PAGES:-500}
       AIQSA_DOCLING_REQUEST_MAX_BYTES: ${AIQSA_DOCLING_REQUEST_MAX_BYTES:-}
@@ -162,7 +147,6 @@ services:
     networks:
       - default
       - parser-control
-      - search-control
       - workspace-control
     ports:
       - "${AIQSA_BIND_ADDRESS:-127.0.0.1}:${AIQSA_PORT:-3000}:3000"
@@ -176,8 +160,6 @@ services:
       storage-init:
         condition: service_completed_successfully
       postgres:
-        condition: service_healthy
-      opensearch:
         condition: service_healthy
 
   memory-worker:
@@ -222,48 +204,6 @@ services:
         condition: service_healthy
       storage-init:
         condition: service_completed_successfully
-
-  memory-search-worker:
-    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
-    command: ["npm", "run", "memory:search:worker"]
-    environment:
-      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY:?Set AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY in .env}
-      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID:-v1}
-      AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: ${AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID:-20260831a}
-      AIQSA_MEMORY_OPENSEARCH_READ_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_READ_ALIAS:-aiqsa-memory-lexical-read}
-      AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS:-aiqsa-memory-lexical-write}
-      AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS:-3000}
-      AIQSA_MEMORY_OPENSEARCH_BULK_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_BULK_TIMEOUT_MS:-30000}
-      AIQSA_MEMORY_OPENSEARCH_BULK_MAX_DOCUMENTS: ${AIQSA_MEMORY_OPENSEARCH_BULK_MAX_DOCUMENTS:-100}
-      AIQSA_MEMORY_OPENSEARCH_BULK_MAX_BYTES: ${AIQSA_MEMORY_OPENSEARCH_BULK_MAX_BYTES:-2097152}
-      AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES: ${AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES:-4194304}
-      AIQSA_MEMORY_OPENSEARCH_SHARDS: ${AIQSA_MEMORY_OPENSEARCH_SHARDS:-1}
-      AIQSA_MEMORY_OPENSEARCH_REPLICAS: ${AIQSA_MEMORY_OPENSEARCH_REPLICAS:-0}
-      AIQSA_MEMORY_OPENSEARCH_PROJECTION_BATCH: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_BATCH:-16}
-      AIQSA_MEMORY_OPENSEARCH_PROJECTION_INTERVAL_MS: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_INTERVAL_MS:-2000}
-      AIQSA_MEMORY_OPENSEARCH_PROJECTION_LEASE_MS: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_LEASE_MS:-120000}
-      AIQSA_MEMORY_OPENSEARCH_PROJECTION_MAX_ATTEMPTS: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_MAX_ATTEMPTS:-8}
-      AIQSA_MEMORY_OPENSEARCH_VERIFICATION_BATCH: ${AIQSA_MEMORY_OPENSEARCH_VERIFICATION_BATCH:-4}
-      AIQSA_OPENSEARCH_URL: http://opensearch:9200
-      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
-      NEXT_TELEMETRY_DISABLED: "1"
-      NODE_ENV: production
-    cpus: ${AIQSA_MEMORY_SEARCH_WORKER_CPU_LIMIT:-0.5}
-    depends_on:
-      migrate-bootstrap:
-        condition: service_completed_successfully
-      opensearch:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    init: true
-    logging: *default-logging
-    mem_limit: ${AIQSA_MEMORY_SEARCH_WORKER_MEMORY_LIMIT:-512m}
-    networks:
-      - default
-      - search-control
-    restart: unless-stopped
-    stop_grace_period: 30s
 
   knowledge-search-worker:
     image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
@@ -492,35 +432,6 @@ services:
     volumes:
       - postgres18_data:/var/lib/postgresql
 
-  opensearch:
-    init: true
-    image: ${AIQSA_OPENSEARCH_IMAGE:-ghcr.io/insciqq/aiqsa:opensearch}
-    environment:
-      DISABLE_INSTALL_DEMO_CONFIG: "true"
-      DISABLE_SECURITY_PLUGIN: "true"
-      OPENSEARCH_JAVA_OPTS: ${AIQSA_OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
-      bootstrap.memory_lock: "true"
-      discovery.type: single-node
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=2s' >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
-    cpus: ${AIQSA_OPENSEARCH_CPU_LIMIT:-1.0}
-    logging: *default-logging
-    mem_limit: ${AIQSA_OPENSEARCH_MEMORY_LIMIT:-1536m}
-    networks:
-      - search-control
-    restart: unless-stopped
-    stop_grace_period: 60s
-    ulimits:
-      memlock:
-        hard: -1
-        soft: -1
-    volumes:
-      - opensearch_data:/usr/share/opensearch/data
-
   # Object storage. SeaweedFS runs without any network interface except
   # loopback; its S3 API reaches the Compose network only through the `minio`
   # relay, so master, volume, filer, gRPC and catalog listeners stay private.
@@ -656,14 +567,11 @@ services:
 networks:
   parser-control:
     internal: true
-  search-control:
-    internal: true
   workspace-control:
     internal: true
   workspace-egress: {}
 
 volumes:
-  opensearch_data:
   postgres18_data:
   seaweedfs_data:
   storage_socket:

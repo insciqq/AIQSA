@@ -152,22 +152,16 @@ export async function executePostgresMemoryLexicalQuery(input: Readonly<{
   const result = Object.freeze({
     candidates,
     evidence: Object.freeze({
-      backend: "POSTGRES" as const,
       durationMs: Math.min(60_000, Math.max(0, Date.now() - startedAt)),
       failureCode: null,
       fallbackUsed: input.fallbackUsed,
       lane: input.evidenceLane,
       matchMode: input.matchMode,
-      opaqueId: null,
-      projectionCaughtUp: true,
-      projectionEventLag: null,
-      projectionRevisionLag: null,
-      projectionVisibleAgeMs: null,
       rawCandidateCount: candidates.length,
       requestedLimit: input.request.finalLimit,
       timedOut: false
     })
   });
-  assertMemoryLexicalSearchResult(input.request, result, "POSTGRES");
+  assertMemoryLexicalSearchResult(input.request, result);
   return result;
 }

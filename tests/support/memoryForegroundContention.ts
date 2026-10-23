@@ -19,7 +19,6 @@ import {
   MEMORY_LEXICAL_NORMALIZATION_VERSION
 } from "@/lib/server/memory/persistence/lexical";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "@/lib/server/memory/retrieval/vector";
-import { initializeMemoryLexicalProjectionState } from "@/lib/server/memory/searchProjection/repository";
 import { defaultMemorySourceMutationHooks } from "@/lib/server/memory/sourceHooks";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "@/lib/server/memory/sourceState";
 import type { RunRepository } from "@/lib/server/runs/runRepositoryContract";
@@ -182,8 +181,6 @@ export async function activateContentionVectorIndex(userId: string, embedding: C
     vectorSpaceFingerprint: embedding.pin.vectorSpaceFingerprint
   } });
   await prisma.$transaction(async (tx) => {
-    await initializeMemoryLexicalProjectionState(tx, { indexGenerationId: generation.id,
-      targetMemoryRevision: settings.memoryRevision, userId });
     await tx.userMemorySettings.update({ data: { activeIndexGenerationId: generation.id }, where: { userId } });
     await tx.memoryIndexGeneration.update({ data: { activatedAt: now, state: "ACTIVE" }, where: { id: generation.id } });
   });

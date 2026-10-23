@@ -113,32 +113,18 @@ import {
   MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS,
   assertMemoryLexicalSearchResult,
   hasAcceptedCompleteMemoryLexicalVariant,
-  memoryLexicalProjectionReadinessScope,
   memoryLexicalReadSignal,
   type MemoryLexicalCandidateProvider,
   type MemoryLexicalLaneEvidence,
-  type MemoryLexicalProviderBackend,
-  type MemoryLexicalProviderEvidence,
   type MemoryLexicalRawCandidate,
   type MemoryLexicalSearchRequest,
   type MemoryLexicalSearchResult
 } from "./lexical/contract";
 import {
+  createPostgresUnicodeMemoryLexicalCandidateProvider,
   isPostgresUnicodeMemoryLexicalLane,
   type PostgresUnicodeMemoryLexicalLane
 } from "./lexical/postgresUnicodeProvider";
-import {
-  defaultMemoryLexicalCutoverRuntime,
-  supportsMemoryLexicalCanonicalGuardFallback
-} from "./lexical/cutover";
-import {
-  defaultMemoryLexicalShadowRuntime,
-  isShadowedMemoryLexicalLane,
-  memoryLexicalShadowLaneReceipt,
-  type MemoryLexicalShadowLaneReceipt,
-  type MemoryLexicalShadowRuntime,
-  type MemoryLexicalShadowStage
-} from "./lexical/shadow";
 
 export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
@@ -216,11 +202,6 @@ export type MemoryLocalRetrievalSnapshot = Readonly<{
   useMemoryFacts: boolean;
   userId: string;
 }>;
-
-const memoryLexicalReadinessScopes = new WeakMap<
-  MemoryLocalRetrievalSnapshot,
-  object
->();
 
 export type MemoryLocalVectorQuery = Readonly<{
   minimumScore: number;
@@ -2703,8 +2684,6 @@ function memoryLexicalSearchRequest(
   if (!snapshot.activeGenerationId || !plan.lexicalQuery) {
     throw new Error("memory_retrieval_snapshot_invalid");
   }
-  const readinessScope = memoryLexicalReadinessScopes.get(snapshot);
-  if (!readinessScope) throw new Error("memory_retrieval_snapshot_invalid");
   const texts = memorySemanticLexicalQueryTexts(plan);
   const termsByVariant = new Map<number, string[]>();
   for (const { term, variantOrdinal } of memorySemanticLexicalTermVariants(
@@ -2751,7 +2730,6 @@ function memoryLexicalSearchRequest(
         finalLimit * 2
       );
   return Object.freeze({
-    [memoryLexicalProjectionReadinessScope]: readinessScope,
     ...(signal ? { [memoryLexicalReadSignal]: signal } : {}),
     activeGenerationId: snapshot.activeGenerationId,
     analysisProfileVersion: MEMORY_LEXICAL_ANALYSIS_PROFILE,
@@ -3048,33 +3026,6 @@ function localLexicalLanes(
     (priority.get(right) ?? Number.MAX_SAFE_INTEGER));
 }
 
-async function prepareMemoryLexicalProviderReadiness(input: Readonly<{
-  plan: MemoryRetrievalPlan;
-  providerForLane: MemoryLexicalProviderForLane;
-  snapshot: MemoryLocalRetrievalSnapshot;
-}>): Promise<void> {
-  const lane = localLexicalLanes(input.snapshot, input.plan).find(
-    isPostgresUnicodeMemoryLexicalLane
-  );
-  if (!lane) return;
-  const provider = input.providerForLane(lane);
-  if (!provider.prepare) return;
-  const request = memoryLexicalSearchRequest(
-    input.snapshot,
-    input.plan,
-    lane,
-    memoryRetrievalLaneLimit(lane, input.plan.aggregationRequested),
-    memoryRetrievalLaneLimit(lane, input.plan.aggregationRequested)
-  );
-  try {
-    await provider.prepare(request);
-  } catch {
-    // Preparation is candidate-free and optional. The subsequent provider
-    // search consumes the same cached proof and owns normal degraded evidence,
-    // fallback, and circuit-breaker accounting.
-  }
-}
-
 function allocatedLimit(
   allocation: MemoryRetrievalLaneLimitAllocation,
   lane: MemoryRetrievalLane,
@@ -3166,11 +3117,8 @@ type MemoryLexicalEvidenceRecorder = Readonly<{
 function createLexicalEvidenceRecorder(
   evidence: MemoryLexicalLaneEvidence[],
   lane: MemoryRetrievalLane,
-  requestedLimit: number,
-  providerBackend: MemoryLexicalProviderBackend = "POSTGRES"
+  requestedLimit: number
 ): MemoryLexicalEvidenceRecorder {
-  const backend: MemoryLexicalProviderEvidence["backend"] =
-    providerBackend === "OPENSEARCH" ? "OPENSEARCH" : "POSTGRES";
   const startedAt = Date.now();
   let canonicalAcceptedCount = 0;
   let rawCandidateCount = 0;
@@ -3185,22 +3133,13 @@ function createLexicalEvidenceRecorder(
       Math.max(0, Date.now() - startedAt)
     );
     const entry = Object.freeze({
-      backend,
       canonicalAcceptedCount,
       durationMs,
       failureCode,
       fallbackUsed: lane.endsWith("_LEXICAL_NGRAM"),
       lane,
       matchMode: lexicalMatchMode(lane),
-      opaqueId: null,
-      projectionCaughtUp: backend === "POSTGRES" ? true : null,
-      projectionEventLag: null,
-      projectionRevisionLag: null,
-      projectionVisibleAgeMs: null,
       rawCandidateCount,
-      rejectedAuthorityCount: 0,
-      rejectedGenerationCount: 0,
-      rejectedHashCount: 0,
       requestedLimit,
       timedOut: failureCode === "memory_lexical_settle_timeout" ||
         isMemoryReadBudgetErrorCode(failureCode) &&
@@ -3245,103 +3184,6 @@ export type MemoryLexicalProviderForLane = (
   lane: PostgresUnicodeMemoryLexicalLane
 ) => MemoryLexicalCandidateProvider;
 
-type MemoryLexicalRejectionCounts = Readonly<{
-  rejectedAuthorityCount: number;
-  rejectedGenerationCount: number;
-  rejectedHashCount: number;
-}>;
-
-type MemoryLexicalRejectionRow = Readonly<{
-  actualGenerationId: string | null;
-  actualSafeContentHash: string | null;
-  actualUserId: string | null;
-  expectedSafeContentHash: string;
-  searchEntryId: string;
-}>;
-
-/** Classifies only opaque provider identities. Canonical selector failures
- * that are not an exact generation/hash mismatch remain authority failures;
- * no Memory text or public item identity is materialized. */
-export async function classifyMemoryLexicalCanonicalRejections(input: Readonly<{
-  acceptedSearchEntryIds: readonly string[];
-  candidates: readonly MemoryLexicalRawCandidate[];
-  client: PrismaClient;
-  deadlineAtMs: number;
-  signal?: AbortSignal;
-  snapshot: MemoryLocalRetrievalSnapshot;
-}>): Promise<MemoryLexicalRejectionCounts> {
-  const byEntry = new Map<string, string>();
-  for (const candidate of input.candidates) {
-    const current = byEntry.get(candidate.searchEntryId);
-    if (current !== undefined && current !== candidate.safeContentHash) {
-      throw new Error("memory_lexical_search_result_invalid");
-    }
-    byEntry.set(candidate.searchEntryId, candidate.safeContentHash);
-  }
-  if (byEntry.size === 0) return Object.freeze({
-    rejectedAuthorityCount: 0,
-    rejectedGenerationCount: 0,
-    rejectedHashCount: 0
-  });
-  const acceptedIds = new Set(input.acceptedSearchEntryIds);
-  if (acceptedIds.size !== input.acceptedSearchEntryIds.length ||
-    input.acceptedSearchEntryIds.some((entryId) => !byEntry.has(entryId))) {
-    throw new Error("memory_lexical_search_result_invalid");
-  }
-  const values = [...byEntry].map(([searchEntryId, safeContentHash]) =>
-    Prisma.sql`(${searchEntryId}::text, ${safeContentHash}::text)`);
-  const rows = await withMemoryReadBudget(
-    input.client,
-    MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
-    (tx) => tx.$queryRaw<MemoryLexicalRejectionRow[]>(Prisma.sql`
-      /* aiqsa_memory_retrieval_lane:OPENSEARCH_CANONICAL_REJECTION_AUDIT */
-      WITH lexical_candidates (
-        "searchEntryId", "expectedSafeContentHash"
-      ) AS MATERIALIZED (
-        VALUES ${Prisma.join(values)}
-      )
-      SELECT
-        lexical_candidates."searchEntryId",
-        lexical_candidates."expectedSafeContentHash",
-        entry."userId" AS "actualUserId",
-        entry."indexGenerationId" AS "actualGenerationId",
-        entry."safeContentHash" AS "actualSafeContentHash"
-      FROM lexical_candidates
-      LEFT JOIN "MemorySearchEntry" AS entry
-        ON entry."id" = lexical_candidates."searchEntryId"
-      ORDER BY lexical_candidates."searchEntryId"
-    `),
-    { admission: "LANE", deadlineAtMs: input.deadlineAtMs, signal: input.signal }
-  );
-  if (rows.length !== byEntry.size || new Set(rows.map(({ searchEntryId }) =>
-    searchEntryId)).size !== rows.length) {
-    throw new Error("memory_lexical_search_result_invalid");
-  }
-  let rejectedAuthorityCount = 0;
-  let rejectedGenerationCount = 0;
-  let rejectedHashCount = 0;
-  for (const row of rows) {
-    if (row.expectedSafeContentHash !== byEntry.get(row.searchEntryId)) {
-      throw new Error("memory_lexical_search_result_invalid");
-    }
-    if (acceptedIds.has(row.searchEntryId)) continue;
-    if (row.actualUserId !== input.snapshot.userId) {
-      rejectedAuthorityCount += 1;
-    } else if (row.actualGenerationId !== input.snapshot.activeGenerationId) {
-      rejectedGenerationCount += 1;
-    } else if (row.actualSafeContentHash !== row.expectedSafeContentHash) {
-      rejectedHashCount += 1;
-    } else {
-      rejectedAuthorityCount += 1;
-    }
-  }
-  return Object.freeze({
-    rejectedAuthorityCount,
-    rejectedGenerationCount,
-    rejectedHashCount
-  });
-}
-
 async function queryProviderBackedLexicalLane(input: Readonly<{
   client: PrismaClient;
   deadlineAtMs?: number;
@@ -3370,9 +3212,9 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
     input.signal
   );
   let searched = await input.provider.search(request);
-  assertMemoryLexicalSearchResult(request, searched, input.provider.backend);
+  assertMemoryLexicalSearchResult(request, searched);
   searched = boundMemoryLexicalCanonicalSearchResult(searched);
-  assertMemoryLexicalSearchResult(request, searched, input.provider.backend);
+  assertMemoryLexicalSearchResult(request, searched);
   if (searched.evidence.lane !== input.lane) {
     throw new Error("memory_lexical_search_result_invalid");
   }
@@ -3418,42 +3260,7 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
     }
     return Object.freeze({ acceptedCount, acceptedSearchEntryIds, result });
   };
-  let canonical = await canonicalize(searched);
-  const rejections = searched.evidence.backend === "OPENSEARCH"
-    ? await classifyMemoryLexicalCanonicalRejections({
-        acceptedSearchEntryIds: canonical.acceptedSearchEntryIds,
-        candidates: searched.candidates,
-        client: input.client,
-        deadlineAtMs: input.deadlineAtMs ??
-          Date.now() + MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
-        signal: input.signal,
-        snapshot: input.snapshot
-      })
-    : Object.freeze({
-        rejectedAuthorityCount: 0,
-        rejectedGenerationCount: 0,
-        rejectedHashCount: 0
-      });
-  const rejectedCandidateCount = rejections.rejectedAuthorityCount +
-    rejections.rejectedGenerationCount + rejections.rejectedHashCount;
-  if (searched.evidence.backend === "OPENSEARCH" &&
-    searched.evidence.failureCode === null &&
-    searched.evidence.projectionCaughtUp === true &&
-    searched.candidates.length > 0 && canonical.acceptedCount === 0 &&
-    rejectedCandidateCount > 0 &&
-    supportsMemoryLexicalCanonicalGuardFallback(input.provider)) {
-    searched = await input.provider.fallbackAfterCanonicalGuard(
-      request,
-      searched.evidence
-    );
-    assertMemoryLexicalSearchResult(request, searched, "POSTGRES");
-    searched = boundMemoryLexicalCanonicalSearchResult(searched);
-    assertMemoryLexicalSearchResult(request, searched, "POSTGRES");
-    if (searched.evidence.lane !== input.lane) {
-      throw new Error("memory_lexical_search_result_invalid");
-    }
-    canonical = await canonicalize(searched);
-  }
+  const canonical = await canonicalize(searched);
   return Object.freeze({
     completeVariantAccepted: hasAcceptedCompleteMemoryLexicalVariant({
       acceptedSearchEntryIds: canonical.acceptedSearchEntryIds,
@@ -3463,8 +3270,7 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
     evidence: Object.freeze({
       ...searched.evidence,
       canonicalAcceptedCount: canonical.acceptedCount,
-      durationMs: Math.min(60_000, Math.max(0, Date.now() - startedAt)),
-      ...rejections
+      durationMs: Math.min(60_000, Math.max(0, Date.now() - startedAt))
     }),
     rawCandidates: searched.candidates,
     result: canonical.result
@@ -3476,149 +3282,11 @@ function orderedLexicalEvidence(
 ): readonly MemoryLexicalLaneEvidence[] {
   return Object.freeze([...evidence].sort((left, right) =>
     left.lane.localeCompare(right.lane) ||
-    left.backend.localeCompare(right.backend) ||
     left.requestedLimit - right.requestedLimit ||
     (left.failureCode ?? "").localeCompare(right.failureCode ?? "") ||
     left.rawCandidateCount - right.rawCandidateCount ||
     left.canonicalAcceptedCount - right.canonicalAcceptedCount ||
     left.durationMs - right.durationMs));
-}
-
-type MemoryLexicalShadowLaneSpec = Readonly<{
-  lane: PostgresUnicodeMemoryLexicalLane;
-  limit: number;
-  queryLimit: number;
-  sourceDiversity: boolean;
-}>;
-
-type MemoryLexicalShadowLaneExecution = Readonly<{
-  completeVariantAccepted: boolean;
-  evidence: MemoryLexicalLaneEvidence;
-  rawCandidates: readonly MemoryLexicalRawCandidate[];
-  result: MemoryLaneResult;
-}>;
-
-async function executeMemoryLexicalShadowLane(input: Readonly<{
-  client: PrismaClient;
-  deadlineAtMs: number;
-  plan: MemoryRetrievalPlan;
-  runtime: MemoryLexicalShadowRuntime;
-  snapshot: MemoryLocalRetrievalSnapshot;
-  spec: MemoryLexicalShadowLaneSpec;
-}>): Promise<MemoryLexicalShadowLaneExecution> {
-  try {
-    return await queryProviderBackedLexicalLane({
-      client: input.client,
-      deadlineAtMs: input.deadlineAtMs,
-      lane: input.spec.lane,
-      limit: input.spec.limit,
-      plan: input.plan,
-      provider: input.runtime.providerForLane(input.spec.lane),
-      queryLimit: input.spec.queryLimit,
-      snapshot: input.snapshot,
-      sourceDiversity: input.spec.sourceDiversity
-    });
-  } catch (error) {
-    const evidence: MemoryLexicalLaneEvidence[] = [];
-    const recorder = createLexicalEvidenceRecorder(
-      evidence,
-      input.spec.lane,
-      input.spec.queryLimit,
-      "OPENSEARCH"
-    );
-    const recorded = recorder.failure(error);
-    if (!recorded) throw new Error("memory_lexical_evidence_invalid");
-    return Object.freeze({
-      completeVariantAccepted: false,
-      evidence: recorded,
-      rawCandidates: Object.freeze([]),
-      result: Object.freeze({ candidates: Object.freeze([]), lane: input.spec.lane })
-    });
-  }
-}
-
-function shadowLaneReceipt(input: Readonly<{
-  execution: MemoryLexicalShadowLaneExecution;
-  postgresEvidence: readonly MemoryLexicalLaneEvidence[];
-  referenceResults: readonly MemoryLaneResult[];
-}>): MemoryLexicalShadowLaneReceipt {
-  const lane = input.execution.result.lane;
-  if (!isShadowedMemoryLexicalLane(lane)) {
-    throw new Error("memory_lexical_shadow_lane_invalid");
-  }
-  const reference = input.referenceResults.find((result) => result.lane === lane);
-  const postgres = input.postgresEvidence.find((entry) =>
-    entry.backend === "POSTGRES" && entry.lane === lane);
-  return memoryLexicalShadowLaneReceipt({
-    candidate: input.execution.result.candidates,
-    lane,
-    openSearchCandidates: input.execution.rawCandidates,
-    openSearchEvidence: input.execution.evidence,
-    postgresCanonicalAcceptedCount:
-      postgres?.canonicalAcceptedCount ?? reference?.candidates.length ?? 0,
-    postgresRawCandidateCount:
-      postgres?.rawCandidateCount ?? reference?.candidates.length ?? 0,
-    reference: reference?.candidates ?? []
-  });
-}
-
-function scheduleMemoryLexicalShadowStage(input: Readonly<{
-  client: PrismaClient;
-  plan: MemoryRetrievalPlan;
-  postgresEvidence: readonly MemoryLexicalLaneEvidence[];
-  referenceResults: readonly MemoryLaneResult[];
-  runtime: MemoryLexicalShadowRuntime | null;
-  snapshot: MemoryLocalRetrievalSnapshot;
-  specs: readonly MemoryLexicalShadowLaneSpec[];
-  stage: MemoryLexicalShadowStage;
-}>): void {
-  if (!input.runtime || input.specs.length === 0) return;
-  input.runtime.submit({
-    stage: input.stage,
-    async work(deadlineAtMs) {
-      const primarySpecs = input.specs.filter(({ lane }) =>
-        lane.endsWith("_LEXICAL_UNICODE"));
-      const primary = await Promise.all(primarySpecs.map((spec) =>
-        executeMemoryLexicalShadowLane({
-          client: input.client,
-          deadlineAtMs,
-          plan: input.plan,
-          runtime: input.runtime!,
-          snapshot: input.snapshot,
-          spec
-        })));
-      const completePrimaryLanes = new Set<MemoryRetrievalLane>(primary
-        .filter(({ completeVariantAccepted }) => completeVariantAccepted)
-        .map(({ result }) => result.lane));
-      const fallbackSpecs = input.specs.filter(({ lane }) =>
-        lane.endsWith("_LEXICAL_NGRAM") && primary.some((execution) =>
-          execution.result.lane.startsWith(lane.startsWith("FACT_")
-            ? "FACT_"
-            : "HISTORY_") && execution.evidence.failureCode === null &&
-          execution.evidence.projectionCaughtUp === true) &&
-        shouldRunMemoryNgramFallback(
-          lane,
-          primary.map(({ result }) => result),
-          completePrimaryLanes
-        ));
-      const fallback = await Promise.all(fallbackSpecs.map((spec) =>
-        executeMemoryLexicalShadowLane({
-          client: input.client,
-          deadlineAtMs,
-          plan: input.plan,
-          runtime: input.runtime!,
-          snapshot: input.snapshot,
-          spec
-        })));
-      return [...primary, ...fallback]
-        .map((execution) => shadowLaneReceipt({
-          execution,
-          postgresEvidence: input.postgresEvidence,
-          referenceResults: input.referenceResults
-        }))
-        .sort((left, right) => left.lane.localeCompare(right.lane));
-    }
-  });
 }
 
 function pushLexicalTasks(
@@ -3636,14 +3304,12 @@ function pushLexicalTasks(
   deferredTasks: readonly MemoryRetrievalLaneTask[];
   evidence(): readonly MemoryLexicalLaneEvidence[];
   failures(): readonly MemoryRetrievalLane[];
-  shadowSpecs: readonly MemoryLexicalShadowLaneSpec[];
   state(): MemoryLocalRetrievalResult["lexicalState"];
 }> {
   const completePrimaryLanes = new Set<MemoryRetrievalLane>();
   const failures: MemoryRetrievalLane[] = [];
   const executionEvidence: MemoryLexicalLaneEvidence[] = [];
   const deferredTasks: MemoryRetrievalLaneTask[] = [];
-  const shadowSpecs: MemoryLexicalShadowLaneSpec[] = [];
   const lanes = localLexicalLanes(snapshot, plan);
   for (const lane of lanes) {
     const limit = allocatedLimit(allocation, lane, plan.aggregationRequested);
@@ -3655,18 +3321,7 @@ function pushLexicalTasks(
     const providerBacked = isPostgresUnicodeMemoryLexicalLane(lane);
     const provider = providerBacked ? providerForLane(lane) : null;
     const sql = providerBacked ? null : laneSql(snapshot, plan, lane, queryLimit);
-    const recorder = createLexicalEvidenceRecorder(
-      evidence,
-      lane,
-      queryLimit,
-      provider?.backend
-    );
-    if (isShadowedMemoryLexicalLane(lane)) shadowSpecs.push(Object.freeze({
-      lane,
-      limit,
-      queryLimit,
-      sourceDiversity
-    }));
+    const recorder = createLexicalEvidenceRecorder(evidence, lane, queryLimit);
     const task: MemoryRetrievalLaneTask = {
       executionId: `${executionTier}:${lane}`,
       async execute() {
@@ -3733,7 +3388,6 @@ function pushLexicalTasks(
     deferredTasks: Object.freeze(deferredTasks),
     evidence: () => orderedLexicalEvidence(executionEvidence),
     failures: () => [...failures].sort((left, right) => left.localeCompare(right)),
-    shadowSpecs: Object.freeze(shadowSpecs),
     state: () => lanes.length === 0 ? "DISABLED" : failures.length === 0 ? "READY"
       : failures.length === lanes.length ? "FAILED" : "DEGRADED"
   };
@@ -4981,22 +4635,31 @@ async function settleMemoryLocalRead<T>(
 
 export type PrismaLocalMemoryRetrievalRepositoryDependencies = Readonly<{
   lexicalCandidateProviderForLane?: MemoryLexicalProviderForLane;
-  lexicalShadowRuntime?: MemoryLexicalShadowRuntime | null;
 }>;
+
+function postgresLexicalProviderForLane(
+  client: PrismaClient
+): MemoryLexicalProviderForLane {
+  const providers = new Map<
+    PostgresUnicodeMemoryLexicalLane,
+    MemoryLexicalCandidateProvider
+  >();
+  return (lane) => {
+    const current = providers.get(lane);
+    if (current) return current;
+    const created = createPostgresUnicodeMemoryLexicalCandidateProvider(client, lane);
+    providers.set(lane, created);
+    return created;
+  };
+}
 
 export function createPrismaLocalMemoryRetrievalRepository(
   client: PrismaClient = prisma,
   dependencies: PrismaLocalMemoryRetrievalRepositoryDependencies = {}
 ) {
-  const defaultLexicalRuntime = dependencies.lexicalCandidateProviderForLane
-    ? null
-    : defaultMemoryLexicalCutoverRuntime(client);
   const providerForLane: MemoryLexicalProviderForLane =
     dependencies.lexicalCandidateProviderForLane ??
-    defaultLexicalRuntime!.providerForLane;
-  const lexicalShadowRuntime = dependencies.lexicalShadowRuntime === undefined
-    ? defaultMemoryLexicalShadowRuntime(client)
-    : dependencies.lexicalShadowRuntime;
+    postgresLexicalProviderForLane(client);
   type IssuedSnapshotMetadata = Readonly<{ authorityFingerprint: string }>;
   const issuedSnapshots = new WeakMap<
     MemoryLocalRetrievalSnapshot,
@@ -5008,7 +4671,6 @@ export function createPrismaLocalMemoryRetrievalRepository(
     const authorityFingerprint = snapshotAuthorityFingerprint(snapshot);
     const frozen = Object.freeze(snapshot);
     issuedSnapshots.set(frozen, Object.freeze({ authorityFingerprint }));
-    memoryLexicalReadinessScopes.set(frozen, Object.freeze({}));
     return frozen;
   };
   const reusableSnapshot = (
@@ -5303,13 +4965,6 @@ export function createPrismaLocalMemoryRetrievalRepository(
         throw new Error("memory_retrieval_baseline_plan_invalid");
       }
       if (snapshot.status !== "READY") return emptyResult(snapshot);
-      if (!denseOnly && input.plan.queryPresent) {
-        await prepareMemoryLexicalProviderReadiness({
-          plan: input.plan,
-          providerForLane,
-          snapshot
-        });
-      }
       const core = !denseOnly && input.plan.applyResponsePreferences
         ? await settleMemoryLocalRead(
             input.settleSignal,
@@ -5459,30 +5114,6 @@ export function createPrismaLocalMemoryRetrievalRepository(
         enrichedLexicalExecution,
         enrichedLaneResults
       );
-      if (separateBaseline && baselineLexicalExecution) {
-        scheduleMemoryLexicalShadowStage({
-          client,
-          plan: separateBaseline,
-          postgresEvidence: baselineLexicalExecution.evidence(),
-          referenceResults: baselineLaneResults,
-          runtime: lexicalShadowRuntime,
-          snapshot,
-          specs: baselineLexicalExecution.shadowSpecs,
-          stage: "BASELINE"
-        });
-      }
-      if (enrichedLexicalExecution) {
-        scheduleMemoryLexicalShadowStage({
-          client,
-          plan: input.plan,
-          postgresEvidence: enrichedLexicalExecution.evidence(),
-          referenceResults: enrichedLaneResults,
-          runtime: lexicalShadowRuntime,
-          snapshot,
-          specs: enrichedLexicalExecution.shadowSpecs,
-          stage: "ENRICHED"
-        });
-      }
       if (!separateBaseline && input.baselinePlan) {
         baselineLaneResults = enrichedLaneResults;
       }

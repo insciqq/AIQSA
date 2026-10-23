@@ -1,24 +1,14 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OpenSearchTransportError } from "../lib/server/search/opensearch/coreTransport";
 
 const fixture = vi.hoisted(() => ({
-  disconnect: vi.fn(), memoryPass: vi.fn(), knowledgePass: vi.fn(), heartbeat: vi.fn(),
+  disconnect: vi.fn(), knowledgePass: vi.fn(), heartbeat: vi.fn(),
   telemetry: vi.fn(), telemetryStop: vi.fn(), signals: new Map<string, () => void>()
 }));
 vi.mock("../lib/server/telemetry/recorder", () => ({ startTelemetryRecorder: fixture.telemetry }));
 vi.mock("./worker-bootstrap.cjs", () => ({}));
 vi.mock("@prisma/client", () => ({ PrismaClient: class { $disconnect = fixture.disconnect; } }));
-vi.mock("../lib/server/memory/searchProjection/repository", () => ({ createPrismaMemoryLexicalProjectionStore: () => ({}) }));
-vi.mock("../lib/server/search/opensearch/memoryClient", () => ({ createMemoryOpenSearchClient: () => ({}) }));
 vi.mock("../lib/server/search/opensearch/transport", () => ({ createKnowledgeOpenSearchTransport: () => ({}) }));
-vi.mock("../lib/server/memory/searchProjection/worker", () => ({
-  memoryLexicalProjectionRuntimeConfigurationFromEnv: () => ({ worker: { intervalMs: 1 }, openSearch: {} }),
-  nextMemoryLexicalProjectionDeferredVerificationPasses: () => 0,
-  shouldRunMemoryLexicalProjectionMaintenance: () => true,
-  runMemoryLexicalProjectionPass: fixture.memoryPass,
-  auditMemoryLexicalProjection: vi.fn(), rebuildMemoryLexicalProjection: vi.fn()
-}));
 vi.mock("../lib/server/knowledge/searchProjection", () => ({
   runKnowledgeSearchProjectionPass: fixture.knowledgePass,
   inspectKnowledgeSearchIntegrity: vi.fn(), rebuildKnowledgeSearchProjections: vi.fn()
@@ -45,7 +35,6 @@ beforeEach(() => {
   fixture.heartbeat.mockResolvedValue(undefined);
   fixture.telemetryStop.mockResolvedValue(undefined);
   fixture.telemetry.mockReturnValue({ flush: vi.fn(), stop: fixture.telemetryStop });
-  fixture.memoryPass.mockReset();
   fixture.knowledgePass.mockReset();
   const once = process.once;
   vi.spyOn(process, "once").mockImplementation(function (event, listener) {
@@ -67,47 +56,14 @@ afterEach(() => {
 });
 
 describe("standalone projection diagnostics", () => {
-  it.each(["memory", "knowledge"] as const)("keeps a healthy idle %s pass and heartbeat silent", async kind => {
+  it("keeps a healthy idle Knowledge pass and heartbeat silent", async () => {
     process.argv.push("--once");
-    fixture.memoryPass.mockResolvedValue(idle);
     fixture.knowledgePass.mockResolvedValue(idle);
-    if (kind === "memory") await import("./memory-search-worker");
-    else await import("./knowledge-search-worker");
+    await import("./knowledge-search-worker");
     await vi.waitFor(() => expect(fixture.disconnect).toHaveBeenCalledOnce());
     expect(records()).toEqual([]);
     expect(process.exitCode).toBeUndefined();
     expect(fixture.telemetry).not.toHaveBeenCalled();
-  });
-
-  it("bounds repeated transport failure and reports one actual Memory recovery", async () => {
-    const error = new OpenSearchTransportError("opensearch_unavailable");
-    Object.assign(error, { privateContent: "PRIVATE_CANARY" });
-    fixture.memoryPass.mockRejectedValueOnce(error).mockRejectedValueOnce(error).mockImplementationOnce(async () => {
-      fixture.signals.get("SIGTERM")!();
-      return idle;
-    });
-    await import("./memory-search-worker");
-    await vi.waitFor(() => expect(fixture.disconnect).toHaveBeenCalledOnce());
-    expect(records()).toMatchObject([
-      { event: "runtime_lifecycle", subsystem: "memory_search", stage: "projection", outcome: "failed", action: "retry" },
-      { event: "subsystem.recovered", subsystem: "memory_search", stage: "projection", repeat_count: 1 }
-    ]);
-    // The long-running loop records telemetry and writes it before the database closes.
-    expect(fixture.telemetry).toHaveBeenCalledOnce();
-    expect(fixture.telemetryStop.mock.invocationCallOrder[0]).toBeLessThan(fixture.disconnect.mock.invocationCallOrder[0]!);
-    expect(JSON.stringify(records())).not.toContain("PRIVATE_CANARY");
-  });
-
-  it("does not report recovery while the next Memory pass still returns failed work", async () => {
-    fixture.memoryPass.mockRejectedValueOnce(new Error("PRIVATE_CAUSE")).mockImplementationOnce(async () => {
-      fixture.signals.get("SIGTERM")!();
-      return { ...idle, claimed: 1, failed: 1 };
-    });
-    await import("./memory-search-worker");
-    await vi.waitFor(() => expect(fixture.disconnect).toHaveBeenCalledOnce());
-    expect(records().some(record => record.event === "subsystem.recovered")).toBe(false);
-    expect(records().at(-1)).toMatchObject({ stage: "projection", outcome: "failed", claimed_count: 1, failed_count: 1 });
-    expect(JSON.stringify(records())).not.toContain("PRIVATE_CAUSE");
   });
 
   it("preserves Knowledge worker failure exit and excludes raw exception text", async () => {
