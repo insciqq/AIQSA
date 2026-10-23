@@ -81,10 +81,10 @@ function fixture(options: Readonly<{
   usage?: UsageLimitStatus;
 }> = {}) {
   const state: {
-    completedText: string | null; created: CreateRunInput | null; createRun?: (input: CreateRunInput) => void; failedCode: string | null;
+    created: CreateRunInput | null; createRun?: (input: CreateRunInput) => void; failedCode: string | null;
     /** Every request the answer model received. */
     requests: ProviderRunRequest[];
-  } = { completedText: null, created: null, failedCode: null, requests: [] };
+  } = { created: null, failedCode: null, requests: [] };
   const capabilities: ProviderModelCapabilities = {
     nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true,
     toolCalling: options.toolCalling ?? true, vision: false
@@ -92,8 +92,6 @@ function fixture(options: Readonly<{
   const implemented: Partial<RunRepository> = {
     appendAssistantText: async () => undefined,
     appendRunOutputEvent: async (_runId, event) => event,
-    beginToolLoopProviderRound: async () => "started",
-    completeRun: async (input) => { state.completedText = input.finalText; return true; },
     createRun: async (input) => {
       state.createRun?.(input);
       state.created = input;
@@ -102,14 +100,12 @@ function fixture(options: Readonly<{
     failRun: async (_runId, _assistantMessageId, error) => { state.failedCode = error.code; return true; },
     findOwnedChat: async (chatId, userId) => userId === owner.id && options.chat?.id === chatId ? options.chat : null,
     findRecentActiveRunForChat: async () => null,
-    findStaleActiveRunsForUser: async () => [],
     getChatUpdateForRun: async () => null,
     getRunControlForUser: async (runId, userId) => runId === "run-1" && userId === owner.id && state.created ? {
       assistantMessageId: "assistant-message-1", chatId: state.created.chatId, id: runId, modelId: state.created.modelId,
       provider: state.created.provider, providerResponseId: null,
-      status: state.completedText !== null ? "complete" : state.failedCode ? "error" : "streaming"
+      status: state.failedCode ? "error" : "streaming"
     } : null,
-    loadCheckpointedToolLoopRun: async () => null,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, leaf) =>
       leaf === (options.chat?.activeLeafMessageId ?? null) ? [...(options.path ?? [])] : null,
     loadEntitlements: async () => ({ modelKeys: new Set(["fake:fake-qsa"]), providerKeys: new Set(), searchStrategies: new Set() }),
@@ -118,13 +114,8 @@ function fixture(options: Readonly<{
       activeLeafMessageId: null, defaultModelId: "fake-qsa", defaultProvider: "fake", folderId: input.folderId, id: input.chatId,
       memoryMode: input.memoryMode, messageCount: 0, projectMemory: null, title: "New Chat", workspaceEnabled: false
     } : null,
-    loadRunUsageAttributions: async () => [],
     loadWorkspaceFileFacts: async () => ({ hasEarlierExports: false, hasFiles: false }),
     markRunAnswerStarted: async () => undefined,
-    persistToolLoopCallBatch: async () => { throw new Error("tool_calls_not_expected"); },
-    recordRunUsageEvents: async () => true,
-    sweepBootOrphanedRuns: async () => 0,
-    updateRunProviderResponseId: async () => "published"
   };
   // Everything else is absent, like the optional operations of a minimal repository;
   // a required operation the path needs would fail the run visibly.
@@ -518,7 +509,6 @@ describe("scheduled task admission on the agent engine", () => {
       ["user", expect.stringMatching(/^<turn_context>/u)], ["user", "Summarize the synthetic fixture"]
     ]);
     expect(native.published).toHaveLength(1);
-    expect(f.state.completedText).toBeNull();
     expect(f.state.failedCode).toBeNull();
   });
 
