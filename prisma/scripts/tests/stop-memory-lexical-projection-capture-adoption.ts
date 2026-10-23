@@ -12,7 +12,7 @@ VALUES ('00000000-0000-4000-8000-0000000000a1', 'projection-capture-owner', 'pro
 INSERT INTO "MemoryLexicalProjectionState" ("userId", "indexGenerationId", "backendKind", "mappingVersion",
   "normalizationVersion", "analysisProfile", "retrievalPipelineVersion", status, "enqueuedThroughSequence",
   "targetMemoryRevision")
-SELECT 'projection-capture-owner', 'projection-capture-generation', 'opensearch_icu_lexical_v1',
+SELECT 'projection-capture-owner', 'projection-capture-generation', 'retired_lexical_backend_v1',
   'memory-lexical-mapping-v1', 'memory-unicode-query-analysis-v1', 'memory-unicode-icu-v1',
   'memory-personal-retrieval-v63', 'CATCHING_UP', max(sequence), 3
 FROM "MemoryLexicalProjectionEvent" WHERE "userId" = 'projection-capture-owner';

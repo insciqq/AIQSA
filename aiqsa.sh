@@ -53,7 +53,6 @@ IFS=$' \t\n'
 
 readonly EXIT_FAILURE=1 EXIT_USAGE=2 EXIT_UNSUPPORTED=3 EXIT_PREFLIGHT=4 EXIT_NOT_READY=5 EXIT_REFUSED=6
 readonly COMPOSE_FLOOR=2.29.7 ENGINE_TECHNICAL_FLOOR=20.10 ENGINE_SUPPORTED_FLOOR=25.0
-readonly MAX_MAP_COUNT_FLOOR=262144
 readonly MEMORY_FAIL_KIB=7549747 MEMORY_WARN_KIB=15099494   # 90% of 8 GiB and 16 GiB
 readonly DISK_WARN_KIB=48828125                              # 50 GB
 readonly REPOSITORY_URL=https://github.com/insciqq/AIQSA
@@ -73,7 +72,7 @@ readonly JOURNAL_DROPIN=/etc/systemd/journald.conf.d/50-aiqsa.conf
 RESTORE_OVERRIDE_HOOK=${AIQSA_CLI_RESTORE_OVERRIDE:-}
 readonly BACKUP_FORMAT=1
 # Services that keep running while the backup stops application writers.
-readonly BACKUP_KEEP_RUNNING=" postgres opensearch seaweedfs minio docling tika workspace-runner "
+readonly BACKUP_KEEP_RUNNING=" postgres seaweedfs minio docling tika workspace-runner "
 readonly ONE_SHOT_SERVICES=" migrate-bootstrap storage-init "
 readonly KEY_ID_PATTERN='^[a-z][a-z0-9_-]{0,63}$'
 
@@ -558,7 +557,6 @@ doctor_host() {
     check FAIL openssl "not found" "Install OpenSSL; it generates the installation secrets."
   fi
   doctor_docker
-  doctor_sysctl
   doctor_memory
   doctor_disk
   doctor_time
@@ -607,20 +605,6 @@ doctor_docker() {
   else
     check FAIL compose "the docker compose plugin is not installed" \
       "Install the Compose v2 plugin ($COMPOSE_FLOOR or newer): https://docs.docker.com/compose/install/linux/"
-  fi
-}
-
-doctor_sysctl() {
-  local value
-  value=$(sysctl -n vm.max_map_count 2>/dev/null) || value=$(cat "$PROC_ROOT/sys/vm/max_map_count" 2>/dev/null) || value=""
-  if [[ ! $value =~ ^[0-9]+$ ]]; then
-    check WARN vm.max_map_count "could not be read" "OpenSearch needs vm.max_map_count >= $MAX_MAP_COUNT_FLOOR."
-  elif (( value < MAX_MAP_COUNT_FLOOR )); then
-    check FAIL vm.max_map_count "$value is below $MAX_MAP_COUNT_FLOOR; OpenSearch will not start" \
-      "sudo sysctl -w vm.max_map_count=$MAX_MAP_COUNT_FLOOR" \
-      "echo 'vm.max_map_count=$MAX_MAP_COUNT_FLOOR' | sudo tee /etc/sysctl.d/99-aiqsa.conf"
-  else
-    check PASS vm.max_map_count "$value"
   fi
 }
 
@@ -998,6 +982,7 @@ doctor_stack() {
   doctor_storage
   doctor_host_probe
   doctor_toolhive_leftovers
+  doctor_search_leftovers
   local usage="" entry
   while IFS= read -r entry; do
     [[ -n $entry ]] && usage+="${usage:+; }$entry"
@@ -1026,6 +1011,27 @@ doctor_toolhive_leftovers() {
   (( ${#lines[@]} )) || return 0
   check WARN toolhive-leftovers "local MCP servers were removed; the old ToolHive runtime left Docker state behind" \
     "Once this release works, remove it with:" "${lines[@]/#/  }"
+}
+
+# Releases after v0.3.26 removed the search index service and its Memory worker
+# (operator decision 2026-10-23). `./aiqsa.sh up` removes their orphaned
+# containers; the index volume is left for the operator to delete.
+doctor_search_leftovers() {
+  local lines=() service
+  load_project_name
+  [[ -n $PROJECT_NAME ]] || return 0
+  for service in opensearch memory-search-worker; do
+    if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
+      --filter "label=com.docker.compose.service=$service" 2>/dev/null) ]]; then
+      lines+=("./aiqsa.sh up   # --remove-orphans removes the $service container")
+    fi
+  done
+  if run docker volume inspect "${PROJECT_NAME}_opensearch_data" >/dev/null 2>&1; then
+    lines+=("docker volume rm ${PROJECT_NAME}_opensearch_data")
+  fi
+  (( ${#lines[@]} )) || return 0
+  check WARN search-leftovers "the search index service was removed; it left Docker state behind" \
+    "Nothing reads it any more. Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
 doctor_runner() {
@@ -1851,7 +1857,7 @@ backup_restart() {
 
 # The non-secret Memory key IDs a restore needs: never key material.
 manifest_key_ids() {
-  local entries=() entry ids="" current="" routing
+  local entries=() entry ids="" current=""
   IFS=',' read -r -a entries <<< "$(env_value AIQSA_MEMORY_FINGERPRINT_KEYRING)"
   for entry in ${entries[@]+"${entries[@]}"}; do
     entry=${entry//[[:space:]]/}
@@ -1862,11 +1868,7 @@ manifest_key_ids() {
     fi
   done
   [[ $current =~ $KEY_ID_PATTERN ]] || current=""
-  routing=$(env_value AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID)
-  routing=${routing:-v1}
-  [[ $routing =~ $KEY_ID_PATTERN ]] || routing=invalid
-  printf '%s\n' "memory_fingerprint_key_ids=$ids" "memory_fingerprint_current=$current" \
-    "memory_opensearch_routing_key_id=$routing"
+  printf '%s\n' "memory_fingerprint_key_ids=$ids" "memory_fingerprint_current=$current"
 }
 
 # backup_manifest DIR MIGRATION OBJECTS IMAGES: plain key=value lines, no secrets.
@@ -2065,7 +2067,7 @@ restore_target_empty() {
   fi
   found=$(run docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null) \
     || restore_refuse "the volumes of $PROJECT_NAME could not be listed."
-  for name in postgres18_data seaweedfs_data opensearch_data storage_socket workspace_runtime_data; do
+  for name in postgres18_data seaweedfs_data storage_socket workspace_runtime_data; do
     if run docker volume inspect "${PROJECT_NAME}_$name" >/dev/null 2>&1; then found+=" ${PROJECT_NAME}_$name"; fi
   done
   if [[ -n ${found//[[:space:]]/} ]]; then
@@ -2324,7 +2326,7 @@ cmd_logs() {
   ensure_temp_dir
   errors=$TEMP_DIR/logs.err
   if [[ -n $levels ]] && (( ! QUIET )); then
-    note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, OpenSearch, Tika, Docling, SeaweedFS) are hidden."
+    note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, Tika, Docling, SeaweedFS) are hidden."
   fi
   if logs_from_journal; then
     # Same-field matches are alternatives, so this is the project AND any listed service.
@@ -2454,7 +2456,7 @@ Options:
   --errors               logs: keep only AIQSA JSON lines at level error or fatal.
   --warnings             logs: keep only AIQSA JSON lines at level warn, error or fatal.
                          Both filters drop plain-text lines, which includes every line
-                         of PostgreSQL, OpenSearch, Tika, Docling and SeaweedFS.
+                         of PostgreSQL, Tika, Docling and SeaweedFS.
   --since <duration>     logs: only lines newer than a duration (30m, 2h, 1h30m)
                          or an RFC 3339 time (2026-01-31T08:00:00Z); without
                          --tail every line in that window is printed.

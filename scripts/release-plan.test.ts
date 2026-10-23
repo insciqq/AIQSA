@@ -32,7 +32,7 @@ function fixture(tag = true) {
   roots.push(root);
   git(root, "init", "-q");
   write(root, "ops/postgres-pgvector.Dockerfile", "FROM postgres:18\n");
-  for (const component of ["docling", "tika", "opensearch"]) {
+  for (const component of ["docling", "tika"]) {
     write(root, `ops/${component}/Dockerfile`, "FROM scratch\n");
   }
   write(root, "app.ts", "initial application\n");
@@ -65,7 +65,7 @@ describe("release channel selection", () => {
 });
 
 describe("reuse of published infrastructure", () => {
-  it("reuses all four images for an application-only fix, excluding the current and prerelease tags", async () => {
+  it("reuses all three images for an application-only fix, excluding the current and prerelease tags", async () => {
     const root = fixture();
     write(root, "app.ts", "fixed application\n");
     commit(root);
@@ -73,12 +73,11 @@ describe("reuse of published infrastructure", () => {
     git(root, "tag", "v0.2.1");
     const resolve = vi.fn().mockResolvedValue(digest);
     const plan = await planImageReuse(root, "v0.2.1", postgresTag, resolve);
-    expect(plan).toEqual({ base: "v0.2.0", reuse: { postgres: digest, docling: digest, tika: digest, opensearch: digest } });
+    expect(plan).toEqual({ base: "v0.2.0", reuse: { postgres: digest, docling: digest, tika: digest } });
     expect(resolve.mock.calls.map(([ref]) => ref)).toEqual([
       "ghcr.io/insciqq/aiqsa-postgres:18.6-pgvector0.8.6-0.2.0",
       "ghcr.io/insciqq/aiqsa:docling-0.2.0",
-      "ghcr.io/insciqq/aiqsa:tika-0.2.0",
-      "ghcr.io/insciqq/aiqsa:opensearch-0.2.0"
+      "ghcr.io/insciqq/aiqsa:tika-0.2.0"
     ]);
   });
 
@@ -88,8 +87,8 @@ describe("reuse of published infrastructure", () => {
     commit(root);
     const resolve = vi.fn().mockResolvedValue(digest);
     expect((await planImageReuse(root, "v0.2.1-rc.1", postgresTag, resolve)).reuse)
-      .toEqual({ postgres: digest, tika: digest, opensearch: digest });
-    expect(resolve).toHaveBeenCalledTimes(3);
+      .toEqual({ postgres: digest, tika: digest });
+    expect(resolve).toHaveBeenCalledTimes(2);
   });
 
   it("compares the root context if Postgres starts copying application files", async () => {
@@ -100,7 +99,7 @@ describe("reuse of published infrastructure", () => {
     write(root, "app.ts", "changed root context\n");
     commit(root);
     expect((await planImageReuse(root, "v0.2.2-rc.1", postgresTag, async () => digest)).reuse)
-      .toEqual({ docling: digest, tika: digest, opensearch: digest });
+      .toEqual({ docling: digest, tika: digest });
   });
 
   it("builds images when no stable ancestor exists", async () => {
@@ -114,7 +113,7 @@ describe("reuse of published infrastructure", () => {
     const root = fixture();
     const resolve = vi.fn().mockResolvedValue(digest).mockResolvedValueOnce("");
     expect((await planImageReuse(root, "v0.2.1-rc.1", postgresTag, resolve)).reuse)
-      .toEqual({ docling: digest, tika: digest, opensearch: digest });
+      .toEqual({ docling: digest, tika: digest });
     await expect(planImageReuse(root, "v0.2.1-rc.1", postgresTag, async () => { throw new Error("registry unavailable"); }))
       .rejects.toThrow("registry unavailable");
   });

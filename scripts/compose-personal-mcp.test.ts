@@ -37,7 +37,6 @@ describe("personal MCP host gateway topology", () => {
     const environment = services.app?.environment ?? {};
     for (const [service, variable] of [
       ["minio", "AIQSA_DEV_MINIO_PORT"],
-      ["opensearch", "AIQSA_DEV_OPENSEARCH_PORT"],
       ["postgres", "AIQSA_DEV_POSTGRES_PORT"]
     ] as const) {
       const published = services[service]?.ports?.find((port) => port.includes(variable));

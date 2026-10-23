@@ -15,7 +15,6 @@ const images = JSON.parse(await readFile(process.argv[3], "utf8"));
 const imageKeys = {
   app: "AIQSA_IMAGE",
   postgres: "AIQSA_POSTGRES_IMAGE",
-  opensearch: "AIQSA_OPENSEARCH_IMAGE",
   docling: "AIQSA_DOCLING_IMAGE",
   tika: "AIQSA_TIKA_IMAGE"
 };
@@ -60,7 +59,7 @@ const compose = (...args) => docker("compose", "--project-name", project, ...arg
 const inApp = (script) => command("docker", ["compose", "--project-name", project, "exec", "-T", "app", "node", "--input-type=module", "-"], script);
 
 async function assertWorkersRunning() {
-  for (const service of ["memory-worker", "memory-search-worker", "knowledge-search-worker"]) {
+  for (const service of ["memory-worker", "knowledge-search-worker"]) {
     const id = await compose("ps", "--all", "--quiet", service);
     assert.ok(id, `${service} must exist`);
     const [container] = JSON.parse(await docker("inspect", id));
