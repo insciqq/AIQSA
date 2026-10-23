@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { ContextSummary } from "../../contracts/contextCompaction";
 import {
   contextNotesDescendantRunIds,
   withoutCarriedContextNotes,
@@ -8,7 +7,7 @@ import {
 } from "./deletionContextNotes";
 
 const digest = (seed: string) => seed.repeat(64).slice(0, 64);
-const notes: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`,
+const notes = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`,
   notes: "Private excerpt digest.", sourceDigest: digest("b"), sourceRefs: [`tor1_${"c".repeat(32)}`] };
 const policy = { mode: "hybrid", source: { digest: digest("d"), leafMessageId: "u2", messageCount: 3 }, version: 1 };
 const checkpoint = {
