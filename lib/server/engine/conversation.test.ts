@@ -35,7 +35,7 @@ describe("native run conversation", () => {
       { id: "msg-answer-1", kind: "assistant_text", text: "Old-core answer" },
       { id: "msg-user-2", kind: "user", text: "Second question" },
       ...nativeTurn,
-      { id: "ctx-4", kind: "user", text: "Skills index" },
+      { id: "ctx-4", kind: "user", runContext: true, text: "Skills index" },
       { id: "msg-user-3", kind: "user", text: "Third question" }
     ]);
     const next = buildRunConversation({

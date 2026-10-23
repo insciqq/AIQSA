@@ -13,8 +13,8 @@ import type { TranscriptItem } from "./transcript";
  * speech: the approved call's result continues that turn instead. A user
  * message is `msg-<messageId>` in its own run and in every later one, so a
  * compaction's kept tail can start there and still be found when later runs
- * rebuild the conversation; run context items (`ctx-<index>`) are rebuilt
- * for every run.
+ * rebuild the conversation; run context items (`ctx-<index>`, `runContext`)
+ * are rebuilt for every run.
  */
 export type ConversationSource = Readonly<{
   /** Approval continuation turns among the branch's user messages. */
@@ -46,8 +46,8 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
     const message = messages[index]!;
     const text = textFromContentBlocks(message.content);
     if (message.purpose !== undefined || message.historyClass !== undefined) {
-      // Internal context (Skills index or instructions) is run-scoped input.
-      if (message.historyClass === undefined && text.trim()) items.push({ id: `ctx-${index}`, kind: "user", text });
+      // Internal context (Skills index or instructions) is run-scoped input, never compacted.
+      if (message.historyClass === undefined && text.trim()) items.push({ id: `ctx-${index}`, kind: "user", runContext: true, text });
       continue;
     }
     if (message.role === "user") {
