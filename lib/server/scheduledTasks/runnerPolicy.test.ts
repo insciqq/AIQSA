@@ -412,9 +412,6 @@ describe("send refusals", () => {
     expect(classifySendRefusal(409, "skill_not_available")).toEqual({ kind: "retry", reasonCode: null });
     expect(classifySendRefusal(403, "model_not_available")).toEqual({ kind: "fail",
       outcome: { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } });
-    // A task saved on a native Anthropic model pauses visibly while that provider is disabled.
-    expect(classifySendRefusal(403, "native_anthropic_disabled")).toEqual({ kind: "fail",
-      outcome: { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } });
     expect(classifySendRefusal(403, "search_strategy_not_available")).toMatchObject({ outcome: { pauseReason: "search_unavailable" } });
     expect(classifySendRefusal(403, "user_not_available")).toMatchObject({ outcome: { pauseReason: "account_inactive" } });
     expect(classifySendRefusal(409, "credential_assignment_ambiguous")).toMatchObject({ outcome: { pauseReason: "provider_unavailable" } });

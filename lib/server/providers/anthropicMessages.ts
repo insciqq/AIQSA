@@ -41,6 +41,9 @@ import {
 } from "./attachmentPayload";
 import { parseSseStream } from "./sse";
 import { markProviderErrorCode, markProviderErrorDetail, providerErrorCodeOfBody } from "./providerErrorCode";
+import { assertProviderHistoryRequest, providerHistoryPreview } from "./history";
+import { anthropicHistoryFromContent, anthropicMessagesFromHistory } from "./anthropicMessagesHistory";
+import { markProviderStreamDrop } from "./streamDrop";
 import {
   addAnthropicMessageUsage,
   addAnthropicWebSearchUsage,
@@ -411,17 +414,15 @@ export function buildAnthropicMessagesOutputParams(values: Record<string, unknow
   };
 }
 
-export function buildAnthropicMessagesRequest(
-  request: ProviderRunRequest,
-  options: Partial<BuildOptions> = {}
-): Record<string, unknown> {
+/** The old core's conversation: earlier turns as text, then its tool loop's provider messages. */
+function conversationMessages(request: ProviderRunRequest, options: Partial<BuildOptions>): AnthropicRequestMessage[] {
   const storedConversationById = new Map(
     conversationMessagesForRequest(request).map((message) => [message.id, message.content])
   );
   const conversation = textConversationForRequest(request, {
     redactSkillContext: options.preview ?? false
   });
-  const messages = mergeAdjacentAnthropicMessages(
+  return mergeAdjacentAnthropicMessages(
     [
       ...conversation.map((message, index) => {
         const storedContent = storedConversationById.get(message.id);
@@ -455,16 +456,54 @@ export function buildAnthropicMessagesRequest(
       )
     ]
   );
+}
+
+/**
+ * The native engine's neutral history (`anthropicMessagesHistory.ts`); its
+ * current input takes this run's attachments and response reminder. Replayed
+ * thinking is checked against the request's own system prompt and tools,
+ * except under manual thinking, whose models check nothing and need it whole.
+ */
+function historyMessages(
+  request: ProviderRunRequest,
+  options: Partial<BuildOptions>,
+  prefix: Readonly<{ manualThinking: boolean; system: string | undefined; tools: readonly Record<string, unknown>[] }>
+): AnthropicRequestMessage[] {
+  const preview = options.preview ?? false;
+  return anthropicMessagesFromHistory(assertProviderHistoryRequest(request), {
+    currentInput: (text) => withResponseReminder(request, buildUserContent(
+      { ...request, content: { blocks: [{ text, type: "text" }] } },
+      {
+        maxAttachmentTextChars: options.maxAttachmentTextChars,
+        preview,
+        redactFiles: options.redactFiles ?? false,
+        redactImages: options.redactImages ?? false
+      },
+      undefined
+    ), textContentBlock, preview),
+    preview,
+    // Exactly what the body sends before its messages.
+    thinkingPrefix: preview || prefix.manualThinking ? null : { system: prefix.system || undefined, tools: prefix.tools },
+    toolsDeclared: prefix.tools.length > 0
+  });
+}
+
+export function buildAnthropicMessagesRequest(
+  request: ProviderRunRequest,
+  options: Partial<BuildOptions> = {}
+): Record<string, unknown> {
   const clientTools = anthropicToolSchemas(request.tools ?? []).map((tool) =>
     anthropicMessagesToolBridge.serializeTool(tool).tool);
   const hostedTools = anthropicMessagesToolBridge.serializeHostedTools?.(request) ?? [];
-  const hasClientToolContinuation = (request.providerToolMessages ?? []).some(value => {
-    const message = objectValue(value);
-    return !message || message.role !== "user" || !Array.isArray(message.content) || message.content.some(value => {
-      const block = objectValue(value);
-      return !block || block.type !== "text" || typeof block.text !== "string";
+  const hasClientToolContinuation = request.history
+    ? request.history.some((item) => item.type === "tool_call" || item.type === "tool_result")
+    : (request.providerToolMessages ?? []).some(value => {
+      const message = objectValue(value);
+      return !message || message.role !== "user" || !Array.isArray(message.content) || message.content.some(value => {
+        const block = objectValue(value);
+        return !block || block.type !== "text" || typeof block.text !== "string";
+      });
     });
-  });
   if (
     hostedTools.length > 0 &&
     (clientTools.length > 0 || hasClientToolContinuation)
@@ -472,13 +511,17 @@ export function buildAnthropicMessagesRequest(
     throw new Error("anthropic_hosted_search_client_tools_unsupported");
   }
   const tools = [...hostedTools, ...clientTools];
+  const outputParams = buildAnthropicMessagesOutputParams(request.params);
+  const system = combineSystem(request, options.preview);
+  const messages = request.history
+    ? historyMessages(request, options, { manualThinking: objectValue(outputParams.thinking)?.type === "enabled", system, tools })
+    : conversationMessages(request, options);
   const body: Record<string, unknown> = {
-    ...buildAnthropicMessagesOutputParams(request.params),
+    ...outputParams,
     messages,
     model: request.modelId || "claude-opus-4-8",
     stream: true
   };
-  const system = combineSystem(request, options.preview);
 
   if (system) {
     body.system = system;
@@ -716,7 +759,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           redactImages: true
         }),
         provider: "anthropic",
-        replayedContext: conversationPreview(request),
+        replayedContext: request.history ? providerHistoryPreview(request.history) : conversationPreview(request),
         redactions: [
           "attachment_extracted_text",
           "attachment_filename",
@@ -1165,12 +1208,16 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             break;
           }
 
-          // `{ type: "error", error: { type: "overloaded_error", ... } }`: only the type leaves.
-          if (type === "error") throw markProviderErrorDetail(new Error("anthropic_stream_error"), objectValue(event.error));
+          // `{ type: "error", error: { type: "overloaded_error", ... } }`: only the type leaves. Like a stream
+          // that ends before `message_stop`, it is a drop the native engine sends again (PROVIDERS.md).
+          if (type === "error") {
+            throw markProviderErrorDetail(markProviderStreamDrop(new Error("anthropic_stream_error"), "error_event"),
+              objectValue(event.error));
+          }
           throw new Error("anthropic_stream_event_unsupported");
         }
 
-        if (!terminalSeen) throw new Error("anthropic_stream_truncated");
+        if (!terminalSeen) throw markProviderStreamDrop(new Error("anthropic_stream_truncated"), "truncated");
         streamBytesUsed += attemptStreamBytes;
 
         const assistantContent = [...contentBlocks.entries()]
@@ -1231,6 +1278,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         model = attemptModel ?? model;
         stopReason = attemptStopReason;
         const rawFinalText = finalText.value();
+        // The native engine's transcript: this response's blocks with what each thinking block was produced after.
+        const history = request.history && !hostedSearch ? anthropicHistoryFromContent(assistantContent, body) : [];
         return {
           finalProviderResponsePreview: responsePreview({
             ...(hostedSearch ? { continuationCount, webSearchUsage } : {}),
@@ -1241,6 +1290,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             usage
           }),
           finalText: rawFinalText,
+          ...(history.length > 0 ? { history } : {}),
           ...(!hostedSearch ? { providerToolCallMessage } : {}),
           providerResponseId: messageId,
           toolCalls: hostedSearch ? [] : toolCalls,
@@ -1377,7 +1427,7 @@ export function createFetchAnthropicMessagesClient(input: {
             parsed = JSON.parse(event.data) as unknown;
           } catch {
             observeStreamParseFailure(response.body);
-            throw new Error("anthropic_stream_truncated");
+            throw markProviderStreamDrop(new Error("anthropic_stream_truncated"), "truncated");
           }
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
             const parsedEvent = parsed as AnthropicStreamEvent;

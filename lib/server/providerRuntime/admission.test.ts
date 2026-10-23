@@ -13,15 +13,6 @@ import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouter
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
-// Native Anthropic admission stays tested as it worked; one test below turns it off.
-const areas = vi.hoisted(() => ({ nativeAnthropic: true }));
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  get NATIVE_ANTHROPIC_ENABLED() {
-    return areas.nativeAnthropic;
-  }
-}));
-
 const capabilities = (input: Readonly<{
   nativePdfInput?: boolean;
   nativeSearch?: boolean;
@@ -1073,22 +1064,6 @@ describe("provider admission", () => {
       searchStrategyRowId: "route-client:openai"
     });
     expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
-  });
-
-  it("refuses a native Anthropic answer model while it is disabled, with its own code", async () => {
-    areas.nativeAnthropic = false;
-    try {
-      const { db } = admissionDb({ answer: officialAnthropicModel, options: [], technicalModels: [] });
-
-      await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-        providerConnectionId: officialAnthropicModel.connectionId,
-        providerModelId: officialAnthropicModel.id,
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        userId: "user-1"
-      })).rejects.toMatchObject({ code: "native_anthropic_disabled", name: "ProviderAdmissionError" });
-    } finally {
-      areas.nativeAnthropic = true;
-    }
   });
 
   it("prefers same-connection Anthropic hosted Search", async () => {

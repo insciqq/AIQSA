@@ -54,6 +54,8 @@ describe("native engine routing", () => {
   it("runs a listed user's personal chat natively", () => {
     expect(route()).toEqual({ engine: "native" });
     expect(route({ prepared: prepared({}, {}, "fake") })).toEqual({ engine: "native" });
+    // Native Anthropic renders the neutral history too (operator decision 2026-10-23).
+    expect(route({ prepared: prepared({}, {}, "anthropic_messages") })).toEqual({ engine: "native" });
   });
 
   it("runs a listed user's Assistant chats, scheduled occurrences, Telegram turns and review steps natively", () => {
@@ -75,7 +77,6 @@ describe("native engine routing", () => {
     expect(route({ prepared: prepared({}, { agent: {} }) })).toMatchObject({ reason: "agent_turn" });
     expect(route({ prepared: prepared({}, { knowledgePlan: { mode: "auto" } }) })).toMatchObject({ reason: "knowledge" });
     expect(route({ prepared: prepared({}, {}, "openai_chat_completions_compatible") })).toMatchObject({ reason: "adapter_without_history" });
-    expect(route({ prepared: prepared({}, {}, "anthropic_messages") })).toMatchObject({ reason: "adapter_without_history" });
     expect(route({ prepared: prepared({}, { modelCapabilities: {} }) })).toMatchObject({ reason: "tool_calling_unverified" });
     expect(route({ prepared: prepared({ chatPdfAdmissions: [{ route: "prepared_text" }] }) })).toMatchObject({ reason: "deferred_preparation" });
     expect(route({ prepared: prepared({ chatPdfAdmissions: [{ route: "direct_pdf" }] }) })).toEqual({ engine: "native" });

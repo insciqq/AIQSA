@@ -187,23 +187,6 @@ describe("provider Quick setup handlers", () => {
     expect(JSON.stringify(await response.json())).not.toContain("sk-write-only");
   });
 
-  it("refuses native Anthropic setup while it is disabled, before testing any key", async () => {
-    const setup = vi.fn();
-    const handler = createAdminProviderQuickSetupMutationHandler({
-      resolveAuth: vi.fn(async () => session),
-      service: service({ setup })
-    });
-    const response = await handler(new Request("http://localhost/api/admin/providers/quick-setup", {
-      body: JSON.stringify({ expectedState: "state-token", provider: "anthropic", secret: "sk-ant-write-only" }),
-      headers: { "content-type": "application/json" },
-      method: "POST"
-    }));
-
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ error: "native_anthropic_disabled" });
-    expect(setup).not.toHaveBeenCalled();
-  });
-
   it("passes the connection name and endpoint overrides of a separate connection", async () => {
     const setup = vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",

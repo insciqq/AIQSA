@@ -8,7 +8,6 @@ import {
   type ScheduledTaskRunTrigger,
   type ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
-import { NATIVE_ANTHROPIC_DISABLED_CODE } from "../../domain/disabledAreas";
 import { nextOccurrenceAfter } from "../../domain/scheduledTaskSchedule";
 
 /**
@@ -560,7 +559,6 @@ const TRANSIENT_CODES = new Set([
 const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
   ["model_cannot_report", "model_cannot_report"],
   ["model_not_available", "model_unavailable"],
-  [NATIVE_ANTHROPIC_DISABLED_CODE, "model_unavailable"],
   ["search_strategy_not_available", "search_unavailable"],
   ["user_not_available", "account_inactive"],
   ["provider_not_available", "provider_unavailable"],
