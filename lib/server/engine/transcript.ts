@@ -84,6 +84,11 @@ export type TranscriptToolResultItem = Readonly<{
   /** The saved whole result (`read_tool_result`) when `output` is an excerpt of it. */
   handle?: string;
   id: string;
+  /**
+   * Written before an approval continuation sends the call again (`outcome` is `unknown`): the call is open until its own
+   * result follows and supersedes this one; without one, an interruption left its effect unknown (`unknownEffects.ts`).
+   */
+  inFlight?: true;
   kind: "tool_result";
   name: string;
   /** `unknown`: the call may or may not have taken effect (never re-sent). */
