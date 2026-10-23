@@ -1,4 +1,4 @@
-import type { SecretChangeCard } from "@/lib/contracts/resourceChanges";
+import { RESOURCE_CHANGE_TEXT_LIMITS, clipResourceChangeText, type SecretChangeCard } from "@/lib/contracts/resourceChanges";
 import {
   WORKSPACE_SECRET_FILE_MAX_BYTES,
   isWorkspaceEnvName,
@@ -16,6 +16,7 @@ import type {
 } from "../workspace/secrets/agentSecrets";
 import { parseWorkspaceSecretValue, WorkspaceSecretError } from "../workspace/secrets/validation";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
+import { newProposalId, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
 import { logSelfServiceFailure } from "./selfServiceCall";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
 
@@ -237,15 +238,18 @@ async function checkedValue(service: AgentSecretService, value: WorkspaceSecretV
 const describeSecret = (secret: AgentSecretView) => ({ kind: secret.kind, name: secret.name,
   ...(secret.envNames.length ? { variables: [...secret.envNames] } : {}), ...(secret.description ? { description: secret.description } : {}) });
 
+/** A change's card (no proposal identity), or a deletion proposal's card with its own identity. */
 export function secretChangeCard(secret: AgentSecretView, action: SecretChangeCard["action"],
   update: Readonly<{ previousName: string | null; valueReplaced: boolean }> = { previousName: null, valueReplaced: false }): SecretChangeCard {
-  return { action, envNames: [...secret.envNames], kind: secret.kind, name: secret.name, previousName: update.previousName,
-    resource: "secret", secretId: secret.id, valueReplaced: update.valueReplaced, version: 1, versionId: secret.versionId };
+  const limit = RESOURCE_CHANGE_TEXT_LIMITS.secretName;
+  return { action, envNames: [...secret.envNames], kind: secret.kind, name: clipResourceChangeText(secret.name, limit),
+    previousName: update.previousName === null ? null : clipResourceChangeText(update.previousName, limit),
+    proposalId: action === "delete_proposed" ? newProposalId() : null, resource: "secret", secretId: secret.id,
+    valueReplaced: update.valueReplaced, version: 1, versionId: secret.versionId };
 }
 
 function cardResult(call: Pick<ModelToolCall, "id" | "name">, card: SecretChangeCard, value: Record<string, unknown>): ToolExecutionResult {
-  return { artifacts: [{ data: { artifactType: "resource_change", payload: card }, type: "artifact" }], callId: call.id,
-    content: [{ type: "json", value }], name: call.name, status: "complete" };
+  return { artifacts: [resourceChangeArtifact(card)], callId: call.id, content: [{ type: "json", value }], name: call.name, status: "complete" };
 }
 
 /** What the model reads after a change; the card carries the rest. */
@@ -339,6 +343,9 @@ export async function executeManageSecret(service: AgentSecretService | undefine
   } catch (error) {
     if (options.signal?.aborted) throw error;
     logSelfServiceFailure(error);
+    if (error instanceof ResourceChangeCardError) {
+      return refused(call, refusal(error.message, "The change could not be shown to the user as a card, so nothing was changed. The user can do it in Studio > Secrets."));
+    }
     return refused(call, refusal("secret_change_failed", "Saving the secret failed; nothing was written. Try once more; if it fails again, tell the user."));
   }
 }

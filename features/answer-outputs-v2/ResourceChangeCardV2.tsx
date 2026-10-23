@@ -29,14 +29,14 @@ import { deleteSecretVersion, readSecretState, ResourceChangeApiError } from "./
 
 /** What the resource is now, as a settled answer reads it; unknown until read (or while the answer runs). */
 type Remote = "unknown" | "current" | "changed" | "missing" | "archived";
-/** `declined`: the user kept the resource; a new proposal of a running answer asks again. */
-type Outcome = Readonly<{ heading: string; message: string | null; declined?: true }>;
+type Outcome = Readonly<{ heading: string; message: string | null }>;
 
 /**
  * What the user did in a card on this page: the card a settling answer
- * mounts again, or the same card in another branch, keeps saying it. Nothing
- * records a declined proposal, so a reload asks again while the resource is
- * as the proposal saw it.
+ * mounts again, or the same card in another branch, keeps saying it. Each
+ * proposal is its own card, so a later proposal of the same change asks
+ * again. Nothing records a declined proposal, so a reload asks again while
+ * the resource is as the proposal saw it.
  */
 const outcomes = new Map<string, Outcome>();
 
@@ -131,16 +131,10 @@ function CardV2({ actions, children, confirm, error, heading, headingRef, icon, 
 }
 
 /** Local card state: the user's outcome on this page, the resource as read now, a request in flight and its error. */
-function useCardState(card: ResourceChangeCard, live: boolean) {
+function useCardState(card: ResourceChangeCard) {
   const key = resourceChangeCardKey(card);
   const headingRef = useRef<HTMLParagraphElement>(null);
-  const [outcome, setOutcome] = useState<Outcome | null>(() => {
-    const kept = outcomes.get(key) ?? null;
-    if (!live || !kept?.declined) return kept;
-    // A running answer proposed it again: the question is asked again.
-    outcomes.delete(key);
-    return null;
-  });
+  const [outcome, setOutcome] = useState<Outcome | null>(() => outcomes.get(key) ?? null);
   const [remote, setRemote] = useState<Remote>("unknown");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +171,7 @@ function useRemoteRead(read: ((signal: AbortSignal) => Promise<Remote>) | null, 
 }
 
 function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: boolean }>) {
-  const state = useCardState(card, live);
+  const state = useCardState(card);
   const { outcome, remote } = state;
   const read = useCallback((signal: AbortSignal) => readSecretState(card.secretId, card.versionId, signal), [card.secretId, card.versionId]);
   useRemoteRead(!live && card.action !== "updated" && !outcome ? read : null, state.setRemote);
@@ -234,7 +228,7 @@ function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: b
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete secret" keepLabel="Keep secret" label={`Delete ${card.name}`}
           text={`Delete “${card.name}”? Chats and the Workspace stop receiving it. This cannot be undone.`}
-          onConfirm={() => remove(false)} onKeep={() => state.finish({ declined: true, heading: "Secret kept", message: null })} />
+          onConfirm={() => remove(false)} onKeep={() => state.finish({ heading: "Secret kept", message: null })} />
       ) : null}>
       <small>{kind}</small>
     </CardV2>
@@ -242,27 +236,32 @@ function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: b
 }
 
 function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalCard; live: boolean }>) {
-  const state = useCardState(card, live);
+  const state = useCardState(card);
   const { outcome, remote } = state;
-  const read = useCallback((signal: AbortSignal) => loadSkillDetail(card.skillId, signal).then((): Remote => "current", (failure: unknown): Remote => {
-    if (failure instanceof SkillRequestError && failure.issue.code === "skill_not_available") return "missing";
-    throw failure;
-  }), [card.skillId]);
+  const read = useCallback((signal: AbortSignal) => loadSkillDetail(card.skillId, signal).then(
+    (detail): Remote => detail.version === card.skillVersion ? "current" : "changed",
+    (failure: unknown): Remote => {
+      if (failure instanceof SkillRequestError && failure.issue.code === "skill_not_available") return "missing";
+      throw failure;
+    }), [card.skillId, card.skillVersion]);
   useRemoteRead(!live && !outcome ? read : null, state.setRemote);
 
   function remove() {
     void state.run(async () => {
       try {
-        await deleteSkill(card.skillId);
+        // Guarded by the version the proposal saw: a Skill saved since is not deleted.
+        await deleteSkill(card.skillId, card.skillVersion);
         state.finish({ heading: "Skill deleted", message: null });
       } catch (failure) {
-        if (failure instanceof SkillRequestError && failure.issue.code === "skill_not_available") state.setRemote("missing");
+        const code = failure instanceof SkillRequestError ? failure.issue.code : null;
+        if (code === "skill_not_available") state.setRemote("missing");
+        else if (code === "skill_version_conflict") state.setRemote("changed");
         else state.setError("The Skill could not be deleted. Try again.");
       }
     });
   }
 
-  const asking = !outcome && remote !== "missing";
+  const asking = !outcome && remote !== "missing" && remote !== "changed";
   const consequences = [
     ...card.assistantCount > 0 ? [`Linked by ${plural(card.assistantCount, "Assistant", "Assistants")}, which lose it.`] : [],
     ...card.shared ? ["Shared with colleagues, who lose access."] : [],
@@ -270,12 +269,13 @@ function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalC
   ];
   return (
     <CardV2 actions={asking ? null : <CardLinkV2 href={SKILL_LIBRARY_PATH} icon="library">Open library</CardLinkV2>} error={state.error}
-      heading={outcome?.heading ?? (remote === "missing" ? "Skill no longer available" : "Delete Skill?")} headingRef={state.headingRef}
-      icon="wand" name={card.name} resource="skill" state={outcome ? "done" : asking ? "asking" : remote} status={outcome?.message ?? null}
+      heading={outcome?.heading ?? (remote === "missing" ? "Skill no longer available" : remote === "changed" ? "Skill not deleted" : "Delete Skill?")}
+      headingRef={state.headingRef} icon="wand" name={card.name} resource="skill" state={outcome ? "done" : asking ? "asking" : remote}
+      status={outcome?.message ?? (remote === "changed" ? "The Skill changed after this proposal, so nothing was deleted. Review it in Studio › Skills." : null)}
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete Skill" keepLabel="Keep Skill" label={`Delete ${card.name}`}
           text={`Delete “${card.name}” with all its versions? This cannot be undone.`} onConfirm={remove}
-          onKeep={() => state.finish({ declined: true, heading: "Skill kept", message: null })} />
+          onKeep={() => state.finish({ heading: "Skill kept", message: null })} />
       ) : null}>
       {asking && consequences.length ? (
         <ul className="v2-resource-change-card-consequences" aria-label="What deleting changes">
@@ -310,9 +310,9 @@ function assistantRefusal(result: Extract<AssistantApiResult<unknown>, { ok: fal
 }
 
 function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; live: boolean }>) {
-  const state = useCardState(card, live);
+  const state = useCardState(card);
   const { outcome, remote } = state;
-  const reads = card.action === "created" || card.action === "delete_proposed";
+  const reads = card.action !== "updated";
   const read = useCallback(async () => assistantRemote(await fetchAssistantDetail(card.assistantId), card.definitionVersion),
     [card.assistantId, card.definitionVersion]);
   useRemoteRead(!live && reads && !outcome ? read : null, state.setRemote);
@@ -390,7 +390,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
             text={`Delete “${card.name}”? This cannot be undone.`}
             onConfirm={() => act(() => deleteAssistant(card.assistantId, card.definitionVersion), { heading: "Assistant deleted", message: null },
               "The Assistant could not be deleted. Try again.")}
-            onKeep={() => state.finish({ declined: true, heading: "Assistant kept", message: null })} />
+            onKeep={() => state.finish({ heading: "Assistant kept", message: null })} />
         ) : null}>
         {asking && lines.length ? (
           <ul className="v2-resource-change-card-consequences" aria-label="What deleting changes">
@@ -412,11 +412,11 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
             ? `Publish “${card.name}” to members of ${audience.groupName}? They can use it, and every later change, until you unpublish it.`
             : `List “${card.name}” for everyone? An administrator reviews this version first.`}
           onConfirm={() => audience?.kind === "group"
-            ? act(() => publishAssistant(card.assistantId, { groupId: audience.groupId, scope: "group" }),
+            ? act(() => publishAssistant(card.assistantId, { expectedVersion: card.definitionVersion, groupId: audience.groupId, scope: "group" }),
               { heading: "Assistant published", message: `Members of ${audience.groupName} can use it now.` }, "Publishing failed. Try again.")
             : act(() => requestAssistantListing(card.assistantId, card.definitionVersion),
               { heading: "Listing requested", message: "An administrator reviews it; Studio › Assistants shows the outcome." }, "The listing request failed. Try again.")}
-          onKeep={() => state.finish({ declined: true, heading: "Not published", message: null })} />
+          onKeep={() => state.finish({ heading: "Not published", message: null })} />
       ) : null}>
       <small>{audience?.kind === "group" ? `To ${audience.groupName}` : "For everyone"}</small>
     </CardV2>

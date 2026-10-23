@@ -54,7 +54,7 @@ describe("manage_secret", () => {
     expect(fake.change).toHaveBeenCalledWith({ action: "create", description: "", name: "GitLab", value: { kind: "text", text: TOKEN } }, expect.any(Function));
     expect(result.status).toBe("complete");
     expect(json(result)).toMatchObject({ action: "created", saved: true, secret: { kind: "text", name: "GitLab" }, secretId: SECRET_ID });
-    expect(card(result)).toEqual({ action: "created", envNames: [], kind: "text", name: "GitLab", previousName: null, resource: "secret",
+    expect(card(result)).toEqual({ action: "created", envNames: [], kind: "text", name: "GitLab", previousName: null, proposalId: null, resource: "secret",
       secretId: SECRET_ID, valueReplaced: false, version: 1, versionId: VERSION_ID });
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
@@ -148,6 +148,15 @@ describe("manage_secret", () => {
     expect(json(ambiguous)).toMatchObject({ code: "secret_ambiguous", matches: [{ secretId: SECRET_ID }, { secretId: "10000000-0000-4000-8000-000000000002" }] });
     const extra = await executeManageSecret(fake, call({ action: "propose_delete", name: "GitLab", text: "x" }));
     expect(String(json(extra).message)).toContain("propose_delete takes only name or secretId");
+  });
+
+  it("gives each deletion proposal its own card and clips a name the answer's decoder would drop", async () => {
+    const astral = { ...gitlab, name: "𝔸".repeat(100) };
+    const fake = service({ find: vi.fn(async () => ({ kind: "found" as const, secret: astral })) });
+    const first = card(await executeManageSecret(fake, call({ action: "propose_delete", name: "x" })));
+    const second = card(await executeManageSecret(fake, call({ action: "propose_delete", name: "x" })));
+    expect(first).toMatchObject({ action: "delete_proposed", name: `${"𝔸".repeat(59)}…`, proposalId: expect.any(String) });
+    expect(first?.proposalId).not.toBe(second?.proposalId);
   });
 
   it.each([

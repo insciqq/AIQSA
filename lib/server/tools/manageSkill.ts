@@ -6,6 +6,7 @@ import type { AgentSkillRefusal, AgentSkillService } from "../skills/agentSkills
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import type { SkillSaveConflict, SkillSaveVersionList } from "../skills/skillSave";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
+import { ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
 import { logSelfServiceFailure } from "./selfServiceCall";
 import { parseSkillSaveTarget, skillSavedResult } from "./skillSave";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
@@ -221,7 +222,7 @@ export async function executeManageSkill(service: AgentSkillService | undefined,
           ? "Only the user's own Skills can be deleted. The user can stop using a colleague's Skill in Studio > Skills."
           : "That Skill is not available to the user.");
       }
-      return { artifacts: [{ data: { artifactType: "resource_change", payload: proposal.card }, type: "artifact" }], callId: call.id,
+      return { artifacts: [resourceChangeArtifact(proposal.card)], callId: call.id,
         content: [{ type: "json", value: { deleted: false, deletionProposed: true, skill: proposal.card.name, library: SKILL_LIBRARY_PATH,
           note: "Nothing was deleted: the answer shows a card in which the user confirms the deletion. Do not ask again in text." } }],
         name: call.name, status: "complete" };
@@ -245,6 +246,9 @@ export async function executeManageSkill(service: AgentSkillService | undefined,
   } catch (error) {
     if (options.signal?.aborted) throw error;
     logSelfServiceFailure(error);
+    if (error instanceof ResourceChangeCardError) {
+      return refused(call, error.message, "The proposal could not be shown to the user as a card, so nothing was proposed. The user can do it in Studio > Skills.");
+    }
     return refused(call, "skill_save_failed", "Saving the Skill failed; nothing was saved. Try once more; if it fails again, tell the user.");
   }
 }

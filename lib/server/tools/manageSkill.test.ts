@@ -26,7 +26,8 @@ const card: SkillSaveCard = {
 function service(overrides: Partial<AgentSkillService> = {}) {
   return {
     proposeDelete: vi.fn<AgentSkillService["proposeDelete"]>(async (skillId) => ({ kind: "proposed", card: { action: "delete_proposed",
-      assistantCount: 2, name: "report-writer", resource: "skill", scheduledTasks: [], shared: true, skillId, version: 1 } })),
+      assistantCount: 2, name: "report-writer", proposalId: "proposal_1", resource: "skill", scheduledTasks: [], shared: true, skillId, skillVersion: 3,
+      version: 1 } })),
     save: vi.fn<AgentSkillService["save"]>(async (_save, result) => {
       const saved = { card, version: 1 };
       return { kind: "changed", result: result(saved), value: saved };
@@ -106,6 +107,13 @@ describe("manage_skill", () => {
     expect(json(result)).toMatchObject({ deleted: false, deletionProposed: true, skill: "report-writer" });
     expect(decodeResourceChangeCard((result.artifacts?.[0] as { data: { payload: unknown } }).data.payload))
       .toMatchObject({ action: "delete_proposed", assistantCount: 2, resource: "skill", shared: true, skillId: "skill-own" });
+    // A card the answer could not show proposes nothing: the model is told so instead of the user seeing no question.
+    const unshowable = await executeManageSkill(service({ proposeDelete: vi.fn(async () => ({ kind: "proposed" as const, card: {
+      action: "delete_proposed" as const, assistantCount: 0, name: "report-writer", proposalId: "proposal_2", resource: "skill" as const,
+      scheduledTasks: [], shared: false, skillId: "skill own", skillVersion: 3, version: 1 as const } })) }),
+    call({ action: "propose_delete", target: "report-writer" }), context);
+    expect(json(unshowable)).toMatchObject({ code: "resource_change_card_invalid" });
+    expect(unshowable.artifacts ?? []).toEqual([]);
     const notOwn = await executeManageSkill(service({ proposeDelete: vi.fn(async () => ({ code: "skill_delete_not_own" as const, kind: "refused" as const })) }),
       call({ action: "propose_delete", target: "skill-colleague" }), context);
     expect(json(notOwn)).toMatchObject({ code: "skill_delete_not_own" });
