@@ -17,6 +17,8 @@ const items: TranscriptItem[] = [
   { callId: "call_1", handle: "tor1_0123456789abcdef0123456789abcdef", id: "t1", kind: "tool_result", name: "lookup_order",
     outcome: "complete", output: "{\"status\":\"shipped\"}" },
   { callId: "call_2", id: "t2", kind: "tool_result", name: "lookup_order", outcome: "unknown", output: "No result." },
+  // An approved call's record before it is sent again.
+  { callId: "call_3", id: "t3", inFlight: true, kind: "tool_result", name: "create_order", outcome: "unknown", output: "In flight." },
   { id: "k1", kind: "compaction", origin, summary: "Earlier work." },
   { id: "k2", kind: "compaction", native: { fields: { type: "compaction" }, format: "openai_responses" }, origin },
   // A compaction that keeps a tail, with its retained record and the size its call reported.
@@ -43,6 +45,9 @@ describe("transcript codec", () => {
       { body: { text: "x" }, callId: "call_1", id: "x", kind: "user" },
       { body: { arguments: "{}", name: "lookup" }, callId: null, id: "x", kind: "tool_call" },
       { body: { name: "lookup", outcome: "maybe", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
+      // Only an unknown outcome is in flight, and the mark is true or absent.
+      { body: { inFlight: true, name: "lookup", outcome: "complete", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
+      { body: { inFlight: false, name: "lookup", outcome: "unknown", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
       { body: { native: { fields: {}, format: "other" }, origin }, callId: null, id: "x", kind: "reasoning" },
       { body: { origin }, callId: null, id: "x", kind: "compaction" },
       { body: { keepFromId: "", origin, summary: "s" }, callId: null, id: "x", kind: "compaction" },
