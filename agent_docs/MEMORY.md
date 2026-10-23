@@ -11,6 +11,7 @@ Personal Memory: what it may learn, who may change it, how it is retrieved and f
 
 - A mutation needs exact authority from the current owner: direct evidence from that user, an owner-bound inbound MCP command, or governed background maintenance of exact automatic sources.
 - The answer model has no mutation tools. Earlier turns, quotations, assistant text, retrieved content, attachments, tool output and client metadata never authorize a mutation. In-chat requests ("remember", "forget") need a strict semantic classification of the current message plus exact source and target proof; they are queued with the message and the answer never waits for them.
+- A request to save a credential, to create or change the assistant's own resources (Skills, Assistants, scheduled tasks, saved secrets), or a standing instruction for how to do a kind of task is never a Memory command (operator report 2026-10-23).
 - A pending acknowledgement promises nothing; only a committed receipt confirms a change.
 - Inbound Memory MCP is a separate delegated boundary: an active owner-bound OAuth grant authorizes only the exact validated facts-only call, and it creates no chat, run or System Model call.
 - Optional retrieval signals (scores, rerankers, usefulness) never weaken ownership, lifecycle, deletion, safety, or the Project and temporary-chat fences.
@@ -38,7 +39,7 @@ Memory must behave the same in every language, fallbacks and unused paths includ
 
 ## Safety Lite
 
-`lib/server/memory/safetyLite.ts` redacts recognized secret spans locally before every Memory persistence, provider, index, context and debug boundary, keeping the safe remainder. Ordinary personal, medical, financial or relationship text is not a secret class. A raw secret may stay only in the chat itself.
+`lib/server/memory/safetyLite.ts` redacts recognized secret spans locally before every Memory persistence, provider, index, context and debug boundary, keeping the safe remainder. Ordinary personal, medical, financial or relationship text is not a secret class. A raw secret may stay only in the chat itself. Every fact write, explicit or automatic, is also refused when it repeats the exact value of one of the owner's saved secrets, whatever its format (`lib/server/memory/persistence/savedSecrets.ts`).
 
 ## Background maintenance
 

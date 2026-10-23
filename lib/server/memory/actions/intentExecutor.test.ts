@@ -8,6 +8,7 @@ import {
 } from "./controlRuntime";
 import { createMemoryIntentActionExecutor } from "./intentExecutor";
 import type { MemoryActionTarget } from "./targetSearch";
+import { ExplicitMemoryServiceError } from "../explicit/service";
 import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import { memorySha256 } from "../persistence/lexical";
 
@@ -221,27 +222,55 @@ describe("Memory intent action executor", () => {
     expect(deps.explicitService.create).not.toHaveBeenCalled();
   });
 
-  it("does not treat a legacy semantic SECRET label as DLP evidence", async () => {
+  it.each(["SAVE", "UPDATE"])("never stores a %s the classifier labels SECRET, whatever its format", async (action) => {
     const deps = dependencies();
+    const statement = "My secret DEMO_API_TOKEN has the value tok_demo_7f3a9c21b8e4.";
     const result = await createMemoryIntentActionExecutor({
       ...deps,
       clientRefs
     } as never).execute(execution(intent({
-      action: "SAVE",
+      action,
       reasonCode: "secret_content",
+      replacementStatement: action === "UPDATE" ? statement : null,
       sensitivity: "SECRET",
-      statement: "private-secret-sentinel"
+      statement: action === "SAVE" ? statement : null,
+      targetQuery: action === "UPDATE" ? "test token" : null
     })));
-    expect(result).toMatchObject({
-      operation: "SAVE",
-      status: "COMMITTED"
-    });
-    expect(deps.authorizationRepository.mintForControl).toHaveBeenCalledOnce();
-    expect(deps.explicitService.create).toHaveBeenCalledWith(
-      "user-1",
-      expect.objectContaining({ statement: "private-secret-sentinel" }),
-      expect.anything()
-    );
+    expect(result).toEqual({ operation: action, status: "REJECTED" });
+    expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
+    expect(deps.explicitService.create).not.toHaveBeenCalled();
+    expect(deps.explicitService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["SAVE", "UPDATE"])("reports a %s storage refused as a saved secret's value as rejected, not failed", async (action) => {
+    const refused = vi.fn(async () => { throw new ExplicitMemoryServiceError("memory_secret_rejected"); });
+    const deps = dependencies({ create: refused, update: refused });
+    const result = await createMemoryIntentActionExecutor({
+      ...deps,
+      clientRefs
+    } as never).execute(execution(intent({
+      action,
+      category: "about_you",
+      reasonCode: action === "SAVE" ? "save_request" : "update_request",
+      replacementStatement: action === "UPDATE" ? "My test token is tok_demo_7f3a9c21b8e4." : null,
+      statement: action === "SAVE" ? "My test token is tok_demo_7f3a9c21b8e4." : null,
+      targetQuery: action === "UPDATE" ? "test token" : null
+    })));
+    expect(result).toEqual({ operation: action, status: "REJECTED" });
+    expect(refused).toHaveBeenCalledOnce();
+  });
+
+  it("still fails visibly when storage fails for another reason", async () => {
+    const failing = vi.fn(async () => { throw new ExplicitMemoryServiceError("memory_unavailable"); });
+    const deps = dependencies({ create: failing });
+    await expect(createMemoryIntentActionExecutor({
+      ...deps,
+      clientRefs
+    } as never).execute(execution(intent({
+      action: "SAVE",
+      reasonCode: "save_request",
+      statement: "I prefer concise answers."
+    })))).rejects.toMatchObject({ code: "memory_unavailable" });
   });
 
   it("rejects a recognized secret-only intent without copying plaintext", async () => {
