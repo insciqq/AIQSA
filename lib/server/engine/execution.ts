@@ -266,8 +266,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // Effects of the branch's earlier calls that are still unknown; only the user's own words count as them speaking.
         const serverTurns = new Set([...continuationTurns].map((messageId) => `msg-${messageId}`));
         const unknownEffects = unknownEffectsOf(conversation.items, (item) => item.followup === true ||
-          (item.id.startsWith("msg-") && !serverTurns.has(item.id)) ||
-          (item.id === input.created.userMessageId && !input.approvalContinuation));
+          (item.id === conversation.currentInputId ? !input.approvalContinuation
+            : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
