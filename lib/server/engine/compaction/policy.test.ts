@@ -9,6 +9,7 @@ import {
   compactionRetention,
   findCompactionCut,
   planCompaction,
+  turnEndedAfter,
   usableContextTokens,
   type CompactionPlanInput
 } from "./policy";
@@ -94,22 +95,59 @@ describe("compaction cut", () => {
       item.callId === pending));
   });
 
-  it("keeps a call waiting for approval open until its real result replaces the placeholder", () => {
+  it("keeps a call waiting for approval open in its turn until its real result replaces the placeholder", () => {
     const chat = longChat(4, 2_000);
     chat.user("Create the refund ticket.");
     const name = "mcp_crm_create_ticket_0123456789";
     const callId = chat.call(name, { title: "Refund" });
     chat.result(callId, name, APPROVAL_PENDING_TEXT, "error");
-    chat.user("Meanwhile, summarize the margins.");
-    chat.answer("Margins look fine.");
+    chat.user("Meanwhile, summarize the margins.", true);
+    chat.answer("Margins look fine; the ticket waits for your approval.");
     const callPosition = () => windowPosition(chat.items, chat.items.find((item) => item.kind === "tool_call" && item.callId === callId)!.id);
     const waiting = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target: CODEX })!;
     expect(windowPosition(chat.items, waiting.keepFromId)).toBeLessThanOrEqual(callPosition());
-    // The approval ran: its result replaces the placeholder and the call no longer holds the tail back.
+    // The approval ran (its continuation adds no user message): its result replaces the placeholder and the call no
+    // longer holds the tail back.
     chat.result(callId, name, "{\"id\":\"T-1001\"}");
     chat.answer("Ticket T-1001 created.");
     const settled = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target: CODEX })!;
     expect(windowPosition(chat.items, settled.keepFromId)).toBeGreaterThan(callPosition());
+  });
+
+  it("lets later turns cut past a call its turn left without a result: stopped mid-call, or an approval never given", () => {
+    for (const ending of ["stopped", "unapproved"] as const) {
+      const chat = longChat(3, 2_000);
+      const turn = chat.user("Run the long job.");
+      const name = ending === "stopped" ? "run_command" : "mcp_crm_create_ticket_0123456789";
+      const callId = chat.call(name, { command: "sleep 600" });
+      // Stop or the deadline ends the run before the result; an ignored card keeps its placeholder for good.
+      if (ending === "unapproved") chat.result(callId, name, APPROVAL_PENDING_TEXT, "error");
+      expect(findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target: CODEX })?.keepFromId)
+        .toBe(chat.items.find((item) => item.kind === "tool_call" && item.callId === callId)!.id);
+      const later = longChat(6, 2_000).items.map((item) => ({ ...item, id: `later-${item.id}` }) as TranscriptItem);
+      const items = [...chat.items, ...later];
+      const cut = findCompactionCut({ estimate: charTokens, items, recentTokens: 6_000, target: CODEX })!;
+      // A later turn starts the kept tail, the unanswered call is compacted, and the prepared cut stays current.
+      expect(cut.keepFromId.startsWith("later-")).toBe(true);
+      expect(windowPosition(items, cut.keepFromId)).toBeGreaterThan(windowPosition(items, turn));
+      expect(compactionCutCurrent(cut, [...items, { id: "next", kind: "user", text: "next" }], CODEX)).toBe(true);
+      expect(turnEndedAfter(items, turn)).toBe(true);
+      expect(turnEndedAfter(chat.items, turn)).toBe(false);
+    }
+  });
+
+  it("never lets a follow-up or run context end the turn of a call still waiting", () => {
+    const chat = longChat(3, 2_000);
+    chat.user("Run the long job.");
+    const callId = chat.call("run_command", { command: "sleep 600" });
+    const call = chat.items.at(-1)!.id;
+    chat.user("Also tell me when it ends.", true);
+    const items: TranscriptItem[] = [...chat.items, { id: "ctx-0", kind: "user", runContext: true, text: "Skills index" },
+      { id: "a-1", kind: "assistant_text", text: "Still running." }];
+    const cut = findCompactionCut({ estimate: charTokens, items, recentTokens: 1, target: CODEX })!;
+    expect(windowPosition(items, cut.keepFromId)).toBeLessThanOrEqual(windowPosition(items, call));
+    expect(turnEndedAfter(items, call)).toBe(false);
+    expect(callId).toBeTruthy();
   });
 
   it("never starts the kept tail at run context or at an input later runs drop", () => {

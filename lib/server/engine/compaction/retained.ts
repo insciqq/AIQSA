@@ -290,8 +290,10 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
   for (const { call, kind, result, waiting } of all) {
     const identity = `${call.name} ${describeArguments(call.arguments)}`.trim();
     if (!result || waiting) {
-      pending.push(`- ${identity} (call ${clip(call.callId, 64)}): ${waiting ? "waits for the user's approval" : "no result recorded yet"} ` +
-        "when this record was made; its outcome follows in the conversation once recorded");
+      // In a compaction's record these are calls of a turn that ended without their result (`policy.ts` cuts no sooner).
+      pending.push(`- ${identity} (call ${clip(call.callId, 64)}): ${waiting
+        ? "waits for the user's approval; if the user approves it, its result follows in the conversation"
+        : "no result was recorded, so its outcome is unknown"}`);
       continue;
     }
     const done = result.outcome === "complete";
@@ -470,10 +472,15 @@ export const RETAINED_CLOSING = "The most recent part of the conversation follow
   "instead of redoing it, keep the user's latest constraints and corrections, and carry the open work on where the conversation " +
   "calls for it.";
 
-/** The retained text of a compaction: the record, the Skills in use and the earlier user messages, then how to resume. */
+/**
+ * The retained text of a compaction: the record, the Skills in use and the
+ * earlier user messages, then how to resume. Each comes from the compacted
+ * part only: the kept tail follows word for word, and a run of another branch
+ * that shares the compacted part may take the compaction too.
+ */
 export function buildRetainedContext(options: RetainedContextOptions): string {
   const parts = [
-    buildStateBlock(options.items, options),
+    buildStateBlock(options.items.slice(0, cutIndex(options.items, options.keepFromId)), options),
     skillsInUse(options.items, options.keepFromId, options.skillTokens, options.estimate, options.rules),
     earlierUserMessages(options.items, options.keepFromId, options.userMessageTokens, options.estimate, options.rules)
   ].filter((part) => part.length > 0);
