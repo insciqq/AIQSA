@@ -8,7 +8,9 @@ type SchedulerInput = Readonly<{
 
 const mocks = vi.hoisted(() => ({
   log: vi.fn(),
+  logProjects: vi.fn(),
   pass: vi.fn(),
+  projects: vi.fn(async (): Promise<unknown> => ({ completed: 0, failed: 0, pending: 0 })),
   pruneRefusals: vi.fn(async () => 0),
   pruneReports: vi.fn(async () => 0),
   pruneTelegram: vi.fn(async () => 0),
@@ -25,6 +27,10 @@ vi.mock("../answerProblemReports/repository", () => ({ deleteExpiredAnswerProble
 vi.mock("../auth/signInRefusals", () => ({ deleteExpiredSignInRefusals: mocks.pruneRefusals }));
 vi.mock("../telegram/store/retention", () => ({ deleteExpiredTelegramRecords: mocks.pruneTelegram }));
 vi.mock("../knowledge/retirement", () => ({ createKnowledgeRetirement: () => mocks.retire }));
+vi.mock("../projects/deletion", () => ({
+  logProjectDeletionPass: mocks.logProjects,
+  runProjectDeletionMaintenance: mocks.projects
+}));
 vi.mock("./prune", () => ({
   createPrismaRetentionRepository: (client: unknown) => ({ client, kind: "repository" }),
   runObjectDeletionPass: mocks.pass
@@ -43,6 +49,7 @@ afterEach(() => {
   mocks.schedulers.length = 0;
   vi.clearAllMocks();
   mocks.retire.mockImplementation(async () => null);
+  mocks.projects.mockImplementation(async () => ({ completed: 0, failed: 0, pending: 0 }));
   vi.useRealTimers();
 });
 
@@ -170,7 +177,7 @@ describe("default object deletion worker", () => {
     expect(JSON.stringify(mocks.log.mock.calls.map(([, fields]) => ({ ...fields, error: undefined })))).not.toContain("CANARY");
   });
 
-  it("does not start Knowledge retirement on a pass that was cancelled", async () => {
+  it("does not start Knowledge or Project retirement on a pass that was cancelled", async () => {
     getDefaultObjectDeletionWorker();
     const scheduler = mocks.schedulers[0]!;
     mocks.pass.mockResolvedValue({ batches: 1, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 0 });
@@ -178,6 +185,28 @@ describe("default object deletion worker", () => {
     controller.abort();
     await scheduler.reconcile(controller.signal);
     expect(mocks.retire).not.toHaveBeenCalled();
+    expect(mocks.projects).not.toHaveBeenCalled();
+  });
+
+  it("deletes fenced Projects that need no Workspace runner after Knowledge, and a failure only asks for a retry", async () => {
+    getDefaultObjectDeletionWorker();
+    const scheduler = mocks.schedulers[0]!;
+    mocks.pass.mockResolvedValue({ batches: 1, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 0 });
+    const done = { completed: 1, failed: 0, pending: 0 };
+    mocks.projects.mockResolvedValueOnce(done).mockRejectedValueOnce(new Error("PRIVATE_PROJECT_CANARY"));
+
+    await scheduler.reconcile(new AbortController().signal);
+    await scheduler.reconcile(new AbortController().signal);
+
+    // No runtime: Workspace maintenance takes the Projects whose chats still hold a VM.
+    expect(mocks.projects).toHaveBeenNthCalledWith(1, { prisma: { kind: "prisma" } });
+    expect(mocks.projects.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.retire.mock.invocationCallOrder[0]!);
+    expect(mocks.logProjects).toHaveBeenCalledExactlyOnceWith(done);
+    expect(mocks.log.mock.calls).toEqual([
+      ["runtime_lifecycle", expect.objectContaining({ action: "retry", code: "project_deletion_failed", outcome: "failed",
+        stage: "delete", subsystem: "projects" })]
+    ]);
+    expect(JSON.stringify(mocks.log.mock.calls.map(([, fields]) => ({ ...fields, error: undefined })))).not.toContain("CANARY");
   });
 
   it("prunes the content-free Telegram records on the same hourly pass under their own failure code", async () => {
