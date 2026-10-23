@@ -20,6 +20,7 @@ import {
   describeArguments,
   earlierUserMessages,
   estimateRetainedTokens,
+  RETAINED_CLOSING,
   RETAINED_PREAMBLE,
   skillsInUse
 } from "./retained";
@@ -240,8 +241,10 @@ describe("earlier user messages and Skills in use", () => {
       userMessageTokens: 5_000 });
     expect(retained.startsWith(`${RETAINED_PREAMBLE}\n\n## Recorded state`)).toBe(true);
     expect(retained.indexOf("## Skills loaded earlier")).toBeLessThan(retained.indexOf("## Earlier user messages"));
+    // It ends by telling the resuming agent how to go on from the verbatim part that follows.
+    expect(retained.endsWith(`\n\n${RETAINED_CLOSING}`)).toBe(true);
     const bound = estimateRetainedTokens(chat.items, keep, charTokens, { skillTokens: 5_000, stateTokens: 1_000, userMessageTokens: 2_000 });
-    expect(bound).toBe(2_000 + (4_000 + 12) + 1_000);
+    expect(bound).toBe(2_000 + (4_000 + 12) + 1_000 + RETAINED_CLOSING.length);
     const empty = transcriptBuilder();
     const only = empty.user("first");
     expect(buildRetainedContext({ estimate: charTokens, items: empty.items, keepFromId: only, skillTokens: 1, userMessageTokens: 1 })).toBe("");

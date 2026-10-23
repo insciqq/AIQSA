@@ -40,8 +40,9 @@ const SECTION_GUIDANCE: Readonly<Record<(typeof SUMMARY_SECTIONS)[number], strin
     "alternatives and why they were rejected.",
   "Current state": "Where the work stands at the end of the session: what was in progress, intermediate results, the state of " +
     "files and systems.",
-  "Open items and next steps": "What remains to be done, in order, including anything waiting for the user, an approval or an " +
-    "outside event. Never list finished work here.",
+  "Open items and next steps": "What remains to be done, in order, starting with the very next action, stated so the next agent " +
+    "can take it without asking (which file, record or tool, with the values in force). Include anything waiting for the user, an " +
+    "approval or an outside event. Never list finished work here.",
   "Critical data": "Exact values the remaining work depends on: numbers with their labels and units, identifiers, file paths, " +
     "URLs, commands, error codes and messages with how each error was resolved. Copy them character for character; never " +
     "round, convert or paraphrase them. When a value lives in a long tool result, give that result's handle so the next agent " +

@@ -168,7 +168,7 @@ export type CompactInput = Readonly<{
   reasoning?: ReasoningWeight;
   resultHandle?: CompactionResultHandle;
   retention?: Partial<CompactionRetention>;
-  /** The engine's item conventions for this run (`engineItemRules(currentInputId)`). */
+  /** The engine's item conventions for this run (`engineItemRules`). */
   rules?: Partial<CompactionItemRules>;
   signal?: AbortSignal;
   target: TranscriptTarget;

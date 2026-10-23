@@ -21,7 +21,8 @@ import type { ProviderHistoryItem, ProviderNativeData } from "../providers/histo
  *   compaction item, or a summary text any target can read; a compaction
  *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
  *   after itself, then everything appended since, and one whose tail is no
- *   longer found before it is not used;
+ *   longer found before it is not used; the run's own context (`runContext`)
+ *   is never compacted and stays, right after the compaction;
  * - reasoning with no text or call after it in its response stays out.
  */
 
@@ -42,6 +43,9 @@ export type TranscriptUserItem = Readonly<{
   followup?: true;
   id: string;
   kind: "user";
+  /** Context the server adds for this run (the Skills index, pinned Skills): rebuilt for every run and never
+   * kept on record, so no compaction covers it; replay keeps it even before a compaction's kept tail. */
+  runContext?: true;
   text: string;
 }>;
 
@@ -231,12 +235,14 @@ function keptTailIndex(items: readonly TranscriptItem[], index: number, item: Tr
   return keepFrom >= 0 && keepFrom < index ? keepFrom : -1;
 }
 
-/** Replay's items from the base compaction at `start`: the base, the tail it
- * keeps verbatim, then the items after it. */
+/** Replay's items from the base compaction at `start`: the base, the run's
+ * own context from before it (never compacted), the tail it keeps verbatim,
+ * then the items after it. */
 function replayWindow(items: readonly TranscriptItem[], start: number, base: TranscriptCompactionItem | null): TranscriptItem[] {
-  if (!base?.keepFromId) return items.slice(start);
-  const keepFrom = keptTailIndex(items, start, base);
-  return [base, ...items.slice(keepFrom, start), ...items.slice(start + 1)];
+  if (!base) return items.slice(start);
+  const keepFrom = base.keepFromId ? keptTailIndex(items, start, base) : start;
+  const runContext = items.slice(0, keepFrom).filter((item) => item.kind === "user" && item.runContext === true);
+  return [base, ...runContext, ...items.slice(keepFrom, start), ...items.slice(start + 1)];
 }
 
 /** The transcript items a request to `target` carries, in replay order. */
