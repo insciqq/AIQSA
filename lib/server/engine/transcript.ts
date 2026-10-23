@@ -17,7 +17,9 @@ import type { ProviderHistoryItem, ProviderNativeData } from "../providers/histo
  *   result gets an explicit unknown outcome, a result without its call stays
  *   out;
  * - replay starts at the latest compaction the target can use: its own native
- *   compaction item, or a summary text any target can read;
+ *   compaction item, or a summary text any target can read; a compaction
+ *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
+ *   after itself, then everything appended since;
  * - reasoning with no text or call after it in its response stays out.
  */
 
@@ -83,10 +85,20 @@ export type TranscriptToolResultItem = Readonly<{
 
 export type TranscriptCompactionItem = Readonly<{
   id: string;
+  /** The first item replay keeps verbatim after this compaction (its recent
+   * tail). Replay continues there and skips this item where it stands, so a
+   * compaction appended at a turn boundary covers only what precedes the
+   * tail. Absent: replay continues with the items after this one. */
+  keepFromId?: string;
   kind: "compaction";
   native?: ProviderNativeData;
   origin: TranscriptOrigin;
-  /** Readable summary of everything before the item, for any target. */
+  /** Provider-reported output tokens of the call that produced `native`. */
+  outputTokens?: number;
+  /** Text replayed with the compaction to every target that uses it: the
+   * code-generated record of the work and the earlier user messages verbatim. */
+  retained?: string;
+  /** Readable summary of everything before the kept tail, for any target. */
   summary?: string;
 }>;
 
@@ -181,14 +193,39 @@ export function modelResponseItems(input: Readonly<{
 export type SelectedTranscriptItem = Readonly<{ item: TranscriptItem; key: string }>;
 
 export type TranscriptSelection = Readonly<{
+  /** The compaction replay starts at, or null when it starts at the beginning. */
+  base: TranscriptCompactionItem | null;
   entries: readonly SelectedTranscriptItem[];
   /** Index of the first transcript item replay may use (its compaction). */
   start: number;
+  /** The items replay draws from, in transcript order: the base compaction,
+   * the tail it keeps verbatim, then every item after it. */
+  window: readonly TranscriptItem[];
 }>;
 
+/** The target replays the compaction's own native item (same route and model). */
+export function replaysNativeCompaction(item: TranscriptCompactionItem, target: TranscriptTarget): boolean {
+  return item.native !== undefined && target.nativeCompaction === true && sameTranscriptOrigin(item.origin, target);
+}
+
 function usableCompaction(item: TranscriptCompactionItem, target: TranscriptTarget): boolean {
-  return (item.native !== undefined && target.nativeCompaction === true && sameTranscriptOrigin(item.origin, target)) ||
-    (typeof item.summary === "string" && item.summary.length > 0);
+  return replaysNativeCompaction(item, target) || (typeof item.summary === "string" && item.summary.length > 0);
+}
+
+/** The text a compaction replays as to a target that does not take its native item. */
+export function compactionSummaryText(item: TranscriptCompactionItem): string {
+  return [`${COMPACTION_SUMMARY_HEADING}\n\n${item.summary ?? ""}`, ...(item.retained ? [item.retained] : [])].join("\n\n");
+}
+
+/** Replay's items from the base compaction at `start`: the base, the tail it
+ * keeps verbatim, then the items after it. A tail that is not found before
+ * the base is not replayed twice: replay then continues after the base. */
+function replayWindow(items: readonly TranscriptItem[], start: number, base: TranscriptCompactionItem | null): TranscriptItem[] {
+  if (!base?.keepFromId) return items.slice(start);
+  const keepFrom = items.findIndex((item) => item.id === base.keepFromId);
+  return keepFrom >= 0 && keepFrom < start
+    ? [base, ...items.slice(keepFrom, start), ...items.slice(start + 1)]
+    : items.slice(start);
 }
 
 /** The transcript items a request to `target` carries, in replay order. */
@@ -199,16 +236,17 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
     ids.add(item.id);
   }
   let start = 0;
+  let base: TranscriptCompactionItem | null = null;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;
     if (item.kind === "compaction" && usableCompaction(item, target)) {
       start = index;
+      base = item;
       break;
     }
   }
-  const window = items.slice(start);
-  const head = window[0];
-  const leadingCompaction = head !== undefined && head.kind === "compaction" && usableCompaction(head, target);
+  const window = replayWindow(items, start, base);
+  const leadingCompaction = base !== null;
 
   let turnStart = -1;
   if (target.reasoningScope === "current_turn") {
@@ -280,7 +318,7 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
     }
   });
   closeBlock();
-  return { entries, start };
+  return { base, entries, start, window };
 }
 
 export type TranscriptProjectionOptions = Readonly<{
@@ -288,43 +326,54 @@ export type TranscriptProjectionOptions = Readonly<{
   currentInputId?: string;
 }>;
 
-function historyItem(
+function historyItems(
   item: TranscriptItem,
   target: TranscriptTarget,
   options: TranscriptProjectionOptions
-): ProviderHistoryItem {
+): ProviderHistoryItem[] {
   switch (item.kind) {
     case "user":
-      return { ...(item.id === options.currentInputId ? { currentInput: true as const } : {}), text: item.text, type: "user" };
+      return [{ ...(item.id === options.currentInputId ? { currentInput: true as const } : {}), text: item.text, type: "user" }];
     case "assistant_text":
-      return {
+      return [{
         ...(item.native && sameTranscriptOrigin(item.origin, target) ? { native: item.native } : {}),
         text: item.text,
         type: "assistant_text"
-      };
+      }];
     case "reasoning":
-      return { native: item.native, type: "reasoning" };
+      return [{ native: item.native, type: "reasoning" }];
     case "tool_call":
-      return {
+      return [{
         arguments: item.arguments,
         callId: item.callId,
         name: item.name,
         ...(item.native && sameTranscriptOrigin(item.origin, target) ? { native: item.native } : {}),
         type: "tool_call"
-      };
+      }];
     case "tool_result":
-      return {
+      return [{
         callId: item.callId,
         ...(item.outcome === "error" ? { isError: true as const } : {}),
         name: item.name,
         output: item.output,
         type: "tool_result"
-      };
-    case "compaction":
-      return item.native && target.nativeCompaction === true && sameTranscriptOrigin(item.origin, target)
-        ? { native: item.native, type: "compaction" }
-        : { text: `${COMPACTION_SUMMARY_HEADING}\n\n${item.summary ?? ""}`, type: "user" };
+      }];
+    case "compaction": {
+      const native = replaysNativeCompaction(item, target) ? item.native : undefined;
+      return native
+        ? [{ native, type: "compaction" }, ...(item.retained ? [{ text: item.retained, type: "user" as const }] : [])]
+        : [{ text: compactionSummaryText(item), type: "user" }];
+    }
   }
+}
+
+/** `ProviderRunRequest.history` for selected items, in their order. */
+export function projectSelection(
+  entries: readonly SelectedTranscriptItem[],
+  target: TranscriptTarget,
+  options: TranscriptProjectionOptions = {}
+): ProviderHistoryItem[] {
+  return entries.flatMap(({ item }) => historyItems(item, target, options));
 }
 
 /** `ProviderRunRequest.history` for a request to `target`. */
@@ -333,5 +382,5 @@ export function projectTranscript(
   target: TranscriptTarget,
   options: TranscriptProjectionOptions = {}
 ): ProviderHistoryItem[] {
-  return selectTranscript(items, target).entries.map(({ item }) => historyItem(item, target, options));
+  return projectSelection(selectTranscript(items, target).entries, target, options);
 }
