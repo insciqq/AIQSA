@@ -144,6 +144,11 @@ export function responsesHistoryFromOutput(output: unknown): ProviderHistoryItem
   return items;
 }
 
+/** The Responses input item that asks the route to compact everything before
+ * it into one opaque `compaction` output item (the native engine's
+ * `ProviderRunRequest.compactionTrigger`). */
+export const RESPONSES_COMPACTION_TRIGGER = Object.freeze({ type: "compaction_trigger" });
+
 /** Responses `input` items for the history (OpenAI native, compatible Responses, DeepSeek). */
 export function responsesInputFromHistory(
   history: readonly ProviderHistoryItem[],
