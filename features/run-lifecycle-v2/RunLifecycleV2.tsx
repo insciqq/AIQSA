@@ -25,6 +25,7 @@ import {
 } from "react";
 import {
   describeToolCallV2,
+  planCallHiddenV2,
   runWaitingPhraseV2,
   settledRunPresentationV2,
   stepDurationSumV2,
@@ -44,7 +45,8 @@ const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "knowle
 function runningToolLabel(activity: ThreadToolActivity): string | null {
   let call: ToolCallV2 | undefined;
   for (let index = activity.calls.length - 1; index >= 0; index -= 1) {
-    if (activity.calls[index]?.status === "running") {
+    // A plan update is the plan's own progress, not a step the answer waits on.
+    if (activity.calls[index]?.status === "running" && !planCallHiddenV2(activity.calls[index]!)) {
       call = activity.calls[index];
       break;
     }

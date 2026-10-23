@@ -48,12 +48,14 @@ export function presentWorkspaceActivityV2(
 }
 
 /** Keep lifecycle proof in the source activity, but do not present a successful
- * empty handoff as work performed by the answer. */
+ * empty handoff as work performed by the answer. A plan is the answer's own
+ * (`workspacePlanV2`), not Workspace work. */
 export function visibleWorkspaceActivityV2(
   activity: ThreadWorkspaceActivity | null,
   generatedFileCount = 0
 ): ThreadWorkspaceActivity | null {
   const entries = (activity?.entries ?? []).filter(entry =>
+    entry.kind !== "plan" &&
     !(entry.kind === "execution_status" && entry.phase === "closed") &&
     !(entry.kind === "outputs_export" && entry.phase === "succeeded" && entry.count === 0 && !entry.skipped) &&
     !(entry.kind === "attachments_prepare" && entry.phase === "succeeded" && entry.count === 0)
@@ -64,6 +66,17 @@ export function visibleWorkspaceActivityV2(
   const unresolvedExport = activity?.outputStatus && activity.outputStatus.state !== "complete";
   if (!substantiveEntry && generatedFileCount === 0 && !unresolvedExport) return null;
   return activity ? { ...activity, entries } : { entries };
+}
+
+/** The answer's latest plan (`update_plan`, or a Codex Agent's plan) with steps to show; null without one. */
+export function workspacePlanV2(activity: ThreadWorkspaceActivity | null): ThreadWorkspaceActivityEntry | null {
+  const plans = (activity?.entries ?? []).filter((entry) => entry.kind === "plan" && (entry.items?.length ?? 0) > 0);
+  return plans.at(-1) ?? null;
+}
+
+/** "Plan · 2 of 5 complete": the plan's own count, never inferred from time. */
+export function workspacePlanSummaryV2(plan: ThreadWorkspaceActivityEntry): string {
+  return `Plan · ${plan.items?.filter((item) => item.completed).length ?? 0} of ${plan.items?.length ?? 0} complete`;
 }
 
 /** Consecutive successful existence/stat checks collapse into one "Checked N files" row. */
@@ -177,6 +190,10 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
     case "file_change": {
       const count = entry.count ?? entry.changes?.length ?? 0;
       const single = count === 1 ? entry.changes?.[0] : undefined;
+      if (entry.phase === "failed" || entry.phase === "cancelled") {
+        const target = single ? single.displayPath : plural(count, "file");
+        return entry.phase === "failed" ? `Could not finish changing ${target}` : `Changing ${target} stopped`;
+      }
       if (single) return `${running ? "Changing" : single.action === "add" ? "Created" : single.action === "delete" ? "Deleted" : "Edited"} ${single.displayPath}`;
       return `${running ? "Editing" : "Edited"} ${plural(count, "file")}`;
     }
@@ -189,7 +206,7 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
     case "agent_note":
       return entry.text ?? "Agent note";
     case "plan":
-      return `Plan · ${entry.items?.filter((item) => item.completed).length ?? 0} of ${entry.items?.length ?? 0} complete`;
+      return workspacePlanSummaryV2(entry);
     case "elided":
       return `${entry.count ?? 0} earlier steps omitted${entry.failedCount ? ` · ${entry.failedCount} failed` : ""}`;
     default:
