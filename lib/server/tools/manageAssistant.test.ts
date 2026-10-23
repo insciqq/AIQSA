@@ -106,7 +106,7 @@ describe("manage_assistant", () => {
     const result = await executeManageAssistant(fake, call({ action: "create", fixedModel: true, instructions: "Write weekly reports.", mcpTools: ["gitlab"],
       model: "gpt-5.5", name: " Reporter ", skills: [{ skill: "report-writer" }, { delivery: "on_demand", skill: "notes" }], starterPrompts: [" Monday report "],
       webSearch: "off" }), context);
-    const [written, writtenView] = fake.create.mock.calls[0]!;
+    const [written, writtenView] = vi.mocked(fake.create).mock.calls[0]!;
     expect(writtenView).toBe(view);
     expect(written).toMatchObject({ name: "Reporter", starterPrompts: ["Monday report"], systemPrompt: "Write weekly reports.", rows: {
       model: { policy: "fixed", value: { mode: "model", modelId: "codex-lb:gpt-5.5" } }, search: { policy: "adjustable", value: { mode: "off" } },
@@ -137,7 +137,7 @@ describe("manage_assistant", () => {
     const fake = service();
     const result = await executeManageAssistant(fake, call({ action: "update", assistantId: "asst_1", expectedVersion: 3,
       instructions: "Review the code.\nBe thorough.\n", model: "Claude Sonnet" }), context);
-    const [id, version, written] = fake.update.mock.calls[0]!;
+    const [id, version, written] = vi.mocked(fake.update).mock.calls[0]!;
     expect([id, version]).toEqual(["asst_1", 3]);
     expect(written).toMatchObject({ description: "Reviews code", name: "Reviewer", starterPrompts: ["Review my MR"], systemPrompt: "Review the code.\nBe thorough.\n",
       rows: { model: { policy: "fixed", value: { mode: "model", modelId: "or:claude-sonnet" } } } });
