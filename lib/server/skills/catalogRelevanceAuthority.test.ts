@@ -65,6 +65,26 @@ describe("Skill relevance current authority", () => {
     await expect(authorize()).rejects.toThrow("skill_catalog_authority_changed");
   });
 
+  it("authorizes an Assistant without links over its runner's own enabled Skills (#48)", async () => {
+    const f = setup();
+    const unlinked: AssistantRunMaterialization = { ...assistant, skillIds: [], skillModes: {},
+      rows: assistantRowsFromLegacyFields({ mcpServerIds: [], providerModelId: "model", runControls: {},
+        searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }) };
+    f.assistants.resolveForRun.mockResolvedValue({ ok: true, assistant: unlinked });
+    f.skills.resolveForRun.mockResolvedValue({ ok: true, skills: [pinned] });
+    // `p` is the runner's own manual pin on top of the Assistant.
+    const authorize = skillCatalogAuthorization({ ...f.input, userId: "runner", assistant: unlinked });
+    await authorize();
+    expect(f.assistants.resolveForRun).toHaveBeenCalledWith("runner", "assistant");
+    expect(f.skills.resolveForRun).toHaveBeenCalledWith("runner", ["p"]);
+    expect(f.skills.listEnabledForRun).toHaveBeenCalledWith("runner");
+    f.skills.listEnabledForRun.mockResolvedValueOnce([available, { ...available, skillId: "new" }]);
+    await expect(authorize()).rejects.toThrow("skill_catalog_authority_changed");
+    // Linking a Skill since admission replaces the personal catalog, so the authority changed.
+    f.assistants.resolveForRun.mockResolvedValueOnce({ ok: true, assistant });
+    await expect(authorize()).rejects.toThrow("skill_catalog_authority_changed");
+  });
+
   it("rejects scope loss during dependency reads", async () => {
     const f = setup();
     f.skills.resolveForRun.mockImplementation(async () => {
