@@ -201,6 +201,24 @@ describe("native tool batch", () => {
     expect([...rows.values()][0]!.state).toBe("complete");
   });
 
+  it("saves every result over the save bound with a handle and shows it whole; a short one and a read of a saved one stay unsaved", async () => {
+    const medium = "r".repeat(TOOL_RESULT_LIMITS.saveChars + 1);
+    const { store } = fakeStore();
+    const batch = deps({
+      lookup: tool("lookup", "none", async ({ call }) => ok(call, call.arguments.size === "short" ? "x".repeat(TOOL_RESULT_LIMITS.saveChars) : medium)),
+      read_tool_result: tool("read_tool_result", "none", async ({ call }) => ok(call, medium))
+    }, store);
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [
+      { arguments: { size: "medium" }, id: "c1", name: "lookup" },
+      { arguments: { size: "short" }, id: "c2", name: "lookup" },
+      { arguments: { handle: `tor1_${"c".repeat(32)}` }, id: "c3", name: "read_tool_result" }
+    ] });
+    expect(batch.saveResult).toHaveBeenCalledTimes(1);
+    expect(batch.saveResult).toHaveBeenCalledWith(expect.objectContaining({ text: medium, toolCallId: "row-1-0" }));
+    expect(outcome.results.map((item) => item.handle)).toEqual([`tor1_${"b".repeat(32)}`, undefined, undefined]);
+    expect(outcome.results[0]!.output).toBe(medium);
+  });
+
   it("keeps a run-scoped result whole and unsaved for its run, and only a note for later turns", async () => {
     const long = "m".repeat(TOOL_RESULT_LIMITS.inlineChars + 10_000);
     const { store } = fakeStore();

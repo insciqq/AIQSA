@@ -23,7 +23,7 @@ import type { ToolObservationSource } from "../toolObservations/contract";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
-import { toolOutputExcerpt, toolResultOutputText } from "./toolResults";
+import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolOutputExcerpt, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
 import type { UnknownEffects } from "./unknownEffects";
 
@@ -198,15 +198,19 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
   }
 
   /**
-   * The checks after a call ran: a long result is saved whole and the model
-   * gets its head and tail with the handle, the call's record settles with
-   * the result, and its output events (images, cards) are published. Its own
-   * records (Search sources, usage) never fail the batch.
+   * The checks after a call ran: a result longer than a short excerpt is
+   * saved whole with a handle (the model gets a long one as its head and tail
+   * with the handle), the call's record settles with the result, and its
+   * output events (images, cards) are published. A read of a saved result is
+   * already readable by its own handle and is saved again only when it does
+   * not fit whole. Its own records (Search sources, usage) never fail the
+   * batch.
    */
   async function afterToolCall(execution: EngineToolExecution, tool: EngineTool, row: ToolCallRow,
     result: ToolExecutionResult): Promise<TranscriptToolResultItem> {
     const text = toolResultOutputText(result);
-    const saved = !tool.runScopedResult && text.length > 0 && toolOutputExcerpt(text, null).truncated
+    const saveAbove = tool.definition.name === READ_TOOL_RESULT_NAME ? TOOL_RESULT_LIMITS.inlineChars : TOOL_RESULT_LIMITS.saveChars;
+    const saved = !tool.runScopedResult && text.length > saveAbove
       ? await deps.saveResult({ outcome: result.status, signal: execution.signal, source: tool.observationSource, text,
         toolCallId: row.id })
       : null;

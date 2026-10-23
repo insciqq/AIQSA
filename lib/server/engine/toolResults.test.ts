@@ -25,9 +25,11 @@ describe("tool result excerpts", () => {
     expect(toolResultOutputText({ content: [{ text: "a", type: "text" }, { type: "json", value: { b: 1 } }] })).toBe("a\n\n{\"b\":1}");
   });
 
-  it("keeps a result within the bound whole", () => {
+  it("keeps a result within the bound whole, with the handle it was saved under", () => {
     const text = "x".repeat(TOOL_RESULT_LIMITS.inlineChars);
     expect(toolOutputExcerpt(text, null)).toEqual({ handle: null, output: text, truncated: false });
+    expect(toolOutputExcerpt(text, { handle })).toEqual({ handle, output: text, truncated: false });
+    expect(toolOutputExcerpt(text, { unsavedReason: "storage_unavailable" })).toEqual({ handle: null, output: text, truncated: false });
   });
 
   it("gives head, tail and the handle of a longer saved result, and says when it could not be saved", () => {
