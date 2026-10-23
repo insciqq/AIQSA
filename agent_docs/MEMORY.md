@@ -39,7 +39,7 @@ Memory must behave the same in every language, fallbacks and unused paths includ
 
 ## Safety Lite
 
-`lib/server/memory/safetyLite.ts` redacts recognized secret spans locally before every Memory persistence, provider, index, context and debug boundary, keeping the safe remainder. Ordinary personal, medical, financial or relationship text is not a secret class. A raw secret may stay only in the chat itself. Every fact write, explicit or automatic, is also refused when it repeats the exact value of one of the owner's saved secrets, whatever its format (`lib/server/memory/persistence/savedSecrets.ts`).
+`lib/server/memory/safetyLite.ts` redacts recognized secret spans locally before every Memory persistence, provider, index, context and debug boundary, keeping the safe remainder. Ordinary personal, medical, financial or relationship text is not a secret class. A raw secret may stay only in the chat itself. The exact values of the owner's saved secrets never become Memory either, whatever their format; only values that look like secrets are compared, so plain words such as `localhost` stay ordinary text (`lib/server/memory/persistence/savedSecretMatching.ts`, operator review 2026-10-23). A fact write repeating one is refused, history indexing replaces it with a redaction marker, and saving a value starts a durable cleanup that forgets the facts and rebuilds the history already holding it (`lib/server/memory/savedSecretScrub.ts`).
 
 ## Background maintenance
 

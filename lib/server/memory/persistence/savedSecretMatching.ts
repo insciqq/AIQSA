@@ -3,11 +3,12 @@ import type { AcceptedWorkspaceSecret } from "../../workspace/secrets/store";
 
 /**
  * How Memory recognizes the values of the owner's saved secrets (Studio >
- * Secrets) in its own text: fact writes refuse them (`./savedSecrets.ts`) and
+ * Secrets) in its own text: fact writes refuse them (`./savedSecrets.ts`),
  * history indexing replaces them with a marker before anything is stored,
  * embedded or recalled (`../history/sourceProjection.ts`,
- * `../history/toolEvents.ts`). Matching is exact and literal, on each value
- * and its trimmed form, so it behaves the same in every language.
+ * `../history/toolEvents.ts`), and saving a value removes it from what Memory
+ * already holds (`../savedSecretScrub.ts`). Matching is exact and literal, on
+ * each value and its trimmed form, so it behaves the same in every language.
  *
  * Only values that look like secrets are screened (operator review
  * 2026-10-23): at least 20 characters of any kind, or at least 8 characters

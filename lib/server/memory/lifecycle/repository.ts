@@ -815,6 +815,55 @@ export async function forgetExplicitOriginFactsForPermanentChatDeletion(
   return facts.length;
 }
 
+/**
+ * System adapter for facts holding a value the owner has since saved as a
+ * secret (`../savedSecretScrub.ts`). Each fact is forgotten with the same
+ * suppression and fence as the user's Forget, its peers kept, and its text is
+ * purged at once: there is no Undo for a secret. The caller holds the owner's
+ * settings lock. Returns the number of facts forgotten.
+ */
+export async function forgetMemoryFactsHoldingSavedSecret(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  keyring: MemorySuppressionKeyring,
+  input: Readonly<{
+    /** `expectedVersionId`: the current version, or the conflicting one of a conflicted fact. */
+    facts: readonly Readonly<{ expectedVersionId: string | null; factId: string }>[];
+    now: Date;
+  }>
+): Promise<number> {
+  const facts: ForgettableFactRow[] = [];
+  for (const target of input.facts) {
+    const fact = await lockForgettableFact(tx, settings.userId, target.factId, target.expectedVersionId ?? "");
+    if (fact) facts.push(fact);
+  }
+  if (facts.length === 0) return 0;
+  await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+  for (const fact of facts) {
+    const deletion = await enqueueMemoryDeletion(tx, settings, {
+      operation: "FORGET_PURGE",
+      targetId: fact.factId,
+      targetType: memoryPurgeTargetType("MEMORY_FACT")
+    });
+    if (!deletion.created && (deletion.state === "SUCCEEDED" || deletion.state === "CANCELLED")) {
+      await tx.memoryDeletionOutbox.update({
+        data: {
+          completedAt: null,
+          errorCode: null,
+          lastAuditAt: null,
+          leaseExpiresAt: null,
+          leaseToken: null,
+          nextAttemptAt: null,
+          state: "PENDING"
+        },
+        where: { id: deletion.id }
+      });
+    }
+    await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id);
+  }
+  return facts.length;
+}
+
 function automaticVersionAdmissionCondition(
   userId: string,
   barrierId: string
