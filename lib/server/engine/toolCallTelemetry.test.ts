@@ -21,6 +21,18 @@ describe("tool_call telemetry", () => {
       .toEqual({ outcome: "failed", code: "mcp_tool_reported_error" });
   });
 
+  it("counts a command that exited non-zero as a completed call, however long its output", () => {
+    const envelope = (stdout: string) => ({ content: [{ type: "text", text: JSON.stringify({ ok: false,
+      error: { code: "workspace_command_failed", message: "PRIVATE" }, data: { exitCode: 1, stdout, stderr: "", truncated: false } }) }],
+    status: "error" });
+    expect(toolCallOutcome(envelope("PRIVATE"))).toEqual({ outcome: "completed", code: "workspace_command_failed" });
+    expect(toolCallOutcome(envelope("x".repeat(20_000)))).toEqual({ outcome: "completed", code: "workspace_command_failed" });
+    // A long envelope of a real failure still names its own code.
+    const busy = { content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code: "workspace_busy" },
+      data: "x".repeat(20_000) }) }], status: "error" };
+    expect(toolCallOutcome(busy)).toEqual({ outcome: "failed", code: "workspace_busy" });
+  });
+
   it("records the sizes of a truncated MCP result on its completed call, never its content", async () => {
     const observation = await captureRunObservation();
     const result = { callId: "call", name: "PRIVATE_NAME", status: "complete", content: [{ type: "text", text: "PRIVATE_TEXT" }],

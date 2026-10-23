@@ -98,7 +98,8 @@ describe("health report collection", () => {
     const report = await collectHealthReport(input, "24h");
     expect(input.health.read).toHaveBeenCalledWith("24h");
     expect(input.health.incidents).toHaveBeenCalledWith({ category: null, code: null, cursor: null, event: null, level: null, q: null, range: "24h" });
-    expect(input.failedRuns).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), perCode: 3, groupLimit: 50 });
+    expect(input.failedRuns).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), perCode: 3, groupLimit: 50,
+      withoutRetiredEngineEnds: true });
     expect(Object.keys(report)).toEqual(["kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry", "attention",
       "failedRuns", "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
       "queues", "queuesCheckedAt", "slowTransactions",

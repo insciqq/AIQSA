@@ -311,7 +311,7 @@ describe("full agent report", () => {
     });
 
     expect(input.failedRunGroups).toHaveBeenCalledWith({ from: new Date("2026-10-01T00:00:00.000Z"),
-      to: new Date("2026-10-08T00:00:00.000Z"), perCode: 20, groupLimit: 200 });
+      to: new Date("2026-10-08T00:00:00.000Z"), perCode: 20, groupLimit: 200, withoutRetiredEngineEnds: true });
     expect(full.failedRuns).toEqual({ runs: 3, users: 2, truncated: false, rows: [
       { failureCode: "provider_server_error", runs: 2, users: 2, firstAt: "2026-10-06T10:00:00.000Z", lastAt: "2026-10-06T10:01:00.000Z",
         newest: [
@@ -381,7 +381,7 @@ describe("full agent report", () => {
     ] });
     expect(full.toolCalls.families).toEqual([
       expect.objectContaining({ toolKind: "fetch_url", calls: 4, failed: 0, timedOut: 1, measured: 4, p95Ms: 15_000 }),
-      expect.objectContaining({ toolKind: "mcp", calls: 3, failed: 2, timedOut: 0, awaitingApproval: 1 })
+      expect.objectContaining({ toolKind: "mcp", calls: 2, failed: 2, timedOut: 0, awaitingApproval: 1 })
     ]);
     expect(full.http.rows.map((row) => row.status)).toEqual([404, 502]);
     expect(full.http.clientErrors).toEqual([expect.objectContaining({ kind: "render", routePath: "/chat/[chatId]", count: 2 })]);
@@ -586,7 +586,7 @@ describe("full agent report text", () => {
       "      first 2026-10-06 10:00 · last 2026-10-06 10:00\n" +
       "      ref 1a2b3c4d user user_a 2026-10-06 10:00\n");
     // A call held for write approval is counted apart from failures.
-    expect(lines.find((line) => line.startsWith("  mcp "))).toContain("3 calls · failed 2 · timed out 0 · cancelled 0 · awaiting approval 1");
+    expect(lines.find((line) => line.startsWith("  mcp "))).toContain("2 calls · failed 2 · timed out 0 · cancelled 0 · awaiting approval 1");
     const empty = formatHealthFullReport(await collectHealthFullReport(sources(fixtureCounters, fixtureIncidents, {
       failedRunGroups: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false })
     }), "7d"));

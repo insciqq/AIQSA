@@ -16,6 +16,10 @@ const MAX_PARSED_TEXT = 4_096;
 const MAX_INSPECTED_PARTS = 4;
 /** Search reports its refusals as `Search failed: <code>` text. */
 const searchFailedText = /^Search failed: ([a-z][a-z0-9_]{0,95})(?![a-z0-9_])/u;
+/** A failure envelope's code leads it, so a long one (a command's output) still names its code. */
+const failureEnvelopeText = /^\{"ok":false,"error":\{"code":"([a-z][a-z0-9_]{0,95})"/u;
+/** A command that ran and exited non-zero: the tool worked and the model reads the exit status. */
+const WORKSPACE_COMMAND_FAILED_CODE = "workspace_command_failed";
 
 type Outcome = EventFields["tool_call"]["outcome"];
 
@@ -42,6 +46,8 @@ function partCode(part: unknown): string | undefined {
   if (type !== "text" || typeof text !== "string") return undefined;
   const searchCode = searchFailedText.exec(text)?.[1];
   if (searchCode) return registered(searchCode);
+  const envelopeCode = failureEnvelopeText.exec(text)?.[1];
+  if (envelopeCode) return registered(envelopeCode);
   if (text.length > MAX_PARSED_TEXT || !text.startsWith("{")) return undefined;
   try { return namedCode(JSON.parse(text)); } catch { return undefined; }
 }
@@ -79,6 +85,8 @@ const outcomeOf = (code: string): Outcome =>
 export function toolCallOutcome(result: unknown): Readonly<{ outcome: Outcome; code?: string }> {
   if (own(result, "status") !== "error") return { outcome: "completed" };
   const code = toolResultFailureCode(result);
+  // Like `tool_execution`, a non-zero exit is not a failure of the tool, so Admin Health does not count it as one.
+  if (code === WORKSPACE_COMMAND_FAILED_CODE) return { outcome: "completed", code };
   return { outcome: outcomeOf(code), code };
 }
 
