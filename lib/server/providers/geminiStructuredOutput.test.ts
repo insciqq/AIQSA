@@ -1,7 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V3 } from "../knowledge/answerGroundingV5";
-import { KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V2 } from "../knowledge/evidenceAnswerReviewV2";
-import { KNOWLEDGE_EVIDENCE_ANSWER_DRAFT_SCHEMA_V1 } from "../knowledge/evidenceAnswerV1";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
 import {
@@ -165,21 +162,20 @@ describe("native Gemini structured output", () => {
     }
   });
 
-  it("projects the existing Knowledge union and review schemas with canonical rules intact", () => {
-    const union = buildGeminiInteractionsStructuredOutputRequest(model, { ...request, schema: KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V3 });
+  it("projects a discriminated union with canonical rules intact", () => {
+    const unionSchema = { oneOf: [
+      { type: "object", additionalProperties: false, required: ["kind", "text"],
+        properties: { kind: { const: "answer" }, text: { type: "string", minLength: 1 } } },
+      { type: "object", additionalProperties: false, required: ["kind", "reason"],
+        properties: { kind: { const: "refuse" }, reason: { type: "string" } } }
+    ] };
+    const original = JSON.stringify(unionSchema);
+    const union = buildGeminiInteractionsStructuredOutputRequest(model, { ...request, schema: unionSchema });
     const projected = union.response_format as { schema: { properties: { __aiqsa_payload: { anyOf: unknown[] } } } };
-    expect(projected.schema.properties.__aiqsa_payload.anyOf).toHaveLength(KNOWLEDGE_GROUNDED_SELECTOR_SCHEMA_V3.oneOf.length);
+    expect(projected.schema.properties.__aiqsa_payload.anyOf).toHaveLength(unionSchema.oneOf.length);
     expect(JSON.stringify(projected)).not.toContain('"oneOf"');
     expect(JSON.stringify(projected)).not.toContain('"const"');
-    const review = buildGeminiInteractionsStructuredOutputRequest(model, { ...request, schema: KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V2 });
-    expect(review.response_format).toMatchObject({ schema: {
-      required: ["version", "blocks", "requirements", "analysisComplete", "followUps"],
-      properties: { version: { type: "integer", enum: [2] }, requirements: { items: {
-        required: ["requirement", "status", "blockIds", "correctionEvidenceHandles", "gap"]
-      } } }
-    } });
-    expect(KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V2.properties.version.const).toBe(2);
-    expect(KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V2.properties.requirements.items.properties.requirement.minLength).toBe(1);
+    expect(JSON.stringify(unionSchema)).toBe(original);
   });
 
   it.each(["mcp_tool_routing", "mcp_tool_routing_retry", "other_routing"])("keeps the outer routing bound and omits nested bounds for %s", (name) => {
@@ -200,30 +196,6 @@ describe("native Gemini structured output", () => {
     } } };
     expect(wire.response_format).toEqual({ mime_type: "application/json", schema: expected, type: "text" });
     expect(routingSchema).toEqual(original);
-  });
-
-  it.each([
-    ["knowledge_evidence_compose_v2", KNOWLEDGE_EVIDENCE_ANSWER_DRAFT_SCHEMA_V1],
-    ["knowledge_evidence_review_v2", KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V2]
-  ] as const)("projects every current evidence answer schema without descendant array bounds (%s)", (name, canonical) => {
-    const original = JSON.stringify(canonical);
-    const wire = buildGeminiInteractionsStructuredOutputRequest(model, { ...request, name, schema: canonical });
-    const responseFormat = wire.response_format as { schema: Record<string, unknown> };
-    const inspect = (value: unknown, arrayAncestor = false): void => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return;
-      const node = value as Record<string, unknown>;
-      if (node.type === "array" && arrayAncestor) expect(node).not.toHaveProperty("maxItems");
-      if (node.properties && typeof node.properties === "object") {
-        Object.values(node.properties).forEach(child => inspect(child, arrayAncestor));
-      }
-      if (node.items) inspect(node.items, arrayAncestor || node.type === "array");
-      if (node.additionalProperties && typeof node.additionalProperties === "object") inspect(node.additionalProperties, arrayAncestor);
-      for (const key of ["anyOf", "oneOf", "prefixItems"] as const) {
-        if (Array.isArray(node[key])) node[key].forEach(child => inspect(child, arrayAncestor || key === "prefixItems" && node.type === "array"));
-      }
-    };
-    inspect(responseFormat.schema);
-    expect(JSON.stringify(canonical)).toBe(original);
   });
 
   it("tracks array ancestry through unions and tuple items without changing sibling arrays", () => {

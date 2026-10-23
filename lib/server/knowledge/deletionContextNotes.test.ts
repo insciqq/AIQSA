@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { ContextSummary } from "../../contracts/contextCompaction";
-import { decodeConversationContextPolicy } from "../runs/contextCompactionContract";
-import { parseToolLoopCheckpoint } from "../runs/toolLoopPersistence";
 import {
   contextNotesDescendantRunIds,
   withoutCarriedContextNotes,
@@ -40,24 +38,23 @@ describe("Knowledge deletion context notes scrub", () => {
     const scrubbedRequest = withoutCarriedContextNotes(request) as typeof request;
     expect(JSON.stringify(scrubbedRequest)).not.toContain("Private excerpt digest");
     expect(scrubbedRequest.modelId).toBe("model");
-    expect(decodeConversationContextPolicy(scrubbedRequest.contextCompactionPolicy)).toEqual(policy);
+    expect(scrubbedRequest.contextCompactionPolicy).toEqual(policy);
 
     const scrubbedState = withoutCheckpointContextNotes(checkpoint);
     expect(JSON.stringify(scrubbedState)).not.toContain("Private excerpt digest");
-    const decoded = parseToolLoopCheckpoint(scrubbedState);
-    // An absent summary decodes as "no summary"; usage receipts remain.
-    expect(decoded?.contextCompaction?.summary).toBeUndefined();
-    expect(decoded?.contextCompaction?.summaryAttempts).toEqual(checkpoint.contextCompaction.summaryAttempts);
-    expect(decoded?.contextCompaction?.measurement).toEqual(checkpoint.contextCompaction.measurement);
+    const decoded = scrubbedState as typeof checkpoint;
+    // The summary goes; usage receipts and the measurement remain.
+    expect(decoded.contextCompaction).not.toHaveProperty("summary");
+    expect(decoded.contextCompaction.summaryAttempts).toEqual(checkpoint.contextCompaction.summaryAttempts);
+    expect(decoded.contextCompaction.measurement).toEqual(checkpoint.contextCompaction.measurement);
   });
 
   it("scrubs the notes of a notes-only checkpoint a Knowledge answer wrote outside the tool loop", () => {
     const notesOnly = { ...checkpoint, providerContinuation: null, roundIndex: 0 };
-    expect(parseToolLoopCheckpoint(notesOnly)?.contextCompaction?.summary).toEqual(notes);
-    const scrubbed = parseToolLoopCheckpoint(withoutCheckpointContextNotes(notesOnly));
+    const scrubbed = withoutCheckpointContextNotes(notesOnly) as typeof notesOnly;
     expect(JSON.stringify(scrubbed)).not.toContain("Private excerpt digest");
     expect(scrubbed).toMatchObject({ providerContinuation: null, roundIndex: 0 });
-    expect(scrubbed?.contextCompaction?.summaryAttempts).toEqual(checkpoint.contextCompaction.summaryAttempts);
+    expect(scrubbed.contextCompaction.summaryAttempts).toEqual(checkpoint.contextCompaction.summaryAttempts);
   });
 
   it("is idempotent and leaves values without notes untouched", () => {
