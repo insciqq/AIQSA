@@ -79,6 +79,18 @@ describe("Memory control without model read planning", () => {
     expect(prompt).toContain("work or project material in a personal chat is a normal persistent SAVE");
   });
 
+  it("keeps credentials, assistant resources and task instructions out of Memory commands", () => {
+    const prompt = buildMemoryActionIntentRequest(context).systemPrompt;
+    expect(prompt).toContain("Three kinds of request are never Memory commands, even with a persistence directive; these rules take precedence over SAVE and UPDATE.");
+    expect(prompt).toContain("credentials are never Memory: a request to save, store, remember, or change a password, API key, access token, private key, recovery code, or any other secret value, the user's own included and also when it asks to keep the value among the user's saved secrets, is NONE with reasonCode secret_content. Never copy a credential value into any field.");
+    expect(prompt).toContain("create, change, run, or delete one of its own resources or settings other than Memory, such as a Skill, an Assistant, a scheduled task, a saved secret, an artifact, or custom instructions, is NONE, even when it says save or remember or describes how the assistant should behave or answer later");
+    expect(prompt).toContain("a standing instruction for how the assistant should carry out a kind of task, such as a procedure, template, or rule like 'when I ask for X, do Y', is not a personal fact: it is NONE unless the current turn explicitly asks to remember it.");
+    // The former first-party exception let a user's own credential become a fact.
+    expect(prompt).not.toContain("A credential explicitly described as the current user's own is first-party.");
+    // A real remember command keeps its meaning.
+    expect(prompt).toContain("'Remember that I prefer concise answers.' is SAVE");
+  });
+
   it("accepts a pure command without requesting a generated search plan", async () => {
     const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) =>
       ({ decision: controlDecision }));

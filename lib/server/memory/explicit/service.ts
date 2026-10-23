@@ -239,6 +239,7 @@ function publicPersistenceCode(
     case "memory_scope_unavailable":
       return "memory_scope_unavailable";
     case "memory_plaintext_not_allowed":
+    case "memory_saved_secret_value":
       return "memory_secret_rejected";
     case "memory_active_generation_invalid":
       return "memory_index_unavailable";

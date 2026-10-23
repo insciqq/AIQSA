@@ -24,6 +24,12 @@ import {
 } from "../../history/safety";
 import { memoryValueContainsRecognizedSecret } from "../../explicit/safety";
 import { enqueueMemoryJob } from "../../persistence/jobs";
+import {
+  MEMORY_SAVED_SECRET_REASON_CODE,
+  memorySavedSecretValues,
+  memoryValueContainsSavedSecret,
+  recordMemorySavedSecretRefusal
+} from "../../persistence/savedSecrets";
 import { memorySha256 } from "../../persistence/lexical";
 import {
   memoryDestructiveSourceCutoff,
@@ -138,11 +144,9 @@ const disabledDecision = Object.freeze({
   status: "CANCELLED" as const
 });
 
-/** Final local defense before model-authored candidate text crosses storage. */
-export function memoryAutomaticCandidateContainsSecret(
-  candidate: MemoryExtractedCandidate
-): boolean {
-  const values = [
+/** The model-authored and quoted text of a candidate that storage would keep. */
+function candidateTexts(candidate: MemoryExtractedCandidate) {
+  return [
     candidate.displayText,
     candidate.statement,
     candidate.quote,
@@ -155,9 +159,30 @@ export function memoryAutomaticCandidateContainsSecret(
     ]),
     ...candidate.evidence.map((evidence) => evidence.quote)
   ];
-  return values.some((value) => memoryValueContainsRecognizedSecret(value)) ||
+}
+
+/** Final local defense before model-authored candidate text crosses storage. */
+export function memoryAutomaticCandidateContainsSecret(
+  candidate: MemoryExtractedCandidate
+): boolean {
+  return candidateTexts(candidate).some((value) => memoryValueContainsRecognizedSecret(value)) ||
     memoryValueContainsRecognizedSecret(candidate.proposedValue) ||
     memoryValueContainsRecognizedSecret(candidate.temporalResolutionEvidence);
+}
+
+/** A candidate repeating a value of the owner's saved secrets is never stored,
+ * whatever its format (`../../persistence/savedSecrets.ts`). */
+export function memoryAutomaticCandidateContainsSavedSecret(
+  candidate: MemoryExtractedCandidate,
+  savedValues: readonly string[]
+): boolean {
+  return memoryValueContainsSavedSecret([
+    ...candidateTexts(candidate),
+    candidate.proposedValue,
+    candidate.unicodeProposedValue,
+    candidate.temporalResolutionEvidence,
+    candidate.entities.map((entity) => entity.qualifiers)
+  ], savedValues);
 }
 
 export type MemoryFactSourceMessage = Readonly<{
@@ -1837,6 +1862,7 @@ async function applyPlan(
     Number(decisions.get(left[1].candidateRef)?.operation === "RETRACT_TARGET") -
     Number(decisions.get(right[1].candidateRef)?.operation === "RETRACT_TARGET"));
   const replacementTargets = new Set<string>();
+  let savedSecretValues: readonly string[] | undefined;
   for (const [index, candidate] of candidateEntries) {
     const candidateOrdinal = plan.candidateOrdinals[index]!;
     const receipt = await tx.memoryFactExtractionCandidateReceipt.findFirst({
@@ -1888,6 +1914,12 @@ async function applyPlan(
     }
     if (memoryAutomaticCandidateContainsSecret(candidate)) {
       await rejectCandidate(tx, claim.userId, receipt.id, "secret_fenced", now);
+      continue;
+    }
+    savedSecretValues ??= await memorySavedSecretValues(tx, claim.userId);
+    if (memoryAutomaticCandidateContainsSavedSecret(candidate, savedSecretValues)) {
+      recordMemorySavedSecretRefusal();
+      await rejectCandidate(tx, claim.userId, receipt.id, MEMORY_SAVED_SECRET_REASON_CODE, now);
       continue;
     }
     if (semanticDecision?.operation === "RETRACT_TARGET" &&

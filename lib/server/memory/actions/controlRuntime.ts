@@ -49,8 +49,8 @@ export const MEMORY_CONTROL_STATEMENT_TOO_LONG =
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v30",
-  promptVersion: "memory-control-prompt-v37",
+  policyVersion: "memory-control-policy-v31",
+  promptVersion: "memory-control-prompt-v38",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
