@@ -18,7 +18,6 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 - Personal credentials resolve as: the user's direct grant, then an identical group grant, then an explicitly configured installation default.
 - Answer, embedding, rerank, Vision, Decisions and other internal roles are independent. Internal roles run on installation credentials, grant users nothing, and never borrow another role's assignment.
 - Image generation is a published resource: administrators publish verified models and keep one default, without which image generation is off for everyone. Users may pick a published model. An unusable published model is marked, never substituted.
-- Native Anthropic (`lib/server/providers/anthropicMessages.ts`) is disabled until its code is removed (root `AGENTS.md`): no new connections or runs and no fixes.
 - Optional Decisions need their own disclosure, qualification and verified availability; adopting them preserves explicit choices, and a failed adoption needs explicit repair, never an automatic replay or a startup block.
 - Speech to text binds a connection and an upstream model id; only a passing Test with the bundled synthetic sample saves it, bound to the tested key version. Dictation audio and transcripts exist only within the request.
 

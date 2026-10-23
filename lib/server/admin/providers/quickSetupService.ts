@@ -26,7 +26,6 @@ import {
   type ProviderConnectionConfiguration
 } from "../../providers/providerConfiguration";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
-import { offeredProviderFamilies } from "../../../domain/disabledAreas";
 import type { AdminProviderCredentialTester, AdminProviderCredentialTestOutcome } from "./credentialTester";
 import { applyNativeRoute } from "./nativeRouting";
 import {
@@ -368,7 +367,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   return {
     async getSnapshot(actor: AdminProviderQuickSetupActor): Promise<AdminProviderQuickSetupSnapshot> {
       const inspectedAt = now();
-      const inspections = await Promise.all(offeredProviderFamilies(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS).map((provider) =>
+      const inspections = await Promise.all(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((provider) =>
         input.repository.inspect({ ...actor, now: inspectedAt, provider })
       ));
       const key = stateTokenKey();

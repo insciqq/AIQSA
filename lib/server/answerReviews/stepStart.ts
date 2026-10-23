@@ -9,7 +9,6 @@ import {
   type AnswerReviewStopReason
 } from "../../contracts/answerReviews";
 import { answerReviewProgress, type AnswerReviewProgress } from "../../domain/answerReviewProgress";
-import { NATIVE_ANTHROPIC_DISABLED_CODE } from "../../domain/disabledAreas";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import { createSendMessageHandler, type RunHandlerDeps } from "../runs/handlers";
@@ -105,8 +104,7 @@ async function stopSession(prisma: PrismaClient, sessionId: string, stopReason: 
 function refusalStopReason(status: number, code: string | null): AnswerReviewStopReason | null {
   if (status === 429) return "budget";
   if (code && ["answer_review_agent_unsupported", "answer_review_assistant_unsupported", "answer_review_knowledge_unsupported",
-    "answer_review_model_unsupported", "provider_not_available", "credential_assignment_ambiguous", "model_not_available",
-    NATIVE_ANTHROPIC_DISABLED_CODE].includes(code)) {
+    "answer_review_model_unsupported", "provider_not_available", "credential_assignment_ambiguous", "model_not_available"].includes(code)) {
     return "error";
   }
   return null;

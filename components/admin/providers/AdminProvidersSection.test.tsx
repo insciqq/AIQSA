@@ -79,8 +79,8 @@ function quickSetupSnapshot() {
   });
   return {
     providers: [
-      // Native Anthropic is disabled (`lib/domain/disabledAreas.ts`), so the server never offers it.
       provider("openai", "OpenAI", ["GPT-5.6 Terra"]),
+      provider("anthropic", "Anthropic", ["Claude Opus 5"]),
       provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
       provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
       provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
@@ -612,7 +612,7 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
     const sheet = await screen.findByRole("dialog", { name: "Add provider" });
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Providers");
-    expect(within(sheet).getByTestId("provider-add-tiles").querySelectorAll("button")).toHaveLength(5);
+    expect(within(sheet).getByTestId("provider-add-tiles").querySelectorAll("button")).toHaveLength(6);
     // The list stays mounted (inert) behind the sheet.
     expect(screen.getByRole("list", { hidden: true, name: "Providers" })).toBeInTheDocument();
     fireEvent.keyDown(sheet, { key: "Escape" });
@@ -624,10 +624,10 @@ describe("AdminProvidersSection", () => {
       checkRun: fixtureCheckRun({ credentialId: "cred-new", current: "model-opus", done: 0, id: "run-new", inFlight: ["model-opus"], total: 1 }),
       credentials: [fixtureCredential({ id: "cred-new", label: "Primary" })],
       defaultCredentialId: "cred-new",
-      displayName: "OpenRouter",
-      family: "openrouter",
-      id: "conn-openrouter",
-      models: [fixtureModel({ connectionId: "conn-openrouter", displayName: "Claude Opus 4.8", id: "model-opus" })]
+      displayName: "Anthropic",
+      family: "anthropic",
+      id: "conn-anthropic",
+      models: [fixtureModel({ connectionId: "conn-anthropic", displayName: "Claude Opus 5", id: "model-opus" })]
     });
     const calls = mockFetch(connections, ({ method, url }) => {
       if (url === "/api/admin/providers/quick-setup" && method === "GET") return Response.json(quickSetupSnapshot());
@@ -635,14 +635,14 @@ describe("AdminProvidersSection", () => {
         connections.current = [...connections.current, created];
         return Response.json({
           checkedAt: "2026-09-07T12:51:00.000Z",
-          connectionId: "conn-openrouter",
+          connectionId: "conn-anthropic",
           defaultCredentialChanged: true,
           defaultChanged: false,
-          model: { displayName: "Claude Opus 4.8" },
-          models: [{ displayName: "Claude Opus 4.8" }],
+          model: { displayName: "Claude Opus 5" },
+          models: [{ displayName: "Claude Opus 5" }],
           outcome: "ready",
-          provider: "openrouter",
-          providerDisplayName: "OpenRouter",
+          provider: "anthropic",
+          providerDisplayName: "Anthropic",
           search: null
         });
       }
@@ -653,12 +653,12 @@ describe("AdminProvidersSection", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
     const sheet = await screen.findByRole("dialog", { name: "Add provider" });
-    fireEvent.click(within(sheet).getByRole("button", { name: "OpenRouter" }));
-    await within(sheet).findByText(/Claude Opus 4.8/);
-    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "sk-or-key" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Anthropic" }));
+    await within(sheet).findByText(/Claude Opus 5/);
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "sk-ant" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
 
-    await waitFor(() => expect(onSelectResource).toHaveBeenCalledWith("conn-openrouter"));
+    await waitFor(() => expect(onSelectResource).toHaveBeenCalledWith("conn-anthropic"));
     const catalogReads = calls.filter(({ method, url }) => method === "GET" && url === "/api/admin/providers");
     const setupIndex = calls.findIndex(({ method, url }) => method === "POST" && url === "/api/admin/providers/quick-setup");
     expect(calls.slice(setupIndex + 1).some(({ method, url }) => method === "GET" && url === "/api/admin/providers")).toBe(true);
@@ -675,13 +675,13 @@ describe("AdminProvidersSection", () => {
           onNavigateSection={vi.fn()}
           onSelectResource={onSelectResource}
           requestConfirmation={vi.fn()}
-          resource="conn-openrouter"
+          resource="conn-anthropic"
         />
       </TopbarHarness>
     );
     const banner = await screen.findByTestId("provider-check-banner");
     expect(banner).toHaveTextContent("Key Primary saved. Checking what each model can do — 0 of 1 done.");
     expect(screen.getByTestId("provider-key-cred-new")).toHaveTextContent("Primary");
-    expect(document.body.textContent).not.toContain("sk-or-key");
+    expect(document.body.textContent).not.toContain("sk-ant");
   });
 });
