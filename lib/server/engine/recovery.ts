@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import type { NormalizedRunWorkspace } from "../providers/types";
 import { activeModelRunStatuses } from "../runs/prismaRepositoryShared";
 import type { RunRepository } from "../runs/runRepositoryContract";
@@ -73,9 +74,17 @@ export async function reconcileNativeRuns(deps: NativeRecoveryDeps, input: Reado
         await deps.workspace.settle({ outcome: "failed", runId: run.id, userId: run.userId, workspace }).catch(() => undefined);
       }
       const scope = { assistantMessageId: run.assistantMessageId, chatId: run.chatId, runId: run.id, userId: run.userId };
-      const done = run.answerCompletedAt
-        ? await deps.runs.complete(scope)
-        : await deps.repository.failRun(run.id, run.assistantMessageId, NATIVE_RUN_INTERRUPTED, { recoveryTerminal: true });
+      // Recovery's own terminal write has its record: Admin Health counts the runs recovery failed from it.
+      const stage = run.answerCompletedAt ? "complete" : "fail";
+      const done = await (run.answerCompletedAt
+        ? deps.runs.complete(scope)
+        : deps.repository.failRun(run.id, run.assistantMessageId, NATIVE_RUN_INTERRUPTED, { recoveryTerminal: true })
+      ).catch((writeError: unknown) => {
+        logEvent("job_persistence", { action: "wait", outcome: "unconfirmed", prisma_code: databaseFailureCode(writeError),
+          run_id: run.id, stage, subsystem: "run_recovery" });
+        throw writeError;
+      });
+      logEvent("job_persistence", { outcome: done ? "confirmed" : "not_applied", run_id: run.id, stage, subsystem: "run_recovery" });
       if (done) settled += 1;
       logEvent("run_recovery", { code: run.answerCompletedAt ? "native_run_completed" : NATIVE_RUN_INTERRUPTED.code,
         outcome: done ? "completed" : "skipped", run_id: run.id, stage: "recovery", subsystem: "run_recovery" });
