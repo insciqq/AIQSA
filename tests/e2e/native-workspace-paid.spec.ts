@@ -598,7 +598,8 @@ test.describe("native engine in a real Workspace VM on Codex LB", () => {
       expect(recall.records.some((entry) => entry.activityKind === "workspace_start"), "no VM start was streamed").toBe(false);
       expect(recallHandoff.binding?.guestUsedAt ?? null, "the turn never used the guest").toBeNull();
       expect(sessionAfter.runtimeSandboxId, "the chat keeps its sandbox").toBe(sessionBefore.runtimeSandboxId);
-      expect(sessionAfter.version, "the Workspace was not recreated").toBe(sessionBefore.version);
+      // The session version counts operation claims (every run claims and retires one), not recreations; the
+      // unchanged sandbox above is the recreation check.
       if (sessionBefore.state === "STOPPED") expect(sessionAfter.state, "a stopped VM stays stopped").toBe("STOPPED");
       expect(namesMonth(recallStated, workbook.bestMonth), "the recalled best month is the workbook's").toBe(true);
 
