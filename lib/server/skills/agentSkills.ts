@@ -1,5 +1,10 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { RESOURCE_CHANGE_TASKS_LIMIT, type SkillDeleteProposalCard } from "@/lib/contracts/resourceChanges";
+import {
+  RESOURCE_CHANGE_TASKS_LIMIT,
+  RESOURCE_CHANGE_TEXT_LIMITS,
+  clipResourceChangeText,
+  type SkillDeleteProposalCard
+} from "@/lib/contracts/resourceChanges";
 import type { SkillSaveCard } from "@/lib/contracts/skillSaves";
 import {
   commitSelfServiceChange,
@@ -7,12 +12,13 @@ import {
   type SelfServiceCommitOutcome,
   type SelfServiceScope
 } from "../tools/selfServiceCall";
+import { newProposalId } from "../tools/resourceChangeCard";
 import type { ToolExecutionResult } from "../tools/types";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import type { AcceptedWorkspaceSecret } from "../workspace/secrets/store";
 import { createSkillBundle, parseSkillMarkdown, type SkillBundle } from "./bundle";
 import { SkillBundleError } from "./bundleErrors";
-import { lockSkillRevisionWrites, skillAccessWhere } from "./prismaRepository";
+import { skillAccessWhere } from "./prismaRepository";
 import { commitSkillSaveInTransaction, type SkillSaveOutcome, type SkillSaveTarget } from "./skillSave";
 import { activeScheduledTasksUsingSkill } from "./skillScheduledTasks";
 
@@ -63,23 +69,43 @@ type BaseRevision = Readonly<{
   files: readonly Readonly<{ path: string; kind: string; executable: boolean; textContent: string | null }>[];
 }>;
 
+type ExistingTarget = Exclude<SkillSaveTarget, Readonly<{ kind: "new" | "restore" }>>;
+
+/** The revision a save builds on, read before its transaction, and the guard the save commits under. */
+type BaseRead = Readonly<{ content: BaseRevision; target: SkillSaveTarget }>;
+
+type SkillReader = Pick<Prisma.TransactionClient, "skillDefinition" | "skillRevision">;
+
 /**
  * The version a save of an existing Skill starts from: the revision the run
  * staged for a frozen alias, else the owner's current or another user's
- * shared revision. The save's own guard then decides whether it may write.
+ * shared revision. Revisions never change, so it is read before the save's
+ * transaction, which then must not commit on top of anything else; the
+ * guard returned makes the save's core re-check that under its lock:
+ * - a frozen alias is already guarded by the exact revision read;
+ * - a copy of another user's Skill names the shared revision it was built from;
+ * - the owner's version guard that matched stays: versions only grow and every
+ *   new current revision raises it, so the same version under the lock proves
+ *   the base is still current;
+ * - one that missed is a conflict, kept below the version read so no later
+ *   version meets it, and the core refuses with the current files.
  */
-async function loadBaseRevision(tx: Prisma.TransactionClient, userId: string,
-  target: Exclude<SkillSaveTarget, Readonly<{ kind: "new" | "restore" }>>): Promise<BaseRevision | null> {
-  const definition = await tx.skillDefinition.findFirst({ where: { deletedAt: null, id: target.skillId, ...skillAccessWhere(userId) },
-    select: { currentRevisionId: true, ownerUserId: true, sharedRevisionId: true } });
+async function loadBaseRevision(db: SkillReader, userId: string, target: ExistingTarget): Promise<BaseRead | null> {
+  const definition = await db.skillDefinition.findFirst({ where: { deletedAt: null, id: target.skillId, ...skillAccessWhere(userId) },
+    select: { currentRevisionId: true, ownerUserId: true, sharedRevisionId: true, version: true } });
   if (!definition) return null;
-  const revisionId = target.kind === "frozen" ? target.revisionId
-    : definition.ownerUserId === userId ? definition.currentRevisionId : definition.sharedRevisionId;
+  const own = definition.ownerUserId === userId;
+  const revisionId = target.kind === "frozen" ? target.revisionId : own ? definition.currentRevisionId : definition.sharedRevisionId;
   if (!revisionId) return null;
-  return tx.skillRevision.findFirst({ where: { bundleReady: true, id: revisionId, skillId: target.skillId }, select: {
+  const content = await db.skillRevision.findFirst({ where: { bundleReady: true, id: revisionId, skillId: target.skillId }, select: {
     description: true, frontmatterJson: true, instructions: true, name: true,
     files: { orderBy: { path: "asc" }, select: { executable: true, kind: true, path: true, textContent: true } }
   } });
+  if (!content) return null;
+  if (target.kind === "frozen") return { content, target };
+  if (!own) return { content, target: { kind: "frozen", revisionId, skillId: target.skillId } };
+  return { content, target: definition.version === target.expectedVersion ? target
+    : { ...target, expectedVersion: Math.min(target.expectedVersion, definition.version - 1) } };
 }
 
 const textBytes = (text: string) => Buffer.from(text, "utf8");
@@ -119,7 +145,7 @@ export async function runSecretValues(source: RunSecretSource, scope: Readonly<{
   return Promise.all(entries.map((entry) => source.read({ ...scope, valueId: entry.valueId })));
 }
 
-type ServiceDatabase = Pick<PrismaClient, "$transaction" | "assistantDefinition" | "skillDefinition">;
+type ServiceDatabase = Pick<PrismaClient, "$transaction" | "assistantDefinition" | "skillDefinition" | "skillRevision">;
 
 export function createAgentSkillService(input: Readonly<{
   db: ServiceDatabase;
@@ -131,21 +157,29 @@ export function createAgentSkillService(input: Readonly<{
 }>): AgentSkillService {
   const { scope } = input;
   const commit = input.commit ?? commitSkillSaveInTransaction;
+
+  /** A save's content and the guard it commits under, or why it cannot be one; a restore has no content. */
+  async function prepare(save: Parameters<AgentSkillService["save"]>[0]): Promise<Readonly<{ kind: "prepared"; bundle: SkillBundle | null;
+    target: SkillSaveTarget }> | Readonly<{ kind: "refused"; value: AgentSkillRefusal }>> {
+    if (!("files" in save)) return { bundle: null, kind: "prepared", target: save.target };
+    const needles = await input.secretNeedles();
+    const base = save.target.kind === "new" ? null : await loadBaseRevision(input.db, scope.userId, save.target);
+    if (save.target.kind !== "new" && !base) return { kind: "refused", value: { code: "skill_not_available", kind: "refused" } };
+    const overlay = overlaySkillBundle(base?.content ?? null, save, needles);
+    if ("kind" in overlay) return { kind: "refused", value: overlay };
+    return { bundle: overlay, kind: "prepared", target: base?.target ?? save.target };
+  }
+
   return {
     async save(save, result) {
-      const needles = "files" in save ? await input.secretNeedles() : [];
+      // The content (up to the bundle limit) is built before the transaction,
+      // which stays short: the save's core re-checks the base under its lock.
+      // A refusal still follows the claim, so a settled call keeps its result.
+      const prepared = await prepare(save);
       return commitSelfServiceChange<AgentSkillSaved, AgentSkillRefusal>(input.db, input.store, async (tx) => {
-        let bundle: SkillBundle | null = null;
-        if ("files" in save) {
-          await lockSkillRevisionWrites(tx, scope.userId);
-          const base = save.target.kind === "new" ? null : await loadBaseRevision(tx, scope.userId, save.target);
-          if (save.target.kind !== "new" && !base) return { kind: "refused", value: { code: "skill_not_available", kind: "refused" } };
-          const overlay = overlaySkillBundle(base, save, needles);
-          if ("kind" in overlay) return { kind: "refused", value: overlay };
-          bundle = overlay;
-        }
-        const outcome = await commit(tx, { bundle, changeNote: save.changeNote, operationKey: scope.callId, runId: scope.runId,
-          target: save.target, userId: scope.userId });
+        if (prepared.kind === "refused") return prepared;
+        const outcome = await commit(tx, { bundle: prepared.bundle, changeNote: save.changeNote, operationKey: scope.callId, runId: scope.runId,
+          target: prepared.target, userId: scope.userId });
         if (outcome.kind !== "saved") return { kind: "refused", value: outcome };
         const saved = { card: outcome.card, version: outcome.version };
         return { kind: "changed", result: result(saved), value: saved };
@@ -154,16 +188,21 @@ export function createAgentSkillService(input: Readonly<{
 
     async proposeDelete(skillId) {
       const definition = await input.db.skillDefinition.findFirst({
-        select: { currentRevision: { select: { name: true } }, ownerUserId: true, publications: { select: { id: true }, take: 1 } },
+        select: { currentRevision: { select: { name: true } }, ownerUserId: true, publications: { select: { id: true }, take: 1 }, version: true },
         where: { deletedAt: null, id: skillId, ...skillAccessWhere(scope.userId) }
       });
       if (!definition) return { code: "skill_not_available", kind: "refused" };
       // A Skill the user can see but does not own is named as such; any other id looks missing.
       if (definition.ownerUserId !== scope.userId || !definition.currentRevision) return { code: "skill_delete_not_own", kind: "refused" };
-      const assistantCount = await input.db.assistantDefinition.count({ where: { skillLinks: { some: { skillId } } } });
+      // Only the user's own Assistants: others' are not the user's to count.
+      const assistantCount = await input.db.assistantDefinition.count({ where: { ownerUserId: scope.userId, skillLinks: { some: { skillId } } } });
       const tasks = await input.db.$transaction((tx) => activeScheduledTasksUsingSkill(tx, { skillId, userId: scope.userId }));
-      return { kind: "proposed", card: { action: "delete_proposed", assistantCount, name: definition.currentRevision.name, resource: "skill",
-        scheduledTasks: tasks.tasks.slice(0, RESOURCE_CHANGE_TASKS_LIMIT), shared: definition.publications.length > 0, skillId, version: 1 } };
+      const limits = RESOURCE_CHANGE_TEXT_LIMITS;
+      return { kind: "proposed", card: { action: "delete_proposed", assistantCount,
+        name: clipResourceChangeText(definition.currentRevision.name, limits.skillName), proposalId: newProposalId(), resource: "skill",
+        scheduledTasks: tasks.tasks.slice(0, RESOURCE_CHANGE_TASKS_LIMIT)
+          .map((task) => ({ taskId: task.taskId, title: clipResourceChangeText(task.title, limits.taskTitle) })),
+        shared: definition.publications.length > 0, skillId, skillVersion: definition.version, version: 1 } };
     }
   };
 }

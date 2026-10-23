@@ -7,12 +7,12 @@ import { ResourceChangeCardsV2 } from "./ResourceChangeCardV2";
 
 const SECRET_ID = "10000000-0000-4000-8000-000000000001";
 const VERSION_ID = "20000000-0000-4000-8000-000000000001";
-const secret: SecretChangeCard = { action: "created", envNames: [], kind: "text", name: "GitLab", previousName: null, resource: "secret",
-  secretId: SECRET_ID, valueReplaced: false, version: 1, versionId: VERSION_ID };
-const skill: SkillDeleteProposalCard = { action: "delete_proposed", assistantCount: 2, name: "Report writer", resource: "skill",
-  scheduledTasks: [{ taskId: "task_1", title: "Monday report" }], shared: true, skillId: "skill_1", version: 1 };
+const secret: SecretChangeCard = { action: "created", envNames: [], kind: "text", name: "GitLab", previousName: null, proposalId: null,
+  resource: "secret", secretId: SECRET_ID, valueReplaced: false, version: 1, versionId: VERSION_ID };
+const skill: SkillDeleteProposalCard = { action: "delete_proposed", assistantCount: 2, name: "Report writer", proposalId: "proposal_0",
+  resource: "skill", scheduledTasks: [{ taskId: "task_1", title: "Monday report" }], shared: true, skillId: "skill_1", skillVersion: 3, version: 1 };
 const assistant: AssistantChangeCard = { action: "created", assistantId: "asst_1", audience: null, changes: [], consequences: null, definitionVersion: 1,
-  instructionsDiff: null, name: "Reporter", resource: "assistant", version: 1 };
+  instructionsDiff: null, name: "Reporter", proposalId: null, resource: "assistant", version: 1 };
 
 type Route = unknown | Response | ((init?: RequestInit) => Response);
 function respond(routes: Record<string, Route>) {
@@ -32,12 +32,17 @@ const summary = (versionId: string) => ({ secrets: [{ byteSize: 30, description:
 const error = (code: string, status: number) => new Response(JSON.stringify({ error: code }), { status });
 const bodies = (fetchMock: ReturnType<typeof respond>, method: string) => fetchMock.mock.calls
   .filter(([, init]) => init?.method === method).map(([url, init]) => [String(url), init?.body ? JSON.parse(String(init.body)) as unknown : null]);
+const skillDetail = (skillId: string, version: number) => ({ skill: { archived: false, assistantUsageCount: 2, audiences: [], canDelete: true,
+  canEdit: true, canPublish: true, canUnshare: false, description: "Weekly", id: skillId, instructionCharacterCount: 6, instructions: "Write.",
+  name: "Report writer", owned: true, owner: { displayName: "Viewer" }, ownerDisplayName: "Viewer", scope: { kind: "owner" },
+  updatedAt: "2026-10-23T09:00:00.000Z", version, workspaceUsageCount: 0 } });
 let unique = 0;
-/** Cards on one page remember outcomes by identity; each test uses its own. */
+/** Cards on one page remember outcomes by identity; each test uses its own (a proposal is its own identity). */
 const fresh = <T extends ResourceChangeCard>(card: T): T => {
   unique += 1;
+  if (card.action === "delete_proposed" || card.action === "publish_proposed") return { ...card, proposalId: `proposal_${unique}` };
   return card.resource === "secret" ? { ...card, versionId: `20000000-0000-4000-8000-${String(unique).padStart(12, "0")}` }
-    : card.resource === "assistant" ? { ...card, definitionVersion: card.definitionVersion + unique * 10 } : { ...card, skillId: `skill_${unique}` };
+    : card.resource === "assistant" ? { ...card, definitionVersion: card.definitionVersion + unique * 10 } : card;
 };
 
 afterEach(() => {
@@ -108,19 +113,25 @@ describe("ResourceChangeCardsV2: secrets", () => {
     await waitFor(() => expect(screen.getByText("Secret kept")).toHaveFocus());
   });
 
-  it("keeps a decline when the answer settles and asks again when a running answer proposes it again", () => {
-    const card = fresh({ ...secret, action: "delete_proposed" as const });
+  it("asks again when a running answer proposes the same deletion again, and keeps each decline", () => {
+    const first = fresh({ ...secret, action: "delete_proposed" as const });
     const fetchMock = respond({});
-    render(<ResourceChangeCardsV2 cards={[card]} live />);
+    const { rerender } = render(<ResourceChangeCardsV2 cards={[first]} live />);
     fireEvent.click(screen.getByRole("button", { name: "Keep secret" }));
-    expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Secret kept");
+    // The same answer proposes it again: a second card asks while the first keeps the user's answer.
+    const second = fresh({ ...secret, action: "delete_proposed" as const });
+    rerender(<ResourceChangeCardsV2 cards={[first, second]} live />);
+    const [kept, asking] = screen.getAllByTestId("resource-change-card");
+    expect(kept).toHaveTextContent("Secret kept");
+    expect(within(kept!).queryByRole("group")).toBeNull();
+    expect(within(asking!).getByRole("group", { name: "Delete GitLab" })).toBeVisible();
+    fireEvent.click(within(asking!).getByRole("button", { name: "Keep secret" }));
     cleanup();
-    render(<ResourceChangeCardsV2 cards={[card]} />);
-    expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Secret kept");
+    // The settled answer mounts both again: neither asks.
+    render(<ResourceChangeCardsV2 cards={[first, second]} />);
+    expect(screen.getAllByTestId("resource-change-card").map((card) => card.textContent)).toEqual([
+      expect.stringContaining("Secret kept"), expect.stringContaining("Secret kept")]);
     expect(screen.queryByRole("group")).toBeNull();
-    cleanup();
-    render(<ResourceChangeCardsV2 cards={[card]} live />);
-    expect(screen.getByRole("group", { name: "Delete GitLab" })).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -145,7 +156,36 @@ describe("ResourceChangeCardsV2: Skills", () => {
       "Linked by 2 Assistants, which lose it.Shared with colleagues, who lose access.Pinned by scheduled tasks “Monday report”");
     fireEvent.click(within(item).getByRole("button", { name: "Delete Skill" }));
     await waitFor(() => expect(item).toHaveTextContent("Skill deleted"));
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => String(url))).toEqual([`/api/me/skills/${card.skillId}`]);
+    // Guarded by the version the proposal saw.
+    expect(bodies(fetchMock, "DELETE")).toEqual([[`/api/me/skills/${card.skillId}`, { expectedVersion: card.skillVersion }]]);
+  });
+
+  it("deletes nothing when a revision was saved after the proposal", async () => {
+    const card = fresh(skill);
+    const fetchMock = respond({ [`DELETE /api/me/skills/${card.skillId}`]: () => error("skill_version_conflict", 409) });
+    render(<ResourceChangeCardsV2 cards={[card]} live />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Skill" }));
+    const item = screen.getByTestId("resource-change-card");
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent(
+      "The Skill changed after this proposal, so nothing was deleted. Review it in Studio › Skills."));
+    expect(item).toHaveTextContent("Skill not deleted");
+    expect(within(item).queryByRole("group")).toBeNull();
+    expect(within(item).getByRole("link", { name: "Open library" })).toBeVisible();
+    expect(bodies(fetchMock, "DELETE")).toHaveLength(1);
+  });
+
+  it("asks a settled answer's question only while the Skill is the version the proposal saw", async () => {
+    const card = fresh(skill);
+    respond({ [`GET /api/me/skills/${card.skillId}`]: skillDetail(card.skillId, card.skillVersion + 1) });
+    render(<ResourceChangeCardsV2 cards={[card]} />);
+    await waitFor(() => expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Skill not deleted"));
+    expect(screen.queryByRole("group")).toBeNull();
+    cleanup();
+    const current = fresh(skill);
+    respond({ [`GET /api/me/skills/${current.skillId}`]: skillDetail(current.skillId, current.skillVersion) });
+    render(<ResourceChangeCardsV2 cards={[current]} />);
+    await waitFor(() => expect(screen.getByTestId("resource-change-card")).toHaveAttribute("data-state", "asking"));
+    expect(screen.getByRole("group", { name: "Delete Report writer" })).toBeVisible();
   });
 
   it("says a Skill that is gone is no longer available", async () => {
@@ -212,7 +252,9 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     expect(screen.getByRole("group", { name: "Publish Reporter" })).toHaveTextContent("Publish “Reporter” to members of Backend?");
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Share every linked Skill with this audience first"));
-    expect(bodies(fetchMock, "POST")).toEqual([["/api/me/assistants/asst_1/publications", { groupId: "grp_1", scope: "group" }]]);
+    // Guarded by the definition version the proposal saw.
+    expect(bodies(fetchMock, "POST")).toEqual([["/api/me/assistants/asst_1/publications",
+      { expectedVersion: group.definitionVersion, groupId: "grp_1", scope: "group" }]]);
     cleanup();
     const everyone = fresh({ ...assistant, action: "publish_proposed" as const, audience: { kind: "everyone" as const } });
     render(<ResourceChangeCardsV2 cards={[everyone]} live />);
@@ -224,6 +266,29 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     render(<ResourceChangeCardsV2 cards={[fresh(group)]} live />);
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Members of Backend can use it now."));
+  });
+
+  it("publishes nothing when the Assistant was saved after the proposal", async () => {
+    const card = fresh({ ...assistant, action: "publish_proposed" as const, audience: { groupId: "grp_1", groupName: "Backend", kind: "group" as const } });
+    const fetchMock = respond({ "POST /api/me/assistants/asst_1/publications": () => error("assistant_version_conflict", 409) });
+    render(<ResourceChangeCardsV2 cards={[card]} live />);
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    const item = screen.getByTestId("resource-change-card");
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent(
+      "The Assistant changed after this proposal, so nothing was done. Review it in Studio › Assistants."));
+    expect(item).toHaveTextContent("Not published");
+    expect(within(item).queryByRole("group")).toBeNull();
+    expect(bodies(fetchMock, "POST")).toHaveLength(1);
+  });
+
+  it("asks a settled answer's publication question only while the Assistant still exists", async () => {
+    const card = fresh({ ...assistant, action: "publish_proposed" as const, audience: { groupId: "grp_1", groupName: "Backend", kind: "group" as const } });
+    const fetchMock = respond({});
+    render(<ResourceChangeCardsV2 cards={[card]} />);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("This Assistant no longer exists."));
+    expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Not published");
+    expect(screen.queryByRole("group")).toBeNull();
+    expect(bodies(fetchMock, "POST")).toEqual([]);
   });
 });
 

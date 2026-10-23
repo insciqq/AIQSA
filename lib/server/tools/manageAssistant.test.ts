@@ -115,7 +115,7 @@ describe("manage_assistant", () => {
     expect(decodeAssistantDraft(written).ok).toBe(true);
     expect(json(result)).toMatchObject({ action: "created", assistant: { assistantId: "asst_new", name: "Reporter", version: 1 }, chat: "/assistant/asst_new", saved: true });
     expect(card(result)).toEqual({ action: "created", assistantId: "asst_new", audience: null, changes: [], consequences: null, definitionVersion: 1,
-      instructionsDiff: null, name: "Reporter", resource: "assistant", version: 1 });
+      instructionsDiff: null, name: "Reporter", proposalId: null, resource: "assistant", version: 1 });
   });
 
   it.each([
@@ -184,6 +184,20 @@ describe("manage_assistant", () => {
     const outside = await executeManageAssistant(fake, call({ action: "propose_publish", assistantId: "asst_1", audience: "Finance" }), context);
     expect(json(outside)).toMatchObject({ code: "assistant_group_unknown" });
     expect(String(json(outside).message)).toContain("\"Backend\", \"Frontend\"; or \"everyone\"");
+  });
+
+  it("gives each proposal its own card and clips names the answer's decoder would drop", async () => {
+    const long = "Platform & infrastructure guild ".repeat(10).trim();
+    const astral: AgentAssistant = { ...reviewer, draft: { ...reviewer.draft, name: "𝔸".repeat(80) } };
+    const fake = service({ get: vi.fn(async () => astral),
+      deletionConsequences: vi.fn(async () => ({ audiences: { groupNames: [long], installation: false }, chatCount: 0, hiddenProjectCount: 0,
+        pendingListingRequest: false, projects: [], version: 3 })) });
+    const first = card(await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context));
+    const second = card(await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context));
+    expect(first).toMatchObject({ consequences: { groupNames: [`${long.slice(0, 199)}…`] }, name: `${"𝔸".repeat(39)}…`, proposalId: expect.any(String) });
+    expect(first?.proposalId).not.toBe(second?.proposalId);
+    const publish = card(await executeManageAssistant(fake, call({ action: "propose_publish", assistantId: "asst_1", audience: "Frontend" }), context));
+    expect(publish).toMatchObject({ action: "publish_proposed", proposalId: expect.any(String) });
   });
 
   it.each([

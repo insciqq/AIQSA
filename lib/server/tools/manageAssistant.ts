@@ -18,7 +18,9 @@ import {
   RESOURCE_CHANGE_DIFF_LINE_MAX_LENGTH,
   RESOURCE_CHANGE_DIFF_LINES_LIMIT,
   RESOURCE_CHANGE_NAMES_LIMIT,
+  RESOURCE_CHANGE_TEXT_LIMITS,
   assistantLibraryPath,
+  clipResourceChangeText,
   type AssistantChangeCard,
   type AssistantChangeField,
   type AssistantPublishAudience
@@ -35,6 +37,7 @@ import type {
 import type { NormalizedRunRequest } from "../providers/types";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
+import { newProposalId, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
 import { logSelfServiceFailure } from "./selfServiceCall";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
 
@@ -330,7 +333,7 @@ function skillsLabel(row: AssistantRows["skills"], names: ReadonlyMap<string, st
 }
 
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
-const clip = (text: string) => text.length > 300 ? `${text.slice(0, 299)}…` : text;
+const clip = (text: string) => clipResourceChangeText(text, RESOURCE_CHANGE_TEXT_LIMITS.summary);
 
 /** What an edit changed, each with a short plain summary for the card. */
 export function assistantChanges(before: AssistantDraft, after: AssistantDraft, catalog: AgentAssistantCatalog,
@@ -349,17 +352,24 @@ export function assistantChanges(before: AssistantDraft, after: AssistantDraft, 
   return changes;
 }
 
+/** A card with its names clipped to what the decoder accepts; a proposal gets its own identity. */
 function assistantCard(input: Readonly<{ action: AssistantChangeCard["action"]; assistantId: string; version: number; name: string;
   changes?: AssistantChangeCard["changes"]; instructionsDiff?: AssistantChangeCard["instructionsDiff"]; audience?: AssistantPublishAudience | null;
   consequences?: AssistantChangeCard["consequences"] }>): AssistantChangeCard {
-  return { action: input.action, assistantId: input.assistantId, audience: input.audience ?? null, changes: input.changes ?? [],
-    consequences: input.consequences ?? null, definitionVersion: input.version, instructionsDiff: input.instructionsDiff ?? null, name: input.name,
-    resource: "assistant", version: 1 };
+  const limits = RESOURCE_CHANGE_TEXT_LIMITS;
+  const audience = input.audience?.kind === "group"
+    ? { ...input.audience, groupName: clipResourceChangeText(input.audience.groupName, limits.groupName) } : input.audience ?? null;
+  const consequences = input.consequences
+    ? { ...input.consequences, groupNames: input.consequences.groupNames.slice(0, RESOURCE_CHANGE_NAMES_LIMIT)
+      .map((name) => clipResourceChangeText(name, limits.groupName)) } : null;
+  const proposal = input.action === "delete_proposed" || input.action === "publish_proposed";
+  return { action: input.action, assistantId: input.assistantId, audience, changes: input.changes ?? [], consequences,
+    definitionVersion: input.version, instructionsDiff: input.instructionsDiff ?? null, name: clipResourceChangeText(input.name, limits.assistantName),
+    proposalId: proposal ? newProposalId() : null, resource: "assistant", version: 1 };
 }
 
 function cardResult(call: Call, card: AssistantChangeCard, value: Record<string, unknown>): ToolExecutionResult {
-  return { artifacts: [{ data: { artifactType: "resource_change", payload: card }, type: "artifact" }], callId: call.id,
-    content: [{ type: "json", value }], name: call.name, status: "complete" };
+  return { artifacts: [resourceChangeArtifact(card)], callId: call.id, content: [{ type: "json", value }], name: call.name, status: "complete" };
 }
 
 function jsonResult(call: Call, value: Record<string, unknown>): ToolExecutionResult {
@@ -445,6 +455,9 @@ export async function executeManageAssistant(service: AgentAssistantService | un
   } catch (error) {
     if (options.signal?.aborted) throw error;
     logSelfServiceFailure(error);
+    if (error instanceof ResourceChangeCardError) {
+      return refused(call, refusal(error.message, "The change could not be shown to the user as a card, so nothing was changed. The user can do it in Studio > Assistants."));
+    }
     return refused(call, refusal("assistant_change_failed", "Saving the Assistant failed; nothing was saved. Try once more; if it fails again, tell the user."));
   }
 }
