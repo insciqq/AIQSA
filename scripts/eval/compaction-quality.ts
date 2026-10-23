@@ -553,7 +553,7 @@ async function recall(run: Run, env: EvalEnvironment, items: readonly Transcript
     env.emit({ ...base, after, event: "recall", model: run.target.model, ...conversationRecord(conversation), ...score });
     return score;
   } catch (error) {
-    env.emit({ ...base, after, code: errorCode(error), event: "error", stage: "recall" });
+    env.emit({ ...base, after, code: errorCode(error), ...errorStatus(error), event: "error", stage: "recall" });
     return null;
   }
 }
@@ -567,7 +567,7 @@ async function continueWork(run: Run, env: EvalEnvironment, items: readonly Tran
       ...conversationRecord(conversation), ...score });
     return score;
   } catch (error) {
-    env.emit({ ...base, code: errorCode(error), event: "error", stage: "continuation" });
+    env.emit({ ...base, code: errorCode(error), ...errorStatus(error), event: "error", stage: "continuation" });
     return null;
   }
 }
@@ -577,6 +577,12 @@ function conversationRecord(conversation: Conversation): Record<string, unknown>
     estimateErrorPct: conversation.estimateErrors, firstInputTokens: conversation.firstInputTokens, inputTokens: conversation.inputTokens,
     latencyMs: conversation.latencyMs, outputTokens: conversation.outputTokens, reads: conversation.reads, rounds: conversation.rounds
   };
+}
+
+/** The HTTP status a provider error carries, when it carries one. */
+function errorStatus(error: unknown): { httpStatus?: number } {
+  const status = error && typeof error === "object" ? (error as { httpStatus?: unknown }).httpStatus : undefined;
+  return typeof status === "number" && Number.isInteger(status) ? { httpStatus: status } : {};
 }
 
 /** A code-like identifier from a failure, never its message. */
@@ -733,7 +739,7 @@ export async function runCompactionEvaluation(options: EvalOptions, env: EvalEnv
     switchModel: options.switchModel, tokens: options.tokens, window: options.window ?? "auto" });
   const tasks = options.scenarios.flatMap((id) => (id === "switch" ? ["native" as const] : options.paths)
     .map((path) => () => runScenarioPath(options, env, id, path).catch((error: unknown) => {
-      env.emit({ code: errorCode(error), event: "error", path, scenario: id, stage: "run" });
+      env.emit({ code: errorCode(error), ...errorStatus(error), event: "error", path, scenario: id, stage: "run" });
       return null;
     })));
   const outcomes = (await pool(tasks, options.concurrency)).flatMap((outcome) => outcome ? [outcome] : []);

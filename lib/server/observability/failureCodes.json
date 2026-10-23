@@ -107,6 +107,7 @@
   "compaction_shutdown",
   "compaction_summary_failed",
   "compaction_superseded",
+  "compaction_unrecorded",
   "compaction_wait_timeout",
   "content_block_limit_exceeded",
   "context_compaction_outcome_unknown",

@@ -126,7 +126,7 @@ describe("state block", () => {
       `- ${namespacedMcpToolName("vault", "set_secret")} name="STRIPE_KEY" → done`,
       `- ${namespacedMcpToolName("crm", "create_ticket")} title="Refund 1001" → done (id=T-1001)`,
       `- ${namespacedMcpToolName("crm", "send_email")} to="ops@example.test" → outcome unknown: check its effect before repeating it`,
-      `- ${namespacedMcpToolName("crm", "update_deal")} deal_id="D-77" (call call_16): no result recorded yet`,
+      `- ${namespacedMcpToolName("crm", "update_deal")} deal_id="D-77" (call call_16): no result was recorded, so its outcome is unknown`,
       `- ${handle}: run_sql query="SELECT warehouse, net_margin FROM settlements" (`,
       "Recent tool errors:\n- run_pipeline stage=\"validate\" → ERR_SCHEMA_DRIFT_0x3F2: column settled_at type mismatch"
     ]) expect(block).toContain(line);
@@ -146,7 +146,8 @@ describe("state block", () => {
     chat.result(waiting, name, APPROVAL_PENDING_TEXT, "error");
     const block = buildStateBlock(chat.items);
     expect(block).toContain(`- ${name} title="Refund 1001" → done (id=T-1001)`);
-    expect(block).toContain(`- ${name} title="Refund 1002" (call ${waiting}): waits for the user's approval when this record was made`);
+    expect(block).toContain(`- ${name} title="Refund 1002" (call ${waiting}): waits for the user's approval; if the user approves it, ` +
+      "its result follows in the conversation");
     expect(block).not.toContain("Recent tool errors");
   });
 
@@ -229,6 +230,18 @@ describe("earlier user messages and Skills in use", () => {
     const tight = skillsInUse(chat.items, keep, 100, charTokens);
     expect(tight).toContain("### xlsx\nXLSX v2");
     expect(tight).toContain("Also loaded earlier, not repeated here: pdf (call load_skill again for the instructions).");
+  });
+
+  it("records only the compacted part's work: the kept tail follows word for word and may belong to another branch", () => {
+    const chat = transcriptBuilder();
+    chat.user("Write the first file.");
+    chat.tool("write_file", { path: "/workspace/project/before.txt" }, "ok");
+    const keep = chat.user("Now the second.");
+    chat.tool("write_file", { path: "/workspace/project/after.txt" }, "ok");
+    const retained = buildRetainedContext({ estimate: charTokens, items: chat.items, keepFromId: keep, skillTokens: 1_000,
+      userMessageTokens: 1_000 });
+    expect(retained).toContain("/workspace/project/before.txt");
+    expect(retained).not.toContain("/workspace/project/after.txt");
   });
 
   it("assembles the retained text and bounds its tokens for planning", () => {

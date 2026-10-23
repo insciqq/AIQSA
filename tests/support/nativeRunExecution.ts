@@ -82,10 +82,10 @@ export function memoryNativeEngine(options: Readonly<{ allowed?: boolean; approv
     settle: vi.fn(async () => true)
   } satisfies ToolCallStore;
   const runs = {
-    appendCompactionStatus: vi.fn(async () => true),
     applyUsageTotals: vi.fn(async () => undefined),
     complete: vi.fn(async () => true),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { published = input.text; return true; }),
+    recordDetachedCompaction: vi.fn(async () => true),
     saveStoppedText: vi.fn(async () => true),
     writeUsageRows: vi.fn(async () => undefined)
   } satisfies NativeRunStore;

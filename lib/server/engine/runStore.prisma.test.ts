@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
 import { createNativeRunStore } from "./runStore";
+import type { TranscriptItem } from "./transcript";
 
 const owners: string[] = [];
 const store = createNativeRunStore(prisma);
@@ -30,8 +33,37 @@ async function nativeRun(engine: "native" | "v1" = "native", status: "cancelled"
 const call = (inputTokens: number): RunUsageAttribution => ({ estimatedCostMicros: 5, modelId: "fake-qsa", operationCount: 1,
   provider: "fake", purpose: "chat_answer", usage: { inputTokens, outputTokens: 2 } });
 
+const compactionItem = (): TranscriptItem => ({ id: randomUUID(), keepFromId: "msg-1", kind: "compaction",
+  origin: { model: "fake-qsa", provider: "fake" }, retained: "Kept.", summary: "## Summary\n- facts" });
+const marker = makeContextCompactionStatus({ afterTokens: 10, beforeTokens: 100, cycle: 1, outcome: "summary_applied", state: "complete" });
+
+/** The deletion fence as admission writes it: a durable operation, then the chat leaves the live key space. */
+async function fence(tx: Prisma.TransactionClient, chatId: string, userId: string): Promise<void> {
+  const chat = await tx.chat.findUniqueOrThrow({ select: { memorySourceRevision: true }, where: { id: chatId } });
+  const deletionId = randomUUID();
+  await tx.memoryDeletionOutbox.create({ data: { admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: chat.memorySourceRevision,
+    alsoForgetOriginMemories: false, id: deletionId, memoryGeneration: 0, operation: "SOURCE_PURGE", targetId: chatId,
+    targetType: "CHAT@memory-chat-delete-v1", userId } });
+  await tx.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: deletionId },
+    where: { id: chatId } });
+}
+
+async function recordedCompactions(runId: string) {
+  return {
+    events: await prisma.modelRunEvent.count({ where: { eventType: "artifact", modelRunId: runId,
+      payload: { equals: "context_compaction", path: ["artifactType"] } } }),
+    items: await prisma.runTranscriptItem.count({ where: { kind: "compaction", modelRunId: runId } })
+  };
+}
+
 afterEach(async () => {
-  for (const id of owners.splice(0)) await prisma.user.deleteMany({ where: { id } });
+  for (const id of owners.splice(0)) {
+    // The deletion fence leaves its durable operation, which the fenced chat references and which restricts
+    // deleting the owner: chats first, then the operation, then the owner.
+    await prisma.chat.deleteMany({ where: { userId: id } });
+    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: id } });
+    await prisma.user.deleteMany({ where: { id } });
+  }
 });
 afterAll(() => prisma.$disconnect());
 
@@ -76,5 +108,43 @@ describe("native run store", () => {
       .toMatchObject({ inputTokens: 30, outputTokens: 4 });
     await expect(prisma.chat.findUniqueOrThrow({ where: { id: scope.chatId } })).resolves
       .toMatchObject({ totalInputTokens: 30, totalOutputTokens: 4 });
+  });
+
+  it("records a compaction that finished after its run with its marker, once, on that run only", async () => {
+    const scope = await nativeRun("native", "cancelled");
+    const item = compactionItem();
+    await expect(store.recordDetachedCompaction(scope, { item, sequence: 3, status: marker })).resolves.toBe(true);
+    // A write repeated after its outcome was lost finds its item and adds nothing.
+    await expect(store.recordDetachedCompaction(scope, { item, sequence: 4, status: marker })).resolves.toBe(true);
+    await expect(recordedCompactions(scope.runId)).resolves.toEqual({ events: 1, items: 1 });
+    await expect(prisma.runTranscriptItem.findUniqueOrThrow({ where: { id: item.id } })).resolves.toMatchObject({ sequence: 3 });
+    // Another owner, another chat or a run of the old core takes nothing.
+    const other = await nativeRun();
+    await expect(store.recordDetachedCompaction({ ...scope, userId: other.userId }, { item: compactionItem(), sequence: 5, status: marker }))
+      .resolves.toBe(false);
+    await expect(store.recordDetachedCompaction({ ...scope, chatId: other.chatId }, { item: compactionItem(), sequence: 5, status: marker }))
+      .resolves.toBe(false);
+    const old = await nativeRun("v1");
+    await expect(store.recordDetachedCompaction(old, { item: compactionItem(), sequence: 0, status: marker })).resolves.toBe(false);
+    await expect(recordedCompactions(old.runId)).resolves.toEqual({ events: 0, items: 0 });
+  });
+
+  it("writes nothing once the chat is fenced for deletion, also when the fence commits while the write waits for the chat", async () => {
+    const fenced = await nativeRun("native", "cancelled");
+    await prisma.$transaction(async (tx) => fence(tx, fenced.chatId, fenced.userId));
+    await expect(store.recordDetachedCompaction(fenced, { item: compactionItem(), sequence: 0, status: marker })).resolves.toBe(false);
+    await expect(recordedCompactions(fenced.runId)).resolves.toEqual({ events: 0, items: 0 });
+
+    const racing = await nativeRun("native", "cancelled");
+    const pending: { write?: Promise<boolean> } = {};
+    await prisma.$transaction(async (tx) => {
+      // Deletion admission holds the chat row while it fences; the write queues behind it and then sees the fence.
+      await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${racing.chatId} FOR UPDATE`;
+      pending.write = store.recordDetachedCompaction(racing, { item: compactionItem(), sequence: 0, status: marker });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await fence(tx, racing.chatId, racing.userId);
+    });
+    await expect(pending.write).resolves.toBe(false);
+    await expect(recordedCompactions(racing.runId)).resolves.toEqual({ events: 0, items: 0 });
   });
 });

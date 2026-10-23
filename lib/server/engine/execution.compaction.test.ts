@@ -92,10 +92,14 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
   } satisfies ToolCallStore;
   let published: string | null = null;
   const runs = {
-    appendCompactionStatus: vi.fn(async () => true),
     applyUsageTotals: vi.fn(async () => undefined),
     complete: vi.fn(async () => true),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { published = input.text; return true; }),
+    // The item and its marker in one write, at the sequence the run's writer reserved.
+    recordDetachedCompaction: vi.fn(async (_scope, input: { item: TranscriptItem; sequence: number }) => {
+      transcriptRows.push(input.item);
+      return true;
+    }),
     saveStoppedText: vi.fn(async () => true),
     writeUsageRows: vi.fn(async () => undefined)
   } satisfies NativeRunStore;
@@ -193,8 +197,11 @@ describe("native run compaction", () => {
     await vi.waitFor(() => expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text", "compaction"]),
       { timeout: 5_000 });
     expect(memory.transcriptRows[1]).toMatchObject({ summary: SUMMARY });
-    await vi.waitFor(() => expect(memory.runs.appendCompactionStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }),
-      expect.objectContaining({ outcome: "summary_applied", state: "complete" })));
+    // Together with its marker, at a sequence after every record of the run, in one write that checks the chat.
+    expect(memory.runs.recordDetachedCompaction).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }),
+      expect.objectContaining({ item: expect.objectContaining({ kind: "compaction" }), sequence: 1,
+        status: expect.objectContaining({ outcome: "summary_applied", state: "complete" }) }));
+    expect(memory.engine.transcripts.append).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(memory.runs.writeUsageRows.mock.calls.length).toBeGreaterThan(usageWrites));
   });
 
