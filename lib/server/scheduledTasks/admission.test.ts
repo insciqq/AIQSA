@@ -500,7 +500,7 @@ describe("scheduled task admission on the agent engine", () => {
     });
     expect(response.status).toBe(200);
     await response.text();
-    expect(f.state.created).toMatchObject({ engine: "native", scheduledOccurrence: { previousResult } });
+    expect(f.state.created).toMatchObject({ scheduledOccurrence: { previousResult } });
     // The owner's own turns before and after the previous result stay out.
     expect(f.state.requests).toHaveLength(1);
     expect(f.state.requests[0]!.history!.map((item) => [item.type, "text" in item ? item.text : null])).toEqual([
@@ -521,7 +521,7 @@ describe("scheduled task admission on the agent engine", () => {
     });
     expect(response.status).toBe(200);
     await response.text();
-    expect(f.state.created).toMatchObject({ engine: "native", scheduledOccurrence: { monitoring: true } });
+    expect(f.state.created).toMatchObject({ scheduledOccurrence: { monitoring: true } });
     expect(f.state.created!.normalizedRequest.monitoringVerdictTool).toBe(true);
     // Standing authority: a scheduled run never asks for a per-run write approval.
     expect(f.state.created!.normalizedRequest.mcpApproval).toBeUndefined();

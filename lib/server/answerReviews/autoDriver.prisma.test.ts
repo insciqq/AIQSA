@@ -23,6 +23,7 @@ import {
   type AnswerReviewStepStart,
   type AnswerReviewStepStartInput
 } from "./stepStart";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 /**
  * The automatic review driver on the disposable database: the session its
@@ -136,7 +137,7 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
       },
       chatId: chat.id,
       async complete(run, text, outputEvents = []) {
-        expect(await repository.completeRun({ assistantMessageId: run.assistantMessageId, chatId: chat.id, estimatedCostMicros: 0,
+        expect(await completeNativeRun(prisma, { assistantMessageId: run.assistantMessageId, chatId: chat.id, estimatedCostMicros: 0,
           finalText: text, modelId: "fake-qsa", outputEvents, provider: "fake", runId: run.runId, usage, userId })).toBe(true);
       },
       userId

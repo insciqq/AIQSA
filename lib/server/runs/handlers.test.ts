@@ -4947,7 +4947,7 @@ describe("interactive sends on the agent engine", () => {
     const native = nativeEngineFake();
     const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() }, repository });
     const events = parseSse(await response.text());
-    expect(state.created).toMatchObject({ engine: "native" });
+    expect(state.created).not.toBeNull();
     expect(native.published).toEqual(["Fake answer: Hello QSA"]);
     expect(events.map((event) => event.type)).toContain("answer_complete");
     expect(events.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
@@ -4975,7 +4975,7 @@ describe("interactive sends on the agent engine", () => {
     }), { params: { chatId: "chat-1" } });
     expect(response.status).toBe(202);
     // The native engine takes it once the follow-up starts it, after the predecessor's hand-off.
-    expect(state.created).toMatchObject({ engine: "native", workspaceFollowup: { predecessorRunId: "previous-run",
+    expect(state.created).toMatchObject({ workspaceFollowup: { predecessorRunId: "previous-run",
       snapshot: { native: {}, version: 1 } } });
     expect(provider.requests).toEqual([]);
     expect(native.published).toEqual([]);
@@ -5015,7 +5015,7 @@ describe("interactive sends on the agent engine", () => {
       body: JSON.stringify({ assistantId: "assistant-1", text: "Assistant run" }), headers: { cookie: authCookie() }, method: "POST"
     }), { params: { chatId: "chat-1" } });
     await response.text();
-    expect(state.created).toMatchObject({ assistant: expect.objectContaining({ assistantId: "assistant-1" }), engine: "native" });
+    expect(state.created).toMatchObject({ assistant: expect.objectContaining({ assistantId: "assistant-1" }) });
     expect(native.published).toHaveLength(1);
     // The family prompt is the persona; the Assistant's instructions follow it.
     const system = provider.requests[0]!.prompt.system!;
@@ -5062,7 +5062,7 @@ describe("interactive sends on the agent engine", () => {
       headers: { cookie: authCookie() }, method: "POST"
     }), { params: { chatId: "chat-1" } });
     await response.text();
-    expect(state.created).toMatchObject({ engine: "native", systemTurnKind: "mcp_approval_continuation" });
+    expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation" });
     // The native run looks the Allow up itself; the body only names it.
     expect(native.deps.engine.approvedCall).toHaveBeenCalledWith({ approvalId: "approval-1", chatId: "chat-1",
       userId: config.bootstrapUserId });
@@ -5081,7 +5081,7 @@ describe("interactive sends on the agent engine", () => {
       headers: { cookie: authCookie() }, method: "POST"
     }), { params: { chatId: "chat-1" } });
     await response.text();
-    expect(state.created).toMatchObject({ answerReviewStep: { round: 1, sessionId: "session-1", step: 0 }, engine: "native" });
+    expect(state.created).toMatchObject({ answerReviewStep: { round: 1, sessionId: "session-1", step: 0 } });
     const tools = toolNames(provider.requests[0]);
     expect(tools).toContain("submit_answer_review");
     expect(tools).not.toContain("manage_secret");

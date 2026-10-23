@@ -90,6 +90,7 @@ import { finalizePreparingRunWithClient } from "./prismaRepositoryPreparation";
 import type { PreparingRunMemoryMaterializer } from "./runRepositoryContract";
 import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../contracts/runs";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 const suppressionKeyring = MemorySuppressionKeyring.parse(
   `current=preparing-test-v1,preparing-test-v1=${Buffer.from(
@@ -3128,7 +3129,7 @@ describe("PREPARING run orchestration", () => {
         });
         expect(binding).toMatchObject({ outcome: "DISABLED", contextTokenCount: 0 });
         expect(await prisma.modelRunMemoryItem.count({ where: { bindingId: binding.id } })).toBe(0);
-        await expect(repository.completeRun({
+        await expect(completeNativeRun(prisma, {
           assistantMessageId: created.assistantMessageId, chatId, estimatedCostMicros: null,
           finalText: "No personal memory used.", modelId: request.modelId, provider: request.provider,
           runId: created.runId, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, userId

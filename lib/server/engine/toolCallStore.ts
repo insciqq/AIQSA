@@ -2,8 +2,10 @@ import { Prisma, type ModelRunStatus, type ModelRunToolCall, type PrismaClient }
 import { consumeMcpApproval, requestMcpApproval, type McpApprovalScope } from "../mcp/writeApprovalRepository";
 import { MCP_APPROVAL_TTL_MS, type McpApprovalCallKey, type McpApprovalRequest } from "../mcp/writeApproval";
 import { mcpApprovalRequiredToolCallResult } from "../runs/mcpApprovalGate";
-import { dispatchableModelRunStatuses, json } from "../runs/prismaRepositoryShared";
+import { dispatchableModelRunStatuses, isRecord, json } from "../runs/prismaRepositoryShared";
 import { snapshotToolLoopJson, toolLoopPersistenceLimits, type ToolLoopJsonValue } from "../runs/toolLoopPersistence";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
+import { LOAD_SKILL_TOOL_NAME } from "../tools/skill";
 
 /**
  * The native engine's `ModelRunToolCall` rows: the record every other table
@@ -101,6 +103,32 @@ function boundedArguments(value: Record<string, unknown>): ToolLoopJsonValue {
   return snapshotToolLoopJson(value, toolLoopPersistenceLimits.argumentsBytes) ?? {};
 }
 
+/**
+ * A completed `load_skill` call loads its Skill for the rest of the run: the
+ * binding `read_skill_file`, the Workspace bundle and a task's pinned Skills
+ * read (`lib/server/skills/`), written with the call's settlement so neither
+ * exists without the other. Only the alias of the run's frozen manifest, with
+ * the instructions the call returned, binds its frozen revision.
+ */
+async function recordLoadedSkill(tx: Prisma.TransactionClient, input: Readonly<{ arguments: Prisma.JsonValue; callId: string;
+  result: ToolLoopJsonValue; runId: string }>): Promise<void> {
+  const run = await tx.modelRun.findUnique({ select: { normalizedRequest: true }, where: { id: input.runId } });
+  const request = run?.normalizedRequest;
+  const manifest = isRecord(request) ? decodeFrozenSkillManifest(request.skills) : null;
+  const alias = isRecord(input.arguments) ? input.arguments.skill : undefined;
+  const reference = manifest?.available.find((skill) => skill.alias === alias);
+  const result = input.result;
+  const content = isRecord(result) && result.status === "complete" && Array.isArray(result.content) ? result.content[0] : null;
+  const loaded = isRecord(content) && content.type === "json" && isRecord(content.value) ? content.value : null;
+  if (!reference || !loaded || loaded.skill !== alias || typeof loaded.instructions !== "string") return;
+  await tx.modelRunSkillBinding.upsert({
+    create: { alias: reference.alias, mode: "loaded", modelRunId: input.runId, modelRunToolCallId: input.callId,
+      revisionId: reference.revisionId, skillId: reference.skillId },
+    update: {},
+    where: { modelRunId_skillId: { modelRunId: input.runId, skillId: reference.skillId } }
+  });
+}
+
 async function lockActiveRun(tx: Prisma.TransactionClient, runId: string, userId: string): Promise<boolean> {
   const [run] = await tx.$queryRaw<Array<{ status: ModelRunStatus }>>(Prisma.sql`
     SELECT "status" FROM "ModelRun" WHERE "id" = ${runId} AND "userId" = ${userId} AND "engine" = 'native' FOR UPDATE
@@ -160,14 +188,25 @@ export function createToolCallStore(client: ToolCallClient) {
     /**
      * Settles a running call with its outcome. A call its executor already
      * settled in its own transaction (a scheduled task or a Skill save), or
-     * that the run's ending closed, keeps its row.
+     * that the run's ending closed, keeps its row. A completed `load_skill`
+     * records its loaded Skill in the same transaction (`recordLoadedSkill`).
      */
     async settle(input: Readonly<{ callId: string; result: ToolLoopJsonValue; runId: string; state: "complete" | "error" }>): Promise<boolean> {
-      const settled = await client.modelRunToolCall.updateMany({
-        data: { completedAt: new Date(), result: json(input.result), state: input.state },
-        where: { id: input.callId, modelRunId: input.runId, state: { in: ["pending", "running"] } }
+      return client.$transaction(async (tx) => {
+        const settled = await tx.modelRunToolCall.updateMany({
+          data: { completedAt: new Date(), result: json(input.result), state: input.state },
+          where: { id: input.callId, modelRunId: input.runId, state: { in: ["pending", "running"] } }
+        });
+        if (settled.count !== 1) return false;
+        if (input.state === "complete") {
+          const call = await tx.modelRunToolCall.findUniqueOrThrow({ select: { arguments: true, toolName: true },
+            where: { id: input.callId } });
+          if (call.toolName === LOAD_SKILL_TOOL_NAME) {
+            await recordLoadedSkill(tx, { arguments: call.arguments, callId: input.callId, result: input.result, runId: input.runId });
+          }
+        }
+        return true;
       });
-      return settled.count === 1;
     }
   };
 }

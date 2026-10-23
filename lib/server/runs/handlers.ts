@@ -745,7 +745,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
-        engine: "native",
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: followupSnapshot()
@@ -1002,7 +1001,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
-        engine: "native",
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),

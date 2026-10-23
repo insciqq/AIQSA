@@ -7,7 +7,6 @@ import { prisma } from "../prisma";
 import { createVisionAnalysisStore } from "./store";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
-import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { loadChatUsageTotals } from "../chats/usageTotals";
 import { createNativeRunStore } from "../engine/runStore";
 import { normalizeTokenUsage } from "../../domain/usage";
@@ -17,6 +16,7 @@ import { createVisionAnalysisService } from "./service";
 import { createConversationImageSource } from "./conversationImages";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { createMemoryStorageAdapter } from "../../../tests/support/storage";
+import { runAttributionUsageWhere } from "../runs/prismaRepositoryUsage";
 
 afterAll(() => prisma.$disconnect());
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -179,7 +179,7 @@ describe("durable auxiliary Vision accounting", () => {
     expect(await f.db.$transaction(tx => loadChatUsageTotals(tx, f.context.chatId))).toMatchObject({
       recordCount: 1, knownCostRecordCount: 1, totalTokens: 5, estimatedCostMicros: 7
     });
-    expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.context.runId, userId: f.context.userId })).toEqual([]);
+    expect(await f.db.usageEvent.count({ where: runAttributionUsageWhere(f.context.runId) })).toBe(0);
   }));
   it("settles received usage after Stop without publishing success or permitting another dispatch", async () => fixture(async f => {
     await f.store.dispatch(f.context, f.plan, inputs);

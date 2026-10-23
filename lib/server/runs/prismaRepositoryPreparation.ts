@@ -1731,8 +1731,8 @@ export async function admitPreparingRunWithClient(
               }
             : {}),
           chatId: input.chatId,
-          // Written explicitly: the column's default names the old core for older writers.
-          ...(input.engine === "native" ? { engine: "native" as const } : {}),
+          // Written explicitly: the column's default names the old core.
+          engine: "native",
           ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
           modelId: input.modelId,
           provider: input.provider,

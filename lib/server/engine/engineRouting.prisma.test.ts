@@ -40,31 +40,28 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("engine marker at admission", () => {
-  it("writes native for a native send and keeps the old core's default otherwise", async () => {
+  it("writes native for every send, whatever the column's default", async () => {
     const userId = await owner();
-    const nativeChat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Native", userId } });
-    const oldChat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Old", userId } });
-    const native = await repository.createRun({ ...sendInput(nativeChat.id, userId), engine: "native" });
-    const oldCore = await repository.createRun(sendInput(oldChat.id, userId));
-    await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: native.runId } })).resolves.toMatchObject({ engine: "native" });
-    await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: oldCore.runId } })).resolves.toMatchObject({ engine: "v1" });
+    const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Native", userId } });
+    const run = await repository.createRun(sendInput(chat.id, userId));
+    await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).resolves.toMatchObject({ engine: "native" });
   });
 
   it("shares the one-active-run guard: a native run blocks another send of its chat", async () => {
     const userId = await owner();
     const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Busy", userId } });
-    const first = await repository.createRun({ ...sendInput(chat.id, userId), engine: "native" });
+    const first = await repository.createRun(sendInput(chat.id, userId));
     await expect(repository.createRun(sendInput(chat.id, userId, first.assistantMessageId))).rejects.toBeInstanceOf(ActiveRunConflictError);
   });
 
-  it("writes native for a native regeneration", async () => {
+  it("writes native for a regeneration", async () => {
     const userId = await owner();
     const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Again", userId } });
-    const first = await repository.createRun({ ...sendInput(chat.id, userId), engine: "native" });
+    const first = await repository.createRun(sendInput(chat.id, userId));
     await prisma.modelRun.update({ data: { status: "complete" }, where: { id: first.runId } });
     await prisma.message.update({ data: { status: "complete" }, where: { id: first.assistantMessageId } });
     const input = sendInput(chat.id, userId);
-    const again = await repository.createRegenerationRun({ chatId: chat.id, defaults: input.defaults, engine: "native",
+    const again = await repository.createRegenerationRun({ chatId: chat.id, defaults: input.defaults,
       modelId: input.modelId, normalizedRequest: input.normalizedRequest, preSendAssistantMessageId: first.assistantMessageId,
       provider: input.provider, providerRequestPreview: {}, userId, userMessageId: first.userMessageId });
     await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: again.runId } })).resolves.toMatchObject({ engine: "native" });

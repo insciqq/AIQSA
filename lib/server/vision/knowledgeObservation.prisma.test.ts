@@ -4,7 +4,6 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "../prisma";
 import { loadChatUsageTotals } from "../chats/usageTotals";
-import { createPrismaRunRepository } from "../runs/prismaRepository";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
@@ -13,6 +12,7 @@ import { createConversationImageSource } from "./conversationImages";
 import { createKnowledgeImageObservationStore } from "./knowledgeObservation";
 import { createVisionAnalysisService } from "./service";
 import { createMemoryStorageAdapter } from "../../../tests/support/storage";
+import { runAttributionUsageWhere } from "../runs/prismaRepositoryUsage";
 
 /**
  * The one frozen Knowledge image description per run, against a disposable
@@ -99,7 +99,7 @@ describe("Knowledge image observation persistence", () => {
     // A pre-answer receipt counts in the chat total but never as the run's answer usage.
     expect(await f.db.$transaction(tx => loadChatUsageTotals(tx, f.context.chatId))).toMatchObject({
       hasCompletedAnswer: false, recordCount: 1, totalTokens: 5, estimatedCostMicros: 7 });
-    expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.context.runId, userId: f.context.userId })).toEqual([]);
+    expect(await f.db.usageEvent.count({ where: runAttributionUsageWhere(f.context.runId) })).toBe(0);
   }));
 
   it("keeps an ambiguous provider outcome and the usage received, and a late success after Stop unpublished", async () => fixture(async f => {

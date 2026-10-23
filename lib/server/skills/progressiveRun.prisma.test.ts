@@ -2,11 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
-import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
+import { createToolCallStore, type ToolCallRow } from "../engine/toolCallStore";
 import { prisma } from "../prisma";
 import type { NormalizedRunRequest } from "../providers/types";
-import { createPrismaRunToolLoopOperations } from "../runs/prismaRepositoryToolLoop";
-import { snapshotToolLoopJson, toolLoopPersistenceLimits, type PersistedToolLoopCall, type ToolLoopJsonValue } from "../runs/toolLoopPersistence";
+import { snapshotToolLoopJson, toolLoopPersistenceLimits, type ToolLoopJsonValue } from "../runs/toolLoopPersistence";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import { createSkillBundle } from "./bundle";
@@ -37,7 +36,9 @@ function resultSnapshot(result: ToolExecutionResult) {
   return value;
 }
 
-function modelCall(call: PersistedToolLoopCall): ModelToolCall {
+type FixtureCall = Readonly<{ arguments: Record<string, ToolLoopJsonValue>; ordinal: number; providerCallId: string; toolName: string }>;
+
+function modelCall(call: FixtureCall): ModelToolCall {
   return { id: call.providerCallId, name: call.toolName, arguments: { ...call.arguments } };
 }
 
@@ -93,13 +94,12 @@ async function createFixture(input: { ownerId: string; userId: string; groupId: 
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", skills: manifest
   };
   const modelRun = await prisma.modelRun.create({ data: {
-    userId, chatId: chat.id, userMessageId: question.id, assistantMessageId: answer.id,
+    engine: "native", userId, chatId: chat.id, userMessageId: question.id, assistantMessageId: answer.id,
     modelId: request.modelId, provider: request.provider, status: "streaming",
     normalizedRequest: request as unknown as Prisma.InputJsonValue
   } });
-  const operations = createPrismaRunToolLoopOperations(prisma, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+  const store = createToolCallStore(prisma);
   const identity = { runId: modelRun.id, userId };
-  expect(await operations.beginToolLoopProviderRound({ ...identity, providerContinuation: null, roundIndex: 0 })).toBe("started");
   const callInputs: Array<{ toolName: string; arguments: Record<string, ToolLoopJsonValue> }> = [
     { toolName: "load_skill", arguments: { skill: alias } },
     { toolName: "load_skill", arguments: { skill: alias } },
@@ -107,10 +107,7 @@ async function createFixture(input: { ownerId: string; userId: string; groupId: 
     { toolName: "read_skill_file", arguments: { skill: alias, path: referencePath, offset: 65_535 } },
     { toolName: "load_skill", arguments: { skill: alias } }
   ];
-  const persisted = await operations.persistToolLoopCallBatch({ ...identity, providerContinuation: null, roundIndex: 0,
-    calls: callInputs.map((call, ordinal) => ({ ...call, ordinal, providerCallId: `fixture-call-${ordinal}` }))
-  });
-  if (persisted.kind !== "persisted") throw new Error("fixture_calls_not_persisted");
+  const calls: FixtureCall[] = callInputs.map((call, ordinal) => ({ ...call, ordinal, providerCallId: `fixture-call-${ordinal}` }));
   const service = createSkillToolService({
     resolveFrozen: catalog.resolveFrozen,
     async isLoaded({ runId, skillId: requestedSkillId }) {
@@ -122,12 +119,17 @@ async function createFixture(input: { ownerId: string; userId: string; groupId: 
     }
   });
   const context = { ...identity, request: { ...request, attachments: [] } };
-  return { ...input, ...identity, alias, skillId, revisionId, manifest, catalog, operations, request,
-    chatId: chat.id, questionId: question.id, calls: persisted.calls,
-    execute: (call: PersistedToolLoopCall) => service.execute(modelCall(call), context),
-    claim: (call: PersistedToolLoopCall) => operations.claimToolLoopCall({ ...identity, callId: call.id }),
-    settle: (call: PersistedToolLoopCall, result: ToolExecutionResult) => operations.settleToolLoopCall({ ...identity,
-      callId: call.id, result: resultSnapshot(result), state: result.status }),
+  return { ...input, ...identity, alias, skillId, revisionId, manifest, catalog, store, request,
+    chatId: chat.id, questionId: question.id, calls,
+    execute: (call: FixtureCall) => service.execute(modelCall(call), context),
+    /** Records the call running before it is sent, as the agent engine does. */
+    async begin(call: FixtureCall): Promise<ToolCallRow> {
+      const begun = await store.begin({ ...call, chatId: chat.id, roundIndex: 0, runId: modelRun.id, userId });
+      if (begun.kind !== "running") throw new Error("fixture_call_not_running");
+      return begun.row;
+    },
+    settle: (row: ToolCallRow, result: ToolExecutionResult) => store.settle({ callId: row.id, result: resultSnapshot(result),
+      runId: modelRun.id, state: result.status }),
     revoke: () => prisma.skillPublication.delete({ where: { id: publication.id } }),
     async advanceApprovedRevision() {
       const replacement = createSkillBundle({ ...draft, instructions: "New approved instructions after run admission." },
@@ -158,8 +160,7 @@ describe("progressive Skill run persistence", () => {
       const first = await service.archive({ ...identity, alias: f.alias, currentAccess: true });
       expect(first.bundle).toMatchObject({ revisionId: f.revisionId, discover: false });
       const load = f.calls[0]!;
-      expect(await f.claim(load)).toMatchObject({ kind: "claimed" });
-      expect(await f.settle(load, await f.execute(load))).toBe("settled");
+      expect(await f.settle(await f.begin(load), await f.execute(load))).toBe(true);
       const loaded = await service.plan(identity);
       expect(loaded.manifestHash).toBe(empty.manifestHash);
       expect(loaded.initial).toEqual([first.bundle]);
@@ -182,7 +183,8 @@ describe("progressive Skill run persistence", () => {
       const nextRevisionId = await f.advanceApprovedRevision();
       expect(await f.catalog.listEnabledForRun(f.userId)).toEqual([expect.objectContaining({ revisionId: nextRevisionId })]);
       expect(resultValue(await f.execute(read))).toEqual({ error: "skill_not_loaded" });
-      expect(await f.claim(load)).toMatchObject({ kind: "claimed", call: { state: "running" } });
+      const loadRow = await f.begin(load);
+      expect(loadRow).toMatchObject({ state: "running" });
       const result = await f.execute(load);
       expect(resultValue(result)).toMatchObject({ instructions: originalInstructions, files: [{ path: referencePath }] });
 
@@ -192,26 +194,25 @@ describe("progressive Skill run persistence", () => {
         get(target, property, receiver) {
           if (property !== "$transaction") return Reflect.get(target, property, receiver);
           return (write: (tx: Prisma.TransactionClient) => Promise<unknown>) => target.$transaction(async (tx) => {
-            expect(await write(tx)).toBe("settled");
+            expect(await write(tx)).toBe(true);
             expect(await tx.modelRunSkillBinding.count({ where: { modelRunId: f.runId } })).toBe(1);
-            expect((await tx.modelRunToolCall.findUniqueOrThrow({ where: { id: load.id } })).state).toBe("complete");
+            expect((await tx.modelRunToolCall.findUniqueOrThrow({ where: { id: loadRow.id } })).state).toBe("complete");
             throw new Error("fixture_settlement_rollback");
           });
         }
       });
-      const rollbackOperations = createPrismaRunToolLoopOperations(rollbackClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
-      const settlement = { runId: f.runId, userId: f.userId, callId: load.id, result: resultSnapshot(result), state: "complete" as const };
-      await expect(rollbackOperations.settleToolLoopCall(settlement)).rejects.toThrow("fixture_settlement_rollback");
+      const settlement = { runId: f.runId, callId: loadRow.id, result: resultSnapshot(result), state: "complete" as const };
+      await expect(createToolCallStore(rollbackClient).settle(settlement)).rejects.toThrow("fixture_settlement_rollback");
       expect(await prisma.modelRunSkillBinding.count({ where: { modelRunId: f.runId } })).toBe(0);
-      expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: load.id } }))
+      expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: loadRow.id } }))
         .toMatchObject({ state: "running", result: null, completedAt: null });
-      const retries = await Promise.all([f.operations.settleToolLoopCall(settlement), f.operations.settleToolLoopCall(settlement)]);
-      expect(retries.sort()).toEqual(["reused", "settled"]);
-      expect(await f.claim(repeat)).toMatchObject({ kind: "claimed" });
-      expect(await f.settle(repeat, await f.execute(repeat))).toBe("settled");
+      // A retried settlement writes once.
+      const retries = await Promise.all([f.store.settle(settlement), f.store.settle(settlement)]);
+      expect(retries.sort()).toEqual([false, true]);
+      expect(await f.settle(await f.begin(repeat), await f.execute(repeat))).toBe(true);
       expect(await prisma.modelRunSkillBinding.findMany({ where: { modelRunId: f.runId },
         select: { skillId: true, revisionId: true, mode: true, alias: true, modelRunToolCallId: true } }))
-        .toEqual([{ skillId: f.skillId, revisionId: f.revisionId, mode: "loaded", alias: f.alias, modelRunToolCallId: load.id }]);
+        .toEqual([{ skillId: f.skillId, revisionId: f.revisionId, mode: "loaded", alias: f.alias, modelRunToolCallId: loadRow.id }]);
       expect(resultValue(await f.execute(read))).toMatchObject({ content: "a".repeat(65_535), nextOffset: 65_535 });
 
       const otherRun = await prisma.modelRun.create({ data: { chatId: f.chatId, userId: f.userId, userMessageId: f.questionId,
@@ -224,44 +225,28 @@ describe("progressive Skill run persistence", () => {
       })).rejects.toThrow();
       expect((await prisma.modelRunSkillBinding.findUniqueOrThrow({
         where: { modelRunId_skillId: { modelRunId: f.runId, skillId: f.skillId } }
-      })).modelRunToolCallId).toBe(load.id);
+      })).modelRunToolCallId).toBe(loadRow.id);
     });
   });
 
-  it("rechecks grants between file pages while replaying committed results without current Skill access", async () => {
+  it("rechecks grants between file pages and keeps the one loaded binding", async () => {
     await withFixture(async (f) => {
       const load = f.calls[0]!, firstPage = f.calls[2]!, nextPage = f.calls[3]!, revokedLoad = f.calls[4]!;
-      expect(await f.claim(load)).toMatchObject({ kind: "claimed" });
       const loaded = await f.execute(load);
-      expect(await f.settle(load, loaded)).toBe("settled");
-      expect(firstPage.state).toBe("pending");
-      expect(await f.claim(firstPage)).toMatchObject({ kind: "claimed", call: { state: "running" } });
-      // An interrupted read is safe to claim again, without an ambiguous
-      // side-effect outcome or a second load binding.
-      expect(await f.claim(firstPage)).toMatchObject({ kind: "claimed", call: { state: "running" } });
+      expect(await f.settle(await f.begin(load), loaded)).toBe(true);
       const page = await f.execute(firstPage);
       expect(resultValue(page)).toMatchObject({ content: "a".repeat(65_535), nextOffset: 65_535 });
-      expect(await f.settle(firstPage, page)).toBe("settled");
+      expect(await f.settle(await f.begin(firstPage), page)).toBe(true);
       await f.revoke();
       expect(await f.catalog.resolveFrozen({ userId: f.userId, skillId: f.skillId, revisionId: f.revisionId })).toBeNull();
 
       for (const call of [nextPage, revokedLoad]) {
-        expect(await f.claim(call)).toMatchObject({ kind: "claimed" });
-        expect(await f.claim(call)).toMatchObject({ kind: "claimed" });
+        const row = await f.begin(call);
         const denied = await f.execute(call);
         expect(denied.status).toBe("error");
         expect(resultValue(denied)).toEqual({ error: "skill_not_available" });
-        expect(await f.settle(call, denied)).toBe("settled");
+        expect(await f.settle(row, denied)).toBe(true);
       }
-      expect(await f.claim(load)).toMatchObject({ kind: "settled", call: { result: resultSnapshot(loaded) } });
-      expect(await f.claim(firstPage)).toMatchObject({ kind: "settled", call: { result: resultSnapshot(page) } });
-      const recovered = await f.operations.loadCheckpointedToolLoopRun({ runId: f.runId, userId: f.userId });
-      expect(recovered?.normalizedRequest.skills).toEqual(f.manifest);
-      expect(recovered?.calls.find(({ id }) => id === firstPage.id)?.result).toEqual(resultSnapshot(page));
-      const loadRecovery = f.operations.loadProviderDispatchRecoveryRequest;
-      if (!loadRecovery) throw new Error("fixture_recovery_operation_missing");
-      expect(await loadRecovery({ runId: f.runId, userId: f.userId }))
-        .toMatchObject({ skills: f.manifest });
       expect(await prisma.modelRunSkillBinding.count({ where: { modelRunId: f.runId, mode: "loaded" } })).toBe(1);
     });
   });

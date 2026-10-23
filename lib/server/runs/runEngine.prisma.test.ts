@@ -53,17 +53,17 @@ function sendInput(chatId: string, userId: string, expectedActiveLeafId: string 
   };
 }
 
-/** A run the old core accepted: its admission named no engine. */
-async function oldCoreRun(userId: string): Promise<AcceptedRun> {
-  const { id: chatId } = await chat(userId, "Old-core chat");
+/** Every admission writes the agent engine's marker. */
+async function nativeRun(userId: string): Promise<AcceptedRun> {
+  const { id: chatId } = await chat(userId, "Native chat");
   const created = await repository.createRun(sendInput(chatId, userId));
   return { assistantMessageId: created.assistantMessageId, chatId, runId: created.runId, userMessageId: created.userMessageId };
 }
 
-/** The native engine writes its marker at admission; nothing else differs here. */
-async function nativeRun(userId: string): Promise<AcceptedRun> {
-  const run = await oldCoreRun(userId);
-  await prisma.modelRun.update({ data: { engine: "native" }, where: { id: run.runId } });
+/** A run the old core accepted before the upgrade: the same rows under the column's default. */
+async function oldCoreRun(userId: string): Promise<AcceptedRun> {
+  const run = await nativeRun(userId);
+  await prisma.modelRun.update({ data: { engine: "v1" }, where: { id: run.runId } });
   return run;
 }
 
@@ -237,7 +237,6 @@ describe("the old run core's rows beside the agent engine on one database", () =
     } });
     await prisma.chat.update({ data: { activeLeafMessageId: root.id }, where: { id: chatId } });
     const native = await repository.createRun(sendInput(chatId, userId, root.id));
-    await prisma.modelRun.update({ data: { engine: "native" }, where: { id: native.runId } });
 
     // The send pre-check and the admission transaction both see the native run.
     await expect(repository.findRecentActiveRunForChat({ chatId, since: new Date(0), userId }))
