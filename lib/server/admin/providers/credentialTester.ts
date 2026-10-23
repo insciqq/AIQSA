@@ -149,6 +149,8 @@ function compatibleCapabilities(entry: Record<string, unknown>): AdminCompatible
   const contextWindow = firstInteger([
     entry.contextWindow,
     entry.context_length,
+    // The Codex listing publishes `context_window`; its `max_context_window` is never used.
+    entry.context_window,
     capabilities.context_length,
     metadata.context_window
   ]);

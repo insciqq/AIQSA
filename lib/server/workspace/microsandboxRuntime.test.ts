@@ -16,7 +16,7 @@ import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsand
 import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { workspaceFailureCause } from "./toolObservability";
-import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { tarGzipStream } from "../chats/tarArchive";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
@@ -443,7 +443,7 @@ describe("Microsandbox Workspace lifecycle", () => {
     await runtime.startAgent({ ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: `agent-${randomUUID()}`,
       skillManifestHash: skillIdentity.manifestHash,
       prompt: "Synthetic task", runToken: "a".repeat(43), timeoutSeconds,
-      profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
+      profile: { gatewayOrigin: RUNNER_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
         maxOutputTokens: 4096, developerInstructions: "Synthetic instructions", mcpMode: "off", mcpTimeoutSeconds: 90 } });
     if (timeoutSeconds === null) expect(builder.timeout).not.toHaveBeenCalled();
     else expect(builder.timeout).toHaveBeenCalledWith(2000);
@@ -469,7 +469,7 @@ describe("Microsandbox Workspace lifecycle", () => {
     Object.assign(value.sandbox, { execStreamWith });
     const start = { ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: firstId,
       skillManifestHash: skillIdentity.manifestHash, prompt: "Synthetic", runToken: "a".repeat(43), timeoutSeconds: null,
-      profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
+      profile: { gatewayOrigin: RUNNER_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
         maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } };
     await runtime.startAgent(start);
     const next = { ...start, runtimeExecSessionId: nextId, previousExecSessionId: firstId, threadId };
@@ -491,7 +491,7 @@ describe("Microsandbox Workspace lifecycle", () => {
     await runtime.ensureSession(ensureInput);
     const start = { ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: `agent-${randomUUID()}`,
       skillManifestHash: skillIdentity.manifestHash, prompt: "Synthetic task", runToken: "a".repeat(43), timeoutSeconds: 30,
-      profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
+      profile: { gatewayOrigin: RUNNER_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
         maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } };
     await expect(runtime.startAgent(start)).rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });
     await runtime.prepareSkillRun({ ...skillIdentity, initial: [] });

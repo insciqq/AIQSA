@@ -12,7 +12,7 @@ import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { AGENT_GRANT_LEASE_MS, type NormalizedRunAgent } from "./config";
 import { AgentExecutionError, agentFailureCode, type AgentFailureCode } from "./failures";
-import { AGENT_LEASE_CANCELLED } from "./lease";
+import { RUNNER_GATEWAY_LEASE_CANCELLED } from "../workspace/runnerGatewayLease";
 import { CODEX_PROVIDER_MAX_RETRIES } from "./codexProfile";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { AGENT_BUILTIN_TOOL_NAMES } from "./builtinTools";
@@ -112,7 +112,7 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     assertLeaseActive: async () => {
       try { await assertActive(database, true); } catch (error) {
         const cancelled = await database.modelRun.count({ where: { id: runId, userId, status: "cancelled" } }).catch(() => 0);
-        throw cancelled ? new Error(AGENT_LEASE_CANCELLED) : error;
+        throw cancelled ? new Error(RUNNER_GATEWAY_LEASE_CANCELLED) : error;
       }
     },
     async assertActiveInTransaction(tx: Prisma.TransactionClient) {

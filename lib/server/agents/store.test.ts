@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { NormalizedRunAgent } from "./config";
-import { AGENT_LEASE_CANCELLED } from "./lease";
+import { RUNNER_GATEWAY_LEASE_CANCELLED } from "../workspace/runnerGatewayLease";
 import { createAgentRunStore } from "./store";
 
 function store(cancelled: number) {
@@ -17,7 +17,7 @@ function store(cancelled: number) {
 describe("Agent lease checks", () => {
   it("report a run the user stopped as cancelled", async () => {
     const value = store(1);
-    await expect(value.store.assertLeaseActive()).rejects.toThrow(AGENT_LEASE_CANCELLED);
+    await expect(value.store.assertLeaseActive()).rejects.toThrow(RUNNER_GATEWAY_LEASE_CANCELLED);
     expect(value.database.modelRun.count).toHaveBeenCalledWith({ where: { id: "run_1", userId: "user_1", status: "cancelled" } });
   });
 

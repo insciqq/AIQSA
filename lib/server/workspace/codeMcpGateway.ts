@@ -2,8 +2,7 @@ import { createMcpHandler, McpServer, type CallToolResult } from "@modelcontextp
 import { prisma } from "../prisma";
 import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/requestBody";
 import { logEvent, runWithContext } from "../observability";
-import { catalogFromSnapshot } from "../agents/mcpGateway";
-import { withAgentLease } from "../agents/lease";
+import { withRunnerGatewayLease } from "./runnerGatewayLease";
 import { createMcpToolService, McpHubServiceError, type McpHubServiceErrorCode } from "../mcp/hubService";
 import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
@@ -11,7 +10,7 @@ import { getMcpRequestMaxBytes, getMcpResponseWireLimits, mcpRequestSizeFailure 
 import { resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor";
 import { filterMcpCatalog } from "../mcp/toolAccessProjection";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
-import type { McpCapabilityCatalog, McpCapabilityCatalogTool, McpRunPlanResult } from "../mcp/runPlan";
+import { mcpCatalogFromSnapshot, type McpCapabilityCatalog, type McpCapabilityCatalogTool, type McpRunPlanResult } from "../mcp/runPlan";
 import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE } from "../mcp/writeApproval";
 import { createPrismaMcpGatewayApprovalStore, gateMcpGatewayCall, type McpGatewayApprovalStore } from "../mcp/writeApprovalGateway";
 import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from "./codeMcp";
@@ -175,7 +174,7 @@ export async function handleWorkspaceCodeMcpRequest(
   // open, so lost run or invocation authority also ends a call in flight.
   const assertActive = () => dependencies.store.assertActive(grant, invocationId);
   try {
-    return await runWithContext({ run_id: grant.runId, user_id: grant.userId }, () => withAgentLease(request, assertActive,
+    return await runWithContext({ run_id: grant.runId, user_id: grant.userId }, () => withRunnerGatewayLease(request, assertActive,
       (signal) => serve(request, signal, grant, invocationId, assertActive, dependencies)));
   } catch (error) {
     return error instanceof WorkspaceCodeAccessError && error.reason === "invocation" ? invocationRefused() : refused();
@@ -207,7 +206,7 @@ async function serve(
       signal.throwIfAborted();
       await assertGrantActive();
     } };
-    const catalog = grant.authority.kind === "catalog" ? grant.authority.catalog : catalogFromSnapshot(grant.authority.snapshot);
+    const catalog = grant.authority.kind === "catalog" ? grant.authority.catalog : mcpCatalogFromSnapshot(grant.authority.snapshot);
     const service = createMcpToolService<Authority>({
       catalog: async () => catalog,
       filterTools: dependencies.filterTools,
