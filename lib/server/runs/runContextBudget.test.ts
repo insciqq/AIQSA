@@ -836,6 +836,19 @@ describe("hybrid context budget boundaries", () => {
   });
   });
 
+  it("admits a fresh chat on a small window whose maximum output exceeds it, summarizes a long one, and refuses only a fixed part that cannot fit", () => {
+    // 40k window, 65,536-token default output: a quarter of the window stays reserved for the answer.
+    const small = { ...capabilities, contextWindow: 40_000, defaultMaxOutputTokens: 65_536 };
+    const prompt = { developer: null, system: "h".repeat(40_000) };
+    const fresh = accepted(budgetOf(hybrid([turn("current", "user", 200)], { modelCapabilities: small, prompt })));
+    expect(fresh.request.contextCompaction).toMatchObject({ budgetTokens: 26_000, outcome: "already_fits" });
+    const long = hybrid([...Array.from({ length: 12 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 10_000)),
+      turn("current", "user", 200)], { modelCapabilities: small, prompt });
+    expect(accepted(budgetOf(long)).request.contextCompaction).toMatchObject({ outcome: "needs_summary" });
+    expect(budgetOf(hybrid([turn("current", "user", 200)], { modelCapabilities: small, prompt: { developer: null,
+      system: "h".repeat(120_000) } }))).toMatchObject({ ok: false, error: { code: "context_too_large" } });
+  });
+
   it("rejects an irreducible current message before a run exists, exactly like legacy", () => {
     const current = turn("current", "user", 121_000, "q");
     for (const input of [hybrid([current]), hybrid([turn("old", "user", 40_000), turn("old-answer", "assistant", 400), current])]) {

@@ -81,6 +81,14 @@ export function summarizeThreadArtifacts(
       Number.isSafeInteger(payload.skillCatalogOmittedCount) && Number(payload.skillCatalogOmittedCount) > 0
       ? [Number(payload.skillCatalogOmittedCount)] : [];
   }).at(-1);
+  // The server's figure, the one its settled summary shows; a run that reports
+  // one announces it first with no value (`liveWorkDurationMs`).
+  const workDurationMs = events.flatMap((event) => {
+    const payload = artifactPayload(event);
+    return artifactTypeFromEvent(event) === "work_duration" && isRecord(payload) &&
+      Number.isSafeInteger(payload.workDurationMs) && Number(payload.workDurationMs) >= 0
+      ? [Number(payload.workDurationMs)] : [];
+  }).at(-1);
   const contextCompaction = contextCompactionFromEvents(events);
   const grounding = events
     .map(groundingDisplayFromEvent)
@@ -143,6 +151,7 @@ export function summarizeThreadArtifacts(
     generatedFiles.length === 0 &&
     generatedImages.length === 0 &&
     !skillCatalogOmittedCount &&
+    workDurationMs === undefined &&
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
@@ -177,7 +186,8 @@ export function summarizeThreadArtifacts(
     ...(answerReviews.length ? { answerReviews } : {}),
     ...(answerReviewDecisions.length ? { answerReviewDecisions } : {}),
     sources,
-    ...(sourceList.truncated ? { sourcesTruncated: true as const } : {})
+    ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
+    ...(workDurationMs !== undefined ? { workDurationMs } : {})
   };
 }
 

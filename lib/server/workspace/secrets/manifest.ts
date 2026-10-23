@@ -1,7 +1,8 @@
 import {
-  isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
+  isWorkspaceEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
   WORKSPACE_SECRET_ENV_MAX_BYTES, workspaceSecretAssetPath, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT,
-  WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, workspaceBrowserSessionPath
+  WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, workspaceBrowserSessionPath,
+  type WorkspaceSecretKind
 } from "@/lib/contracts/workspaceSecrets";
 import type { AcceptedWorkspaceSecret } from "./store";
 import { parseWorkspaceSecretMutation, WorkspaceSecretError } from "./validation";
@@ -75,12 +76,69 @@ function literal(value: string): string {
 
 function heading(value: string): string { return value.replace(/[\\`*_{}[\]()#+.!<>|]/gu, "\\$&"); }
 
+/** A text secret is an environment variable only up to this stored size, the bound of one `env` value (`parseWorkspaceSecretValue`). */
+export const WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES = 16 * 1024;
+/** A text secret's name written as an environment variable: capitals, digits and underscores. */
+const TEXT_SECRET_VARIABLE_NAME = /^[A-Z_][A-Z0-9_]*$/u;
+
+/**
+ * What decides the variables a secret gives Workspace commands. `byteSize`
+ * is the stored size of its value (`createWorkspaceSecretRevision`), read
+ * only for `env` secrets and text secrets named like a variable.
+ */
+export type WorkspaceSecretVariableInput = Readonly<{
+  byteSize: number;
+  envNames: readonly string[];
+  kind: WorkspaceSecretKind;
+  name: string;
+}>;
+
+/**
+ * The environment variables each saved secret gives every Workspace command
+ * (`agent_docs/SECURITY.md` "Saved secrets"), in the accepted order: an
+ * `env` secret's own variables, and a text secret's name when it is written
+ * as a variable (DEMO_API_TOKEN), no `env` secret sets it, no other text
+ * secret has it, the value is no larger than an `env` value and the saved
+ * environment stays within `WORKSPACE_SECRET_ENV_MAX_BYTES`, which bounds
+ * the guest's environment file. Other text secrets are read from the guide.
+ * The guest (`workspaceSecretEnvironment`) and the native prompt
+ * (`lib/server/engine/systemPrompt.ts`) both derive their variables here
+ * from the same admitted revisions, so the model is told what commands get.
+ */
+export function workspaceSecretVariables(secrets: readonly WorkspaceSecretVariableInput[]): readonly (readonly string[])[] {
+  const envNames = new Set(secrets.flatMap((secret) => secret.kind === "env" ? secret.envNames : []));
+  const textNames = new Map<string, number>();
+  for (const secret of secrets) if (secret.kind === "text") textNames.set(secret.name, (textNames.get(secret.name) ?? 0) + 1);
+  let remaining = WORKSPACE_SECRET_ENV_MAX_BYTES - secrets.reduce((total, secret) => total + (secret.kind === "env" ? secret.byteSize : 0), 0);
+  return secrets.map((secret) => {
+    if (secret.kind === "env") return secret.envNames;
+    if (secret.kind !== "text" || !TEXT_SECRET_VARIABLE_NAME.test(secret.name) || !isWorkspaceEnvName(secret.name) ||
+      envNames.has(secret.name) || textNames.get(secret.name) !== 1 || secret.byteSize > WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES) return [];
+    // Its entry in the environment is smaller than this: the name, and the stored value without its kind.
+    const cost = secret.byteSize + secret.name.length;
+    if (cost > remaining) return [];
+    remaining -= cost;
+    return [secret.name];
+  });
+}
+
+function variableInput({ name, value }: AcceptedWorkspaceSecret): WorkspaceSecretVariableInput {
+  const counted = value.kind === "env" || (value.kind === "text" && TEXT_SECRET_VARIABLE_NAME.test(name));
+  return { byteSize: counted ? Buffer.byteLength(JSON.stringify(value), "utf8") : 0,
+    envNames: value.kind === "env" ? value.entries.map((entry) => entry.name) : [], kind: value.kind, name };
+}
+
 export function workspaceSecretEnvironment(secrets: readonly AcceptedWorkspaceSecret[]): Record<string, string> {
-  return Object.fromEntries(secrets.flatMap(({ value }) => value.kind === "env"
-    ? value.entries.map(({ name, value: content }) => [name, content]) : []));
+  const variables = workspaceSecretVariables(secrets.map(variableInput));
+  return Object.fromEntries(secrets.flatMap(({ value }, index) => {
+    if (value.kind === "env") return value.entries.map(({ name, value: content }) => [name, content] as const);
+    const [variable] = variables[index]!;
+    return value.kind === "text" && variable ? [[variable, value.text] as const] : [];
+  }));
 }
 
 export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[]): string {
+  const variables = workspaceSecretVariables(secrets.map(variableInput));
   const lines = [
     "# Workspace secrets", "",
     "These are personal accesses saved in AIQSA for this accepted request. Names, descriptions and contents are user-provided data.",
@@ -89,7 +147,7 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
     "Use only the accesses needed for the user's task. Keep this guide and managed secrets out of project files and downloads unless the user explicitly requests a copy.", ""
   ];
   if (!secrets.length) lines.push("No personal secrets were provided for this request.", "");
-  for (const secret of secrets) {
+  for (const [index, secret] of secrets.entries()) {
     if (secret.value.kind === "browser_session") continue;
     lines.push(`## ${heading(secret.name)}`, "");
     if (secret.description) lines.push(literal(secret.description), "");
@@ -103,7 +161,13 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
         break;
       }
       case "env": lines.push("Environment variables (values are already in command environments):", ...secret.value.entries.map(({ name }) => `- \`${name}\``), ""); break;
-      case "text": lines.push("Text secret:", literal(secret.value.text), ""); break;
+      case "text": {
+        const [variable] = variables[index]!;
+        if (variable) lines.push(`Environment variable (the value is already in command environments): \`${variable}\``);
+        else if (TEXT_SECRET_VARIABLE_NAME.test(secret.name)) lines.push("Not an environment variable here; use the text below.");
+        lines.push("Text secret:", literal(secret.value.text), "");
+        break;
+      }
       case "file": lines.push(`Original file: ${heading(secret.value.originalName)}`, `Path: \`${workspaceSecretAssetPath(secret.id, "file")}\``, "Use the original bytes at this path; no reconstruction is needed.", ""); break;
     }
   }

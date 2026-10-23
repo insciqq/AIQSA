@@ -50,13 +50,13 @@ describe("admitted run guidance", () => {
 
 describe("native system prompt", () => {
   it("puts the family prompt and harness first, the run's guidance next and the environment last", async () => {
-    const secrets = source(async () => [{ description: "", envNames: [], kind: "text", name: "GitLab", valueId: "v1" }]);
+    const secrets = source(async () => [{ byteSize: 40, description: "", envNames: [], kind: "text", name: "GitLab", valueId: "v1" }]);
     const admitted = request(`${standard.renderedSystemPrompt}\n\n${guidance}\n\n${mcpIndex}`,
       { workspace: { enabled: true } as ProviderRunRequest["workspace"] });
     const native = await withNativeSystemPrompt({ now, request: admitted, scope, secrets, snapshot: gpt,
       tools: tools("read_tool_result", "update_plan", "read_secret", "manage_secret") });
     const system = native.prompt.system!;
-    const environment = environmentPromptSection({ now, secretNames: ["GitLab"], timeZone: zone });
+    const environment = environmentPromptSection({ now, secrets: [{ kind: "text", name: "GitLab", variables: [] }], timeZone: zone });
     expect(system.startsWith(`${GPT_FAMILY_PROMPT}\n\n# AIQSA`)).toBe(true);
     expect(system.endsWith(`${guidance}\n\n${mcpIndex}\n\n${environment}`)).toBe(true);
     expect(system).toContain("# Workspace");
@@ -65,7 +65,7 @@ describe("native system prompt", () => {
     expect(system).not.toContain("You are a helpful AI assistant.");
     expect(system.indexOf("# Environment")).toBeGreaterThan(system.indexOf(mcpIndex));
     expect(environment).toContain(`(${zone})`);
-    expect(environment).toContain('Saved secrets: "GitLab".');
+    expect(environment).toContain('Saved secrets: "GitLab" (text).');
     expect(secrets.list).toHaveBeenCalledWith(scope);
     // Presets, answer rules and the baseline evidence keep their places.
     expect(native.prompt).toMatchObject({ baseline: admitted.prompt.baseline, developer: VISIBLE_ANSWER_CONTRACT,
@@ -82,9 +82,28 @@ describe("native system prompt", () => {
     expect(first.prompt.system).toContain("The user has no saved secrets.");
   });
 
+  it("names the variables each secret gives Workspace commands, as the guest derives them, only in a run with a Workspace", async () => {
+    // The run's admitted revisions: an env secret, a text secret named like a variable, a text secret that is not one,
+    // and a text secret whose variable the env secret already sets.
+    const secrets = source(async () => [
+      { byteSize: 120, description: "", envNames: ["GITLAB_TOKEN", "GITLAB_HOST"], kind: "env", name: "GitLab", valueId: "v1" },
+      { byteSize: 48, description: "", envNames: [], kind: "text", name: "DEMO_API_TOKEN", valueId: "v2" },
+      { byteSize: 30, description: "", envNames: [], kind: "text", name: "Notes", valueId: "v3" },
+      { byteSize: 48, description: "", envNames: [], kind: "text", name: "GITLAB_TOKEN", valueId: "v4" }
+    ]);
+    const withWorkspace = await withNativeSystemPrompt({ now, request: request(null, { workspace: { enabled: true } as ProviderRunRequest["workspace"] }),
+      scope, secrets, snapshot: gpt, tools: tools("read_secret") });
+    expect(withWorkspace.prompt.system).toContain('Saved secrets: "GitLab" (env: GITLAB_TOKEN, GITLAB_HOST), "DEMO_API_TOKEN" (text: DEMO_API_TOKEN), ' +
+      '"Notes" (text), "GITLAB_TOKEN" (text).\nAfter a secret\'s kind come the environment variables every Workspace command gets from it.');
+    expect(withWorkspace.prompt.system).toContain("a text secret named like a variable (capitals, digits and underscores) under that name");
+    const without = await withNativeSystemPrompt({ now, request: request(null), scope, secrets, snapshot: gpt, tools: tools("read_secret") });
+    expect(without.prompt.system).toContain('Saved secrets: "GitLab" (env), "DEMO_API_TOKEN" (text), "Notes" (text), "GITLAB_TOKEN" (text).');
+    expect(without.prompt.system).not.toMatch(/environment variables every Workspace command|# Workspace/u);
+  });
+
   it("names saved secrets only where read_secret is offered, and goes without them when they cannot be read", async () => {
     const admitted = request(standard.renderedSystemPrompt);
-    const unused = source(async () => [{ description: "", envNames: [], kind: "text", name: "GitLab", valueId: "v1" }]);
+    const unused = source(async () => [{ byteSize: 40, description: "", envNames: [], kind: "text", name: "GitLab", valueId: "v1" }]);
     const without = await withNativeSystemPrompt({ now, request: admitted, scope, secrets: unused, snapshot: gpt, tools: tools("update_plan") });
     expect(unused.list).not.toHaveBeenCalled();
     expect(without.prompt.system).not.toMatch(/saved secrets/iu);

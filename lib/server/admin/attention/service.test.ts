@@ -491,6 +491,19 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("does not ask for a reranker for Knowledge while Knowledge is off, but still names a broken one", () => {
+    areas.knowledge = false;
+    try {
+      expect(items({ systemRoles: roles({ rerankerModel: null }) })).toEqual([]);
+      // Memory ranks with an assigned reranker, so an unavailable one still needs a fix.
+      expect(items({ systemRoles: roles({ rerankerModel: { ...roleCandidate, available: false } }) })).toEqual([
+        expect.objectContaining({ id: "system_role_unavailable:reranker", severity: "bad" })
+      ]);
+    } finally {
+      areas.knowledge = true;
+    }
+  });
+
   it("checks only the PDF reader the PDF mode routes to", () => {
     const pageImages = { ...roleCandidate, available: false, id: "model-terra" };
     const pdfReader = { ...roleCandidate, available: true, id: "model-sol" };

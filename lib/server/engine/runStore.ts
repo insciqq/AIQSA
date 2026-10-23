@@ -54,9 +54,23 @@ export function nativeUsageRowId(runId: string, key: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "usageEvent">,
+export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "modelRun" | "usageEvent">,
   memorySourceHooks: MemorySourceMutationHooks = defaultMemorySourceMutationHooks) {
   return {
+    /**
+     * The published run's work duration exactly as a reload reads it: run
+     * creation to the published answer (`runWorkDurationMs` in
+     * `lib/server/chats/prismaRepository.ts`), so the live answer shows the
+     * same figure. Null before publication or when the run is not on record.
+     */
+    async workDurationMs(scope: NativeRunScope): Promise<number | null> {
+      const run = await client.modelRun.findFirst({ select: { answerCompletedAt: true, createdAt: true },
+        where: { chatId: scope.chatId, engine: "native", id: scope.runId, userId: scope.userId } });
+      if (!run?.answerCompletedAt) return null;
+      const duration = run.answerCompletedAt.getTime() - run.createdAt.getTime();
+      return Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null;
+    },
+
     /**
      * Publishes the answer: the message completes with this text and the run
      * records that its answer exists. Only an active native run of the scope

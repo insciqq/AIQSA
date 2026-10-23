@@ -1,3 +1,4 @@
+import { defaultNativeEngineHandlerDeps } from "../engine/defaultEngine";
 import { prisma } from "../prisma";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { createPrismaChatTitleGenerator } from "../chats/titleGeneration";
@@ -20,7 +21,8 @@ function createDefaultWorkspaceFollowup() {
     registry: activeRunControllerRegistry, repository: followups,
     continueRun: createWorkspaceFollowupContinuation({
       ...defaultRunServices(storage), chatTitleGenerator: createPrismaChatTitleGenerator(),
-      repository, workspace, followups, kickPdf: () => getDefaultChatPdf().kick()
+      repository, workspace, followups, kickPdf: () => getDefaultChatPdf().kick(),
+      nativeEngine: defaultNativeEngineHandlerDeps(storage)
     }),
     fail: createWorkspaceFollowupFailure({ repository, workspace })
   });

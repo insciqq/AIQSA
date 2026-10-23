@@ -163,6 +163,9 @@ export function humanizeErrorCode(code: string): string {
       "A selected Skill is no longer available. Review Skills and try again",
     skills_invalid: "Choose distinct Skills and try again",
     skills_count_exceeded: "Pin up to 32 Skills, including Assistant Skills, and try again",
+    // Admission summarizes earlier messages, so only this turn's own part can be over.
+    context_too_large: "This message does not fit the selected model's context window beside its instructions and tools. " +
+      "Shorten the message or remove attachments, or choose a model with a larger context window",
     skills_budget_exceeded: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window",
     sources_processing:
       "The selected documents are still processing. Try again when they are ready",

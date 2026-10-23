@@ -16,6 +16,7 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../../http/requestBody";
+import { isUnconfiguredProviderTemplate } from "../../../domain/providerTemplates";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
   AdminProviderServiceError,
@@ -195,7 +196,11 @@ async function safely(operation: () => Promise<Response>, stage: LifecycleStage 
 }
 
 async function catalog(service: AdminProviderService, status = 200): Promise<Response> {
-  return Response.json({ connections: await service.listConnections() }, { status });
+  // A family's built-in connection is listed once it was set up; before that
+  // it is a bootstrap placeholder, not a connection (`isUnconfiguredProviderTemplate`).
+  const connections = (await service.listConnections()).filter((connection) =>
+    !isUnconfiguredProviderTemplate(connection));
+  return Response.json({ connections }, { status });
 }
 
 async function modelSaveResponse(input: {

@@ -14,7 +14,7 @@ import { handleFor, transcriptBuilder } from "./compaction/compaction.testFixtur
 import { SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
 import { contextMeasureCalibration, measureContext } from "./contextMeasure";
 import { createDetachedCompactions, DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions } from "./detachedCompactions";
-import { COMPACTION_LIFECYCLE, createRunContext } from "./runContext";
+import { COMPACTION_LIFECYCLE, createRunContext, windowOutputParams } from "./runContext";
 import { COMPACTION_SUMMARY_HEADING, projectTranscript, type TranscriptItem, type TranscriptTarget } from "./transcript";
 
 /** The route and model `transcriptBuilder` attributes its items to. */
@@ -553,6 +553,65 @@ describe("a native run's context", () => {
     expect(sentText).not.toContain("PRIVATE-MEMORY-FACT");
     expect(sentText).toContain(note);
     expect(JSON.stringify(run.appended)).not.toContain("PRIVATE-MEMORY-FACT");
+  });
+
+  it("reserves only a share of a small window for the output: a fresh chat runs, a long one compacts", async () => {
+    // A 40k window with a 65,536-token maximum output left no room for any request.
+    const small = { contextWindow: 40_000, maxOutputTokens: 65_536 };
+    const fresh = transcriptBuilder();
+    fresh.user("What is the capital of France?");
+    const first = harness(fresh.items, { call: async () => summaryReply(), window: small });
+    await expect(first.context.prepare(request(fresh.items))).resolves.toBeDefined();
+    expect(first.calls).toHaveLength(0);
+
+    // A quarter of the window stays reserved: 30,000 tokens are usable.
+    const chat = transcriptBuilder();
+    for (let turn = 1; measured(chat.items) < 28_000; turn += 1) {
+      chat.user(`question ${turn}: ${"q".repeat(200)}`);
+      chat.tool("lookup", { turn }, `result ${turn} ${"r".repeat(2_000)}`);
+      chat.answer(`answer ${turn} ${"a".repeat(300)}`);
+    }
+    expect(measured(chat.items)).toBeLessThan(30_000);
+    const long = harness(chat.items, { call: async () => summaryReply(), window: small });
+    const sent = await long.context.prepare(request(chat.items));
+    expect(long.calls.length).toBeGreaterThanOrEqual(1);
+    expect(firstText(sent).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+  });
+
+  it("asks a small window for no more output than its reserve, and leaves large or unknown windows as configured", () => {
+    expect(windowOutputParams({ maxOutputTokens: 65_536, reasoning: { effort: "low" } }, { contextWindow: 40_000, maxOutputTokens: 65_536 }))
+      .toEqual({ maxOutputTokens: 10_000, reasoning: { effort: "low" } });
+    // Every alias the adapters read takes the cap; a default from the model's capabilities becomes explicit.
+    expect(windowOutputParams({ max_tokens: 65_536 }, { contextWindow: 32_000, maxOutputTokens: 65_536 }))
+      .toEqual({ max_tokens: 8_000, maxOutputTokens: 8_000 });
+    expect(windowOutputParams({}, { contextWindow: 40_000, maxOutputTokens: 65_536 })).toEqual({ maxOutputTokens: 10_000 });
+    const params = { maxOutputTokens: 65_536 };
+    expect(windowOutputParams(params, { contextWindow: 200_000, maxOutputTokens: 65_536 })).toBe(params);
+    expect(windowOutputParams(params, { contextWindow: 40_000, maxOutputTokens: 4_096 })).toBe(params);
+    expect(windowOutputParams(params, { maxOutputTokens: 65_536 })).toBe(params);
+    expect(windowOutputParams(params, { contextWindow: 40_000, maxOutputTokens: 0 })).toBe(params);
+  });
+
+  it("keeps an explicit reasoning budget strictly below a capped output, and drops one the cap leaves no room for", () => {
+    const window = { contextWindow: 40_000, maxOutputTokens: 65_536 };
+    // Anthropic thinking: lowered to half the 10,000-token output, the answer keeping the rest.
+    expect(windowOutputParams({ maxTokens: 65_536, thinking: { budgetTokens: 32_000, enabled: true, type: "enabled" } }, window))
+      .toEqual({ maxOutputTokens: 10_000, maxTokens: 10_000, thinking: { budgetTokens: 5_000, enabled: true, type: "enabled" } });
+    expect(windowOutputParams({ thinking: { budget_tokens: 12_000, enabled: true, type: "enabled" } }, window))
+      .toEqual({ maxOutputTokens: 10_000, thinking: { budget_tokens: 5_000, enabled: true, type: "enabled" } });
+    // A budget already within it stays as it is.
+    expect(windowOutputParams({ thinking: { budgetTokens: 4_000, enabled: true, type: "enabled" } }, window))
+      .toEqual({ maxOutputTokens: 10_000, thinking: { budgetTokens: 4_000, enabled: true, type: "enabled" } });
+    // OpenRouter reasoning, both spellings.
+    expect(windowOutputParams({ reasoning: { enabled: true, maxTokens: 20_000, max_tokens: 20_000 } }, window))
+      .toEqual({ maxOutputTokens: 10_000, reasoning: { enabled: true, maxTokens: 5_000, max_tokens: 5_000 } });
+    // Below Anthropic's 1,024-token minimum the explicit budget is dropped instead of sent invalid.
+    expect(windowOutputParams({ thinking: { budgetTokens: 8_000, enabled: true, type: "enabled" } },
+      { contextWindow: 8_000, maxOutputTokens: 65_536 }))
+      .toEqual({ maxOutputTokens: 2_000, thinking: { enabled: true, type: "enabled" } });
+    // Uncapped windows keep the budget.
+    const large = { thinking: { budgetTokens: 32_000, enabled: true, type: "enabled" } };
+    expect(windowOutputParams(large, { contextWindow: 200_000, maxOutputTokens: 64_000 })).toBe(large);
   });
 
   it("measures nothing without a window", async () => {

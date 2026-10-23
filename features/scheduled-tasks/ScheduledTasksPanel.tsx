@@ -156,7 +156,10 @@ export function ScheduledTasksPanel({
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // A "running now" notice names its task and lasts only while that run does.
+  const [notice, setNoticeState] = useState<Readonly<{ runningTaskId: string | null; text: string }> | null>(null);
+  const setNotice = (text: string | null, runningTaskId: string | null = null) =>
+    setNoticeState(text === null ? null : { runningTaskId, text });
   const [retrying, setRetrying] = useState(false);
   const pending = useRef(false);
   const active = useRef(true);
@@ -167,6 +170,11 @@ export function ScheduledTasksPanel({
   /** Run ids the editor already marked seen (or is marking). */
   const seenRuns = useRef(new Set<string>());
   const busy = saving || rowBusy !== null;
+  const runningNoticeSettled = notice?.runningTaskId
+    ? !tasks.some((task) => task.id === notice.runningTaskId && task.running) : false;
+  useEffect(() => {
+    if (runningNoticeSettled) setNoticeState((current) => current?.runningTaskId ? null : current);
+  }, [runningNoticeSettled]);
 
   useEffect(() => {
     active.current = true;
@@ -238,7 +246,7 @@ export function ScheduledTasksPanel({
     restoreFocus.current = task.id;
     editorEpoch.current += 1;
     setEditor(null);
-    void rowMutation(task, async () => { await onOpenChat(chatId); });
+    void openTaskChat(task, chatId);
   }
 
   // "Edit task" in a task's chat opens Studio › Scheduled with that task's editor.
@@ -336,7 +344,7 @@ export function ScheduledTasksPanel({
   });
   const runNow = (task: ScheduledTask) => rowMutation(task, async () => {
     applyScheduledTask(await runScheduledTaskNow(task.id));
-    if (active.current) setNotice(`“${task.title}” is running now. The answer will appear in ${task.chatMode === "new" ? "a new chat" : "its chat"}.`);
+    if (active.current) setNotice(`“${task.title}” is running now. The answer will appear in ${task.chatMode === "new" ? "a new chat" : "its chat"}.`, task.id);
   });
   const remove = (task: ScheduledTask) => rowMutation(task, async () => {
     await deleteScheduledTask(task.id);
@@ -345,9 +353,26 @@ export function ScheduledTasksPanel({
     setDeleting(null);
     if (active.current) setNotice(`“${task.title}” was deleted. Its chats and answers stay in your history.`);
   });
-  const openChat = (task: ScheduledTask) => rowMutation(task, async () => {
-    if (task.chatId) await onOpenChat(task.chatId);
-  });
+  /**
+   * Opens a task's chat the way a chat row does: the shell opens it and leaves
+   * Studio. Unlike a mutation it never reports the panel busy, because Studio
+   * refuses to close while it is; a chat that is gone reports on the row.
+   */
+  async function openTaskChat(task: ScheduledTask, chatId: string) {
+    if (pending.current) return;
+    pending.current = true; setNotice(null);
+    setRowErrors(({ [task.id]: _removed, ...rest }) => rest);
+    try {
+      await onOpenChat(chatId);
+    } catch (error) {
+      if (!active.current) return;
+      setRowErrors((current) => ({ ...current, [task.id]: error instanceof Error && !(error instanceof ScheduledTaskApiError)
+        ? error.message : scheduledTaskFailureMessage(errorCode(error)) }));
+    } finally {
+      pending.current = false;
+    }
+  }
+  const openChat = (task: ScheduledTask) => task.chatId ? openTaskChat(task, task.chatId) : undefined;
   const retry = async () => {
     setRetrying(true);
     await refreshScheduledTasks();
@@ -365,7 +390,7 @@ export function ScheduledTasksPanel({
         Scheduled tasks
       </SectionHeading>
       {limitReason && loadState === "ready" ? <p className="v2-scheduled-note" id="v2-scheduled-limit">{limitReason}</p> : null}
-      {notice ? <p className="v2-scheduled-notice" role="status">{notice}</p> : null}
+      {notice && !runningNoticeSettled ? <p className="v2-scheduled-notice" role="status">{notice.text}</p> : null}
       {loadState === "idle" || loadState === "loading" ? <p className="v2-scheduled-note" role="status">Loading scheduled tasks…</p> : null}
       {loadState === "error" ? (
         <div className="v2-scheduled-load-error" role="alert">

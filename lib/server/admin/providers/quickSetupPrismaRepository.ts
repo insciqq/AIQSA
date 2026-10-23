@@ -14,7 +14,10 @@ import {
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID
 } from "../../../domain/search";
-import type { ProviderModelTemplateKey } from "../../../domain/providerTemplates";
+import {
+  isUnconfiguredProviderTemplate,
+  type ProviderModelTemplateKey
+} from "../../../domain/providerTemplates";
 import {
   filterAvailableProviderModels,
   filterExposedProviderModels,
@@ -741,13 +744,17 @@ async function loadQuickSetupState(
     version: 4
   });
 
+  // The bootstrap placeholder is not a connection yet: setup configures it
+  // under the chosen name, so it neither counts as one nor takes its name.
+  const placeholder = connection !== null && isUnconfiguredProviderTemplate(connection);
   const inspection: AdminProviderQuickSetupInspection = {
     actingUserDefault: Boolean(selectedModel && settings?.defaultProviderModelId === selectedModel.id),
     authorized: Boolean(actorAuthorized),
-    canonicalConnection: connection !== null,
+    canonicalConnection: connection !== null && !placeholder,
     configured,
     connectionNames: connections
-      .filter((candidate) => candidate.family === policy.provider)
+      .filter((candidate) => candidate.family === policy.provider &&
+        !(placeholder && candidate.id === connection?.id))
       .map((candidate) => candidate.displayName),
     fingerprint: safeFingerprint,
     mode,
@@ -1582,6 +1589,8 @@ async function applyQuickSetupPlan(
         activeConfig: json(policy.connection.configuration),
         activeVersion: current.connection.draftVersion,
         activatedAt: plan.now,
+        // The family's first setup names its bootstrap placeholder.
+        ...(plan.connectionDisplayName ? { displayName: plan.connectionDisplayName } : {}),
         enabled: true
       },
       where: { id: policy.connection.id }

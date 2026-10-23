@@ -96,7 +96,10 @@ export function createNativeOrphanFinder(client: Pick<PrismaClient, "modelRun">)
       status: { in: activeModelRunStatuses },
       ...(input.liveRunIds.length > 0 ? { id: { notIn: [...input.liveRunIds] } } : {}),
       ...(input.userId ? { userId: input.userId } : {}),
-      OR: [{ createdAt: { lt: input.bootedBefore } }, { updatedAt: { lt: input.staleBefore } }]
+      OR: [{ createdAt: { lt: input.bootedBefore } }, { updatedAt: { lt: input.staleBefore } }],
+      // A successor still waiting behind the previous answer's Workspace belongs to its follow-up job, which starts,
+      // expires or fails it, after a restart too (`workspaceFollowupCoordinator.ts`).
+      NOT: { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
     }
   });
 }

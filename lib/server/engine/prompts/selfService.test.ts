@@ -76,6 +76,9 @@ describe("AIQSA guide", () => {
     expect(aiqsaGuideText("secrets")).toContain("32 secrets and 4 MiB in total, 128 KiB of environment variables, 512 KiB per file");
     expect(aiqsaGuideText("skills")).toContain("one save per answer and 20 per hour");
     expect(aiqsaGuideText("scheduled_tasks")).toContain("10 active tasks (3 of them hourly) and 50 in total");
+    // A run reads only the links its saved instructions hold (`lib/server/scheduledTasks/promptUrls.ts`).
+    expect(aiqsaGuideText("scheduled_tasks")).toContain("When a task depends on particular sites, write their exact links into the instructions and tell the user which sources it uses.");
+    expect(aiqsaGuideText("scheduled_tasks")).toContain("allowed once the user opens the task and saves its instructions");
     for (const section of ["assistants", "instructions", "skills", "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"]) {
       expect(aiqsaGuideText("studio")).toContain(`/?library=${section}`);
     }

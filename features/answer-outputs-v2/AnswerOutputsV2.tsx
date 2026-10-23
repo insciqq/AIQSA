@@ -7,7 +7,8 @@ import { ArtifactThumbnailV2 } from "@/components/artifacts/ArtifactThumbnailV2"
 import { useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
+import { ChatImageV2, ChatImageViewerV2 } from "@/features/attachments-v2/ChatImageV2";
+import { attachmentPreviewKind } from "@/lib/domain/attachmentPreview";
 import { FileActionsMenuV2 } from "@/features/attachments-v2/FileActionsMenuV2";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
@@ -536,6 +537,7 @@ export function AnswerOutputsV2({
   onEditArtifact,
   onEditScheduledTask,
   onOpenArtifact,
+  onOpenLibrary,
   onStartAssistantChat,
   onUseImageInArtifact,
   runId = null,
@@ -553,6 +555,8 @@ export function AnswerOutputsV2({
   /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
+  /** Opens a Studio address (`/?library=...`) a card links to in the shell. */
+  onOpenLibrary?(href: string): void;
   /** Starts a new chat with an Assistant an answer created, as `/assistant/<id>` does. */
   onStartAssistantChat?(assistantId: string): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
@@ -564,6 +568,7 @@ export function AnswerOutputsV2({
   const scheduledTasks = artifact?.scheduledTasks ?? [];
   const skillSaves = artifact?.skillSaves ?? [];
   const resourceChanges = artifact?.resourceChanges ?? [];
+  const cardNavigation = { onOpenLibrary, onStartAssistantChat };
   const mcpApprovals = artifact?.mcpApprovals ?? [];
   if (live) {
     // A created or changed task, a saved Skill or a changed secret or Assistant already is so: its card does not wait for the answer.
@@ -571,10 +576,10 @@ export function AnswerOutputsV2({
     const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
     return drafts.length || scheduledTasks.length || skillSaves.length || resourceChanges.length || mcpApprovals.length
       ? <div className="v2-answer-outputs" data-testid="answer-outputs">
-        {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
+        {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} previewImages /> : null}
         <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
-        <SkillSaveCardsV2 cards={skillSaves} live />
-        <ResourceChangeCardsV2 cards={resourceChanges} live onStartAssistantChat={onStartAssistantChat} />
+        <SkillSaveCardsV2 cards={skillSaves} live onOpenLibrary={onOpenLibrary} />
+        <ResourceChangeCardsV2 cards={resourceChanges} live navigation={cardNavigation} />
         <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
       </div> : null;
   }
@@ -614,11 +619,11 @@ export function AnswerOutputsV2({
       {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
-      <SkillSaveCardsV2 cards={skillSaves} />
-      <ResourceChangeCardsV2 cards={resourceChanges} onStartAssistantChat={onStartAssistantChat} />
+      <SkillSaveCardsV2 cards={skillSaves} onOpenLibrary={onOpenLibrary} />
+      <ResourceChangeCardsV2 cards={resourceChanges} navigation={cardNavigation} />
       <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
-        <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
+        <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} previewImages />
       ) : null}
       {artifact?.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
@@ -726,18 +731,31 @@ function generatedFileIcon(file: ThreadGeneratedFile, type: string): UiV2IconNam
   return file.mimeType.startsWith("image/") ? "image" : FILE_TYPE_ICONS[type] ?? "file";
 }
 
+/** An image file the authorized preview route can show (the same rule it applies). */
+function previewableImageFile(file: ThreadGeneratedFile): boolean {
+  return attachmentPreviewKind({ byteSize: file.byteSize, fileName: file.fileName, mimeType: file.mimeType, status: "ready" }) === "image";
+}
+
 /** Generated files as compact cards: Download is the visible verb, saving a
  * copy to Files waits behind "⋯". The type tile also keeps the file text
- * clear of the floating jump control's left lane. */
-export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisabled = false }: Readonly<{
+ * clear of the floating jump control's left lane. An image file's name opens
+ * the image viewer; with `previewImages` (an answer's outputs) its picture is
+ * also shown inline above the cards, as generated images are. */
+export function GeneratedFilesV2({ files, canSave = false, onUseFile, previewImages = false, useDisabled = false }: Readonly<{
   files: readonly ThreadGeneratedFile[];
   canSave?: boolean;
   onUseFile?(attachmentId: string, fileName: string): void;
+  previewImages?: boolean;
   useDisabled?: boolean;
 }>) {
+  const [viewing, setViewing] = useState<ThreadGeneratedFile | null>(null);
   if (files.length === 0) return null;
+  const previews = previewImages ? files.filter(previewableImageFile) : [];
   return (
     <section className="v2-generated-files" aria-label="Generated files">
+      {previews.map((file) => (
+        <ChatImageV2 key={file.attachmentId} attachmentId={file.attachmentId} caption={false} label={file.fileName} />
+      ))}
       <ul>
         {files.map((file) => {
           const type = generatedFileType(file);
@@ -745,7 +763,12 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisable
             <li key={file.attachmentId}>
               <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name={generatedFileIcon(file, type)} /></span>
               <span className="v2-generated-file-copy">
-                <strong title={file.relativePath}>{file.fileName}</strong>
+                {previewableImageFile(file) ? (
+                  <button aria-haspopup="dialog" className="v2-generated-file-name v2-focusable" onClick={() => setViewing(file)}
+                    title={file.relativePath} type="button">
+                    <strong>{file.fileName}</strong>
+                  </button>
+                ) : <strong title={file.relativePath}>{file.fileName}</strong>}
                 <small>{file.checkpoint ? "Saved draft · " : null}{type} · {formatAttachmentBytes(file.byteSize)}</small>
                 {file.checkpoint ? <>
                   <small className="v2-generated-file-description">{file.checkpoint.description}</small>
@@ -771,6 +794,7 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisable
           );
         })}
       </ul>
+      {viewing ? <ChatImageViewerV2 attachmentId={viewing.attachmentId} label={viewing.fileName} onClose={() => setViewing(null)} /> : null}
     </section>
   );
 }

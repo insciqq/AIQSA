@@ -820,6 +820,38 @@ describe("Prisma provider Quick setup additional connections", () => {
     });
   });
 
+  it("treats the bootstrap placeholder as no connection, and names it at the family's first setup", async () => {
+    const placeholder = canonicalConnection();
+    const fresh = transactionalRepository([placeholder]);
+    const inspection = await fresh.repository.inspect({ now, provider: "openai", ...actor });
+    // Neither connected nor holding the family's name, so the first Add provider configures it.
+    expect(inspection).toMatchObject({ canonicalConnection: false, connectionNames: [], mode: "initial" });
+
+    const evidence = { detail: "ok" as const, method: "models_catalog" as const, selectedProviders: [],
+      upstreamModelId: terra.configuration.upstreamModelId };
+    // Stop right after the connection write: the rest of the commit is covered elsewhere.
+    fresh.tx.providerModel.create.mockImplementationOnce(async () => { throw new Error("stop_after_connection"); });
+    await expect(fresh.repository.commit({
+      actor, candidate: terra, candidates: [terra], checkedAt: now, connectionDisplayName: "OpenAI · Work",
+      credential: { draftVersion: 1, id: "credential-new", isNew: true, versionEnvelope: "envelope-new", versionId: "version-new" },
+      expectedFingerprint: inspection.fingerprint, grants: [{ id: "grant-terra", modelId: terra.modelId }], mode: "initial",
+      modelChecks: [{ evidence, modelId: terra.modelId }], now, preservedModels: [], provider: "openai", rerankerChecks: []
+    })).rejects.toThrow("stop_after_connection");
+    expect(fresh.updates).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({ activeVersion: 1, displayName: "OpenAI · Work", enabled: true }),
+      table: "providerConnection",
+      where: { id: policy.connection.id }
+    }));
+    expect(fresh.created.providerConnection).toBeUndefined();
+
+    // A key makes the same row an ordinary connection that keeps its name.
+    const keyed = transactionalRepository([canonicalConnection({ credentials: [readyGraph().credential] })]);
+    await expect(keyed.repository.inspect({ now, provider: "openai", ...actor })).resolves.toMatchObject({
+      canonicalConnection: true,
+      connectionNames: ["OpenAI"]
+    });
+  });
+
   it("creates a separate connection graph with no template identity and a Primary default key", async () => {
     const graph = readyGraph();
     const { created, repository, tx, updates } = transactionalRepository([graph.connection]);

@@ -1,6 +1,7 @@
 import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
+import { providerTemplateIds } from "../../../domain/providerTemplates";
 import type { AuthenticatedSession, RequestAuthResolver } from "../../auth/requestAuth";
 import {
   createAdminProviderCatalogHandler,
@@ -516,5 +517,32 @@ describe("provider settings Test & Save boundary", () => {
     expect((await handler(jsonRequest(url, { ...body, credentialSecrets: [{ credentialId: "credential-1" }] }, "PATCH"), { params: { connectionId: "connection-1" } })).status).toBe(400);
     expect((await handler(jsonRequest(url, { ...body, activate: undefined }, "PATCH"), { params: { connectionId: "connection-1" } })).status).toBe(400);
     expect(providerService.saveConnectionSettings).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("bootstrap placeholder connections", () => {
+  const read = (connections: AdminProviderConnection[]) => createAdminProviderCatalogHandler({
+    resolveAuth: resolver(auth()), service: service({ listConnections: vi.fn(async () => connections) })
+  })(new Request("http://localhost/api/admin/providers"));
+  const placeholder = (id: string, family: AdminProviderConnection["family"], displayName: string): AdminProviderConnection => ({
+    ...connection, activeVersion: 0, credentials: [], defaultCredentialId: null, displayName, enabled: false, family, id
+  });
+
+  it("lists a family's built-in connection only once it was set up, so nothing unconfigured looks connected", async () => {
+    const deepSeek = placeholder(providerTemplateIds.deepSeekConnection, "deepseek", "DeepSeek");
+    const openAi = placeholder(providerTemplateIds.openAiConnection, "openai", "OpenAI");
+    const fresh = await (await read([deepSeek, openAi])).json() as { connections: AdminProviderConnection[] };
+    expect(fresh.connections).toEqual([]);
+
+    // A key or an activation makes it an ordinary connection that stays listed.
+    const withKey = { ...deepSeek, credentials: connection.credentials };
+    const activated = { ...openAi, activeVersion: 1 };
+    const later = await (await read([withKey, activated])).json() as { connections: AdminProviderConnection[] };
+    expect(later.connections.map(({ id }) => id)).toEqual([providerTemplateIds.deepSeekConnection, providerTemplateIds.openAiConnection]);
+
+    // Any other connection is listed whatever its state.
+    const draft = placeholder("connection-draft", "deepseek", "DeepSeek · 2");
+    const other = await (await read([draft])).json() as { connections: AdminProviderConnection[] };
+    expect(other.connections.map(({ id }) => id)).toEqual(["connection-draft"]);
   });
 });

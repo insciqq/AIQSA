@@ -227,6 +227,24 @@ describe("create_scheduled_task tool", () => {
     expect(result.artifacts?.[0]).toMatchObject({ data: { payload: { timeZoneFallback: true, kind: "monitoring" } } });
   });
 
+  it("asks for the exact links of the sites a task depends on and for naming its sources", () => {
+    const { description } = createScheduledTaskTool("Europe/Moscow");
+    expect(description).toContain("When the task depends on particular sites or pages, write their exact URLs into prompt, " +
+      "since a run reads only the links in its saved prompt besides its own search results, and tell the user which " +
+      "sources it will use.");
+  });
+
+  it("tells the model when the task's runs cannot read its links until the user saves the instructions", async () => {
+    const pending = await executeCreateScheduledTask(call({ ...reminder, prompt: "Send the rate from https://www.cbr.ru/currency_base/daily/." }),
+      context(), creator(task({ promptLinksPending: true })));
+    expect(pending.content).toEqual([{ type: "json", value: expect.objectContaining({
+      created: true, linksPending: true,
+      linksNote: expect.stringContaining("opens the task with Edit and saves its instructions once")
+    }) }]);
+    const allowed = await executeCreateScheduledTask(call(reminder), context(), creator());
+    expect(JSON.stringify(allowed.content)).not.toContain("linksPending");
+  });
+
   it("hands the creation only the run's frozen user-authored link digests, never Search authority", async () => {
     const create = creator();
     const userUrlDigests = ["b".repeat(64)];
