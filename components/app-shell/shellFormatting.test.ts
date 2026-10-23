@@ -29,6 +29,15 @@ describe("shell error formatting", () => {
     expect(await responseErrorMessage(Response.json({ error: code }, { status: 400 }), "send_failed_400")).toBe(`${message} (${code})`);
   });
 
+  it("explains a request too large for the model's context window with what to do, keeping the code", async () => {
+    const formatted = await responseErrorMessage(Response.json({ error: "context_too_large",
+      message: "Prompt, pinned context, current message, and tools exceed the model context budget (16000 estimated tokens available)." },
+    { status: 400 }), "send_failed_400");
+    expect(formatted).toBe("This message does not fit the selected model's context window beside its instructions and tools. " +
+      "Shorten the message or remove attachments, or choose a model with a larger context window (context_too_large)");
+    expect(formatted).not.toContain("context too large");
+  });
+
   it("keeps concrete Skill admission limits visible in the composer", async () => {
     expect(await responseErrorMessage(Response.json({ error: "skills_count_exceeded", actual: 33, limit: 32 }), "send_failed_400"))
       .toContain("33 Skills are pinned; the limit is 32");
