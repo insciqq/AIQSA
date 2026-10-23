@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError } from "../parsing/errors";
-import { readOnlyRunTool } from "../runs/toolReadOnly";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { PdfExtractionError } from "../uploads/pdf";
 import { extractPage as extractPageText } from "../webFetch/extract";
@@ -60,7 +59,6 @@ describe("fetch_url tool contract", () => {
       { version: 1, userUrlDigests: [], instructionUrlDigests: ["https://x.example/"] }]) {
       expect(isFetchUrlPlan(invalid)).toBe(false);
     }
-    expect(readOnlyRunTool({ tools: [fetchUrlTool] })(FETCH_URL_TOOL_NAME)).toBe(true);
   });
 
   it("reads only user-authored text of the branch, never other roles, internal context or scheduled prompts", () => {

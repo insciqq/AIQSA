@@ -23,12 +23,28 @@ import {
 } from "../../providers/runtimeFactory";
 import { ProviderStreamSafetyError } from "../../providers/streamSafety";
 import { resolveProviderToolChoice } from "../../providers/providerToolChoice";
-import { requiredToolCorrectionContinuation } from "../../runs/providerToolLoop";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
-import type { ModelToolCall } from "../../tools/types";
+import type { ModelToolCall, ProviderToolBridge } from "../../tools/types";
 import { memoryModelOutputAllowance } from "../execution/outputBudget";
 import { admittedOutputAllowance, type ModelGenerationBudget } from "../../providers/modelOutputAllowance";
+
+/**
+ * The genuine output of a response that skipped the one required tool, then
+ * one user turn asking for exactly that tool: the single correction a strict
+ * Memory request gets.
+ */
+function requiredToolCorrectionMessages(bridge: ProviderToolBridge, result: ProviderRunResult, toolName: string): unknown[] {
+  const text = `You must call the ${toolName} tool before answering. Call it now with valid arguments. Do not provide a final answer yet.`;
+  const assistantMessage = bridge.provider === "gemini"
+    ? { type: "model_output", content: [{ type: "text", text: result.finalText }] }
+    : { role: "assistant", content: result.finalText };
+  return [
+    ...bridge.serializeAssistantToolCalls({ calls: result.toolCalls ?? [],
+      providerMessage: result.providerToolCallMessage ?? assistantMessage }),
+    bridge.provider === "gemini" ? { type: "user_input", content: [{ type: "text", text }] } : { role: "user", content: text }
+  ];
+}
 
 type LockedCredentialVersion = Readonly<{
   credentialId: string;
@@ -441,16 +457,13 @@ export function createAcceptedMemoryLearningProvider<
         return { providerResponseId: boundedProviderResponseId(result.providerResponseId),
           toolCalls: result.toolCalls, usage: result.usage };
       }
-      const continuation = requiredToolCorrectionContinuation(runtime.toolBridge, {
-        providerResponseId: null,
-        providerToolMessages: []
-      }, result, providerRequest.tools[0].name);
+      const correction = requiredToolCorrectionMessages(runtime.toolBridge, result, providerRequest.tools[0].name);
       const correctionRequest: ProviderRunRequest = {
         ...providerRequest,
         // Memory requests are stateless (store:false). Replay their genuine
         // output rather than referring to an unstored provider response.
         previousProviderResponseId: undefined,
-        providerToolMessages: [...continuation.providerToolMessages],
+        providerToolMessages: correction,
         toolChoice: "auto"
       };
       let corrected: ProviderRunResult;

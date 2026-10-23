@@ -1,6 +1,6 @@
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ProviderModelCapabilities } from "../providers/types";
-import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
+import { applyProviderRequestContextBudget } from "../runs/requestContextBudget";
 import { planAdaptivePdfPages, type AdaptivePdfPlan } from "./adaptivePdf";
 import { assembleAdaptivePdfPages } from "./adaptivePdfAssembly";
 import { adaptivePdfVisionPrompt, prepareAdaptivePdfVisionSupplement } from "./adaptivePdfVision";

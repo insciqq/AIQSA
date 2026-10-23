@@ -1,11 +1,13 @@
+import type { ChatTitleGenerator } from "../chats/titleGeneration";
+import { nativeRunResponse, nativeRunServices, type NativeEngineHandlerDeps } from "../engine/handlerSupport";
+import type { NativeRunServices } from "../engine/execution";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
-import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
-import { CONTEXT_COMPACTION_POLICY_RETIRED, contextCompactionPolicyRetired } from "../runs/contextCompactionContract";
-import { createRunExecutionResponse, type RunExecutionInput } from "../runs/runExecution";
+import { applyProviderRequestContextBudget } from "../runs/requestContextBudget";
 import { acceptedRunSnapshot, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
@@ -22,24 +24,25 @@ import { observeChatPdfPersistence } from "./chatPdfPersistenceObservability";
 export type ChatPdfRunSnapshot = AcceptedRunSnapshot;
 export const chatPdfRunSnapshot = acceptedRunSnapshot;
 
-type Dependencies = Omit<RunExecutionInput,
-  "adapter" | "created" | "prepared" | "repository" | "userId" | "toolBridge" | "searchRuntimes" | "structuredOutputAdapter"> & Readonly<{
+type Dependencies = Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" | "skillTools" | "vision"> & Readonly<{
+  chatTitleGenerator?: ChatTitleGenerator;
+  nativeEngine: NativeEngineHandlerDeps;
   pdfRepository: ReturnType<typeof createChatPdfRepository>;
   providerRuntime: ProviderRuntimeResolver;
   repository: RunRepository;
   storage: StorageAdapter;
+  workspace?: WorkspaceCoordinator;
 }>;
 
 export function createChatPdfRunFailure(deps: Readonly<{
   repository: Pick<RunRepository, "settlePreparingRunFailure" | "getRunControlForRecovery" | "hasPendingPdfPreparation" | "failRun">;
-  workspace?: RunExecutionInput["workspace"];
+  workspace?: Pick<WorkspaceCoordinator, "settle">;
 }>): ChatPdfCoordinatorDependencies["fail"] {
   return async (claim, error) => {
     const message = error.code === "pdf_local_text_unusable"
       ? "This PDF could not be read. Try a different file."
       : error.code === "pdf_preparation_context_limit" ? "This document does not fit the conversation context."
       : error.code === CHAT_PDF_READER_OUTPUT_LIMIT.code ? CHAT_PDF_READER_OUTPUT_LIMIT.message
-      : error.code === CONTEXT_COMPACTION_POLICY_RETIRED.code ? CONTEXT_COMPACTION_POLICY_RETIRED.message
       : "Document preparation could not finish. Try again.";
     const settled = await observeChatPdfPersistence(claim.runId, "fail", () => deps.repository.settlePreparingRunFailure({
       errorCode: error.code, message, retryable: error.retryable, runId: claim.runId, state: "FAILED", userId: claim.userId
@@ -73,12 +76,8 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
       throw new ChatPdfPreparationError("pdf_preparation_invalid");
     }
     let prepared = snapshot.prepared;
-    // A snapshot accepted under the retired context policy ends before its
-    // budget, provider or tool step.
-    if (contextCompactionPolicyRetired(prepared.normalizedRequest) || loaded.modelRun.normalizedRequest &&
-      contextCompactionPolicyRetired(loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest)) {
-      throw new ChatPdfPreparationError(CONTEXT_COMPACTION_POLICY_RETIRED.code);
-    }
+    // A run the old core admitted has no engine left to answer it; it ends at startup (`retiredEngineRuns.ts`).
+    if (loaded.modelRun.engine !== "native") throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     const runtime = await deps.providerRuntime.resolve(claim.runId, "answer");
     const records = await deps.repository.loadAttachments(claim.userId, prepared.normalizedRequest.attachmentIds,
       prepared.project?.projectId);
@@ -147,8 +146,10 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     }
     if (!await observeChatPdfPersistence(claim.runId, "dispatch", () => deps.pdfRepository.markAnswerDispatched(claim))) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     releaseRegistry();
-    const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, created, prepared,
-      searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
+    const response = nativeRunResponse(deps.nativeEngine, { adapter: runtime.adapter,
+      ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
+      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), userId: claim.userId,
+      ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "complete" });
     // Answer persistence and its controller have taken ownership. Do not hold
     // the single PDF worker for the duration of an ordinary streamed answer.

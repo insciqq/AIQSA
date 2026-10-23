@@ -44,12 +44,7 @@ import {
   type ChatAssistantAdmission
 } from "./assistantRunAdmission";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
-import {
-  contextSummaryReuseCandidates,
-  conversationContextPolicy,
-  type ContextSummaryReuse
-} from "./contextCompactionContract";
-import { applyReusedContextSummary } from "./contextCompactionSummarizer";
+import { conversationContextPolicy } from "./contextCompactionContract";
 import {
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
@@ -112,9 +107,7 @@ import {
 } from "../tools/fetchUrlPlan";
 import { isFetchUrlDigest } from "../webFetch/urls";
 import { readToolCallTool } from "../tools/readToolCall";
-import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
-import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
-import { toolHistoryReaders } from "./toolHistoryRecords";
+import { TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -146,9 +139,10 @@ import {
   knowledgeEvidenceMessageFromDispatchDraft,
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
-import { requestWithRunFollowups } from "./runFollowupExecution";
-import { followupAdmissionBudgetTokens, followupTokenCost, type RunFollowupAdmission, type RegenerationFollowups } from "./runFollowups";
+import { applyProviderRequestContextBudget } from "./requestContextBudget";
+import {
+  followupAdmissionBudgetTokens, followupTokenCost, requestWithRunFollowups, type RunFollowupAdmission, type RegenerationFollowups
+} from "./runFollowups";
 import {
   getRunAttachmentLimits,
   type RunAttachmentLimits
@@ -229,52 +223,6 @@ type RunPreparationRepository = Pick<
   | "loadToolHistory"
   | "projectToolHistory"
 >>;
-
-/**
- * Notes a hybrid admission freezes as a candidate instead of buying a summary
- * of its whole branch again: the latest compatible checkpoint on this branch
- * (`contextSummaryReuseCandidates`) whose notes, standing for their covered
- * prefix, fit the admitted binding. Memory context and later tool results are
- * unknown here, so the executor decides whether the exact branch needs them and
- * rechecks their sources. This reads settled checkpoints only: no provider,
- * tool or observation I/O happens during preparation.
- */
-async function carriedContextSummary(input: Readonly<{
-  bridge?: ProviderToolBridge;
-  conversationMessages: readonly ProviderConversationMessage[];
-  repository: RunPreparationRepository;
-  request: ProviderRunRequest;
-  userId: string;
-  /** The request with this admission's tool-history records, for notes whose
-   * boundary is such a record. Never part of the prepared request. */
-  withToolHistory?(request: ProviderRunRequest): Promise<ProviderRunRequest>;
-}>): Promise<ContextSummaryReuse | null> {
-  const policy = input.request.contextCompactionPolicy;
-  const load = input.repository.loadBranchContextCheckpoints;
-  const leafMessageId = policy?.source.leafMessageId;
-  if (policy?.mode !== "hybrid" || !load || !leafMessageId) return null;
-  // Candidates come from the branch ancestry, not the provider context: an
-  // answer that failed after committing notes is left out of the context yet
-  // stays the parent of this turn. Applying carried notes still requires their
-  // covered boundary in the provider context.
-  const current = input.conversationMessages.at(-1)?.id;
-  const branch = await load({ chatId: input.request.chatId, leafMessageId, userId: input.userId });
-  let withHistory: ProviderRunRequest | undefined;
-  for (const reuse of contextSummaryReuseCandidates({
-    checkpoints: branch.checkpoints,
-    priorMessageIds: branch.ancestorMessageIds.filter((messageId) => messageId !== current),
-    userId: input.userId
-  })) {
-    const base = isToolHistoryMessageId(reuse.coveredMessageId) && input.withToolHistory
-      ? withHistory ??= await input.withToolHistory(input.request) : input.request;
-    const projected = applyReusedContextSummary({ ...base, contextCompactionPolicy: { ...policy, reuse } });
-    if (projected && applyProviderRequestContextBudget({
-      ...(input.bridge ? { bridge: input.bridge } : {}),
-      request: projected
-    }).ok) return reuse;
-  }
-  return null;
-}
 
 /**
  * The earlier turns a scheduled run's model sees: only the task's previous
@@ -796,13 +744,6 @@ function resolveWorkspaceEnabled(
     return null;
   }
   return (value as { enabled: boolean }).enabled;
-}
-
-/** One read of a frozen history's records, shared by the admission checks
- * that need them; null when it cannot be read. */
-function readToolHistoryOnce(read: () => Promise<ToolHistoryProjection>): () => Promise<ToolHistoryProjection | null> {
-  let pending: Promise<ToolHistoryProjection | null> | null = null;
-  return () => pending ??= read().catch(() => null);
 }
 
 /** Explicit document retry retains the accepted reader/answer authority, but a
@@ -2712,35 +2653,6 @@ async function prepareRunWith(
     const reserve = followupAdmission.budgetTokens + (inheritedFollowups?.entries.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0) ?? 0);
     normalizedRequest.followupContextReserveTokens = reserve;
     providerRequest.followupContextReserveTokens = reserve;
-  }
-  // The exact branch stays the admitted context; carried notes are frozen
-  // beside it as a candidate the executor applies only when needed.
-  const projectHistory = deps.repository.projectToolHistory;
-  // The frozen history's records under the admitting user's authority, read
-  // once for every admission check that needs them.
-  const admittedRecords = projectHistory && toolHistory.turns.length > 0 ? readToolHistoryOnce(() => projectHistory({
-    actor: { chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId },
-    readers: toolHistoryReaders(normalizedRequest), toolHistory,
-    currentUserMessageId: providerRequest.context?.messages.at(-1)?.id ?? null
-  })) : null;
-  const reuse = await carriedContextSummary({
-    ...(toolBridge ? { bridge: toolBridge } : {}),
-    conversationMessages,
-    repository: deps.repository,
-    request: providerRequest,
-    userId: input.userId,
-    ...(admittedRecords ? {
-      // Without its records (a failed read) no carried notes bounded by one apply.
-      withToolHistory: async (request: ProviderRunRequest) => {
-        const projection = await admittedRecords();
-        return projection ? insertToolHistory(request, projection) : request;
-      }
-    } : {})
-  });
-  if (reuse && providerRequest.contextCompactionPolicy) {
-    const contextCompactionPolicy = { ...providerRequest.contextCompactionPolicy, reuse };
-    normalizedRequest.contextCompactionPolicy = contextCompactionPolicy;
-    providerRequest.contextCompactionPolicy = contextCompactionPolicy;
   }
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   // Assistant-derived values never overwrite the user's ordinary manual

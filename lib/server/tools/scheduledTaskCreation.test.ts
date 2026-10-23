@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ScheduledTask } from "../../contracts/scheduledTasks";
 import { logEvent } from "../observability";
-import { readOnlyRunTool } from "../runs/toolReadOnly";
 import type { ScheduledTaskCallCreation } from "../runs/runRepositoryContract";
 import {
   CREATE_SCHEDULED_TASK_TOOL_NAME,
@@ -74,8 +73,6 @@ describe("create_scheduled_task tool", () => {
     expect(isScheduledTaskCreateCall({ scheduledTaskTool: settings }, CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe(true);
     expect(isScheduledTaskCreateCall({}, CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe(false);
     expect(isScheduledTaskCreateCall({ scheduledTaskTool: settings }, "get_session_status")).toBe(false);
-    // A creation changes state: repeated identical calls are never treated as reads.
-    expect(readOnlyRunTool({ tools: [tool] })(CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe(false);
   });
 
   it("pins Skills only from the run's own catalog, by alias or name, and tells the model which it pinned", async () => {

@@ -2,13 +2,9 @@
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
 import { ARTIFACT_LIMITS, normalizeArtifactOperation } from "@/lib/contracts/artifacts";
-import { ARTIFACT_GENERATION_LIMITS, decodeArtifactGenerationEvent, type ArtifactGenerationEvent } from "@/lib/contracts/artifactGeneration";
 import { parseArtifactRuntimeError } from "@/lib/contracts/artifactRuntime";
-import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { artifactReadPage } from "./readPage";
-import { ArtifactArgumentPreview } from "./argumentPreview";
 import { artifactDownloadDisposition, artifactDownloadName } from "./downloadName";
-import { createArtifactGeneration } from "./generation";
 import { decodeArtifactBundle, renderArtifactBundle } from "./bundle";
 import { artifactToolError } from "./errors";
 import { ArtifactPublicBusyError, boundedArtifactWork } from "./objects";
@@ -59,33 +55,6 @@ describe("artifact patch, privacy and bounded output", () => {
     expect(() => artifactReadPage({ ...input, args: { artifact_id: "artifact", cursor: firstCursor!.slice(0, -2) + "ab" } })).toThrow("artifact_read_cursor_invalid");
     expect(() => artifactReadPage({ ...input, versionId: "different", args: { artifact_id: "artifact", cursor: firstCursor } })).toThrow("artifact_read_cursor_invalid");
   });
-  it("extracts only root files text across every JSON character boundary", () => {
-    const text = '<main title="x">🪿\n\\end</main>';
-    const input = JSON.stringify({ secret: "NEVER_PUBLIC", nested: { files: [{ text: "NEVER_PUBLIC" }] }, title: "Example", files: [{ text, path: "index.html", asset_ref: "NEVER_PUBLIC" }], kind: "html" });
-    const preview = new ArtifactArgumentPreview("draft");
-    const events = Array.from(input).flatMap(character => preview.feed(character));
-    expect(events.filter(event => event.phase === "file").map(event => event.phase === "file" ? event.text : "").join("")).toBe(text);
-    expect(JSON.stringify(events)).not.toContain("NEVER_PUBLIC");
-    expect(events.every(event => decodeArtifactGenerationEvent(event) !== null)).toBe(true);
-    for (const data of events) expect(projectRunOutputArtifactEvent({ type: "artifact_generation", data })).toBeNull();
-    const escaped = new ArtifactArgumentPreview("escaped");
-    const output = '{"files":[{"text":"\\uD83E\\uDEBF"}]}'.split("").flatMap(character => escaped.feed(character));
-    expect(output.filter(event => event.phase === "file").map(event => event.phase === "file" ? event.text : "").join("")).toBe("🪿");
-    expect(preview.feed('{"files":[]}')).toEqual([{ phase: "reset", draftId: "draft" }]);
-  });
-  it("keeps pending fallback factual and correlates authoritative settlement", async () => {
-    const events: ArtifactGenerationEvent[] = [];
-    const generation = createArtifactGeneration("run", async event => { events.push(event); });
-    const call = { id: "private-provider-id", name: "create_artifact", arguments: { title: "Example", kind: "html" } };
-    await generation.requested(1, [call]);
-    expect(events.map(event => event.phase)).toEqual(["started", "metadata"]);
-    await generation.settled(call.id, { callId: call.id, name: call.name, status: "complete", content: [], artifacts: [{ type: "artifact", data: {
-      artifactType: "generated_artifact", payload: { artifact_id: "a", version_id: "v", version_number: 1, title: "Example", kind: "html", entrypoint: "index.html" }
-    } }] });
-    await generation.stop("failed");
-    expect(events.at(-1)).toMatchObject({ phase: "settled", status: "ready", artifact: { versionId: "v" } });
-    expect(events).toHaveLength(3); expect(JSON.stringify(events)).not.toContain(call.id);
-  });
   it("keeps v1 readable and emits safe Unicode download filenames", () => {
     expect(decodeArtifactBundle(Buffer.from(JSON.stringify({ version: 1, kind: "image", entrypoint: null, files: [{ path: "a.png", mimeType: "image/png", base64: "aGk=" }] })))).toMatchObject({ version: 1 });
     expect(artifactDownloadName("Гусь-рокер — страница", "zip")).toMatchObject({ ascii: "artifact.zip", utf8: "Гусь-рокер — страница.zip" });
@@ -94,19 +63,6 @@ describe("artifact patch, privacy and bounded output", () => {
     const svg = { version: 2 as const, kind: "svg" as const, entrypoint: "image.svg", files: [{ path: "image.svg", mimeType: "image/svg+xml", text: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="2"/></svg>' }] };
     expect(renderArtifactBundle(svg, true)).toMatchObject({ contentType: "image/svg+xml; charset=utf-8", fileName: "image.svg", body: Buffer.from(svg.files[0]!.text) });
     expect(renderArtifactBundle(svg).contentType).toBe("text/html; charset=utf-8");
-  });
-  it("bounds preview across drafts, resets malformed JSON, and settles cancellation once", async () => {
-    const events: ArtifactGenerationEvent[] = [];
-    const generation = createArtifactGeneration("run", async event => { events.push(event); });
-    for (let callIndex = 0; callIndex < 6; callIndex++) await generation.observe(1, { callIndex, callId: `call-${callIndex}`, name: "create_artifact",
-      delta: JSON.stringify({ files: [{ path: "index.html", text: "x".repeat(ARTIFACT_LIMITS.maxTextFileBytes) }] }) });
-    expect(events.reduce((total, event) => total + (event.phase === "file" ? Buffer.byteLength(event.text) : 0), 0)).toBeLessThanOrEqual(ARTIFACT_GENERATION_LIMITS.maxPreviewBytes);
-    await generation.stop("cancelled"); await generation.stop("failed");
-    expect(events.filter(event => event.phase === "settled")).toHaveLength(6);
-    expect(events.filter(event => event.phase === "settled").every(event => event.phase === "settled" && event.status === "cancelled")).toBe(true);
-    const preview = new ArtifactArgumentPreview("broken");
-    expect(preview.feed('{"files":[{"text":"x","text":"duplicate"}]}')).toEqual([{ draftId: "broken", phase: "reset" }]);
-    expect(preview.feed('{"files":[{"text":"later"}]}')).toEqual([]);
   });
   it("queues rendering work past four, refuses it past the waiting room, and releases permits after failure", async () => {
     let release!: () => void;
