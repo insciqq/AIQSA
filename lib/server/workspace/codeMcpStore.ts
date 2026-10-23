@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { isMcpApprovalAdmission, type McpApprovalAdmission } from "../mcp/writeApproval";
 import { toolActivityDescriptors } from "../tools/activityDescriptors";
@@ -110,7 +110,7 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
         return true;
       });
       return issued
-        ? { environment: { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: AGENT_GATEWAY_ORIGIN }, token }
+        ? { environment: { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN }, token }
         : { environment: {} };
     },
 

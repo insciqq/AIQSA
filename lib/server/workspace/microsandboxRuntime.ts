@@ -47,7 +47,7 @@ import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { AgentExecutionOutput } from "../agents/executionOutput";
 import { CodexJsonlDecoder } from "../agents/codexProtocol";
-import { AGENT_GATEWAY_PORT, AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { AGENT_PROMPT_MAX_BYTES, INSTALL_CODEX_PROFILE } from "../agents/guest";
 import { CODEX_HOME_DIRECTORY, CODEX_RUN_TOKEN_ENV, codexExecArguments, renderCodexManagedProfile } from "../agents/codexProfile";
 import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
@@ -158,7 +158,7 @@ function publicOnlyPolicy(agentGatewayEnabled = false) {
       Rule.allowDns(),
       Rule.allowEgress(Destination.group("public")),
       ...(agentGatewayEnabled ? [{ ...Rule.allowEgress(Destination.group("host")),
-        protocols: ["tcp" as const], ports: [{ start: AGENT_GATEWAY_PORT, end: AGENT_GATEWAY_PORT }] }] : [])
+        protocols: ["tcp" as const], ports: [{ start: RUNNER_GATEWAY_PORT, end: RUNNER_GATEWAY_PORT }] }] : [])
     ]
   };
 }
@@ -1151,7 +1151,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
       // Server-owned run values win over a saved variable of the same name.
       const environment = { ...workspaceSecretEnvironment(secrets),
-        ...parseWorkspaceRunEnvironment(input.runEnvironment, AGENT_GATEWAY_ORIGIN) };
+        ...parseWorkspaceRunEnvironment(input.runEnvironment, RUNNER_GATEWAY_ORIGIN) };
       const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
       const deadline = AbortSignal.timeout(90_000);
@@ -1255,7 +1255,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   private async startPreparedAgent(input: WorkspaceAgentStart): Promise<void> {
-    if (!this.config.agentGatewayEnabled || input.profile.gatewayOrigin !== AGENT_GATEWAY_ORIGIN) {
+    if (!this.config.agentGatewayEnabled || input.profile.gatewayOrigin !== RUNNER_GATEWAY_ORIGIN) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
     if (!/^agent-[a-f0-9-]{36}$/iu.test(input.runtimeExecSessionId) ||

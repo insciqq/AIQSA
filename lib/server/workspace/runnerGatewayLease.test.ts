@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { AGENT_LEASE_CANCELLED, withAgentLease } from "./lease";
+import { RUNNER_GATEWAY_LEASE_CANCELLED, withRunnerGatewayLease } from "./runnerGatewayLease";
 
 afterEach(() => vi.useRealTimers());
 
@@ -7,7 +7,7 @@ it("aborts an in-flight request when another process revokes its grant", async (
   vi.useFakeTimers();
   let active = true;
   let upstreamSignal: AbortSignal | undefined;
-  const response = await withAgentLease(new Request("http://agent.invalid"), async () => {
+  const response = await withRunnerGatewayLease(new Request("http://agent.invalid"), async () => {
     if (!active) throw new Error("revoked");
   }, async (signal) => {
     upstreamSignal = signal;
@@ -27,7 +27,7 @@ it("ends the stream without an error when the client inside the VM closes its ow
   vi.useFakeTimers();
   const client = new AbortController();
   let upstreamSignal: AbortSignal | undefined;
-  const response = await withAgentLease(new Request("http://agent.invalid", { signal: client.signal }), async () => {}, async (signal) => {
+  const response = await withRunnerGatewayLease(new Request("http://agent.invalid", { signal: client.signal }), async () => {}, async (signal) => {
     upstreamSignal = signal;
     return new Response(new ReadableStream<Uint8Array>({ start(controller) {
       controller.enqueue(new TextEncoder().encode("partial"));
@@ -47,8 +47,8 @@ it("ends the stream without an error when the user stops the run", async () => {
   vi.useFakeTimers();
   let stopped = false;
   let upstreamSignal: AbortSignal | undefined;
-  const response = await withAgentLease(new Request("http://agent.invalid"), async () => {
-    if (stopped) throw new Error(AGENT_LEASE_CANCELLED);
+  const response = await withRunnerGatewayLease(new Request("http://agent.invalid"), async () => {
+    if (stopped) throw new Error(RUNNER_GATEWAY_LEASE_CANCELLED);
   }, async (signal) => {
     upstreamSignal = signal;
     return new Response(new ReadableStream<Uint8Array>({ start(controller) {
@@ -67,14 +67,14 @@ it("ends the stream without an error when the user stops the run", async () => {
 });
 
 it("still interrupts the stream as a failure when the upstream fails while the client waits", async () => {
-  const response = await withAgentLease(new Request("http://agent.invalid"), async () => {}, async () =>
+  const response = await withRunnerGatewayLease(new Request("http://agent.invalid"), async () => {}, async () =>
     new Response(new ReadableStream({ pull(controller) { controller.error(new Error("upstream failed")); } })));
   await expect(response.text()).rejects.toThrow("agent_request_interrupted");
 });
 
 it("releases its watchdog when the stream ends normally", async () => {
   vi.useFakeTimers();
-  const response = await withAgentLease(new Request("http://agent.invalid"), async () => {}, async () => new Response("ok"));
+  const response = await withRunnerGatewayLease(new Request("http://agent.invalid"), async () => {}, async () => new Response("ok"));
   expect(await response.text()).toBe("ok");
   expect(vi.getTimerCount()).toBe(0);
 });

@@ -1,7 +1,6 @@
-import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAgentRelay } from "./relay";
-import { AGENT_RELAY_PROOF_HEADER, agentRelayProofKey, signAgentRelayProof } from "./relayProof";
+import { RUNNER_RELAY_PROOF_HEADER, runnerRelayProofKey, signRunnerRelayProof } from "../workspace/runnerGatewayProof";
+import { handleRunnerGatewayRequest } from "../workspace/runnerGateway";
 import { agentTokenHash } from "./store";
 import { handleAgentGatewayRequest } from "./gateway";
 
@@ -16,21 +15,18 @@ const runnerToken = "synthetic-runner-token-".padEnd(48, "0");
 const bearer = "b".repeat(43);
 const endpoints = ["v1/responses", "v1/alpha/search", "mcp"];
 
+/** The route composes the runner gateway with the Agent's bearer handler. */
+function route(request: Request, path: string) {
+  return handleRunnerGatewayRequest(request, path, { agent: handleAgentGatewayRequest });
+}
+
 function gatewayRequest(path: string, headers: Record<string, string> = {}) {
   return new Request(`http://app.invalid/api/internal/agent/${path}`, { method: "POST", body: "{}",
     headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", ...headers } });
 }
 
-function relayProof(input: Readonly<{ bearer?: string; nowMs?: number; path?: string; token?: string }> = {}) {
-  return signAgentRelayProof(agentRelayProofKey(input.token ?? runnerToken)!,
-    { bearer: input.bearer ?? bearer, method: "POST", path: input.path ?? "v1/responses" }, input.nowMs);
-}
-
-async function expectRefusedBeforeLookup(request: Request, path = "v1/responses") {
-  const response = await handleAgentGatewayRequest(request, path);
-  expect(response.status).toBe(401);
-  expect(await response.json()).toEqual({ error: "agent_authorization_required" });
-  expect(database.agentRunBinding.findUnique).not.toHaveBeenCalled();
+function relayProof(path: string) {
+  return signRunnerRelayProof(runnerRelayProofKey(runnerToken)!, { bearer, method: "POST", path });
 }
 
 beforeEach(() => {
@@ -42,17 +38,16 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("Agent gateway ingress", () => {
-  it("refuses a direct request with a well-formed bearer but no relay proof, exactly like a bad bearer", async () => {
-    for (const path of endpoints) await expectRefusedBeforeLookup(gatewayRequest(path), path);
-    await expectRefusedBeforeLookup(gatewayRequest("v1/responses",
-      { authorization: "Bearer not-a-run-bearer", [AGENT_RELAY_PROOF_HEADER]: relayProof() }));
-  });
-
-  it("looks up the bearer only once a current relay proof for that endpoint is present", async () => {
+describe("Agent share of the runner gateway", () => {
+  it("looks up the Agent binding only after the relay proof passed", async () => {
+    for (const path of endpoints) {
+      const response = await route(gatewayRequest(path), path);
+      expect(response.status).toBe(401);
+    }
+    expect(database.agentRunBinding.findUnique).not.toHaveBeenCalled();
     for (const path of endpoints) {
       database.agentRunBinding.findUnique.mockClear();
-      const response = await handleAgentGatewayRequest(gatewayRequest(path, { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path }) }), path);
+      const response = await route(gatewayRequest(path, { [RUNNER_RELAY_PROOF_HEADER]: relayProof(path) }), path);
       // The synthetic bearer has no binding, so the lookup itself refuses it.
       expect(response.status).toBe(401);
       expect(database.agentRunBinding.findUnique).toHaveBeenCalledOnce();
@@ -61,70 +56,23 @@ describe("Agent gateway ingress", () => {
     }
   });
 
-  it("refuses spoofed, garbled, replayed or foreign proofs before any lookup", async () => {
-    // Exact skew boundaries are pinned in relayProof.test.ts with a fixed clock.
-    const now = Date.now();
-    const guessedKeyProof = relayProof({ token: "guest-guessed-runner-token-".padEnd(48, "0") });
-    for (const proof of ["v1", "v1.1791374400.guest-supplied-proof", `${relayProof()}, ${relayProof()}`, guessedKeyProof,
-      relayProof({ nowMs: now - 120_000 }), relayProof({ nowMs: now + 120_000 }),
-      relayProof({ path: "mcp" }), relayProof({ bearer: "c".repeat(43) })]) {
-      await expectRefusedBeforeLookup(gatewayRequest("v1/responses", { [AGENT_RELAY_PROOF_HEADER]: proof }));
-    }
-    await expectRefusedBeforeLookup(gatewayRequest("v1/responses",
-      { [AGENT_RELAY_PROOF_HEADER]: relayProof(), origin: "https://public.example" }));
-  });
-
-  it("serves a bearer that is no Agent grant only as a Workspace code bearer on MCP, never model or Search", async () => {
+  it("leaves a bearer that is no Agent grant to the code gateway on MCP only, never model or Search", async () => {
     for (const path of ["v1/responses", "v1/alpha/search"]) {
-      const response = await handleAgentGatewayRequest(gatewayRequest(path, { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path }) }), path);
+      const response = await route(gatewayRequest(path, { [RUNNER_RELAY_PROOF_HEADER]: relayProof(path) }), path);
       expect(response.status).toBe(401);
     }
     expect(codeGateway.handleWorkspaceCodeMcpRequest).not.toHaveBeenCalled();
     codeGateway.handleWorkspaceCodeMcpRequest.mockResolvedValueOnce(Response.json({ ok: true }));
-    const request = gatewayRequest("mcp", { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path: "mcp" }) });
-    const response = await handleAgentGatewayRequest(request, "mcp");
+    const request = gatewayRequest("mcp", { [RUNNER_RELAY_PROOF_HEADER]: relayProof("mcp") });
+    const response = await route(request, "mcp");
     expect(response.status).toBe(200);
     expect(codeGateway.handleWorkspaceCodeMcpRequest).toHaveBeenCalledWith(request, agentTokenHash(bearer));
-    // Code bearers pass the same relay proof and Origin refusal first.
-    codeGateway.handleWorkspaceCodeMcpRequest.mockClear();
-    database.agentRunBinding.findUnique.mockClear();
-    await expectRefusedBeforeLookup(gatewayRequest("mcp"), "mcp");
-    await expectRefusedBeforeLookup(gatewayRequest("mcp", { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path: "mcp" }),
-      origin: "https://public.example" }), "mcp");
+  });
+
+  it("refuses a failed binding lookup without falling through to the code gateway", async () => {
+    database.agentRunBinding.findUnique.mockRejectedValueOnce(new Error("database_unavailable"));
+    const response = await route(gatewayRequest("mcp", { [RUNNER_RELAY_PROOF_HEADER]: relayProof("mcp") }), "mcp");
+    expect(response.status).toBe(401);
     expect(codeGateway.handleWorkspaceCodeMcpRequest).not.toHaveBeenCalled();
-  });
-
-  it("refuses every request when the app has no runner token", async () => {
-    for (const value of [undefined, "", "   "]) {
-      vi.stubEnv("AIQSA_WORKSPACE_RUNNER_TOKEN", value);
-      await expectRefusedBeforeLookup(gatewayRequest("mcp", { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path: "mcp" }) }), "mcp");
-    }
-  });
-
-  it("reaches the binding lookup for a request relayed by the runner relay", async () => {
-    const relay = createAgentRelay("http://app.invalid", runnerToken, async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
-      return handleAgentGatewayRequest(new Request(url, init), url.pathname.replace(/^\/api\/internal\/agent\//u, ""));
-    });
-    await new Promise<void>((resolve, reject) => {
-      relay.once("error", reject);
-      relay.listen(0, "127.0.0.1", resolve);
-    });
-    try {
-      for (const path of endpoints) {
-        database.agentRunBinding.findUnique.mockClear();
-        const response = await fetch(`http://127.0.0.1:${(relay.address() as AddressInfo).port}/${path}`, {
-          method: "POST", body: "{}", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json",
-            [AGENT_RELAY_PROOF_HEADER]: "v1.1791374400.guest-supplied-proof" } });
-        expect(response.status).toBe(401);
-        expect(await response.json()).toEqual({ error: "agent_authorization_required" });
-        expect(database.agentRunBinding.findUnique).toHaveBeenCalledOnce();
-        expect(database.agentRunBinding.findUnique).toHaveBeenCalledWith(
-          expect.objectContaining({ where: { tokenHash: agentTokenHash(bearer) } }));
-      }
-    } finally {
-      relay.closeAllConnections();
-      await new Promise<void>((resolve) => relay.close(() => resolve()));
-    }
   });
 });

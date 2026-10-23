@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import {
   isWorkspaceCodeInvocationId,
   parseWorkspaceRunEnvironment,
@@ -52,12 +52,12 @@ describe("run environment for guest commands", () => {
   const token = "t".repeat(43);
 
   it("accepts a bearer with the runner's own relay origin, or a reason, or nothing", () => {
-    expect(parseWorkspaceRunEnvironment(undefined, AGENT_GATEWAY_ORIGIN)).toEqual({});
-    expect(parseWorkspaceRunEnvironment({}, AGENT_GATEWAY_ORIGIN)).toEqual({});
-    const bearer = { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: AGENT_GATEWAY_ORIGIN };
-    expect(parseWorkspaceRunEnvironment(bearer, AGENT_GATEWAY_ORIGIN)).toEqual(bearer);
+    expect(parseWorkspaceRunEnvironment(undefined, RUNNER_GATEWAY_ORIGIN)).toEqual({});
+    expect(parseWorkspaceRunEnvironment({}, RUNNER_GATEWAY_ORIGIN)).toEqual({});
+    const bearer = { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN };
+    expect(parseWorkspaceRunEnvironment(bearer, RUNNER_GATEWAY_ORIGIN)).toEqual(bearer);
     for (const reason of ["internet_off", "gateway_unavailable", "mcp_off", "project_unsupported"]) {
-      expect(parseWorkspaceRunEnvironment({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: reason }, AGENT_GATEWAY_ORIGIN))
+      expect(parseWorkspaceRunEnvironment({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: reason }, RUNNER_GATEWAY_ORIGIN))
         .toEqual({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: reason });
     }
   });
@@ -66,14 +66,14 @@ describe("run environment for guest commands", () => {
     for (const value of [
       null, [], "AIQSA_RUN_TOKEN=x",
       { PATH: "/tmp" },
-      { [WORKSPACE_CODE_TOKEN_ENV]: "short", [WORKSPACE_CODE_GATEWAY_ENV]: AGENT_GATEWAY_ORIGIN },
+      { [WORKSPACE_CODE_TOKEN_ENV]: "short", [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN },
       { [WORKSPACE_CODE_TOKEN_ENV]: token },
-      { [WORKSPACE_CODE_GATEWAY_ENV]: AGENT_GATEWAY_ORIGIN },
+      { [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN },
       { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: "https://attacker.example" },
-      { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: AGENT_GATEWAY_ORIGIN, [WORKSPACE_CODE_UNAVAILABLE_ENV]: "mcp_off" },
+      { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN, [WORKSPACE_CODE_UNAVAILABLE_ENV]: "mcp_off" },
       { [WORKSPACE_CODE_UNAVAILABLE_ENV]: "maybe" }
     ]) {
-      expect(() => parseWorkspaceRunEnvironment(value, AGENT_GATEWAY_ORIGIN)).toThrow("workspace_run_environment_invalid");
+      expect(() => parseWorkspaceRunEnvironment(value, RUNNER_GATEWAY_ORIGIN)).toThrow("workspace_run_environment_invalid");
     }
   });
 });

@@ -19,7 +19,7 @@ import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperati
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
-import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
 import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES, renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
@@ -345,7 +345,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
         let runEnvironment: Readonly<Record<string, string>>;
         try {
-          runEnvironment = parseWorkspaceRunEnvironment(body.runEnvironment, AGENT_GATEWAY_ORIGIN);
+          runEnvironment = parseWorkspaceRunEnvironment(body.runEnvironment, RUNNER_GATEWAY_ORIGIN);
         } catch {
           throw new Error("field_invalid");
         }

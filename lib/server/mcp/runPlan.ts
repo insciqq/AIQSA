@@ -368,6 +368,16 @@ export function buildMcpCapabilityCatalog(
   return catalog;
 }
 
+/** The catalog of a frozen run plan snapshot, for runs that kept no discovery catalog. */
+export function mcpCatalogFromSnapshot(snapshot?: McpRunPlanSnapshot): McpCapabilityCatalog {
+  return { version: 1, servers: snapshot?.servers.map((server) => ({
+    ...server, description: "", namespace: server.serverId,
+    tools: snapshot.tools.filter((tool) => tool.serverId === server.serverId).map((tool) => ({
+      namespacedName: tool.namespacedName, originalName: tool.originalName, description: tool.description
+    }))
+  })) ?? [] };
+}
+
 /**
  * The personal servers `buildMcpCapabilityCatalog` leaves out of the same
  * records for a reason the owner can fix, in catalog order. This is the

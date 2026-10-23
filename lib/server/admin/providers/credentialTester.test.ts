@@ -165,6 +165,21 @@ describe("admin provider credential tester", () => {
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_METADATA");
   });
 
+  it("reads Codex LB windows from either listing and never takes the maximum window", async () => {
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup,
+      dispatch: async () => Response.json({ data: [
+        { id: "gpt-6.1-sol", owned_by: "codex-lb", context_length: 500_000 },
+        { id: "gpt-6-astra", owned_by: "codex-lb", context_window: 272_000, max_context_window: 872_000 },
+        { id: "gpt-6-luna", owned_by: "codex-lb", max_context_window: 872_000 }
+      ] }) } });
+    const outcome = await tester.test(input("openai_compatible"));
+    expect(outcome.models).toEqual([
+      { id: "gpt-6.1-sol", capabilities: { contextWindow: 500_000 }, ownedBy: "codex-lb" },
+      { id: "gpt-6-astra", capabilities: { contextWindow: 272_000 }, ownedBy: "codex-lb" },
+      { id: "gpt-6-luna", capabilities: {}, ownedBy: "codex-lb" }
+    ]);
+  });
+
   it("keeps OpenRouter answer, embedding, and reranker catalogs class-specific", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const tester = createAdminProviderCredentialTester({

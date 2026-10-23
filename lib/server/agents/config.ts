@@ -1,5 +1,6 @@
 import { DEFAULT_AGENT_POLICY, decodeAgentPolicy, type AgentPolicyWire } from "@/lib/contracts/agentPolicy";
 import { CODEX_VERSION } from "./codexProfile";
+import { RUNNER_GATEWAY_REQUEST_MAX_BYTES } from "../workspace/runnerGatewayRelay";
 
 /** Frozen per accepted turn; null means no Agent deadline. */
 export type NormalizedRunAgent = Readonly<{
@@ -49,7 +50,7 @@ export function validAcceptedAgent(value: unknown): value is NormalizedRunAgent 
 }
 
 export const AGENT_GRANT_LEASE_MS = 30_000;
-export const AGENT_REQUEST_MAX_BYTES = 8 * 1024 * 1024;
+export const AGENT_REQUEST_MAX_BYTES = RUNNER_GATEWAY_REQUEST_MAX_BYTES;
 
 export function validNormalizedAgent(value: unknown): value is NormalizedRunAgent {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
