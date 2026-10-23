@@ -1343,7 +1343,6 @@ describe("MCP runtime over-bound call isolation", () => {
       },
       markStarting: async () => true,
       synchronizeDesired: async () => [launch],
-      synchronizeShared: async () => [],
       touchLastUsed: async () => undefined
     };
     const coordinator = new McpRuntimeCoordinator({

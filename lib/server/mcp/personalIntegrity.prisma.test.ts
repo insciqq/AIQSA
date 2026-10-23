@@ -548,7 +548,7 @@ describe("account deletion with personal MCP", () => {
     expect(dashboard.users.find((row) => row.id === ownerId)?.deletion).toEqual({
       canDelete: true,
       reason: null,
-      summary: "2 private Memory, Knowledge or personal MCP records will be fenced and durably purged before the account is removed."
+      summary: "2 private Memory or personal MCP records will be fenced and durably purged before the account is removed."
     });
 
     const kick = vi.fn();
