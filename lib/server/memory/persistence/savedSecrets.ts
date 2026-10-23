@@ -2,14 +2,16 @@ import type { Prisma } from "@prisma/client";
 import { logEvent } from "../../observability";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import {
-  WORKSPACE_ACTIVITY_SECRET_MIN_LENGTH,
-  workspaceActivitySecretValues
-} from "../../workspace/activityText";
-import {
   decryptWorkspaceSecret,
   type AcceptedWorkspaceSecret
 } from "../../workspace/secrets/store";
 import { memoryPersistenceFailure } from "./errors";
+import {
+  memorySavedSecretScreenedValues,
+  memoryValueContainsSavedSecret
+} from "./savedSecretMatching";
+
+export { memoryValueContainsSavedSecret } from "./savedSecretMatching";
 
 /**
  * The values of the owner's saved secrets (Studio > Secrets) never become
@@ -17,12 +19,10 @@ import { memoryPersistenceFailure } from "./errors";
  * value such as a test token the user saved as a secret would otherwise pass
  * as an ordinary fact, be recalled in other chats and reach providers.
  *
- * Matching is exact and literal, on each value and its trimmed form, so it is
- * language-neutral. Values shorter than the masking threshold are ignored, as
- * in Workspace activity and Skill saves. Saved browser login states are left
- * out: they are captured by the browser, not typed, and too large to decrypt
- * on every write. A value that cannot be decrypted cannot be compared and is
- * skipped with a content-free record.
+ * Which values are screened and how they match is `./savedSecretMatching.ts`.
+ * Saved browser login states are left out: they are captured by the browser,
+ * not typed, and too large to decrypt on every write. A value that cannot be
+ * decrypted cannot be compared and is skipped with a content-free record.
  */
 export const MEMORY_SAVED_SECRET_REASON_CODE = "saved_secret_value";
 
@@ -66,37 +66,7 @@ export async function memorySavedSecretValues(
       outcome: "degraded", stage: "validate", subsystem: "memory"
     });
   }
-  let extracted: readonly string[];
-  try {
-    extracted = workspaceActivitySecretValues(secrets);
-  } catch {
-    extracted = [];
-  }
-  const values = new Set<string>();
-  for (const value of extracted) {
-    for (const candidate of [value, value.trim()]) {
-      if ([...candidate].length >= WORKSPACE_ACTIVITY_SECRET_MIN_LENGTH) values.add(candidate);
-    }
-  }
-  return [...values];
-}
-
-/** Whether any string in a value, object keys included, contains one of the saved values. */
-export function memoryValueContainsSavedSecret(
-  value: unknown,
-  savedValues: readonly string[],
-  seen: WeakSet<object> = new WeakSet()
-): boolean {
-  if (savedValues.length === 0) return false;
-  if (typeof value === "string") return savedValues.some((saved) => value.includes(saved));
-  if (typeof value !== "object" || value === null || seen.has(value)) return false;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return value.some((entry) => memoryValueContainsSavedSecret(entry, savedValues, seen));
-  }
-  return Object.entries(value).some(([entryKey, entry]) =>
-    savedValues.some((saved) => entryKey.includes(saved)) ||
-    memoryValueContainsSavedSecret(entry, savedValues, seen));
+  return memorySavedSecretScreenedValues(secrets);
 }
 
 /** Records one refused Memory text without its content. */
