@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
     artifacts: service("artifacts"),
     images: service("images"),
     reconcile: vi.fn(async (_deps: Record<string, unknown>) => undefined),
+    reconcileNative: vi.fn(async (_deps: Record<string, unknown>) => ({ settled: 0 })),
     schedulerInput: [] as Array<{ reconcile(signal: AbortSignal): Promise<void> }>,
     skillTools: { kind: "skillTools" },
     storage,
@@ -37,6 +38,8 @@ vi.mock("../chats/titleGenerationWorker", () => ({ createPrismaChatTitleWorker: 
 vi.mock("./runExecution", () => ({ activeRunControllerRegistry: { kind: "registry" } }));
 vi.mock("./prismaRepository", () => ({ createPrismaRunRepository: () => ({ kind: "repository" }) }));
 vi.mock("./runRecovery", () => ({ reconcileInstallationRuns: mocks.reconcile }));
+vi.mock("../engine/defaultEngine", () => ({ defaultNativeRecoveryDeps: (input: Record<string, unknown>) => ({ kind: "nativeRecovery", ...input }) }));
+vi.mock("../engine/recovery", () => ({ reconcileNativeRuns: mocks.reconcileNative }));
 vi.mock("./recoveryScheduler", () => ({
   RunRecoveryScheduler: class {
     constructor(input: { reconcile(signal: AbortSignal): Promise<void> }) { mocks.schedulerInput.push(input); }
@@ -55,6 +58,9 @@ describe("default run recovery scheduler", () => {
     await mocks.schedulerInput[0]!.reconcile(new AbortController().signal);
 
     expect(mocks.reconcile).toHaveBeenCalledOnce();
+    // Each engine recovers only its own runs; the native pass runs after the old core's.
+    expect(mocks.reconcileNative).toHaveBeenCalledOnce();
+    expect(mocks.reconcileNative.mock.calls[0]![0]).toMatchObject({ kind: "nativeRecovery", repository: { kind: "repository" } });
     const deps = mocks.reconcile.mock.calls[0]![0];
     // Undispatched image, artifact and Skill calls, running artifact/image
     // receipts and conversation pixels all depend on these services.
