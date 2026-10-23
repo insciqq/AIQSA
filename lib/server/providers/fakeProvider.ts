@@ -2,6 +2,7 @@ import { textFromContentBlocks, type ModelRunSseEvent } from "../../domain/model
 import { conversationPreview, textConversationForRequest } from "./context";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import type { ModelToolCall, RunTool } from "../tools/types";
+import type { ProviderHistoryItem } from "./history";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
 
 const DETERMINISTIC_RESULT_ZIP_BASE64 =
@@ -19,10 +20,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The native engine's history after its latest user turn: the current turn's tool results. */
+function historyToolResults(history: readonly ProviderHistoryItem[]): FakeToolResultMessage[] {
+  let start = 0;
+  history.forEach((item, index) => { if (item.type === "user") start = index + 1; });
+  return history.slice(start).flatMap((item): FakeToolResultMessage[] => {
+    if (item.type !== "tool_result") return [];
+    let content: FakeToolResultMessage["content"][number];
+    try {
+      content = { type: "json", value: JSON.parse(item.output) as unknown };
+    } catch {
+      content = { text: item.output, type: "text" };
+    }
+    return [{ content: [content], status: item.isError ? "error" : "complete", type: "fake_tool_result" }];
+  });
+}
+
 function fakeToolResults(request: ProviderRunRequest): FakeToolResultMessage[] {
+  if (request.history) return historyToolResults(request.history);
   return (request.providerToolMessages ?? []).filter((value): value is FakeToolResultMessage =>
     isRecord(value) && value.type === "fake_tool_result" &&
     (value.status === "complete" || value.status === "error") && Array.isArray(value.content));
+}
+
+/**
+ * The question a request asks: its own content, or with the native engine's
+ * history its latest user turn (an approval continuation adds none, so the
+ * turn it continues asks again).
+ */
+function requestQuestion(request: ProviderRunRequest): string {
+  if (!request.history) return textFromContentBlocks(request.content);
+  const users = request.history.filter((item): item is Extract<ProviderHistoryItem, { type: "user" }> => item.type === "user");
+  return (users.find((item) => item.currentInput) ?? users.at(-1))?.text ?? "";
 }
 
 /** Test-only page-reader scenario: `first_link` reads the question's first link, `unlisted` a link it never had. */
@@ -640,7 +669,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
       };
     },
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-      const question = textFromContentBlocks(request.content) || "empty question";
+      const question = requestQuestion(request) || "empty question";
       const scripted = scriptedAnswerReviewResult(request, question) ?? scriptedWorkspaceResult(request, question) ??
         scriptedFetchUrlResult(request, question) ?? scriptedMcpResult(request, question);
       if (scripted) {

@@ -2,6 +2,7 @@ import { decodeMemorySearchActivity } from "@/lib/contracts/memorySearchActivity
 import { decodeFetchUrlTarget } from "@/lib/contracts/fetchUrlActivity";
 import { CHAT_PDF_READER_OUTPUT_LIMIT, isChatPdfReaderOutputLimitFailure, type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
+  continuableRunFailure,
   isToolSynthesisFailure,
   TOOL_SYNTHESIS_FAILURE,
   type ModelRunStatus,
@@ -21,10 +22,13 @@ import { decodeReasoningHeading } from "@/lib/domain/reasoningHeading";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
+/** `continue`: the answer's work is kept and an ordinary next turn picks it up. */
+export type RunRecoveryV2 = "change_parameters" | "continue" | "regenerate" | "retry";
+
 export type RunFailureV2 = Readonly<{
   code?: string | null;
   message?: string | null;
-  recovery?: "change_parameters" | "regenerate" | "retry";
+  recovery?: RunRecoveryV2;
 }>;
 
 export type RunLifecycleStateV2 = Readonly<{
@@ -76,7 +80,7 @@ export type RunPresentationV2 = Readonly<{
   failure?: Readonly<{
     code: string | null;
     message: string;
-    recovery: "change_parameters" | "regenerate" | "retry";
+    recovery: RunRecoveryV2;
   }>;
   kind:
     | "activity"
@@ -899,6 +903,9 @@ function failureFromState(
   if (isToolSynthesisFailure(failure.code, failure.message)) {
     return { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" };
   }
+  // Live by its code, after a reload by the saved answer's reviewed text.
+  const continuable = continuableRunFailure(failure.code, failure.message);
+  if (continuable) return { ...continuable, recovery: "continue" };
   const recovery = failure.recovery === "retry" ? "retry" : "change_parameters";
   const partial = state.content.trim().length > 0;
   const fallback = partial && recovery === "retry"

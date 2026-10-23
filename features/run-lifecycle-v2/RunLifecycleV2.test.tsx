@@ -10,7 +10,7 @@ import {
   settledRunPresentationV2,
   type RunPresentationV2
 } from "./runPresentation";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, mcpAutoDiscoveryFailure, RUN_INTERRUPTED_FAILURE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
 
@@ -195,6 +195,27 @@ describe("Run lifecycle v2", () => {
     expect(onRegenerate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(onRegenerate).toHaveBeenCalledOnce();
+  });
+
+  it("offers Continue first on an interrupted answer, with Regenerate beside it and no model change", async () => {
+    let finish: () => void = () => undefined;
+    const onContinue = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onRegenerate = vi.fn();
+    const interrupted = presentation({ kind: "terminal_error", failure: { ...RUN_INTERRUPTED_FAILURE, recovery: "continue" } });
+    const { rerender } = render(<RunAnswerV2 content="Work so far" onContinue={onContinue} onRegenerate={onRegenerate}
+      onSelectModel={vi.fn()} presentation={interrupted} />);
+    expect(screen.getByRole("heading", { name: "Answer interrupted" })).toBeVisible();
+    expect(screen.getByText(RUN_INTERRUPTED_FAILURE.message)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Choose model…" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(onContinue).toHaveBeenCalledOnce();
+    await act(async () => finish());
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    expect(onRegenerate).toHaveBeenCalledOnce();
+    // An older answer offers no Continue: its turn would follow the latest one.
+    rerender(<RunAnswerV2 content="Work so far" onRegenerate={onRegenerate} presentation={interrupted} />);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
   });
 
   it("settles the answer chrome only on authoritative terminal presentations", () => {

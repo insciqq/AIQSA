@@ -165,6 +165,7 @@ function RunErrorReferenceV2({ runId }: { runId: string }) {
 }
 
 function RunErrorV2({
+  onContinue,
   onRegenerate,
   onRetry,
   onSelectModel,
@@ -172,6 +173,7 @@ function RunErrorV2({
   pdfPreparation,
   presentation
 }: {
+  onContinue?(): unknown;
   onRegenerate?(): void;
   onRetry?(): void;
   onSelectModel?(): void;
@@ -179,6 +181,7 @@ function RunErrorV2({
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   presentation: RunPresentationV2;
 }) {
+  const [continuing, setContinuing] = useState(false);
   if (
     (presentation.kind !== "recoverable_error" && presentation.kind !== "terminal_error") ||
     !presentation.failure
@@ -187,6 +190,17 @@ function RunErrorV2({
   }
 
   const recoverable = presentation.kind === "recoverable_error";
+  // The work so far is kept: Continue sends an ordinary next turn.
+  const continuable = presentation.failure.recovery === "continue";
+  const continueAnswer = async () => {
+    if (continuing || !onContinue) return;
+    setContinuing(true);
+    try {
+      await onContinue();
+    } finally {
+      setContinuing(false);
+    }
+  };
   const synthesisFailed = isToolSynthesisFailure(presentation.failure.code);
   const pdfFailed = pdfPreparation?.some((item) => item.phase === "failed");
   const autoDiscoveryUnavailable =
@@ -201,6 +215,7 @@ function RunErrorV2({
       aria-label={autoDiscoveryUnavailable
         ? "Automatic tool discovery is unavailable"
         : synthesisFailed ? "Final answer not completed"
+        : continuable ? "Answer interrupted"
         : recoverable ? "Answer interrupted by an error" : "Run failed"}
     >
       <div className="v2-run-error-heading">
@@ -208,6 +223,7 @@ function RunErrorV2({
         <h2>{autoDiscoveryUnavailable
           ? "Automatic tool discovery is unavailable"
           : synthesisFailed ? "Final answer not completed"
+          : continuable ? "Answer interrupted"
           : pdfFailed ? "Document preparation stopped" : recoverable ? "Answer interrupted by a provider error" : "Request not completed"}</h2>
       </div>
       <p>{presentation.failure.message}</p>
@@ -221,10 +237,15 @@ function RunErrorV2({
         {!autoDiscoveryUnavailable && recoverable && onRetry ? (
           <UiV2Button icon="regenerate" tone="primary" onClick={onRetry}>Retry</UiV2Button>
         ) : null}
-        {!autoDiscoveryUnavailable && !recoverable && onRegenerate ? (
-          <UiV2Button icon="regenerate" tone="primary" onClick={onRegenerate}>Regenerate</UiV2Button>
+        {continuable && onContinue ? (
+          <UiV2Button busy={continuing} tone="primary" onClick={() => void continueAnswer()}>Continue</UiV2Button>
         ) : null}
-        {!pdfFailed && !autoDiscoveryUnavailable && !synthesisFailed && !recoverable && onSelectModel ? (
+        {!autoDiscoveryUnavailable && !recoverable && onRegenerate ? (
+          <UiV2Button icon="regenerate" tone={continuable && onContinue ? undefined : "primary"} onClick={onRegenerate}>
+            Regenerate
+          </UiV2Button>
+        ) : null}
+        {!pdfFailed && !autoDiscoveryUnavailable && !synthesisFailed && !continuable && !recoverable && onSelectModel ? (
           <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
         {presentation.failure.code || presentation.runId ? (
@@ -258,6 +279,8 @@ export type RunAnswerV2Props = Readonly<{
   onPinSkill?(skillId: string): Promise<void>;
   pinnedSkillIds?: readonly string[];
   onRefresh?(): MaybePromise;
+  /** Continue on an interrupted answer; only the chat's latest answer offers it. */
+  onContinue?(): unknown;
   onRegenerate?(): void;
   onRetry?(): void;
   onSelectModel?(): void;
@@ -288,6 +311,7 @@ export function RunAnswerV2({
   onPinSkill,
   pinnedSkillIds,
   onRefresh,
+  onContinue,
   onRegenerate,
   onRetry,
   onSelectModel,
@@ -360,6 +384,7 @@ export function RunAnswerV2({
         <RunCancelledV2 onRegenerate={onRegenerate} />
       ) : null}
       <RunErrorV2
+        onContinue={onContinue}
         onRegenerate={onRegenerate}
         onRetry={onRetry}
         onSelectModel={onSelectModel}

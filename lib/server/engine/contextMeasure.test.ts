@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { contextTokenEstimator, estimateContextTokens, tokenEstimateProfileFor } from "../../domain/tokenEstimate";
 import { responsesHistoryFromOutput, type ProviderHistoryItem } from "../providers/history";
 import {
   CONTEXT_ITEM_FRAMING_TOKENS as FRAMING,
+  CONTEXT_MEASURE_CALIBRATION,
   contextAnchor,
-  measureContext
+  contextItemTokens,
+  contextMeasureCalibration,
+  measureContext,
+  type ContextMeasureCalibration
 } from "./contextMeasure";
 import { modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget } from "./transcript";
 
@@ -122,5 +127,132 @@ describe("anchored context measure", () => {
     expect(measure.anchored).toBe(false);
     expect(measure.tokens).toBeLessThan(1_000);
     expect(contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: null } })).toBeNull();
+  });
+});
+
+describe("compaction weights", () => {
+  const native = { fields: { encrypted_content: "E".repeat(9_000), type: "compaction" }, format: "openai_responses" as const };
+
+  it("weighs a readable compaction by its summary and retained text", () => {
+    const items: TranscriptItem[] = [
+      { id: "u1", kind: "user", text: "old" },
+      { id: "c1", kind: "compaction", origin: codex, retained: "kept facts", summary: "summary" }
+    ];
+    const measure = measureContext({ estimate, fixedTokens: 0, items, target: codex });
+    const text = "Summary of the earlier conversation:\n\nsummary\n\nkept facts";
+    expect(measure.tokens).toBe(text.length + FRAMING.compaction);
+  });
+
+  it("weighs a native compaction by its call's reported output plus its retained text, only on its own route", () => {
+    const items: TranscriptItem[] = [
+      { id: "u1", kind: "user", text: "old" },
+      { id: "c1", kind: "compaction", native, origin: codex, outputTokens: 1_400, retained: "kept facts" }
+    ];
+    const own = { ...codex, nativeCompaction: true };
+    expect(measureContext({ estimate, fixedTokens: 0, items, target: own }).tokens)
+      .toBe(1_400 + "kept facts".length + FRAMING.user);
+    // Without a reported output it weighs only its retained text; another route cannot use it.
+    const unreported = items.map((item) => item.kind === "compaction" ? { ...item, outputTokens: undefined } : item);
+    expect(measureContext({ estimate, fixedTokens: 0, items: unreported, target: own }).tokens).toBe("kept facts".length + FRAMING.user);
+    expect(measureContext({ estimate, fixedTokens: 0, items, target: deepseek }).tokens).toBe("old".length + FRAMING.user);
+  });
+});
+
+describe("Gemini calibration", () => {
+  const gemini: TranscriptTarget = { model: "gemini-3.5-flash-lite", provider: "gemini" };
+  const openrouter: TranscriptTarget = { model: "google/gemini-3.8-flash", provider: "openrouter" };
+
+  it("selects the Gemini weights for native Gemini and OpenRouter google/* models only", () => {
+    expect(contextMeasureCalibration(tokenEstimateProfileFor({ modelId: gemini.model, provider: "gemini" })))
+      .toBe(CONTEXT_MEASURE_CALIBRATION.gemini);
+    expect(contextMeasureCalibration(tokenEstimateProfileFor({ modelId: openrouter.model, provider: "openrouter" })))
+      .toBe(CONTEXT_MEASURE_CALIBRATION.gemini);
+    for (const input of [{ modelId: "gpt-6-astra", provider: "openai_compatible" }, { modelId: "deepseek-flash", provider: "deepseek" },
+      { modelId: "openai/gpt-6", provider: "openrouter" }, { modelId: "gpt-6", provider: "fake" }]) {
+      expect(contextMeasureCalibration(tokenEstimateProfileFor(input))).toBe(CONTEXT_MEASURE_CALIBRATION.default);
+    }
+  });
+
+  // Spike 1 (2026-10-23, `scripts/spikes/transcript-replay.ts`): every anchored
+  // call whose added items are known exactly, with the input the provider
+  // reported before and after them. Calls rebuilt across a model switch carry
+  // another model's answer text, which the content-free run did not keep.
+  const orders: Readonly<Record<string, Readonly<{ carrier: string; eta_days: number; items: number; status: string }>>> = {
+    "A-17": { carrier: "Northwind", eta_days: 3, items: 2, status: "shipped" },
+    "B-42": { carrier: "Contoso", eta_days: 1, items: 1, status: "packing" },
+    "C-5": { carrier: "Fabrikam", eta_days: 4, items: 3, status: "shipped" },
+    "D-8": { carrier: "Northwind", eta_days: 2, items: 1, status: "in transit" },
+    "E-3": { carrier: "Contoso", eta_days: 5, items: 4, status: "awaiting pickup" },
+    "F-9": { carrier: "Fabrikam", eta_days: 6, items: 2, status: "delayed" }
+  };
+  const interrupted = "The process stopped while this tool call ran; its outcome is unknown.";
+  const next = (orderId: string) => `Now look up order ${orderId} the same way.`;
+  const which = "Without calling any tool, which of the two orders arrives first? Answer with its id in one short sentence.";
+  type Added = Readonly<{ callOutput: number; orderId: string; unknown?: true }> | Readonly<{ answerOutput: number; user: string }>;
+  type SpikeCall = Readonly<{ added: Added; anchor: number; reported: number }>;
+  const pair = (orderId: string, callOutput: number, unknown?: true): Added => ({ callOutput, orderId, ...(unknown ? { unknown } : {}) });
+  const text = (answerOutput: number, user: string): Added => ({ answerOutput, user });
+  const nativeCalls: readonly SpikeCall[] = [
+    { added: pair("A-17", 21), anchor: 133, reported: 162 }, { added: text(18, next("B-42")), anchor: 162, reported: 194 },
+    { added: pair("B-42", 21), anchor: 194, reported: 223 }, { added: text(16, which), anchor: 223, reported: 263 },
+    { added: pair("C-5", 20), anchor: 132, reported: 160 }, { added: pair("D-8", 20), anchor: 189, reported: 217 },
+    { added: pair("E-3", 20), anchor: 132, reported: 160 }, { added: text(9, next("F-9")), anchor: 160, reported: 182 },
+    { added: pair("F-9", 20, true), anchor: 182, reported: 210 }, { added: pair("F-9", 8), anchor: 210, reported: 238 }
+  ];
+  const openRouterCalls: readonly SpikeCall[] = [
+    { added: pair("A-17", 21), anchor: 107, reported: 155 }, { added: text(8, next("B-42")), anchor: 155, reported: 175 },
+    { added: pair("B-42", 21), anchor: 175, reported: 222 }, { added: text(9, which), anchor: 222, reported: 253 },
+    { added: pair("C-5", 20), anchor: 106, reported: 153 }, { added: pair("D-8", 20), anchor: 180, reported: 226 },
+    { added: pair("E-3", 20), anchor: 106, reported: 153 }, { added: text(9, next("F-9")), anchor: 153, reported: 173 },
+    { added: pair("F-9", 20, true), anchor: 173, reported: 208 }
+  ];
+
+  function addedItems(added: Added, origin: TranscriptOrigin): TranscriptItem[] {
+    if ("user" in added) {
+      return [
+        { id: "a", kind: "assistant_text", origin, outputTokens: added.answerOutput, text: "answer" },
+        { id: "u", kind: "user", text: added.user }
+      ];
+    }
+    const output = added.unknown ? interrupted
+      : JSON.stringify({ order_id: added.orderId, ...orders[added.orderId], warehouse: "WH-3", note: "synthetic test record" });
+    return [
+      { arguments: JSON.stringify({ order_id: added.orderId }), callId: "c", id: "call", kind: "tool_call", name: "lookup_order",
+        origin, outputTokens: added.callOutput },
+      { callId: "c", id: "result", kind: "tool_result", name: "lookup_order", outcome: added.unknown ? "unknown" : "complete", output }
+    ];
+  }
+
+  function errors(calls: readonly SpikeCall[], target: TranscriptTarget, weigh: (value: unknown) => number,
+    calibration: ContextMeasureCalibration): number[] {
+    return calls.map((call) => {
+      const tokens = call.anchor + addedItems(call.added, target).reduce((total, item) =>
+        total + contextItemTokens(item, target, weigh, "opaque", calibration), 0);
+      return (tokens - call.reported) / call.reported;
+    });
+  }
+
+  const mean = (values: readonly number[]) => values.reduce((left, right) => left + right, 0) / values.length;
+
+  it("stays above every count Gemini reported while cutting the overestimate", () => {
+    const geminiEstimate = contextTokenEstimator({ modelId: gemini.model, provider: "gemini" });
+    const before = errors(nativeCalls, gemini, geminiEstimate, CONTEXT_MEASURE_CALIBRATION.default);
+    const after = errors(nativeCalls, gemini, geminiEstimate, CONTEXT_MEASURE_CALIBRATION.gemini);
+    expect(Math.min(...after)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...after)).toBeLessThan(Math.max(...before));
+    expect(mean(after)).toBeLessThan(mean(before));
+    expect(Math.max(...after)).toBeLessThanOrEqual(0.28);
+    expect(mean(after)).toBeLessThanOrEqual(0.15);
+  });
+
+  it("stays above every count OpenRouter reported for google/* models, which now take the Gemini family", () => {
+    const unknownEstimate = (value: unknown) => estimateContextTokens(value, { family: "unknown" });
+    const familyEstimate = contextTokenEstimator({ modelId: openrouter.model, provider: "openrouter" });
+    const before = errors(openRouterCalls, openrouter, unknownEstimate, CONTEXT_MEASURE_CALIBRATION.default);
+    const after = errors(openRouterCalls, openrouter, familyEstimate, CONTEXT_MEASURE_CALIBRATION.gemini);
+    expect(Math.min(...after)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...after)).toBeLessThanOrEqual(0.17);
+    expect(mean(after)).toBeLessThanOrEqual(0.09);
+    expect(mean(after)).toBeLessThan(mean(before) / 2);
   });
 });
