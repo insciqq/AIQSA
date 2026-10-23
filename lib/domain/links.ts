@@ -1,4 +1,16 @@
 const SAFE_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+/** Studio sections the AIQSA guide gives the agent as links (`lib/server/engine/prompts/selfService.ts`). */
+const STUDIO_SECTIONS = new Set(["artifacts", "assistants", "defaults", "files", "instructions", "mcp", "memory", "scheduled", "secrets", "skills"]);
+
+/** A Studio section address in this app (`/?library=<section>`, or one Assistant), else null. */
+export function studioHref(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const href = value.trim();
+  const match = /^\/\?library=([a-z]+)(?:&assistant=[A-Za-z0-9_-]{1,64})?$/u.exec(href);
+  return match && STUDIO_SECTIONS.has(match[1]!) ? href : null;
+}
 
 export function safeExternalHref(value: unknown): string | null {
   if (typeof value !== "string") {
