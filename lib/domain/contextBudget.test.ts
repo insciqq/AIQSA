@@ -1,6 +1,6 @@
 import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { describe, expect, it } from "vitest";
-import { APPROX_TOKEN_WEIGHT_CLASSES, applyContextBudget, calculateContextBudgetLimits, estimateApproxTokens, estimateApproxTokensFromProjectedParts, type ContextBudgetMessage } from "./contextBudget";
+import { APPROX_TOKEN_WEIGHT_CLASSES, applyContextBudget, calculateContextBudgetLimits, contextOutputReserveTokens, estimateApproxTokens, estimateApproxTokensFromProjectedParts, type ContextBudgetMessage } from "./contextBudget";
 import {
   TOKEN_ESTIMATE_LIMITS,
   TOKEN_ESTIMATE_MULTIPLIERS,
@@ -123,6 +123,23 @@ describe("context budget", () => {
         provider: "fake"
       }).budgetTokens
     ).toBe(7373);
+  });
+
+  it("scales the output reserve for small windows and keeps the maximum for large ones", () => {
+    // A 40k window with the 65,536-token default output would leave no input at all.
+    expect(calculateContextBudgetLimits({ contextWindow: 40_000, maxOutputTokens: 65_536 })).toEqual({
+      budgetTokens: 26_000, contextWindow: 40_000, maxOutputTokens: 10_000, safetyMarginTokens: 4_000
+    });
+    expect(contextOutputReserveTokens(32_000, 65_536)).toBe(8_000);
+    expect(contextOutputReserveTokens(100_000, 65_536)).toBe(36_000);
+    // A small configured output stays as it is.
+    expect(contextOutputReserveTokens(40_000, 4_096)).toBe(4_096);
+    // Large windows keep today's reserve.
+    expect(contextOutputReserveTokens(131_072, 65_536)).toBe(65_536);
+    expect(contextOutputReserveTokens(200_000, 64_000)).toBe(64_000);
+    expect(contextOutputReserveTokens(400_000, 128_000)).toBe(128_000);
+    // An unknown window keeps the maximum.
+    expect(contextOutputReserveTokens(0, 65_536)).toBe(65_536);
   });
 
   it("keeps messages byte-identical when the branch fits", () => {
