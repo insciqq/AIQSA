@@ -4,6 +4,7 @@ import { createKnowledgeRetirement, type KnowledgeRetirementPass } from "../know
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { prisma } from "../prisma";
+import { logProjectDeletionPass, runProjectDeletionMaintenance } from "../projects/deletion";
 import { RunRecoveryScheduler } from "../runs/recoveryScheduler";
 import { deleteExpiredTelegramRecords } from "../telegram/store/retention";
 import { createS3StorageAdapter } from "../uploads/storage";
@@ -67,8 +68,8 @@ const globalForObjectDeletion = globalThis as unknown as {
 /**
  * One worker per application process (single replica), shared across route
  * bundles: due object-deletion jobs leave storage without an operator prune
- * timer, and what is left of the removed Knowledge is deleted a bounded batch
- * per pass. Retention staging stays with `npm run prune`.
+ * timer, and what is left of the removed Knowledge and Projects is deleted a
+ * bounded batch per pass. Retention staging stays with `npm run prune`.
  */
 export function getDefaultObjectDeletionWorker(): RunRecoveryScheduler {
   if (!globalForObjectDeletion.__aiqsaObjectDeletionWorker) {
@@ -103,6 +104,14 @@ export function getDefaultObjectDeletionWorker(): RunRecoveryScheduler {
           if (signal.aborted) return;
           logEvent("runtime_lifecycle", { error, subsystem: "knowledge", stage: "cleanup", outcome: "failed",
             action: "retry", code: "knowledge_retirement_failed", prisma_code: databaseFailureCode(error) });
+        }
+        if (signal.aborted) return;
+        try {
+          // Without a runtime only Projects that need no Workspace runner; Workspace maintenance takes the rest.
+          logProjectDeletionPass(await runProjectDeletionMaintenance({ prisma }));
+        } catch (error) {
+          logEvent("runtime_lifecycle", { error, subsystem: "projects", stage: "delete", outcome: "failed",
+            action: "retry", code: "project_deletion_failed", prisma_code: databaseFailureCode(error) });
         }
       },
       subsystem: "object_storage"

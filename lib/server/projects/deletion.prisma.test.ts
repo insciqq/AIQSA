@@ -105,6 +105,26 @@ describe("Project retirement", () => {
     } finally { await value.cleanup(); await unfenced.cleanup(); }
   });
 
+  it("without a Workspace runtime finalizes only fenced Projects whose chats hold no Workspace VM", async () => {
+    const plain = await fixture();
+    const withVm = await fixture();
+    try {
+      await withVm.workspace();
+      for (let pass = 0; pass < 20 && await prisma.project.count({ where: { id: plain.projectId } }); pass += 1) {
+        await runProjectDeletionMaintenance({ prisma, limit: 50 });
+      }
+      expect(await prisma.project.findUnique({ where: { id: plain.projectId } })).toBeNull();
+      // Never claimed or failed: Workspace maintenance removes the VM first.
+      expect(await prisma.project.findUnique({ where: { id: withVm.projectId } })).toMatchObject({
+        deletionClaimToken: null, deletionLastAttemptAt: null, deletionLastErrorCode: null, status: "DELETING"
+      });
+      for (let pass = 0; pass < 20 && await prisma.project.count({ where: { id: withVm.projectId } }); pass += 1) {
+        await runProjectDeletionMaintenance({ prisma, runtime: withVm.runtime, limit: 50 });
+      }
+      expect(await prisma.project.findUnique({ where: { id: withVm.projectId } })).toBeNull();
+    } finally { await plain.cleanup(); await withVm.cleanup(); }
+  });
+
   it("records a failed attempt while a run is active and finishes once the run settled", async () => {
     const value = await fixture();
     try {

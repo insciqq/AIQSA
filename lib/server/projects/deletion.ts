@@ -1,16 +1,19 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import { logEvent } from "../observability";
 import type { WorkspaceRuntime } from "../workspace/runtime";
 import { removeWorkspaceForDeletion } from "../workspace/removal";
 
 /*
  * Projects were removed together with their data (operator decision
  * 2026-10-23). The migration `20261023210000_retire_projects` fenced every
- * remaining Project for deletion; Workspace maintenance finalizes them here,
- * a bounded batch per pass: their Workspace VMs are removed, their stored
- * objects are queued for deletion, and the Project's chats, messages, runs,
- * shares and memberships cascade with it. The tables stay until the next
- * release drops them.
+ * remaining Project for deletion, and they are finalized here, a bounded
+ * batch per pass: their Workspace VMs are removed, their stored objects are
+ * queued for deletion, and the Project's chats, messages, runs, shares and
+ * memberships cascade with it. The application's deletion worker takes the
+ * Projects that need no Workspace runner, so retirement completes on an
+ * installation without Workspace; Workspace maintenance takes the rest. The
+ * tables stay until a later release drops them.
  */
 
 const CLAIM_MS = 5 * 60_000;
@@ -122,19 +125,38 @@ export async function finalizeProjectDeletion(input: Readonly<{
   }
 }
 
+export type ProjectDeletionPass = Readonly<{ completed: number; failed: number; pending: number }>;
+
+/**
+ * One bounded pass over fenced Projects. Without a Workspace runtime it takes
+ * only Projects whose chats hold no Workspace VM or operation, since removing
+ * one needs the runner.
+ */
 export async function runProjectDeletionMaintenance(input: Readonly<{
   prisma: PrismaClient;
   runtime?: WorkspaceRuntime;
   limit?: number;
-}>): Promise<Readonly<{ completed: number; failed: number; pending: number }>> {
+}>): Promise<ProjectDeletionPass> {
+  const needsNoRunner = { chats: { none: { workspaceSession: { is: { OR: [
+    { runtimeSandboxId: { not: null } }, { operationOwner: { not: null } }
+  ] } } } } };
   const rows = await input.prisma.project.findMany({
     where: { status: "DELETING", deletionRequestedAt: { not: null }, OR: [
       { deletionClaimExpiresAt: null }, { deletionClaimExpiresAt: { lte: new Date() } }
-    ] },
+    ], ...(input.runtime ? {} : needsNoRunner) },
     orderBy: [{ deletionLastAttemptAt: { sort: "asc", nulls: "first" } }, { id: "asc" }],
     select: { id: true }, take: Math.min(50, Math.max(1, input.limit ?? 10))
   });
   const result = { completed: 0, failed: 0, pending: 0 };
   for (const { id } of rows) result[await finalizeProjectDeletion({ ...input, projectId: id })]++;
   return result;
+}
+
+/** Content-free counts of a pass that deleted or failed something. */
+export function logProjectDeletionPass(pass: ProjectDeletionPass): void {
+  if (pass.completed === 0 && pass.failed === 0) return;
+  logEvent("runtime_lifecycle", { subsystem: "projects", stage: "delete",
+    outcome: pass.failed > 0 ? "failed" : "completed",
+    completed_count: pass.completed, failed_count: pass.failed, pending_count: pass.pending,
+    ...(pass.failed > 0 ? { action: "retry" as const, code: "project_deletion_failed" } : {}) });
 }
