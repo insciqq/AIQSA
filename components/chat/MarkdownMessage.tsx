@@ -1,6 +1,6 @@
 "use client";
 
-import { safeExternalHref } from "@/lib/domain/links";
+import { safeExternalHref, studioHref } from "@/lib/domain/links";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CodeCopyButton } from "./CodeCopyButton";
 import { highlightCodeBlock, resolveCodeLanguage } from "./codeHighlighting";
@@ -127,6 +127,11 @@ function renderLink(node: Extract<MarkdownInline, { type: "link" }>, key: string
         {label}
       </a>
     );
+  }
+  // A Studio section the agent points to opens in this tab, like the app's own links.
+  const studio = studioHref(node.url);
+  if (studio) {
+    return <a className={LINK_CLASS} href={studio} key={key}>{label}</a>;
   }
   const href = safeExternalHref(node.url);
   // An unsafe destination keeps rendering as its literal Markdown source.

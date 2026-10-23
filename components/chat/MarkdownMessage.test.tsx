@@ -607,6 +607,18 @@ describe("MarkdownMessage", () => {
     expect(screen.getByText(/<script>alert\(1\)<\/script>/)).toBeVisible();
   });
 
+  it("opens the Studio sections the agent links to in this tab and keeps other app paths inert", () => {
+    render(<MarkdownMessage content={"[Skills](/?library=skills), [Editor](/?library=assistants&assistant=a1-b2), " +
+      "[Logout](/api/auth/logout), [Odd](/?library=admin) and [Up](/?library=../skills)"} />);
+
+    const skills = screen.getByRole("link", { name: "Skills" });
+    expect(skills).toHaveAttribute("href", "/?library=skills");
+    expect(skills).not.toHaveAttribute("target");
+    expect(screen.getByRole("link", { name: "Editor" })).toHaveAttribute("href", "/?library=assistants&assistant=a1-b2");
+    for (const name of ["Logout", "Odd", "Up"]) expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+    expect(screen.getByText(/\[Logout\]\(\/api\/auth\/logout\)/)).toBeVisible();
+  });
+
   it("renders links with parenthesized URL paths and uppercase schemes", () => {
     render(<MarkdownMessage content="[Nim](HTTPS://en.wikipedia.org/wiki/Nim_(game))" />);
 
