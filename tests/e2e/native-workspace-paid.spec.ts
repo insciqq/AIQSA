@@ -92,6 +92,7 @@ import { expect, test, type Browser, type Locator, type Page, type TestInfo } fr
 import sharp from "sharp";
 import { utils as spreadsheetUtils, write as writeWorkbook } from "xlsx";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
+import { workspaceActivitySnapshot } from "../../lib/server/runs/workspaceActivityPersistence";
 import { getWorkspaceConfig, WorkspaceConfigError, type WorkspaceConfig } from "../../lib/server/workspace/config";
 import { selectModel } from "./shell/composer";
 import { keepAccountMcpDefault } from "./support/chatDefaults";
@@ -320,19 +321,17 @@ type ActivityEntry = Readonly<{
   startedAt?: string;
 }>;
 
-/** The run's kept Workspace activity entries, each in its latest saved state. */
+/**
+ * The run's kept Workspace activity entries, each in its latest saved state,
+ * as a reload reads them: every update leaves a value-free
+ * `workspace_activity_receipt`, and the entries themselves live in the run's
+ * one `workspace_activity_snapshot` row (sequence -1). Only runs from before
+ * snapshots kept `artifact` rows of them.
+ */
 async function workspaceActivity(runId: string): Promise<ActivityEntry[]> {
-  const rows = await prisma.modelRunEvent.findMany({ orderBy: { sequence: "asc" }, select: { payload: true },
-    where: { eventType: "artifact", modelRunId: runId } });
-  const latest = new Map<string, ActivityEntry>();
-  for (const row of rows) {
-    const data = row.payload as { artifactType?: unknown; payload?: unknown } | null;
-    if (data?.artifactType !== "workspace_activity" || !data.payload || typeof data.payload !== "object") continue;
-    const entry = data.payload as Partial<ActivityEntry>;
-    if (typeof entry.id !== "string" || typeof entry.kind !== "string" || typeof entry.phase !== "string") continue;
-    latest.set(entry.id, { ...latest.get(entry.id), ...entry } as ActivityEntry);
-  }
-  return [...latest.values()];
+  const row = await prisma.modelRunEvent.findUnique({ select: { payload: true },
+    where: { modelRunId_sequence: { modelRunId: runId, sequence: -1 } } });
+  return [...(workspaceActivitySnapshot(row?.payload)?.entries ?? [])] as ActivityEntry[];
 }
 
 const vmStarts = (entries: readonly ActivityEntry[]) => entries.filter((entry) => entry.kind === "workspace_start");

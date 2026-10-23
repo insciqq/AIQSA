@@ -1,6 +1,6 @@
 import { encodeSseEvent, RUN_STREAM_KEEPALIVE, RUN_STREAM_KEEPALIVE_MS, type ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { logEvent } from "../observability";
-import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
+import { projectRunOutputArtifactEvent, type RunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { RunRepository } from "../runs/runRepositoryContract";
 
 /**
@@ -15,6 +15,12 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 export type RunEventSink = Readonly<{
   /** Saves the event's kept projection, then sends it live. */
   publish(event: ModelRunSseEvent): Promise<void>;
+  /**
+   * Saves a record the server mints itself, which the provider projection
+   * never keeps (a compaction status: capacity is the server's, never a
+   * provider's output), then sends it live.
+   */
+  record(event: RunOutputArtifactEvent): Promise<void>;
   /** Sends a live-only event. */
   send(event: ModelRunSseEvent): void;
   startKeepalive(): () => void;
@@ -34,18 +40,23 @@ export function createRunEventSink(input: Readonly<{
     }
   };
   const send = (event: ModelRunSseEvent) => enqueue(encodeSseEvent(event));
+  /** The saved form of a kept event (a Workspace entry carries its durable sequence); the event itself when saving failed. */
+  const save = async (kept: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent | null> => {
+    try {
+      return await input.repository.appendRunOutputEvent(input.runId, kept);
+    } catch (error) {
+      logEvent("service_operation", { action: "degrade", code: "run_output_unsaved", error, outcome: "degraded",
+        run_id: input.runId, stage: "write", subsystem: "database" });
+      return null;
+    }
+  };
   return {
     async publish(event) {
       const kept = projectRunOutputArtifactEvent(event);
       let live: ModelRunSseEvent = event;
       if (kept) {
-        try {
-          const saved = await input.repository.appendRunOutputEvent(input.runId, kept);
-          if (saved.type === "artifact" && saved.data.artifactType === "workspace_activity") live = saved;
-        } catch (error) {
-          logEvent("service_operation", { action: "degrade", code: "run_output_unsaved", error, outcome: "degraded",
-            run_id: input.runId, stage: "write", subsystem: "database" });
-        }
+        const saved = await save(kept);
+        if (saved?.type === "artifact" && saved.data.artifactType === "workspace_activity") live = saved;
       }
       // A grounding display crosses only as its kept projection.
       if (event.type === "grounding_display") {
@@ -53,6 +64,10 @@ export function createRunEventSink(input: Readonly<{
         live = kept;
       }
       send(live);
+    },
+    async record(event) {
+      await save(event);
+      send(event);
     },
     send,
     startKeepalive() {
