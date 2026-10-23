@@ -6,7 +6,7 @@ import type { AgentSkillRefusal, AgentSkillService } from "../skills/agentSkills
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import type { SkillSaveConflict, SkillSaveVersionList } from "../skills/skillSave";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
-import { ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
+import { PROPOSAL_CARD_NOTE, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
 import { logSelfServiceFailure } from "./selfServiceCall";
 import { parseSkillSaveTarget, skillSavedResult } from "./skillSave";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
@@ -224,7 +224,7 @@ export async function executeManageSkill(service: AgentSkillService | undefined,
       }
       return { artifacts: [resourceChangeArtifact(proposal.card)], callId: call.id,
         content: [{ type: "json", value: { deleted: false, deletionProposed: true, skill: proposal.card.name, library: SKILL_LIBRARY_PATH,
-          note: "Nothing was deleted: the answer shows a card in which the user confirms the deletion. Do not ask again in text." } }],
+          note: `Nothing was deleted: the answer shows a card in which the user confirms the deletion. ${PROPOSAL_CARD_NOTE}` } }],
         name: call.name, status: "complete" };
     }
     if (action === "restore") {

@@ -170,6 +170,8 @@ describe("native tool batch", () => {
     expect(store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval }));
     expect(outcome.approvals).toEqual(["approval-1"]);
     expect(outcome.results[0]).toMatchObject({ outcome: "error", output: UNKNOWN_OUTCOME_APPROVAL_OUTPUT });
+    // The answer places the approval card; the model is never told where it is.
+    expect(UNKNOWN_OUTCOME_APPROVAL_OUTPUT).not.toMatch(/above|below/u);
   });
 
   it("sends the continuation's approved call with the Allow that names it, and a completed call settles the effect", async () => {

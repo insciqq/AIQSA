@@ -166,6 +166,9 @@ describe("manage_assistant", () => {
     const fake = service();
     const result = await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context);
     expect(json(result)).toMatchObject({ deleted: false, deletionProposed: true });
+    // The answer places the card: the model is told not to say where it is.
+    expect(json(result).note).toContain("without saying where it appears");
+    expect(json(result).note).not.toMatch(/above|below/u);
     expect(card(result)).toMatchObject({ action: "delete_proposed", consequences: { chatCount: 4, everyone: false, groupNames: ["Backend"],
       pendingListingRequest: false }, definitionVersion: 3 });
     expect(fake.update).not.toHaveBeenCalled();
@@ -177,6 +180,8 @@ describe("manage_assistant", () => {
     const group = await executeManageAssistant(fake, call({ action: "propose_publish", assistantId: "asst_1", audience: "frontend" }), context);
     expect(card(group)).toMatchObject({ action: "publish_proposed", audience: { groupId: "grp_frontend", groupName: "Frontend", kind: "group" }, definitionVersion: 3 });
     expect(json(group)).toMatchObject({ publicationProposed: true, published: false });
+    expect(json(group).note).toContain("without saying where it appears");
+    expect(json(group).note).not.toMatch(/above|below/u);
     const everyone = await executeManageAssistant(fake, call({ action: "propose_publish", assistantId: "asst_1", audience: "Everyone" }), context);
     expect(card(everyone)).toMatchObject({ audience: { kind: "everyone" } });
     const already = await executeManageAssistant(fake, call({ action: "propose_publish", assistantId: "asst_1", audience: "Backend" }), context);
