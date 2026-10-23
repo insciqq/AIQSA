@@ -62,10 +62,13 @@ export function createUnknownEffects(): UnknownEffects {
 /**
  * The unknown effects a branch's transcript left, in its order: a call whose
  * latest result is unknown or missing, unless an equivalent call completed
- * after it. Every tool counts here, whatever this run knows of it (an Auto
- * tool is found again only when the model asks for it); the batch applies the
- * rule only to tools with external effects. Only the user's own words
- * (`userAuthored`) count as the user speaking.
+ * after it. An approved call's in-flight record (`inFlight`) opens the call
+ * again: its own result settles it, a definite "not sent" included, and
+ * without one the call is unknown like any call left without a result. Every
+ * tool counts here, whatever this run knows of it (an Auto tool is found
+ * again only when the model asks for it); the batch applies the rule only to
+ * tools with external effects. Only the user's own words (`userAuthored`)
+ * count as the user speaking.
  */
 export function unknownEffectsOf(items: readonly TranscriptItem[],
   userAuthored: (item: TranscriptUserItem) => boolean): UnknownEffects {
@@ -89,6 +92,10 @@ export function unknownEffectsOf(items: readonly TranscriptItem[],
     if (item.kind === "tool_result") {
       const call = calls.get(item.callId);
       if (!call) continue;
+      if (item.inFlight) {
+        open.add(item.callId);
+        continue;
+      }
       open.delete(item.callId);
       effects.record(call, item.outcome);
       continue;
