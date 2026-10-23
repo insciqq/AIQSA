@@ -42,7 +42,9 @@ import { callModel } from "./modelCall";
 import { createRunContext, type RunContext } from "./runContext";
 import type { NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
-import { runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState } from "./toolBatch";
+import {
+  APPROVED_CALL_IN_FLIGHT_OUTPUT, runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState
+} from "./toolBatch";
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
 import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
@@ -412,8 +414,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           const load = registry.resolve(approvedCall.name) ? undefined
             : registry.mcpLoadCall?.(approvedCall.name, `aiqsa_approved_load_${approvalId}`);
           if (load) await runToolBatch(batchDeps, toolState, { calls: [load], round: 0 });
+          const unavailable = !registry.resolve(approvedCall.name);
+          // On record before it may be sent, as a model's calls are: the call's earlier result said "not sent", so an
+          // interruption before its own result lands must leave its effect unknown, and an equivalent call later needs the
+          // user's decision again, whatever the server's consent. Its own result, recorded later, supersedes this one.
+          if (!unavailable) {
+            await appendCalls([{ callId: approvedCall.id, id: randomUUID(), kind: "tool_result", name: approvedCall.name,
+              outcome: "unknown", output: APPROVED_CALL_IN_FLIGHT_OUTPUT }]);
+          }
           const batch = await runToolBatch(batchDeps, toolState, {
-            approved: { approvalId, callId: approvedCall.id, ...(registry.resolve(approvedCall.name) ? {} : { unavailable: true as const }) },
+            approved: { approvalId, callId: approvedCall.id, ...(unavailable ? { unavailable: true as const } : {}) },
             calls: [approvedCall], firstOrdinal: load ? 1 : 0, round: 0
           });
           await append(batch.results);
