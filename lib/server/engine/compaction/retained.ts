@@ -165,6 +165,14 @@ function firstLine(text: string, chars: number): string {
   return clip(line, chars);
 }
 
+const ERROR_LINE = /(?:error|exception|fail|fatal|traceback|denied|refused|timed? ?out|ошибк|сбой)/iu;
+
+/** The line of a failed result that names the failure, else its first line. */
+function errorLine(text: string, chars: number): string {
+  const line = text.slice(0, 64_000).split(/\r?\n/u).find((entry) => ERROR_LINE.test(entry));
+  return line ? clip(line, chars) : firstLine(text, chars);
+}
+
 const RESULT_IDENTIFIER = /"((?:[a-z]+_)?id|[a-z]+Id|url|version)"\s*:\s*"([^"\s]{1,100})"/gu;
 
 /** Up to two identifiers a result names first (ids, URLs, versions). */
@@ -179,7 +187,7 @@ function resultIdentifiers(output: string): string {
 
 function outcomeText(result: TranscriptToolResultItem, identify = false): string {
   if (result.outcome === "unknown") return "outcome unknown: check its effect before repeating it";
-  if (result.outcome === "error") return `error: ${firstLine(result.output, 140)}`;
+  if (result.outcome === "error") return `error: ${errorLine(result.output, 140)}`;
   const exit = /"?exit_?code"?\s*[:=]\s*(-?\d{1,4})/iu.exec(result.output.slice(0, 4_096))?.[1];
   return exit !== undefined ? `exit ${exit}` : `done${identify ? resultIdentifiers(result.output) : ""}`;
 }
@@ -314,7 +322,7 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
     } else if (!handle && result.output.length >= LARGE_RESULT_CHARS && kind !== "skill_load") {
       large.push(`- (no handle) ${identity} → ${result.output.length.toLocaleString("en-US")} characters; only an excerpt survives compaction`);
     }
-    if (result.outcome === "error") errors.push(`- ${identity} → ${firstLine(result.output, 160)}`);
+    if (result.outcome === "error") errors.push(`- ${identity} → ${errorLine(result.output, 160)}`);
   }
 
   const changedLines = [...changed.entries()].map(([path, entry]) =>
