@@ -26,7 +26,7 @@ Until the switch the native engine (`lib/server/engine/`) serves only the intera
 Answering the user is the top priority (operator decision 2026-10-22).
 
 - Model calls, summary and compaction calls included, retry transparently under the transport policy in `agent_docs/PROVIDERS.md`, and read-only tools retry the same way. None of them needs a durable dispatch receipt.
-- A call with external side effects is recorded before dispatch and never re-sent automatically when its outcome is unknown; the transcript keeps the outcome as unknown.
+- A call with external side effects is recorded before dispatch and never re-sent automatically when its outcome is unknown; the transcript keeps the outcome as unknown. An equivalent call the model asks for later, in any turn, waits for the user's decision: the approval card for an MCP tool, whatever its consent, otherwise the user writing again (`lib/server/engine/unknownEffects.ts`).
 - The answer is saved and shown before bookkeeping. Usage, checkpoints and other records are written after it and retried; their failure never fails the run or hides the answer.
 - Entitlement is checked at admission, not again before each call. Per-request ownership checks stay.
 - A run reaches exactly one terminal state. An interrupted run (restart, crash) keeps its transcript, files and outputs and offers Continue, which starts an ordinary follow-up turn. Recovery touches only its own engine's runs.
