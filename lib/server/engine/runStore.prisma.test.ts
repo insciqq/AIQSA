@@ -57,7 +57,13 @@ async function recordedCompactions(runId: string) {
 }
 
 afterEach(async () => {
-  for (const id of owners.splice(0)) await prisma.user.deleteMany({ where: { id } });
+  for (const id of owners.splice(0)) {
+    // The deletion fence leaves its durable operation, which the fenced chat references and which restricts
+    // deleting the owner: chats first, then the operation, then the owner.
+    await prisma.chat.deleteMany({ where: { userId: id } });
+    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: id } });
+    await prisma.user.deleteMany({ where: { id } });
+  }
 });
 afterAll(() => prisma.$disconnect());
 
