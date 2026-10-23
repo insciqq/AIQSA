@@ -8,7 +8,7 @@ const request = {
   timeoutMs: 100
 };
 
-function transport(namespace: "knowledge" | "memory" = "knowledge") {
+function transport(namespace: "memory" = "memory") {
   return new BoundedOpenSearchCoreTransport({
     env: { AIQSA_OPENSEARCH_URL: "http://search.example.test:9200", NODE_ENV: "test" },
     namespace
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe("shared OpenSearch cancellation", () => {
-  it.each(["knowledge", "memory"] as const)("does not dispatch an already cancelled %s request", async (namespace) => {
+  it.each(["memory"] as const)("does not dispatch an already cancelled %s request", async (namespace) => {
     const fetch = vi.fn().mockResolvedValue(Response.json({ hits: [] }));
     vi.stubGlobal("fetch", fetch);
     const controller = new AbortController();

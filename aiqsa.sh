@@ -1029,15 +1029,16 @@ doctor_toolhive_leftovers() {
     "Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
-# Knowledge was removed with its knowledge-search-worker service; a plain
-# `docker compose up -d` keeps the orphaned container running the old image.
+# Knowledge was removed with its knowledge-search-worker service. `./aiqsa.sh up`
+# and `upgrade` remove the orphaned container; a plain `docker compose up -d`
+# keeps it running the old image.
 doctor_knowledge_worker_leftover() {
   load_project_name
   [[ -n $PROJECT_NAME ]] || return 0
   [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
     --filter label=com.docker.compose.service=knowledge-search-worker 2>/dev/null) ]] || return 0
   check WARN knowledge-worker-leftover "Knowledge was removed; the old knowledge-search-worker container is still there" \
-    "Remove it with:" "  docker compose up -d --remove-orphans"
+    "Remove it with:" "  ./aiqsa.sh up   # --remove-orphans removes the knowledge-search-worker container"
 }
 
 doctor_runner() {

@@ -48,7 +48,7 @@ export type BoundedOpenSearchRequest = Readonly<{
   timeoutMs: number;
 }>;
 
-const indexNamePattern = /^aiqsa-(?:knowledge|memory)-[a-z0-9-]+$/u;
+const indexNamePattern = /^aiqsa-memory-[a-z0-9-]+$/u;
 
 function configurationFromEnv(env: NodeJS.ProcessEnv): OpenSearchConfiguration {
   const rawUrl = env.AIQSA_OPENSEARCH_URL?.trim() || "http://opensearch:9200";
@@ -116,11 +116,11 @@ function classifiedStatus(status: number): OpenSearchTransportError {
  * response, retry, and retrieval semantics stay in the typed clients. */
 export class BoundedOpenSearchCoreTransport {
   readonly #configuration: OpenSearchConfiguration;
-  readonly #namespace: "knowledge" | "memory";
+  readonly #namespace: "memory";
 
   constructor(input: Readonly<{
     env?: NodeJS.ProcessEnv;
-    namespace: "knowledge" | "memory";
+    namespace: "memory";
   }>) {
     this.#configuration = configurationFromEnv(input.env ?? process.env);
     this.#namespace = input.namespace;
