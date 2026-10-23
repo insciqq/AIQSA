@@ -83,6 +83,7 @@ Code: `lib/server/telegram/`.
 ## Skills
 
 - Skills grant no capabilities. Other users' Skills require approved revisions and audience authority, checked at admission. Turning Skills off keeps pins. Filtering never hides a required dependency.
+- An Assistant on Auto that links no Skills offers its runner's own enabled Skills, like an ordinary chat; any link replaces that catalog with the links (issue #48, `lib/server/skills/catalogRelevanceAuthority.ts`).
 
 ## Search and documents
 

@@ -94,7 +94,14 @@ export function AssistantSkillsRowV2({ editor, locked }: Readonly<{
             );
           })}
         </ul>
-      ) : <p className="v2-assistant-setup-note">No Skills linked.</p>}
+      ) : (
+        // Without links an Auto Assistant offers the chatting user's own enabled Skills (#48).
+        <p className="v2-assistant-setup-note">
+          {value.mode === "auto"
+            ? "No Skills linked. Like a regular chat, it loads each person's own enabled Skills on demand."
+            : "No Skills linked."}
+        </p>
+      )}
       <div className="v2-assistant-skills-footer">
         <UiV2Button disabled={locked} icon="plus" ref={opener} onClick={() => setPickerOpen(true)}>Add Skills…</UiV2Button>
         <span

@@ -411,7 +411,11 @@ export type AssistantSkillDelivery = "always" | "on_demand";
 
 export type AssistantSkillLink = { delivery: AssistantSkillDelivery; skillId: string };
 
-/** Skills have no inherit: `auto` without links already behaves like an ordinary chat. */
+/**
+ * Skills have no inherit: `auto` without links already behaves like an
+ * ordinary chat, offering the running user's own enabled Skills. Any link
+ * replaces that catalog with the Assistant's links.
+ */
 export type AssistantSkillsValue = {
   hiddenCount?: number;
   links: AssistantSkillLink[];

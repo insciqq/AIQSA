@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultAssistantDraftRows,
@@ -306,6 +306,20 @@ describe("Assistant editor page", () => {
     expect(view.onRowChange).toHaveBeenCalledWith("skills", { value: { links, mode: "off" } });
   });
 
+  it("says an Auto Assistant without links uses each person's own enabled Skills, and Off without links uses none (#48)", () => {
+    const rows = defaultAssistantDraftRows();
+    for (const mode of ["auto", "off"] as const) {
+      renderPage(editor({ draft: draft({ rows: { ...rows, skills: { policy: "adjustable", value: { links: [], mode } } } }) }));
+      expect(within(row("skills")).getByRole("button", { name: "Skills" }))
+        .toHaveAccessibleDescription(mode === "auto" ? "Auto · enabled Skills, like a regular chat" : "Off · no Skills linked");
+      fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+      expect(within(row("skills")).getByText(mode === "auto"
+        ? "No Skills linked. Like a regular chat, it loads each person's own enabled Skills on demand."
+        : "No Skills linked.")).toBeVisible();
+      cleanup();
+    }
+  });
+
   it("opens the Skills library in selection mode and returns focus to Add Skills", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       nextCursor: null, publishableWorkspaces: [], skills: [], viewer: { canPublishInstallation: false }
@@ -396,7 +410,7 @@ describe("Assistant editor page", () => {
       "Web search: Your default (Inherit) · Adjustable",
       // A server outside the owner's list is not named.
       "Tools: Jira, Unavailable MCP server · Adjustable — differs from your draft",
-      "Skills: Auto · no Skills linked · Adjustable"
+      "Skills: Auto · enabled Skills, like a regular chat · Adjustable"
     ]);
     expect(conflict).toHaveTextContent("Newer text.");
     expect(screen.getByLabelText("Instructions")).toHaveValue("My unsaved text.");

@@ -26,6 +26,7 @@ import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer"
 import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
+import { SKILL_MAX_AVAILABLE } from "../../contracts/skills";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
@@ -1749,6 +1750,112 @@ describe("run preparation", () => {
     expect(await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, {
       ...sendInput(successBody({ skillIds: ["p"] })), skillCatalogDecision: { operationKey: "changed-admission", authorizeScope }
     })).toMatchObject({ ok: false, code: "skill_not_available", status: 404 });
+  });
+
+  describe("an Assistant's Skills catalog (#48)", () => {
+    type Links = Readonly<Record<string, "pinned" | "available">>;
+    const skillsAssistant = (links: Links, mode: "auto" | "off" = "auto"): AssistantRunResolution => {
+      const skillIds = Object.keys(links);
+      const fields = { mcpServerIds: [], providerModelId: "fake-qsa", runControls: {},
+        searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds, skillModes: { ...links }, skills: { mode } };
+      return { ok: true, assistant: {
+        answerRules: null, assistantId: "assistant-1", definitionVersion: 1,
+        identity: { name: "Writing helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
+          kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+        name: "Writing helper", provider: "fake", rows: assistantRowsFromLegacyFields(fields), systemPrompt: "Help with writing.",
+        ...fields
+      } };
+    };
+    const personal = [
+      { skillId: "code-review", revisionId: "code-review-r", name: "Code review", description: "Review a diff" },
+      { skillId: "release-notes", revisionId: "release-notes-r", name: "Release notes", description: "Write release notes" }
+    ];
+    const linked = { skillId: "linked", revisionId: "linked-r", name: "Linked", description: "Linked task", instructions: "LINKED_BODY" };
+    function setup(links: Links, mode: "auto" | "off" = "auto") {
+      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const resolveAssistant = vi.fn(async (_userId: string, _assistantId: string) => skillsAssistant(links, mode));
+      const skills = {
+        resolveForRun: vi.fn(async (_userId: string, ids: readonly string[]) => ({ ok: true as const,
+          skills: ids.map(skillId => skillId === "linked" ? linked : { ...linked, skillId, revisionId: `${skillId}-r`, name: skillId }) })),
+        listEnabledForRun: vi.fn(async () => personal)
+      };
+      const deps: RunPreparationDeps = { ...h.deps, skills, assistants: { resolveForRun: resolveAssistant },
+        repository: { ...h.deps.repository, loadAssistantRowContext: assistantRowContextLoader({
+          defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" } }) } };
+      return { deps, resolveAssistant, skills };
+    }
+    const send = (body: Readonly<Record<string, unknown>> = {}) =>
+      sendInput({ assistantId: "assistant-1", content: textMessageContent("Review this diff"), timeZone: "Europe/Berlin", ...body });
+    const manifestOf = (prepared: PreparedRun) => decodeFrozenSkillManifest(prepared.normalizedRequest.skills)!;
+
+    it("offers the runner's enabled Skills on Auto without links, like an ordinary chat", async () => {
+      const { deps, resolveAssistant, skills } = setup({});
+      const ordinary = manifestOf(preparedFrom(await prepareRun(deps, sendInput(successBody({ content: textMessageContent("Review this diff") })))));
+      const prepared = preparedFrom(await prepareRun(deps, send()));
+      expect(prepared.assistant?.assistantId).toBe("assistant-1");
+      const manifest = manifestOf(prepared);
+      expect(manifest).toMatchObject({ mode: "auto", tools: "load_and_read", pinned: [] });
+      expect(manifest.available.map(skill => skill.skillId)).toEqual(["code-review", "release-notes"]);
+      expect(manifest.available).toEqual(ordinary.available);
+      expect(prepared.providerRequest.tools?.map(tool => tool.name)).toContain("load_skill");
+      // The Assistant is shared: the catalog is its runner's, resolved for the runner only.
+      expect(resolveAssistant.mock.calls.every(([userId]) => userId === "user-1")).toBe(true);
+      expect(skills.listEnabledForRun.mock.calls).toEqual([["user-1"], ["user-1"]]);
+    });
+
+    it("leaves out the runner's manual pins and refuses a personal catalog above the limit", async () => {
+      const { deps, skills } = setup({});
+      const pinnedManual = preparedFrom(await prepareRun(deps, send({ skillIds: ["code-review"] })));
+      expect(manifestOf(pinnedManual).pinned.map(skill => skill.skillId)).toEqual(["code-review"]);
+      expect(manifestOf(pinnedManual).available.map(skill => skill.skillId)).toEqual(["release-notes"]);
+      skills.listEnabledForRun.mockResolvedValueOnce(Array.from({ length: SKILL_MAX_AVAILABLE + 1 }, (_, index) =>
+        ({ skillId: `s${index}`, revisionId: `r${index}`, name: `S${index}`, description: `Task ${index}` })));
+      expect(await prepareRun(deps, send())).toMatchObject({ ok: false, code: "skills_count_exceeded",
+        skillValidation: { field: "available", limit: SKILL_MAX_AVAILABLE } });
+    });
+
+    it("keeps only the Assistant's links once it links any Skill", async () => {
+      for (const delivery of ["available", "pinned"] as const) {
+        const { deps, skills } = setup({ linked: delivery });
+        const manifest = manifestOf(preparedFrom(await prepareRun(deps, send())));
+        expect(skills.listEnabledForRun, delivery).not.toHaveBeenCalled();
+        expect(manifest.available.map(skill => skill.skillId), delivery).toEqual(delivery === "available" ? ["linked"] : []);
+        expect(manifest.pinned.map(skill => skill.skillId), delivery).toEqual(delivery === "pinned" ? ["linked"] : []);
+      }
+    });
+
+    it("offers nothing with Skills Off", async () => {
+      const { deps, skills } = setup({}, "off");
+      const manifest = manifestOf(preparedFrom(await prepareRun(deps, send())));
+      expect(manifest).toMatchObject({ mode: "off", available: [], pinned: [] });
+      expect(skills.listEnabledForRun).not.toHaveBeenCalled();
+    });
+
+    it("authorizes relevance over the runner's personal catalog without links and over the links otherwise", async () => {
+      const decide = (expected: readonly string[]) => vi.fn<NonNullable<RunPreparationDeps["skillCatalogRelevance"]>>(async decision => {
+        expect(decision.candidates.map(skill => skill.skillId)).toEqual(expected);
+        await decision.authorize();
+        return [expected[0]!];
+      });
+      const authority = { operationKey: "assistant-admission", authorizeScope: vi.fn(async () => undefined) };
+      const unlinked = setup({});
+      const personalRelevance = decide(["code-review", "release-notes"]);
+      const ranked = preparedFrom(await prepareRun({ ...unlinked.deps, skillCatalogRelevance: personalRelevance },
+        { ...send(), skillCatalogDecision: authority }));
+      expect(manifestOf(ranked).available.map(skill => skill.skillId)).toEqual(["code-review"]);
+      // Admission and the decision's authorization both read the runner's own catalog.
+      expect(unlinked.skills.listEnabledForRun.mock.calls).toEqual([["user-1"], ["user-1"]]);
+      expect(unlinked.resolveAssistant).toHaveBeenCalledTimes(2);
+
+      unlinked.skills.listEnabledForRun.mockResolvedValueOnce(personal).mockResolvedValueOnce(personal.slice(1));
+      expect(await prepareRun({ ...unlinked.deps, skillCatalogRelevance: decide(["code-review", "release-notes"]) },
+        { ...send(), skillCatalogDecision: authority })).toMatchObject({ ok: false, code: "skill_not_available", status: 404 });
+
+      const withLink = setup({ linked: "available" });
+      await prepareRun({ ...withLink.deps, skillCatalogRelevance: decide(["linked"]) }, { ...send(), skillCatalogDecision: authority });
+      expect(withLink.skills.listEnabledForRun).not.toHaveBeenCalled();
+      expect(withLink.skills.resolveForRun.mock.calls).toEqual([["user-1", ["linked"]], ["user-1", ["linked"]]]);
+    });
   });
 
   it("fails before snapshotting unsupported Buffer data without mutating it", async () => {
