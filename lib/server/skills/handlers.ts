@@ -341,10 +341,22 @@ export function createDeleteSkillHandler(deps: SkillHandlerDeps) {
   ): Promise<Response> {
     const session = await deps.resolveAuth(request);
     if (!session) return errorJson("unauthorized", 401);
+    // Studio deletes without a body; a deletion the user confirmed in an
+    // answer's card names the version the card showed, checked under the
+    // deletion's lock.
+    const value = await readJsonBodyOrNull(request, "json");
+    const bodyError = requestBodyErrorResponse(value);
+    if (bodyError) return bodyError;
+    if (value !== null && (!isRecord(value) || Object.keys(value).some((key) => key !== "expectedVersion") ||
+      !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1)) {
+      return errorJson("skill_draft_invalid", 400);
+    }
     const result = await deps.repository.delete(
       session.userId,
-      await routeParam(context, "skillId")
+      await routeParam(context, "skillId"),
+      value === null ? undefined : Number(value.expectedVersion)
     );
+    if (result === "version_conflict") return errorJson("skill_version_conflict", 409);
     return result === "ok"
       ? new Response(null, { status: 204 })
       : errorJson("skill_not_available", 404);

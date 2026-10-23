@@ -273,6 +273,30 @@ describe("Skill handlers", () => {
     expect(deleteResponse.status).toBe(404);
     await expect(detailResponse.json()).resolves.toEqual({ error: "skill_not_available" });
     await expect(deleteResponse.json()).resolves.toEqual({ error: "skill_not_available" });
+    expect(repo.delete).toHaveBeenCalledWith("user-1", "private", undefined);
+  });
+
+  it("deletes only the version a confirmed proposal names, and nothing once the Skill changed", async () => {
+    const repo = repository();
+    const guarded = (body: unknown) => createDeleteSkillHandler(deps(repo))(
+      new Request("http://localhost/api/me/skills/skill-1", { body: JSON.stringify(body), headers: { "content-type": "application/json" }, method: "DELETE" }),
+      { params: { skillId: "skill-1" } }
+    );
+    expect((await guarded({ expectedVersion: 3 })).status).toBe(204);
+    expect(repo.delete).toHaveBeenLastCalledWith("user-1", "skill-1", 3);
+
+    // A revision saved between the proposal and the click: the repository's lock check refuses it.
+    repo.delete.mockResolvedValueOnce("version_conflict" as never);
+    const conflict = await guarded({ expectedVersion: 3 });
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toEqual({ error: "skill_version_conflict" });
+
+    for (const body of [{}, { expectedVersion: 0 }, { expectedVersion: "3" }, { expectedVersion: 3, force: true }, [3]]) {
+      const invalid = await guarded(body);
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({ error: "skill_draft_invalid" });
+    }
+    expect(repo.delete).toHaveBeenCalledTimes(2);
   });
 
   it("creates only strict text-only drafts", async () => {

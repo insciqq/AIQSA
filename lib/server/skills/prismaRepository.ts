@@ -422,13 +422,11 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       });
     },
 
-    async delete(userId: string, skillId: string): Promise<"not_found" | "ok"> {
+    /** `expectedVersion`, when given, must still be the Skill's version under the deletion's lock. */
+    async delete(userId: string, skillId: string, expectedVersion?: number): Promise<"not_found" | "version_conflict" | "ok"> {
       for (let attempt = 0; ; attempt += 1) {
         try {
-          return await client.$transaction(async (tx) => {
-            const result = await deleteOwnedSkillInTransaction(tx, userId, skillId);
-            return result === "ok" ? "ok" as const : "not_found" as const;
-          });
+          return await client.$transaction((tx) => deleteOwnedSkillInTransaction(tx, userId, skillId, expectedVersion));
         } catch (error) {
           const retryable = error instanceof Prisma.PrismaClientKnownRequestError &&
             (error.code === "P2034" || (error.code === "P2010" &&

@@ -497,6 +497,11 @@ describe("Prisma Assistant rows", () => {
         knowledge: { policy: "fixed", value: { baseIds: [knowledge.id], mode: "explicit", sourceIds: [] } }
       }));
       expect(withKnowledge).toEqual({ assistantId, kind: "ok" });
+      // A publication confirmed in an answer's card names the version it
+      // proposed: the edit above saved a newer one, so nothing is published.
+      await expect(repository.publish({ actorIsAdmin: false, assistantId, expectedVersion: 1, groupId: group.id, scope: "group",
+        userId: ownerUserId })).resolves.toEqual({ kind: "version_conflict" });
+      await expect(prisma.assistantPublication.count({ where: { assistantId } })).resolves.toBe(0);
       await expect(repository.publish({ actorIsAdmin: false, assistantId, groupId: group.id, scope: "group", userId: ownerUserId }))
         .resolves.toMatchObject({ kind: "ok" });
       await expect(repository.getDetail(memberUserId, assistantId)).resolves.toMatchObject({

@@ -770,18 +770,26 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
     if (scope === "group" && (typeof groupId !== "string" || !groupId.trim())) {
       return errorJson("assistant_publication_invalid", 400);
     }
-    if (Object.keys(body ?? {}).some((key) => key !== "scope" && key !== "groupId")) {
+    if (Object.keys(body ?? {}).some((key) => key !== "scope" && key !== "groupId" && key !== "expectedVersion")) {
+      return errorJson("assistant_publication_invalid", 400);
+    }
+    // Studio publishes the current definition; a publication the user
+    // confirmed in an answer's card names the version it proposed.
+    const expectedVersion = body?.expectedVersion;
+    if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) < 1)) {
       return errorJson("assistant_publication_invalid", 400);
     }
 
     const result = await deps.repository.publish({
       actorIsAdmin: resolved.auth.isAdmin,
       assistantId,
+      ...(expectedVersion === undefined ? {} : { expectedVersion: Number(expectedVersion) }),
       groupId: scope === "group" ? (groupId as string).trim() : null,
       scope,
       userId: resolved.auth.userId
     });
     if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
+    if (result.kind === "version_conflict") return errorJson("assistant_version_conflict", 409);
     if (result.kind === "forbidden") return errorJson("forbidden", 403);
     if (result.kind === "invalid") return errorJson("assistant_publication_invalid", 400);
     if (result.kind === "skill_audience_mismatch") {
