@@ -444,6 +444,11 @@ export function memorySearchCallHiddenV2(call: ToolActivityIdentity & Readonly<{
     (call.status === "error" || call.memorySearchOutcome === "failure");
 }
 
+/** A call of the plan tool: the answer shows the plan it set, not the call. */
+export function planCallHiddenV2(call: ToolActivityIdentity): boolean {
+  return toolActivityOriginV2(call) === "session" && call.toolName === "update_plan";
+}
+
 export type AnswerProcessFactsV2 = Readonly<{
   hasReasoning: boolean;
   memoryCount: number;

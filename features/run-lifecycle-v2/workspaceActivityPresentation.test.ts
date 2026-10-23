@@ -10,6 +10,8 @@ import {
   workspaceLiveLabelV2,
   workspaceOutputSkipsCopyV2,
   workspaceOutputStatusCopyV2,
+  workspacePlanSummaryV2,
+  workspacePlanV2,
   workspaceProcessLabelV2
 } from "./workspaceActivityPresentation";
 
@@ -142,6 +144,33 @@ describe("workspace activity presentation", () => {
     expect(workspaceActivityLabelV2({ id: "h", kind: "workspace_start", phase: "succeeded" })).toBe("Workspace ready");
     expect(workspaceActivityLabelV2({ id: "i", kind: "workspace_recreated", phase: "succeeded" })).toBe("Workspace was recreated");
     expect(workspaceActivityLabelV2({ id: "j", kind: "workspace_stopped", phase: "cancelled" })).toBe("Workspace work stopped");
+  });
+
+  it("says a patch that did not finish changed nothing it claims", () => {
+    const one = { changes: [{ action: "add", displayPath: "project/a.ts" }], count: 1, id: "p", kind: "file_change" } as const;
+    const two = { changes: [{ action: "update", displayPath: "project/a.ts" }, { action: "delete", displayPath: "project/b.ts" }], count: 2,
+      id: "q", kind: "file_change" } as const;
+    expect(workspaceActivityLabelV2({ ...one, phase: "running" })).toBe("Changing project/a.ts");
+    expect(workspaceActivityLabelV2({ ...one, phase: "succeeded" })).toBe("Created project/a.ts");
+    expect(workspaceActivityLabelV2({ ...one, phase: "failed" })).toBe("Could not finish changing project/a.ts");
+    expect(workspaceActivityLabelV2({ ...two, phase: "succeeded" })).toBe("Edited 2 files");
+    expect(workspaceActivityLabelV2({ ...two, phase: "failed" })).toBe("Could not finish changing 2 files");
+    expect(workspaceActivityLabelV2({ ...two, phase: "cancelled" })).toBe("Changing 2 files stopped");
+  });
+
+  it("keeps the answer's plan out of the Workspace feed and offers its latest version", () => {
+    const plan = { id: "plan:run", items: [{ completed: true, text: "Read" }, { active: true, completed: false, text: "Chart" }], kind: "plan",
+      phase: "running" } as const;
+    const onlyPlan = { entries: [plan] };
+    expect(visibleWorkspaceActivityV2(onlyPlan)).toBeNull();
+    expect(workspaceLiveLabelV2(onlyPlan)).toBeNull();
+    expect(workspacePlanV2(onlyPlan)).toEqual(plan);
+    expect(workspacePlanSummaryV2(plan)).toBe("Plan · 1 of 2 complete");
+    const withWork = { entries: [plan, command("c", "running")] };
+    expect(visibleWorkspaceActivityV2(withWork)?.entries).toEqual([command("c", "running")]);
+    expect(workspaceLiveLabelV2(withWork)).toBe("Running npm test…");
+    expect(workspacePlanV2({ entries: [{ ...plan, items: [] }] })).toBeNull();
+    expect(workspacePlanV2(null)).toBeNull();
   });
 
   it("retains newer persisted entries and adds unseen live steps", () => {
