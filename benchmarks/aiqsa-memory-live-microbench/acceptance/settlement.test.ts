@@ -35,7 +35,6 @@ describe("acceptance background settlement", () => {
       memoryJob: { findMany: vi.fn().mockResolvedValue([{ id: "batch-job", kind: "EMBED_ITEMS",
         state: testCase.state, errorCode: testCase.code, chatId: null, sourceMessageId: null }]) },
       memoryDeletionOutbox: { count: vi.fn().mockResolvedValue(0) },
-      memoryLexicalProjectionEvent: { count: vi.fn().mockResolvedValue(0) },
       userMemorySettings: { findUniqueOrThrow: vi.fn().mockResolvedValue({ useMemoryFacts: true }) },
       memoryEmbeddingBatchItem: { count: vi.fn().mockResolvedValue(testCase.items) },
       memoryExecutionBinding: { count: vi.fn().mockResolvedValue(testCase.executions) }

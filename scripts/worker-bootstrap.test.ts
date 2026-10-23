@@ -34,7 +34,6 @@ afterEach(() => {
 describe("standalone worker startup", () => {
   it.each([
     ["memory-coordinator.ts", "memory_coordinator"],
-    ["memory-search-worker.ts", "memory_search"],
     ["knowledge-search-worker.ts", "knowledge_search"],
     ["workspace-runner.ts", "workspace_runner"],
     ["workspace-maintenance.ts", "maintenance"],

@@ -14,7 +14,6 @@ import type {
 import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
-import { loadMemoryLexicalProjectionCanonicalEntry } from "../searchProjection/repository";
 import {
   MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
   type MemoryItemEmbeddingPin
@@ -1438,14 +1437,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         .toEqual(new Set(["FACT_VERSION", "RECALL_CHUNK", "TOOL_EVENT"]));
       expect(entries.find((entry) => entry.recallChunkId === source.chunkId)
         ?.normalizedSearchText).toBe(storedChunkText);
-      for (const entry of entries) {
-        const canonical = await loadMemoryLexicalProjectionCanonicalEntry(prisma, {
-          attemptCount: 1, id: randomUUID(), indexGenerationId: entry.indexGenerationId,
-          leaseToken: randomUUID(), memoryRevisionSnapshot: first.memoryRevision,
-          operation: "SYNC_ENTRY", searchEntryId: entry.id, sequence: 1n, userId
-        });
-        expect(canonical?.lexicalText).toBe(entry.normalizedSearchText);
-      }
       await admit();
       const second = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       const secondEntry = await prisma.memorySearchEntry.findFirstOrThrow({ where: {
@@ -1453,9 +1444,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         toolEventId: event.id, userId
       } });
       expect(secondEntry.normalizedSearchText).toBe(firstEntry.normalizedSearchText);
-      expect(await prisma.memoryLexicalProjectionEvent.count({ where: {
-        indexGenerationId: second.activeIndexGenerationId!, operation: "DELETE_ENTRY", userId
-      } })).toBe(0);
       expect((await rebuild.inventory(userId)).ready).toBe(true);
     } finally {
       await cleanupOwner(userId);
@@ -1697,21 +1685,13 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         where: { id: identity.generationId }
       });
       if (!target.sourceIndexGenerationId) throw new Error("source_missing");
-      const [after, source, entries, projection] = await Promise.all([
+      const [after, source, entries] = await Promise.all([
         prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
         prisma.memoryIndexGeneration.findUniqueOrThrow({
           where: { id: target.sourceIndexGenerationId }
         }),
         prisma.memorySearchEntry.findMany({
           where: { indexGenerationId: identity.generationId, userId }
-        }),
-        prisma.memoryLexicalProjectionState.findUniqueOrThrow({
-          where: {
-            userId_indexGenerationId: {
-              indexGenerationId: identity.generationId,
-              userId
-            }
-          }
         })
       ]);
       expect(after).toMatchObject({
@@ -1726,10 +1706,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
         sourceIndexGenerationId: source.id,
         state: "ACTIVE"
-      });
-      expect(projection).toMatchObject({
-        status: "CATCHING_UP",
-        targetMemoryRevision: after.memoryRevision
       });
       expect(source.state).toBe("SUPERSEDED");
       await expect(prisma.memorySearchEntry.count({
@@ -2292,17 +2268,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       })).resolves.toMatchObject({
         indexedThroughMemoryRevision: afterRollback.memoryRevision
       });
-      await expect(prisma.memoryLexicalProjectionState.findUniqueOrThrow({
-        where: {
-          userId_indexGenerationId: {
-            indexGenerationId: firstCurrentGenerationId,
-            userId
-          }
-        }
-      })).resolves.toMatchObject({
-        status: "CATCHING_UP",
-        targetMemoryRevision: afterRollback.memoryRevision
-      });
       await expect(cutover.inventory(userId)).resolves.toMatchObject({
         activeGenerationId: firstCurrentGenerationId,
         eligibleItems: 1,
@@ -2412,7 +2377,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(promotion.generationId).not.toBe(source.id);
       if (!promotion.generationId) throw new Error("promotion_generation_missing");
 
-      const [after, promoted, retainedSource, targetEntries, projection, jobsAfter] =
+      const [after, promoted, retainedSource, targetEntries, jobsAfter] =
         await Promise.all([
           prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
           prisma.memoryIndexGeneration.findUniqueOrThrow({
@@ -2422,14 +2387,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
           prisma.memorySearchEntry.findMany({
             orderBy: { id: "asc" },
             where: { indexGenerationId: promotion.generationId, userId }
-          }),
-          prisma.memoryLexicalProjectionState.findUniqueOrThrow({
-            where: {
-              userId_indexGenerationId: {
-                indexGenerationId: promotion.generationId,
-                userId
-              }
-            }
           }),
           prisma.memoryJob.count({ where: { userId } })
         ]);
@@ -2480,11 +2437,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(targetEntries.map(exactEntry).sort(byFactVersionId)).toEqual(
         sourceEntries.map(exactEntry).sort(byFactVersionId)
       );
-      expect(projection).toMatchObject({
-        status: "CATCHING_UP",
-        targetMemoryRevision: after.memoryRevision
-      });
-      expect(projection.enqueuedThroughSequence).toBeGreaterThan(0n);
       expect(jobsAfter).toBe(jobsBefore);
       await expect(cutover.inventory(userId)).resolves.toMatchObject({
         activeGenerationId: promotion.generationId,
@@ -2840,13 +2792,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(entries.find(({ toolEventId }) => toolEventId === toolEvent.id))
         .toMatchObject({ normalizedSearchText: toolEvent.normalizedSafeSearchText });
       for (const entry of entries) {
-        const canonical = await loadMemoryLexicalProjectionCanonicalEntry(prisma, {
-          attemptCount: 1, id: randomUUID(), indexGenerationId: identity.generationId,
-          leaseToken: randomUUID(), memoryRevisionSnapshot: after.memoryRevision,
-          operation: "SYNC_ENTRY", searchEntryId: entry.id, sequence: 1n, userId
-        });
         const vectorTarget = await embeddingRepository.loadTarget(userId, entry.id);
-        expect(canonical?.lexicalText).toBe(entry.normalizedSearchText);
         expect(vectorTarget?.normalizedSearchText).toBe(entry.normalizedSearchText);
       }
       await expect(prisma.memorySearchEntry.count({
