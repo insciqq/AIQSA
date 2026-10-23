@@ -46,8 +46,9 @@ describe("Memory saved-secret guard", () => {
   it("reads every typed value of the owner's saved secrets, trimmed too, and leaves browser states out", async () => {
     const fake = db([
       row({ kind: "text", text: ` ${TOKEN}\n` }),
-      row({ entries: [{ name: "DEMO_API_TOKEN", value: "env-value-123" }, { name: "SHORT", value: "abc" }], kind: "env" }),
-      row({ kind: "ssh_key", passphrase: "correct horse", privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----" }),
+      row({ entries: [{ name: "DEMO_API_TOKEN", value: "env-value-123" }, { name: "SHORT", value: "abc" },
+        { name: "DB_HOST", value: "localhost" }], kind: "env" }),
+      row({ kind: "ssh_key", passphrase: "correct horse battery staple", privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----" }),
       row({ base64: Buffer.from("file-secret-content").toString("base64"), kind: "file", originalName: "token.txt" })
     ]);
     const values = await memorySavedSecretValues(reader(fake), USER, () => KEY);
@@ -56,10 +57,11 @@ describe("Memory saved-secret guard", () => {
       where: { browserFileName: null, userId: USER }
     }));
     expect(values).toEqual(expect.arrayContaining([
-      ` ${TOKEN}\n`, TOKEN, "env-value-123", "correct horse", "file-secret-content"
+      ` ${TOKEN}\n`, TOKEN, "env-value-123", "correct horse battery staple", "file-secret-content"
     ]));
-    // Below the masking threshold a value would match ordinary words.
+    // Short values and plain words are ordinary text, not screened (`savedSecretMatching.ts`).
     expect(values).not.toContain("abc");
+    expect(values).not.toContain("localhost");
   });
 
   it("needs no key when the owner has no saved secrets", async () => {

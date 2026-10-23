@@ -429,9 +429,11 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
         };
       }
 
-      // The classifier's own SECRET label also ends a mutation: a credential is
-      // never Memory, whatever format Safety Lite recognizes.
-      if (mutationIntentContainsRecognizedSecret(intent) || intent.sensitivity === "SECRET") {
+      // The classifier's own SECRET label also ends a save or an update: a
+      // credential is never stored, whatever format Safety Lite recognizes.
+      // Forgetting one stays possible.
+      if (mutationIntentContainsRecognizedSecret(intent) ||
+        ((intent.action === "SAVE" || intent.action === "UPDATE") && intent.sensitivity === "SECRET")) {
         return mutationRejected(intent.action);
       }
 

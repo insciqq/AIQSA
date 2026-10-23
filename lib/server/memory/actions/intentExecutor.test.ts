@@ -242,6 +242,21 @@ describe("Memory intent action executor", () => {
     expect(deps.explicitService.update).not.toHaveBeenCalled();
   });
 
+  it("still forgets what Memory holds about a credential when the classifier labels the request SECRET", async () => {
+    const deps = dependencies();
+    const result = await createMemoryIntentActionExecutor({
+      ...deps,
+      clientRefs
+    } as never).execute(execution(intent({
+      action: "FORGET",
+      reasonCode: "forget_request",
+      sensitivity: "SECRET",
+      targetQuery: "my GitHub token"
+    })));
+    expect(result).toEqual({ operation: "FORGET", status: "COMMITTED" });
+    expect(deps.lifecycleService.forget).toHaveBeenCalledOnce();
+  });
+
   it.each(["SAVE", "UPDATE"])("reports a %s storage refused as a saved secret's value as rejected, not failed", async (action) => {
     const refused = vi.fn(async () => { throw new ExplicitMemoryServiceError("memory_secret_rejected"); });
     const deps = dependencies({ create: refused, update: refused });
