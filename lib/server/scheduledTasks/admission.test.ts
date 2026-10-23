@@ -17,6 +17,7 @@ import {
 import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
+import { nativeEngineFake } from "@/tests/support/nativeEngine";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import {
   createScheduledTaskSend,
@@ -496,6 +497,67 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(f.state.created).not.toHaveProperty("scheduledOccurrence");
+  });
+});
+
+describe("scheduled task admission on the native engine", () => {
+  const nativeSend = (f: ReturnType<typeof fixture>, native: ReturnType<typeof nativeEngineFake>) =>
+    createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, nativeEngine: native.deps } });
+
+  it("runs a listed owner's same-chat occurrence natively, from the flat context alone", async () => {
+    resetBootOrphanSweepForTest();
+    const path = [...ownerTurns("before", 3), say("previous-user", "user", "Summarize the synthetic fixture"),
+      say("previous-answer", "assistant", "Previous synthetic summary"), ...ownerTurns("after", 3)];
+    const chat: RunOwnedChatRecord = { ...taskChat, activeLeafMessageId: path.at(-1)!.id };
+    const f = fixture({ chat, path });
+    const native = nativeEngineFake([owner.email!]);
+    const response = await nativeSend(f, native)({
+      body: body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" }), chatId: chat.id,
+      occurrence: { ...occurrence, previousResult }, userId: owner.id
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.state.created).toMatchObject({ engine: "native", scheduledOccurrence: { previousResult } });
+    // The owner's own turns before and after the previous result stay out.
+    expect(f.state.requests).toHaveLength(1);
+    expect(f.state.requests[0]!.history!.map((item) => [item.type, "text" in item ? item.text : null])).toEqual([
+      ["user", "Summarize the synthetic fixture"], ["assistant_text", "Previous synthetic summary"], ["user", "Summarize the synthetic fixture"]
+    ]);
+    expect(native.published).toHaveLength(1);
+    expect(f.state.completedText).toBeNull();
+    expect(f.state.failedCode).toBeNull();
+  });
+
+  it("offers a listed owner's monitoring check its verdict tool and saved secrets, never a self-service tool", async () => {
+    resetBootOrphanSweepForTest();
+    const f = fixture();
+    const native = nativeEngineFake([owner.id], { tools: true });
+    const response = await nativeSend(f, native)({
+      body: body({ chatId: newChatId, kind: "new" }, true, { toolsEnabled: true, workspaceEnabled: false }), chatId: newChatId,
+      occurrence: { ...occurrence, monitoring: true }, userId: owner.id
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.state.created).toMatchObject({ engine: "native", scheduledOccurrence: { monitoring: true } });
+    expect(f.state.created!.normalizedRequest.monitoringVerdictTool).toBe(true);
+    // Standing authority: a scheduled run never asks for a per-run write approval.
+    expect(f.state.created!.normalizedRequest.mcpApproval).toBeUndefined();
+    const tools = (f.state.requests[0]!.tools ?? []).map((tool) => tool.name);
+    expect(tools).toEqual(expect.arrayContaining(["report_monitoring_result", "read_secret"]));
+    expect(tools.some((name) => name.startsWith("manage_") || name === "create_scheduled_task")).toBe(false);
+    expect(f.state.requests[0]!.prompt.system).toContain("scheduled monitoring check");
+  });
+
+  it("keeps an unlisted owner's occurrence on the old core", async () => {
+    resetBootOrphanSweepForTest();
+    const f = fixture();
+    const native = nativeEngineFake(["someone-else@example.test"]);
+    const response = await nativeSend(f, native)({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence,
+      userId: owner.id });
+    await response.text();
+    expect(f.state.created?.engine).toBeUndefined();
+    expect(native.published).toEqual([]);
+    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
   });
 });
 
