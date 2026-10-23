@@ -1251,32 +1251,6 @@
   }
 }
 
-/* A labelled row holds six chips. With the reasoning level as the seventh or
-   a later chip (data-compact-labels) the capabilities show their icons, as
-   below 46rem, instead of adding a second row. */
-@container composer (min-width: 46.01rem) {
-  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-label { display: none; }
-  .v2-composer-indicators[data-compact-labels] > .v2-composer-indicator:not(.v2-composer-reasoning) > .v2-composer-indicator-face {
-    width: 1.75rem;
-    height: 1.75rem;
-    padding: 0;
-  }
-  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-icon { position: static; }
-  .v2-composer-indicators[data-compact-labels] > .v2-composer-indicator:not(.v2-composer-reasoning) .v2-composer-indicator-glyph {
-    width: 1rem;
-    height: 1rem;
-  }
-  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-count { position: absolute; top: -0.25rem; right: -0.25rem; }
-  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator[data-comment-count] .v2-composer-indicator-count {
-    display: inline-flex;
-  }
-  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator-signal { top: -0.0625rem; right: -0.0625rem; }
-  .v2-composer-indicators[data-compact-labels] .v2-composer-indicator[data-provenance="assistant"] > .v2-composer-indicator-face::after {
-    top: auto;
-    bottom: -0.125rem;
-  }
-}
-
 @container composer (max-width: 26rem) {
   .v2-composer-entry {
     display: grid;
