@@ -17,6 +17,8 @@ import type { ContextCompactionStatus } from "../../contracts/contextCompaction"
 import { appendRunOutputEvents, closeRunningToolLoopCallsInTransaction } from "../runs/prismaRepositoryToolLoop";
 import { runAttributionUsageRows } from "../runs/prismaRepositoryUsage";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
+import type { TranscriptItem } from "./transcript";
+import { encodeTranscriptItem } from "./transcriptCodec";
 
 /**
  * Terminal writes of a native run, answer first: the answer text is
@@ -90,15 +92,37 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
     },
 
     /**
-     * Records a compaction's status on a native run whose answer may be
-     * settled already: a background compaction can finish after its run, and
-     * its quiet marker belongs to that answer. It adds a marker and never
-     * changes the answer.
+     * Records a compaction that finished after its run: its item in the run's
+     * transcript at `sequence` (taken from the run's writer) and its quiet
+     * marker on the answer, together, under the chat row lock that deletion
+     * takes, and only while the chat is its owner's and not being deleted and
+     * the run is on record. False when nothing was written; an item already
+     * on record (a repeated write whose outcome was lost) counts as written.
      */
-    async appendCompactionStatus(scope: NativeRunScope, status: ContextCompactionStatus): Promise<boolean> {
+    async recordDetachedCompaction(scope: NativeRunScope, input: Readonly<{
+      item: TranscriptItem; sequence: number; status: ContextCompactionStatus | null;
+    }>): Promise<boolean> {
+      const fields = encodeTranscriptItem(input.item);
       return client.$transaction(async (tx) => {
-        if (!await lockNativeRun(tx, scope)) return false;
-        await appendRunOutputEvents(tx, scope.runId, [{ data: { artifactType: "context_compaction", payload: status }, type: "artifact" }]);
+        const [chat] = await tx.$queryRaw<Array<{ permanentDeletionAt: Date | null }>>(Prisma.sql`
+          SELECT "permanentDeletionAt" FROM "Chat" WHERE "id" = ${scope.chatId} AND "userId" = ${scope.userId} FOR UPDATE
+        `);
+        if (!chat || chat.permanentDeletionAt !== null) return false;
+        const [run] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id" FROM "ModelRun" WHERE "id" = ${scope.runId} AND "chatId" = ${scope.chatId} AND "userId" = ${scope.userId}
+            AND "engine" = 'native' AND "assistantMessageId" = ${scope.assistantMessageId}
+          FOR UPDATE
+        `);
+        if (!run) return false;
+        const recorded = await tx.runTranscriptItem.findFirst({ select: { id: true },
+          where: { chatId: scope.chatId, id: input.item.id, modelRunId: scope.runId, userId: scope.userId } });
+        if (recorded) return true;
+        await tx.runTranscriptItem.create({ data: { body: json(fields.body), callId: fields.callId, chatId: scope.chatId,
+          id: input.item.id, kind: fields.kind, modelRunId: scope.runId, sequence: input.sequence, userId: scope.userId } });
+        if (input.status) {
+          await appendRunOutputEvents(tx, scope.runId, [{ data: { artifactType: "context_compaction", payload: input.status },
+            type: "artifact" }]);
+        }
         return true;
       });
     },

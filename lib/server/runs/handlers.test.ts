@@ -7045,10 +7045,10 @@ function nativeEngineFake(listed: readonly string[]) {
       mcpBindingRows: async () => [],
       observations: async () => ({ withReservation: vi.fn() }) as never,
       runs: {
-        appendCompactionStatus: async () => true,
         applyUsageTotals: async () => undefined,
         complete: async () => true,
         publishAnswer: async (_scope, input) => { published.push(input.text); return true; },
+        recordDetachedCompaction: async () => true,
         saveStoppedText: async () => true,
         writeUsageRows: async () => undefined
       },
