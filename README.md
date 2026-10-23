@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 
 - **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
 - **Ready in minutes.** Add an API key and AIQSA checks what each model can actually do (images, PDFs, tools, web search) and turns on exactly that. There is nothing to wire together before your team starts.
-- **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download. For larger jobs, give the task to a Codex agent working in the same machine.
+- **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download.
 - **Answers you can check.** A built-in Knowledge engine reads PDFs, scans and tables, finds the right passages with hybrid search and reranking, and checks the answer against the passages it cites before you see it. Web search answers come with linked sources.
 - **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
 - **Work that runs on its own.** Scheduled tasks run a prompt daily, weekly or monthly and deliver the answer to its own chat, with an optional email.
@@ -47,7 +47,6 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 **Tools and automation**
 - Web search with sources.
 - Workspace: an isolated KVM virtual machine per chat, with file exports and personal secrets.
-- Agent mode: Codex runs long tasks inside the chat's Workspace.
 - MCP: connect remote MCP servers with OAuth; Auto mode finds the right tool for the request.
 - Skills: reusable instructions and files that the model loads when they are relevant.
 - Scheduled tasks: once, daily, weekly or monthly runs with optional email notifications.
