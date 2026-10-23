@@ -1,4 +1,9 @@
-import { responsesInputFromHistory, type ProviderHistoryItem, type ProviderNativeData } from "../../providers/history";
+import {
+  RESPONSES_COMPACTION_TRIGGER,
+  responsesInputFromHistory,
+  type ProviderHistoryItem,
+  type ProviderNativeData
+} from "../../providers/history";
 
 /**
  * Native compaction on OpenAI Responses routes (Codex LB, OpenAI): an
@@ -8,10 +13,11 @@ import { responsesInputFromHistory, type ProviderHistoryItem, type ProviderNativ
  * 7 of 8 planted facts recalled. `/v1/responses/compact` is not used: on
  * Codex LB it accounted only ~130k of such an input and recalled 1–4 of 8.
  * The item replays only to the same route and model; other targets build a
- * summary from the stored transcript instead.
+ * summary from the stored transcript instead. The run sends it through the
+ * Responses request builder (`ProviderRunRequest.compactionTrigger`).
  */
 
-export const COMPACTION_TRIGGER_ITEM = Object.freeze({ type: "compaction_trigger" });
+export const COMPACTION_TRIGGER_ITEM = RESPONSES_COMPACTION_TRIGGER;
 
 /** Responses `input` for a native compaction call: the replayed span, then the trigger. */
 export function responsesCompactionInput(history: readonly ProviderHistoryItem[]): Record<string, unknown>[] {
