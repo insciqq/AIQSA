@@ -24,3 +24,10 @@ export function resourceChangeArtifact(card: ResourceChangeCard): ModelRunSseEve
 export function newProposalId(): string {
   return randomUUID();
 }
+
+/**
+ * How a proposal's result ends. The answer places its cards (after the text
+ * in the chat), so the model names no position: told only that a card is
+ * shown, it wrote "the card shown above" of one below its text.
+ */
+export const PROPOSAL_CARD_NOTE = "Mention it as \"the card\" without saying where it appears, and do not ask again in text.";

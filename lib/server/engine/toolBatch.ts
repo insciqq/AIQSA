@@ -75,7 +75,7 @@ export const UNKNOWN_OUTCOME_REPEAT_OUTPUT =
 /** The same refusal where the user decides in the approval card. */
 export const UNKNOWN_OUTCOME_APPROVAL_OUTPUT =
   "Not sent: an identical earlier call failed after it may have been sent, so its effect is unknown. Check the current state " +
-  "if you can and tell the user what you found; the user decides in the card below whether to send it again. Do not call it " +
+  "if you can and tell the user what you found; the user decides in the approval card whether to send it again. Do not call it " +
   "again meanwhile.";
 
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>

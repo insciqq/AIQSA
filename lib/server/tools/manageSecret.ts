@@ -16,7 +16,7 @@ import type {
 } from "../workspace/secrets/agentSecrets";
 import { parseWorkspaceSecretValue, WorkspaceSecretError } from "../workspace/secrets/validation";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
-import { newProposalId, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
+import { newProposalId, PROPOSAL_CARD_NOTE, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
 import { logSelfServiceFailure } from "./selfServiceCall";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
 
@@ -376,6 +376,6 @@ async function proposeDelete(service: AgentSecretService, call: ModelToolCall, a
   if (lookup.kind === "ambiguous") return refused(call, refusalOf({ code: "secret_ambiguous", matches: lookup.matches }));
   return cardResult(call, secretChangeCard(lookup.secret, "delete_proposed"), {
     deleted: false, deletionProposed: true, secret: describeSecret(lookup.secret),
-    note: "Nothing was deleted: the answer shows a card in which the user confirms the deletion. Do not ask again in text."
+    note: `Nothing was deleted: the answer shows a card in which the user confirms the deletion. ${PROPOSAL_CARD_NOTE}`
   });
 }
