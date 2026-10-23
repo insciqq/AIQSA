@@ -7045,6 +7045,7 @@ function nativeEngineFake(listed: readonly string[]) {
       mcpBindingRows: async () => [],
       observations: async () => ({ withReservation: vi.fn() }) as never,
       runs: {
+        appendCompactionStatus: async () => true,
         applyUsageTotals: async () => undefined,
         complete: async () => true,
         publishAnswer: async (_scope, input) => { published.push(input.text); return true; },
@@ -7054,7 +7055,7 @@ function nativeEngineFake(listed: readonly string[]) {
       savedResults: { read: async () => null },
       toolCalls: { begin: async () => ({ kind: "inactive" }), refuse: async () => null, settle: async () => true },
       transcripts: { append: async () => undefined, approvalContinuationTurns: async () => new Set(), loadRuns: async () => new Map(),
-        nativeRunsForAnswers: async () => new Map(), nextSequence: async () => 0 }
+        nativeRunsForAnswers: async () => new Map(), nextSequence: async () => 0, runLive: async () => true }
     },
     findOrphans: async () => []
   };

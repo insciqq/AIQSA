@@ -77,7 +77,7 @@ export function createDetachedCompactions(options: Readonly<{ onFirstAdd?: (regi
     },
     finish(chatId, job) {
       const entry = byChat.get(chatId);
-      if (entry?.job !== job) return;
+      if (!entry || entry.job !== job) return;
       byChat.set(chatId, { chatId, job, stop: () => undefined, targetKey: entry.targetKey, userId: entry.userId });
       const expiry = setTimeout(() => registry.remove(chatId, job), DETACHED_COMPACTION.keepMs);
       expiry.unref?.();
