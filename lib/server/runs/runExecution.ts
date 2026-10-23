@@ -458,7 +458,7 @@ function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function serializeChatUpdate(
+export function serializeChatUpdate(
   update: RunChatUpdateRecord
 ): ModelRunChatUpdateData {
   return {

@@ -76,6 +76,8 @@ export type ToolBatchOutcome = Readonly<{
   approvals: readonly string[];
   /** A call was refused for the call budget: the next round may use no tools. */
   budgetExhausted: boolean;
+  /** Calls that were sent; a batch that sent none made no progress. */
+  executed: number;
   results: readonly TranscriptToolResultItem[];
 }>;
 
@@ -199,6 +201,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
   const hooks = createToolHooks(deps, state);
   const approvals: string[] = [];
   let budgetExhausted = false;
+  let executed = 0;
   const declared = input.calls.filter((call) => deps.registry.resolve(call.name));
   if (declared.length > 0) deps.onLiveEvent(liveRunPhaseStatus({ count: declared.length, phase: "tools" }));
 
@@ -232,6 +235,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
       approvals.push(begun.approvalId);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: APPROVAL_PENDING_OUTPUT };
     }
+    executed += 1;
     deps.onLiveEvent(liveToolCallStatus(call, { ...tool.activity(call), round: input.round }));
     const execution: EngineToolExecution = { call, ordinal, persistedToolCallId: begun.row.id, round: input.round, signal: deps.signal };
     let result: ToolExecutionResult;
@@ -266,5 +270,5 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
     }
   };
   await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));
-  return { approvals, budgetExhausted, results };
+  return { approvals, budgetExhausted, executed, results };
 }
