@@ -1,0 +1,235 @@
+import { describe, expect, it, vi } from "vitest";
+import { estimateApproxTokens } from "../../domain/contextBudget";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
+import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
+import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import type { RunRepository } from "../runs/runRepositoryContract";
+import { SUMMARIZER_INSTRUCTIONS, SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
+import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
+import type { NativeRunStore } from "./runStore";
+import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
+import { COMPACTION_SUMMARY_HEADING, type TranscriptItem } from "./transcript";
+import type { TranscriptRepository } from "./transcriptRepository";
+
+/**
+ * The native run with compaction in its loop: background compaction while
+ * the turn works, its item swapped in at the next request boundary or kept
+ * after the answer, the quiet marker, and the size rejection compacted and
+ * sent once more.
+ */
+const SUMMARY = SUMMARY_SECTIONS.map((section) => `## ${section}\n- ${section} facts`).join("\n\n");
+const ORIGIN = { model: "fake-qsa", provider: "connection-1" };
+
+type AnswerStep = Readonly<{ calls?: ProviderRunResult["toolCalls"]; fail?: unknown; text?: string }>;
+
+const isSummary = (request: ProviderRunRequest) => request.prompt.system === SUMMARIZER_INSTRUCTIONS;
+
+/** Answers from `steps` in order; summary requests get the summary after `summaryDelayMs`. */
+function scriptedAdapter(steps: readonly AnswerStep[], summaryDelayMs = 0) {
+  const answers: ProviderRunRequest[] = [];
+  const summaries: ProviderRunRequest[] = [];
+  const order: string[] = [];
+  const adapter: ProviderAdapter = {
+    buildRequestPreview: () => ({}),
+    async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+      if (isSummary(request)) {
+        summaries.push(request);
+        order.push("summary");
+        if (summaryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, summaryDelayMs));
+        return { finalProviderResponsePreview: {}, finalText: SUMMARY, history: [{ text: SUMMARY, type: "assistant_text" }],
+          usage: { inputTokens: 2_000, outputTokens: 200 } };
+      }
+      answers.push(request);
+      order.push("answer");
+      const step = steps[Math.min(answers.length - 1, steps.length - 1)]!;
+      if (step.fail) throw step.fail;
+      if (step.text) yield { data: { delta: step.text }, type: "token" };
+      return { finalProviderResponsePreview: {}, finalText: step.text ?? "", toolCalls: [...(step.calls ?? [])],
+        usage: { inputTokens: 100, outputTokens: 10 } };
+    }
+  };
+  return { adapter, answers, order, summaries };
+}
+
+/** An earlier native answer of many tool rounds, about `tokens` of context. */
+function earlierWork(tokens: number): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  let total = 0;
+  for (let round = 1; total < tokens; round += 1) {
+    const callId = `call-${round}`;
+    const output = `result ${round}: ${"r".repeat(4_000)}`;
+    items.push({ arguments: JSON.stringify({ round }), callId, id: `n-call-${round}`, kind: "tool_call", name: "lookup", origin: ORIGIN },
+      { callId, id: `n-result-${round}`, kind: "tool_result", name: "lookup", outcome: "complete", output },
+      { id: `n-text-${round}`, kind: "assistant_text", origin: ORIGIN, text: `Round ${round} done. ${"a".repeat(200)}` });
+    total += estimateApproxTokens(output) + estimateApproxTokens("a".repeat(220)) + 30;
+  }
+  return items;
+}
+
+function memoryEngine(earlier: readonly TranscriptItem[]) {
+  const transcriptRows: TranscriptItem[] = [];
+  const rows = new Map<string, ToolCallRow>();
+  const transcripts = {
+    append: vi.fn(async (_scope, _from, items: readonly TranscriptItem[]) => { transcriptRows.push(...items); }),
+    approvalContinuationTurns: vi.fn(async () => new Set<string>()),
+    loadRuns: vi.fn(async () => new Map([["run-0", [...earlier]]])),
+    nativeRunsForAnswers: vi.fn(async () => new Map([["answer-0", "run-0"]])),
+    nextSequence: vi.fn(async () => transcriptRows.length)
+  } satisfies TranscriptRepository;
+  const toolCalls = {
+    begin: vi.fn(async (input): Promise<ToolCallBeginResult> => {
+      const row: ToolCallRow = { arguments: input.arguments as ToolCallRow["arguments"], id: `row-${rows.size}`, ordinal: input.ordinal,
+        providerCallId: input.providerCallId, result: null, roundIndex: input.roundIndex, startedAt: "now", state: "running",
+        toolName: input.toolName };
+      rows.set(row.id, row);
+      return { kind: "running", row };
+    }),
+    refuse: vi.fn(async () => null),
+    settle: vi.fn(async () => true)
+  } satisfies ToolCallStore;
+  let published: string | null = null;
+  const runs = {
+    applyUsageTotals: vi.fn(async () => undefined),
+    complete: vi.fn(async () => true),
+    publishAnswer: vi.fn(async (_scope, input: { text: string }) => { published = input.text; return true; }),
+    saveStoppedText: vi.fn(async () => true),
+    writeUsageRows: vi.fn(async () => undefined)
+  } satisfies NativeRunStore;
+  const engine: NativeEngineDeps = {
+    approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
+    observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never), runs,
+    // A slow reader: the tool round takes a moment, as real tools do.
+    savedResults: { read: vi.fn(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); return null; }) },
+    toolCalls, transcripts
+  };
+  return { engine, published: () => published, runs, transcriptRows };
+}
+
+function repository() {
+  return {
+    appendAssistantText: vi.fn(async () => undefined),
+    appendRunOutputEvent: vi.fn(async (_runId: string, event: unknown) => event),
+    failRun: vi.fn(async () => true),
+    getChatUpdateForRun: vi.fn(async () => null),
+    getRunControlForUser: vi.fn(async () => ({ status: "streaming" })),
+    loadModelPricing: vi.fn(async () => null),
+    loadProviderModelCostBasis: vi.fn(async () => null),
+    loadRunMcpApprovalCards: vi.fn(async () => []),
+    markRunAnswerStarted: vi.fn(async () => undefined)
+  };
+}
+
+function prepared(contextWindow: number): MaterializedPreparedRunData {
+  const text = (value: string) => ({ blocks: [{ text: value, type: "text" }] });
+  const request = {
+    attachmentIds: [], attachments: [], chatId: "chat", content: text("Next step, please."),
+    context: { messages: [
+      { content: text("Run the reconciliation round by round."), id: "user-0", role: "user" as const },
+      { content: { blocks: [] }, id: "answer-0", role: "assistant" as const },
+      { content: text("Next step, please."), id: "current-user-message", role: "user" as const }
+    ], mode: "branch_path" as const },
+    knowledgePlan: { baseIds: [], mode: "none" as const, sourceIds: [], version: 1 as const },
+    modelCapabilities: { contextWindow, defaultMaxOutputTokens: 1_000, nativePdfInput: false, nativeSearch: false, pdf: false,
+      reasoning: true, toolCalling: true, vision: false },
+    modelId: "fake-qsa", params: {}, prompt: { developer: null, system: "Be brief." }, provider: "fake",
+    searchPlan: { mode: "all_selected" as const, options: [] }, toolMode: "auto" as const
+  } as ProviderRunRequest;
+  return {
+    contextTruncation: null, defaults: null, expectedActiveLeafId: null, mcpBindings: [],
+    normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 60_000 },
+      connectionId: "connection-1", model: { adapterKind: "fake" }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
+    providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
+  };
+}
+
+async function events(response: Response): Promise<ModelRunSseEvent[]> {
+  const text = await response.text();
+  return text.split("\n\n").flatMap((block) => {
+    const type = /^event: (.+)$/mu.exec(block)?.[1];
+    const data = /^data: (.+)$/mu.exec(block)?.[1];
+    return type && data ? [{ data: JSON.parse(data), type } as ModelRunSseEvent] : [];
+  });
+}
+
+const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
+const CONTEXT_TOKENS = 30_000;
+/** A window whose usable part puts the conversation at about `share` of it (the instructions and tools add a little). */
+const windowFor = (share: number) => Math.ceil((CONTEXT_TOKENS + 600) / share) + 1_000;
+
+function compactionStatuses(result: readonly ModelRunSseEvent[]) {
+  return result.flatMap((event) => event.type === "artifact" && event.data.artifactType === "context_compaction"
+    ? [event.data.payload as { outcome: string; state: string }] : []);
+}
+
+const firstText = (request: ProviderRunRequest) => {
+  const first = request.history?.[0];
+  return first?.type === "user" ? first.text : "";
+};
+
+describe("native run compaction", () => {
+  it("answers without waiting when the turn crosses the background threshold, then keeps the compaction for the next turn", async () => {
+    const scripted = scriptedAdapter([{ text: "Done with the next step." }], 30);
+    const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(windowFor(0.78)), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.published()).toBe("Done with the next step.");
+    // The answer request went out as it was, without a summary in it.
+    expect(scripted.answers).toHaveLength(1);
+    expect(firstText(scripted.answers[0]!)).not.toContain(COMPACTION_SUMMARY_HEADING);
+    expect(scripted.summaries.length).toBeGreaterThanOrEqual(1);
+    // The answer came first; the marker follows it and was never shown as running.
+    const types = result.map((event) => event.type === "artifact" ? `artifact:${event.data.artifactType}` : event.type);
+    expect(types.indexOf("answer_complete")).toBeLessThan(types.indexOf("artifact:context_compaction"));
+    expect(compactionStatuses(result)).toEqual([expect.objectContaining({ outcome: "summary_applied", state: "complete" })]);
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+    // The compaction item is on record after the answer's items, so the next turn starts from it.
+    expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text", "compaction"]);
+    expect(memory.transcriptRows[1]).toMatchObject({ summary: SUMMARY });
+  });
+
+  it("swaps a background compaction in at the next request boundary of the same turn", async () => {
+    const scripted = scriptedAdapter([
+      { calls: [{ arguments: { handle: `tor1_${"a".repeat(32)}` }, id: "call-read", name: "read_tool_result" }] },
+      { text: "Read it; continuing." }
+    ]);
+    const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(windowFor(0.78)), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.published()).toBe("Read it; continuing.");
+    expect(scripted.answers).toHaveLength(2);
+    expect(firstText(scripted.answers[0]!)).not.toContain(COMPACTION_SUMMARY_HEADING);
+    expect(firstText(scripted.answers[1]!).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+    // The kept tail carries the round that ran meanwhile.
+    expect(scripted.answers[1]!.history?.some((item) => item.type === "tool_call" && item.callId === "call-read")).toBe(true);
+    expect(compactionStatuses(result)).toEqual([expect.objectContaining({ state: "complete" })]);
+    expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["tool_call", "tool_result", "compaction", "assistant_text"]);
+  });
+
+  it("compacts in the foreground on a size rejection and sends the request once more", async () => {
+    const rejection = Object.assign(new Error("prompt is too long"), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED });
+    const scripted = scriptedAdapter([{ fail: rejection }, { text: "Answered after compaction." }]);
+    const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(windowFor(0.6)), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.published()).toBe("Answered after compaction.");
+    expect(scripted.answers).toHaveLength(2);
+    expect(firstText(scripted.answers[1]!).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+    expect(scripted.order.indexOf("summary")).toBeGreaterThan(0);
+    expect(compactionStatuses(result).map((status) => status.state)).toEqual(["running", "complete"]);
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+  });
+
+  it("fails visibly when the request is rejected for its size again after compacting", async () => {
+    const rejection = Object.assign(new Error("prompt is too long"), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED });
+    const scripted = scriptedAdapter([{ fail: rejection }]);
+    const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const repo = repository();
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(windowFor(0.6)), repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(scripted.answers).toHaveLength(2);
+    expect(result.at(-1)).toMatchObject({ data: { code: "context_too_large" }, type: "error" });
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "context_too_large" }),
+      { recoveryTerminal: true });
+  });
+});

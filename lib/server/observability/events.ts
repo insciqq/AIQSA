@@ -62,7 +62,8 @@ type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safet
   "upstream" | "authority_expired" | "interrupted";
 type ProviderIdentity = Readonly<{ providerFamily?: string; adapterKind?: string; connectionId?: string; providerModelId?: string }>;
 type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
-  stage?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
+  stage?: "answer" | "compaction" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" |
+    "decisions" | "image";
   outcome?: OperationOutcome; duration_ms?: number; attempt?: number; action?: "none" | "retry" | "stop";
   httpStatus?: number; code?: string; reason?: Reason; timeout_ms?: number; delay_ms?: number;
   abort_source?: "provider_deadline" | "parent_signal" | "unknown";
@@ -208,6 +209,15 @@ export type EventFields = {
   context_estimate: Pick<ProviderIdentity, "providerFamily"> & Readonly<{
     estimate_family: "anthropic" | "deepseek" | "gemini" | "openai" | "unknown";
     estimated_tokens: number; reported_input_tokens: number; ratio_permille: number;
+  }>;
+  /** One compaction of a native run (`lib/server/engine/runContext.ts`): its path, mode, trigger, sizes and outcome; never content. */
+  context_compaction: Readonly<{
+    run_id: string; kind: "native" | "summary"; mode: "background" | "foreground"; reason: "threshold" | "overflow";
+    /** `compacted`: its item entered the transcript; `discarded`: it finished but no longer applied. */
+    outcome: "compacted" | "discarded" | "failed" | "cancelled";
+    code?: string; duration_ms?: number; calls?: number; chunks?: number; fallback?: boolean;
+    tokens_before?: number; tokens_after?: number; input_tokens?: number; output_tokens?: number;
+    compacted_items?: number; kept_items?: number;
   }>;
   provider_request: ProviderFields;
   provider_retry: ProviderFields;
