@@ -559,8 +559,6 @@ export type RunUsageAttribution = {
 };
 
 export type CreateRunInput = {
-  /** The agent engine executes the run (`ModelRun.engine`); absent only in fixtures of runs the old core accepted. */
-  engine?: "native";
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: Readonly<{ admissionKey: string; predecessorRunId: string; snapshot: unknown }>;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
@@ -619,8 +617,6 @@ export type CreateRunInput = {
 export type CreateRegenerationRunInput = {
   /** Automatic answer review of the new answer (never of a turn the server wrote). */
   answerReviewAuto?: AnswerReviewAutoAdmission;
-  /** The agent engine executes the run (`ModelRun.engine`); absent only in fixtures of runs the old core accepted. */
-  engine?: "native";
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: never;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];

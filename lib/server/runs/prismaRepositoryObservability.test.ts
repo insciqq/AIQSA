@@ -29,7 +29,6 @@ describe("Prisma run failure diagnostics", () => {
     ["regeneration admission", (repository) => repository.findRegenerationSource("message-safe", "user-safe")],
     ["run control", (repository) => repository.getRunControlForUser("run-safe", "user-safe")],
     ["attachment admission", (repository) => repository.loadAttachments("user-safe", ["attachment-safe"])],
-    ["Search admission", (repository) => repository.isSearchStrategyEnabled("search-safe")],
     ["completion pricing", (repository) => repository.loadModelPricing("fake", "model-safe")],
     ["Knowledge retrieval pricing", (repository) => repository.loadProviderModelCostBasis("model-safe")]
   ])("retains the original read failure across %s", async (_stage, read) => {

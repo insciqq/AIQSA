@@ -12,6 +12,7 @@ import type { RunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { loadAnswerReviewProjection, loadAnswerReviewSessionSnapshot } from "./repository";
 import { startAnswerReviewRound, type AnswerReviewServiceDeps } from "./service";
 import { answerReviewSnapshotProgress, reconcileAnswerReviewSession } from "./stepStart";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 /**
  * Answer review storage on the disposable database: sessions, the step claim
@@ -78,7 +79,7 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
       } as CreateRunInput);
     };
     const complete = async (run: CreatedRun, text: string, outputEvents: RunOutputArtifactEvent[] = []) => {
-      expect(await repository.completeRun({ assistantMessageId: run.assistantMessageId, chatId: chat.id, estimatedCostMicros: 0,
+      expect(await completeNativeRun(prisma, { assistantMessageId: run.assistantMessageId, chatId: chat.id, estimatedCostMicros: 0,
         finalText: text, modelId: "fake-qsa", outputEvents, provider: "fake", runId: run.runId, usage, userId })).toBe(true);
     };
     return await execute({

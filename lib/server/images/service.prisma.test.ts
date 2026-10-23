@@ -22,6 +22,7 @@ import { createUserImageModelService } from "./userImageModels";
 import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import type { ModelToolCall, ToolExecutionContext } from "../tools/types";
 import type { ProviderRunRequest } from "../providers/types";
+import { runAttributionUsageWhere } from "../runs/prismaRepositoryUsage";
 
 afterAll(() => prisma.$disconnect());
 const key = Buffer.alloc(32, 71);
@@ -131,7 +132,7 @@ describe("durable conversational images", () => {
     expect(usage).toHaveLength(2);
     expect(usage.every((entry) => entry.imageGeneration && entry.purpose === "image_generation" &&
       entry.estimatedCostMicros === null && entry.totalTokens === 14)).toBe(true);
-    expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.runId, userId: f.userId })).toEqual([]);
+    expect(await f.db.usageEvent.count({ where: runAttributionUsageWhere(f.runId) })).toBe(0);
     await f.db.modelRun.update({ where: { id: f.runId }, data: { status: "error" } });
     await f.db.message.update({ where: { id: f.assistantId }, data: { status: "error" } });
     const messages = await createPrismaRunRepository(f.db).loadConversationContextForLeaf(f.request.chatId, f.userId, f.assistantId);
