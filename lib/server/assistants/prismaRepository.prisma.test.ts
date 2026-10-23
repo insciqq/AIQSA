@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import {
   assistantRowsFromLegacyFields,
@@ -11,20 +11,12 @@ import {
   type AssistantRows
 } from "../../contracts/assistants";
 import { prisma } from "../prisma";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
 import { createSkillSharingService } from "../skills/shareRequests";
 import { assertAssistantRunProvenance } from "../runs/prismaRepositoryBindings";
 import { createAssistantListingService } from "./listingRequests";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { createGetAssistantHandler, createListAssistantsHandler } from "./handlers";
-
-// These repository tests cover Knowledge links with the area on; while Knowledge is disabled
-// (`lib/domain/disabledAreas.ts`) saved Knowledge reads as unavailable, covered by the unit tests.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
 import { loadFeaturedAssistantOrders } from "./listedAssistants";
 import { createPrismaAssistantRepository } from "./prismaRepository";
 import { loadPersonalAssistantRowContext } from "./rowContext";
@@ -56,7 +48,6 @@ function assistantDraft(providerModelId: string, skillIds: string[]): AssistantD
     name: "Workflow assistant",
     responseReminder: "",
     rows: assistantRowsFromLegacyFields({
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       providerModelId,
       runControls: {},
@@ -84,7 +75,6 @@ describe("Prisma Assistant Skill links", () => {
     });
     const skillIds: string[] = [];
     let assistantId: string | null = null;
-    let knowledgeBaseId: string | null = null;
 
     await prisma.user.createMany({
       data: [{
@@ -261,7 +251,7 @@ describe("Prisma Assistant Skill links", () => {
         expect.objectContaining({ id: assistantId, content: expect.objectContaining({ name: "Concurrent identity" }) })
       ]);
       await expect(assistantRepository.getDetail(memberUserId, assistantId)).resolves.toMatchObject({
-        dependencyAvailability: { knowledge: "ready", skills: true },
+        dependencyAvailability: { skills: true },
         content: {
           responseReminder: "End with a next step.",
           skillIds: [liveSkillId, firstSkillId],
@@ -280,7 +270,7 @@ describe("Prisma Assistant Skill links", () => {
         // unusable and answers the neutral conflict.
         expect((await assistantRepository.resolveForRun(userId, assistantId)).ok).toBe(true);
         const context = await loadPersonalAssistantRowContext(prisma, {
-          ids: { knowledgeBaseIds: [], knowledgeSourceIds: [], skillIds: [liveSkillId, firstSkillId] },
+          ids: { skillIds: [liveSkillId, firstSkillId] },
           userId
         }, { loadCatalogData: async () => catalogDataWithoutModels });
         expect(context?.available.skillIds).toEqual(new Set([firstSkillId]));
@@ -377,24 +367,6 @@ describe("Prisma Assistant Skill links", () => {
         userId: ownerUserId
       })).resolves.toMatchObject({ kind: "ok" });
 
-      const knowledge = await prisma.knowledgeBase.create({ data: { ownerUserId, name: "Dependency fixture" } });
-      knowledgeBaseId = knowledge.id;
-      await prisma.assistantDefinition.update({ where: { id: assistantId }, data: {
-        knowledgeSelection: { mode: "explicit", version: 1, baseIds: [knowledge.id], sourceIds: [] }
-      } });
-      // Owner can see the empty base; the recipient cannot. Neither can run it.
-      for (const userId of [ownerUserId, memberUserId]) {
-        expect((await assistantRepository.getDetail(userId, assistantId))?.dependencyAvailability?.knowledge).toBe(userId === ownerUserId ? "not_ready" : "access_denied");
-      }
-      await prisma.knowledgeBase.update({ where: { id: knowledge.id }, data: { trashedAt: new Date() } });
-      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe("access_denied");
-      await prisma.knowledgeBase.delete({ where: { id: knowledge.id } });
-      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe("access_denied");
-      await prisma.assistantDefinition.update({ where: { id: assistantId }, data: {
-        knowledgeSelection: { mode: "none", version: 1, baseIds: [], sourceIds: [] }
-      } });
-      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe("ready");
-
       await expect(skillRepository.delete(ownerUserId, liveSkillId)).resolves.toBe("ok");
       await expect(prisma.assistantSkill.count({ where: { skillId: liveSkillId } }))
         .resolves.toBe(0);
@@ -419,7 +391,6 @@ describe("Prisma Assistant Skill links", () => {
       await prisma.assistantPublication.deleteMany({ where: { assistantId: { in: assistantIds } } });
       await prisma.assistantPin.deleteMany({ where: { assistantId: { in: assistantIds } } });
       await prisma.assistantDefinition.deleteMany({ where: { id: { in: assistantIds } } });
-      if (knowledgeBaseId) await prisma.knowledgeBase.deleteMany({ where: { id: knowledgeBaseId } });
 
       await prisma.skillPublication.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillDefinition.updateMany({
@@ -440,7 +411,6 @@ describe("Prisma Assistant Skill links", () => {
 describe("Prisma Assistant rows", () => {
   const defaultRows: AssistantRows = {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -451,12 +421,11 @@ describe("Prisma Assistant rows", () => {
     return { ...assistantDraft("unused", []), name: "Row defaults", rows, systemPrompt: "Answer as the team's editor." };
   }
 
-  it("stores inherit rows, downgrades a copy, serves Project members, withdraws listing on archive and lists recents", async () => {
+  it("stores inherit rows, copies, withdraws listing on archive and lists recents", async () => {
     const suffix = randomUUID();
     const ownerUserId = `assistant-rows-owner-${suffix}`;
     const memberUserId = `assistant-rows-member-${suffix}`;
-    const projectUserId = `assistant-rows-project-${suffix}`;
-    const userIds = [ownerUserId, memberUserId, projectUserId];
+    const userIds = [ownerUserId, memberUserId];
     const group = await prisma.group.create({ data: { name: `Assistant Rows ${suffix}` } });
     await prisma.user.createMany({ data: userIds.map((id) => ({ displayName: id, id, status: "active" as const })) });
     // Provisioned users always have settings; without them no catalog loads.
@@ -478,17 +447,14 @@ describe("Prisma Assistant rows", () => {
     };
     const updatedAt = async (assistantId: string) =>
       (await prisma.assistantDefinition.findUniqueOrThrow({ where: { id: assistantId } })).updatedAt.toISOString();
-    let projectId: string | null = null;
-    let knowledgeBaseId: string | null = null;
     try {
       // Every row at its new default needs no catalog entry and no dependency.
       const created = await repository.create(ownerUserId, rowsDraft(defaultRows));
       if (created.kind !== "ok") throw new Error("assistant_rows_fixture_create_failed");
       const assistantId = created.assistantId;
       await expect(repository.getDetail(ownerUserId, assistantId)).resolves.toMatchObject({
-        content: { knowledgeSelection: expect.objectContaining({ mode: "none" }), mcpServerIds: [], providerModelId: null,
-          rows: defaultRows },
-        dependencyAvailability: { knowledge: "ready", skills: true }
+        content: { mcpServerIds: [], providerModelId: null, rows: defaultRows },
+        dependencyAvailability: { skills: true }
       });
       // Inherit rows are runnable: the run resolves them from the chat's context.
       await expect(repository.resolveForRun(ownerUserId, assistantId)).resolves.toMatchObject({
@@ -496,14 +462,10 @@ describe("Prisma Assistant rows", () => {
         ok: true
       });
 
-      // A fixed Knowledge base the copier cannot open becomes an adjustable None.
-      const knowledge = await prisma.knowledgeBase.create({ data: { ownerUserId, name: "Private handbook" } });
-      knowledgeBaseId = knowledge.id;
-      const withKnowledge = await repository.update(ownerUserId, assistantId, 1, rowsDraft({
-        ...defaultRows,
-        knowledge: { policy: "fixed", value: { baseIds: [knowledge.id], mode: "explicit", sourceIds: [] } }
-      }));
-      expect(withKnowledge).toEqual({ assistantId, kind: "ok" });
+      // A fixed explicit Off needs no resource, so a copy keeps it.
+      const fixedOff = { policy: "fixed" as const, value: { mode: "off" as const } };
+      const edited = await repository.update(ownerUserId, assistantId, 1, rowsDraft({ ...defaultRows, search: fixedOff }));
+      expect(edited).toEqual({ assistantId, kind: "ok" });
       // A publication confirmed in an answer's card names the version it
       // proposed: the edit above saved a newer one, so nothing is published.
       await expect(repository.publish({ actorIsAdmin: false, assistantId, expectedVersion: 1, groupId: group.id, scope: "group",
@@ -514,7 +476,7 @@ describe("Prisma Assistant rows", () => {
       await expect(repository.getDetail(memberUserId, assistantId)).resolves.toMatchObject({
         audience: null,
         content: { systemPrompt: "Answer as the team's editor." },
-        visibleKnowledge: { baseIds: [], sourceIds: [] }
+        publications: null
       });
       // The group member reads how it reaches them; the owner reads the audience.
       await expect(readDetail(memberUserId, assistantId)).resolves.toMatchObject({
@@ -524,41 +486,15 @@ describe("Prisma Assistant rows", () => {
         audience: { everyone: false, groupNames: [group.name] }, scope: { kind: "owner" }, updatedAt: await updatedAt(assistantId)
       });
       const copy = await repository.duplicate(memberUserId, assistantId);
-      expect(copy).toMatchObject({ kind: "ok", report: { downgradedRows: ["knowledge"], droppedSkillCount: 0 } });
+      expect(copy).toMatchObject({ kind: "ok", report: { downgradedRows: [], droppedSkillCount: 0 } });
       if (copy.kind !== "ok") throw new Error("assistant_rows_fixture_copy_failed");
       await expect(repository.getDetail(memberUserId, copy.assistantId)).resolves.toMatchObject({
-        content: { name: "Copy of Row defaults", rows: { ...defaultRows, knowledge: { policy: "adjustable", value: { mode: "none" } } } },
+        content: { name: "Copy of Row defaults", rows: { ...defaultRows, search: fixedOff } },
         owned: true
       });
       const ownCopy = await repository.duplicate(ownerUserId, assistantId);
       expect(ownCopy).toMatchObject({ kind: "ok", report: { downgradedRows: [], droppedSkillCount: 0 } });
-
-      // A Project member reads the detail, instructions included, and nothing more.
-      const project = await createPrismaProjectRepository(prisma).create({
-        actorDisplayName: ownerUserId, description: "Disposable Assistant rows fixture", name: `Rows ${suffix}`, userId: ownerUserId
-      });
-      if (project.kind !== "ok") throw new Error(`assistant_rows_fixture_project_${project.kind}`);
-      projectId = project.value.id;
-      await expect(repository.getDetail(projectUserId, assistantId)).resolves.toBeNull();
-      await prisma.projectAssistantBinding.create({ data: { assistantId, projectId } });
-      await prisma.projectGrant.create({ data: { projectId, role: "VIEWER", userId: projectUserId } });
-      await expect(repository.getDetail(projectUserId, assistantId)).resolves.toMatchObject({
-        audience: null, content: { systemPrompt: "Answer as the team's editor." }, owned: false,
-        projectName: `Rows ${suffix}`, publications: null
-      });
-      // A Project member reads the Project scope and the update date, never the owner's group.
-      const memberDetail = await readDetail(projectUserId, assistantId);
-      expect(memberDetail).toMatchObject({
-        audience: null, scope: { kind: "project", projectName: `Rows ${suffix}` }, updatedAt: await updatedAt(assistantId)
-      });
-      expect(JSON.stringify(memberDetail)).not.toContain(group.name);
-      expect((await repository.listForUser(projectUserId)).map((entry) => entry.id)).not.toContain(assistantId);
-      await expect(repository.setPinned(projectUserId, assistantId, true)).resolves.toBe(false);
-      await expect(repository.duplicate(projectUserId, assistantId)).resolves.toEqual({ kind: "not_found" });
-      await expect(repository.getDetail(ownerUserId, assistantId)).resolves.toMatchObject({
-        projects: { otherProjectCount: 0, projects: [{ id: projectId, name: `Rows ${suffix}` }] },
-        recentChatCount: 0
-      });
+      await expect(repository.getDetail(ownerUserId, assistantId)).resolves.toMatchObject({ recentChatCount: 0 });
 
       // Archiving withdraws a pending listing request.
       const version = (await prisma.assistantDefinition.findUniqueOrThrow({ where: { id: assistantId } })).version;
@@ -569,7 +505,7 @@ describe("Prisma Assistant rows", () => {
       await expect(repository.setArchived(ownerUserId, assistantId, version, true)).resolves.toEqual({ assistantId, kind: "ok" });
       await expect(prisma.assistantListingRequest.findMany({ select: { state: true }, where: { assistantId } }))
         .resolves.toEqual([{ state: "withdrawn" }]);
-      await expect(repository.getDetail(projectUserId, assistantId)).resolves.toBeNull();
+      await expect(repository.getDetail(memberUserId, assistantId)).resolves.toBeNull();
 
       // Recents follow the latest personal chats, distinct and newest first,
       // among the listed candidates only.
@@ -590,7 +526,6 @@ describe("Prisma Assistant rows", () => {
       await expect(repository.loadRecentAssistantIds(memberUserId, [])).resolves.toEqual([]);
     } finally {
       await prisma.chat.deleteMany({ where: { userId: { in: userIds } } });
-      if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
       const assistantIds = (await prisma.assistantDefinition.findMany({
         select: { id: true }, where: { ownerUserId: { in: userIds } }
       })).map((definition) => definition.id);
@@ -598,7 +533,6 @@ describe("Prisma Assistant rows", () => {
       await prisma.assistantPublication.deleteMany({ where: { assistantId: { in: assistantIds } } });
       await prisma.assistantPin.deleteMany({ where: { assistantId: { in: assistantIds } } });
       await prisma.assistantDefinition.deleteMany({ where: { id: { in: assistantIds } } });
-      if (knowledgeBaseId) await prisma.knowledgeBase.deleteMany({ where: { id: knowledgeBaseId } });
       await prisma.group.deleteMany({ where: { id: group.id } });
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }
@@ -646,7 +580,6 @@ describe("Prisma Assistant list summary fields", () => {
       const create = async (name: string, linkedSkillIds: string[]) => {
         const created = await repository.create(ownerUserId, { ...assistantDraft("unused", []), name, rows: {
           controls: { policy: "adjustable", value: {} },
-          knowledge: { policy: "adjustable", value: { mode: "none" } },
           model: { policy: "adjustable", value: { mode: "inherit" } },
           search: { policy: "adjustable", value: { mode: "inherit" } },
           skills: { policy: "adjustable", value: {

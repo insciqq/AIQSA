@@ -5,7 +5,6 @@ import {
   decodeOptionalDefaultAssistant,
   type ChatDefaultMcpMode
 } from "./chatDefaults";
-import type { KnowledgeSelection } from "./knowledge";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 
 export type UserSettingsWire = AnswerSoundPreferences & {
@@ -18,8 +17,6 @@ export type UserSettingsWire = AnswerSoundPreferences & {
   /** A saved default Assistant is no longer available and is not applied. */
   defaultAssistantUnavailable?: boolean;
   defaultControlValues: Record<string, unknown>;
-  /** Knowledge selection attached to new chats; null starts them without Knowledge. */
-  defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
   defaultSkillsMode?: import("./chatDefaults").ChatDefaultSkillsMode;
   defaultWorkspaceEnabled?: boolean;
@@ -64,7 +61,6 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   const defaultSearchPlan = decodeSearchPlan(settings.defaultSearchPlan);
   const organizationSearchPlan = decodeSearchPlan(settings.organizationSearchPlan);
   const chatDefaults = decodeOptionalChatDefaults({
-    knowledgePlan: settings.defaultKnowledgePlan,
     mcpMode: settings.defaultMcpMode,
     skillsMode: settings.defaultSkillsMode,
     sendWithEnter: settings.sendWithEnter
@@ -108,7 +104,6 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       defaultAssistantId: defaultAssistant.assistantId,
       defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,
       defaultControlValues: { ...settings.defaultControlValues },
-      defaultKnowledgePlan: chatDefaults.knowledgePlan,
       defaultMcpMode: chatDefaults.mcpMode,
       defaultSkillsMode: chatDefaults.skillsMode,
       defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? false,

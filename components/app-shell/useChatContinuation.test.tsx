@@ -7,9 +7,9 @@ import type { ChatContinuationModelSelection } from "@/lib/contracts/chatContinu
 const onOpen = vi.fn();
 const updatedAt = "2026-09-05T12:00:00.000Z";
 const child = {
-  activeLeafMessageId: "summary", createdAt: updatedAt, updatedAt, defaultKnowledgePlan: null,
+  activeLeafMessageId: "summary", createdAt: updatedAt, updatedAt,
   defaultModelId: null, defaultProvider: null, folderId: null, id: "new-chat", messageCount: 1, pinned: false,
-  projectId: null, title: "Continued: source", hasContinuationSource: true,
+  title: "Continued: source", hasContinuationSource: true,
   contextStats: { approximateActiveBranchInputTokens: 20 }, usageStats: null,
   pageInfo: { activeLeafMessageId: "summary", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: updatedAt },
   messages: [{ id: "summary", parentMessageId: null, role: "assistant", status: "complete", createdAt: updatedAt,
@@ -97,7 +97,7 @@ it("opens the saved summary after one action and ignores a second click", async 
   fireEvent.click(button);
   expect(fetch).toHaveBeenCalledOnce();
   expect(screen.getByRole("status")).toHaveTextContent("Preparing your summary");
-  await act(async () => { finish(Response.json({ status: "complete", chatId: "new-chat", projectId: null })); });
+  await act(async () => { finish(Response.json({ status: "complete", chatId: "new-chat" })); });
   await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "new-chat", hasContinuationSource: true }), "chat:source"));
 });
 
@@ -147,7 +147,7 @@ it("waits for uploads and keeps cancellation usable if an upload starts during s
 });
 
 it("keeps the source input owner when the saved summary detail cannot be opened", async () => {
-  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ status: "complete", chatId: "new-chat", projectId: null }))
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ status: "complete", chatId: "new-chat" }))
     .mockResolvedValueOnce(Response.json({ error: "chat_not_found" }, { status: 404 }));
   vi.stubGlobal("fetch", fetch);
   render(<Harness />);
@@ -165,7 +165,7 @@ it.each(["navigation", "branch", "cancel"])("never opens a late response after %
   if (action === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   else view.rerender(<Harness chatId={action === "navigation" ? "other" : "source"} leaf="changed" />);
   expect(fetch.mock.calls[0]![1].signal.aborted).toBe(action !== "cancel");
-  await act(async () => { finish(Response.json({ status: "complete", chatId: "new-chat", projectId: null })); });
+  await act(async () => { finish(Response.json({ status: "complete", chatId: "new-chat" })); });
   expect(onOpen).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledOnce();
 });
@@ -197,7 +197,7 @@ it("shows background progress and sends cancellation only after the claim is ack
 
 it("does not open a completed chat when cancellation arrives while its details load", async () => {
   let finish!: (response: Response) => void;
-  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ status: "complete", chatId: "new-chat", projectId: null }))
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ status: "complete", chatId: "new-chat" }))
     .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
   vi.stubGlobal("fetch", fetch);
   render(<Harness />);

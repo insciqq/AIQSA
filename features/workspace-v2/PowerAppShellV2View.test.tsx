@@ -13,7 +13,6 @@ import {
   RunSetupV2,
   TemporaryChatIndicatorV2,
   WorkspaceHeaderV2,
-  knowledgeReferenceForMessageV2,
   liveAnswerSourceV2,
   announcedPresentationV2,
   presentAnswerV2,
@@ -121,7 +120,6 @@ describe("Navigation chat selection v2", () => {
     id,
     messageCount: 0,
     pinned: false,
-    projectId: null,
     title: "Chat",
     updatedAt: "2026-10-03T00:00:00.000Z"
   });
@@ -137,24 +135,23 @@ describe("Navigation chat selection v2", () => {
     let loadList!: () => void;
     const listLoaded = new Promise<void>((resolve) => { loadList = resolve; });
     const activated: string[] = [];
-    let shown: ChatRoute = { chatId: null, projectId: null };
+    let shown: ChatRoute = { chatId: null };
     const settled: Promise<ChatRoute | null>[] = [];
     const openChatAddress = vi.fn((chatId: string) => navigateToChatAddress(
-      { chatId, projectId: null },
+      { chatId },
       (route, resolution) => {
         settled.push(resolveChatRoute(route, resolution, {
           openAssistant: async () => "opened",
-          openBlank: () => { shown = { chatId: null, projectId: null }; },
+          openBlank: () => { shown = { chatId: null }; },
           async openChat(id) {
             await listLoaded;
             useWorkspaceStore.getState().setChats([chatSummary(id)]);
             // Like the shell's workspace read, a superseded address activates nothing.
             if (!isCurrentChatRouteResolution(resolution)) return "failed";
             activated.push(id);
-            shown = { chatId: id, projectId: null };
+            shown = { chatId: id };
             return "opened";
           },
-          openProject: async () => "unavailable",
           showUnavailable: vi.fn(),
           stateRoute: () => shown
         }));
@@ -166,15 +163,14 @@ describe("Navigation chat selection v2", () => {
   it("opens a row the unloaded workspace list does not hold yet once the list arrives", async () => {
     const owner = addressOwner();
     const actions = { activateChat: vi.fn(), openChatAddress: owner.openChatAddress };
-    const leaveProject = vi.fn();
 
-    selectNavigationChatV2("chat-1", actions, leaveProject);
+    selectNavigationChatV2("chat-1", actions);
 
     expect(owner.openChatAddress).toHaveBeenCalledExactlyOnceWith("chat-1");
     expect(actions.activateChat).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe("/c/chat-1");
     owner.loadList();
-    await expect(Promise.all(owner.settled)).resolves.toEqual([{ chatId: "chat-1", projectId: null }]);
+    await expect(Promise.all(owner.settled)).resolves.toEqual([{ chatId: "chat-1" }]);
     expect(owner.activated).toEqual(["chat-1"]);
     expect(window.location.pathname).toBe("/c/chat-1");
   });
@@ -183,23 +179,21 @@ describe("Navigation chat selection v2", () => {
     const owner = addressOwner();
     const actions = { activateChat: vi.fn(), openChatAddress: owner.openChatAddress };
 
-    selectNavigationChatV2("chat-1", actions, vi.fn());
-    selectNavigationChatV2("chat-2", actions, vi.fn());
+    selectNavigationChatV2("chat-1", actions);
+    selectNavigationChatV2("chat-2", actions);
     owner.loadList();
-    await expect(Promise.all(owner.settled)).resolves.toEqual([null, { chatId: "chat-2", projectId: null }]);
+    await expect(Promise.all(owner.settled)).resolves.toEqual([null, { chatId: "chat-2" }]);
     expect(owner.activated).toEqual(["chat-2"]);
     expect(window.location.pathname).toBe("/c/chat-2");
   });
 
-  it("activates a known row directly, leaving an open Project", () => {
+  it("activates a known row directly", () => {
     const known = chatSummary("chat-1");
     useWorkspaceStore.getState().setChats([known]);
     const actions = { activateChat: vi.fn(), openChatAddress: vi.fn() };
-    const leaveProject = vi.fn();
 
-    selectNavigationChatV2("chat-1", actions, leaveProject);
+    selectNavigationChatV2("chat-1", actions);
 
-    expect(leaveProject).toHaveBeenCalledOnce();
     expect(actions.activateChat).toHaveBeenCalledExactlyOnceWith(known);
     expect(actions.openChatAddress).not.toHaveBeenCalled();
   });
@@ -333,35 +327,6 @@ describe("Run setup v2", () => {
     expect(streaming).toHaveAttribute("aria-checked", "true");
     fireEvent.click(streaming);
     expect(composer.changeStreamMode).toHaveBeenCalledWith(false);
-  });
-});
-
-describe("Knowledge citation provenance v2", () => {
-  it("uses the original answer authority for a copied branch message", () => {
-    expect(knowledgeReferenceForMessageV2({
-      citationMessageId: "assistant-source",
-      id: "assistant-branch",
-      runId: "run-source"
-    }, {
-      citations: [],
-      knowledgeCitations: [{ handle: "K1" }],
-      reasoningText: [],
-      sources: []
-    }, true)).toEqual({
-      messageId: "assistant-source",
-      runId: "run-source"
-    });
-  });
-
-  it("does not expose a citation authority for unsettled or uncited answers", () => {
-    const message = { id: "assistant", runId: "run" };
-    expect(knowledgeReferenceForMessageV2(message, null, true)).toBeUndefined();
-    expect(knowledgeReferenceForMessageV2(message, {
-      citations: [],
-      knowledgeCitations: [{ handle: "K1" }],
-      reasoningText: [],
-      sources: []
-    }, false)).toBeUndefined();
   });
 });
 
@@ -838,26 +803,9 @@ describe("Workspace header v2", () => {
     fireEvent.click(nested);
     expect(onMove).toHaveBeenCalledWith("child-a");
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
-  });
 
-  it("uses Project root for manager movement and hides movement without authority", () => {
-    const onMove = vi.fn();
-    const projectFolders = folders.map((folder) => ({ ...folder, parentId: null }));
-    const { rerender } = render(
-      <WorkspaceHeaderV2
-        {...headerProps({ folders: projectFolders, moveRootLabel: "Project root", onMove })}
-      />
-    );
-
-    fireEvent.click(screen.getByTestId("header-more-trigger"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
-    const submenu = screen.getByLabelText("Move to…");
-    expect(within(submenu).getAllByRole("menuitem").map((item) => item.textContent))
-      .toEqual(["Project root", "Research", "Recall", "Ops"]);
-    fireEvent.click(within(submenu).getByRole("menuitem", { name: "Research" }));
-    expect(onMove).toHaveBeenCalledWith("root-a");
-
-    rerender(<WorkspaceHeaderV2 {...headerProps({ folders: projectFolders, onMove: null })} />);
+    // Without move authority the menu offers no Move.
+    rerender(<WorkspaceHeaderV2 {...headerProps({ onDelete, onMove: null })} />);
     fireEvent.click(screen.getByTestId("header-more-trigger"));
     expect(screen.queryByRole("menuitem", { name: "Move to…" })).toBeNull();
   });
@@ -969,94 +917,34 @@ describe("Workspace header v2", () => {
 });
 
 describe("Chat location crumb v2", () => {
-  it("uses the Project-owned hierarchy and prefixes the Project name", () => {
-    expect(chatLocationCrumbV2({
-      chat: { folderId: "project-child", projectId: "project-1" },
-      personalFolders: [{ id: "project-child", name: "Personal leak", parentId: null }],
-      project: { id: "project-1", name: "Ingest pipeline" },
-      projectFolders: [
-        { id: "project-root", name: "Specs", parentId: null },
-        { id: "project-child", name: "Retries", parentId: "project-root" }
-      ]
-    })).toBe("Ingest pipeline / Specs / Retries");
-
-    expect(chatLocationCrumbV2({
-      chat: { folderId: null, projectId: "project-1" },
-      personalFolders: [],
-      project: { id: "project-1", name: "Ingest pipeline" },
-      projectFolders: []
-    })).toBe("Ingest pipeline");
-  });
-
-  it("starts at the Project folders while the header chip names the Project", () => {
-    const project = { id: "project-1", name: "Ingest pipeline" };
-    const projectFolders = [{ id: "project-root", name: "Specs", parentId: null }];
-    expect(chatLocationCrumbV2({
-      chat: { folderId: "project-root", projectId: "project-1" }, personalFolders: [], project, projectNamed: true, projectFolders
-    })).toBe("Specs");
-    expect(chatLocationCrumbV2({
-      chat: { folderId: null, projectId: "project-1" }, personalFolders: [], project, projectNamed: true, projectFolders
-    })).toBeNull();
-  });
-
-  it("keeps personal paths separate and fails closed for a mismatched Project", () => {
-    const personalFolders = [
-      { id: "personal-root", name: "Research", parentId: null },
-      { id: "personal-child", name: "Recall", parentId: "personal-root" }
+  it("names the chat's folder path and nothing for a chat outside folders", () => {
+    const folders = [
+      { id: "root", name: "Research", parentId: null },
+      { id: "child", name: "Recall", parentId: "root" }
     ];
-    expect(chatLocationCrumbV2({
-      chat: { folderId: "personal-child", projectId: null },
-      personalFolders,
-      project: null,
-      projectFolders: []
-    })).toBe("Research / Recall");
-    expect(chatLocationCrumbV2({
-      chat: { folderId: "personal-child", projectId: "project-missing" },
-      personalFolders,
-      project: { id: "other-project", name: "Other" },
-      projectFolders: []
-    })).toBeNull();
+    expect(chatLocationCrumbV2({ chat: { folderId: "child" }, folders })).toBe("Research / Recall");
+    expect(chatLocationCrumbV2({ chat: { folderId: null }, folders })).toBeNull();
+    expect(chatLocationCrumbV2({ chat: null, folders })).toBeNull();
   });
 });
 
 describe("Blank welcome v2", () => {
-  it("shows the Project Assistant intro instead of hiding it behind Project orientation", () => {
-    render(<>{blankConversationOrientationV2({
-      assistantOrientation: <section data-testid="project-assistant-intro">Assistant starters</section>,
-      projectOrientation: <section data-testid="project-generic-intro">Shared project</section>,
-      projectSelected: true
-    })}</>);
-
-    expect(screen.getByTestId("project-assistant-intro")).toBeVisible();
-    expect(screen.queryByTestId("project-generic-intro")).toBeNull();
-  });
-
   it("leaves the personal blank chat to the quiet greeting with no generic starter prompts", () => {
-    expect(blankConversationOrientationV2({
-      projectOrientation: <section>Shared project</section>,
-      projectSelected: false
-    })).toBeUndefined();
+    expect(blankConversationOrientationV2({})).toBeUndefined();
 
     render(<>{blankConversationOrientationV2({
-      assistantOrientation: <section data-testid="assistant-intro">Assistant</section>,
-      projectSelected: false
+      assistantOrientation: <section data-testid="assistant-intro">Assistant</section>
     })}</>);
     expect(screen.getByTestId("assistant-intro")).toBeVisible();
   });
 
-  it("names a blank temporary chat unless an Assistant intro or a Project owns the welcome", () => {
+  it("names a blank temporary chat unless an Assistant intro owns the welcome", () => {
     const temporaryOrientation = <section data-testid="temporary-intro">Temporary Chat</section>;
-    render(<>{blankConversationOrientationV2({ projectSelected: false, temporaryOrientation })}</>);
+    render(<>{blankConversationOrientationV2({ temporaryOrientation })}</>);
     expect(screen.getByTestId("temporary-intro")).toBeVisible();
 
     expect(blankConversationOrientationV2({
       assistantOrientation: <section>Assistant</section>,
-      projectSelected: false,
-      temporaryOrientation
-    })).not.toBe(temporaryOrientation);
-    expect(blankConversationOrientationV2({
-      projectOrientation: <section>Shared project</section>,
-      projectSelected: true,
       temporaryOrientation
     })).not.toBe(temporaryOrientation);
   });

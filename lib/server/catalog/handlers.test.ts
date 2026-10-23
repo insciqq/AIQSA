@@ -149,7 +149,6 @@ describe("catalog handler", () => {
       "organizationSearchPlan",
       "searchPlan",
       "searchPreferenceSource",
-      "knowledgePlan",
       "mcpMode",
       "skillsMode",
       "sendWithEnter",

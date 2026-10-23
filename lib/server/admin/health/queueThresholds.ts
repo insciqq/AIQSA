@@ -10,10 +10,11 @@ export type AdminHealthQueuePolicy = Readonly<{
   stalledAfterSeconds: number;
   /**
    * Whether a stalled queue raises its own "Needs attention" item. Queues that
-   * another alert already watches stay quiet here: Knowledge processing and
-   * deletion and stored file deletion (Knowledge operations), Memory (its
-   * worker and processing alerts) and MCP server checks (the server's own
-   * item, and an administrator who just started the check is watching it).
+   * another alert already watches stay quiet here: Memory (its worker and
+   * processing alerts) and MCP server checks (the server's own item, and an
+   * administrator who just started the check is watching it). Stored file
+   * deletion stays quiet too: it raised no item of its own before Knowledge
+   * was removed either.
    */
   attention: boolean;
 }>;
@@ -26,8 +27,6 @@ export type AdminHealthQueuePolicy = Readonly<{
 export const ADMIN_HEALTH_QUEUE_POLICIES: Readonly<Record<AdminHealthQueueId, AdminHealthQueuePolicy>> = Object.freeze({
   // Claimed within seconds; three short attempts settle a file within minutes.
   attachment_processing: { slowAfterSeconds: 10 * MINUTE, stalledAfterSeconds: 30 * MINUTE, attention: true },
-  // The Knowledge operations card's "ingestion queue stalled" warning and critical ages.
-  document_processing: { slowAfterSeconds: 15 * MINUTE, stalledAfterSeconds: HOUR, attention: false },
   // A pending title expires after five minutes; an older one means the title worker is not running.
   chat_titles: { slowAfterSeconds: 10 * MINUTE, stalledAfterSeconds: 30 * MINUTE, attention: true },
   // Due runs start within a minute; per-user run limits may hold a few back for a while.
@@ -37,8 +36,7 @@ export const ADMIN_HEALTH_QUEUE_POLICIES: Readonly<Record<AdminHealthQueueId, Ad
   mcp_activation: { slowAfterSeconds: 10 * MINUTE, stalledAfterSeconds: 30 * MINUTE, attention: false },
   // Cleanup retries with backoff; hours of failing cleanup leave sandboxes running.
   workspace_cleanup: { slowAfterSeconds: 30 * MINUTE, stalledAfterSeconds: 2 * HOUR, attention: true },
-  knowledge_deletion: { slowAfterSeconds: HOUR, stalledAfterSeconds: 24 * HOUR, attention: false },
-  // The Knowledge operations card's "object deletion stalled" warning and critical ages.
+  // Due deletions are claimed within minutes; a day without progress leaves deleted files stored.
   file_deletion: { slowAfterSeconds: HOUR, stalledAfterSeconds: 24 * HOUR, attention: false }
 });
 

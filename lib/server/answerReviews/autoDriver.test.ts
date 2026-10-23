@@ -41,7 +41,7 @@ function snapshot(overrides: Omit<Partial<AnswerReviewSessionSnapshot>, "session
   const last = steps.at(-1);
   const lastMessageId = rest.lastMessageId ?? (last ? last.answerId ?? last.turnId : "answer-1");
   return {
-    chat: { activeLeafMessageId: lastMessageId, assistantId: null, projectId: null },
+    chat: { activeLeafMessageId: lastMessageId, assistantId: null },
     lastMessageId,
     latestVersionId: "answer-1",
     source: { runId: "run-answer", runTerminal: true, status: "complete" },

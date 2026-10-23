@@ -8,7 +8,6 @@ const storedSettings = {
   browserNotificationsEnabled: true,
   defaultAssistantId: "assistant-1",
   defaultControlValues: {},
-  defaultKnowledgePlan: null,
   defaultMcpMode: "auto",
   defaultProviderModel: null,
   defaultSearchPlan: null,

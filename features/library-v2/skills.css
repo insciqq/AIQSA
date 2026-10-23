@@ -649,8 +649,6 @@
 .v2-skill-selection-list li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-skill-selection-list li > small { flex: 0 0 auto; color: var(--v2-color-text3); font-size: 0.6875rem; }
 .v2-skill-selection-remove { flex: 0 0 auto; width: 1.75rem; height: 1.75rem; min-height: 1.75rem; padding: 0; }
-.v2-project-skill-picker { overflow-y: auto; min-height: 0; padding: 1rem; }
-.v2-project-skill-picker .v2-skill-row { grid-template-columns: minmax(0, 1fr) auto; }
 
 .v2-skill-import-result {
   position: relative;

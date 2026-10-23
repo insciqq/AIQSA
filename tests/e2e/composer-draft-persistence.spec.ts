@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
-import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
 import { chooseSearchStrategy } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
@@ -49,7 +48,6 @@ test("reload preserves independently scoped drafts and the last tab write, while
   await signInWithLocalToken(page);
   const suffix = randomUUID().slice(0, 8);
   const chatIds: string[] = [];
-  let projectId: string | undefined;
   let second: Page | undefined;
   try {
     await composer(page).fill("Unsent new-chat text");
@@ -84,16 +82,6 @@ test("reload preserves independently scoped drafts and the last tab write, while
     await second.close();
     second = undefined;
 
-    const created = await page.request.post("/api/projects", { data: { name: `Draft Project ${suffix}`, preferredModelId: providerTemplateIds.fakeModel } });
-    expect(created.status()).toBe(201);
-    projectId = (await created.json()).project.id;
-    await page.goto(`/p/${projectId}`);
-    await expect(page.getByRole("complementary", { name: "Shared project context" })).toContainText(`Draft Project ${suffix}`, { timeout: 30_000 });
-    await expect(composer(page)).toBeVisible({ timeout: 30_000 });
-    await expect(composer(page)).toHaveValue("", { timeout: 30_000 });
-    await composer(page).fill("Unsent Project text");
-    await page.reload();
-    await expect(composer(page)).toHaveValue("Unsent Project text", { timeout: 30_000 });
     await page.goto("/");
     await expect(composer(page)).toHaveValue("Unsent new-chat text", { timeout: 30_000 });
 
@@ -119,7 +107,6 @@ test("reload preserves independently scoped drafts and the last tab write, while
   } finally {
     await second?.close();
     for (const id of chatIds) await deleteOwnedChatPermanently(page.request, id).catch(() => undefined);
-    if (projectId) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
   }
 });
 

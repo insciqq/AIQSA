@@ -29,8 +29,6 @@ describe("refusals of the send handler in Telegram", () => {
     ["skills_budget_exceeded", COPY.skillUnavailable, "open"],
     ["assistant_not_available", COPY.assistantUnavailable, "none"],
     ["assistant_overrides_not_allowed", COPY.assistantUnavailable, "none"],
-    ["knowledge_base_not_available", COPY.knowledgeUnavailable, "open"],
-    ["sources_processing", COPY.knowledgeUnavailable, "open"],
     ["attachment_not_available", COPY.attachmentUnavailable, "open"],
     ["unsupported_attachment_type", COPY.attachmentUnavailable, "open"],
     ["request_body_too_large", COPY.tooLong, "none"],
@@ -41,7 +39,7 @@ describe("refusals of the send handler in Telegram", () => {
   });
 
   it("drops a chat that can no longer take messages from the link", () => {
-    for (const code of ["chat_not_found", "chat_not_created", "personal_draft_conflict", "project_not_found", "memory_temporary_chat_forbidden"]) {
+    for (const code of ["chat_not_found", "chat_not_created", "personal_draft_conflict", "memory_temporary_chat_forbidden"]) {
       expect(telegramRefusalReply({ code, status: 404 })).toEqual({ action: "none", chatGone: true, text: COPY.chatUnavailable });
     }
   });

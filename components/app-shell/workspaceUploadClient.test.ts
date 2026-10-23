@@ -40,7 +40,7 @@ function begin() {
     });
     return part;
   });
-  const result = uploadWorkspaceFile({ file, projectId: null, sourceKey, generation });
+  const result = uploadWorkspaceFile({ file, sourceKey, generation });
   return { sourceKey, generation, result };
 }
 

@@ -37,7 +37,6 @@ function Harness({ initialDraft = "", initialPins = [], onPin, onSkillSearch, ..
       draft={draft}
       onDraftChange={setDraft}
       onOpenSkillLibrary={vi.fn()}
-      onSelectKnowledgeSelection={vi.fn()}
       onSelectMcp={vi.fn()}
       onSelectModel={vi.fn()}
       onSelectSearchOptionIds={vi.fn()}
@@ -305,41 +304,16 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(option(/Fact check/u)).toHaveAttribute("data-disabled");
   });
 
-  it("opens the Knowledge, MCP and Search layers as their chips do", () => {
+  it("opens the MCP and Search layers as their chips do", () => {
     render(<Harness selectedSearchOptionIds={["web-primary"]} />);
-    type("/", "/choose know");
-    key("Enter");
-    expect(screen.getByRole("menu", { name: "Knowledge" })).toBeInTheDocument();
-    expect(field()).toHaveValue("");
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge" }), { key: "Escape" });
     type("/", "/mcp");
     key("Enter");
     expect(screen.getByRole("menu", { name: "MCP tools" })).toBeInTheDocument();
+    expect(field()).toHaveValue("");
     fireEvent.keyDown(screen.getByRole("menu", { name: "MCP tools" }), { key: "Escape" });
     type("/", "/web search");
     key("Enter");
     expect(screen.getByRole("dialog", { name: "Web search" })).toBeInTheDocument();
-  });
-
-  it("selects a Knowledge base by name like its layer row, with the layer's limits", () => {
-    const onSelectKnowledgeSelection = vi.fn();
-    render(<Harness onSelectKnowledgeSelection={onSelectKnowledgeSelection} />);
-    type("/");
-    expect(within(list()).queryByRole("option", { name: /Product research/u })).toBeNull();
-    type("/prod");
-    expect(option(/Product research/u)).toHaveTextContent("Knowledge base · 27 documents");
-    key("Enter");
-    expect(onSelectKnowledgeSelection).toHaveBeenCalledWith(expect.objectContaining({ baseIds: ["kb-product"], mode: "explicit" }));
-    type("/", "/архив");
-    expect(option(/Архив проекта/u)).toHaveAttribute("aria-disabled", "true");
-  });
-
-  it("offers no Knowledge command or base while Knowledge is not offered", () => {
-    render(<Harness knowledgeOffered={false} />);
-    type("/", "/know");
-    expect(within(list()).queryByRole("option", { name: /Choose Knowledge/u })).toBeNull();
-    type("/", "/prod");
-    expect(within(list()).queryByRole("option", { name: /Product research/u })).toBeNull();
   });
 
   it("turns web search off, with no Workspace command", () => {
@@ -363,9 +337,9 @@ describe("composer / palette entries mirror existing actions", () => {
     type("/", "/attach");
     key("Enter");
     expect(click).toHaveBeenCalledOnce();
-    view.rerender(<Harness onCreateArtifact={onCreateArtifact} sharedProject onUploadFiles={undefined} />);
+    view.rerender(<Harness onCreateArtifact={onCreateArtifact} artifactUnavailableReason="Not available here" onUploadFiles={undefined} />);
     type("", "/");
-    expect(option(/Create artifact/u)).toHaveTextContent("Not available in projects");
+    expect(option(/Create artifact/u)).toHaveTextContent("Not available here");
     expect(option(/Attach files/u)).toHaveTextContent("Unavailable");
     expect(option(/Attach files/u)).toHaveAttribute("aria-disabled", "true");
   });

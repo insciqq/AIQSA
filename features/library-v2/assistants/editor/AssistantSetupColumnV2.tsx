@@ -17,9 +17,7 @@ import {
   type AssistantRowKey,
   type AssistantRowPolicy
 } from "@/lib/contracts/assistants";
-import { KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES } from "@/lib/contracts/knowledge";
 import { SKILL_ASSISTANT_MAX_AVAILABLE, SKILL_MAX_PINNED } from "@/lib/contracts/skills";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { useId, useState, type ReactNode } from "react";
 import {
@@ -38,7 +36,6 @@ export const ASSISTANT_POLICY_TOOLTIP =
 
 const rowIcons: Readonly<Record<AssistantRowKey, UiV2IconName>> = {
   controls: "sliders",
-  knowledge: "book",
   model: "layers",
   search: "globe",
   skills: "wand",
@@ -327,90 +324,8 @@ function ToolsBody({ editor }: Readonly<{ editor: AssistantEditorView }>) {
   );
 }
 
-function KnowledgeBody({ editor }: Readonly<{ editor: AssistantEditorView }>) {
-  const name = useId();
-  const { options } = editor;
-  const value = editor.draft.rows.knowledge.value;
-  const baseIds = value.mode === "explicit" ? value.baseIds : [];
-  const sourceIds = value.mode === "explicit" ? value.sourceIds : [];
-  const count = baseIds.length + sourceIds.length;
-  const mode = value.mode === "explicit" ? "selected" : value.mode;
-  const set = (next: { baseIds: string[]; sourceIds: string[] }) =>
-    editor.onRowChange("knowledge", { value: { mode: "explicit", ...next } });
-  const full = count >= KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES;
-  return (
-    <>
-      <ModeChoices
-        label="Knowledge"
-        name={name}
-        options={[
-          { label: ASSISTANT_INHERIT_LABEL, mode: "inherit" },
-          { label: "None", mode: "none" },
-          // Knowledge is disabled: a selection saved earlier shows only so it can be cleared.
-          ...(KNOWLEDGE_ENABLED || mode === "selected"
-            ? [{ label: "Selected", mode: "selected" as const, sub: `${count} of ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES}` }]
-            : [])
-        ]}
-        value={mode}
-        onChange={(next) => editor.onRowChange("knowledge", {
-          value: next === "inherit" ? { mode: "inherit" } : next === "none" ? { mode: "none" } : { baseIds: [], mode: "explicit", sourceIds: [] }
-        })}
-      />
-      {mode === "selected" && !KNOWLEDGE_ENABLED ? (
-        <p role="status">Knowledge is turned off. Choose None or {ASSISTANT_INHERIT_LABEL} to save this Assistant.</p>
-      ) : mode === "selected" ? (
-        <>
-          {options.knowledgeDataState === "loading" ? <p role="status">Loading Knowledge…</p> : null}
-          {options.knowledgeDataState === "error" ? (
-            <div className="v2-assistant-setup-retry" role="alert">
-              <span>{options.knowledgeDataError ?? "Knowledge did not load."}</span>
-              <UiV2Button onClick={options.onRetryKnowledge}>Try again</UiV2Button>
-            </div>
-          ) : null}
-          <fieldset className="v2-assistant-setup-options">
-            <legend>Bases</legend>
-            {options.knowledgeBases.length === 0 && options.knowledgeDataState === "ready" ? <p>No bases available.</p> : null}
-            {options.knowledgeBases.map((base) => {
-              const checked = baseIds.includes(base.id);
-              return (
-                <label key={base.id}>
-                  <input
-                    checked={checked}
-                    disabled={!checked && (!base.available || full)}
-                    type="checkbox"
-                    onChange={() => set({ baseIds: checked ? baseIds.filter((id) => id !== base.id) : [...baseIds, base.id], sourceIds })}
-                  />
-                  <span>{base.name}{base.available ? null : <small>Unavailable</small>}</span>
-                </label>
-              );
-            })}
-          </fieldset>
-          <fieldset className="v2-assistant-setup-options">
-            <legend>Documents</legend>
-            {options.knowledgeSources.length === 0 && options.knowledgeDataState === "ready" ? <p>No documents available.</p> : null}
-            {options.knowledgeSources.map((source) => {
-              const checked = sourceIds.includes(source.id);
-              return (
-                <label key={source.id}>
-                  <input
-                    checked={checked}
-                    disabled={!checked && (!source.available || full)}
-                    type="checkbox"
-                    onChange={() => set({ baseIds, sourceIds: checked ? sourceIds.filter((id) => id !== source.id) : [...sourceIds, source.id] })}
-                  />
-                  <span>{source.name}{source.available ? null : <small>Not ready</small>}</span>
-                </label>
-              );
-            })}
-          </fieldset>
-        </>
-      ) : null}
-    </>
-  );
-}
-
 /**
- * The Setup column: six rows, each a value and a Fixed or Adjustable policy,
+ * The Setup column: five rows, each a value and a Fixed or Adjustable policy,
  * then the Sharing card. Errors stay at their rows.
  */
 export function AssistantSetupColumnV2({ editor, locked, onOpenSharing }: Readonly<{
@@ -419,10 +334,6 @@ export function AssistantSetupColumnV2({ editor, locked, onOpenSharing }: Readon
   onOpenSharing(): void;
 }>) {
   const rows = editor.draft.rows;
-  // Knowledge is disabled: the Knowledge row shows only for an Assistant that
-  // opened with a Knowledge selection, so that selection can be cleared.
-  const [knowledgeRowShown] = useState(() => KNOWLEDGE_ENABLED || rows.knowledge.value.mode === "explicit");
-  const rowKeys = ASSISTANT_ROW_KEYS.filter((row) => row !== "knowledge" || knowledgeRowShown);
   const failedRows = (errors: AssistantEditorView["errors"]) => ASSISTANT_ROW_KEYS.filter((row) => errors?.rows[row]);
   const [expanded, setExpanded] = useState<ReadonlySet<AssistantRowKey>>(() => new Set([
     ...(editor.initialExpandedRow ? [editor.initialExpandedRow] : []),
@@ -446,7 +357,6 @@ export function AssistantSetupColumnV2({ editor, locked, onOpenSharing }: Readon
   });
   const bodies: Record<AssistantRowKey, ReactNode> = {
     controls: <AssistantParametersV2 editor={editor} />,
-    knowledge: <KnowledgeBody editor={editor} />,
     model: <ModelBody editor={editor} />,
     search: <SearchBody editor={editor} />,
     skills: <AssistantSkillsRowV2 editor={editor} locked={locked} />,
@@ -468,7 +378,7 @@ export function AssistantSetupColumnV2({ editor, locked, onOpenSharing }: Readon
       </header>
       <fieldset className="v2-assistant-rows" disabled={locked}>
         <legend className="v2-sr-only">Setup rows</legend>
-        {rowKeys.map((row) => (
+        {ASSISTANT_ROW_KEYS.map((row) => (
           <SetupRow
             error={editor.errors?.rows[row] ?? liveErrors[row]}
             expanded={expanded.has(row)}

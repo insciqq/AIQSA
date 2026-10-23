@@ -1,17 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { allMyKnowledgeSelection, EMPTY_KNOWLEDGE_SELECTION, explicitKnowledgeSelection } from "@/lib/contracts/knowledge";
+import { afterEach, describe, expect, it } from "vitest";
 import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import { boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
 import { useComposerControlStore } from "./composerControlStore";
-
-// Knowledge selections stay tested as they worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
 
 describe("composer control store", () => {
   afterEach(() => {
@@ -169,26 +159,5 @@ describe("composer control store", () => {
       searchPlanMode: "all_selected",
       selectedSearchOptionIds: []
     });
-  });
-
-  it("keeps a chosen Knowledge plan, and takes none while Knowledge is disabled", () => {
-    const plan = explicitKnowledgeSelection({ baseIds: ["base-1"] });
-    useComposerControlStore.getState().setSelectedKnowledgePlan(plan, "chat", "system");
-    expect(useComposerControlStore.getState()).toMatchObject({
-      knowledgePlanSource: "chat", knowledgeSelection: { baseIds: ["base-1"], mode: "explicit" }, selectedKnowledgeBaseIds: ["base-1"]
-    });
-
-    areas.knowledge = false;
-    try {
-      // A chat, folder or saved default stays stored on the server but never becomes the composer's plan.
-      useComposerControlStore.getState().setSelectedKnowledgePlan(plan, "chat", "system");
-      expect(useComposerControlStore.getState()).toMatchObject({
-        knowledgePlanSource: "off", knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, selectedKnowledgeBaseIds: []
-      });
-      useComposerControlStore.getState().setSelectedKnowledgePlan(allMyKnowledgeSelection());
-      expect(useComposerControlStore.getState()).toMatchObject({ knowledgePlanSource: "off", knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION });
-    } finally {
-      areas.knowledge = true;
-    }
   });
 });

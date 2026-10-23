@@ -51,7 +51,7 @@ describe("background queue projection", () => {
     expect(snapshot.queues.map((row) => row.queue)).toEqual([...adminHealthQueueIds]);
     expect(snapshot.queues.filter((row) => row.state === "stalled").map((row) => row.queue)).toEqual(["scheduled_tasks", "file_deletion"]);
 
-    // Stored file deletion is stalled too, but Knowledge operations already alert on it.
+    // Stored file deletion is stalled too, but it raises no item of its own.
     await expect(service.stalled()).resolves.toEqual([{ queue: "scheduled_tasks", waiting: 3, running: 1, oldestSeconds: 864_000 }]);
     expect(read).toHaveBeenLastCalledWith(["attachment_processing", "chat_titles", "scheduled_tasks", "workspace_cleanup"], now);
   });

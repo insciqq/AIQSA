@@ -4,7 +4,6 @@ import type {
   WorkspaceChatSummaryWire
 } from "../../contracts/chats";
 import type { ChatImportSource } from "../../contracts/chatImport";
-import type { KnowledgePlan } from "../../contracts/knowledge";
 import {
   UNAVAILABLE_CHAT_WORKSPACE_STATE,
   type ChatWorkspaceState
@@ -14,7 +13,6 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
-import { ProjectsDisabledError, projectsDisabledResponse } from "../projects/disabled";
 
 export type BranchMessageRecord = {
   chatId: string;
@@ -32,7 +30,6 @@ export type BranchMessageRecord = {
 export type BranchChatRecord = {
   activeLeafMessageId: string | null;
   createdAt: Date | string;
-  defaultKnowledgePlan?: KnowledgePlan | null;
   defaultModelId: string | null;
   defaultProvider: string | null;
   folderId: string | null;
@@ -42,7 +39,6 @@ export type BranchChatRecord = {
   importSourceModel?: string | null;
   messageCount: number;
   pinned: boolean;
-  projectId?: string | null;
   title: string;
   updatedAt: Date | string;
   workspace?: ChatWorkspaceState;
@@ -136,7 +132,6 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt instanceof Date ? chat.createdAt.toISOString() : chat.createdAt,
-    defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
@@ -145,7 +140,6 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
     ...(chat.importSource && chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     messageCount: chat.messageCount,
     pinned: chat.pinned,
-    ...(chat.projectId !== undefined ? { projectId: chat.projectId } : {}),
     title: chat.title,
     updatedAt: chat.updatedAt instanceof Date ? chat.updatedAt.toISOString() : chat.updatedAt,
     workspace: chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
@@ -222,7 +216,6 @@ export function createEditMessageBranchHandler(deps: MessageBranchHandlerDeps) {
       if (isActiveMessageMutationConflictError(error)) {
         return activeMutationConflictResponse(error);
       }
-      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
 
       throw error;
     }
@@ -258,7 +251,6 @@ export function createBranchChatFromMessageHandler(deps: MessageBranchHandlerDep
       if (isActiveMessageMutationConflictError(error)) {
         return activeMutationConflictResponse(error);
       }
-      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
 
       throw error;
     }

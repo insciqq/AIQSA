@@ -52,17 +52,17 @@ export type AdoptChatSetup = <Invalid>(input: AdoptChatSetupInput<Invalid>) => P
 
 /**
  * The definition rows after adopting `adopted`, in definition vocabulary.
- * A chat's Tools mode over the user's own servers (`auto`, `load_all`) and
- * "All my knowledge" have no definition value of their own; they are adopted
- * as inherit only when the owner's Chat defaults resolve inherit to exactly
- * that value, and refused with the row's ordinary validation code otherwise.
- * Controls belong to the model: adopting either row keeps the
- * Assistant's controls only where they applied in the chat, under the chat's.
+ * A chat's Tools mode over the user's own servers (`auto`, `load_all`) has no
+ * definition value of its own; it is adopted as inherit only when the owner's
+ * Chat defaults resolve inherit to exactly that value, and refused with the
+ * row's ordinary validation code otherwise. Controls belong to the model:
+ * adopting either row keeps the Assistant's controls only where they applied
+ * in the chat, under the chat's.
  */
 export function adoptedChatSetupRows(input: Readonly<{
   adopted: readonly AssistantRowKey[];
   assistant: AssistantRows;
-  defaults: Pick<AssistantRowContextDefaults, "knowledge" | "tools">;
+  defaults: Pick<AssistantRowContextDefaults, "tools">;
   resolution: AssistantRowResolution;
 }>): { ok: true; rows: AssistantRows } | AssistantDecodeError {
   const { adopted, assistant, defaults } = input;
@@ -87,20 +87,6 @@ export function adoptedChatSetupRows(input: Readonly<{
         next.tools = { policy: assistant.tools.policy, value: { mode: "inherit" } };
       } else {
         return { code: "assistant_mcp_servers_invalid", ok: false, row: "tools" };
-      }
-    } else if (key === "knowledge") {
-      const knowledge = values.knowledge.value;
-      if (knowledge.mode === "explicit") {
-        next.knowledge = {
-          policy: assistant.knowledge.policy,
-          value: { baseIds: [...knowledge.baseIds], mode: "explicit", sourceIds: [...knowledge.sourceIds] }
-        };
-      } else if (knowledge.mode === "none") {
-        next.knowledge = { policy: assistant.knowledge.policy, value: { mode: "none" } };
-      } else if (defaults.knowledge.mode === "all_my_knowledge") {
-        next.knowledge = { policy: assistant.knowledge.policy, value: { mode: "inherit" } };
-      } else {
-        return { code: "assistant_knowledge_bases_invalid", ok: false, row: "knowledge" };
       }
     } else if (key === "skills") {
       next.skills = {
@@ -145,12 +131,11 @@ export function createPrismaAdoptChatSetup(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
-            AND "projectId" IS NULL
             AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
         const chat = chats[0];
-        // Another user's chat, a Project chat and a chat bound elsewhere look alike.
+        // Another user's chat and a chat bound elsewhere look alike.
         if (!chat || chat.archived || chat.assistantId !== assistantId) return { kind: "not_found" };
         if (definition.version !== input.expectedVersion) return { kind: "version_conflict" };
         if (definition.archivedAt) return { kind: "archived" };
@@ -165,7 +150,7 @@ export function createPrismaAdoptChatSetup(
         const stored = decoded?.kind === "overrides" ? decoded.overrides : {};
         if (Object.keys(stored).length === 0) return { kind: "unchanged" };
         const rows = await loadAssistantRows(tx, assistantId);
-        const context = await loadPersonalChatAssistantContext(tx, { rows, stored, userId }, options);
+        const context = await loadPersonalChatAssistantContext(tx, { rows, userId }, options);
         if (!context) return { kind: "not_found" };
         const { resolution } = resolveChatAssistantRows({ assistant: rows, context, stored });
         const adopted = ASSISTANT_ROW_KEYS.filter((key) => resolution.rows[key].provenance === "chat");
@@ -184,7 +169,6 @@ export function createPrismaAdoptChatSetup(
           await tx.assistantDefinition.update({
             data: {
               ...after,
-              knowledgeSelection: after.knowledgeSelection as unknown as Prisma.InputJsonValue,
               runControls: after.runControls as Prisma.InputJsonValue,
               searchPlan: after.searchPlan as Prisma.InputJsonValue,
               version: { increment: 1 }

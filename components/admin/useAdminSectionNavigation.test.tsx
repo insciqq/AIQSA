@@ -128,21 +128,21 @@ describe("useAdminSectionNavigation", () => {
 
   it("keeps the origin chat return across section, resource and filter changes for the Chats links", async () => {
     stubViewport(390);
-    window.history.replaceState(null, "", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-1&section=users");
+    window.history.replaceState(null, "", "/admin?return=%2Fc%2Fchat-1&section=users");
     const view = renderNavigation();
     await waitFor(() => expect(view.navigation.activeSection).toBe("users"));
     const chatsLinks = () => screen.getAllByRole("link", { name: "Chats" });
-    await waitFor(() => expect(chatsLinks()[0]).toHaveAttribute("href", "/p/project-1/c/chat-1"));
-    expect(chatsLinks().every((link) => link.getAttribute("href") === "/p/project-1/c/chat-1")).toBe(true);
+    await waitFor(() => expect(chatsLinks()[0]).toHaveAttribute("href", "/c/chat-1"));
+    expect(chatsLinks().every((link) => link.getAttribute("href") === "/c/chat-1")).toBe(true);
 
     act(() => { view.navigation.selectFilter("pending"); });
     act(() => { view.navigation.selectSection("providers", "conn-1"); });
     act(() => { view.navigation.selectResource(null); });
-    expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
-    expect(chatsLinks()[0]).toHaveAttribute("href", "/p/project-1/c/chat-1");
+    expect(new URLSearchParams(window.location.search).get("return")).toBe("/c/chat-1");
+    expect(chatsLinks()[0]).toHaveAttribute("href", "/c/chat-1");
     act(() => window.history.back());
     await waitFor(() => expect(view.navigation.activeResource).toBe("conn-1"));
-    expect(new URLSearchParams(window.location.search).get("return")).toBe("/p/project-1/c/chat-1");
+    expect(new URLSearchParams(window.location.search).get("return")).toBe("/c/chat-1");
   });
 
   it("links back to the origin chat from the server markup and follows the address once hydrated", async () => {
@@ -155,7 +155,7 @@ describe("useAdminSectionNavigation", () => {
           accountLabel="admin@example.com"
           navigation={navigation}
           releaseStatus={null}
-          returnPath="/p/project-1/c/chat-1"
+          returnPath="/c/chat-1"
           topbar={{ title: navigation.activeSectionConfig.label }}
         >
           <section />
@@ -167,9 +167,9 @@ describe("useAdminSectionNavigation", () => {
     const serverChats = [...server.querySelectorAll("a")].filter((link) =>
       link.getAttribute("aria-label") === "Chats" || link.textContent?.trim() === "Chats");
     expect(serverChats.length).toBeGreaterThan(0);
-    expect(serverChats.map((link) => link.getAttribute("href"))).toEqual(serverChats.map(() => "/p/project-1/c/chat-1"));
+    expect(serverChats.map((link) => link.getAttribute("href"))).toEqual(serverChats.map(() => "/c/chat-1"));
     expect(server.querySelector('[data-testid="admin-nav-users"]'))
-      .toHaveAttribute("href", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-1&section=users");
+      .toHaveAttribute("href", "/admin?return=%2Fc%2Fchat-1&section=users");
 
     // In the browser the address is the source: a return changed there is followed.
     window.history.replaceState(null, "", "/admin?return=%2Fc%2Fchat-2");

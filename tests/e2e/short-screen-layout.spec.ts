@@ -136,7 +136,7 @@ async function expectSheetReachesLastItem(
   await expect(sheet).toHaveCount(0);
 }
 
-async function openStudioSection(page: Page, name: "Assistants" | "Instructions" | "Knowledge"): Promise<Locator> {
+async function openStudioSection(page: Page, name: "Assistants" | "Instructions"): Promise<Locator> {
   await runAccountMenuAction(page, name);
   return page.getByTestId("library-v2");
 }
@@ -234,7 +234,7 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
       expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
 
       // The chat row "⋯" in the (compact) chat list.
-      const navigation = page.getByRole("complementary", { name: /^(Chat|Project) navigation$/ });
+      const navigation = page.getByRole("complementary", { name: "Chat navigation" });
       if (!(await navigation.isVisible())) {
         await page.locator(".v2-sidebar-floats").getByRole("button", { name: "Open sidebar" }).tap();
         await expect(navigation).toBeVisible();
@@ -257,7 +257,7 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
         "Delete"
       );
 
-      // Studio › Instructions and Knowledge: the first row menu the operator has.
+      // Studio › Instructions: the first row menu the operator has.
       library = await openStudioSection(page, "Instructions");
       await expect(library.getByRole("button", { name: "New preset" })).toBeEnabled({ timeout: 30_000 });
       const preset = await firstRowMenuTrigger(library.getByTestId("settings-instructions"));
@@ -266,18 +266,6 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
         await expectSheetReachesLastItem(page, preset, `Actions for ${name}`, size);
       } else {
         test.info().annotations.push({ description: "The seeded operator has no instruction preset.", type: "skipped-menu" });
-      }
-
-      library = await openStudioSection(page, "Knowledge");
-      const knowledge = library.getByTestId("library-knowledge-panel");
-      await expect(knowledge).toBeVisible();
-      await expect(knowledge.getByText("Loading knowledge…")).toHaveCount(0, { timeout: 30_000 });
-      const base = await firstRowMenuTrigger(knowledge);
-      if (base) {
-        const name = ((await base.getAttribute("aria-label")) ?? "").replace(/^More actions for /, "");
-        await expectSheetReachesLastItem(page, base, `Actions for ${name}`, size);
-      } else {
-        test.info().annotations.push({ description: "The seeded operator owns no Knowledge base.", type: "skipped-menu" });
       }
     } finally {
       if (assistant) await deleteOwnedAssistant(page.request, assistant.id);

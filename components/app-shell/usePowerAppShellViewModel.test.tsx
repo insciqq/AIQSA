@@ -8,7 +8,7 @@ import { composerContextGauge } from "./composerContextStats";
 import { composerContextConfigurationKey } from "./composerContextConfiguration";
 import { initialComposerControlSnapshot, type ComposerControlSnapshot } from "./composerControlStore";
 import type { SessionContextStatus } from "@/lib/contracts/sessionStatus";
-import type { Catalog, FolderSummary, WorkspaceChatSummary } from "./types";
+import type { Catalog, WorkspaceChatSummary } from "./types";
 import { decodeUploadAttachmentResponse } from "@/lib/contracts/uploads";
 import { boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
 
@@ -47,10 +47,8 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       chats: [chat("chat-a")],
       draft: "",
       contextConfigurationKey: configurationKey(),
-      folders: [],
       maxOutputTokens: "128000",
       pendingChatFolderId: null,
-      projectSettingsFolderId: null,
       renderActiveLeafId: null,
       runSurface: { answerStartedAt: null, events: [], startedAt: null },
       selectedAssistantPromptCharacterCount: null,
@@ -524,24 +522,6 @@ describe("usePowerAppShellViewModel", () => {
 
     expect(result.current.composerContextStats.approximateInputTokens).toBe(
       estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE) + 12_345
-    );
-  });
-
-  it("does not include a legacy folder Project Memory value in the client estimate", () => {
-    const folder: FolderSummary = {
-      id: "folder-1",
-      name: "Research",
-      parentId: null,
-      projectMemory: "Legacy text must stay dormant",
-      sortOrder: 0
-    };
-    const { result } = renderViewModel({
-      chats: [{ ...chat("chat-a"), folderId: folder.id }],
-      folders: [folder]
-    });
-
-    expect(result.current.composerContextStats.approximateInputTokens).toBe(
-      estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE)
     );
   });
 });

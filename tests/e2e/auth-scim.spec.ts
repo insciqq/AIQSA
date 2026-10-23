@@ -40,7 +40,6 @@ test.afterAll(async () => {
     });
   }
   await prisma.authScimToken.deleteMany({ where: { id: { notIn: existingTokenIds } } });
-  await prisma.project.deleteMany({ where: { name: { contains: run } } });
   await prisma.authSession.deleteMany({ where: { user: { email: { endsWith: `@${domain}` } } } });
   await prisma.user.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
   await prisma.group.deleteMany({ where: { name: { contains: run } } });
@@ -146,51 +145,23 @@ test("provisions users and groups in Entra ID, Okta and Authentik shapes", async
   expect((await scim("GET", `Users/${katherine.id}`)).ok()).toBe(true);
 });
 
-test("deactivating a sole Project Owner revokes access at once and waits for an ownership transfer", async ({ page }, testInfo) => {
-  const owner = await (await scim("POST", "Users", { externalId: `owner-${run}`, userName: `owner@${domain}` })).json();
-  const successor = await prisma.user.create({ data: { displayName: `Successor ${run}`, email: `successor@${domain}`, status: "active" } });
-  const project = await prisma.project.create({
-    data: {
-      createdByDisplayName: "SCIM owner",
-      createdByUserId: owner.id,
-      grants: { create: [{ role: "OWNER", userId: owner.id }] },
-      name: `Owned by a leaver ${run}`
-    }
-  });
+test("deactivating a user revokes access at once", async () => {
+  const leaver = await (await scim("POST", "Users", { externalId: `leaver-${run}`, userName: `leaver@${domain}` })).json();
   const sessionToken = randomUUID();
   await prisma.authSession.create({
-    data: { expiresAt: new Date(Date.now() + 86_400_000), tokenHash: hashToken(sessionToken), userId: owner.id }
+    data: { expiresAt: new Date(Date.now() + 86_400_000), tokenHash: hashToken(sessionToken), userId: leaver.id }
   });
-  const asOwner = { headers: { cookie: `${SESSION_COOKIE_NAME}=${sessionToken}` } };
-  expect((await api!.get("/api/me", asOwner)).status()).toBe(200);
+  const asLeaver = { headers: { cookie: `${SESSION_COOKIE_NAME}=${sessionToken}` } };
+  expect((await api!.get("/api/me", asLeaver)).status()).toBe(200);
 
-  const pending = await scim("PATCH", `Users/${owner.id}`, {
+  const deactivated = await scim("PATCH", `Users/${leaver.id}`, {
     Operations: [{ op: "Replace", path: "active", value: "False" }],
     schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"]
   });
-  expect(pending.status()).toBe(409);
-  expect(await pending.json()).toEqual({
-    detail: "Transfer Project ownership first; the account's access is already revoked.",
-    schemas: [SCIM_ERROR],
-    status: "409"
-  });
-  expect((await api!.get("/api/me", asOwner)).status()).toBe(401);
-
-  await signInWithLocalToken(page);
-  await page.goto("/admin?section=users");
-  const row = page.getByTestId("admin-user-row").filter({ hasText: `owner@${domain}` });
-  await expect(row.getByTestId("admin-user-scim-pending-tag")).toHaveText("SCIM deactivation pending: 1 Project needs a new Owner");
-  await page.goto(`/admin?section=users&resource=${owner.id}`);
-  const marker = page.getByTestId("admin-user-scim-pending");
-  await expect(marker).toContainText("SCIM deactivation pending: 1 Project needs a new Owner");
-  await page.screenshot({ path: testInfo.outputPath("scim-pending-desktop.png") });
-
-  await prisma.projectGrant.create({ data: { projectId: project.id, role: "OWNER", userId: successor.id } });
-  const retried = await scim("DELETE", `Users/${owner.id}`);
-  expect(retried.status()).toBe(204);
-  expect(await (await scim("GET", `Users/${owner.id}`)).json()).toMatchObject({ active: false });
-  await page.reload();
-  await expect(page.getByTestId("admin-user-scim-pending")).toHaveCount(0);
+  expect(deactivated.status()).toBe(200);
+  expect(await deactivated.json()).toMatchObject({ active: false });
+  expect((await api!.get("/api/me", asLeaver)).status()).toBe(401);
+  expect(await (await scim("GET", `Users/${leaver.id}`)).json()).toMatchObject({ active: false });
 });
 
 for (const viewport of [

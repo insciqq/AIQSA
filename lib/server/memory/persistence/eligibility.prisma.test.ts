@@ -142,10 +142,9 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
     await prisma.$disconnect();
   });
 
-  it("keeps transferred Personal fact/history evidence dormant across every active consumer", async () => {
+  it("keeps an excluded source's Personal fact/history evidence dormant across every active consumer", async () => {
     const suffix = randomUUID();
     const userId = `memory-data-002-${suffix}`;
-    let projectId: string | null = null;
 
     await prisma.user.create({
       data: {
@@ -209,7 +208,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
         data: {
           memoryMode: "NORMAL",
           memorySourceRevision: 1,
-          title: "Personal source before Project transfer",
+          title: "Personal source",
           userId
         }
       });
@@ -722,56 +721,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
         });
       });
 
-      projectId = randomUUID();
-      const projectChat = await prisma.$transaction(async (tx) => {
-        await tx.project.create({
-          data: {
-            createdByDisplayName: "DATA-002 owner",
-            createdByUserId: userId,
-            id: projectId!,
-            memoryEnabled: false,
-            name: `DATA-002 Project ${suffix}`
-          }
-        });
-        await tx.projectGrant.create({
-          data: {
-            createdByUserId: userId,
-            projectId: projectId!,
-            role: "OWNER",
-            userId
-          }
-        });
-        const chat = await tx.chat.create({
-          data: {
-            createdByDisplayName: "DATA-002 owner",
-            createdByUserId: userId,
-            memoryMode: "EXCLUDED",
-            projectId: projectId!,
-            title: "Transferred Project copy",
-            userId: null
-          }
-        });
-        const message = await tx.message.create({
-          data: {
-            authorDisplayName: "DATA-002 owner",
-            authorProjectRole: "OWNER",
-            authorUserId: userId,
-            chatId: chat.id,
-            content: textMessageContent("I keep project notes in a cedar notebook."),
-            role: "user",
-            status: "complete"
-          }
-        });
-        return tx.chat.update({
-          data: { activeLeafMessageId: message.id },
-          where: { id: chat.id }
-        });
-      });
-
-      // Project chats are separately owned and Memory-disabled. Excluding the
-      // Personal source first removes its reusable evidence; the copied Project
-      // transcript does not become Personal evidence implicitly.
-      expect(projectChat).toMatchObject({ memoryMode: "EXCLUDED", projectId, userId: null });
+      // Excluding the Personal source removes its reusable evidence.
       await expect(prisma.memoryEvidence.count({
         where: { factVersionId, userId }
       })).resolves.toBe(0);
@@ -872,7 +822,7 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
 
       // The consumer chat only drives the accepted-read fixture above. Remove
       // it from future Personal history admission so this rebuild proves the
-      // transferred source cannot resurrect without inventing an incomplete
+      // excluded source cannot resurrect without inventing an incomplete
       // checkpoint for an otherwise eligible chat.
       await prisma.$transaction(async (tx) => {
         const locked = await lockMemorySourceChat(tx, {
@@ -984,7 +934,6 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
       });
       expect(binding.modelRunId).toBe(run.id);
     } finally {
-      if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
       await prisma.user.deleteMany({ where: { id: userId } });
     }

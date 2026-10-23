@@ -76,8 +76,8 @@ function runTotalParts(totals: HealthRunTotals): string[] {
 function runSection(report: HealthFullReport): string[] {
   const { runs } = report;
   return section("Runs (accepted runs; outcomes counted once per run from its terminal write)", [
-    ...wrapParts([`accepted ${runs.accepted}: send ${runs.acceptedByKind.send}`, `regenerate ${runs.acceptedByKind.regenerate}`,
-      `project ${runs.acceptedByKind.project}`], "  ", " · "),
+    ...wrapParts([`accepted ${runs.accepted}: send ${runs.acceptedByKind.send}`, `regenerate ${runs.acceptedByKind.regenerate}`],
+      "  ", " · "),
     ...wrapParts([...runTotalParts(runs), `stop requests ${runs.stopRequests}`], "  ", " · "),
     ...wrapParts([`failed during preparation ${runs.failedInPreparation}`, `failed in recovery ${runs.failedInRecovery}`,
       `terminal write unconfirmed ${runs.unconfirmed}`], "  ", " · "),

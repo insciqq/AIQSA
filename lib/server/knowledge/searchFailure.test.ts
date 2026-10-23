@@ -6,7 +6,6 @@ import {
   recordKnowledgeFailureBilledCalls
 } from "./searchFailure";
 import { knowledgeUsageAttributionsFromToolResult } from "./toolResult";
-import { OpenSearchTransportError } from "../search/opensearch/coreTransport";
 
 describe("safe Knowledge search failure projection", () => {
   it.each(["knowledge_search_projection_incomplete", "knowledge_search_projection_pending", "knowledge_search_projection_failed", "opensearch_timeout", "opensearch_connection_failed",
@@ -26,7 +25,8 @@ describe("safe Knowledge search failure projection", () => {
     for (const error of [new Error("private_secret_value"), new Error("Bearer PRIVATE_TOKEN"), { code: "opensearch_timeout" }]) {
       expect(knowledgeSearchFailureToolResult(call, error)).toMatchObject({ rawPreview: { knowledgeFailure: { code: "knowledge_retrieval_failed" } } });
     }
-    expect(knowledgeSearchFailureToolResult(call, new OpenSearchTransportError("opensearch_authentication_failed")))
+    const transportFailure = Object.assign(new Error("search transport failure"), { code: "opensearch_authentication_failed" });
+    expect(knowledgeSearchFailureToolResult(call, transportFailure))
       .toMatchObject({ rawPreview: { knowledgeFailure: { code: "opensearch_authentication_failed" } } });
   });
   it("retains the bounded SQL timeout classification without its underlying query or cause", () => {

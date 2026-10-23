@@ -368,7 +368,6 @@ function commonPredicates(input: MemoryVectorSearchInput): Prisma.Sql[] {
       FROM "Chat" AS current_chat
       WHERE current_chat."userId" = ${input.userId}
         AND current_chat."id" = ${input.eligibility.chatId}
-        AND current_chat."projectId" IS NULL
         AND current_chat."memoryMode" IN (
           'NORMAL'::"MemoryChatMode", 'EXCLUDED'::"MemoryChatMode"
         )
@@ -611,7 +610,6 @@ function chunkEligibilityPredicates(
     Prisma.sql`chunk."safetyClass"::text IN (${allowed})`,
     Prisma.sql`chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"`,
     Prisma.sql`source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"`,
-    Prisma.sql`source_chat."projectId" IS NULL`,
     Prisma.sql`checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"`,
     Prisma.sql`checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}`,
     memoryHistoryChunkSourceAuthorityPredicate({
@@ -784,7 +782,6 @@ function roundEligibility(
           AND parent_chunk."sourceProjectionVersion" =
             ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
           AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-          AND source_chat."projectId" IS NULL
           AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
           AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
           AND ${memoryHistoryRoundSourceAuthorityPredicate({
@@ -906,7 +903,6 @@ function toolEventEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           AND tool_event."safetyClass"::text IN (${allowed})
           AND tool_event."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
           AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-          AND source_chat."projectId" IS NULL
           AND source_chat."permanentDeletionAt" IS NULL
           AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
           AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}

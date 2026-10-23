@@ -48,23 +48,6 @@ const queueSql: Readonly<Record<AdminHealthQueueId, (window: Window) => Prisma.S
       ON attachment."id" = job."attachmentId"
       AND attachment."status" = 'processing'::"AttachmentStatus"
   `,
-  // The Knowledge operations card's definitions: pending and processing
-  // artifacts, the oldest of either by creation time.
-  document_processing: ({ since }) => Prisma.sql`
-    SELECT
-      count(*) FILTER (WHERE "state" = 'pending'::"KnowledgeSourceArtifactState")::integer AS "waiting",
-      count(*) FILTER (WHERE "state" = 'processing'::"KnowledgeSourceArtifactState")::integer AS "running",
-      count(*) FILTER (WHERE "state" = 'failed'::"KnowledgeSourceArtifactState" AND "updatedAt" >= ${since})::integer AS "failed",
-      min("createdAt") FILTER (WHERE "state" IN (
-        'pending'::"KnowledgeSourceArtifactState", 'processing'::"KnowledgeSourceArtifactState"
-      )) AS "oldestDueAt"
-    FROM "KnowledgeSourceIndexArtifact"
-    WHERE "state" IN (
-      'pending'::"KnowledgeSourceArtifactState",
-      'processing'::"KnowledgeSourceArtifactState",
-      'failed'::"KnowledgeSourceArtifactState"
-    )
-  `,
   // A dispatched title whose answer never arrived ends ambiguous: its outcome is unknown.
   chat_titles: ({ since }) => Prisma.sql`
     SELECT
@@ -142,22 +125,8 @@ const queueSql: Readonly<Record<AdminHealthQueueId, (window: Window) => Prisma.S
       'PENDING'::"WorkspaceCleanupState", 'RUNNING'::"WorkspaceCleanupState", 'FAILED'::"WorkspaceCleanupState"
     )
   `,
-  // The Knowledge operations card's pending deletions (every unfinished state)
-  // and their oldest creation time; blocked jobs wait for an administrator.
-  knowledge_deletion: ({ since }) => Prisma.sql`
-    SELECT
-      count(*) FILTER (WHERE "state" <> 'RUNNING'::"KnowledgeDeletionState")::integer AS "waiting",
-      count(*) FILTER (WHERE "state" = 'RUNNING'::"KnowledgeDeletionState")::integer AS "running",
-      count(*) FILTER (WHERE "lastErrorCode" IS NOT NULL AND "lastAttemptAt" >= ${since})::integer AS "failed",
-      min("createdAt") AS "oldestDueAt"
-    FROM "KnowledgeDeletionJob"
-    WHERE "state" IN (
-      'PENDING'::"KnowledgeDeletionState", 'RUNNING'::"KnowledgeDeletionState",
-      'RETRY_WAIT'::"KnowledgeDeletionState", 'BLOCKED_REQUIRES_ADMIN'::"KnowledgeDeletionState"
-    )
-  `,
-  // The shared "due" predicate of claims, the prune dry run and the Knowledge
-  // operations card: a job a reference still protects is not waiting.
+  // The shared "due" predicate of claims and the prune dry run: a job a
+  // reference still protects is not waiting.
   file_deletion: ({ now, since }) => {
     const claimableBefore = deletionJobClaimableBefore(now);
     return Prisma.sql`

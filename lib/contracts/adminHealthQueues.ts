@@ -14,13 +14,11 @@ import type { ErrorResponse } from "./http";
  */
 export const adminHealthQueueIds = [
   "attachment_processing",
-  "document_processing",
   "chat_titles",
   "scheduled_tasks",
   "memory",
   "mcp_activation",
   "workspace_cleanup",
-  "knowledge_deletion",
   "file_deletion"
 ] as const;
 export type AdminHealthQueueId = (typeof adminHealthQueueIds)[number];
@@ -31,13 +29,11 @@ export type AdminHealthQueueState = (typeof adminHealthQueueStates)[number];
 /** Plain-English names and what each queue does, shared by the card and attention copy. */
 export const adminHealthQueueCopy: Readonly<Record<AdminHealthQueueId, Readonly<{ label: string; purpose: string }>>> = {
   attachment_processing: { label: "Chat file processing", purpose: "Reads files attached in chats so answers can use them" },
-  document_processing: { label: "Knowledge document processing", purpose: "Prepares Knowledge documents for search" },
   chat_titles: { label: "Chat titles", purpose: "Names new chats after their first answer" },
   scheduled_tasks: { label: "Scheduled tasks", purpose: "Starts scheduled task runs when they are due" },
   memory: { label: "Memory learning and indexing", purpose: "Learns facts and indexes chat history, as on the Memory card" },
   mcp_activation: { label: "MCP server checks", purpose: "Checks installation MCP server settings before they go live" },
   workspace_cleanup: { label: "Workspace cleanup", purpose: "Removes sandboxes of deleted or expired Workspaces" },
-  knowledge_deletion: { label: "Knowledge deletion", purpose: "Purges deleted Knowledge documents and bases" },
   file_deletion: { label: "Stored file deletion", purpose: "Deletes stored files nothing references any more" }
 };
 

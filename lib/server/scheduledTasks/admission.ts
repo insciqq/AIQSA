@@ -93,8 +93,7 @@ export function createPrismaScheduledTaskOwnerLoader(prisma: PrismaClient): Sche
   return async ({ taskId, userId }) => {
     const task = await prisma.scheduledTask.findFirst({
       select: { user: { select: { displayName: true, email: true, id: true, role: true, status: true } } },
-      // A SCIM deactivation that waits for a Project ownership transfer already ended the
-      // owner's access, standing tasks included.
+      // A recorded SCIM deactivation ends the owner's access, standing tasks included.
       where: { id: taskId, user: { scimDeactivatedAt: null }, userId }
     });
     return task?.user ?? null;

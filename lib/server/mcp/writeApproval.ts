@@ -2,8 +2,8 @@ import { hashCanonicalMcpValue } from "./definitions";
 
 /**
  * MCP write approval (operator decision 2026-10-08). An interactive run (a
- * personal or Project chat run its user started, Assistant and Knowledge
- * chats included) asks its initiator before an MCP tool that may change data
+ * chat run its user started, Assistant chats included) asks its initiator
+ * before an MCP tool that may change data
  * runs. Scheduled-task runs are their owner's standing authority and Hub
  * clients prompt themselves: neither carries the admission marker.
  *

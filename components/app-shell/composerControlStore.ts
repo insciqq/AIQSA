@@ -1,4 +1,3 @@
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { DEFAULT_CHAT_MAX_OUTPUT_TOKENS } from "@/lib/domain/providerParams";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type {
@@ -10,12 +9,6 @@ import type {
   AssistantRowProvenance,
   AssistantRowValues
 } from "@/lib/contracts/assistants";
-import {
-  decodeKnowledgePlan,
-  EMPTY_KNOWLEDGE_SELECTION,
-  explicitKnowledgeSelection,
-  type KnowledgeSelection
-} from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { SkillsMode, AssistantSkillMode } from "@/lib/contracts/skills";
 import type { SearchPlanMode } from "@/lib/domain/search";
@@ -42,7 +35,6 @@ export type ComposerModelSelection = {
  * Assistant or the rows' origins.
  */
 export type ComposerControlChangeOrigin = "system" | "user";
-export type ComposerKnowledgePlanSource = "assistant" | "chat" | "explicit" | "off" | "project";
 
 /** The Assistant's exact MCP server list; only an Assistant row sets it. */
 export type ComposerMcpExactSelection = { hiddenCount?: number; mode: "exact"; serverIds: string[] };
@@ -119,11 +111,8 @@ export type ComposerControlSnapshot = {
   assistant: ComposerAssistantState | null;
   backgroundMode: boolean;
   maxOutputTokens: string;
-  knowledgePlanSource: ComposerKnowledgePlanSource;
-  knowledgeSelection: KnowledgeSelection;
   reasoningEffort: string;
   reasoningMode: string;
-  selectedKnowledgeBaseIds: string[];
   mcpSelection: ComposerMcpSelection;
   skillsMode: SkillsMode;
   selectedModelId: string;
@@ -140,7 +129,6 @@ export type ComposerControlSnapshot = {
 /** The ordinary composer fields each Assistant row owns. */
 export const COMPOSER_ASSISTANT_ROW_FIELDS = {
   controls: ["backgroundMode", "maxOutputTokens", "reasoningEffort", "reasoningMode", "streamMode", "temperature"],
-  knowledge: ["knowledgePlanSource", "knowledgeSelection", "selectedKnowledgeBaseIds"],
   model: ["selectedModelId", "selectedProvider"],
   search: ["searchPlanMode", "selectedSearchOptionIds"],
   skills: ["skillsMode"],
@@ -159,7 +147,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   ): void;
   /**
    * Removes the Assistant. Values an Assistant alone can express (an exact
-   * MCP list, a hidden Knowledge plan) return to the given ordinary values.
+   * MCP list) return to the given ordinary values.
    */
   clearAssistant(fallback?: { mcpSelection: McpRunSelection; skillsMode: SkillsMode }): void;
   /** Returns a row to the Assistant in composer state; false without a local baseline. */
@@ -168,11 +156,6 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   setMaxOutputTokens(value: string): void;
   setMcpSelection(value: McpRunSelection, origin?: ComposerControlChangeOrigin): void;
   setSkillsMode(value: SkillsMode, origin?: ComposerControlChangeOrigin): void;
-  setSelectedKnowledgePlan(
-    selection: KnowledgeSelection | readonly string[],
-    source?: Exclude<ComposerKnowledgePlanSource, "assistant">,
-    origin?: ComposerControlChangeOrigin
-  ): void;
   setReasoningEffort(value: string): void;
   setReasoningMode(value: string): void;
   setSelectedModelId(value: string, origin?: ComposerControlChangeOrigin): void;
@@ -197,11 +180,8 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   maxOutputTokens: String(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
   mcpSelection: { mode: "auto" },
   skillsMode: "auto",
-  knowledgePlanSource: "off",
-  knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
   reasoningEffort: "medium",
   reasoningMode: "standard",
-  selectedKnowledgeBaseIds: [],
   selectedModelId: "gpt-5.5",
   selectedProvider: "openai",
   selectedSearchOptionIds: ["openai-native-web-search"],
@@ -291,8 +271,7 @@ function controlChange(
   update: Partial<ComposerControlSnapshot>
 ): Partial<ComposerControlSnapshot> {
   // Every Assistant parameter edit is a chat override, including inherited
-  // and replacement models. Personal-default persistence is independent:
-  // Project chats never have that fallback for delivering the chosen value.
+  // and replacement models. Personal-default persistence is independent.
   return rowChange(state, "controls", update);
 }
 
@@ -400,23 +379,12 @@ export const useComposerControlStore = create<ComposerControlStore>((set, get) =
   clearAssistant(fallback) {
     set((state) => {
       if (!state.assistant) return {};
-      // A privacy-hidden Assistant plan has no ids a browser may send back.
-      const hiddenKnowledge = state.knowledgeSelection.mode === "inherited";
       return {
         assistant: null,
         ...(state.mcpSelection.mode === "exact"
           ? { mcpSelection: { ...(fallback?.mcpSelection ?? { mode: "auto" as const }) } }
           : {}),
-        ...(fallback ? { skillsMode: fallback.skillsMode } : {}),
-        ...(hiddenKnowledge
-          ? {
-              knowledgePlanSource: "off" as const,
-              knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
-              selectedKnowledgeBaseIds: []
-            }
-          : state.knowledgePlanSource === "assistant"
-            ? { knowledgePlanSource: "explicit" as const }
-            : {})
+        ...(fallback ? { skillsMode: fallback.skillsMode } : {})
       };
     });
   },
@@ -458,34 +426,6 @@ export const useComposerControlStore = create<ComposerControlStore>((set, get) =
   },
   setSkillsMode(skillsMode, origin = "user") {
     set((state) => origin === "user" ? rowChange(state, "skills", { skillsMode }) : { skillsMode });
-  },
-  setSelectedKnowledgePlan(requested, requestedSource = "explicit", origin = "user") {
-    // Knowledge is disabled: a chat's, folder's or saved default never becomes
-    // the composer's selection, so nothing is sent for it.
-    const selection = KNOWLEDGE_ENABLED ? requested : EMPTY_KNOWLEDGE_SELECTION;
-    const source = KNOWLEDGE_ENABLED ? requestedSource : "off";
-    const decoded = decodeKnowledgePlan(Array.isArray(selection)
-      ? explicitKnowledgeSelection({ baseIds: selection })
-      : selection);
-    if (!decoded.ok) return;
-    set((state) => {
-      // A user edit is always the user's own explicit plan.
-      const effectiveSource = origin === "user" && boundComposerAssistant(state) ? "explicit" : source;
-      // An inherited plan contains no client-authorized ids and is valid only
-      // while its server-owned source remains attached. It must never be sent
-      // back as an explicit browser plan after an override/detachment.
-      const knowledgeSelection = effectiveSource === "explicit" && decoded.plan.mode === "inherited"
-        ? EMPTY_KNOWLEDGE_SELECTION
-        : decoded.plan;
-      const update: Partial<ComposerControlSnapshot> = {
-        knowledgePlanSource: effectiveSource === "explicit" && knowledgeSelection.mode === "none"
-          ? "off"
-          : effectiveSource,
-        knowledgeSelection,
-        selectedKnowledgeBaseIds: [...knowledgeSelection.baseIds]
-      };
-      return origin === "user" ? rowChange(state, "knowledge", update) : update;
-    });
   },
   setReasoningEffort(value) {
     set((state) => controlChange(state, { reasoningEffort: value }));

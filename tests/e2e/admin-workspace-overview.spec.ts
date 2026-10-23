@@ -5,7 +5,7 @@ import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layo
 
 const observedAt = "2026-09-09T12:00:00.000Z";
 const rows: WorkspaceOverviewRow[] = Array.from({ length: 22 }, (_, index) => ({
-  context: index === 1 ? "project" : "personal",
+  context: index === 1 ? null : "personal",
   id: `ws-${(index + 1).toString(16).padStart(16, "0")}`,
   lastActiveAt: observedAt,
   state: index === 21 ? "stopped" : index % 2 ? "running" : "ready",

@@ -47,11 +47,10 @@ export type RunLifecycleStateV2 = Readonly<{
 export type RunActivityKindV2 =
   | "compaction"
   | "files"
-  | "knowledge"
   | "preparing"
   | "provider"
   | "queued"
-  /** A model request after tool or Knowledge work. It reads their results
+  /** A model request after tool work. It reads their results
    * but shows the run's waiting phrase like any other model wait: in a tool
    * loop that is most of the run (operator decision 2026-10-21). */
   | "results"
@@ -191,7 +190,7 @@ function contextCompactionCycles(
   return [...cycles.values()].sort((left, right) => left.cycle - right.cycle);
 }
 
-/** `resultsPending`: tool or Knowledge work was shown earlier in this feed. */
+/** `resultsPending`: tool work was shown earlier in this feed. */
 function activityFromEvent(event: RunEventView, index: number, resultsPending: boolean): ActivitySignal | null {
   if (event.type !== "artifact" || !isRecord(event.data)) return null;
   const payload = eventPayload(event);
@@ -232,8 +231,8 @@ function activityFromEvent(event: RunEventView, index: number, resultsPending: b
     return { index, kind: "tool", ...toolActivityMetadata(payload) };
   }
 
-  if ((payload.stage === "files" || payload.stage === "knowledge") && payload.status === "running") {
-    return { index, kind: payload.stage === "files" ? "files" : "knowledge" };
+  if (payload.stage === "files" && payload.status === "running") {
+    return { index, kind: "files" };
   }
 
   if (payload.stage === "model" && payload.status === "waiting") {
@@ -337,8 +336,6 @@ export function toolActivityOriginV2(call: ToolActivityIdentity): ThreadToolActi
   if ((!call.serverName || serverName === "Auto tools") && toolName === "find_tools") {
     return "discovery";
   }
-  if ((!call.serverName || serverName === "Knowledge") &&
-    (toolName === "search_knowledge" || toolName === "retrieve_knowledge")) return "knowledge";
   if ((!call.serverName || serverName === "Web search") &&
     webSearchToolNames.has(toolName.toLowerCase())) return "web_search";
   return call.serverName ? "mcp" : "tool";
@@ -348,7 +345,7 @@ export function toolActivityOriginV2(call: ToolActivityIdentity): ThreadToolActi
  * User-legible label for one tool call (FRONTEND contract: only user-legible
  * server/tool names). Built-in tools get a plain-language verb; MCP tools
  * keep their server name plus a de-snaked tool name. Raw identifiers such as
- * `search_knowledge` never reach the thread.
+ * `find_tools` never reach the thread.
  */
 export function describeToolCallV2(
   call: ToolActivityIdentity,
@@ -398,11 +395,6 @@ export function describeToolCallV2(
     if (phase === "failed") return "Tool discovery failed";
     if (phase === "cancelled") return "Tool discovery stopped";
     return running ? "Finding relevant tools" : "Found relevant tools";
-  }
-  if (origin === "knowledge") {
-    if (phase === "failed") return "Knowledge search unavailable";
-    if (phase === "cancelled") return "Knowledge search stopped";
-    return running ? "Searching Knowledge" : "Searched Knowledge";
   }
   if (origin === "memory" && call.toolName === "memory_search") {
     // Failed searches are not listed (memorySearchCallHiddenV2) and limits stay
@@ -545,8 +537,6 @@ function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | nu
       return "Compacting context…";
     case "files":
       return "Reading files…";
-    case "knowledge":
-      return "Searching Knowledge…";
     case "results":
     case "provider":
       return runWaitingPhraseV2(runId);
@@ -877,7 +867,7 @@ const NEUTRAL_RUN_PREPARATION_CODE_V2 = "preparation_failed";
 // already stored before the neutral server copy.
 const memoryRunFailureMessagePattern = /^Memory (?:preparation|search|egress)\b|answer-model Memory tool/u;
 // The external-dispatch evidence ledger keeps a historical `memory_egress_`
-// prefix; its failures concern Knowledge, providers or MCP, not Memory.
+// prefix; its failures concern providers or MCP, not Memory.
 const EGRESS_LEDGER_CODE_PREFIX = "memory_egress_";
 
 /** Users never see Memory failures: a run that failed while preparing or
@@ -987,7 +977,7 @@ export function presentRunLifecycleV2(
       ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
       : activityFromEvent(event, index, resultsPending);
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
-    resultsPending ||= activity?.kind === "tool" || activity?.kind === "knowledge";
+    resultsPending ||= activity?.kind === "tool";
 
     if (event.type === "error") {
       terminal = "error";

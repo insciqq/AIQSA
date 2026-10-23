@@ -230,20 +230,21 @@ test("one key save activates models, fills empty defaults and retries failed Sea
         }
         await page.screenshot({ path: testInfo.outputPath("bootstrap-" + theme + "-" + viewport.width + ".png"), fullPage: true });
         await page.goto("/admin?section=roles");
-        const knowledgeStatus = page.getByTestId("admin-knowledge-state");
-        await expect(knowledgeStatus).toBeVisible({ timeout: 30_000 });
-        const chip = await knowledgeStatus.boundingBox();
-        const group = await page.getByTestId("admin-role-knowledge").boundingBox();
+        const memoryStatus = page.getByTestId("admin-role-memory-status");
+        await expect(memoryStatus).toBeVisible({ timeout: 30_000 });
+        const chip = await memoryStatus.boundingBox();
+        const group = await page.getByTestId("admin-role-memory").boundingBox();
         expect(chip).not.toBeNull();
         expect(group).not.toBeNull();
         expect(chip!.x).toBeGreaterThanOrEqual(group!.x);
         expect(chip!.x + chip!.width).toBeLessThanOrEqual(group!.x + group!.width);
-        expect(await knowledgeStatus.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+        expect(await memoryStatus.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (viewport.width >= 1280) {
-          const memoryStatus = await page.getByTestId("admin-role-memory-status").boundingBox();
-          expect(memoryStatus).not.toBeNull();
-          expect(Math.abs(chip!.x - memoryStatus!.x)).toBeLessThanOrEqual(1);
+          // Status pills share one column across the role rows.
+          const visionStatus = await page.getByTestId("admin-role-vision-status").boundingBox();
+          expect(visionStatus).not.toBeNull();
+          expect(Math.abs(chip!.x - visionStatus!.x)).toBeLessThanOrEqual(1);
         }
         await page.screenshot({ path: testInfo.outputPath("roles-" + theme + "-" + viewport.width + ".png"), fullPage: true });
       }

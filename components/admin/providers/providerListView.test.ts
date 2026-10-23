@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
@@ -296,14 +295,6 @@ describe("list copy", () => {
       rerankerCandidates: [],
       verificationCandidates: []
     } as unknown as AdminSystemModelPolicyCatalog;
-    const knowledge = {
-      profile: {
-        activeRevision: {
-          destination: { deploymentId: "model-embed" },
-          pdfProcessing: { destination: { deploymentId: "model-luna" }, mode: "system_model_vision" }
-        }
-      }
-    } as unknown as AdminKnowledgeSettings;
     const search = {
       integrations: [
         {
@@ -330,16 +321,16 @@ describe("list copy", () => {
       ]
     } as unknown as AdminSearchCatalog;
 
-    const usage = deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy });
-    expect(usage.get("conn-openai")).toEqual(["Default chat", "System model", "Chat PDF", "Knowledge docs", "OpenAI Search"]);
-    expect(usage.get("conn-openrouter")).toEqual(["Reranker", "Knowledge embeddings", "Perplexity Search"]);
+    const usage = deriveProviderUsage([openai, openrouter], { modelPolicy, search, systemModelPolicy });
+    expect(usage.get("conn-openai")).toEqual(["Default chat", "System model", "Chat PDF", "OpenAI Search"]);
+    expect(usage.get("conn-openrouter")).toEqual(["Reranker", "Perplexity Search"]);
     expect(visibleUsageTags(usage.get("conn-openai")!)).toEqual({
-      hidden: 2,
+      hidden: 1,
       shown: ["Default chat", "System model", "Chat PDF"]
     });
-    expect(deriveProviderUsage([openai], { knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
+    expect(deriveProviderUsage([openai], { modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
     systemModelPolicy.policy.visionModel = { ...candidate, available: false };
-    expect(deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy }).get("conn-openai"))
+    expect(deriveProviderUsage([openai, openrouter], { modelPolicy, search, systemModelPolicy }).get("conn-openai"))
       .toContain("Vision Model");
 
     expect(providerSubtitle(openai, usage)).toBe("Default chat provider · 1 Search source");
@@ -347,12 +338,12 @@ describe("list copy", () => {
     const published = { ...candidate, available: true };
     systemModelPolicy.policy.imageModels = [published] as never;
     systemModelPolicy.policy.imageModel = null;
-    const imageOff = deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy });
+    const imageOff = deriveProviderUsage([openai, openrouter], { modelPolicy, search, systemModelPolicy });
     expect(imageOff.get("conn-openai")).toContain("Image generation · off");
     expect(imageOff.get("conn-openai")).not.toContain("Image generation");
     expect(providerSubtitle(openai, imageOff)).toBe("Default chat provider · 1 Search source");
     systemModelPolicy.policy.imageModel = published as never;
-    expect(deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy }).get("conn-openai"))
+    expect(deriveProviderUsage([openai, openrouter], { modelPolicy, search, systemModelPolicy }).get("conn-openai"))
       .toContain("Image generation");
     expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "Memory"]]]))).toBe("Default chat provider");
     expect(providerSubtitle(openrouter, usage)).toBe("Qwen3 Embedding 8B, Voyage Rerank");
@@ -371,7 +362,7 @@ describe("list copy", () => {
         chatPdfProcessingMode: "prefer_chat_model"
       }
     } as unknown as AdminSystemModelPolicyCatalog;
-    const usage = () => deriveProviderUsage([], { knowledge: null, modelPolicy: null, search: null, systemModelPolicy });
+    const usage = () => deriveProviderUsage([], { modelPolicy: null, search: null, systemModelPolicy });
     expect([...usage()]).toEqual([["conn-codex", ["Chat PDF"]]]);
     systemModelPolicy.policy.chatPdfProcessingMode = "read_page_images";
     expect([...usage()]).toEqual([["conn-openai", ["Chat PDF"]]]);

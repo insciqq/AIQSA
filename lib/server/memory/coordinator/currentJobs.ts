@@ -38,7 +38,7 @@ export function currentMemoryJobsSql(now: Date): Prisma.Sql {
             ELSE settings."useMemoryFacts"
           END
           AND (job."chatId" IS NULL OR (
-            chat.id IS NOT NULL AND chat."projectId" IS NULL AND chat."permanentDeletionAt" IS NULL
+            chat.id IS NOT NULL AND chat."permanentDeletionAt" IS NULL
             AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
             AND (job."branchGeneration" IS NULL OR job."branchGeneration" = chat."memoryBranchGeneration")
             -- A command owns one exact source message and may outlive the

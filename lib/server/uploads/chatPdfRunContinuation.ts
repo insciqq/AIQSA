@@ -79,8 +79,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     // A run the old core admitted has no engine left to answer it; it ends at startup (`retiredEngineRuns.ts`).
     if (loaded.modelRun.engine !== "native") throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     const runtime = await deps.providerRuntime.resolve(claim.runId, "answer");
-    const records = await deps.repository.loadAttachments(claim.userId, prepared.normalizedRequest.attachmentIds,
-      prepared.project?.projectId);
+    const records = await deps.repository.loadAttachments(claim.userId, prepared.normalizedRequest.attachmentIds);
     for (const row of loaded.modelRun.chatPdfAttachments) {
       const original = records.find(({ id }) => id === row.attachmentId);
       if (!original || original.checksum?.trim() !== row.sourceChecksum.trim() || original.byteSize !== row.sourceByteSize) {

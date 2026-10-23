@@ -11,26 +11,12 @@ import type { AdminEmailState } from "../../../contracts/email";
 import type { AdminMcpServer } from "../../../contracts/mcp";
 import type { AdminUsageLimitUserRow, EffectiveUsageLimits } from "../../../contracts/usageLimits";
 import {
-  adminKnowledgeOperationsFixture,
-  adminKnowledgeProfileFixture,
-  adminKnowledgeSettingsFixture
-} from "../../../../tests/support/knowledgeProfile";
-import {
   createAdminAttentionService,
   deriveAdminAttentionItems,
   type AdminAttentionInputs,
   type AdminAttentionSources,
   type AdminAttentionUsageLimitsInput
 } from "./service";
-
-// Knowledge attention stays tested as it worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("../../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../../domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
 
 const at = "2026-09-07T12:00:00.000Z";
 
@@ -272,7 +258,6 @@ const quiet: AdminAttentionInputs = {
   actingAdminUserId: "admin-1",
   dashboard: { users: [user({ id: "admin-1", role: "admin" })] },
   email: email({ active: { activatedAt: at, activatedByUserId: "admin-1", configuration: smtp, enabled: true, passwordConfigured: true, version: 1 } }),
-  knowledge: adminKnowledgeSettingsFixture(),
   mcp: [mcpServer()],
   memory: memoryOk,
   providers: [connection({ activeChecks: [check({})] })],
@@ -486,22 +471,14 @@ describe("deriveAdminAttentionItems", () => {
       detail: "Reranking uses GPT-5.6 Luna on codex-lb, which is not available — pick another model",
       target: { resource: "reranker", section: "roles" }
     });
-    expect(items({ systemRoles: roles({ rerankerModel: null }) })).toEqual([
-      expect.objectContaining({ id: "system_role_not_assigned:reranker", severity: "neutral" })
-    ]);
   });
 
-  it("does not ask for a reranker for Knowledge while Knowledge is off, but still names a broken one", () => {
-    areas.knowledge = false;
-    try {
-      expect(items({ systemRoles: roles({ rerankerModel: null }) })).toEqual([]);
-      // Memory ranks with an assigned reranker, so an unavailable one still needs a fix.
-      expect(items({ systemRoles: roles({ rerankerModel: { ...roleCandidate, available: false } }) })).toEqual([
-        expect.objectContaining({ id: "system_role_unavailable:reranker", severity: "bad" })
-      ]);
-    } finally {
-      areas.knowledge = true;
-    }
+  it("does not ask for a reranker, but still names a broken one", () => {
+    expect(items({ systemRoles: roles({ rerankerModel: null }) })).toEqual([]);
+    // Memory ranks with an assigned reranker, so an unavailable one still needs a fix.
+    expect(items({ systemRoles: roles({ rerankerModel: { ...roleCandidate, available: false } }) })).toEqual([
+      expect.objectContaining({ id: "system_role_unavailable:reranker", severity: "bad" })
+    ]);
   });
 
   it("checks only the PDF reader the PDF mode routes to", () => {
@@ -525,59 +502,6 @@ describe("deriveAdminAttentionItems", () => {
       })]);
     expect(items({ systemRoles: roles({ chatTitleModel: null }) })).toEqual([]);
     expect(items({ systemRoles: roles({ chatTitleModel: { ...roleCandidate, available: true } }) })).toEqual([]);
-  });
-
-  it("summarizes Knowledge alerts and reindexing without exposing internals", () => {
-    const result = items({
-      knowledge: adminKnowledgeSettingsFixture({
-        operations: adminKnowledgeOperationsFixture({
-          alerts: [
-            { code: "knowledge_ingestion_failures", severity: "warning" },
-            { code: "knowledge_search_backend_unavailable", severity: "critical" }
-          ],
-          ingestion: { ...adminKnowledgeOperationsFixture().ingestion, failedArtifacts: 2 }
-        }),
-        profile: adminKnowledgeProfileFixture({
-          migration: { activeProfileBases: 4, buildingProfileBases: 1, legacyGenerations: 0, profiledGenerations: 5, totalBases: 5 }
-        })
-      })
-    });
-    expect(result).toEqual([
-      expect.objectContaining({
-        code: "knowledge_needs_attention",
-        count: 2,
-        detail: "2 documents need reprocessing · the search backend is unavailable",
-        severity: "bad",
-        target: { section: "retrieval" },
-        title: "Knowledge documents failed processing"
-      }),
-      expect.objectContaining({
-        code: "knowledge_reindexing",
-        count: 1,
-        detail: "1 of 5 bases still reindexing",
-        severity: "neutral",
-        title: "Knowledge is reindexing"
-      })
-    ]);
-  });
-
-  it("names stalled object deletion by its due backlog count", () => {
-    const fixture = adminKnowledgeOperationsFixture();
-    const result = items({
-      knowledge: adminKnowledgeSettingsFixture({
-        operations: adminKnowledgeOperationsFixture({
-          alerts: [{ code: "knowledge_object_deletion_stalled", severity: "warning" }],
-          deletion: { ...fixture.deletion, oldestUnclaimedObjectSeconds: 7_200, unclaimedObjects: 3 }
-        })
-      })
-    });
-    expect(result).toEqual([expect.objectContaining({
-      code: "knowledge_needs_attention",
-      count: 1,
-      detail: "3 files waiting for deletion",
-      severity: "warn",
-      target: { section: "retrieval" }
-    })]);
   });
 
   it("reports a stopped Memory worker and a required index rebuild", () => {
@@ -799,7 +723,6 @@ describe("createAdminAttentionService", () => {
     return {
       dashboard: vi.fn().mockResolvedValue(quiet.dashboard),
       email: vi.fn().mockResolvedValue(quiet.email),
-      knowledge: vi.fn().mockResolvedValue(quiet.knowledge),
       mcp: vi.fn().mockResolvedValue(quiet.mcp),
       memory: vi.fn().mockResolvedValue(quiet.memory),
       providers: vi.fn().mockResolvedValue(quiet.providers),
@@ -823,26 +746,12 @@ describe("createAdminAttentionService", () => {
       now: () => new Date(at),
       sources: sources({
         email: vi.fn().mockResolvedValue(email()),
-        knowledge: vi.fn().mockRejectedValue(new Error("db down")),
         memory: vi.fn().mockRejectedValue(new Error("worker table missing"))
       })
     });
     const result = await service.list("admin-1");
     expect(result.items.map((item) => item.code)).toEqual(["email_not_configured"]);
-    expect(result.unavailable).toEqual(["knowledge", "memory"]);
-  });
-
-  it("neither reads nor names Knowledge while it is disabled", async () => {
-    areas.knowledge = false;
-    try {
-      const knowledge = vi.fn().mockRejectedValue(new Error("db down"));
-      const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ knowledge }) });
-
-      await expect(service.list("admin-1")).resolves.toEqual({ checkedAt: at, items: [], unavailable: [] });
-      expect(knowledge).not.toHaveBeenCalled();
-    } finally {
-      areas.knowledge = true;
-    }
+    expect(result.unavailable).toEqual(["memory"]);
   });
 
   it("links pending Skill reviews to the approval queue and distinguishes an unavailable count", async () => {

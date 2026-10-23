@@ -44,7 +44,7 @@ function RequestList({ state, onSelectFilter, onOpen }: {
   return <>
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div><h2 className="text-lg font-semibold text-ink">Skill approvals</h2>
-        <p className="mt-1 text-sm text-ink-muted">Review instructions and files before they become available to other people and Projects.</p></div>
+        <p className="mt-1 text-sm text-ink-muted">Review instructions and files before they become available to other people.</p></div>
       <UiV2Button disabled={loading} icon="regenerate" onClick={() => refresh()}>Refresh</UiV2Button>
     </div>
     <div className="flex flex-wrap items-center gap-3">

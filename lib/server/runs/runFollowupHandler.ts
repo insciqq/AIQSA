@@ -3,14 +3,12 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
-import { notifyProjectEvent } from "../projects/events";
 import { notifyRunFollowup } from "./runFollowupRegistry";
 import type { RunFollowupOperations } from "./runFollowups";
 
 export function createRunFollowupHandler(deps: {
   resolveAuth: RequestAuthResolver;
   followups: Pick<RunFollowupOperations, "accept">;
-  projectIdForChat?(chatId: string): Promise<string | null>;
 }) {
   return async function POST(request: Request, context: { params: Promise<{ runId: string }> | { runId: string } }): Promise<Response> {
     const json = (value: unknown, status = 200) => Response.json(value, {
@@ -33,8 +31,6 @@ export function createRunFollowupHandler(deps: {
       if (result.kind === "context_full") return json({ error: "followup_context_full",
         message: "This follow-up exceeds the task's remaining context. Shorten it or send it after the answer finishes." }, 400);
       notifyRunFollowup(runId, result.entry.ordinal);
-      const projectId = await deps.projectIdForChat?.(input.chatId).catch(() => null);
-      if (projectId) notifyProjectEvent(projectId);
       return json({ followup: result.entry });
     } catch (error) {
       logEvent("service_operation", { error, subsystem: "run_recovery", stage: "continuation", outcome: "failed",

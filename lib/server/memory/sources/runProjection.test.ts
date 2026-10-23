@@ -89,7 +89,6 @@ function historyClient(overrides: Readonly<{
       memoryMode: "NORMAL",
       memorySourceRevision: 3,
       permanentDeletionAt: null,
-      projectId: null,
       title: "Archived source"
     }]) },
     chatMemoryCheckpoint: { findMany: vi.fn(async () => [{
@@ -577,7 +576,6 @@ describe("answer Memory source projection", () => {
       memoryMode: "NORMAL",
       memorySourceRevision: 1,
       permanentDeletionAt: null,
-      projectId: null,
       title: "Source chat"
     }] as never);
     database.message.findMany.mockResolvedValueOnce([{

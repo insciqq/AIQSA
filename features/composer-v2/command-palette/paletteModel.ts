@@ -29,14 +29,12 @@ export type ComposerPaletteEntry = Readonly<{
   /** Further text the filter matches after the label (a Skill's description, a model's provider). */
   keywords?: readonly string[];
   icon?: UiV2IconName;
-  /** Draws a check: the value is chosen (a selected Knowledge base). */
+  /** Draws a check: the value is chosen. */
   checked?: boolean;
   /** The value already in force (a pinned Skill, the current model): checked at full strength, cannot run. */
   current?: boolean;
   /** Listed dimmed with this reason instead of `detail`; cannot run. */
   disabledReason?: string | null;
-  /** Listed only once the user types a filter (long catalogs such as Knowledge bases). */
-  queryOnly?: boolean;
   run(): void;
 }>;
 
@@ -74,7 +72,7 @@ export function opensComposerPalette(previousDraft: string, nextDraft: string): 
  * keyword contains it. Null when nothing matches.
  */
 function matchRank(entry: ComposerPaletteEntry, needle: string): number | null {
-  if (!needle) return entry.queryOnly ? null : 0;
+  if (!needle) return 0;
   const label = entry.label.toLocaleLowerCase();
   if (label.startsWith(needle)) return 0;
   if (label.split(/[\s·:/()-]+/u).some((word) => word.startsWith(needle))) return 1;

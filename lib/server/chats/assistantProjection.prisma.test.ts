@@ -11,8 +11,7 @@ import { defaultProviderModels } from "../../domain/catalog";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { prisma } from "../prisma";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
-import { loadChatAssistantProjection, loadProjectChatAssistant } from "./assistantProjection";
+import { loadChatAssistantProjection } from "./assistantProjection";
 import { serializeChatDetail } from "./handlers";
 import { createPrismaChatRepository } from "./prismaRepository";
 
@@ -35,7 +34,6 @@ function stubCatalog(): Promise<CatalogData> {
     searchStrategies: [],
     settings: {
       defaultControlValues: {},
-      defaultKnowledgePlan: null,
       defaultMcpMode: "load_all",
       defaultProviderModelId: providerTemplateIds.fakeModel,
       defaultSearchPlan: null,
@@ -93,8 +91,6 @@ async function withProjectionFixture<T>(run: (fixture: ProjectionFixture) => Pro
   };
   try {
     const own = await define(userId, "Own helper", {
-      knowledgePolicy: "adjustable",
-      knowledgeSelection: { mode: "inherit" },
       mcpMode: "exact",
       mcpServerIds: [hidden.mcpServerId],
       modelPolicy: "adjustable",
@@ -103,6 +99,7 @@ async function withProjectionFixture<T>(run: (fixture: ProjectionFixture) => Pro
       toolsPolicy: "adjustable"
     });
     const ownArchived = await define(userId, "Own archived helper", { archivedAt: new Date() });
+    // A Knowledge selection stored before Knowledge was removed stays in its column and is never read.
     const foreignFixedTools = await define(ownerId, "Published helper", {
       knowledgePolicy: "adjustable",
       knowledgeSelection: { baseIds: [hidden.knowledgeBaseId], mode: "explicit", sourceIds: [], version: 1 },
@@ -190,7 +187,6 @@ describe("chat detail Assistant projection", () => {
         provenance: "assistant",
         value: { mode: "model", modelId: providerTemplateIds.fakeModel }
       });
-      expect(bound.rows.knowledge).toMatchObject({ assistantValue: { mode: "inherit" }, provenance: "default", value: { mode: "none" } });
       // The owner's own MCP server they can no longer use: counted, the row falls back to their Chat default.
       expect(bound.rows.tools).toEqual({
         assistantValue: { hiddenCount: 1, mode: "exact", serverIds: [] },
@@ -231,11 +227,7 @@ describe("chat detail Assistant projection", () => {
         provenance: "assistant",
         value: { hiddenCount: 1, mode: "exact", serverIds: [] }
       });
-      expect(consumer.rows.knowledge).toMatchObject({
-        assistantValue: { baseIds: [], hiddenCount: 1, mode: "explicit", sourceIds: [] },
-        deviation: { reason: "knowledge_access" },
-        provenance: "fallback"
-      });
+      expect(consumer.rows).not.toHaveProperty("knowledge");
       expect(JSON.stringify(consumer)).not.toMatch(new RegExp(`${hidden.mcpServerId}|${hidden.knowledgeBaseId}`, "u"));
 
       await expect(projectionOf(userId, { assistantId: assistants.ownArchived })).resolves.toMatchObject({
@@ -246,117 +238,19 @@ describe("chat detail Assistant projection", () => {
     });
   });
 
-  it("projects a bound Project chat from the Project alone", async () => {
-    await withProjectionFixture(async ({ assistants, hidden, userId }) => {
-      const created = await createPrismaProjectRepository(prisma).create({
-        actorDisplayName: "Projection user",
-        description: "",
-        name: `Projection project ${randomUUID()}`,
-        preferredModelId: providerTemplateIds.fakeModel,
-        userId
-      });
-      if (created.kind !== "ok") throw new Error(created.kind);
-      const projectId = created.value.id;
-      try {
-        // The member's own Chat defaults say Load all; the Project's say Off.
-        await prisma.project.update({
-          data: { defaults: { ...created.value.defaults, mcpMode: "off" } },
-          where: { id: projectId }
-        });
-        await prisma.projectAssistantBinding.createMany({
-          data: [assistants.own, assistants.ownArchived].map((assistantId) => ({ addedByUserId: userId, assistantId, projectId }))
-        });
-        const projectChat = (assistantId: string) => prisma.chat.create({
-          data: {
-            assistantId,
-            createdByDisplayName: "Projection user",
-            createdByUserId: userId,
-            memoryMode: "EXCLUDED",
-            projectId,
-            title: "Project chat",
-            userId: null
-          }
-        });
-        const read = async (chatId: string) => {
-          const detail = await repository().getChat({ chatId, userId });
-          const wire = JSON.parse(JSON.stringify({ chat: serializeChatDetail(detail!) }));
-          expect(JSON.stringify(wire)).not.toContain("Private instructions");
-          return decodeChatDetailResponse(wire)!.assistant;
-        };
-        const chat = await projectChat(assistants.own);
-
-        const bound = await read(chat.id);
-        // Members see the Assistant as consumers of the Project.
-        expect(bound).toMatchObject({
-          availability: { ok: true },
-          id: assistants.own,
-          owned: false,
-          ownerDisplayName: "Project",
-          state: "bound"
-        });
-        if (bound?.state !== "bound") throw new Error("expected a bound projection");
-        expect(bound.rows.model).toMatchObject({
-          provenance: "assistant",
-          value: { mode: "model", modelId: providerTemplateIds.fakeModel }
-        });
-        // The owner's own MCP server is not the Project's: the row runs with the Project's default.
-        expect(bound.rows.tools).toEqual({
-          assistantValue: { hiddenCount: 1, mode: "exact", serverIds: [] },
-          deviation: { reason: "tools_access" },
-          policy: "adjustable",
-          provenance: "fallback",
-          value: { mode: "off" }
-        });
-        expect(bound.rows.knowledge).toMatchObject({ provenance: "default", value: { mode: "none" } });
-        expect(JSON.stringify(bound)).not.toContain(hidden.mcpServerId);
-
-        // Archived, or no longer bound to the Project: never bound, and archived says only that.
-        await expect(read((await projectChat(assistants.ownArchived)).id))
-          .resolves.toEqual({ reason: "archived", state: "unavailable" });
-        await prisma.projectAssistantBinding.deleteMany({ where: { assistantId: assistants.own, projectId } });
-        await expect(read(chat.id)).resolves.toEqual({ state: "unavailable" });
-      } finally {
-        await prisma.project.deleteMany({ where: { id: projectId } });
-      }
-    });
-  });
-
   it("counts the statements the chat detail read adds for its Assistant", async () => {
     await withProjectionFixture(async ({ assistants, userId }) => {
-      const created = await createPrismaProjectRepository(prisma).create({
-        actorDisplayName: "Projection user",
-        description: "",
-        name: `Counted project ${randomUUID()}`,
-        preferredModelId: providerTemplateIds.fakeModel,
-        userId
-      });
-      if (created.kind !== "ok") throw new Error(created.kind);
-      const projectId = created.value.id;
       // Counts every SQL statement, relation loads included.
       const counting = createQueryCountingClient();
       try {
-        await prisma.projectAssistantBinding.create({ data: { addedByUserId: userId, assistantId: assistants.own, projectId } });
         const personalChat = (assistantId: string | null) => prisma.chat.create({
           data: { assistantId, title: "Counted chat", userId }
         });
-        const projectChat = (assistantId: string | null) => prisma.chat.create({
-          data: {
-            assistantId,
-            createdByDisplayName: "Projection user",
-            createdByUserId: userId,
-            memoryMode: "EXCLUDED",
-            projectId,
-            title: "Counted Project chat",
-            userId: null
-          }
-        });
         const cases = [
           ["personal-owner", await personalChat(assistants.own)],
-          // Published to the viewer; names an MCP server and a Knowledge base they cannot use.
+          // Published to the viewer; names an MCP server they cannot use.
           ["personal-consumer", await personalChat(assistants.foreignFixedTools)],
-          ["personal-unbound", await personalChat(null)],
-          ["project-bound", await projectChat(assistants.own)],
-          ["project-unbound", await projectChat(null)]
+          ["personal-unbound", await personalChat(null)]
         ] as const;
         // The application's default catalog read, on the counting client.
         const chats = createPrismaChatRepository(counting.client);
@@ -364,9 +258,9 @@ describe("chat detail Assistant projection", () => {
         for (const [name, chat] of cases) {
           await counting.reset();
           const projection = await loadChatAssistantProjection(counting.client, {
-            chat: { assistantId: chat.assistantId, assistantOverrides: chat.assistantOverrides, projectId: chat.projectId },
+            chat: { assistantId: chat.assistantId, assistantOverrides: chat.assistantOverrides },
             userId
-          }, { loadProjectChatAssistant });
+          });
           const projectionStatements = await counting.count();
           await counting.reset();
           const detail = await chats.getChat({ chatId: chat.id, userId });
@@ -379,18 +273,14 @@ describe("chat detail Assistant projection", () => {
         }
         // An unbound chat adds no statement.
         expect(counts["personal-unbound"]!.projection).toBe(0);
-        expect(counts["project-unbound"]!.projection).toBe(0);
         // Measured for a viewer without groups, projection only (owner,
-        // consumer, Project): 21, 24 and 18 before the shared group read; 20,
-        // 21 and 16 with it inside a transaction, whose BEGIN and COMMIT are
-        // gone now, which leaves 18, 19 and 16. The bounds add a margin of 2.
+        // consumer): 21 and 24 before the shared group read; 20 and 21 with it
+        // inside a transaction, whose BEGIN and COMMIT are gone now, which
+        // leaves 18 and 19. The bounds add a margin of 2.
         expect(counts["personal-owner"]!.projection).toBeLessThanOrEqual(20);
         expect(counts["personal-consumer"]!.projection).toBeLessThanOrEqual(21);
-        expect(counts["project-bound"]!.projection).toBeLessThanOrEqual(18);
       } finally {
         await counting.client.$disconnect();
-        await prisma.chat.deleteMany({ where: { projectId } });
-        await prisma.project.deleteMany({ where: { id: projectId } });
       }
     });
   });

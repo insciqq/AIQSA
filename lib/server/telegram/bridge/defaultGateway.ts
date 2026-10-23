@@ -90,7 +90,7 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
 
     async findChat(userId: string, chatId: string) {
       const chat = await sendDeps.repository.findOwnedChat(chatId, userId);
-      if (!chat || chat.project || chat.memoryMode === "TEMPORARY") return null;
+      if (!chat || chat.memoryMode === "TEMPORARY") return null;
       return {
         activeLeafMessageId: chat.activeLeafMessageId, assistantId: chat.assistantId ?? null, id: chat.id,
         model: { modelId: chat.defaultModelId, provider: chat.defaultProvider }, title: chat.title

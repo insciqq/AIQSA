@@ -206,7 +206,8 @@ describe("AdminPage", () => {
   });
 
   it.each([
-    [{ return: "/p/project-1/c/chat-1", section: "users" }, "/p/project-1/c/chat-1"],
+    [{ return: "/c/chat-1", section: "users" }, "/c/chat-1"],
+    [{ return: "/p/project-1/c/chat-1" }, "/"],
     [{ return: "https://evil.example/c/foreign" }, "/"],
     [{ return: "/admin?section=users" }, "/"],
     [{ return: ["/c/chat-1", "/c/chat-2"] }, "/"]

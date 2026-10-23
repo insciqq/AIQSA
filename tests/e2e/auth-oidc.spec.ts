@@ -81,14 +81,14 @@ test("the login page offers the OIDC button and explains an unreachable provider
   const page = await anonymousPage(browser);
   const button = page.getByRole("link", { name: `Continue with ${LABEL}` });
   await expect(async () => {
-    await page.goto("/login?next=%2Fprojects");
+    await page.goto("/login?next=%2Fc%2Fexample-chat");
     await expect(button).toBeVisible({ timeout: 1_000 });
   }).toPass({ timeout: 15_000 });
-  await expect(button).toHaveAttribute("href", "/api/auth/oauth/oidc?next=%2Fprojects");
+  await expect(button).toHaveAttribute("href", "/api/auth/oauth/oidc?next=%2Fc%2Fexample-chat");
   await expectNoHorizontalOverflow(page);
 
   await button.click();
-  await expect(page).toHaveURL(/\/login\?oauth=failed&provider=oidc&next=%2Fprojects$/u);
+  await expect(page).toHaveURL(/\/login\?oauth=failed&provider=oidc&next=%2Fc%2Fexample-chat$/u);
   await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText(`${LABEL} sign-in could not be completed. Try again or use email and password. (oauth_failed)`);
   await page.context().close();
 });
@@ -120,9 +120,9 @@ test("auto-redirect sends /login to the provider, with ?local=1 and outcomes as 
   }).toPass({ timeout: 15_000 });
   await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("(oauth_failed)");
 
-  const redirect = await page.request.get("/login?next=%2Fprojects", { maxRedirects: 0 });
+  const redirect = await page.request.get("/login?next=%2Fc%2Fexample-chat", { maxRedirects: 0 });
   expect([303, 307, 308]).toContain(redirect.status());
-  expect(redirect.headers().location).toMatch(/\/api\/auth\/oauth\/oidc\?next=%2Fprojects$/u);
+  expect(redirect.headers().location).toMatch(/\/api\/auth\/oauth\/oidc\?next=%2Fc%2Fexample-chat$/u);
 
   await page.goto("/login?local=1");
   await expect(page).toHaveURL(/\/login\?local=1$/u);

@@ -622,7 +622,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
               user: { select: { scimDeactivatedAt: true, status: true } },
               chat: {
                 select: {
-                  activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true, projectId: true
+                  activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true
                 }
               },
               carryover: {
@@ -641,8 +641,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         baselineAssistantMessageId, baselineGeneration, baselineRunId, baselineUserMessageId, carryover, chat, chatMode, kind, user,
         ...task
       } = row.task;
-      const usable = chat && !chat.archived && chat.permanentDeletionAt === null && chat.projectId === null &&
-        chat.assistantId === null;
+      const usable = chat && !chat.archived && chat.permanentDeletionAt === null && chat.assistantId === null;
       const baseline = baselineRunId && baselineUserMessageId && baselineAssistantMessageId && baselineGeneration
         ? { assistantMessageId: baselineAssistantMessageId, generation: baselineGeneration, runId: baselineRunId,
           userMessageId: baselineUserMessageId }
@@ -660,8 +659,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         occurrence: {
           id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: trigger(row.trigger), userId: row.userId
         },
-        // A pending SCIM deactivation keeps the status active only for the Project-owner
-        // invariant; the owner's access, standing tasks included, already ended.
+        // A recorded SCIM deactivation ends the owner's access, standing tasks included.
         ownerActive: user.status === "active" && user.scimDeactivatedAt === null,
         relevantMcpServerIds: !task.toolsEnabled ? null
           : baseline?.generation === task.generation
@@ -687,16 +685,16 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
     async archiveRotatedChat({ chatId, taskId, userId }) {
       return prisma.$transaction(async (tx) => {
         const [chat] = await tx.$queryRaw<Array<LockedMemorySourceChat & {
-          pinned: boolean; permanentDeletionAt: Date | null; projectId: string | null;
+          pinned: boolean; permanentDeletionAt: Date | null;
         }>>(Prisma.sql`
           SELECT "id", "userId", "activeLeafMessageId", "archived", "folderId", "memoryMode", "memoryBranchGeneration",
             "memorySourceRevision", "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline", "pinned",
-            "permanentDeletionAt", "projectId"
+            "permanentDeletionAt"
           FROM "Chat" WHERE "id" = ${chatId} AND "userId" = ${userId}
           FOR UPDATE
         `);
         // The owner keeps what they pinned, filed or shared in view; a chat in use or already gone is left alone.
-        if (!chat || chat.archived || chat.pinned || chat.folderId !== null || chat.projectId !== null ||
+        if (!chat || chat.archived || chat.pinned || chat.folderId !== null ||
           chat.permanentDeletionAt !== null || chat.memoryMode === "TEMPORARY") return false;
         const [busy] = await tx.$queryRaw<Array<{ busy: boolean }>>(Prisma.sql`
           SELECT EXISTS (

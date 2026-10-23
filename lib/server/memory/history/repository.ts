@@ -341,7 +341,6 @@ async function probeWith(
   const source = await lockMemorySourceChat(tx, {
     chatId: job.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: job.userId
   });
   if (!sourceMatchesJob(source, job)) return staleDecision;
@@ -1021,7 +1020,6 @@ async function prepareWith(
   const chat = await lockMemorySourceChat(tx, {
     chatId: job.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: job.userId
   });
   if (!sourceMatchesJob(chat, job)) return { decision: staleDecision };
@@ -2933,7 +2931,6 @@ async function applyPlan(
   const source = await lockMemorySourceChat(tx, {
     chatId: claim.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: claim.userId
   });
   if (

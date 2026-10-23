@@ -4,7 +4,6 @@ import {
   adminUserDeletionBlock
 } from "./adminDeletionMetadata";
 import type {
-  AdminDisableUserProjectOwnerRequired,
   AdminRepository,
   AdminRevokeUserSessionsInput
 } from "./adminRepositoryContract";
@@ -268,15 +267,7 @@ export function createAdminUserSessionCommands(
           return "last_admin_forbidden";
         }
 
-        // Checked before the status write so the deferred Project-owner trigger never has to
-        // roll back the whole disable (and its session revocation) at COMMIT.
-        const ownerConflict = await soleOwnedProjectConflict(tx, target.id);
-        if (ownerConflict) {
-          return ownerConflict;
-        }
-
-        // An administrator's disable is never SCIM's to undo, even when it completes a SCIM
-        // deactivation that waited for an ownership transfer.
+        // An administrator's disable is never SCIM's to undo, even when SCIM had asked for it too.
         const updated = await tx.user.updateMany({
           data: {
             scimDeactivatedAt: null,
@@ -491,7 +482,7 @@ async function countUserOwnedAppData(
     }),
     tx.modelRun.count({
       where: {
-        chat: { projectId: null },
+        chat: { userId },
         userId
       }
     }),
@@ -544,92 +535,6 @@ async function countUserOwnedAppData(
     usageEvents
   });
   return { knowledge, memory, nonPurgeable, personalMcp };
-}
-
-/** Bounds the Projects named in a disable conflict; `projectCount` still reports all of them. */
-const SOLE_OWNED_PROJECT_LIST_LIMIT = 20;
-
-/** Non-deleting Projects in which the user is a direct Owner and no other active user is. */
-function soleOwnedProjectWhere(userId: string): Prisma.ProjectWhereInput {
-  return {
-    grants: {
-      some: { groupId: null, role: "OWNER", userId }
-    },
-    NOT: {
-      grants: {
-        some: {
-          groupId: null,
-          role: "OWNER",
-          user: { status: "active" },
-          userId: { not: userId }
-        }
-      }
-    },
-    status: { not: "DELETING" }
-  };
-}
-
-/** How many Projects would lose their only active Owner if the user were disabled; unlocked. */
-export function countSoleOwnedProjects(
-  client: Pick<Prisma.TransactionClient, "project">,
-  userId: string
-): Promise<number> {
-  return client.project.count({ where: soleOwnedProjectWhere(userId) });
-}
-
-/**
- * Finds the non-deleting Projects in which the user is the only active direct Owner, after
- * locking every non-deleting Project the user directly owns. Project grant and lifecycle writers
- * lock the Project row first: one that committed while these locks were awaited is seen by the
- * re-read below, and one that waits here fails its serializable row lock afterwards because the
- * status change rewrites the Project row (access-revision trigger), so it cannot act on the old
- * Owner set. A concurrent co-Owner disable waits here and then sees this one.
- */
-async function soleOwnedProjectConflict(
-  tx: Prisma.TransactionClient,
-  userId: string
-): Promise<AdminDisableUserProjectOwnerRequired | null> {
-  const owned = await tx.$queryRaw<{ id: string }[]>`
-    SELECT project_row."id"
-    FROM "Project" AS project_row
-    WHERE project_row."status" <> 'DELETING'
-      AND EXISTS (
-        SELECT 1
-        FROM "ProjectGrant" AS grant_row
-        WHERE grant_row."projectId" = project_row."id"
-          AND grant_row."userId" = ${userId}
-          AND grant_row."groupId" IS NULL
-          AND grant_row."role" = 'OWNER'
-      )
-    ORDER BY project_row."id"
-    FOR UPDATE
-  `;
-  if (owned.length === 0) {
-    return null;
-  }
-
-  // A separate statement: under READ COMMITTED it sees every transaction that committed while
-  // the locks above were awaited.
-  const soleOwned = await tx.project.findMany({
-    orderBy: [{ name: "asc" }, { id: "asc" }],
-    select: { name: true, status: true },
-    where: {
-      ...soleOwnedProjectWhere(userId),
-      id: { in: owned.map(({ id }) => id) }
-    }
-  });
-  if (soleOwned.length === 0) {
-    return null;
-  }
-
-  return {
-    kind: "project_owner_required",
-    projectCount: soleOwned.length,
-    projects: soleOwned.slice(0, SOLE_OWNED_PROJECT_LIST_LIMIT).map((project) => ({
-      name: project.name,
-      status: project.status === "ARCHIVED" ? "ARCHIVED" : "ACTIVE"
-    }))
-  };
 }
 
 /** Ends the account's sessions, inbound MCP grants and Telegram link; disable and reject inherit all three. */
@@ -686,22 +591,15 @@ export type SystemDeactivationResult =
   | { kind: "already_inactive" }
   | { kind: "disabled" }
   | { kind: "last_admin" }
-  | { kind: "not_found" }
-  /**
-   * Sessions and inbound MCP grants are revoked and `scimDeactivatedAt` records the request,
-   * but the account stays active: `projectCount` Projects have it as their only active Owner.
-   */
-  | { kind: "owner_transfer_required"; projectCount: number };
+  | { kind: "not_found" };
 
 /**
  * The system-actor variant of `disableUser`, for SCIM deactivation, inside the caller's
  * transaction. The caller already holds the active-admin set (`activeAdmins`) and then the user
- * row: `disableUser`'s lock order. It keeps `disableUser`'s guards without an acting
+ * row: `disableUser`'s lock order. It keeps `disableUser`'s guard without an acting
  * administrator: an active admin is not disabled when no other active admin could still sign
- * in, and a sole direct Project Owner keeps the active status the Project-owner invariant needs.
- * Access ends immediately either way: sessions and inbound MCP grants are revoked, and a pending
- * `scimDeactivatedAt` refuses new sign-ins until the IdP retries after an ownership transfer.
- * An account an administrator disabled or denied stays as it is, unmarked.
+ * in. A disable revokes sessions, inbound MCP grants, Connect devices and Telegram links. An
+ * account an administrator disabled or denied stays as it is, unmarked.
  */
 export async function deactivateUserAsSystem(
   tx: Prisma.TransactionClient,
@@ -732,15 +630,6 @@ export async function deactivateUserAsSystem(
   }
 
   const access = { now: input.now, reason: "scim_deactivated", revokedByUserId: null, userId: target.id } as const;
-  const ownerConflict = target.status === "active" ? await soleOwnedProjectConflict(tx, target.id) : null;
-  if (ownerConflict) {
-    if (target.scimDeactivatedAt === null) {
-      await tx.user.update({ data: { scimDeactivatedAt: input.now }, where: { id: target.id } });
-    }
-    await revokeAccountAccess(tx, access);
-    return { kind: "owner_transfer_required", projectCount: ownerConflict.projectCount };
-  }
-
   await tx.user.update({
     data: { scimDeactivatedAt: target.scimDeactivatedAt ?? input.now, status: "disabled" },
     where: { id: target.id }

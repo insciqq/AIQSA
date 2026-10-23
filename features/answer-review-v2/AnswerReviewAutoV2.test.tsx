@@ -34,7 +34,7 @@ const config = (overrides: Partial<AnswerReviewAutoConfig> = {}): AnswerReviewAu
 
 function state(overrides: Partial<Parameters<typeof answerReviewAutoStateV2>[0]> = {}) {
   return answerReviewAutoStateV2({ assistantChat: false, authorModel: claude, config: config(),
-    knowledgeEnabled: false, models: [claude, gpt, gemini, textOnly], ...overrides });
+    models: [claude, gpt, gemini, textOnly], ...overrides });
 }
 
 describe("automatic review state", () => {
@@ -49,10 +49,9 @@ describe("automatic review state", () => {
       .toEqual({ count: 2, label: "Review: GPT-5, Gemini, up to 1 round", state: "on" });
   });
 
-  it("is blocked with its reason in Assistant chats, with Knowledge and for a model without tools", () => {
+  it("is blocked with its reason in Assistant chats and for a model without tools", () => {
     for (const [overrides, reason] of [
       [{ assistantChat: true }, /Assistant chats/u],
-      [{ knowledgeEnabled: true }, /Knowledge/u],
       [{ authorModel: textOnly }, /can't use tools/u],
       [{ models: [claude, textOnly] }, /No other model/u]
     ] as const) {
@@ -161,7 +160,7 @@ describe("automatic review status line", () => {
     expect(within(status).queryByRole("button", { name: /Revise|Continue/u })).toBeNull();
   });
 
-  it("offers no Stop to another member of a Project chat", () => {
+  it("offers no Stop to a viewer who may not act on the review", () => {
     const between = group(autoThread("between", sessionWire({ canAct: undefined })));
     render(<AnswerReviewStatusV2 actionsEnabled group={between} onStopSession={vi.fn()} progress={answerReviewGroupProgressV2(between)} />);
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
@@ -199,7 +198,7 @@ describe("following a running automatic review", () => {
 
   it.each([
     ["its initiator hears its end once", sessionWire(), 1],
-    ["another member of a Project chat sees it end without a sound", sessionWire({ canAct: undefined }), 0]
+    ["a viewer who may not act sees it end without a sound", sessionWire({ canAct: undefined }), 0]
   ] as const)("reads the chat again while it runs, and %s", async (_case, session, rings) => {
     const notify = vi.fn(async () => undefined);
     const refresh = vi.fn(async () => null);

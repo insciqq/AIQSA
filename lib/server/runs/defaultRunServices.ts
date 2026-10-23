@@ -1,8 +1,5 @@
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { imageGenerationForStorage } from "../images/defaultImages";
-import { knowledgeProviderDispatchLifecycle } from "../knowledge/defaultEvidenceDispatch";
-import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
-import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { admitMemorySearch } from "../memory/search/admission";
 import { createPrismaMemorySearchService } from "../memory/search/runtime";
@@ -24,9 +21,6 @@ export function defaultRunServices(storage: StorageAdapter) {
   return {
     artifacts: artifactServiceForStorage(storage),
     images: imageGenerationForStorage(storage),
-    knowledgeAdmission: knowledgeRunAdmissionService,
-    knowledgeExecutor: knowledgeToolExecutor,
-    knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
     memorySearch: createPrismaMemorySearchService(),
     memorySearchAdmission: { async admit(userId: string, assistantId?: string | null) {
       const policy = await prisma.modelPolicy.findUniqueOrThrow({

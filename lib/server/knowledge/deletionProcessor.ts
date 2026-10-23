@@ -14,7 +14,6 @@ import {
   withoutCheckpointContextNotes,
   type ContextNotesRun
 } from "./deletionContextNotes";
-import { deleteKnowledgeSearchArtifacts } from "./searchProjection";
 
 export const DEFAULT_KNOWLEDGE_DELETION_BATCH_SIZE = 25;
 export const DEFAULT_KNOWLEDGE_DELETION_LEASE_MINUTES = 15;
@@ -1811,11 +1810,10 @@ async function purgeBase(
   ], now);
 }
 
-export function createPrismaKnowledgeDeletionProcessor(
-  client: PrismaClient = prisma,
-  searchDeletion: (indexArtifactIds: readonly string[]) => Promise<void> =
-    (indexArtifactIds) => deleteKnowledgeSearchArtifacts({ indexArtifactIds })
-) {
+// Knowledge passages also lived in an OpenSearch index, which goes away with
+// OpenSearch itself (operator decision 2026-10-23); their projection rows are
+// deleted with their index artifacts.
+export function createPrismaKnowledgeDeletionProcessor(client: PrismaClient = prisma) {
   async function settle(
     tx: Prisma.TransactionClient,
     knowledgeDeletionJobId: string,
@@ -1903,34 +1901,6 @@ export function createPrismaKnowledgeDeletionProcessor(
 
   async function process(claim: KnowledgeDeletionClaim, now = new Date()): Promise<ProcessResult> {
     try {
-      if (claim.targetType === "SOURCE") {
-        const projections = await client.knowledgeSearchProjection.findMany({
-          orderBy: { indexArtifactId: "asc" },
-          select: { indexArtifactId: true },
-          where: {
-            indexArtifact: {
-              sourceArtifact: {
-                sourceVersion: { sourceId: claim.targetId }
-              }
-            }
-          }
-        });
-        if (projections.length > 0) {
-          await client.knowledgeSearchProjection.updateMany({
-            data: {
-              claimToken: null,
-              leaseExpiresAt: null,
-              state: "DELETING"
-            },
-            where: {
-              indexArtifactId: {
-                in: projections.map(({ indexArtifactId }) => indexArtifactId)
-              }
-            }
-          });
-          await searchDeletion(projections.map(({ indexArtifactId }) => indexArtifactId));
-        }
-      }
       return await client.$transaction(async (tx) => {
         const job = await tx.knowledgeDeletionJob.findFirst({
           select: { id: true },

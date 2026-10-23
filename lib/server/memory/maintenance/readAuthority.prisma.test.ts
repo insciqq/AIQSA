@@ -135,13 +135,6 @@ const sourceFences: Readonly<Record<string, (owner: Owner, source: MaintenanceFi
   },
   "purges the source chat": (_, { chatId }) => prisma.chat.delete({ where: { id: chatId } }),
   "excludes the source chat": (_, { chatId }) => prisma.chat.update({ where: { id: chatId }, data: { memoryMode: "EXCLUDED" } }),
-  "moves the source chat into a Project": async ({ userId }, { chatId }) => {
-    const project = await prisma.project.create({ data: { name: "Synthetic Project", createdByUserId: userId,
-      createdByDisplayName: "Maintenance fixture", grants: { create: { userId, role: "OWNER" } } } });
-    cleanups.push(() => prisma.project.deleteMany({ where: { id: project.id } }));
-    await prisma.chat.update({ where: { id: chatId }, data: { userId: null, projectId: project.id, memoryMode: "EXCLUDED",
-      createdByUserId: userId, createdByDisplayName: "Maintenance fixture" } });
-  },
   "forgets the source message": ({ userId }, { chatId, messageId }) => withLockedMemoryTransaction(prisma, userId,
     (tx, settings) => createMemorySuppressionInTransaction(tx, settings, keyring, { suppressionId: randomUUID(),
       scope: "SOURCE_MESSAGE", chatId, messageId, branchGeneration: 0, explicitOverrideAllowed: false })),

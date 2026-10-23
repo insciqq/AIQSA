@@ -6,7 +6,7 @@ export type ChatContinuationRequest = Readonly<{
   modelSelection?: ChatContinuationModelSelection;
 }>;
 export type ChatContinuationResult =
-  | Readonly<{ status: "complete"; chatId: string; projectId: string | null }>
+  | Readonly<{ status: "complete"; chatId: string }>
   | Readonly<{ status: "running"; progress?: ChatContinuationProgress }>;
 
 export function decodeChatContinuationRequest(value: unknown): ChatContinuationRequest | null {
@@ -39,8 +39,7 @@ export function decodeChatContinuationResult(value: unknown): ChatContinuationRe
       return { status: "running", progress: { completedParts: Number(progress.completedParts), stage: progress.stage } };
     }
   }
-  if (record.status !== "complete" || Object.keys(record).length !== 3 ||
-    typeof record.chatId !== "string" || !record.chatId || record.chatId.length > 256 ||
-    !(record.projectId === null || typeof record.projectId === "string" && record.projectId.length > 0 && record.projectId.length <= 256)) return null;
-  return { status: "complete", chatId: record.chatId, projectId: record.projectId };
+  if (record.status !== "complete" || Object.keys(record).length !== 2 ||
+    typeof record.chatId !== "string" || !record.chatId || record.chatId.length > 256) return null;
+  return { status: "complete", chatId: record.chatId };
 }

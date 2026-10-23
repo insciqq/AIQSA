@@ -168,7 +168,7 @@ function emailTrusted(input: ExternalIdentityInput): boolean {
   return input.emailVerified || input.policy.trustUnverifiedEmail;
 }
 
-/** Disabled or denied, or deactivated by SCIM while that waits for a Project ownership transfer. */
+/** Disabled or denied, or with a deactivation SCIM recorded. */
 function signInBlocked(user: Pick<User, "scimDeactivatedAt" | "status">): boolean {
   return user.status === "disabled" || user.status === "denied" || user.scimDeactivatedAt !== null;
 }

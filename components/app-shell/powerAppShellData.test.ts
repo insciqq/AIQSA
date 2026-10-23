@@ -82,14 +82,12 @@ describe("chat wire decoding", () => {
     expect(summary).toEqual({
       activeLeafMessageId: "assistant-1",
       createdAt: "2026-07-12T08:00:00.000Z",
-      defaultKnowledgePlan: null,
       defaultModelId: "gpt-5.5",
       defaultProvider: "openai",
       folderId: null,
       id: "chat-1",
       messageCount: 1,
       pinned: true,
-      projectId: null,
       title: "Summary boundary",
       updatedAt: "2026-07-12T08:01:00.000Z"
     });

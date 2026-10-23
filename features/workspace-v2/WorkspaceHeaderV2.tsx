@@ -253,16 +253,13 @@ export function WorkspaceHeaderV2({
   folders = [],
   importLabel = null,
   importTitle,
-  leadingSlot = null,
   memoryLockedReason = null,
   memoryUsed = null,
   modelSelector = null,
   modelTriggerRef,
   moveDisabled = false,
-  moveRootLabel,
   onArchive,
   onBranches,
-  onCopyLink = null,
   onCopyThread,
   onDelete = null,
   onExport,
@@ -296,7 +293,7 @@ export function WorkspaceHeaderV2({
   archiveDisabled?: boolean;
   /**
    * Folder path shown before the title, only while the chat lives in a
-   * folder ("Workspace 1 / Project 7"); date groups never produce a crumb.
+   * folder ("Work / Research"); date groups never produce a crumb.
    */
   crumb?: string | null;
   deleteDisabled?: boolean;
@@ -316,12 +313,6 @@ export function WorkspaceHeaderV2({
   /** Whether Memory reads this chat; null hides the Memory item. */
   memoryUsed?: boolean | null;
   /**
-   * Context rendered before the title inside the same island (the shared
-   * Project chip). The island also shows while no chat is active when this
-   * slot renders something.
-   */
-  leadingSlot?: ReactNode;
-  /**
    * The header model selector; rendered before the title on every width and
    * on the blank chat too, where it is the only header content.
    */
@@ -329,11 +320,8 @@ export function WorkspaceHeaderV2({
   /** The model selector's button, for layers that return focus to it. */
   modelTriggerRef?: RefObject<HTMLButtonElement | null>;
   moveDisabled?: boolean;
-  /** Project chats call the top-level Move to… destination "Project root". */
-  moveRootLabel?: string;
   onArchive(): void;
   onBranches(): void;
-  onCopyLink?: (() => void) | null;
   onCopyThread(): void;
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
@@ -375,10 +363,8 @@ export function WorkspaceHeaderV2({
     memoryLockedReason,
     memoryUsed: onMemoryMode ? memoryUsed : null,
     moveDisabled,
-    moveRootLabel,
     onArchive,
     onBranches,
-    onCopyLink: onCopyLink ?? undefined,
     onCopyThread,
     onDelete: onDelete ?? undefined,
     onExport,
@@ -402,7 +388,6 @@ export function WorkspaceHeaderV2({
         </div>
       ) : null}
       <div className="v2-live-title">
-        {leadingSlot}
         {/* The welcome screen keeps a quiet empty header: actions only. */}
         {active ? (
           editingTitle !== null ? (

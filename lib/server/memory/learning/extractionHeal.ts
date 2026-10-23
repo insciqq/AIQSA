@@ -89,7 +89,7 @@ function healableExtractionSql(policyVersion: number, now: Date): Prisma.Sql {
             WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id))))
     AND job."memoryGenerationSnapshot" = settings."memoryGeneration"
     AND settings."useMemoryFacts" AND settings."learnAutomatically"
-    AND chat."projectId" IS NULL AND chat."permanentDeletionAt" IS NULL
+    AND chat."permanentDeletionAt" IS NULL
     AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
     AND source.role = 'user' AND source.status = 'complete'::"MessageStatus"
     -- An edit branches the message DAG: only the active path is current.

@@ -7,7 +7,6 @@ import {
   decodeAssistantDetail,
   decodeAssistantDraft,
   decodeAssistantDuplicateResponse,
-  decodeAssistantKnowledgeValue,
   decodeAssistantListResponse,
   decodeAssistantContent,
   decodeAssistantModelValue,
@@ -162,7 +161,7 @@ describe("assistant draft decode", () => {
     const decoded = decodeAssistantDraft({ ...validDraft(), name: "  Code Reviewer  " });
     expect(decoded.ok).toBe(true);
     if (decoded.ok) {
-      expect(decoded.draft.rows.knowledge).toEqual({ policy: "fixed", value: { mode: "none" } });
+      expect(decoded.draft.rows).not.toHaveProperty("knowledge");
       expect(decoded.draft.name).toBe("Code Reviewer");
       expect(decoded.draft.rows.search).toEqual({
         policy: "fixed",
@@ -209,7 +208,6 @@ describe("assistant draft decode", () => {
     expect(decodeAssistantDraft(withoutRows)).toEqual({ code: "assistant_rows_invalid", ok: false });
     expect(decodeAssistantDraft({
       ...withoutRows,
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       providerModelId: "model-1",
       runControls: {},
@@ -265,7 +263,6 @@ describe("assistant draft decode", () => {
 function validRows(): Record<string, unknown> {
   return {
     controls: { policy: "fixed", value: { reasoningEffort: "high" } },
-    knowledge: { policy: "fixed", value: { mode: "none" } },
     model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
     search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["openai-native-web-search"] } },
     skills: { policy: "fixed", value: { links: [], mode: "auto" } },
@@ -277,7 +274,6 @@ function validContent(): Record<string, unknown> {
   return {
     ...validFields(),
     answerRules: null,
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: ["server-1"],
     providerModelId: "model-1",
     rows: validRows(),
@@ -300,8 +296,6 @@ function validSummary(): Record<string, unknown> {
     featured: false,
     featuredOrder: null,
     fingerprint: {
-      knowledgeLabel: "Knowledge · 1",
-      knowledgeResourceCount: 1,
       mcpServerCount: 2,
       modelLabel: "Claude Sonnet",
       reasoningEffort: "high",
@@ -443,31 +437,17 @@ describe("assistant wire decoders", () => {
     ).toBeNull();
   });
 
-  it("requires and decodes bounded content Knowledge and Skill ids", () => {
+  it("requires and decodes bounded content Skill ids, ignoring the retired Knowledge selection", () => {
     const content = validContent();
-    const withoutKnowledge: Record<string, unknown> = { ...content };
-    delete withoutKnowledge.knowledgeSelection;
-    expect(decodeAssistantContent(withoutKnowledge)).toBeNull();
-    expect(decodeAssistantContent({
+    // Definitions stored before Knowledge was removed still carry a selection and its row.
+    const decoded = decodeAssistantContent({
       ...content,
-      knowledgeSelection: {
-        baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
-      }
-    })?.knowledgeSelection).toEqual({
-      baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
+      knowledgeSelection: { baseIds: ["base-a"], mode: "explicit", sourceIds: [], version: 1 },
+      rows: { ...validRows(), knowledge: { policy: "fixed", value: { mode: "none" } } }
     });
-    expect(decodeAssistantContent({
-      ...content,
-      knowledgeSelection: {
-        baseIds: ["base-a", "base-a"], mode: "explicit", sourceIds: [], version: 1
-      }
-    })).toBeNull();
-    expect(decodeAssistantContent({
-      ...content,
-      knowledgeSelection: {
-        baseIds: [" "], mode: "explicit", sourceIds: [], version: 1
-      }
-    })).toBeNull();
+    expect(decoded).not.toBeNull();
+    expect(decoded).not.toHaveProperty("knowledgeSelection");
+    expect(decoded?.rows).not.toHaveProperty("knowledge");
     const withoutSkills: Record<string, unknown> = { ...content };
     delete withoutSkills.skillIds;
     expect(decodeAssistantContent(withoutSkills)).toBeNull();
@@ -534,8 +514,9 @@ const ids = (count: number, prefix = "id") => Array.from({ length: count }, (_, 
 
 describe("Assistant row vocabulary", () => {
   it("decodes row keys, policies and provenance and rejects anything else", () => {
-    expect(["model", "controls", "search", "tools", "knowledge", "skills"].map(decodeAssistantRowKey))
-      .toEqual(["model", "controls", "search", "tools", "knowledge", "skills"]);
+    expect(["model", "controls", "search", "tools", "skills"].map(decodeAssistantRowKey))
+      .toEqual(["model", "controls", "search", "tools", "skills"]);
+    expect(decodeAssistantRowKey("knowledge")).toBeNull();
     expect(decodeAssistantRowPolicy("fixed")).toBe("fixed");
     expect(decodeAssistantRowPolicy("adjustable")).toBe("adjustable");
     expect(["assistant", "chat", "default", "fallback"].map(decodeAssistantRowProvenance))
@@ -555,21 +536,15 @@ describe("Assistant row vocabulary", () => {
     expect(decodeAssistantToolsValue({ mode: "inherit" })).toEqual({ mode: "inherit" });
     expect(decodeAssistantToolsValue({ mode: "off" })).toEqual({ mode: "off" });
     expect(decodeAssistantToolsValue({ mode: "exact", serverIds: ["a"] })).toEqual({ mode: "exact", serverIds: ["a"] });
-    expect(decodeAssistantKnowledgeValue({ mode: "inherit" })).toEqual({ mode: "inherit" });
-    expect(decodeAssistantKnowledgeValue({ mode: "none" })).toEqual({ mode: "none" });
-    expect(decodeAssistantKnowledgeValue({ baseIds: ["b"], mode: "explicit", sourceIds: [] }))
-      .toEqual({ baseIds: ["b"], mode: "explicit", sourceIds: [] });
-    // An empty concrete value is never another name for Off, None or inherit.
+    // An empty concrete value is never another name for Off or inherit.
     expect(decodeAssistantSearchValue({ mode: "all_selected", optionIds: [] })).toBeNull();
     expect(decodeAssistantToolsValue({ mode: "exact", serverIds: [] })).toBeNull();
-    expect(decodeAssistantKnowledgeValue({ baseIds: [], mode: "explicit", sourceIds: [] })).toBeNull();
     expect(decodeAssistantModelValue({ mode: "model", modelId: null })).toBeNull();
-    for (const decode of [decodeAssistantModelValue, decodeAssistantSearchValue, decodeAssistantToolsValue, decodeAssistantKnowledgeValue]) {
+    for (const decode of [decodeAssistantModelValue, decodeAssistantSearchValue, decodeAssistantToolsValue]) {
       expect(decode({ mode: "inherit", optionIds: [] })).toBeNull();
       expect(decode(null)).toBeNull();
     }
     expect(decodeAssistantSearchValue({ mode: "off", optionIds: [] })).toBeNull();
-    expect(decodeAssistantKnowledgeValue({ baseIds: [], mode: "none", sourceIds: [], version: 1 })).toBeNull();
   });
 
   it("enforces resource bounds at their limits", () => {
@@ -580,8 +555,6 @@ describe("Assistant row vocabulary", () => {
     expect(decodeAssistantToolsValue({ mode: "exact", serverIds: ids(17) })).toBeNull();
     expect(decodeAssistantToolsValue({ mode: "exact", serverIds: ["a", " a"] })).toBeNull();
     expect(decodeAssistantToolsValue({ mode: "exact", serverIds: ["x".repeat(65)] })).toBeNull();
-    expect(decodeAssistantKnowledgeValue({ baseIds: ids(64, "b"), mode: "explicit", sourceIds: ids(64, "s") })).not.toBeNull();
-    expect(decodeAssistantKnowledgeValue({ baseIds: ids(65, "b"), mode: "explicit", sourceIds: ids(64, "s") })).toBeNull();
     const links = (count: number, delivery: string) => ids(count, delivery).map((skillId) => ({ delivery, skillId }));
     expect(decodeAssistantSkillsValue({ links: [...links(32, "always"), ...links(64, "on_demand")], mode: "off" })).not.toBeNull();
     expect(decodeAssistantSkillsValue({ links: links(33, "always"), mode: "auto" })).toBeNull();
@@ -594,7 +567,6 @@ describe("Assistant row vocabulary", () => {
     const hidden = [
       [decodeAssistantSearchValue, { hiddenCount: 1, mode: "all_selected", optionIds: [] }],
       [decodeAssistantToolsValue, { hiddenCount: 2, mode: "exact", serverIds: ["a"] }],
-      [decodeAssistantKnowledgeValue, { baseIds: [], hiddenCount: 3, mode: "explicit", sourceIds: [] }],
       [decodeAssistantSkillsValue, { hiddenCount: 1, links: [], mode: "auto" }],
       [decodeAssistantModelValue, { mode: "model", modelId: null }]
     ] as const;
@@ -611,7 +583,6 @@ describe("Assistant row vocabulary", () => {
 function draftRows(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -625,14 +596,22 @@ describe("Assistant rows", () => {
     expect(decodeAssistantRows(draftRows())).toMatchObject({ ok: true });
     expect(decodeAssistantRows(validRows())).toMatchObject({ ok: true });
     expect(decodeAssistantRows(draftRows({
-      knowledge: { policy: "fixed", value: { mode: "none" } },
       search: { policy: "fixed", value: { mode: "off" } },
       tools: { policy: "fixed", value: { mode: "off" } }
     }))).toMatchObject({ ok: true });
   });
 
+  it("ignores the Knowledge row of rows stored before Knowledge was removed", () => {
+    for (const knowledge of [{ policy: "fixed", value: { mode: "none" } },
+      { policy: "adjustable", value: { mode: "all_my_knowledge" } }, null]) {
+      const decoded = decodeAssistantRows({ ...draftRows(), knowledge });
+      expect(decoded).toMatchObject({ ok: true });
+      expect(decoded.ok && decoded.rows).not.toHaveProperty("knowledge");
+    }
+  });
+
   it("applies the policy rules with stable row-scoped codes", () => {
-    for (const row of ["model", "search", "tools", "knowledge"]) {
+    for (const row of ["model", "search", "tools"]) {
       expect(decodeAssistantRows(draftRows({ [row]: { policy: "fixed", value: { mode: "inherit" } } })))
         .toEqual({ code: "assistant_row_fixed_requires_value", ok: false, row });
     }
@@ -660,8 +639,6 @@ describe("Assistant rows", () => {
         { code: "assistant_run_controls_invalid", field: "maxOutputTokens", row: "controls" }],
       [draftRows({ search: { policy: "adjustable", value: { mode: "sometimes" } } }), { code: "assistant_search_plan_invalid", row: "search" }],
       [draftRows({ tools: { policy: "adjustable", value: { mode: "auto" } } }), { code: "assistant_mcp_servers_invalid", row: "tools" }],
-      [draftRows({ knowledge: { policy: "adjustable", value: { mode: "all_my_knowledge" } } }),
-        { code: "assistant_knowledge_bases_invalid", row: "knowledge" }],
       [draftRows({ skills: { policy: "adjustable", value: { links: ids(33).map((skillId) => ({ delivery: "always", skillId })), mode: "auto" } } }),
         { actual: 33, code: "skills_count_exceeded", field: "pinned", limit: 32, row: "skills" }]
     ];
@@ -672,7 +649,6 @@ describe("Assistant rows", () => {
 
   it("maps legacy flat row fields to fixed rows for fixtures", () => {
     const base = {
-      knowledgeSelection: { baseIds: [], mode: "none" as const, sourceIds: [], version: 1 as const },
       mcpServerIds: [],
       providerModelId: "model-1",
       runControls: {},
@@ -681,7 +657,6 @@ describe("Assistant rows", () => {
     };
     expect(assistantRowsFromLegacyFields(base)).toEqual({
       controls: { policy: "adjustable", value: {} },
-      knowledge: { policy: "fixed", value: { mode: "none" } },
       model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "off" } },
       skills: { policy: "fixed", value: { links: [], mode: "auto" } },
@@ -689,7 +664,6 @@ describe("Assistant rows", () => {
     });
     expect(assistantRowsFromLegacyFields({
       ...base,
-      knowledgeSelection: { baseIds: ["b"], mode: "explicit", sourceIds: ["s"], version: 1 },
       mcpServerIds: ["server"],
       runControls: { temperature: 0.3 },
       searchPlan: { mode: "model_choice", optionIds: ["web"] },
@@ -698,7 +672,6 @@ describe("Assistant rows", () => {
       skills: { mode: "off" }
     })).toEqual({
       controls: { policy: "fixed", value: { temperature: 0.3 } },
-      knowledge: { policy: "fixed", value: { baseIds: ["b"], mode: "explicit", sourceIds: ["s"] } },
       model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "model_choice", optionIds: ["web"] } },
       skills: { policy: "fixed", value: { links: [
@@ -753,10 +726,11 @@ describe("Assistants v2 wire additions", () => {
     expect(decodeAssistantContent({ ...validContent(), answerRules: "Be brief." })?.answerRules).toBe("Be brief.");
   });
 
-  it("decodes Featured, Project scope, archived availability and row deviations", () => {
-    expect(decodeAssistantSummary({ ...validSummary(), featured: true, featuredOrder: 0,
-      scope: { kind: "project", projectName: "Support" } }))
-      .toMatchObject({ featured: true, scope: { kind: "project", projectName: "Support" } });
+  it("decodes Featured, archived availability and row deviations", () => {
+    expect(decodeAssistantSummary({ ...validSummary(), featured: true, featuredOrder: 0, scope: { kind: "installation" } }))
+      .toMatchObject({ featured: true, scope: { kind: "installation" } });
+    // Projects were removed: no Assistant is listed through one.
+    expect(decodeAssistantSummary({ ...validSummary(), scope: { kind: "project", projectName: "Support" } })).toBeNull();
     expect(decodeAssistantSummary({ ...validSummary(), availability: { ok: false, reason: "archived" } })?.availability)
       .toEqual({ ok: false, reason: "archived" });
     const withoutFeatured: Record<string, unknown> = validSummary();
@@ -765,7 +739,6 @@ describe("Assistants v2 wire additions", () => {
     expect(decodeAssistantSummary({ ...validSummary(), scope: { kind: "project" } })).toBeNull();
 
     const deviations = {
-      knowledge: { reason: "knowledge_not_ready" },
       model: { dependencies: [{ kind: "model", name: "Gemini" }], reason: "model_access" },
       search: { reason: "search_access" },
       tools: { reason: "tools_access" }
@@ -776,6 +749,7 @@ describe("Assistants v2 wire additions", () => {
     expect(decodeAssistantRowAvailability({ controls: { reason: "model_access" } }, true)).toBeNull();
     expect(decodeAssistantRowAvailability({ skills: { reason: "skills_access" } }, true)).toBeNull();
     expect(decodeAssistantRowAvailability({ model: { reason: "archived" } }, true)).toBeNull();
+    expect(decodeAssistantRowAvailability({ knowledge: { reason: "knowledge_not_ready" } }, true)).toBeNull();
     expect(decodeAssistantSummary({ ...validSummary(), rowAvailability: deviations })).toBeNull();
     expect(decodeAssistantSummary({ ...validSummary(), audience: ownerAudience, owned: true, rowAvailability: deviations })?.rowAvailability)
       .toEqual(deviations);
@@ -802,7 +776,6 @@ describe("Assistants v2 wire additions", () => {
       owned: true,
       ownerDisplayName: "Alex",
       pinned: false,
-      projects: { otherProjectCount: 2, projects: [{ id: "project-1", name: "Support" }] },
       recentChatCount: 14,
       rowAvailability: {},
       scope: { kind: "owner" },
@@ -812,13 +785,14 @@ describe("Assistants v2 wire additions", () => {
     expect(decodeAssistantDetail(detail)).toMatchObject({
       featuredOrder: 1,
       listingRequest: { canWithdraw: true, request: { id: "request-1", outdated: true, state: "pending" } },
-      projects: { otherProjectCount: 2 },
       recentChatCount: 14
     });
+    // A server from before Projects were removed may still name them; that is ignored.
+    expect(decodeAssistantDetail({ ...detail, projects: { otherProjectCount: 2, projects: [] } })).not.toHaveProperty("projects");
     expect(decodeAssistantDetail({ ...detail, listingRequest: null })?.listingRequest).toBeNull();
-    for (const field of ["featuredOrder", "listingRequest", "projects", "recentChatCount"]) {
+    for (const field of ["featuredOrder", "listingRequest", "recentChatCount"]) {
       const consumer: Record<string, unknown> = { ...detail, audience: null, owned: false, featuredOrder: undefined,
-        listingRequest: undefined, projects: undefined, recentChatCount: undefined, version: undefined };
+        listingRequest: undefined, recentChatCount: undefined, version: undefined };
       consumer[field] = detail[field as keyof typeof detail];
       expect(decodeAssistantDetail(consumer), field).toBeNull();
     }
@@ -828,7 +802,6 @@ describe("Assistants v2 wire additions", () => {
       { featuredOrder: -1 },
       { listingRequest: { outdated: true, requestId: "request-1", reviewNote: null, state: "pending" } },
       { listingRequest: { canRequest: false, canWithdraw: true, listed: false, request: null } },
-      { projects: { otherProjectCount: 0, projects: [{ id: "p", name: "A" }, { id: "p", name: "B" }] } },
       { recentChatCount: 1.5 }
     ]) {
       expect(decodeAssistantDetail({ ...detail, ...invalid }), JSON.stringify(invalid)).toBeNull();
@@ -858,15 +831,16 @@ describe("Assistants v2 wire additions", () => {
     const member = {
       archived: false, audience: null, availability: { ok: true }, content: validContent(), featured: false,
       id: "assistant-1", owned: false, ownerDisplayName: "Alex", pinned: false, rowAvailability: {},
-      scope: { kind: "project", projectName: "Support" }, updatedAt: "2026-09-28T00:00:00.000Z"
+      scope: { groupNames: ["Support"], kind: "group" }, updatedAt: "2026-09-28T00:00:00.000Z"
     };
     expect(decodeAssistantDetail(member)).toMatchObject({
-      audience: null, scope: { kind: "project", projectName: "Support" }, updatedAt: "2026-09-28T00:00:00.000Z"
+      audience: null, scope: { groupNames: ["Support"], kind: "group" }, updatedAt: "2026-09-28T00:00:00.000Z"
     });
     expect(decodeAssistantDetail({ ...member, audience, owned: true, scope: { kind: "owner" } })?.audience).toEqual(audience);
     for (const invalid of [
       { scope: undefined },
       { scope: { kind: "everyone" } },
+      { scope: { kind: "project", projectName: "Support" } },
       { updatedAt: undefined },
       { updatedAt: "" },
       { audience },
@@ -901,13 +875,15 @@ describe("Assistants v2 wire additions", () => {
     const detail = { archived: false, audience: ownerAudience, availability: { ok: true }, content: validContent(),
       featured: false, id: "assistant-1", owned: true, ownerDisplayName: "Alex", pinned: false, rowAvailability: {},
       scope: { kind: "owner" }, updatedAt: "2026-09-28T00:00:00.000Z" };
-    expect(decodeAssistantDuplicateResponse({ assistant: detail, report: { downgradedRows: ["knowledge"], droppedSkillCount: 1 } }))
-      .toMatchObject({ report: { downgradedRows: ["knowledge"], droppedSkillCount: 1 } });
+    expect(decodeAssistantDuplicateResponse({ assistant: detail, report: { downgradedRows: ["tools"], droppedSkillCount: 1 } }))
+      .toMatchObject({ report: { downgradedRows: ["tools"], droppedSkillCount: 1 } });
     expect(decodeAssistantDuplicateResponse({ assistant: detail })).toBeNull();
     expect(decodeAssistantDuplicateResponse({ assistant: detail, report: { downgradedRows: ["prompt"], droppedSkillCount: 0 } })).toBeNull();
 
-    const provenance = { controls: "default", knowledge: "assistant", model: "chat", search: "fallback", skills: "assistant", tools: "default" };
+    const provenance = { controls: "default", model: "chat", search: "fallback", skills: "assistant", tools: "default" };
     expect(decodeAssistantRunRowProvenance(provenance)).toEqual(provenance);
+    // A run accepted before Knowledge was removed also names its row.
+    expect(decodeAssistantRunRowProvenance({ ...provenance, knowledge: "assistant" })).toEqual(provenance);
     expect(decodeAssistantRunRowProvenance({ ...provenance, model: "user" })).toBeNull();
     expect(decodeAssistantRunRowProvenance({ ...provenance, extra: "chat" })).toBeNull();
   });

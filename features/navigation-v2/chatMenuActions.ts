@@ -40,11 +40,8 @@ export type ChatMenuActionsInputV2 = Readonly<{
   /** Whether Memory reads this chat; null hides the Memory item. */
   memoryUsed?: boolean | null;
   moveDisabled?: boolean;
-  /** The first destination in Move to…; Project chats call this "Project root". */
-  moveRootLabel?: string;
   onArchive?(): void;
   onBranches?(): void;
-  onCopyLink?(): void;
   onCopyThread?(): void;
   /** Absent hides "Delete…" entirely (no permanent-deletion capability). */
   onDelete?(): void;
@@ -79,10 +76,8 @@ export function chatMenuActionsV2({
   memoryLockedReason = null,
   memoryUsed = null,
   moveDisabled = false,
-  moveRootLabel = "No folder",
   onArchive,
   onBranches,
-  onCopyLink,
   onCopyThread,
   onDelete,
   onExport,
@@ -105,7 +100,7 @@ export function chatMenuActionsV2({
           icon: "folder",
           label: "Move to…",
           submenu: [
-            { label: moveRootLabel, onSelect: () => onMove(null) },
+            { label: "No folder", onSelect: () => onMove(null) },
             ...flattenFolderTree(folders).map(({ depth, folder }) => ({
               depth,
               label: folder.name,
@@ -159,9 +154,6 @@ export function chatMenuActionsV2({
       : []),
     ...(surface === "header" && exportItems.length > 0
       ? [{ icon: "download", label: "Export", submenu: exportItems }] as const
-      : []),
-    ...(surface === "header" && onCopyLink
-      ? [{ icon: "link", label: "Copy link to chat", onSelect: onCopyLink }] as const
       : [])
   ];
   const destructive: UiV2MenuAction[] = [

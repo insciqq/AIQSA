@@ -124,13 +124,6 @@ export type NavigationSidebarProps = Readonly<{
   onCopyThread?(chat: ChatNavigationSummaryWire): void;
   onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown" | "pdf"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
-  onFolderProjectSettings?(folder: ChatNavigationFolderWire): void;
-  /**
-   * Rail/drawer Projects and Library are personal-workspace destinations:
-   * inside a shared Project the owner leaves it first so the destination has
-   * a visible answer (the Projects block or the Library column).
-   */
-  onLeaveProject?(): void;
   onLibrary?(): void;
   navigationBusy?: boolean;
   onLoadMore(): void;
@@ -139,12 +132,10 @@ export type NavigationSidebarProps = Readonly<{
   onOpenMessageMatch?(match: ChatMessageMatchWire): void;
   /** Requests the first message page again after it failed. */
   onRetryMessageMatches?(): void;
-  /** Rail/drawer Projects: opens the dedicated Projects section. */
-  onProjects?(): void;
   /**
-   * Mobile drawer only: the rail destinations (Projects, Library,
-   * Settings, Control Center) and the account entry live in the drawer
-   * footer because the rail is absent below 768px.
+   * Mobile drawer only: the rail destinations (Library, Settings, Control
+   * Center) and the account entry live in the drawer footer because the
+   * rail is absent below 768px.
    */
   drawerDestinations?: boolean;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
@@ -159,29 +150,7 @@ export type NavigationSidebarProps = Readonly<{
   onSelectChat(chat: ChatNavigationSummaryWire): void;
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSettings?(): void;
-  /**
-   * The account menu's Settings: always the account's own Settings, also
-   * where `onSettings` opens a Project's settings. Defaults to `onSettings`.
-   */
-  onAccountSettings?(): void;
   onSearch(value: string): void;
-  /** A selected Project owns the sidebar list region; personal chats stay hidden until it is left. */
-  projectContextActive?: boolean;
-  /** Whether the selected Project currently exposes an enabled message composer. */
-  projectComposerAvailable?: boolean;
-  /** Selected Project identity rendered as the second-column heading. */
-  projectTitle?: ReactNode;
-  /** Shared-workspace navigation that exclusively owns the column in Projects mode. */
-  projectsSlot?:
-    | ReactNode
-    | ((onNavigate: () => void, options: Readonly<{ landing: boolean }>) => ReactNode);
-  /**
-   * "projects" turns the column into the Projects landing (rail/drawer
-   * destination): only the Projects block, no chat list or filter.
-   */
-  view?: "chats" | "projects";
-  /** Legacy Projects-to-Chats route; the shell normally owns this through the rail. */
-  onShowChats?(): void;
   ready: boolean;
   searchError: string | null;
   searchLoading: boolean;
@@ -558,9 +527,6 @@ function FolderGroup({
                         }))
                       ]
                     },
-                    ...(props.onFolderProjectSettings
-                      ? [{ icon: "settings" as const, label: "Default Knowledge…", onSelect: () => props.onFolderProjectSettings?.(folder) }]
-                      : []),
                     {
                       icon: "trash",
                       label: "Delete folder",
@@ -794,8 +760,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [chatKey, loadMoreBlocked, onLoadMore]);
-  const projectsView = props.view === "projects";
-  const projectColumn = projectsView || Boolean(props.projectContextActive);
   // Navigating away from search results resets the query so no stale
   // results view survives chat selection.
   const selectChat = (chat: ChatNavigationSummaryWire) => {
@@ -837,19 +801,15 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     } : undefined}>
     <aside
       className="v2-navigation"
-      aria-label={projectColumn ? "Project navigation" : "Chat navigation"}
-      data-project-context={props.projectContextActive || undefined}
-      data-view={projectsView ? "projects" : undefined}
+      aria-label="Chat navigation"
     >
-      {!projectsView && (!props.projectContextActive || props.projectComposerAvailable) ? (
-        <button
-          className="v2-navigation-skip v2-focusable"
-          type="button"
-          onClick={focusMessageComposer}
-        >
-          Skip to message composer
-        </button>
-      ) : null}
+      <button
+        className="v2-navigation-skip v2-focusable"
+        type="button"
+        onClick={focusMessageComposer}
+      >
+        Skip to message composer
+      </button>
       <div className="v2-navigation-header">
         {/* Desktop/compact: the column title plus the hide-list control; the
             mobile drawer shows the wordmark and a close cross instead. */}
@@ -858,9 +818,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             <span className="v2-navigation-mark" aria-hidden="true"><UiV2Icon name="brand" /></span>
             AIQSA
           </span>
-          <span className="v2-navigation-column-title">
-            {props.projectContextActive ? props.projectTitle ?? "Project" : projectsView ? "Projects" : "Chats"}
-          </span>
+          <span className="v2-navigation-column-title">Chats</span>
           <button
             className="v2-icon-button v2-focusable v2-navigation-close"
             type="button"
@@ -873,7 +831,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             <UiV2Icon name="close" />
           </button>
         </div>
-        {projectColumn ? null : (
         <div className="v2-new-chat-wrap">
           <button
             className="v2-new-chat-main v2-focusable"
@@ -885,45 +842,36 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             New chat
           </button>
         </div>
-        )}
-        {!projectColumn ? (
-          <div className="v2-navigation-filter">
-            <UiV2Icon name="search" />
-            <input
-              aria-label="Filter chats"
-              autoComplete="off"
-              maxLength={CHAT_NAVIGATION_QUERY_MAX_LENGTH}
-              placeholder="Filter chats…"
-              type="search"
-              value={filterValue}
-              onChange={(event) => typeFilter(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
-                event.preventDefault();
-                // Escape clears a query first, then leaves the field (A15).
-                if (filterValue) clearFilter();
-                else event.currentTarget.blur();
-              }}
+        <div className="v2-navigation-filter">
+          <UiV2Icon name="search" />
+          <input
+            aria-label="Filter chats"
+            autoComplete="off"
+            maxLength={CHAT_NAVIGATION_QUERY_MAX_LENGTH}
+            placeholder="Filter chats…"
+            type="search"
+            value={filterValue}
+            onChange={(event) => typeFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              // Escape clears a query first, then leaves the field (A15).
+              if (filterValue) clearFilter();
+              else event.currentTarget.blur();
+            }}
+          />
+          {filterValue ? (
+            <UiV2IconButton
+              className="v2-navigation-filter-clear"
+              icon="close"
+              label="Clear filter"
+              onClick={clearFilter}
             />
-            {filterValue ? (
-              <UiV2IconButton
-                className="v2-navigation-filter-clear"
-                icon="close"
-                label="Clear filter"
-                onClick={clearFilter}
-              />
-            ) : null}
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
 
       <div className="v2-navigation-scroll" aria-live="polite" ref={scrollRef}>
-        {projectColumn
-          ? typeof props.projectsSlot === "function"
-            ? props.projectsSlot(props.onClose, { landing: projectsView })
-            : props.projectsSlot
-          : null}
-        {!projectColumn ? <>
         <ChatRootDropTarget />
         <UiV2RovingTree className="v2-navigation-tree" label="Personal chats">
         {!props.ready && props.loading && !props.error ? (
@@ -1168,7 +1116,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             </button>
           </div>
         ) : null}
-        </> : null}
       </div>
 
       {props.drawerDestinations ? (
@@ -1179,16 +1126,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               in the account menu, exactly as on the rail. Icons share one
               top line, so the two-line "AIQSA Connect" keeps them aligned. */}
           <div className="v2-navigation-destinations [&>*]:!justify-start">
-            {props.onProjects ? (
-              <button
-                className="v2-navigation-destination v2-focusable"
-                type="button"
-                disabled={props.navigationBusy}
-                onClick={props.onProjects}
-              >
-                <UiV2Icon name="layers" /><span>Projects</span>
-              </button>
-            ) : null}
             {props.onLibrary ? (
               <button className="v2-navigation-destination v2-focusable" disabled={props.navigationBusy} type="button" onClick={props.onLibrary}>
                 <UiV2Icon name="studio" /><span>Studio</span>
@@ -1213,7 +1150,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             accountId={props.accountId ?? null}
             accountLabel={props.accountLabel}
             adminEntryVisible={props.adminEntryVisible}
-            onSettings={props.onAccountSettings ?? props.onSettings}
+            onSettings={props.onSettings}
           />
         </div>
       ) : null}
@@ -1386,10 +1323,6 @@ type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   onChats?(): void;
   /** Guards the entire navigation action before changing any surface or drawer. */
   onRequestNavigation?(proceed: () => void): void;
-  /** Mirrors whether the Projects reading surface is open. */
-  onProjectsSectionChange?(open: boolean): void;
-  /** Optional controlled state for the Projects reading/column destination. */
-  projectsSectionOpen?: boolean;
   /** Which second-column section is open; the rail marks it. */
   section?: RailSectionV2;
   sidebar?: ReactNode | ((onClose: () => void) => ReactNode);
@@ -1410,8 +1343,6 @@ export function ReadingRoomShellV2({
   children,
   onChats,
   onRequestNavigation,
-  onProjectsSectionChange,
-  projectsSectionOpen,
   section = "chats",
   sidebar,
   ...navigationOwnerProps
@@ -1429,10 +1360,6 @@ export function ReadingRoomShellV2({
     target: "open" | "sidebar" | "composer";
   }> | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
-  // Presentation-only: the second column shows the Projects landing instead
-  // of the chat list until a chat is chosen or Chats is pressed.
-  const [uncontrolledProjectsView, setProjectsView] = useState(false);
-  const projectsView = projectsSectionOpen ?? uncontrolledProjectsView;
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const compositionRef = useRef<SidebarCompositionV2>("desktop");
   const focusBeforeCompactRef = useRef<HTMLElement | null>(null);
@@ -1647,18 +1574,7 @@ export function ReadingRoomShellV2({
     if (section === "library" && onRequestNavigation) onRequestNavigation(proceed);
     else proceed();
   };
-  const projectSlot = navigationOwnerProps.projectsSlot;
-  const navigationProjectsSlot = typeof projectSlot === "function"
-    ? (_onNavigate: () => void, options: Readonly<{ landing: boolean }>) => projectSlot(() => {
-        setProjectsView(false);
-        onProjectsSectionChange?.(false);
-        if (composition !== "desktop") closeSidebar();
-      }, options)
-    : projectSlot;
   const createPersonalChat = (mode: NewChatMode) => requestNavigation(() => {
-    navigationOwnerProps.onLeaveProject?.();
-    setProjectsView(false);
-    onProjectsSectionChange?.(false);
     if (section !== "chats") onChats?.();
     onNewChat(mode);
     closeDrawers();
@@ -1711,12 +1627,7 @@ export function ReadingRoomShellV2({
       window.clearTimeout(filterFocusTimeout);
     };
   }, []);
-  // Projects owns the whole second column. The reading surface is mirrored to
-  // the parent shell while a selected Project remains the contextual section.
   const showChats = () => requestNavigation(() => {
-    navigationOwnerProps.onLeaveProject?.();
-    setProjectsView(false);
-    onProjectsSectionChange?.(false);
     if (section !== "chats") {
       closeDrawers();
       onChats?.();
@@ -1724,17 +1635,8 @@ export function ReadingRoomShellV2({
     }
     if (collapsed) revealList();
   });
-  const showProjects = () => requestNavigation(() => {
-    if (section !== "chats") onChats?.();
-    setProjectsView(true);
-    onProjectsSectionChange?.(true);
-    if (collapsed) revealList();
-  });
   const showLibrary = navigationOwnerProps.onLibrary
     ? () => {
-        setProjectsView(false);
-        onProjectsSectionChange?.(false);
-        navigationOwnerProps.onLeaveProject?.();
         closeDrawers();
         navigationOwnerProps.onLibrary?.();
       }
@@ -1745,49 +1647,31 @@ export function ReadingRoomShellV2({
         navigationOwnerProps.onSettings?.();
       }
     : undefined;
-  const showAccountSettings = navigationOwnerProps.onAccountSettings
-    ? () => {
-        closeDrawers();
-        navigationOwnerProps.onAccountSettings?.();
-      }
-    : showSettings;
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
       drawerDestinations={composition === "mobile"}
-      projectsSlot={navigationProjectsSlot}
       onClose={closeSidebar}
-      onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
-      onShowChats={showChats}
       onLibrary={showLibrary}
       onNewChat={(mode) => {
         createPersonalChat(mode);
       }}
       onSettings={showSettings}
-      onAccountSettings={showAccountSettings}
       onBranches={navigationOwnerProps.onBranches ? chat => requestNavigation(() => navigationOwnerProps.onBranches?.(chat)) : undefined}
       onSelectChat={(chat) => requestNavigation(() => {
-        setProjectsView(false);
-        onProjectsSectionChange?.(false);
         navigationOwnerProps.onSelectChat(chat);
         // A drawer (mobile, compact) yields to the chosen chat.
         setMobileOpen(false);
         if (composition === "compact") setCompactExpanded(false);
       })}
       onOpenMessageMatch={navigationOwnerProps.onOpenMessageMatch ? (match) => requestNavigation(() => {
-        setProjectsView(false);
-        onProjectsSectionChange?.(false);
         navigationOwnerProps.onOpenMessageMatch?.(match);
         setMobileOpen(false);
         if (composition === "compact") setCompactExpanded(false);
       }) : undefined}
-      view={projectsView ? "projects" : "chats"}
     />
   );
 
-  const resolvedSection: RailSectionV2 = section === "library"
-    ? "library"
-    : projectsView || navigationOwnerProps.projectContextActive ? "projects" : "chats";
   // On phones the rail is hidden: the drawer toggle carries the hints of the entries inside it.
   const unreadAnnouncementsHint = composition === "mobile" && Boolean(announcements && announcements.unreadCount > 0);
   const mobileAdminAttention = composition === "mobile" ? adminAttention : null;
@@ -1797,7 +1681,7 @@ export function ReadingRoomShellV2({
       className="v2-workspace-shell"
       data-chat-active={chatActive || undefined}
       data-mobile-sidebar={mobileOpen || undefined}
-      data-shell-section={resolvedSection}
+      data-shell-section={section}
       data-sidebar-collapsed={collapsed || undefined}
       data-sidebar-compact-expanded={composition === "compact" && compactExpanded || undefined}
       data-sidebar-composition={composition}
@@ -1813,16 +1697,14 @@ export function ReadingRoomShellV2({
         <RailV2
           accountId={navigationOwnerProps.accountId}
           accountLabel={navigationOwnerProps.accountLabel}
-          active={resolvedSection}
+          active={section}
           navigationBusy={navigationOwnerProps.navigationBusy}
           adminEntryVisible={navigationOwnerProps.adminEntryVisible}
           connectEntryVisible={navigationOwnerProps.connectEntryVisible}
           onChats={showChats}
           onLibrary={showLibrary}
           onNewChat={() => createPersonalChat("NORMAL")}
-          onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
           onSettings={showSettings}
-          onAccountSettings={showAccountSettings}
         />
       ) : null}
       <button
@@ -1861,7 +1743,7 @@ export function ReadingRoomShellV2({
           aria-expanded={composition === "mobile" ? mobileOpen : !collapsed}
           onClick={revealList}
         />
-        {resolvedSection === "chats" ? (
+        {section === "chats" ? (
           <UiV2IconButton
             icon="plus"
             label="New chat"

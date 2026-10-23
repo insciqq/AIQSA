@@ -2,7 +2,6 @@ import { createAdminAttentionHandler } from "@/lib/server/admin/attention/handle
 import { readDefaultHealthFindings } from "@/lib/server/admin/attention/defaultHealth";
 import { adminHealthQueuesService } from "@/lib/server/admin/health/queuesDefault";
 import { createAdminAttentionService } from "@/lib/server/admin/attention/service";
-import { adminKnowledgePolicyService } from "@/lib/server/admin/knowledge/policyDefault";
 import { defaultAdminMemoryStatusService } from "@/lib/server/admin/memory/statusDefault";
 import { adminMemoryStatusForAttention } from "@/lib/domain/adminMemoryProcessing";
 import { adminProviderService } from "@/lib/server/admin/providers/defaultProviders";
@@ -25,7 +24,6 @@ const service = createAdminAttentionService({
       if (result.ok) return result.value;
       throw new Error(result.code);
     },
-    knowledge: () => adminKnowledgePolicyService.list(),
     mcp: (actingAdminUserId) => mcpRepository.listAdminServers(actingAdminUserId),
     // Recent command/search diagnostics stay on the Memory card only.
     memory: async () => adminMemoryStatusForAttention(await defaultAdminMemoryStatusService.get()),

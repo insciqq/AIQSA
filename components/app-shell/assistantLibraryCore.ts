@@ -19,13 +19,8 @@ export type AssistantLibraryControllerInput = {
   chooseAssistant(detail: AssistantDetail): Promise<string | null>;
   catalog: Catalog | null;
   catalogError: string | null;
-  knowledgeBases: { available: boolean; id: string; name: string }[];
-  knowledgeSources: { available: boolean; id: string; name: string }[];
-  knowledgeDataError: string | null;
-  knowledgeDataState: "error" | "loading" | "ready";
   openMcpSettings(): void;
   retryCatalog(): void;
-  retryKnowledge(): void;
   setShellNotice(notice: { kind: "error"; text: string }): void;
   skills: SkillSummary[];
 };
@@ -52,7 +47,6 @@ const knownErrorText: Readonly<Record<string, string>> = {
   assistant_skills_invalid: "The Skill selection is invalid.",
   skills_count_exceeded: "Choose up to 32 Always and 64 On demand Skills. Change delivery or remove a Skill before saving.",
   assistant_skills_not_available: "One selected Skill is no longer available to you.",
-  assistant_knowledge_bases_invalid: "The Knowledge selection is invalid.",
   assistant_starter_prompts_invalid: "Keep up to 6 starters of up to 200 characters.",
   assistant_system_prompt_invalid: "Shorten the system prompt.",
   assistant_tools_not_available: "One selected MCP server is not available to you.",

@@ -428,8 +428,7 @@
   cursor: wait;
 }
 
-/* A group header that also hosts its one creation action (Folders "+"),
-   mirroring the Projects header row. */
+/* A group header that also hosts its one creation action (Folders "+"). */
 .v2-navigation-group-head {
   display: flex;
   min-height: 1.875rem;
@@ -1203,40 +1202,6 @@ html[data-motion="off"] .v2-sidebar-floats {
 .v2-navigation-destinations > .v2-navigation-destination > .v2-icon {
   width: 1.125rem;
   height: 1.125rem;
-}
-
-/* Projects landing (rail/drawer destination, UX audit 2026-09-02 #10): the
-   column holds only the Projects block under a return row. */
-.v2-navigation-back {
-  display: flex;
-  min-height: 2.25rem;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.25rem;
-  padding: 0.375rem 0.5rem;
-  border: 0;
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-text2);
-  background: transparent;
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.v2-navigation-back:hover {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
-}
-
-.v2-navigation-back > .v2-icon {
-  width: 1rem;
-  height: 1rem;
-}
-
-.v2-navigation[data-view="projects"] .v2-project-navigation {
-  padding-top: 0.25rem;
 }
 
 /* Touch (C2): list rows and the mobile islands keep 44px targets. */

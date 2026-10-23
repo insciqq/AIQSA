@@ -6,7 +6,8 @@ export const WORKSPACE_OVERVIEW_STATES = [
 export type WorkspaceOverviewState = (typeof WORKSPACE_OVERVIEW_STATES)[number];
 export type WorkspaceOverviewFilter = "active" | "all";
 export type WorkspaceOverviewRow = Readonly<{
-  context: "personal" | "project" | null;
+  /** Null for a chat that is no longer personal, such as a removed Project's chat awaiting deletion. */
+  context: "personal" | null;
   id: string;
   lastActiveAt: string | null;
   state: WorkspaceOverviewState;
@@ -79,7 +80,7 @@ export function decodeWorkspaceOverviewResponse(value: unknown): WorkspaceOvervi
   const rows: WorkspaceOverviewRow[] = [];
   for (const row of overview.rows) {
     if (!record(row) || typeof row.id !== "string" || !/^ws-[a-f0-9]{16}$/u.test(row.id) ||
-      !(row.context === null || row.context === "personal" || row.context === "project") ||
+      !(row.context === null || row.context === "personal") ||
       !(row.user === null || typeof row.user === "string" && row.user.length > 0 && row.user.length <= 160 && !/[\u0000-\u001f\u007f]/u.test(row.user)) ||
       !(row.lastActiveAt === null || timestamp(row.lastActiveAt)) ||
       !(WORKSPACE_OVERVIEW_STATES as readonly unknown[]).includes(row.state)) return null;

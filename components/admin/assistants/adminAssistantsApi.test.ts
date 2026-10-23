@@ -22,10 +22,9 @@ const rows = {
   controls: { policy: "adjustable", value: {} },
   search: { policy: "fixed", value: { mode: "off" } },
   tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["mcp-docs"], hiddenCount: 1 } },
-  knowledge: { policy: "fixed", value: { mode: "explicit", baseIds: [], sourceIds: [], hiddenCount: 1 } },
   skills: { policy: "adjustable", value: { mode: "auto", links: [{ skillId: "style", delivery: "always" }] } }
 } as const;
-const names = { knowledgeBases: [], knowledgeSources: [], mcpServers: [{ id: "mcp-docs", name: "Docs search" }], models: [],
+const names = { mcpServers: [{ id: "mcp-docs", name: "Docs search" }], models: [],
   searchOptions: [], skills: [{ id: "style", name: "Style guide" }] };
 const definition = { version: 3, name: "Writing editor", description: "Edits drafts", category: "writing", avatar, instructions: "Be concise.",
   answerRules: "", responseReminder: "Cite sources.", starterPrompts: ["Tighten this paragraph"], rows, names };
@@ -74,7 +73,6 @@ describe("adminAssistantsApi", () => {
     for (const broken of [
       { ...definition, rows: { ...rows, tools: { policy: "adjustable", value: { mode: "all" } } } },
       { ...definition, rows: { ...rows, search: { policy: "fixed", value: { mode: "inherit" } } } },
-      { ...definition, rows: { ...rows, knowledge: { policy: "fixed", value: { mode: "explicit", baseIds: [], sourceIds: [], hiddenCount: 0 } } } },
       { ...definition, names: { ...names, skills: [{ id: "style" }] } },
       { ...definition, names: { ...names, projects: [] } },
       { ...definition, names: undefined }
@@ -118,20 +116,19 @@ describe("adminAssistantsApi", () => {
 
   it("gives every mode of every Setup row its own text and counts what the administrator can't access", () => {
     type Review = Parameters<typeof assistantSetupRows>[0];
-    const noNames: AdminAssistantReviewNames = { knowledgeBases: [], knowledgeSources: [], mcpServers: [], models: [], searchOptions: [], skills: [] };
+    const noNames: AdminAssistantReviewNames = { mcpServers: [], models: [], searchOptions: [], skills: [] };
     const read = (patch: Partial<Record<keyof typeof rows, unknown>>, named: Partial<typeof noNames> = {}) =>
       Object.fromEntries(assistantSetupRows({ rows: { ...rows, ...patch }, names: { ...noNames, ...named } } as unknown as Review)
         .map((row) => [row.label, row.value]));
     const valueOf = (key: keyof typeof rows, value: unknown, named: Partial<typeof noNames> = {}) =>
       read({ [key]: { policy: "adjustable", value } }, named)[{ model: "Model", controls: "Reasoning & parameters", search: "Web search",
-        tools: "Tools", knowledge: "Knowledge", skills: "Skills" }[key]];
+        tools: "Tools", skills: "Skills" }[key]];
 
     expect(assistantSetupRows({ rows, names } as unknown as Review)).toEqual([
       { label: "Model", policy: "adjustable", value: "Each person's default model" },
       { label: "Reasoning & parameters", policy: "adjustable", value: "Not set" },
       { label: "Web search", policy: "fixed", value: "Off" },
       { label: "Tools", policy: "adjustable", value: "Docs search, 1 MCP server you can't access" },
-      { label: "Knowledge", policy: "fixed", value: "1 base or source you can't access" },
       { label: "Skills", policy: "adjustable", value: "Auto · Style guide (Always)" }
     ]);
 
@@ -154,14 +151,6 @@ describe("adminAssistantsApi", () => {
     expect(valueOf("tools", { mode: "inherit" })).toBe("Each person's MCP setting");
     expect(valueOf("tools", { mode: "off" })).toBe("Off");
     expect(valueOf("tools", { mode: "exact", serverIds: [], hiddenCount: 2 })).toBe("2 MCP servers you can't access");
-
-    expect(valueOf("knowledge", { mode: "inherit" })).toBe("Each person's default");
-    expect(valueOf("knowledge", { mode: "none" })).toBe("None");
-    expect(valueOf("knowledge", { mode: "explicit", baseIds: ["kb"], sourceIds: ["src"], hiddenCount: 2 },
-      { knowledgeBases: [{ id: "kb", name: "Company handbook" }], knowledgeSources: [{ id: "src", name: "Travel policy.pdf" }] }))
-      .toBe("Company handbook, Travel policy.pdf, 2 bases or sources you can't access");
-    // An identified resource without a name is counted, never shown by its id.
-    expect(valueOf("knowledge", { mode: "explicit", baseIds: ["kb-private"], sourceIds: [] })).toBe("1 base or source you can't access");
 
     const skillNames = { skills: [{ id: "style", name: "Style guide" }, { id: "tone", name: "Tone" }] };
     expect(valueOf("skills", { mode: "auto", links: [] })).toBe("Auto · No Skills selected");

@@ -301,7 +301,6 @@ async function loadRecallChunkTarget(
     INNER JOIN "Chat" AS chat
       ON chat."userId" = chunk."userId"
       AND chat."id" = chunk."chatId"
-      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId"
@@ -392,7 +391,6 @@ async function loadRecallRoundTarget(
     INNER JOIN "Chat" AS chat
       ON chat."userId" = round."userId"
       AND chat."id" = round."chatId"
-      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = round."userId"
@@ -493,7 +491,6 @@ async function loadRecallRoundSegmentTarget(
     INNER JOIN "Chat" AS chat
       ON chat."userId" = round."userId"
       AND chat."id" = round."chatId"
-      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = round."userId"
@@ -590,7 +587,6 @@ async function loadToolEventTarget(
     FROM "MemoryToolEvent" AS tool_event
     INNER JOIN "Chat" AS chat
       ON chat."userId" = tool_event."userId" AND chat."id" = tool_event."chatId"
-      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND chat."permanentDeletionAt" IS NULL
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint

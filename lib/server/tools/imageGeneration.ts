@@ -51,19 +51,15 @@ const IMAGE_MODEL_UNAVAILABLE: Record<ImageModelUnavailableReason, string> = {
 /**
  * The run's image model is published but cannot run: the run has no image
  * tool and no other model stands in, so the answer model can say why and
- * how to recover. Personal chats recover in Studio; Projects only through
- * an administrator, since they always use the organization default.
+ * how to recover in Studio.
  */
 export function imageGenerationUnavailableGuidance(input: Readonly<{
   reason: ImageModelUnavailableReason;
-  scope: "personal" | "project";
   source: "organization" | "personal";
 }>): string {
-  const recovery = input.scope === "project"
-    ? "Projects always use the organization's default image model, so only an administrator can restore it"
-    : input.source === "personal"
-      ? "the user can choose another image model or the organization default in Studio > Chat defaults > Image model"
-      : "the user can choose another image model in Studio > Chat defaults > Image model, or ask an administrator";
+  const recovery = input.source === "personal"
+    ? "the user can choose another image model or the organization default in Studio > Chat defaults > Image model"
+    : "the user can choose another image model in Studio > Chat defaults > Image model, or ask an administrator";
   return `Image generation and editing are unavailable for this message because ${IMAGE_MODEL_UNAVAILABLE[input.reason]}. ` +
     `No other image model is used instead. If the user asks to create or edit an image, say so briefly: ${recovery}.`;
 }

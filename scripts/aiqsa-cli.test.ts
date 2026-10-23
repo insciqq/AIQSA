@@ -586,7 +586,7 @@ describe("doctor", () => {
     expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm|image rm) /mu);
   });
 
-  it("lists search index leftovers with exact removal commands and stays quiet without them", () => {
+  it("lists search index and Knowledge leftovers with exact removal commands and stays quiet without them", () => {
     const fixture = new Fixture();
     fixture.writeEnv();
     const clean = fixture.run(["doctor", "--stack-only"]);
@@ -595,13 +595,15 @@ describe("doctor", () => {
     fixture.rules.push(
       { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=opensearch", stdout: "c97\n" },
       { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=memory-search-worker", stdout: "c98\n" },
+      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=knowledge-search-worker", stdout: "c42\n" },
       { match: "^volume inspect aiqsa-test_opensearch_data", stdout: "[]\n" }
     );
     const result = fixture.run(["doctor", "--stack-only"]);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("WARN search-leftovers: the search index service was removed");
+    expect(result.stdout).toContain("WARN search-leftovers: the search index and Knowledge services were removed");
     expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the opensearch container");
     expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the memory-search-worker container");
+    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the knowledge-search-worker container");
     expect(result.stdout).toContain("docker volume rm aiqsa-test_opensearch_data");
     expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm) /mu);
   });
@@ -1070,10 +1072,10 @@ describe("upgrade", () => {
 const keyringKey = (letter: string) => `${letter.repeat(43)}=`;
 const keyring = `current=v2,v1=${keyringKey("A")},v2=${keyringKey("B")}`;
 const latestMigration = "20261002000000_latest";
-const runningRows = ["app|running|healthy|0|c1", "memory-worker|running||0|c5", "knowledge-search-worker|running||0|c6",
+const runningRows = ["app|running|healthy|0|c1", "memory-worker|running||0|c5",
   "migrate-bootstrap|exited||0|c2", "storage-init|exited||0|c7", "postgres|running|healthy|0|c3",
   "seaweedfs|running|healthy|0|c8", "minio|running|healthy|0|c9"].join("\n") + "\n";
-const restartSet = "app memory-worker knowledge-search-worker postgres seaweedfs minio";
+const restartSet = "app memory-worker postgres seaweedfs minio";
 
 // A running installation whose schema matches the checkout's newest migration.
 function backupFixture(fixture: Fixture, migrationRow = `${latestMigration}|0`): void {
@@ -1114,7 +1116,7 @@ describe("backup", () => {
     backupFixture(fixture);
     const result = fixture.run(["backup"]);
     expect(result.status, result.stderr).toBe(0);
-    expectOrdered(fixture.dockerLog, [/ stop app memory-worker knowledge-search-worker$/u, / pg_dump -Fc -U aiqsa -d aiqsa$/u,
+    expectOrdered(fixture.dockerLog, [/ stop app memory-worker$/u, / pg_dump -Fc -U aiqsa -d aiqsa$/u,
       / stop minio seaweedfs$/u, /^run --rm --network none --user 0:0 -v aiqsa-test_seaweedfs_data:\/data:ro --entrypoint tar /u,
       / exec -T postgres pg_restore --list$/u, / --entrypoint tar .* -tzf -$/u,
       new RegExp(` up -d --no-recreate --wait --wait-timeout 600 ${restartSet}$`, "u")]);
@@ -1156,7 +1158,7 @@ describe("backup", () => {
     if (rule) fixture.rules.unshift(rule);
     const result = fixture.run(["backup"], term ? { FAKE_TERM_ON: term } : {});
     expect(result.status).toBe(1);
-    expectOrdered(fixture.dockerLog, [/ stop app memory-worker knowledge-search-worker$/u, / pg_dump -Fc /u,
+    expectOrdered(fixture.dockerLog, [/ stop app memory-worker$/u, / pg_dump -Fc /u,
       new RegExp(` up -d --no-recreate --wait --wait-timeout 600 ${restartSet}$`, "u")]);
     expect(fixture.dockerLog.includes(" stop minio seaweedfs")).toBe(storageStopped);
     expect(fixture.dockerLog.match(/ up -d /gu)).toHaveLength(1);
@@ -1237,7 +1239,6 @@ describe("restore", () => {
       new RegExp(`${isolated} up -d --wait --wait-timeout 600 postgres seaweedfs minio$`, "u"),
       new RegExp(`${isolated} exec -T postgres .* pg_restore --no-owner --exit-on-error -U aiqsa -d aiqsa$`, "u"),
       /-e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio --entrypoint npm memory-worker run memory:restore:reconcile$/u,
-      / --entrypoint npm memory-worker run knowledge:restore:reconcile$/u,
       new RegExp(`${isolated} down$`, "u"), /^volume rm aiqsa-restore-x_storage_socket$/u,
       /^compose --project-directory \S+ up -d --remove-orphans --wait /u, / storage-init status$/u]);
     expect(fixture.dockerLog).not.toMatch(/ down -v|-p aiqsa-test /u);
@@ -1289,7 +1290,7 @@ describe("restore", () => {
     expect(result.stderr).toContain("memory:restore:reconcile failed with memory_restore_reconciliation_pending");
     expect(result.stderr).toContain("  docker compose down -v\n  rm .env\n");
     expect(fixture.dockerLog).toMatch(/-p aiqsa-restore-\d{14} .* down$/mu);
-    expect(fixture.dockerLog).not.toMatch(/knowledge:restore:reconcile|--remove-orphans|storage-init/u);
+    expect(fixture.dockerLog).not.toMatch(/--remove-orphans|storage-init/u);
     expectNoSecrets(result.output, body);
   });
 

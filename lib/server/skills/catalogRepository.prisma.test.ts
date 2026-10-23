@@ -57,7 +57,6 @@ describe("Skill enabled catalog persistence", () => {
     await prisma.userGroup.create({ data: { userId: runner, groupId: group.id } });
     const skills = createPrismaSkillRepository(prisma), catalog = createSkillCatalogRepository(prisma), preferences = createSkillPreferenceService(prisma);
     const ids: string[] = [];
-    let projectId: string | undefined;
     try {
       const draft = { name: "Own workflow", description: "Synthetic procedure", instructions: "Original instructions" };
       const own = await skills.create(runner, draft); ids.push(own);
@@ -82,21 +81,7 @@ describe("Skill enabled catalog persistence", () => {
       await prisma.skillPublication.delete({ where: { id: publication.id } });
       expect(await catalog.listEnabledForRun(runner)).toEqual([]);
       expect(await catalog.resolveFrozen(frozen)).toBeNull();
-
-      const project = await prisma.project.create({ data: { name: "Catalog Project", createdByDisplayName: "Fixture", grants: {
-        create: { userId: runner, role: "OWNER" }
-      } } });
-      projectId = project.id;
-      const binding = await prisma.projectSkillBinding.create({ data: { projectId, skillId: own } });
-      const ownRevision = (await prisma.skillDefinition.findUniqueOrThrow({ where: { id: own } })).currentRevisionId!;
-      const projected = { userId: runner, projectId, skillId: own, revisionId: ownRevision };
-      expect(await catalog.resolveFrozen(projected)).toBeNull();
-      await prisma.skillDefinition.update({ where: { id: own }, data: { sharedRevisionId: ownRevision } });
-      expect(await catalog.resolveFrozen(projected)).toMatchObject({ instructions: draft.instructions });
-      await prisma.projectSkillBinding.delete({ where: { id: binding.id } });
-      expect(await catalog.resolveFrozen(projected)).toBeNull();
     } finally {
-      if (projectId) await prisma.project.delete({ where: { id: projectId } });
       await prisma.skillPublication.deleteMany({ where: { skillId: { in: ids } } });
       await prisma.skillDefinition.updateMany({ where: { id: { in: ids } }, data: { currentRevisionId: null, sharedRevisionId: null } });
       await prisma.skillRevision.deleteMany({ where: { skillId: { in: ids } } });

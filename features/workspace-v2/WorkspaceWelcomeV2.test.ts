@@ -5,9 +5,6 @@ import { observeMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 import {
-  CompactKnowledgePollingV2,
-  compactKnowledgeRefreshPendingV2,
-  knowledgeSummaryStatusV2,
   MEMORY_LIST_POLL_INTERVAL_MS,
   memoryListPollingActiveV2,
   MemoryListPollingV2,
@@ -74,25 +71,6 @@ describe("Studio MCP attention", () => {
   });
 });
 
-describe("knowledgeSummaryStatusV2", () => {
-  it("preserves exact server readiness and never guesses ready", () => {
-    expect(knowledgeSummaryStatusV2({
-      archived: false,
-      readiness: { state: "processing" }
-    })).toBe("processing");
-    expect(knowledgeSummaryStatusV2({
-      archived: false,
-      readiness: { state: "needs_attention" }
-    })).toBe("needs_attention");
-    expect(knowledgeSummaryStatusV2({ archived: false })).toBe("unavailable");
-    expect(knowledgeSummaryStatusV2({
-      archived: true,
-      readiness: { state: "trashed" }
-    })).toBe("trashed");
-    expect(knowledgeSummaryStatusV2({ archived: true })).toBe("archived");
-  });
-});
-
 describe("memoryManagerErrorCopy", () => {
   it("shows only input validation and keeps Memory failures silent", () => {
     expect(memoryManagerErrorCopy("memory_secret_rejected")).toMatch(/looks like a secret/i);
@@ -100,72 +78,6 @@ describe("memoryManagerErrorCopy", () => {
     for (const code of ["memory_unavailable", "memory_action_failed", "classifier_internal_code", null]) {
       expect(memoryManagerErrorCopy(code)).toBeNull();
     }
-  });
-});
-
-describe("compactKnowledgeRefreshPendingV2", () => {
-  it("polls only the visible compact Knowledge list while processing remains", () => {
-    expect(compactKnowledgeRefreshPendingV2({
-      activeTab: "knowledge",
-      busy: false,
-      catalog: "bases",
-      processing: true,
-      task: "list"
-    })).toBe(true);
-    expect(compactKnowledgeRefreshPendingV2({
-      activeTab: "files",
-      busy: false,
-      catalog: "bases",
-      processing: true,
-      task: "list"
-    })).toBe(false);
-    expect(compactKnowledgeRefreshPendingV2({
-      activeTab: "knowledge",
-      busy: false,
-      catalog: "bases",
-      processing: false,
-      task: "list"
-    })).toBe(false);
-    expect(compactKnowledgeRefreshPendingV2({
-      activeTab: "knowledge",
-      busy: false,
-      catalog: "sources",
-      processing: true,
-      task: "list"
-    })).toBe(false);
-  });
-
-  it("waits for a slow refresh before scheduling the next poll and stops on cleanup", async () => {
-    vi.useFakeTimers();
-    let settleFirst: (() => void) | undefined;
-    const first = new Promise<void>((resolve) => {
-      settleFirst = resolve;
-    });
-    const refresh = vi.fn()
-      .mockReturnValueOnce(first)
-      .mockResolvedValue(undefined);
-    const view = render(createElement(CompactKnowledgePollingV2, {
-      active: true,
-      onRefresh: refresh
-    }));
-
-    await act(async () => vi.advanceTimersByTime(2_000));
-    expect(refresh).toHaveBeenCalledOnce();
-    await act(async () => vi.advanceTimersByTime(10_000));
-    expect(refresh).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      settleFirst?.();
-      await first;
-    });
-    await act(async () => vi.advanceTimersByTime(1_999));
-    expect(refresh).toHaveBeenCalledOnce();
-    await act(async () => vi.advanceTimersByTime(1));
-    expect(refresh).toHaveBeenCalledTimes(2);
-
-    view.unmount();
-    await act(async () => vi.advanceTimersByTime(10_000));
-    expect(refresh).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -183,7 +95,7 @@ describe("Memory list polling", () => {
     const learning = { settings: { learnAutomatically: true }, status: "ON" };
     const learningOff = { settings: { learnAutomatically: false }, status: "ON" };
     expect(memoryListPollingActiveV2({ activeTab: "memory", memory: learning })).toBe(true);
-    expect(memoryListPollingActiveV2({ activeTab: "knowledge", memory: learning })).toBe(false);
+    expect(memoryListPollingActiveV2({ activeTab: "files", memory: learning })).toBe(false);
     // "remember that…" requests still commit in the background with learning off.
     expect(memoryListPollingActiveV2({ activeTab: "memory", memory: learningOff })).toBe(true);
     for (const status of ["PAUSED", "NEEDS_ADMIN_SETUP", "UNAVAILABLE", "PREPARING"]) {

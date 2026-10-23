@@ -74,10 +74,6 @@ const activityCases: Array<{
     label: "Reading files"
   },
   {
-    state: runState({ events: [summary("knowledge", "running")], status: "streaming" }),
-    label: "Knowledge search"
-  },
-  {
     state: runState({
       events: [{
         data: {

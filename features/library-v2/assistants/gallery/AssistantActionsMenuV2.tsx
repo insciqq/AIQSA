@@ -28,7 +28,7 @@ export function AssistantActionsMenuV2({
   onCopied
 }: Readonly<{
   assistant: AssistantMenuTarget;
-  /** Only listed Assistants can be copied; a Project member's detail read cannot. */
+  /** Only listed Assistants can be copied; a detail read outside the list cannot. */
   canDuplicate: boolean;
   disabled: boolean;
   gallery: AssistantGalleryView;

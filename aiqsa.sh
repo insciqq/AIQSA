@@ -618,7 +618,7 @@ doctor_memory() {
     if (( kib < MEMORY_FAIL_KIB )); then
       check FAIL memory "$gib; at least 8 GB is required (each Workspace session runs in a 4 GB virtual machine)"
     elif (( kib < MEMORY_WARN_KIB )); then
-      check WARN memory "$gib; 16 GB is recommended for several Workspace sessions, Knowledge ingestion and OCR"
+      check WARN memory "$gib; 16 GB is recommended for several Workspace sessions and OCR"
     else
       check PASS memory "$gib"
     fi
@@ -1013,14 +1013,16 @@ doctor_toolhive_leftovers() {
     "Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
-# Releases after v0.3.26 removed the search index service and its Memory worker
-# (operator decision 2026-10-23). `./aiqsa.sh up` removes their orphaned
-# containers; the index volume is left for the operator to delete.
+# Releases after v0.3.26 removed the search index service with its Memory and
+# Knowledge workers (operator decisions 2026-10-23). `./aiqsa.sh up` and
+# `upgrade` remove their orphaned containers; a plain `docker compose up -d`
+# keeps them running the old image. The index volume is left for the operator
+# to delete.
 doctor_search_leftovers() {
   local lines=() service
   load_project_name
   [[ -n $PROJECT_NAME ]] || return 0
-  for service in opensearch memory-search-worker; do
+  for service in opensearch memory-search-worker knowledge-search-worker; do
     if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
       --filter "label=com.docker.compose.service=$service" 2>/dev/null) ]]; then
       lines+=("./aiqsa.sh up   # --remove-orphans removes the $service container")
@@ -1030,7 +1032,7 @@ doctor_search_leftovers() {
     lines+=("docker volume rm ${PROJECT_NAME}_opensearch_data")
   fi
   (( ${#lines[@]} )) || return 0
-  check WARN search-leftovers "the search index service was removed; it left Docker state behind" \
+  check WARN search-leftovers "the search index and Knowledge services were removed; they left Docker state behind" \
     "Nothing reads it any more. Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
@@ -2225,7 +2227,7 @@ cmd_restore() {
   say "Restoring PostgreSQL."
   pg_tool rc pg_restore --no-owner --exit-on-error -U "$(pg_user)" -d "$(pg_db)" <"$dir/postgres.dump" >"$log" 2>&1 \
     || restore_step_failed "pg_restore failed" "$log"
-  for script in memory:restore:reconcile knowledge:restore:reconcile; do
+  for script in memory:restore:reconcile; do
     say "Reconciling: $script."
     if ! rc run --rm --no-deps -T -e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES \
       -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio \
@@ -2239,9 +2241,9 @@ cmd_restore() {
   RESTORE_PHASE=started
   FAIL_COUNT=0 WARN_COUNT=0 PASS_COUNT=0
   up_stack none
-  # The reconciliation reset both search projections to pending; the running
-  # search workers recreate the indexes and project everything from PostgreSQL.
-  say "Memory and Knowledge search indexes are being rebuilt from PostgreSQL by the search workers."
+  # The reconciliation reset the Memory search projection to pending; the running
+  # search worker recreates the index and projects everything from PostgreSQL.
+  say "The Memory search index is being rebuilt from PostgreSQL by the search worker."
   post_start_check
   say "Restore complete."
 }

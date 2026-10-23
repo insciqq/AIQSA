@@ -120,14 +120,12 @@ describe("usePersonalChatDeepLink", () => {
     expect(loadEarlier).toHaveBeenCalledOnce();
   });
 
-  it("leaves Project chat routes and the new chat alone", () => {
-    for (const address of ["/p/project-1/c/chat-1?message=message-1", "/?message=message-1"]) {
-      window.history.replaceState(null, "", address);
-      const { props, unmount } = renderDeepLink();
-      expect(props.revealMessage).not.toHaveBeenCalled();
-      expect(props.onUnavailable).not.toHaveBeenCalled();
-      unmount();
-    }
+  it("leaves the new chat alone", () => {
+    window.history.replaceState(null, "", "/?message=message-1");
+    const { props, unmount } = renderDeepLink();
+    expect(props.revealMessage).not.toHaveBeenCalled();
+    expect(props.onUnavailable).not.toHaveBeenCalled();
+    unmount();
   });
 
   it("reports the one-shot Memory source marker separately and clears it without details", () => {

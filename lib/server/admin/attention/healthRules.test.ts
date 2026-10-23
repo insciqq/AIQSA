@@ -319,7 +319,7 @@ describe("healthAttentionItems", () => {
       "12 requests ended with a server error in the last hour",
       "The Memory worker started 4 times in the last hour — check its logs",
       "1 log line could not be written in the last hour, so some diagnostics are missing",
-      "Knowledge · 25 errors in the last hour",
+      "Knowledge removal · 25 errors in the last hour",
       "Image analysis · 3 of 8 ran out of time in the last 24 hours",
       "2 owners had the Memory index rebuilt 3 or more times in the last 24 hours, up to 5 for one owner — each rebuild re-indexes and re-embeds that owner's whole Memory; check the logged rebuild reasons"
     ]);

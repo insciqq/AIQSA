@@ -1,6 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { SkillFileSummary } from "../../contracts/skills";
-import { resolveProjectAccess } from "../projects/access";
 import { skillAccessWhere } from "./prismaRepository";
 import type { SkillRunCatalogEntry, SkillRunMaterialization } from "./runMaterialization";
 
@@ -38,15 +37,11 @@ export function createSkillCatalogRepository(db: PrismaClient | Prisma.Transacti
 
     /** Approval can advance after admission. Authorize the live definition, then
      * read its exact frozen immutable revision without following either pointer. */
-    async resolveFrozen(input: { userId: string; projectId?: string; skillId: string; revisionId: string }): Promise<(SkillRunMaterialization & { files: SkillFileSummary[] }) | null> {
-      if (input.projectId) {
-        if (!await resolveProjectAccess(db, { projectId: input.projectId, userId: input.userId, requireActive: true })) return null;
-      } else if (!await db.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } })) return null;
+    async resolveFrozen(input: { userId: string; skillId: string; revisionId: string }): Promise<(SkillRunMaterialization & { files: SkillFileSummary[] }) | null> {
+      if (!await db.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } })) return null;
       const revision = await db.skillRevision.findFirst({
         where: { id: input.revisionId, skillId: input.skillId, bundleReady: true, skill: { AND: [
-          { deletedAt: null, archivedAt: null }, input.projectId
-            ? { sharedRevisionId: { not: null }, projectBindings: { some: { projectId: input.projectId } } }
-            : skillAccessWhere(input.userId)
+          { deletedAt: null, archivedAt: null }, skillAccessWhere(input.userId)
         ] } },
         select: { ...metadata, skillId: true, instructions: true, files }
       });

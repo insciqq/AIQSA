@@ -1,7 +1,6 @@
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { logEvent } from "@/lib/server/observability";
 import { databaseFailureCode } from "@/lib/server/observability/databaseFailure";
-import { ProjectsDisabledError, projectsDisabledResponse } from "@/lib/server/projects/disabled";
 import type { WorkspaceLifecycleService } from "./lifecycle";
 import { WorkspaceLifecycleError } from "./lifecycle";
 
@@ -18,7 +17,6 @@ function failure(error: unknown): Response {
   if (error instanceof WorkspaceLifecycleError) {
     return json({ error: error.code }, error.status);
   }
-  if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
   logEvent("service_operation", { subsystem: "workspace", stage: "process", outcome: "failed",
     code: "workspace_lifecycle_action_failed", prisma_code: databaseFailureCode(error) });
   return json({ error: "workspace_runtime_unavailable" }, 503);

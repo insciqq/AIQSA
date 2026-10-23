@@ -8,8 +8,6 @@ import {
   chatAssistantOverridesIssue,
   nextChatAssistantOverrides,
   overridesNeedCatalog,
-  projectKnowledgeOverrideAvailable,
-  projectOverridesNeedAuthority,
   type ChatAssistantOverrideCatalog
 } from "./assistantOverrides";
 
@@ -61,8 +59,6 @@ function rows(
 ): AssistantRows {
   const decoded = assistantRowsFromStoredColumns({
     controlsPolicy: "adjustable",
-    knowledgePolicy: policy,
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpMode: "off",
     mcpServerIds: [],
     modelPolicy: policy,
@@ -116,7 +112,6 @@ describe("chat Assistant overrides", () => {
       { model: { mode: "model", modelId: "chat-model" } },
       { search: { mode: "off" } },
       { tools: { mode: "load_all" } },
-      { knowledge: { mode: "none" } },
       { skills: { mode: "off" } }
     ] satisfies ChatAssistantOverridesPatch[]) {
       expect(issue(patch, { rows: rows("fixed") })).toBe("assistant_overrides_not_allowed");
@@ -158,32 +153,10 @@ describe("chat Assistant overrides", () => {
   });
 
   it("loads the catalog only for rows whose values it decides", () => {
-    expect(overridesNeedCatalog({ tools: { mode: "off" }, knowledge: { mode: "none" }, skills: { mode: "auto" } }))
+    expect(overridesNeedCatalog({ tools: { mode: "off" }, skills: { mode: "auto" } }))
       .toBe(false);
     expect(overridesNeedCatalog({ model: null, controls: null, search: null })).toBe(false);
     expect(overridesNeedCatalog({ search: { mode: "off" } })).toBe(true);
     expect(overridesNeedCatalog({ controls: {} })).toBe(true);
-  });
-
-  it("checks Knowledge values in a Project chat against the Project's own Knowledge", () => {
-    const available = {
-      knowledgeBaseIds: new Set(["project-base"]),
-      knowledgeSourceIds: new Set(["project-document"])
-    };
-    expect(projectKnowledgeOverrideAvailable(available, { mode: "none" })).toBe(true);
-    expect(projectKnowledgeOverrideAvailable(available, {
-      baseIds: ["project-base"], mode: "explicit", sourceIds: ["project-document"]
-    })).toBe(true);
-    expect(projectKnowledgeOverrideAvailable(available, {
-      baseIds: ["personal-base"], mode: "explicit", sourceIds: []
-    })).toBe(false);
-    expect(projectKnowledgeOverrideAvailable(available, {
-      baseIds: [], mode: "explicit", sourceIds: ["personal-document"]
-    })).toBe(false);
-    expect(projectKnowledgeOverrideAvailable(available, { mode: "all_my_knowledge" })).toBe(false);
-
-    expect(projectOverridesNeedAuthority({ tools: { mode: "off" }, knowledge: null })).toBe(false);
-    expect(projectOverridesNeedAuthority({ knowledge: { mode: "none" } })).toBe(true);
-    expect(projectOverridesNeedAuthority({ model: { mode: "model", modelId: "project-model" } })).toBe(true);
   });
 });

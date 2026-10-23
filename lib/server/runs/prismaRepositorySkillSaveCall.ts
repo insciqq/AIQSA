@@ -13,7 +13,7 @@ type StoredResult = Parameters<typeof parsePersistedToolExecutionResult>[1];
 
 /**
  * `RunRepository.saveSkillForCall`. One transaction takes the run's
- * settlement locks (Project, owner, chat, then the run), fences the run (active,
+ * settlement locks (owner, chat, then the run), fences the run (active,
  * personal, unscheduled, not an answer to a scheduled task's prompt) and its
  * running call, saves through the shared Skill write core and settles the
  * call with its card. A crash leaves all of it or none of it, so a recovered
@@ -23,13 +23,13 @@ export async function saveSkillForToolCall(prisma: PrismaClient, input: SaveInpu
   return prisma.$transaction(async (tx) => {
     await lockRunSettlementScope(tx, input.runId);
     const [run] = await tx.$queryRaw<Array<{ errorPayload: Prisma.JsonValue | null; scheduledTaskId: string | null;
-      status: ModelRunStatus; userMessageId: string; projectId: string | null }>>(Prisma.sql`
-      SELECT r."status", r."errorPayload", r."scheduledTaskId", r."userMessageId", c."projectId"
-      FROM "ModelRun" r JOIN "Chat" c ON c."id" = r."chatId"
+      status: ModelRunStatus; userMessageId: string }>>(Prisma.sql`
+      SELECT r."status", r."errorPayload", r."scheduledTaskId", r."userMessageId"
+      FROM "ModelRun" r
       WHERE r."id" = ${input.runId} AND r."userId" = ${input.userId}
       FOR UPDATE OF r
     `);
-    if (!run || run.scheduledTaskId !== null || run.projectId !== null || !activeToolLoopRun(run) ||
+    if (!run || run.scheduledTaskId !== null || !activeToolLoopRun(run) ||
       !await tx.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } })) return { kind: "unavailable" };
     const call = await tx.modelRunToolCall.findFirst({
       select: { providerCallId: true, result: true, state: true, toolName: true },

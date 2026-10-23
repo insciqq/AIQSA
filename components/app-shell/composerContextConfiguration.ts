@@ -16,8 +16,6 @@ export function composerContextConfigurationKey(
       ? { id: controls.assistant.id, promptCharacterCount: controls.assistant.promptCharacterCount }
       : controls.assistant ? { state: controls.assistant.state } : null,
     backgroundMode: controls.backgroundMode,
-    knowledgeSelection: controls.knowledgeSelection,
-    knowledgePlanSource: controls.knowledgePlanSource,
     maxOutputTokens: controls.maxOutputTokens,
     mcpSelection: controls.mcpSelection,
     skillsMode: controls.skillsMode,

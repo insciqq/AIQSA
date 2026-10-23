@@ -22,8 +22,6 @@ describe("shell error formatting", () => {
   });
 
   it.each([
-    ["knowledge_image_not_supported", "This model can't read images and no Vision Model is available to describe them for the Knowledge answer. Remove the image, choose a model that supports images, ask an administrator to assign the Vision Model, or ask without Knowledge"],
-    ["knowledge_image_limit_exceeded", "A Knowledge answer can use at most 8 images from one message. Remove some images and try again"],
     ["image_attachment_not_supported", "This model can't use images here. Remove the image, choose a model that supports images, or ask an administrator to assign the Vision Model"]
   ])("explains a refused image admission (%s) with its recovery", async (code, message) => {
     expect(await responseErrorMessage(Response.json({ error: code }, { status: 400 }), "send_failed_400")).toBe(`${message} (${code})`);
@@ -132,20 +130,6 @@ describe("shell error formatting", () => {
     expect(humanizeErrorCode("OpenAI request failed with status 503")).toBe(
       "OpenAI request failed with status 503"
     );
-  });
-
-  it.each([
-    ["sources_processing", "still processing"],
-    ["no_retrieval_candidates", "No matching passages"],
-    ["knowledge_retrieval_failed", "could not be retrieved"],
-    ["knowledge_answer_failed", "could not complete"],
-    ["knowledge_answer_contract_failed", "could not be safely accepted"],
-    ["knowledge_citation_contract_failed", "cited evidence that was not supplied"]
-  ])("keeps Knowledge state %s distinct and user-safe", (code, expected) => {
-    const message = humanizeErrorCode(code);
-    expect(message).toContain(expected);
-    expect(message).toContain(`(${code})`);
-    expect(message).not.toMatch(/providerResponseId|manifestHash|sourceArtifactId/u);
   });
 
   it.each(["openrouter_required_parameters_unavailable", "openrouter_routing_unavailable"])("identifies the answer route for %s without suggesting an unchanged retry", (code) => {

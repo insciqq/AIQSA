@@ -69,8 +69,7 @@ async function settleExhaustedAttachmentJobs(
       FROM "AttachmentProcessingJob" AS job
       INNER JOIN "Attachment" AS attachment
         ON attachment."id" = job."attachmentId"
-        AND (attachment."userId" = job."ownerUserId"
-          OR attachment."projectId" IS NOT NULL)
+        AND attachment."userId" = job."ownerUserId"
       WHERE attachment."status" = 'processing'::"AttachmentStatus"
         AND job."attemptCount" >= ${input.maxAttempts}
         AND job."nextAttemptAt" <= ${input.now}
@@ -120,8 +119,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               FROM "AttachmentProcessingJob" AS job
               INNER JOIN "Attachment" AS attachment
                 ON attachment."id" = job."attachmentId"
-                AND (attachment."userId" = job."ownerUserId"
-                  OR attachment."projectId" IS NOT NULL)
+                AND attachment."userId" = job."ownerUserId"
               WHERE attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."attemptCount" < ${input.maxAttempts}
                 AND job."nextAttemptAt" <= ${input.now}
@@ -141,8 +139,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               FROM "AttachmentProcessingJob" AS job
               INNER JOIN "Attachment" AS attachment
                 ON attachment."id" = job."attachmentId"
-                AND (attachment."userId" = job."ownerUserId"
-                  OR attachment."projectId" IS NOT NULL)
+                AND attachment."userId" = job."ownerUserId"
               WHERE attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."ownerUserId" > ${lastGrantedOwnerUserId}
                 AND job."attemptCount" < ${input.maxAttempts}
@@ -161,8 +158,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               FROM "AttachmentProcessingJob" AS job
               INNER JOIN "Attachment" AS attachment
                 ON attachment."id" = job."attachmentId"
-                AND (attachment."userId" = job."ownerUserId"
-                  OR attachment."projectId" IS NOT NULL)
+                AND attachment."userId" = job."ownerUserId"
               WHERE NOT EXISTS (SELECT 1 FROM after_cursor)
                 AND attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."ownerUserId" <= ${lastGrantedOwnerUserId}
@@ -209,8 +205,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
         FROM claimed
         INNER JOIN "Attachment" AS attachment
           ON attachment."id" = claimed."attachmentId"
-          AND (attachment."userId" = claimed."ownerUserId"
-            OR attachment."projectId" IS NOT NULL)
+          AND attachment."userId" = claimed."ownerUserId"
       `);
       const claimed = rows[0];
       if (!claimed) return { exhausted, row: null };

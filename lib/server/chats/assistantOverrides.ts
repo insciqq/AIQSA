@@ -8,17 +8,15 @@ import {
 } from "../../contracts/chats";
 import type { SearchStrategyCatalogEntry } from "../../domain/catalog";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
-import type { AssistantRowAvailableResources } from "../assistants/rowResolution";
 import { assistantRunControlIssue } from "../assistants/runControlMaterialization";
 import { assistantRowsFromStoredColumns } from "../assistants/storedContent";
 import {
   resolveCurrentUserCatalogSelection,
   type CatalogData
 } from "../catalog/currentUserCatalog";
-import { installationOrGroupPublication } from "../knowledge/retainedEvidenceAccess";
 import type { ChatAssistantUpdateErrorCode } from "./assistantUpdateError";
 
-/** The part of the chat's catalog that overrides are checked against: the requester's, or the Project's. */
+/** The part of the requester's catalog that overrides are checked against. */
 export type ChatAssistantOverrideCatalog = Readonly<{
   defaultModelId: string | null;
   models: readonly CatalogWireModel[];
@@ -56,15 +54,8 @@ export function overridesNeedCatalog(patch: ChatAssistantOverridesPatch): boolea
   return (["controls", "model", "search"] as const).some((key) => patch[key] != null);
 }
 
-/** Whether a patch names resources a Project chat checks against the Project: a catalog value or Knowledge. */
-export function projectOverridesNeedAuthority(patch: ChatAssistantOverridesPatch): boolean {
-  return overridesNeedCatalog(patch) || patch.knowledge != null;
-}
-
 const definitionRowSelect = {
   controlsPolicy: true,
-  knowledgePolicy: true,
-  knowledgeSelection: true,
   mcpMode: true,
   mcpServerIds: true,
   modelPolicy: true,
@@ -78,7 +69,7 @@ const definitionRowSelect = {
   toolsPolicy: true
 } satisfies Prisma.AssistantDefinitionSelect;
 
-/** The six rows of a definition the caller already found available. */
+/** The rows of a definition the caller already found available. */
 export async function loadAssistantRows(
   tx: Pick<Prisma.TransactionClient, "assistantDefinition">,
   assistantId: string
@@ -95,8 +86,7 @@ export async function loadAssistantRows(
 /**
  * Checks a patch against the Assistant's row policies and the requester's
  * catalog, the way an ordinary chat checks the same kind of value. Clearing a
- * row (null) is always allowed: it only removes a stale value. Knowledge
- * resources are checked separately because they need the database.
+ * row (null) is always allowed: it only removes a stale value.
  */
 export function chatAssistantOverridesIssue(input: Readonly<{
   catalog: ChatAssistantOverrideCatalog | null;
@@ -142,61 +132,4 @@ export function chatAssistantOverridesIssue(input: Readonly<{
     }
   }
   return null;
-}
-
-/** Whether every Knowledge base and source of an explicit override is usable by the requester. */
-export async function knowledgeOverrideAvailable(
-  tx: Pick<Prisma.TransactionClient, "knowledgeBase" | "knowledgeSource" | "userGroup">,
-  userId: string,
-  value: NonNullable<ChatAssistantOverridesPatch["knowledge"]>
-): Promise<boolean> {
-  if (value.mode !== "explicit") return true;
-  const baseIds = [...new Set(value.baseIds)];
-  const sourceIds = [...new Set(value.sourceIds)];
-  if (baseIds.length === 0 && sourceIds.length === 0) return true;
-  const memberships = await tx.userGroup.findMany({
-    select: { groupId: true },
-    where: { group: { archivedAt: null }, userId }
-  });
-  const accessible = await tx.knowledgeBase.findMany({
-    select: { id: true },
-    where: {
-      deletionRequestedAt: null,
-      OR: [
-        { archivedAt: null, ownerUserId: userId, trashedAt: null },
-        installationOrGroupPublication(memberships.map(({ groupId }) => groupId))
-      ]
-    }
-  });
-  const accessibleIds = new Set(accessible.map(({ id }) => id));
-  if (baseIds.some((id) => !accessibleIds.has(id))) return false;
-  if (sourceIds.length === 0) return true;
-  const sources = await tx.knowledgeSource.count({
-    where: {
-      deletionRequestedAt: null,
-      id: { in: sourceIds },
-      OR: [
-        { ownerUserId: userId },
-        { baseMemberships: { some: { knowledgeBaseId: { in: [...accessibleIds] }, removedAt: null } } }
-      ],
-      trashedAt: null
-    }
-  });
-  return sources === sourceIds.length;
-}
-
-/**
- * Whether a Knowledge override is usable in a Project chat: None, or only
- * Knowledge bases and ready documents the Project provides. "All my
- * knowledge" and a member's personal Knowledge never run in a Project.
- */
-export function projectKnowledgeOverrideAvailable(
-  available: Pick<AssistantRowAvailableResources, "knowledgeBaseIds" | "knowledgeSourceIds">,
-  value: NonNullable<ChatAssistantOverridesPatch["knowledge"]>
-): boolean {
-  if (value.mode === "all_my_knowledge") return false;
-  return value.mode === "none" || (
-    value.baseIds.every((id) => available.knowledgeBaseIds.has(id)) &&
-    value.sourceIds.every((id) => available.knowledgeSourceIds.has(id))
-  );
 }

@@ -6,30 +6,15 @@ import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { ChatAssistantOverridesPatch } from "../../contracts/chats";
 import { nextChatAssistantOverrides } from "../chats/assistantOverrides";
 import { ANSWER_RULES_MAX_LENGTH, RESPONSE_REMINDER_MAX_LENGTH } from "../../contracts/instructionPresets";
-import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import { providerInstructionsWithPersonalContext } from "../providers/personalContext";
 import { withResponseReminder } from "../providers/responseReminder";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
-import {
-  KnowledgeRunAdmissionError,
-  type KnowledgeRunAdmissionPlan
-} from "../knowledge/runAdmission";
-import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
-import { KNOWLEDGE_SEARCH_TOOL_NAME } from "../knowledge/retrievalTypes";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { ProviderAdapter, ProviderModelCapabilities } from "../providers/types";
-import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
-import { SESSION_STATUS_TOOL_NAME } from "../tools/sessionStatus";
 import { materializePreparedRunData, prepareRun, type RunPreparationDeps } from "./runPreparation";
-
-// Knowledge admission stays tested as it worked; `runPreparation.test.ts` covers Knowledge disabled.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
 
 const fakeAdapter = {
   buildRequestPreview: () => ({ provider: "fake" }),
@@ -54,15 +39,8 @@ function repository() {
       providerKeys: new Set<string>(),
       searchStrategies: new Set<string>()
     })),
-    loadSearchStrategyConfiguration: vi.fn(async () => null),
-    isSearchStrategyEnabled: vi.fn(async () => true)
+    loadSearchStrategyConfiguration: vi.fn(async () => null)
   };
-}
-
-function knowledgeSelection(baseIds: readonly string[] = []): KnowledgeSelection {
-  return baseIds.length > 0
-    ? { baseIds: [...baseIds], mode: "explicit", sourceIds: [], version: 1 }
-    : { baseIds: [], mode: "none", sourceIds: [], version: 1 };
 }
 
 type AssistantFixture = Extract<AssistantRunResolution, { ok: true }>["assistant"];
@@ -74,7 +52,6 @@ function assistantResolution(
   const { rows, ...fields } = overrides;
   const flat: Omit<AssistantFixture, "rows"> = {
     assistantId: "assistant-1",
-    knowledgeSelection: knowledgeSelection(),
     mcpServerIds: [],
     name: "Code Reviewer",
     provider: "fake",
@@ -102,46 +79,6 @@ function assistantResolution(
 type AdmissionInput = Parameters<
   NonNullable<RunPreparationDeps["providerAdmission"]>["load"]
 >[0];
-type KnowledgeAdmissionInput = Parameters<
-  NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
->[0];
-
-function knowledgeAdmissionPlan(
-  input: KnowledgeAdmissionInput,
-  fingerprintCharacter: string
-) {
-  return {
-    bindings: input.knowledgePlan.mode === "none"
-      ? []
-      : [{
-          approxTokens: 1_000,
-          baseContentRevision: 1,
-          embeddingCredentialSource: "default" as const,
-          embeddingExecutionSnapshot: {} as never,
-          embeddingProviderModelId: "embedding-model-1",
-          includeWholeBase: true,
-          indexedContentRevision: 1,
-          indexGenerationId: "generation-1",
-          knowledgeBaseId: input.knowledgePlan.baseIds[0] ?? "knowledge-base-1",
-          ordinal: 0,
-          passageCount: 4,
-          readySourceCount: 1,
-          selectedSourceIds: input.knowledgePlan.sourceIds,
-          sourceCount: 1,
-          targetDimension: 1024,
-          vectorSpaceFingerprint: "f".repeat(64)
-        }],
-    budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-    exclusions: [],
-    fingerprint: fingerprintCharacter.repeat(64),
-    knowledgePlan: input.knowledgePlan,
-    resolvedSourceCount: 0,
-    ...(input.executionScope ? { executionScope: input.executionScope } : {}),
-    ...(input.projectId ? { projectId: input.projectId } : {}),
-    userId: input.userId
-  };
-}
-
 function fakeAdmissionPlan(input: AdmissionInput, toolCalling = true): ProviderAdmissionPlan {
   const capabilities: ProviderModelCapabilities = {
     contextWindow: 128_000,
@@ -296,227 +233,6 @@ describe("standard-chat baseline admission", () => {
   });
 });
 
-describe("ordinary Knowledge plan resolution", () => {
-  it.each([
-    {
-      body: ordinaryBody({ knowledgePlan: knowledgeSelection(["explicit"]), text: "Hello" }),
-      chat: knowledgeSelection(["chat"]),
-      expected: ["explicit"],
-      folder: knowledgeSelection(["folder"]),
-      label: "explicit over chat and folder"
-    },
-    {
-      body: ordinaryBody({ text: "Hello" }),
-      chat: knowledgeSelection(["chat"]),
-      expected: ["chat"],
-      folder: knowledgeSelection(["folder"]),
-      label: "chat over folder"
-    },
-    {
-      body: ordinaryBody({ text: "Hello" }),
-      chat: null,
-      expected: ["folder"],
-      folder: knowledgeSelection(["folder"]),
-      label: "folder when chat inherits"
-    }
-  ])("resolves $label", async ({ body, chat, expected, folder }) => {
-    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
-      knowledgeAdmissionPlan(input, "b"));
-    const source = sendSource();
-    const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
-      body,
-      source: {
-        ...source,
-        chat: {
-          ...source.chat,
-          defaultKnowledgePlan: chat,
-          folderDefaultKnowledgePlan: folder
-        }
-      },
-      userId: "user-1"
-    });
-
-    expect(result.ok).toBe(true);
-    expect(load).toHaveBeenCalledWith({
-      knowledgePlan: knowledgeSelection(expected),
-      userId: "user-1"
-    });
-    if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
-        knowledgeSelection(expected)
-      );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
-      expect(result.prepared.normalizedRequest.toolMode).toBe("auto");
-      // The page reader is built in for every tool-calling run that keeps its tools on.
-      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        KNOWLEDGE_SEARCH_TOOL_NAME,
-        SESSION_STATUS_TOOL_NAME,
-        FETCH_URL_TOOL_NAME
-      ]);
-    }
-  });
-
-  it("keeps explicit Off above defaults and resolves absent defaults to Off", async () => {
-    const load = vi.fn();
-    for (const input of [
-      {
-        body: ordinaryBody({ knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }, text: "Hello" }),
-        chat: knowledgeSelection(["chat"]),
-        folder: knowledgeSelection(["folder"])
-      },
-      { body: ordinaryBody({ text: "Hello" }), chat: null, folder: null }
-    ]) {
-      const source = sendSource();
-      const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
-        body: input.body,
-        source: {
-          ...source,
-          chat: {
-            ...source.chat,
-            defaultKnowledgePlan: input.chat,
-            folderDefaultKnowledgePlan: input.folder
-          }
-        },
-        userId: "user-1"
-      });
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(knowledgeSelection());
-        expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
-      }
-    }
-    expect(load).not.toHaveBeenCalled();
-  });
-
-  it("keeps selected Knowledge active when ordinary client tools are suppressed", async () => {
-    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
-      knowledgeAdmissionPlan(input, "c"));
-    const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
-      body: ordinaryBody({
-        knowledgePlan: knowledgeSelection(["base-1"]),
-        text: "Hello",
-        tools: "none"
-      }),
-      source: sendSource(),
-      userId: "user-1"
-    });
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.prepared.normalizedRequest).toMatchObject({
-        knowledgePlan: knowledgeSelection(["base-1"]),
-        toolMode: "auto"
-      });
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
-      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        KNOWLEDGE_SEARCH_TOOL_NAME,
-        SESSION_STATUS_TOOL_NAME
-      ]);
-    }
-  });
-
-  it("rejects selected Knowledge for a non-tool answer model", async () => {
-    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
-      knowledgeAdmissionPlan(input, "d"));
-    const result = await prepareRun(deps({
-      knowledgeAdmission: { load },
-      providerAdmission: {
-        async load(input) {
-          return fakeAdmissionPlan(input, false);
-        }
-      }
-    }), {
-      body: ordinaryBody({ knowledgePlan: knowledgeSelection(["base-1"]), text: "Hello" }),
-      source: sendSource(),
-      userId: "user-1"
-    });
-
-    expect(result).toMatchObject({
-      code: "knowledge_tool_calling_not_supported",
-      ok: false,
-      status: 400
-    });
-  });
-
-  it("applies the same explicit-plan wire contract to regeneration", async () => {
-    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
-      knowledgeAdmissionPlan(input, "c"));
-    const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
-      body: ordinaryBody({ knowledgePlan: knowledgeSelection(["regeneration-base"]) }),
-      source: {
-        kind: "regenerate",
-        source: {
-          assistantMessage: { modelId: "fake-model", provider: "fake" },
-          chat: {
-            defaultKnowledgePlan: knowledgeSelection(["chat-default"]),
-            defaultModelId: "fake-model",
-            defaultProvider: "fake",
-            folderDefaultKnowledgePlan: knowledgeSelection(["folder-default"]),
-            id: "chat-1",
-            projectMemory: null
-          },
-          userMessage: {
-            content: textMessageContent("Stored question"),
-            id: "user-message-1",
-            scheduledTaskPrompt: false
-          }
-        }
-      },
-      userId: "user-1"
-    });
-
-    expect(result.ok).toBe(true);
-    expect(load).toHaveBeenCalledWith({
-      knowledgePlan: knowledgeSelection(["regeneration-base"]),
-      userId: "user-1"
-    });
-    if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
-        knowledgeSelection(["regeneration-base"])
-      );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
-      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        KNOWLEDGE_SEARCH_TOOL_NAME,
-        SESSION_STATUS_TOOL_NAME,
-        FETCH_URL_TOOL_NAME
-      ]);
-    }
-  });
-
-  it("rejects malformed stored or explicit plans before provider admission", async () => {
-    const source = sendSource();
-    for (const input of [
-      {
-        body: ordinaryBody({ knowledgePlan: { baseIds: ["legacy-base"] }, text: "Hello" }),
-        chat: null
-      },
-      {
-        body: ordinaryBody({
-          knowledgePlan: {
-            baseIds: ["a", "a"], mode: "explicit", sourceIds: [], version: 1
-          },
-          text: "Hello"
-        }),
-        chat: null
-      },
-      {
-        body: ordinaryBody({ text: "Hello" }),
-        chat: { baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`) }
-      }
-    ]) {
-      const result = await prepareRun(deps(), {
-        body: input.body,
-        source: {
-          ...source,
-          chat: { ...source.chat, defaultKnowledgePlan: input.chat }
-        },
-        userId: "user-1"
-      });
-      expect(result).toMatchObject({ code: "knowledge_plan_invalid", ok: false, status: 400 });
-    }
-  });
-});
-
 describe("assistant run admission", () => {
   it.each(["", "Assistant reminder"])("uses only the Assistant reminder and never personal presets (%s)", async responseReminder => {
     const instructions = { resolveForRun: vi.fn() };
@@ -561,137 +277,9 @@ describe("assistant run admission", () => {
         assistantId: "assistant-1",
         definitionVersion: 3,
         identity: { name: "Code Reviewer", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-        rows: { controls: "assistant", knowledge: "assistant", model: "assistant", search: "assistant", skills: "assistant", tools: "assistant" }
+        rows: { controls: "assistant", model: "assistant", search: "assistant", skills: "assistant", tools: "assistant" }
       });
       expect(result.prepared.defaults).toBeNull();
-    }
-  });
-
-  it("uses the current Assistant Knowledge list and admits it server-side", async () => {
-    const load = vi.fn(async (input: KnowledgeAdmissionInput) =>
-      knowledgeAdmissionPlan(input, "a"));
-    const result = await prepareRun(
-      deps({
-        assistants: {
-          resolveForRun: async () => assistantResolution({
-            knowledgeSelection: knowledgeSelection(["base-a", "base-b"])
-          })
-        },
-        knowledgeAdmission: { load }
-      }),
-      {
-        body: { assistantId: "assistant-1", text: "Review this" },
-        source: sendSource(),
-        userId: "user-1"
-      }
-    );
-
-    expect(result.ok).toBe(true);
-    expect(load).toHaveBeenCalledWith({
-      knowledgePlan: knowledgeSelection(["base-a", "base-b"]),
-      userId: "user-1"
-    });
-    if (result.ok) {
-      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual(
-        knowledgeSelection(["base-a", "base-b"])
-      );
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
-      // An Assistant's tools row selects MCP servers; the built-in page reader stays.
-      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        KNOWLEDGE_SEARCH_TOOL_NAME,
-        SESSION_STATUS_TOOL_NAME,
-        FETCH_URL_TOOL_NAME
-      ]);
-    }
-  });
-
-  it("admits an Assistant direct Source through ordinary user authority", async () => {
-    const sourceId = "00000000-0000-4000-8000-000000000001";
-    const selection: KnowledgeSelection = {
-      baseIds: [],
-      mode: "explicit",
-      sourceIds: [sourceId],
-      version: 1
-    };
-    const load = vi.fn(async (
-      input: KnowledgeAdmissionInput
-    ): Promise<KnowledgeRunAdmissionPlan> => ({
-      bindings: [],
-      budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-      exclusions: [],
-      fingerprint: "e".repeat(64),
-      knowledgePlan: input.knowledgePlan,
-      profiles: [{
-        embeddingCredentialSource: "default",
-        embeddingExecutionSnapshot: {} as never,
-        embeddingProviderModelId: "embedding-model-1",
-        ordinal: 0,
-        profileRevisionId: "profile-revision-1",
-        targetDimension: 1024,
-        vectorSpaceFingerprint: "f".repeat(64)
-      }],
-      resolvedSourceCount: 1,
-      sources: [{
-        approxTokens: 1_000,
-        authority: { knowledgeBaseIds: [], owner: true, projectId: null },
-        baseProvenance: [],
-        directSelected: true,
-        ordinal: 0,
-        privateLabels: { fileName: "source-1.md", sourceName: "Source 1" },
-        passageCount: 4,
-        profileOrdinal: 0,
-        profileRevisionId: "profile-revision-1",
-        selectionProvenance: ["explicit_source"],
-        sourceAlias: "S1",
-        sourceArtifactId: "artifact-1",
-        sourceId,
-        sourceVersionId: "source-version-1",
-        sourceVersionNumber: 1
-      }],
-      userId: input.userId
-    }));
-    const result = await prepareRun(
-      deps({
-        assistants: {
-          resolveForRun: async () => assistantResolution({ knowledgeSelection: selection })
-        },
-        knowledgeAdmission: { load }
-      }),
-      {
-        body: { assistantId: "assistant-1", text: "Review this" },
-        source: sendSource(),
-        userId: "user-1"
-      }
-    );
-
-    expect(load).toHaveBeenCalledOnce();
-    expect(load).toHaveBeenCalledWith({
-      knowledgePlan: selection,
-      userId: "user-1"
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.prepared.assistant).toEqual({
-        assistantId: "assistant-1",
-        definitionVersion: 3,
-        identity: { name: "Code Reviewer", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-        rows: { controls: "assistant", knowledge: "assistant", model: "assistant", search: "assistant", skills: "assistant", tools: "assistant" }
-      });
-      expect(result.prepared.knowledgeAdmissionPlan?.sources).toEqual([
-        expect.objectContaining({
-          authority: { knowledgeBaseIds: [], owner: true, projectId: null },
-          directSelected: true,
-          sourceId
-        })
-      ]);
-      expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
-      expect(result.prepared.normalizedRequest).not.toHaveProperty("knowledgePlanner");
-      expect(result.prepared.normalizedRequest.toolMode).toBe("auto");
-      expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        KNOWLEDGE_SEARCH_TOOL_NAME,
-        SESSION_STATUS_TOOL_NAME,
-        FETCH_URL_TOOL_NAME
-      ]);
     }
   });
 
@@ -775,7 +363,6 @@ describe("assistant run admission", () => {
     const resolveForRun = vi.fn(async () => assistantResolution());
     for (const override of [
       { modelId: "other" },
-      { knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 } },
       { params: { temperature: 1 } },
       { controlDefaults: { temperature: "1" } },
       { provider: "openai" },
@@ -811,41 +398,6 @@ describe("assistant run admission", () => {
       expect(result).toMatchObject({ code: "assistant_overrides_not_allowed", ok: false, status: 400 });
     }
     expect(resolveForRun).not.toHaveBeenCalled();
-  });
-
-  it("reports the Assistant's own unavailable Knowledge with the neutral conflict", async () => {
-    const selection: KnowledgeSelection = {
-      baseIds: [],
-      mode: "explicit",
-      sourceIds: ["hidden-source"],
-      version: 1
-    };
-    const load = vi.fn(async () => { throw new KnowledgeRunAdmissionError(); });
-    const result = await prepareRun(
-      deps({
-        assistants: {
-          resolveForRun: async () => assistantResolution({
-            knowledgeSelection: selection
-          })
-        },
-        knowledgeAdmission: { load }
-      }),
-      {
-        body: { assistantId: "assistant-1", text: "Review this" },
-        source: sendSource(),
-        userId: "user-1"
-      }
-    );
-
-    expect(result).toMatchObject({
-      code: "assistant_not_available",
-      ok: false,
-      status: 409
-    });
-    expect(load).toHaveBeenCalledWith({
-      knowledgePlan: selection,
-      userId: "user-1"
-    });
   });
 
   it("returns the privacy-neutral failure for unresolved assistants", async () => {
@@ -1105,7 +657,6 @@ describe("bound chat Assistant rows", () => {
       rowDeps(
         resolver({
           controls: adjustable<"controls">({}),
-          knowledge: adjustable<"knowledge">({ mode: "inherit" }),
           model: adjustable<"model">({ mode: "inherit" }),
           search: adjustable<"search">({ mode: "inherit" }),
           tools: adjustable<"tools">({ mode: "inherit" })
@@ -1128,7 +679,7 @@ describe("bound chat Assistant rows", () => {
     }));
     expect(result.prepared.normalizedRequest.params).toMatchObject({ reasoning: { effort: "low" } });
     expect(result.prepared.assistant?.rows).toEqual({
-      controls: "default", knowledge: "default", model: "default", search: "default", skills: "assistant", tools: "default"
+      controls: "default", model: "default", search: "default", skills: "assistant", tools: "default"
     });
   });
 
@@ -1188,7 +739,6 @@ describe("bound chat Assistant rows", () => {
   it("reports request values outside the runner's catalog as an ordinary chat does", async () => {
     const rows = {
       controls: adjustable<"controls">({}),
-      knowledge: adjustable<"knowledge">({ mode: "none" }),
       model: adjustable<"model">({ mode: "model", modelId: "fake-model" }),
       search: adjustable<"search">({ mode: "off" }),
       tools: adjustable<"tools">({ mode: "off" })
@@ -1196,7 +746,6 @@ describe("bound chat Assistant rows", () => {
     const cases: [Record<string, unknown>, string, number][] = [
       [{ modelId: "missing-model", provider: "fake" }, "model_not_available", 403],
       [{ modelId: "fake-model", provider: "another-connection" }, "model_not_available", 403],
-      [{ knowledgePlan: knowledgeSelection(["hidden-base"]) }, "knowledge_base_not_available", 404],
       [{ searchPlan: { mode: "all_selected", optionIds: ["hidden-web"] } }, "search_strategy_not_available", 403],
       [{ controlDefaults: { reasoningEffort: "impossible" } }, "invalid_run_params", 400],
       [{ params: { temperature: 1 } }, "invalid_run_params", 400],
@@ -1205,7 +754,7 @@ describe("bound chat Assistant rows", () => {
     ];
     for (const [override, code, status] of cases) {
       const result = await prepareRun(
-        rowDeps(resolver(rows, { runControls: {} }), loader({ unavailable: ["hidden-base", "hidden-web"] })),
+        rowDeps(resolver(rows, { runControls: {} }), loader({ unavailable: ["hidden-web"] })),
         { body: { text: "Hi", ...override }, source: boundSource(), userId: "user-1" }
       );
       expect(result).toMatchObject({ code, ok: false, status });

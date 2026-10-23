@@ -6,32 +6,39 @@ import { prisma } from "../prisma";
 import { getWorkspaceConfig } from "../workspace/config";
 import { DeterministicWorkspaceRuntime } from "../workspace/deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "../workspace/fencedRuntime";
-import { createPrismaProjectRepository } from "./prismaRepository";
-import { createPrismaProjectContentRepository } from "./contentRepository";
-import { finalizeProjectDeletion } from "./deletion";
+import { finalizeProjectDeletion, runProjectDeletionMaintenance } from "./deletion";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 
+/** A Project as the retirement migration leaves it: fenced for deletion, with a chat, a file and a share. */
 async function fixture() {
   const suffix = randomUUID();
-  const ownerId = `project-deletion-owner-${suffix}`;
-  const viewerId = `project-deletion-viewer-${suffix}`;
-  await prisma.user.createMany({ data: [ownerId, viewerId].map(id => ({ id, displayName: "Deletion fixture", status: "active" as const })) });
+  const ownerId = `project-retirement-owner-${suffix}`;
+  const viewerId = `project-retirement-viewer-${suffix}`;
+  await prisma.user.createMany({ data: [ownerId, viewerId].map(id => ({ id, displayName: "Retirement fixture", status: "active" as const })) });
   const local = new DeterministicWorkspaceRuntime(config);
   const runtime = fenceDeterministicWorkspaceRuntime(local);
-  const repository = createPrismaProjectRepository(prisma, { workspaceRuntime: runtime });
-  const created = await repository.create({ actorDisplayName: "Deletion fixture", name: "Disposable Project", description: "PRIVATE_DESCRIPTION", userId: ownerId });
-  if (created.kind !== "ok") throw new Error("fixture_create_failed");
-  const projectId = created.value.id;
-  await prisma.projectGrant.create({ data: { projectId, userId: viewerId, role: "VIEWER" } });
-  const chat = await prisma.chat.create({ data: {
-    projectId, userId: null, createdByUserId: ownerId, createdByDisplayName: "Deletion fixture", memoryMode: "EXCLUDED", title: "PRIVATE_CHAT"
+  const project = await prisma.project.create({ data: {
+    createdByDisplayName: "Retirement fixture", createdByUserId: ownerId, deletionRequestedAt: new Date(),
+    description: "PRIVATE_DESCRIPTION", name: "Retired Project", status: "DELETING",
+    grants: { create: [{ role: "OWNER", userId: ownerId }, { role: "VIEWER", userId: viewerId }] }
   } });
-  const request = { actorDisplayName: "Deletion fixture", projectId, userId: ownerId };
+  const projectId = project.id;
+  const chat = await prisma.chat.create({ data: {
+    projectId, userId: null, createdByUserId: ownerId, createdByDisplayName: "Retirement fixture", memoryMode: "EXCLUDED", title: "PRIVATE_CHAT"
+  } });
+  const message = await prisma.message.create({ data: { chatId: chat.id, role: "user", authorUserId: ownerId,
+    authorDisplayName: "Retirement fixture", authorProjectRole: "OWNER", content: { blocks: [{ type: "text", text: "PRIVATE_TEXT" }] } } });
+  const storageKey = `projects/retirement-${suffix}`;
+  const attachment = await prisma.attachment.create({ data: { byteSize: 4, chatId: chat.id, fileName: "private.txt", kind: "file",
+    messageId: message.id, mimeType: "text/plain", projectId, storageKey, uploaderDisplayName: "Retirement fixture", uploaderUserId: ownerId } });
+  const share = await prisma.sharedChatSnapshot.create({ data: { chatId: chat.id, createdByDisplayName: "Retirement fixture",
+    projectId, revokedAt: new Date(), slugHash: randomBytes(32).toString("hex"), snapshot: {}, title: "Synthetic share" } });
+  const personal = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Personal chat", userId: ownerId } });
   let sessionId: string | null = null;
   let runtimeSandboxId: string | null = null;
   return {
-    chat, local, ownerId, projectId, repository, request, runtime, viewerId,
+    attachment, chat, local, message, ownerId, personal, projectId, runtime, share, storageKey, viewerId,
     async workspace() {
       sessionId = `ws_${randomBytes(20).toString("hex")}`;
       const sandboxName = workspaceSandboxName(sessionId);
@@ -44,77 +51,105 @@ async function fixture() {
     },
     async cleanup() {
       if (sessionId) {
-        await local.removeSession({ runtimeSandboxId, sessionId });
+        await local.removeSession({ runtimeSandboxId, sessionId }).catch(() => undefined);
         await prisma.workspaceCleanupJob.deleteMany({ where: { workspaceSessionId: sessionId } });
         await prisma.workspaceSession.deleteMany({ where: { id: sessionId } });
       }
       await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
       await prisma.project.deleteMany({ where: { id: projectId } });
+      await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey } });
+      await prisma.chat.deleteMany({ where: { id: personal.id } });
       await prisma.user.deleteMany({ where: { id: { in: [ownerId, viewerId] } } });
     }
   };
 }
 
-describe("durable Project deletion", () => {
+describe("Project retirement", () => {
   afterAll(async () => { await prisma.$disconnect(); });
 
-  it("rejects an active run before changing lifecycle or revoking shares", async () => {
+  it("deletes a fenced Project with its chats, files, shares, memberships and Workspace, and nothing personal", async () => {
     const value = await fixture();
     try {
-      const message = await prisma.message.create({ data: { chatId: value.chat.id, role: "user",
-        authorUserId: value.ownerId, authorDisplayName: "Deletion fixture", authorProjectRole: "OWNER", content: { blocks: [] } } });
-      const answer = await prisma.message.create({ data: { chatId: value.chat.id, role: "assistant", parentMessageId: message.id, content: { blocks: [] } } });
-      await prisma.$transaction(async tx => {
-        const run = await tx.modelRun.create({ data: { chatId: value.chat.id, userId: value.ownerId,
-          userMessageId: message.id, assistantMessageId: answer.id, provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status: "streaming" } });
-        await tx.projectRunBinding.create({ data: { modelRunId: run.id, projectId: value.projectId,
-          initiatorUserId: value.ownerId, acceptedRole: "OWNER", accessRevision: 1, instructionsRevision: 1,
-          memoryRevision: 0, policyRevision: 1, personalMemoryDisabled: true } });
-      });
-      const share = await prisma.sharedChatSnapshot.create({ data: { projectId: value.projectId, chatId: value.chat.id,
-        title: "Synthetic share", slugHash: randomBytes(32).toString("hex"), snapshot: {} } });
-      expect(await value.repository.delete(value.request)).toEqual({ kind: "conflict", reason: "project_active_run" });
-      expect(await prisma.project.findUnique({ where: { id: value.projectId } })).toMatchObject({ status: "ACTIVE", deletionRequestedAt: null });
-      expect(await prisma.sharedChatSnapshot.findUnique({ where: { id: share.id } })).toMatchObject({ revokedAt: null });
-      expect(await prisma.projectAuditEvent.count({ where: { projectId: value.projectId, eventType: "deletion_requested" } })).toBe(0);
+      const sessionId = await value.workspace();
+      const removeSession = vi.fn(value.runtime.removeSession);
+      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime: { ...value.runtime, removeSession } }))
+        .toBe("completed");
+      expect(removeSession).toHaveBeenCalledOnce();
+      expect(await prisma.project.findUnique({ where: { id: value.projectId } })).toBeNull();
+      expect(await prisma.projectGrant.count({ where: { projectId: value.projectId } })).toBe(0);
+      expect(await prisma.chat.findUnique({ where: { id: value.chat.id } })).toBeNull();
+      expect(await prisma.message.findUnique({ where: { id: value.message.id } })).toBeNull();
+      expect(await prisma.attachment.findUnique({ where: { id: value.attachment.id } })).toBeNull();
+      expect(await prisma.sharedChatSnapshot.findUnique({ where: { id: value.share.id } })).toBeNull();
+      expect(await prisma.workspaceSession.findUnique({ where: { id: sessionId } })).toBeNull();
+      // The stored object leaves through the ordinary reference-checked object deletion.
+      expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: value.storageKey } })).toBe(1);
+      expect(await prisma.chat.findUnique({ where: { id: value.personal.id } })).not.toBeNull();
+      expect(await prisma.user.count({ where: { id: { in: [value.ownerId, value.viewerId] } } })).toBe(2);
+      // Repeating the step after completion changes nothing.
+      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime: value.runtime })).toBe("completed");
     } finally { await value.cleanup(); }
   });
 
-  it("keeps failed deletion visible only to its Owner and finalizes after that Owner is disabled", async () => {
+  it("finalizes fenced Projects from the maintenance pass and leaves a Project that is not fenced", async () => {
     const value = await fixture();
-    const foreign = await fixture();
+    const unfenced = await fixture();
     try {
-      const sessionId = await value.workspace();
-      const removeSession = vi.fn(value.runtime.removeSession).mockRejectedValueOnce(new Error("synthetic_runtime_outage"));
-      const runtime = { ...value.runtime, removeSession };
-      const repository = createPrismaProjectRepository(prisma, { workspaceRuntime: runtime });
-      expect(await repository.delete(value.request)).toEqual({ kind: "ok", value: { id: value.projectId, status: "failed" } });
-      expect(await repository.list(value.ownerId)).toContainEqual(expect.objectContaining({
-        id: value.projectId, status: "DELETING", deletionStatus: "failed", description: "", chatCount: 0, audienceCount: 0
-      }));
-      expect(await repository.list(value.viewerId)).toEqual([]);
-      const detail = await repository.getDetail(value.ownerId, value.projectId);
-      expect(detail).toMatchObject({ deletionStatus: "failed", instructions: "", resources: [], grants: [], fileCount: 0 });
-      expect(JSON.stringify(detail)).not.toContain("PRIVATE_");
-      expect(await repository.getDetail(value.viewerId, value.projectId)).toBeNull();
-      const content = createPrismaProjectContentRepository(prisma);
-      expect(await content.listWorkspace(value.ownerId, value.projectId)).toEqual({ chats: [], folders: [] });
-      expect(await content.listWorkspace(value.viewerId, value.projectId)).toBeNull();
-      expect(await content.createChat({ actorDisplayName: "Deletion fixture", projectId: value.projectId, userId: value.ownerId })).toEqual({ kind: "not_found" });
-      expect(await repository.delete({ ...value.request, userId: value.viewerId })).toEqual({ kind: "not_found" });
-      await prisma.user.update({ where: { id: value.ownerId }, data: { status: "disabled" } });
-      // The prior failed Workspace operation keeps its own backoff/fence.
-      await prisma.workspaceSession.update({ where: { id: sessionId }, data: { operationExpiresAt: new Date(0) } });
-      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime })).toBe("completed");
-      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime })).toBe("completed");
-      expect(removeSession).toHaveBeenCalledTimes(2);
+      await prisma.project.update({ where: { id: unfenced.projectId }, data: { deletionRequestedAt: null, status: "ACTIVE" } });
+      for (let pass = 0; pass < 20 && await prisma.project.count({ where: { id: value.projectId } }); pass += 1) {
+        await runProjectDeletionMaintenance({ prisma, runtime: value.runtime, limit: 50 });
+      }
       expect(await prisma.project.findUnique({ where: { id: value.projectId } })).toBeNull();
-      expect(await prisma.project.findUnique({ where: { id: foreign.projectId } })).not.toBeNull();
-      expect(await prisma.chat.findUnique({ where: { id: foreign.chat.id } })).not.toBeNull();
-    } finally { await value.cleanup(); await foreign.cleanup(); }
+      expect(await prisma.project.findUnique({ where: { id: unfenced.projectId } })).not.toBeNull();
+      expect(await prisma.chat.findUnique({ where: { id: unfenced.chat.id } })).not.toBeNull();
+    } finally { await value.cleanup(); await unfenced.cleanup(); }
   });
 
-  it("keeps concurrent retries pending while one worker owns deletion", async () => {
+  it("without a Workspace runtime finalizes only fenced Projects whose chats hold no Workspace VM", async () => {
+    const plain = await fixture();
+    const withVm = await fixture();
+    try {
+      await withVm.workspace();
+      for (let pass = 0; pass < 20 && await prisma.project.count({ where: { id: plain.projectId } }); pass += 1) {
+        await runProjectDeletionMaintenance({ prisma, limit: 50 });
+      }
+      expect(await prisma.project.findUnique({ where: { id: plain.projectId } })).toBeNull();
+      // Never claimed or failed: Workspace maintenance removes the VM first.
+      expect(await prisma.project.findUnique({ where: { id: withVm.projectId } })).toMatchObject({
+        deletionClaimToken: null, deletionLastAttemptAt: null, deletionLastErrorCode: null, status: "DELETING"
+      });
+      for (let pass = 0; pass < 20 && await prisma.project.count({ where: { id: withVm.projectId } }); pass += 1) {
+        await runProjectDeletionMaintenance({ prisma, runtime: withVm.runtime, limit: 50 });
+      }
+      expect(await prisma.project.findUnique({ where: { id: withVm.projectId } })).toBeNull();
+    } finally { await plain.cleanup(); await withVm.cleanup(); }
+  });
+
+  it("records a failed attempt while a run is active and finishes once the run settled", async () => {
+    const value = await fixture();
+    try {
+      const answer = await prisma.message.create({ data: { chatId: value.chat.id, role: "assistant", parentMessageId: value.message.id,
+        content: { blocks: [] } } });
+      // A Project run carries its binding (a deferred database check).
+      const run = await prisma.$transaction(async (tx) => {
+        const created = await tx.modelRun.create({ data: { assistantMessageId: answer.id, chatId: value.chat.id, modelId: "fake-qsa",
+          normalizedRequest: {}, provider: "fake", status: "streaming", userId: value.ownerId, userMessageId: value.message.id } });
+        await tx.projectRunBinding.create({ data: { acceptedRole: "OWNER", accessRevision: 1, initiatorUserId: value.ownerId,
+          instructionsRevision: 1, memoryRevision: 0, modelRunId: created.id, personalMemoryDisabled: true, policyRevision: 1,
+          projectId: value.projectId } });
+        return created;
+      });
+      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime: value.runtime })).toBe("failed");
+      expect(await prisma.project.findUnique({ where: { id: value.projectId } })).toMatchObject({
+        deletionClaimToken: null, deletionLastErrorCode: "project_deletion_failed", status: "DELETING"
+      });
+      await prisma.modelRun.update({ where: { id: run.id }, data: { status: "cancelled" } });
+      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime: value.runtime })).toBe("completed");
+      expect(await prisma.modelRun.findUnique({ where: { id: run.id } })).toBeNull();
+    } finally { await value.cleanup(); }
+  });
+
+  it("keeps concurrent attempts pending while one worker owns the deletion", async () => {
     const value = await fixture();
     let release!: () => void;
     const hold = new Promise<void>(resolve => { release = resolve; });
@@ -126,23 +161,19 @@ describe("durable Project deletion", () => {
       const removeSession = vi.fn(async (input: Parameters<typeof value.runtime.removeSession>[0]) => {
         entered(); await hold; await value.runtime.removeSession(input);
       });
-      const repository = createPrismaProjectRepository(prisma, { workspaceRuntime: { ...value.runtime, removeSession } });
-      pending = repository.delete(value.request);
+      const runtime = { ...value.runtime, removeSession };
+      pending = finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime });
       await started;
-      expect(await repository.delete(value.request)).toEqual({ kind: "ok", value: { id: value.projectId, status: "pending" } });
+      expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime })).toBe("pending");
       expect(removeSession).toHaveBeenCalledOnce();
       release();
-      expect(await pending).toEqual({ kind: "ok", value: { id: value.projectId, status: "completed" } });
-      expect(await repository.delete(value.request)).toEqual({ kind: "not_found" });
+      expect(await pending).toBe("completed");
     } finally { release(); await pending; await value.cleanup(); }
   });
 
   it("retains a failed final transaction for a later worker retry", async () => {
     const value = await fixture();
     try {
-      await prisma.project.update({ where: { id: value.projectId }, data: {
-        status: "DELETING", deletionRequestedAt: new Date()
-      } });
       let transactions = 0;
       const interrupted = new Proxy(prisma, { get(target, property, receiver) {
         if (property !== "$transaction") return Reflect.get(target, property, receiver);
@@ -159,11 +190,11 @@ describe("durable Project deletion", () => {
     } finally { await value.cleanup(); }
   });
 
-  it("recovers an expired worker claim without a current Owner session", async () => {
+  it("recovers an expired worker claim", async () => {
     const value = await fixture();
     try {
       await prisma.project.update({ where: { id: value.projectId }, data: {
-        status: "DELETING", deletionRequestedAt: new Date(0), deletionClaimToken: randomUUID(), deletionClaimExpiresAt: new Date(0)
+        deletionClaimExpiresAt: new Date(0), deletionClaimToken: randomUUID(), deletionRequestedAt: new Date(0)
       } });
       await prisma.user.update({ where: { id: value.ownerId }, data: { status: "disabled" } });
       expect(await finalizeProjectDeletion({ prisma, projectId: value.projectId, runtime: value.runtime })).toBe("completed");

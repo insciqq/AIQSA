@@ -61,53 +61,6 @@ import type {
   MemoryPreparingSettingsSnapshot
 } from "./preparingRun";
 import type { MemoryInitialChatMode } from "../../contracts/memory";
-import type { ProjectDefaultsWire, ProjectPolicyWire } from "../../contracts/projects";
-import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
-import type { KnowledgeRunAdmissionSource } from "../knowledge/runAdmission";
-
-/** Immutable Project authority a run of a Project chat was accepted under. */
-export type ProjectRunRecoveryAuthority = Readonly<{
-  accessRevision: number;
-  instructionsRevision: number;
-  memoryRevision: number;
-  policyRevision: number;
-  projectId: string;
-  providerAdmissionFingerprint: string;
-  providerConnectionId: string;
-  providerModelId: string;
-  providerRequiresClientTools: boolean;
-  providerSearchPlan: SearchPlan;
-}>;
-
-export type ProjectRunMemoryItem = Readonly<{
-  factId: string;
-  factVersionId: string;
-  includedText: string;
-  ordinal: number;
-}>;
-
-/** Immutable, server-loaded Project context carried into run admission. */
-export type ProjectRunAdmission = Readonly<{
-  accessRevision: number;
-  assistantBindings: readonly Readonly<{ assistantId: string }>[];
-  defaults: ProjectDefaultsWire;
-  instructions: string;
-  instructionsRevision: number;
-  knowledgeBaseIds: readonly string[];
-  mcpServerIds: readonly string[];
-  memoryEnabled: boolean;
-  memoryItems: readonly ProjectRunMemoryItem[];
-  memoryRevision: number;
-  modelIds: readonly string[];
-  policy: ProjectPolicyWire;
-  policyRevision: number;
-  projectId: string;
-  /** Project runs always resolve installation/shared provider authority. */
-  executionScope?: "project";
-  role: "CONTRIBUTOR" | "MANAGER" | "OWNER" | "VIEWER";
-  searchOptionIds: readonly string[];
-  skillIds?: readonly string[];
-}>;
 
 export type RunAttachmentRecord = ProviderAttachment & {
   preparedPdf?: Readonly<{ byteSize: number; checksum: string; pageCount: number; sourceChecksum: string; storageKey: string }>;
@@ -146,11 +99,9 @@ export type RunControlRecord = {
   assistantMessageId: string | null;
   chatId: string;
   id: string;
+  /** The run belongs to a legacy Project chat, which has no personal owner. */
+  legacyProjectChat?: true;
   modelId: string;
-  project?: ProjectRunRecoveryAuthority;
-  /** Legacy ProjectRunBinding rows with incomplete immutable authority. Active
-   * recovery must fail these closed; terminal history remains readable. */
-  projectRecoveryInvalid?: true;
   provider: string;
   providerResponseId: string | null;
   recoverySettled?: boolean;
@@ -180,7 +131,6 @@ export type RunChatUpdateRecord = {
     id: string;
     messageCount: number;
     pinned: boolean;
-    projectId?: string | null;
     title: string;
     updatedAt: Date | string;
     usageStats?: ChatUsageStats | null;
@@ -198,7 +148,6 @@ export type RunChatUpdateRecord = {
     id: string;
     modelId: string | null;
     modelRunId?: string | null;
-    author?: ChatMessageWire["author"];
     parentMessageId: string | null;
     provider: string | null;
     role: string;
@@ -494,7 +443,7 @@ export type AcceptedAssistantRun = {
 };
 
 /**
- * An Assistant run's chat binding, in a personal or Project chat. Admission
+ * An Assistant run's chat binding. Admission
  * rechecks that the chat is still bound as prepared, binds it when `bind` is
  * set (a first message creates the chat bound), and applies the override
  * change (stored controls follow their model) in the same transaction.
@@ -579,7 +528,6 @@ export type CreateRunInput = {
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
-  project?: ProjectRunAdmission;
   /** First personal send only: the chat row is committed with messages/run in
    * the same transaction, so rejected admission cannot leave an empty chat. */
   personalChat?: Readonly<{
@@ -587,9 +535,6 @@ export type CreateRunInput = {
     folderId: string | null;
     memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   }>;
-  /** First Project send only: the chat row is committed with messages/run in
-   * the same transaction, so a rejected admission cannot leave an empty chat. */
-  projectChat?: Readonly<{ folderId: string | null }>;
   /** A scheduled task's personal send: the run links this occurrence in its
    * creating transaction or is not created, records its scheduled origin,
    * marks its user message as the task's prompt, bypasses Personal Memory,
@@ -636,7 +581,6 @@ export type CreateRegenerationRunInput = {
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
-  project?: ProjectRunAdmission;
   signal?: AbortSignal;
   userId: string;
   userMessageId: string;
@@ -709,7 +653,6 @@ export type PreparingRunFinalizationInput = Readonly<{
   attemptId: string;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: readonly McpRunPlanBinding[];
-  project?: ProjectRunAdmission;
   skillBindings?: readonly AcceptedSkillRun[];
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan?: ProviderAdmissionPlan;
@@ -730,17 +673,13 @@ export type RunOwnedChatRecord = Readonly<{
   assistantId?: string | null;
   /** Raw `Chat.assistantOverrides`, decoded by admission. */
   assistantOverrides?: unknown;
-  defaultKnowledgePlan?: unknown;
   defaultModelId: string;
   defaultProvider: string;
   folderId?: string | null;
-  folderDefaultKnowledgePlan?: unknown;
   id: string;
   memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   messageCount: number;
-  projectFolderId?: string | null;
   projectMemory: string | null;
-  project?: ProjectRunAdmission;
   title: string;
   workspaceEnabled?: boolean;
 }>;
@@ -829,19 +768,11 @@ export type RunRepository = {
     options?: Readonly<{ recoveryTerminal?: boolean; workspaceClaimToken?: string }>
   ): Promise<boolean>;
   findOwnedChat(chatId: string, userId: string): Promise<RunOwnedChatRecord | null>;
-  /** Chain inputs of a personal Assistant run: the user's Chat defaults and usable resources. */
+  /** Chain inputs of an Assistant run: the user's Chat defaults and usable resources. */
   loadAssistantRowContext?(input: Readonly<{
     ids: AssistantRowResourceIds;
     userId: string;
   }>): Promise<AssistantRowContext | null>;
-  /** Chain inputs of a Project chat's Assistant: the Project's defaults and resources only. */
-  loadProjectAssistantRowContext?(input: Readonly<{ projectId: string }>): Promise<AssistantRowContext | null>;
-  loadProjectFirstSend?(input: Readonly<{
-    chatId: string;
-    folderId: string | null;
-    projectId: string;
-    userId: string;
-  }>): Promise<RunOwnedChatRecord | null>;
   loadPersonalFirstSend?(input: Readonly<{
     chatId: string;
     folderId: string | null;
@@ -864,14 +795,11 @@ export type RunRepository = {
     chat: {
       assistantId?: string | null;
       assistantOverrides?: unknown;
-      defaultKnowledgePlan?: unknown;
       defaultModelId: string;
       defaultProvider: string;
-      folderDefaultKnowledgePlan?: unknown;
       id: string;
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
-      project?: ProjectRunAdmission;
       workspaceEnabled?: boolean;
     };
     userMessage: {
@@ -906,7 +834,7 @@ export type RunRepository = {
   ): Promise<ProviderConversationMessage[]>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
-   * initiating user's current chat or Project access. */
+   * initiating user's current chat access. */
   getRunControlForRecovery?(runId: string): Promise<RunControlRecord | null>;
   getRunOutcomeForUser(runId: string, userId: string): Promise<RunOutcomeRecord | null>;
   getChatUpdateForRun(input: {
@@ -915,19 +843,8 @@ export type RunRepository = {
     userId: string;
     userMessageId: string;
   }): Promise<RunChatUpdateRecord | null>;
-  isProjectRunAccessCurrent?(input: {
-    accessRevision: number;
-    instructionsRevision: number;
-    memoryRevision: number;
-    policyRevision: number;
-    projectId: string;
-    userId: string;
-  }): Promise<boolean>;
-  loadAttachments(userId: string, attachmentIds: string[], projectId?: string, runId?: string): Promise<RunAttachmentRecord[]>;
+  loadAttachments(userId: string, attachmentIds: string[], runId?: string): Promise<RunAttachmentRecord[]>;
   loadWorkspaceFileFacts(input: import("../workspace/inboxFacts").WorkspaceInboxFactsInput): Promise<import("../workspace/inboxFacts").WorkspaceInboxFacts>;
-  loadKnowledgeFullContextPassages?(
-    sources: readonly KnowledgeRunAdmissionSource[]
-  ): Promise<readonly KnowledgeFullContextPassage[] | null>;
   /** Purpose-bound recovery loader for a full-context manifest accepted into
    * the evidence session before any current Draft provider operation exists. */
   loadKnowledgeFullContextDispatchRecovery?(input: {

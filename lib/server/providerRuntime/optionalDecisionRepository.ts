@@ -42,13 +42,13 @@ export function createOptionalDecisionRepository(db: PrismaClient): OptionalDeci
         } });
         if (created.count === 1) {
           const run = owner.runId ? await tx.modelRun.findFirstOrThrow({ where: { id: owner.runId, userId: owner.userId },
-            select: { chatId: true, chat: { select: { projectId: true } } } }) : null;
+            select: { chatId: true } }) : null;
           // A crash after this commit must retain unknown accounting, even if
           // there is no process left to execute a finally block.
           await tx.usageEvent.create({ data: {
             optionalDecision: true, optionalDecisionAttemptId: id, purpose: "skill_selection",
             userId: owner.userId, modelRunId: owner.runId ?? null,
-            chatId: run?.chatId ?? null, projectId: run?.chat.projectId ?? null, provider: snapshot.providerFamily,
+            chatId: run?.chatId ?? null, provider: snapshot.providerFamily,
             providerModelId: snapshot.providerModelId, modelId: snapshot.model.upstreamModelId,
             usageCompleteness: "UNAVAILABLE", operationCount: 1
           } });
@@ -66,7 +66,7 @@ export function createOptionalDecisionRepository(db: PrismaClient): OptionalDeci
       await db.$transaction(async tx => {
         const attempt = await tx.optionalDecisionAttempt.findFirst({ where: {
           id, userId: owner.userId, modelRunId: owner.runId ?? null, purpose: owner.purpose, operationKey: owner.operationKey
-        }, include: { modelRun: { select: { chatId: true, chat: { select: { projectId: true } } } } } });
+        }, include: { modelRun: { select: { chatId: true } } } });
         // Deleting the owning user/chat can retire an in-flight optional result.
         if (!attempt) return;
         const changed = await tx.optionalDecisionAttempt.updateMany({ where: { id,
@@ -93,7 +93,6 @@ export function createOptionalDecisionRepository(db: PrismaClient): OptionalDeci
         await tx.usageEvent.upsert({ where: { optionalDecisionAttemptId: id }, update: usage,
           create: { ...usage, optionalDecision: true, optionalDecisionAttemptId: id, purpose: "skill_selection", userId: owner.userId,
             modelRunId: owner.runId ?? null, chatId: attempt.modelRun?.chatId ?? null,
-            projectId: attempt.modelRun?.chat.projectId ?? null,
             provider: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
             modelId: snapshot.model.upstreamModelId, operationCount: 1 } });
       });

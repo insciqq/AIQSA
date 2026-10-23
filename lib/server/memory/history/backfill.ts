@@ -95,7 +95,6 @@ function eligibleHistorySourceWhereSql(userId: string): Prisma.Sql {
   return Prisma.sql`
     chat."userId" = ${userId}
     AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-    AND chat."projectId" IS NULL
   `;
 }
 
@@ -251,7 +250,6 @@ export async function seedMemoryHistoryBackfill(
     const source = await loadMemorySourceSnapshot(tx, {
       chatId: candidate.chatId,
       lock: "NONE",
-      personalOnly: true,
       userId: settings.userId
     });
     if (

@@ -25,7 +25,6 @@ import {
   MEMORY_CONSUMER_STATEMENT_MAX_LENGTH,
   type MemoryConsumerItem
 } from "@/lib/contracts/memoryConsumer";
-import { knowledgeAggregateStatus } from "@/lib/domain/knowledgePresentation";
 import {
   Fragment,
   useEffect,
@@ -38,7 +37,6 @@ import {
 } from "react";
 import type {
   FileSummaryV2,
-  KnowledgeSummaryV2,
   LibraryNavigationGuardV2,
   LibrarySubviewV2,
   LibraryTabIdV2,
@@ -57,13 +55,13 @@ function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
 
 export const libraryTabGroups: readonly Readonly<{ label: string | null; tabs: readonly LibraryTabIdV2[] }>[] = [
   { label: "Behavior", tabs: ["assistants", "instructions", "skills"] },
-  { label: "Content", tabs: ["knowledge", "memory", "files", "artifacts"] },
+  { label: "Content", tabs: ["memory", "files", "artifacts"] },
   { label: "Tools", tabs: ["scheduled", "mcp", "secrets"] },
   { label: null, tabs: ["defaults"] }
 ];
 const tabIcons: Record<LibraryTabIdV2, UiV2IconName> = {
   assistants: "assistant", instructions: "file-text", skills: "wand",
-  knowledge: "book", memory: "memory", files: "file", artifacts: "artifact",
+  memory: "memory", files: "file", artifacts: "artifact",
   mcp: "plug", secrets: "key", scheduled: "clock", defaults: "sliders"
 };
 
@@ -310,221 +308,6 @@ export function SectionHeading({
         </div>
       ) : null}
     </header>
-  );
-}
-
-type KnowledgeFilterV2 = "all" | "archived" | "shared" | "trash" | "yours";
-
-const knowledgeFilterLabels: Record<KnowledgeFilterV2, string> = {
-  all: "All",
-  archived: "Archived",
-  shared: "Shared",
-  trash: "Trash",
-  yours: "Yours"
-};
-
-function knowledgeFilterMatch(base: KnowledgeSummaryV2, filter: KnowledgeFilterV2): boolean {
-  const trashed = base.trashed ?? base.status === "trashed";
-  const archived = base.archived ?? base.status === "archived";
-  if (filter === "trash") return trashed;
-  if (filter === "archived") return archived && !trashed;
-  if (archived || trashed) return false;
-  if (filter === "yours") return base.owned;
-  if (filter === "shared") return !base.owned;
-  return true;
-}
-
-function KnowledgeCardV2({
-  base,
-  onArchiveToggle,
-  onOpen
-}: Readonly<{
-  base: KnowledgeSummaryV2;
-  onArchiveToggle?(id: string, archived: boolean): void;
-  onOpen?(id: string): void;
-}>) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const { menuRef, triggerRef } = useMenuDismissalV2({
-    onClose: () => setMenuOpen(false),
-    open: menuOpen
-  });
-  const trashed = base.trashed ?? base.status === "trashed";
-  const archived = base.archived ?? base.status === "archived";
-  const lifecycle = trashed
-    ? base.purgeScheduledAt ? `Purge scheduled ${base.purgeScheduledAt}` : "In Trash"
-    : base.updatedLabel ? `Updated ${base.updatedLabel}` : null;
-  return (
-    <li className="v2-knowledge-card" data-status={base.status}>
-      <button
-        aria-label={`Open ${base.name}`}
-        className="v2-knowledge-card-open v2-focusable"
-        type="button"
-        onClick={() => onOpen?.(base.id)}
-      >
-        <span className="v2-knowledge-card-icon" aria-hidden="true"><UiV2Icon name={trashed ? "trash" : "book"} /></span>
-        <span className="v2-knowledge-card-copy">
-          <strong>{base.name}</strong>
-          <small>{base.owned ? "Yours" : `Shared by ${base.sharedBy ?? "its owner"}`}</small>
-          {base.description ? <span>{base.description}</span> : null}
-          <span className="v2-knowledge-card-meta">
-            {base.sourceCount} {base.sourceCount === 1 ? "document" : "documents"}
-            {lifecycle ? ` · ${lifecycle}` : ""}
-          </span>
-        </span>
-        <span className="v2-knowledge-status" data-tone={base.status === "ready" ? "ok" : base.status === "needs_attention" || base.status === "unavailable" ? "danger" : base.status === "processing" ? "live" : "neutral"}>
-          {base.readinessLabel ?? knowledgeAggregateStatus({ state: base.status }).label}
-        </span>
-      </button>
-      {base.owned && !trashed ? (
-        <span className="v2-knowledge-card-menu">
-          <UiV2IconButton
-            ref={triggerRef}
-            aria-expanded={menuOpen}
-            aria-haspopup="menu"
-            icon="more"
-            label={`More actions for ${base.name}`}
-            onClick={() => setMenuOpen((open) => !open)}
-          />
-          {menuOpen ? (
-            <UiV2ResponsiveMenu
-              anchorRef={triggerRef}
-              label={`Actions for ${base.name}`}
-              menuRef={menuRef}
-              onClose={() => setMenuOpen(false)}
-            >
-              <UiV2MenuItem icon={archived ? "regenerate" : "archive"} onClick={() => {
-                setMenuOpen(false);
-                onArchiveToggle?.(base.id, !archived);
-              }}>
-                {archived ? "Restore" : "Archive"}
-              </UiV2MenuItem>
-            </UiV2ResponsiveMenu>
-          ) : null}
-        </span>
-      ) : null}
-    </li>
-  );
-}
-
-export function KnowledgePanelV2({
-  bases,
-  canCreate = true,
-  error,
-  filter = "all",
-  loadState = "ready",
-  onArchiveToggle,
-  onBrowseSources,
-  onCreate,
-  onFilterChange,
-  onOpen,
-  onQueryChange,
-  onRetry,
-  query = ""
-}: Readonly<{
-  bases: readonly KnowledgeSummaryV2[];
-  /** False while the installation cannot create or reprocess Knowledge. */
-  canCreate?: boolean;
-  error?: string | null;
-  filter?: KnowledgeFilterV2;
-  loadState?: "error" | "loading" | "ready";
-  onArchiveToggle?(id: string, archived: boolean): void;
-  onBrowseSources?(): void;
-  onCreate?(): void;
-  onFilterChange?(filter: KnowledgeFilterV2): void;
-  onOpen?(id: string): void;
-  onQueryChange?(query: string): void;
-  onRetry?(): void;
-  query?: string;
-}>) {
-  const counts = Object.fromEntries(
-    (Object.keys(knowledgeFilterLabels) as KnowledgeFilterV2[]).map((candidate) => [
-      candidate,
-      bases.filter((base) => knowledgeFilterMatch(base, candidate)).length
-    ])
-  ) as Record<KnowledgeFilterV2, number>;
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visibleBases = bases.filter((base) => knowledgeFilterMatch(base, filter)).filter((base) =>
-    !normalizedQuery || [base.name, base.description, base.sharedBy ?? ""]
-      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
-  );
-  return (
-    <div data-testid="library-knowledge-panel">
-      <SectionHeading
-        action={(
-          <>
-            <UiV2Button onClick={onBrowseSources}>All documents</UiV2Button>
-            <UiV2Button disabled={!canCreate} icon="plus" tone="primary" onClick={onCreate}>New base</UiV2Button>
-          </>
-        )}
-        description="A base is a set of documents an answer may read. Pick one in the composer, in a project or in an assistant."
-        search={(
-          <label className="v2-resource-search">
-            <span className="v2-sr-only">Search bases</span>
-            <UiV2Icon name="search" />
-            <input
-              aria-label="Search bases"
-              placeholder="Search bases…"
-              type="search"
-              value={query}
-              onChange={(event) => onQueryChange?.(event.currentTarget.value)}
-            />
-          </label>
-        )}
-      >
-        Knowledge
-      </SectionHeading>
-      <div aria-label="Knowledge filter" className="v2-resource-filters" role="group">
-        {(Object.keys(knowledgeFilterLabels) as KnowledgeFilterV2[]).map((candidate) => (
-          <button
-            aria-pressed={filter === candidate}
-            className="v2-resource-filter v2-focusable"
-            data-selected={filter === candidate || undefined}
-            key={candidate}
-            type="button"
-            onClick={() => onFilterChange?.(candidate)}
-          >
-            {knowledgeFilterLabels[candidate]}{candidate === "trash" && counts[candidate] === 0 ? "" : ` ${counts[candidate]}`}
-          </button>
-        ))}
-      </div>
-      {!canCreate ? (
-        <div className="v2-memory-disabled" role="status">
-          <strong>Knowledge is temporarily unavailable</strong>
-          You can still open existing bases. Contact your administrator before creating or reprocessing content.
-        </div>
-      ) : null}
-      {loadState === "loading" && bases.length === 0 ? (
-        <p className="v2-resource-empty" role="status">Loading knowledge…</p>
-      ) : loadState === "error" && bases.length === 0 ? (
-        <div className="v2-resource-empty" role="alert">
-          <p>{error || "Knowledge could not be loaded."}</p>
-          <UiV2Button onClick={onRetry}>Retry</UiV2Button>
-        </div>
-      ) : visibleBases.length ? (
-        <ul className="v2-knowledge-card-grid" aria-label="Knowledge bases">
-          {visibleBases.map((base) => (
-            <KnowledgeCardV2
-              base={base}
-              key={base.id}
-              onArchiveToggle={onArchiveToggle}
-              onOpen={onOpen}
-            />
-          ))}
-        </ul>
-      ) : (
-        <p className="v2-resource-empty">
-          {normalizedQuery ? `No bases match “${query.trim()}”.`
-            : filter === "trash" ? "Trash is empty."
-              : filter === "shared" ? "Nothing shared with you yet."
-                : filter === "archived" ? "No archived bases."
-                  : filter === "yours" ? "You have no active bases yet."
-                    : "No knowledge bases yet."}
-        </p>
-      )}
-      <p className="v2-library-disclosure v2-knowledge-privacy">
-        <UiV2Icon name="lock" /> Documents are private. Sharing a base is a separate, explicit step.
-      </p>
-    </div>
   );
 }
 

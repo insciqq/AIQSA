@@ -30,9 +30,9 @@ function numberFromSavedValue(value: unknown): number | null {
 }
 
 /**
- * Converts saved control values (per-model user values, Project defaults and
- * the ordinary `controlDefaults` request field, where numbers travel as
- * strings) into provider-neutral controls. Null for an unknown field or a
+ * Converts saved control values (per-model user values and the ordinary
+ * `controlDefaults` request field, where numbers travel as strings) into
+ * provider-neutral controls. Null for an unknown field or a
  * value of the wrong kind.
  */
 export function runControlsFromSavedValues(

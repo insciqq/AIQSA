@@ -66,6 +66,7 @@ import {
 } from "./telemetry-duration-buckets-adoption";
 import { MODEL_RUN_ENGINE_MIGRATION, modelRunEngineFixtureSql, modelRunEngineProofSql } from "./model-run-engine-adoption";
 import { STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION, stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql } from "./stop-memory-lexical-projection-capture-adoption";
+import { RETIRE_PROJECTS_MIGRATION, retireProjectsFixtureSql, retireProjectsProofSql } from "./retire-projects-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7899,6 +7900,10 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION,
     stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql,
     stopMemoryLexicalProjectionCaptureProofSql);
+  // Projects are fenced for deletion, never deleted by the migration itself;
+  // Workspace maintenance deletes them through the Project deletion path.
+  runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_PROJECTS_MIGRATION,
+    retireProjectsFixtureSql, retireProjectsProofSql, retireProjectsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

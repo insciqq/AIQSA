@@ -11,18 +11,7 @@ import { assistantContent, assistantDetail } from "@/tests/support/assistantLibr
 import { AssistantSharingSheetV2 } from "./AssistantSharingSheetV2";
 import { assistantSharingAccessItems } from "./assistantSharingCopy";
 
-// The Projects section stays tested as it worked; one test below turns Projects off.
-const areas = vi.hoisted(() => ({ projects: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get PROJECTS_ENABLED() {
-    return areas.projects;
-  }
-}));
-
 const names: AssistantResourceNames = {
-  knowledgeBases: [{ id: "base-hr", name: "HR handbook" }],
-  knowledgeSources: [],
   mcpServers: [{ id: "mcp-jira", name: "Jira" }, { id: "mcp-confluence", name: "Confluence" }],
   models: [{ id: "model-1", label: "Model one" }],
   searchOptions: [{ id: "web", label: "Web Search" }]
@@ -62,14 +51,12 @@ const sharedDetail = assistantDetail(3, {
     name: "Jira desk",
     rows: {
       controls: { policy: "fixed", value: { temperature: 0.2 } },
-      knowledge: { policy: "adjustable", value: { baseIds: ["base-hr"], mode: "explicit", sourceIds: [] } },
       model: { policy: "adjustable", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "off" } },
       skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }, { delivery: "on_demand", skillId: "skill-2" }], mode: "auto" } },
       tools: { policy: "fixed", value: { hiddenCount: 1, mode: "exact", serverIds: ["mcp-jira", "mcp-confluence", "mcp-gone"] } }
     }
   }),
-  projects: { otherProjectCount: 1, projects: [{ id: "project-1", name: "Platform ops" }] },
   skills: [{ id: "skill-1", name: "Jira issue format" }]
 });
 
@@ -107,12 +94,11 @@ function withDetail(overrides: Partial<AssistantDetail>, view: Partial<Assistant
 }
 
 afterEach(() => {
-  areas.projects = true;
   cleanup();
 });
 
 describe("Assistant Sharing sheet", () => {
-  it("shows the owner every section: audience, required access, link and Projects", () => {
+  it("shows the owner every section: audience, required access and link", () => {
     const view = sheetView();
     render(<AssistantSharingSheetV2 view={view} />);
     const dialog = screen.getByRole("dialog", { name: "Sharing · Jira desk" });
@@ -129,7 +115,7 @@ describe("Assistant Sharing sheet", () => {
     );
     expect(within(dialog).queryByRole("switch", { name: "Featured" })).toBeNull();
 
-    // Fixed rows and Skill links only: the adjustable model and Knowledge are not listed.
+    // Fixed rows and Skill links only: the adjustable model is not listed.
     const access = within(dialog).getByRole("region", { name: "People you share with need access to" });
     expect(within(access).getAllByRole("listitem").map((item) => item.textContent))
       .toEqual(["Jira", "Confluence", "2 more MCP servers", "Skill “Jira issue format”", "1 more Skill"]);
@@ -142,26 +128,11 @@ describe("Assistant Sharing sheet", () => {
       .toHaveValue(`${window.location.origin}/assistant/assistant-1`);
     expect(link).toHaveTextContent("Opens a new chat with this Assistant for people who can use it; others land on their own new chat.");
 
-    const projects = within(dialog).getByRole("region", { name: "Projects using this Assistant" });
-    expect(within(projects).getAllByRole("listitem").map((item) => item.textContent))
-      .toEqual(["Platform ops", "1 other Project you can't open"]);
-    expect(projects).toHaveTextContent("Project managers refresh dependencies from the Project.");
-
     expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
     fireEvent.click(within(audience).getByRole("radio", { name: "Selected groups" }));
     fireEvent.click(everyone);
     expect(view.onChange).toHaveBeenNthCalledWith(1, { audience: "groups" });
     expect(view.onChange).toHaveBeenNthCalledWith(2, { audience: "everyone" });
-  });
-
-  it("shows no Projects section while Projects are disabled", () => {
-    areas.projects = false;
-    render(<AssistantSharingSheetV2 view={sheetView()} />);
-    const dialog = screen.getByRole("dialog", { name: "Sharing · Jira desk" });
-
-    expect(within(dialog).queryByRole("region", { name: "Projects using this Assistant" })).toBeNull();
-    expect(dialog).not.toHaveTextContent("Project managers refresh dependencies");
-    expect(within(dialog).getByRole("region", { name: "Link" })).toBeInTheDocument();
   });
 
   it("chooses groups with their member counts and asks for at least one", () => {
@@ -544,7 +515,6 @@ describe("Required access", () => {
       content: assistantContent({
         rows: {
           controls: { policy: "adjustable", value: {} },
-          knowledge: { policy: "fixed", value: { baseIds: ["base-hr", "base-gone"], hiddenCount: 1, mode: "explicit", sourceIds: [] } },
           model: { policy: "fixed", value: { mode: "model", modelId: null } },
           search: { policy: "fixed", value: { mode: "model_choice", optionIds: ["web"] } },
           skills: { policy: "fixed", value: { links: [], mode: "auto" } },
@@ -555,9 +525,7 @@ describe("Required access", () => {
 
     expect(assistantSharingAccessItems(detail, names).map((item) => item.label)).toEqual([
       "1 model",
-      "Web Search",
-      "HR handbook",
-      "2 more Knowledge bases or documents"
+      "Web Search"
     ]);
     const adjustable = assistantContent().rows;
     expect(assistantSharingAccessItems(assistantDetail(3, {

@@ -4,21 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminAttention } from "@/lib/contracts/adminAttention";
 import type { AdminEmailState } from "@/lib/contracts/email";
-import {
-  adminKnowledgeAnswerPolicyFixture,
-  adminKnowledgeOperationsFixture,
-  adminKnowledgeProfileFixture
-} from "@/tests/support/knowledgeProfile";
 import { populatedUsageAnalytics, usageResponse } from "@/components/admin/usage/usageTestFixtures";
 import { StrictMode } from "react";
 import { AdminPanel } from "./AdminPanel";
-
-// The Knowledge & Memory section stays tested as it worked; `adminSections.test.ts` and
-// `retrieval/AdminRetrievalSection.test.tsx` cover Knowledge disabled.
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
 
 const adminMcpController = vi.hoisted(() => ({
   actions: {
@@ -762,7 +750,7 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("link", { name: "Invites" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Safety" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /^(Overview|Providers|Defaults & roles|Search|Knowledge & Memory|Users|Groups|Sign-up rules|MCP servers|Workspace|Email|Usage)$/ }))
+    expect(screen.getAllByRole("link", { name: /^(Overview|Providers|Defaults & roles|Search|Memory|Users|Groups|Sign-up rules|MCP servers|Workspace|Email|Usage)$/ }))
       .toHaveLength(12);
 
     window.history.pushState(null, "", "/admin?section=system-models");
@@ -771,10 +759,11 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");
     expect(window.location.search).toBe("?section=roles");
 
+    // The section of the removed Knowledge resolves to Memory.
     window.history.pushState(null, "", "/admin?section=knowledge");
     fireEvent.popState(window);
     await screen.findByTestId("admin-section-retrieval");
-    expect(screen.getByRole("link", { name: "Knowledge & Memory" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Memory" })).toHaveAttribute("aria-current", "page");
   });
 
   it("switches compact composition between the active section and the section drawer", async () => {
@@ -865,23 +854,8 @@ describe("AdminPanel", () => {
     await screen.findByTestId("admin-section-users");
     expect(window.location.search).toBe("?section=users");
   });
-  it("mounts the Knowledge and Memory cards under Knowledge & Memory and links assignments to Defaults & roles", async () => {
-    window.history.replaceState(null, "", "/admin?section=knowledge");
-    const knowledge = {
-      answerPolicy: adminKnowledgeAnswerPolicyFixture(),
-      ingestionLimits: {
-        maxChunksPerDocument: 10_000,
-        maxFileBytes: 25_000_000,
-        maxNormalizedChars: 5_000_000,
-        maxPages: 2_000
-      },
-      operations: adminKnowledgeOperationsFixture(),
-      profile: adminKnowledgeProfileFixture(),
-      retrieval: {
-        candidateLimit: 40,
-        resultLimit: 16
-      }
-    };
+  it("mounts the Memory card under Memory and leaves it for Defaults & roles without a discard prompt", async () => {
+    window.history.replaceState(null, "", "/admin?section=retrieval");
     const memory = {
       processing: { enabled: true, issues: [] },
       searchTimeout: { seconds: 30, version: 1 },
@@ -895,9 +869,6 @@ describe("AdminPanel", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url === "/api/admin") return dashboardResponse();
-      if (url === "/api/admin/knowledge" && (init?.method ?? "GET") === "GET") {
-        return dashboardResponse({ knowledge });
-      }
       if (url === "/api/admin/memory" && (init?.method ?? "GET") === "GET") {
         return dashboardResponse({ memory });
       }
@@ -907,14 +878,12 @@ describe("AdminPanel", () => {
 
     const retrieval = await screen.findByTestId("admin-section-retrieval");
     expect(window.location.search).toBe("?section=retrieval");
-    const knowledgeCard = within(retrieval).getByTestId("admin-retrieval-knowledge");
-    await within(knowledgeCard).findByTestId("knowledge-processing-line");
     await within(within(retrieval).getByTestId("admin-retrieval-memory")).findByText("Working");
     for (const save of within(retrieval).getAllByRole("button", { name: "Save" })) {
       expect(save).toBeDisabled();
     }
     expect(within(retrieval).queryByText(/Manage assignments in System Models/)).not.toBeInTheDocument();
-    fireEvent.click(within(knowledgeCard).getByRole("button", { name: "Processing model and embeddings: Defaults & roles" }));
+    fireEvent.click(screen.getByRole("link", { name: "Defaults & roles" }));
     await screen.findByTestId("admin-section-roles");
     expect(window.location.search).toBe("?section=roles");
     expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");

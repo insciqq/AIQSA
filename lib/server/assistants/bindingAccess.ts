@@ -3,29 +3,19 @@ import { decodeAssistantIdentity, type AssistantIdentity } from "../../contracts
 
 /*
  * Whether an Assistant may be bound to a chat or saved as a default. A
- * personal binding needs the Assistant to be the user's own or published to
- * them (installation, or a group publication in a live group they belong to);
- * a Project chat needs the Assistant bound to that Project, which is its own
- * authority. An archived Assistant is never available. The rule mirrors the
- * access entry of the Assistant repository and the run provenance checks; it
- * is one SQL predicate here so that a missing, foreign or archived Assistant
- * runs the same statement and yields the same empty result.
+ * binding needs the Assistant to be the user's own or published to them
+ * (installation, or a group publication in a live group they belong to). An
+ * archived Assistant is never available. The rule mirrors the access entry of
+ * the Assistant repository and the run provenance checks; it is one SQL
+ * predicate here so that a missing, foreign or archived Assistant runs the
+ * same statement and yields the same empty result.
  */
 
-export type AssistantBindingScope =
-  | Readonly<{ kind: "personal"; userId: string }>
-  | Readonly<{ kind: "project"; projectId: string }>;
+export type AssistantBindingScope = Readonly<{ kind: "personal"; userId: string }>;
 
 export type AssistantBindingAccessClient = Pick<Prisma.TransactionClient, "$queryRaw">;
 
 function availableTo(scope: AssistantBindingScope): Prisma.Sql {
-  if (scope.kind === "project") {
-    return Prisma.sql`EXISTS (
-      SELECT 1 FROM "ProjectAssistantBinding" AS project_binding
-      WHERE project_binding."assistantId" = definition."id"
-        AND project_binding."projectId" = ${scope.projectId}
-    )`;
-  }
   return Prisma.sql`(
     definition."ownerUserId" = ${scope.userId}
     OR EXISTS (
@@ -51,8 +41,8 @@ function availableTo(scope: AssistantBindingScope): Prisma.Sql {
  * Checks availability inside the caller's transaction. With `lock`, the
  * definition row is held FOR KEY SHARE until the transaction ends, so a
  * concurrent deletion waits instead of breaking a foreign key the caller is
- * about to write. Callers that also lock a chat, Project or settings row take
- * this lock first, in the same order as Assistant deletion.
+ * about to write. Callers that also lock a chat or settings row take this
+ * lock first, in the same order as Assistant deletion.
  */
 export async function isAssistantAvailable(
   client: AssistantBindingAccessClient,

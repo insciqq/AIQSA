@@ -21,43 +21,29 @@ async function users(count: number) {
 }
 
 /** A personal chat whose first message was edited and whose answer was regenerated with a delivered follow-up. */
-async function branchedChat(ownerId: string, chat: { archived?: boolean; projectId?: string } = {}) {
+async function branchedChat(ownerId: string, chat: { archived?: boolean } = {}) {
   const chatId = randomUUID();
   cleanups.push(async () => { await prisma.chat.deleteMany({ where: { id: chatId } }); });
-  await prisma.chat.create({ data: {
-    id: chatId, title: "Export fixture", createdAt: at(0), pinned: true,
-    ...(chat.projectId
-      ? { projectId: chat.projectId, createdByUserId: ownerId, createdByDisplayName: "Export fixture member", memoryMode: "EXCLUDED" }
-      : { userId: ownerId })
-  } });
-  // Project user messages carry author attribution; personal ones must not.
-  const author = chat.projectId
-    ? { authorUserId: ownerId, authorDisplayName: "Export fixture member", authorProjectRole: "OWNER" as const }
-    : {};
+  await prisma.chat.create({ data: { id: chatId, title: "Export fixture", createdAt: at(0), pinned: true, userId: ownerId } });
   const attachmentId = randomUUID();
-  const question = await prisma.message.create({ data: { chatId, role: "user", status: "complete", createdAt: at(1), ...author,
+  const question = await prisma.message.create({ data: { chatId, role: "user", status: "complete", createdAt: at(1),
     content: { blocks: [{ text: "Synthetic question", type: "text" }, { attachmentId, fileName: "notes.txt", type: "file" }] } } });
   await prisma.attachment.create({ data: { id: attachmentId, chatId, messageId: question.id, status: "ready", kind: "file",
     fileName: "notes.txt", mimeType: "text/plain", byteSize: 12, storageKey: `export-test/${chatId}/notes.txt`, metadata: {},
-    ...(chat.projectId ? { projectId: chat.projectId, uploaderDisplayName: "Export fixture member", uploaderUserId: ownerId } : { userId: ownerId }) } });
+    userId: ownerId } });
   await prisma.message.create({ data: { chatId, role: "assistant", status: "complete", createdAt: at(2), parentMessageId: question.id,
     provider: "fake", modelId: "export-fixture", content: text("First answer") } });
-  // A Project run needs a full Project run binding, so Project fixtures carry the
-  // follow-up as the copied-branch snapshot; personal ones keep the live run rows.
-  const snapshot = { available: false, entries: [{ id: "export-fixture-followup", ordinal: 1, text: "Synthetic clarification",
-    author: "Export fixture member", createdAt: at(4).toISOString(), delivery: "delivered", precedingText: "Synthetic partial" }] };
   const regenerated = await prisma.message.create({ data: { chatId, role: "assistant", status: "complete", createdAt: at(3),
-    parentMessageId: question.id, provider: "fake", modelId: "export-fixture", content: text("Regenerated answer"),
-    ...(chat.projectId ? { branchFollowups: snapshot } : {}) } });
-  const run = chat.projectId ? null : await prisma.modelRun.create({ data: { chatId, userId: ownerId, userMessageId: question.id,
+    parentMessageId: question.id, provider: "fake", modelId: "export-fixture", content: text("Regenerated answer") } });
+  const run = await prisma.modelRun.create({ data: { chatId, userId: ownerId, userMessageId: question.id,
     assistantMessageId: regenerated.id, provider: "fake", modelId: "export-fixture", status: "complete", normalizedRequest: {},
     followupMode: "chat", followupRevision: 1, followupClosedAt: at(5), answerCompletedAt: at(5) } });
-  if (run) await prisma.runFollowup.create({ data: { chatId, modelRunId: run.id, ordinal: 1, nonce: "export-fixture-1",
+  await prisma.runFollowup.create({ data: { chatId, modelRunId: run.id, ordinal: 1, nonce: "export-fixture-1",
     text: "Synthetic clarification", authorName: "Export fixture member", createdAt: at(4), deliveredAt: at(4), precedingText: "Synthetic partial" } });
-  const edited = await prisma.message.create({ data: { chatId, role: "user", status: "complete", createdAt: at(6), ...author,
+  const edited = await prisma.message.create({ data: { chatId, role: "user", status: "complete", createdAt: at(6),
     content: text("Edited question") } });
   await prisma.chat.update({ where: { id: chatId }, data: { activeLeafMessageId: regenerated.id, archived: chat.archived ?? false } });
-  return { attachmentId, chatId, editedId: edited.id, questionId: question.id, regeneratedId: regenerated.id, runId: run?.id ?? null };
+  return { attachmentId, chatId, editedId: edited.id, questionId: question.id, regeneratedId: regenerated.id, runId: run.id };
 }
 
 async function tarEntries(iterable: AsyncIterable<TarEntry>): Promise<TarEntry[]> {
@@ -85,7 +71,7 @@ describe("chat export against PostgreSQL", () => {
     expect(document.chat).toMatchObject({ activeLeafId: "m5", archived: false, pinned: true, title: "Export fixture" });
     expect(document.chat.messages[0]?.attachments).toEqual([{ byteSize: 12, mimeType: "text/plain", name: "notes.txt" }]);
     const serialized = JSON.stringify(document);
-    for (const internal of [fixture.chatId, fixture.questionId, fixture.regeneratedId, fixture.runId!, fixture.attachmentId, ownerId]) {
+    for (const internal of [fixture.chatId, fixture.questionId, fixture.regeneratedId, fixture.runId, fixture.attachmentId, ownerId]) {
       expect(serialized).not.toContain(internal);
     }
     expect(await loadAuthorizedChatExportSource(prisma, { chatId: fixture.chatId, userId: outsiderId })).toBeNull();
@@ -99,25 +85,10 @@ describe("chat export against PostgreSQL", () => {
     expect(await loadAuthorizedChatExportSource(prisma, { chatId: archived.chatId, userId: outsiderId })).toBeNull();
   });
 
-  it("lets a Project viewer export an active Project chat and nobody outside the Project", async () => {
-    const [ownerId, viewerId, outsiderId] = await users(3) as [string, string, string];
-    const projectId = randomUUID();
-    cleanups.push(async () => { await prisma.project.deleteMany({ where: { id: projectId } }); });
-    await prisma.project.create({ data: { id: projectId, name: "Export fixture Project", createdByUserId: ownerId,
-      createdByDisplayName: "Export fixture member", grants: { create: [{ role: "OWNER", userId: ownerId }, { role: "VIEWER", userId: viewerId }] } } });
-    const fixture = await branchedChat(ownerId, { projectId });
-    expect(await loadAuthorizedChatExportSource(prisma, { chatId: fixture.chatId, userId: viewerId })).not.toBeNull();
-    expect(await loadAuthorizedChatExportSource(prisma, { chatId: fixture.chatId, userId: outsiderId })).toBeNull();
-  });
-
-  it("puts the identical chat object in the bulk archive beside a manifest, without Project chats", async () => {
-    const [ownerId] = await users(1) as [string];
-    const projectId = randomUUID();
-    cleanups.push(async () => { await prisma.project.deleteMany({ where: { id: projectId } }); });
-    await prisma.project.create({ data: { id: projectId, name: "Export fixture Project", createdByUserId: ownerId,
-      createdByDisplayName: "Export fixture member", grants: { create: [{ role: "OWNER", userId: ownerId }] } } });
+  it("puts the identical chat object in the bulk archive beside a manifest, without other users' chats", async () => {
+    const [ownerId, otherId] = await users(2) as [string, string];
     const personal = await branchedChat(ownerId);
-    await branchedChat(ownerId, { projectId });
+    await branchedChat(otherId);
     const exportedAt = at(10);
     const output = await tarEntries(personalChatExportEntries(prisma, ownerId, exportedAt));
     const manifest = decodeChatArchiveManifest(JSON.parse(String(output[0]?.content)));

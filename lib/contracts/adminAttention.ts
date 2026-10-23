@@ -3,8 +3,8 @@ import type { ErrorResponse } from "./http";
 /**
  * Control Center "Needs attention" list: the server aggregates every item that
  * needs an administrator decision or action from data it already serves
- * (dashboard, providers, Search, system roles, Knowledge operations, Memory
- * status, MCP servers, email health, usage limits), from thresholds over the
+ * (dashboard, providers, Search, system roles, Memory status, MCP servers,
+ * email health, usage limits), from thresholds over the
  * content-free health telemetry counters, Memory rebuild and failed-run counts, and from
  * background queue ages.
  * Nothing is persisted; every item carries human copy plus one jump target
@@ -17,8 +17,6 @@ export type AdminAttentionCode =
   | "background_failures"
   | "email_delivery_failing"
   | "email_not_configured"
-  | "knowledge_needs_attention"
-  | "knowledge_reindexing"
   | "logs_dropped"
   | "mcp_server_needs_attention"
   | "memory_index_rebuild_required"
@@ -90,7 +88,6 @@ export const adminAttentionSources = [
   "dashboard",
   "email",
   "health",
-  "knowledge",
   "mcp",
   "memory",
   "providers",
@@ -158,8 +155,6 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "assistants_listing_pending",
   "email_delivery_failing",
   "email_not_configured",
-  "knowledge_needs_attention",
-  "knowledge_reindexing",
   "mcp_server_needs_attention",
   "memory_index_rebuild_required",
   "memory_processing_blocked",
@@ -193,7 +188,6 @@ export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttenti
   if (item.code.startsWith("provider_")) return "providers";
   if (item.code.startsWith("users_")) return "dashboard";
   if (item.code.startsWith("usage_")) return "usage_limits";
-  if (item.code.startsWith("knowledge_")) return "knowledge";
   if (item.code.startsWith("mcp_")) return "mcp";
   if (item.code.startsWith("search_")) return "search";
   if (item.code.startsWith("skills_")) return "skills";

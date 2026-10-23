@@ -17,7 +17,7 @@ function tableRows(count: number, columns: number): string[] {
     `<tr>${Array.from({ length: columns }, (_, column) => `<td>r${row + 1}c${column + 1}</td>`).join("")}</tr>`);
 }
 
-function expectKnowledgeValidTables(parsed: ParsedDocument): void {
+function expectValidTables(parsed: ParsedDocument): void {
   for (const block of parsed.blocks) {
     if (block.table) expect(parsedTableShapeValid(block.table)).toBe(true);
   }
@@ -520,7 +520,7 @@ describe("Tika normalization", () => {
     expect(parsed.text).toContain("r2000c2\n");
     expect(parsed.text).toContain("r2001c1\tr2001c2");
     expect(parsed.text).toContain("r2500c2");
-    expectKnowledgeValidTables(parsed);
+    expectValidTables(parsed);
   });
 
   it("splits a table beyond the cell bound instead of rejecting the document", () => {
@@ -533,7 +533,7 @@ describe("Tika normalization", () => {
     expect(parsed.blocks.every((block) =>
       (block.table?.cells.length ?? 0) <= PARSED_TABLE_MAX_CELLS)).toBe(true);
     expect(parsed.text).toContain("r1700c6");
-    expectKnowledgeValidTables(parsed);
+    expectValidTables(parsed);
   });
 
   it("keeps a table wider than the column bound as text instead of an invalid structure", () => {
@@ -548,7 +548,7 @@ describe("Tika normalization", () => {
     expect(parsed.blocks[0]!.text).toBe("r1c1\tr1c2\tr1c3\nr2c1\tr2c2\tr2c3\nr3c1\tr3c2\tr3c3");
   });
 
-  it("keeps spans inside the declared grid with the Knowledge semantics", () => {
+  it("keeps spans inside the declared grid", () => {
     const parsed = tikaTableDocument([
       "<tr><td rowspan=\"9\">a</td><td colspan=\"2\">b</td></tr>",
       "<tr><td>c</td><td>d</td></tr>"
@@ -557,7 +557,7 @@ describe("Tika normalization", () => {
     expect(parsed.warnings).not.toContain("table_extraction_degraded");
     expect(parsed.blocks[0]?.table).toMatchObject({ columnCount: 3, rowCount: 2 });
     expect(parsed.blocks[0]?.table?.cells[0]).toMatchObject({ row: 0, rowSpan: 2 });
-    expectKnowledgeValidTables(parsed);
+    expectValidTables(parsed);
   });
 
   it("clamps HTML spans and still bounds the retained columns", () => {
@@ -591,6 +591,6 @@ describe("Docling table bounds", () => {
     expect(parsed.warnings).toContain("table_extraction_degraded");
     expect(parsed.blocks.map((block) => block.table?.rowCount)).toEqual([PARSED_TABLE_MAX_ROWS, 1]);
     expect(parsed.blocks[1]?.text).toBe("row 2001");
-    expectKnowledgeValidTables(parsed);
+    expectValidTables(parsed);
   });
 });

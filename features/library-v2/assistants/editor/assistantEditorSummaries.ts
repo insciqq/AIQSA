@@ -8,7 +8,6 @@ import type { AssistantRowDeviation, AssistantRowKey } from "@/lib/contracts/ass
 
 export const ASSISTANT_ROW_LABELS: Readonly<Record<AssistantRowKey, string>> = {
   controls: "Reasoning & parameters",
-  knowledge: "Knowledge",
   model: "Model",
   search: "Web search",
   skills: "Skills",
@@ -65,16 +64,6 @@ export function assistantRowSummary(
       if (value.serverIds.length === 0) return "No servers selected";
       return namedList(value.serverIds.map((id) =>
         options.mcpServers.find((server) => server.id === id)?.name ?? "Unavailable MCP server"), "servers");
-    }
-    case "knowledge": {
-      const value = rows.knowledge.value;
-      if (value.mode === "inherit") return ASSISTANT_INHERIT_LABEL;
-      if (value.mode === "none") return "None";
-      const names = [
-        ...value.baseIds.map((id) => options.knowledgeBases.find((base) => base.id === id)?.name ?? "Unavailable base"),
-        ...value.sourceIds.map((id) => options.knowledgeSources.find((source) => source.id === id)?.name ?? "Unavailable document")
-      ];
-      return names.length === 0 ? "Nothing selected" : namedList(names, "selected");
     }
     case "skills": {
       const mode = rows.skills.value.mode === "auto" ? "Auto" : "Off";

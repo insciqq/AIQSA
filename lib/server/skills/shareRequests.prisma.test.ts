@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createSkillBundle } from "./bundle";
 import { createSkillBundleService } from "./bundleService";
 import { createPrismaSkillRepository } from "./prismaRepository";
@@ -14,14 +13,12 @@ async function fixture() {
   const group = await prisma.group.create({ data: { name: `Sharing ${suffix}` } });
   await prisma.userGroup.createMany({ data: [owner, peer, admin].map((userId) => ({ userId, groupId: group.id })) });
   const repository = createPrismaSkillRepository(prisma), service = createSkillSharingService(prisma);
-  const projects: string[] = [];
   const draft = { name: "Review workflow", description: "Synthetic approval procedure", instructions: "Approved original" };
   const skillId = await repository.create(owner, draft);
-  return { owner, peer, admin, group, skillId, draft, repository, service, projects,
+  return { owner, peer, admin, group, skillId, draft, repository, service,
     publish: (id = skillId, userId = owner) => repository.publish({ userId, skillId: id, actorIsAdmin: userId === admin, scope: "group", groupId: group.id }),
     async pending(id = skillId) { return prisma.skillShareRequest.findFirstOrThrow({ where: { skillId: id, state: "pending" } }); },
     async cleanup() {
-      await prisma.project.deleteMany({ where: { id: { in: projects } } });
       const skills = await prisma.skillDefinition.findMany({ where: { ownerUserId: { in: [owner, admin] } }, select: { id: true } });
       const ids = skills.map(({ id }) => id);
       await prisma.skillPublication.deleteMany({ where: { skillId: { in: ids } } });
@@ -89,30 +86,6 @@ describe("Skill revision approval persistence", () => {
       await f.repository.publish({ userId: f.admin, skillId, actorIsAdmin: true, scope: "installation", groupId: null });
       await f.service.request(f.admin, skillId, 1);
       expect(await prisma.skillShareRequest.count({ where: { skillId } })).toBe(1);
-    } finally { await f.cleanup(); }
-  });
-
-  it("creates the first Project request atomically and gives even its owner only the approved revision", async () => {
-    const f = await fixture();
-    try {
-      const projects = createPrismaProjectRepository(prisma);
-      const created = await projects.create({ actorDisplayName: "Owner", description: "Synthetic Project", name: "Sharing Project", userId: f.owner });
-      if (created.kind !== "ok") throw new Error("project_fixture_failed");
-      f.projects.push(created.value.id);
-      const initial = (await projects.getDetail(f.owner, created.value.id))!;
-      const result = await projects.addResource({ actorDisplayName: "Owner", expectedPolicyRevision: initial.policyRevision,
-        projectId: created.value.id, resourceId: f.skillId, type: "skill", userId: f.owner });
-      expect(result.kind).toBe("ok");
-      const pending = await f.pending();
-      expect(await prisma.projectSkillBinding.count({ where: { projectId: created.value.id, skillId: f.skillId } })).toBe(1);
-      expect((await f.repository.resolveForProject(created.value.id, [f.skillId])).ok).toBe(false);
-      await f.service.decide(f.admin, pending.id, "approve", null);
-      await f.repository.revise(f.owner, f.skillId, 1, { ...f.draft, instructions: "Personal only" });
-      expect(await f.repository.resolveForProject(created.value.id, [f.skillId])).toMatchObject({ skills: [{ revisionId: pending.revisionId, instructions: f.draft.instructions }] });
-      expect(await f.repository.resolveForRun(f.owner, [f.skillId])).toMatchObject({ skills: [{ instructions: "Personal only" }] });
-      const detail = await projects.getDetail(f.owner, created.value.id);
-      expect(detail?.resources).toEqual(expect.arrayContaining([expect.objectContaining({ type: "skill", revisionId: pending.revisionId, available: true })]));
-      expect(JSON.stringify(detail)).not.toContain("Personal only");
     } finally { await f.cleanup(); }
   });
 

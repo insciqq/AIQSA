@@ -98,7 +98,6 @@ export const TELEGRAM_RUN_REFUSAL_COPY = {
   toolsUnavailable: "A connected tool this chat uses isn't ready. Review your connections in AIQSA.",
   skillUnavailable: "A Skill this chat uses isn't available. Review your Skills in AIQSA.",
   assistantUnavailable: "This assistant isn't available now. Start a new chat with /new or choose another with /assistant.",
-  knowledgeUnavailable: "This chat's Knowledge isn't ready. Continue it in AIQSA or start a new chat with /new.",
   chatUnavailable: "This chat isn't available anymore. Your next message starts a new chat.",
   attachmentUnavailable: "An attachment couldn't be used. Open AIQSA to check it.",
   contextTooLarge: "This chat is too long to continue here. Start a new chat with /new.",

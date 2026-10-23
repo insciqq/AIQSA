@@ -23,7 +23,7 @@ afterEach(async () => {
 const syntheticSecret = "synthetic-call-details-secret";
 const syntheticKey = Buffer.alloc(32, 37);
 
-async function fixture(options: { project?: boolean; sensitive?: boolean } = {}) {
+async function fixture(options: { sensitive?: boolean } = {}) {
   const userIds = Array.from({ length: 3 }, () => randomUUID());
   const [initiatorId, otherId, adminId] = userIds as [string, string, string];
   const serverId = randomUUID();
@@ -34,7 +34,6 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
   const toolName = namespacedMcpToolName(namespace, "records");
   const storage = createMemoryStorageAdapter();
   let chatId: string | undefined;
-  let projectId: string | undefined;
   cleanups.push(async () => {
     if (chatId) {
       await prisma.modelRun.deleteMany({ where: { chatId } });
@@ -42,7 +41,6 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
       await prisma.message.deleteMany({ where: { chatId } });
       await prisma.chat.deleteMany({ where: { id: chatId } });
     }
-    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.mcpRuntimeGeneration.deleteMany({ where: { revisionId } });
     await prisma.mcpUserServer.deleteMany({ where: { serverId } });
     await prisma.mcpRevision.deleteMany({ where: { serverId } });
@@ -53,14 +51,6 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
   await prisma.user.createMany({ data: userIds.map(id => ({
     id, displayName: "Synthetic MCP details member", status: "active", role: id === adminId ? "admin" : "user"
   })) });
-  if (options.project) {
-    const project = await prisma.project.create({ data: {
-      name: "Synthetic MCP details Project", createdByUserId: otherId, createdByDisplayName: "Project Owner",
-      grants: { create: [{ userId: otherId, role: "OWNER" }, { userId: initiatorId, role: "CONTRIBUTOR" },
-        { userId: adminId, role: "VIEWER" }] }
-    } });
-    projectId = project.id;
-  }
   const configuration = {
     auth: { mode: options.sensitive ? "static" : "none" },
     runtime: { startupTimeoutMs: 30_000, callTimeoutMs: 30_000 },
@@ -76,20 +66,14 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
   await prisma.mcpGrant.createMany({ data: userIds.map(userId => ({ serverId, userId, canUse: true })) });
   const userServer = await prisma.mcpUserServer.create({ data: { serverId, userId: initiatorId, enabled: true } });
   await prisma.mcpUserServer.createMany({ data: [otherId, adminId].map(userId => ({ serverId, userId, enabled: true })) });
-  if (projectId) {
-    await prisma.projectMcpBinding.create({ data: { projectId, serverId } });
-    await prisma.mcpSharedRuntime.create({ data: { serverId } });
-  }
   if (options.sensitive) vi.stubEnv("AIQSA_ENCRYPTION_KEY", syntheticKey.toString("base64"));
   await prisma.mcpRuntimeGeneration.create({ data: {
-    id: generationId, revisionId, fingerprint, state: "ready",
-    ...(projectId ? { sharedServerId: serverId } : { userServerId: userServer.id }),
+    id: generationId, revisionId, fingerprint, state: "ready", userServerId: userServer.id,
     ...(options.sensitive ? { effectiveConfigEnvelope: encryptMcpEnvelope({ version: 1,
       values: { authorization: syntheticSecret } }, syntheticKey, mcpRuntimeGenerationEnvelopeContext(generationId, fingerprint)) } : {})
   } });
   const chat = await prisma.chat.create({ data: {
-    title: "Historical MCP details", memoryMode: "EXCLUDED", userId: projectId ? null : initiatorId,
-    ...(projectId ? { projectId, createdByUserId: initiatorId, createdByDisplayName: "Synthetic MCP details member" } : {})
+    title: "Historical MCP details", memoryMode: "EXCLUDED", userId: initiatorId
   } });
   chatId = chat.id;
   const acceptedRequest = {
@@ -102,9 +86,7 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
   } = {}) => {
     const name = callOptions.name ?? toolName;
     const question = await prisma.message.create({ data: {
-      chatId: chat.id, role: "user", status: "complete", content: textMessageContent("Synthetic request"),
-      ...(projectId ? { authorUserId: initiatorId, authorDisplayName: "Synthetic MCP details member",
-        authorProjectRole: "CONTRIBUTOR" as const } : {})
+      chatId: chat.id, role: "user", status: "complete", content: textMessageContent("Synthetic request")
     } });
     const answer = await prisma.message.create({ data: {
       chatId: chat.id, parentMessageId: question.id, role: "assistant", status: "complete", content: textMessageContent("Historical answer")
@@ -112,11 +94,7 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
     const run = await prisma.modelRun.create({ data: {
       chatId: chat.id, userId: initiatorId, userMessageId: question.id, assistantMessageId: answer.id,
       modelId: "fake-qsa", provider: "fake", status: "complete",
-      normalizedRequest: { ...acceptedRequest, ...(callOptions.agent ? { agent: {} } : {}) },
-      ...(projectId ? { projectRunBinding: { create: {
-        projectId, initiatorUserId: initiatorId, acceptedRole: "CONTRIBUTOR", accessRevision: 1,
-        policyRevision: 1, instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true
-      } } } : {})
+      normalizedRequest: { ...acceptedRequest, ...(callOptions.agent ? { agent: {} } : {}) }
     } });
     const binding = callOptions.bound === false ? null : await prisma.mcpRunBinding.create({ data: {
       modelRunId: run.id, runtimeGenerationId: generationId,
@@ -154,7 +132,7 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
     } } });
     return { bytes, storageKey };
   };
-  return { ...saved, initiatorId, otherId, adminId, serverId, projectId, chat, generationId,
+  return { ...saved, initiatorId, otherId, adminId, serverId, chat, generationId,
     makeCall, observation, storage, repository: createPrismaMcpCallDetailsRepository(prisma),
     read: mcpCallDetailsForStorage(prisma, storage) };
 }
@@ -184,20 +162,6 @@ describe("Prisma MCP call details authority and historical display", () => {
     expect(await f.read(f.key)).toMatchObject({ requestState: "available", responseState: "available" });
     await prisma.user.update({ where: { id: f.initiatorId }, data: { status: "disabled" } });
     expect(await f.repository.read(f.key)).toBeNull();
-    expect(await f.read(f.key)).toBeNull();
-  });
-
-  it("keeps Project calls initiator-only even for the Owner and an administrator with Viewer access", async () => {
-    const f = await fixture({ project: true });
-    expect(await f.read(f.key)).toMatchObject({ responseState: "available" });
-    for (const userId of [f.otherId, f.adminId]) {
-      expect(await f.repository.read({ ...f.key, userId })).toBeNull();
-      expect(await f.read({ ...f.key, userId })).toBeNull();
-    }
-    await prisma.mcpToolAccessPolicy.create({ data: { serverId: f.serverId, toolName: "records", restricted: true,
-      users: { create: { userId: f.initiatorId } } } });
-    expect(await f.read(f.key)).toMatchObject({ responseState: "available" });
-    await prisma.projectGrant.delete({ where: { projectId_userId: { projectId: f.projectId!, userId: f.initiatorId } } });
     expect(await f.read(f.key)).toBeNull();
   });
 
@@ -242,8 +206,8 @@ describe("Prisma MCP call details authority and historical display", () => {
     expect(await f.read(f.key)).toMatchObject({ responseState: "unavailable", response: null });
   });
 
-  it.each(["grant", "tool", "project", "user"])("suppresses an OBJECT result when %s access is revoked during streaming I/O", async authority => {
-    const f = await fixture({ project: authority === "project" });
+  it.each(["grant", "tool", "user"])("suppresses an OBJECT result when %s access is revoked during streaming I/O", async authority => {
+    const f = await fixture();
     const original = await f.observation("OBJECT", "Original before revocation ".repeat(500));
     const revoke = async () => {
       if (authority === "grant") await prisma.mcpGrant.delete({ where: { serverId_userId: {
@@ -251,8 +215,7 @@ describe("Prisma MCP call details authority and historical display", () => {
       else if (authority === "tool") await prisma.mcpToolAccessPolicy.create({ data: {
         serverId: f.serverId, toolName: "records", restricted: true
       } });
-      else if (authority === "user") await prisma.user.update({ where: { id: f.initiatorId }, data: { status: "disabled" } });
-      else await prisma.projectGrant.delete({ where: { projectId_userId: { projectId: f.projectId!, userId: f.initiatorId } } });
+      else await prisma.user.update({ where: { id: f.initiatorId }, data: { status: "disabled" } });
     };
     let bytesDelivered = 0;
     const streamRead = vi.fn<NonNullable<StorageAdapter["getObjectStream"]>>(async (storageKey, options) => {

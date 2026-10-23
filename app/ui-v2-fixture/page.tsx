@@ -58,8 +58,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "assistant-fallback",
         "assistant-fixed",
         "assistant-fixed-model",
-        "assistant-knowledge",
-        "assistant-project-fallback",
         "attachments",
         "capabilities",
         "chips-wide",
@@ -69,11 +67,9 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "commands",
         "default",
         "error",
-        "knowledge",
         "load-all-refused",
         "mcp-personal",
         "model",
-        "project-knowledge",
         "reasoning",
         "reasoning-hidden",
         "reasoning-locked",
@@ -98,11 +94,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "fixed",
         "menu",
         "picker",
-        "picker-project",
-        "project-chosen",
-        "project-fallback",
-        "project-menu",
-        "project-unavailable",
         "unavailable-consumer",
         "unavailable-owner"
       ] as const,
@@ -125,10 +116,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
       query.state,
       [
         "approval",
-        "citation-assistant",
-        "citation-personal",
-        "citation-project",
-        "citation-visual",
         "complete",
         "empty",
         "memory",
@@ -156,7 +143,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "library") {
     const state = fixtureState(
       query.state,
-      ["all-sections", "assistants", "dirty", "files", "knowledge", "memory", "memory-disabled", "skills"] as const,
+      ["all-sections", "assistants", "dirty", "files", "memory", "memory-disabled", "skills"] as const,
       "assistants"
     );
     const { LibraryV2Gallery } = await import("./_fixtures/LibraryV2Gallery");
@@ -220,15 +207,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
     const state = fixtureState(query.state, ["attention", "on", "setup"] as const, "on");
     const { TelegramAdminV2Gallery } = await import("./_fixtures/TelegramAdminV2Gallery");
     return <TelegramAdminV2Gallery state={state} />;
-  }
-  if (query.fixture === "projects") {
-    const state = fixtureState(
-      query.state,
-      ["contributor", "empty", "error", "landing", "overview", "setup", "viewer"] as const,
-      "landing"
-    );
-    const { ProjectsV2Gallery } = await import("./_fixtures/ProjectsV2Gallery");
-    return <ProjectsV2Gallery state={state} />;
   }
   if (query.fixture === "connect") {
     const state = fixtureState(query.state, ["empty", "list", "pair", "pair-expired", "session", "session-running"] as const, "list");

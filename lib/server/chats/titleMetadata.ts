@@ -46,7 +46,7 @@ export function createGetChatTitleHandler(input: Readonly<{
     const result = chatId.length <= 200 ? await input.client.$transaction(async tx => {
       const chat = await tx.chat.findFirst({
         select: { ...chatTitleMetadataSelect, updatedAt: true },
-        where: { archived: false, id: chatId, permanentDeletionAt: null, projectId: null, userId: auth.userId }
+        where: { archived: false, id: chatId, permanentDeletionAt: null, userId: auth.userId }
       });
       if (!chat) return null;
       const pending = chatTitlePending(chat);

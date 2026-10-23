@@ -5,7 +5,6 @@ import { SKILL_BUNDLE_MAX_BYTES, SKILL_FILE_MAX_BYTES, SKILL_MAX_FILES, SKILL_TE
 import { skillTarPath, skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { tarEndBlocks, tarEntryBlocks } from "../chats/tarArchive";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
-import { resolveProjectAccess } from "../projects/access";
 import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceSkillBundleRef } from "../workspace/runtime";
 import { renderSkillMarkdown, skillBundleDigest } from "./bundle";
@@ -102,15 +101,11 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
   async function accepted(input: RunIdentity) {
     const [run, user] = await Promise.all([
       db.modelRun.findFirst({ where: { id: input.runId, userId: input.userId },
-        select: { normalizedRequest: true, chat: { select: { userId: true, projectId: true } },
+        select: { normalizedRequest: true, chat: { select: { userId: true } },
           skillRunBindings: { select: { skillId: true, revisionId: true, mode: true, alias: true } } } }),
       db.user.findUnique({ where: { id: input.userId }, select: { status: true } })
     ]);
-    if (!run || user?.status !== "active") return invalid();
-    if (run.chat.projectId) {
-      if (!await resolveProjectAccess(db, { projectId: run.chat.projectId, userId: input.userId,
-        minimumRole: "CONTRIBUTOR", requireActive: true })) return invalid();
-    } else if (run.chat.userId !== input.userId) return invalid();
+    if (!run || user?.status !== "active" || run.chat.userId !== input.userId) return invalid();
     const request = run.normalizedRequest;
     if (!request || typeof request !== "object" || Array.isArray(request)) return invalid();
     const workspace = request.workspace;
@@ -155,7 +150,7 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
       const available = manifest.available.some(item => item.skillId === reference.skillId);
       if (input.currentAccess) {
         if (!await createSkillCatalogRepository(db).resolveFrozen({ userId: input.userId,
-          ...(run.chat.projectId ? { projectId: run.chat.projectId } : {}), skillId: reference.skillId, revisionId: reference.revisionId })) {
+          skillId: reference.skillId, revisionId: reference.revisionId })) {
           throw new SkillBundleError({ code: "skill_not_available" });
         }
       } else if (available && !run.skillRunBindings.some(binding => binding.skillId === reference.skillId && binding.mode === "loaded")) return invalid();
