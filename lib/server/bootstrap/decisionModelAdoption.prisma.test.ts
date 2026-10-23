@@ -131,13 +131,12 @@ describe("existing-installation Jev upgrade", () => {
     });
   });
 
-  it("keeps per-feature opt-outs while assigning the other qualified consumers", async () => {
+  it("keeps an opt-out of the only default consumer and adopts nothing for it", async () => {
     await fixture(async ({ adopt }) => {
       await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { decisionFeaturesJson: { skillSuggestions: false } } });
-      expect(await adopt()).toBe("applied");
+      expect(await adopt()).toBe("preserved");
       const roles = createDecisionModelRoleResolver(prisma);
-      expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
-      expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: true });
+      expect((await roles.resolve("skillSuggestions")).ok).toBe(false);
     });
   });
 

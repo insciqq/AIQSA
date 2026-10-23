@@ -143,14 +143,12 @@ describe("persisted independent System Model roles", () => {
       expect(await service.adoptDecisionModel({ userId: adminId, expectedVersion: before.version, providerModelId: id })).toBe(true);
       const roles = createDecisionModelRoleResolver(db);
       expect((await roles.resolve("skillSuggestions")).ok).toBe(true);
-      expect((await roles.resolve("skillSuggestions")).ok).toBe(true);
       let current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       await service.update({ userId: adminId, expectedVersion: current.version,
         decisionFeatures: { skillSuggestions: false } });
       current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       expect(await service.adoptDecisionModel({ userId: adminId, expectedVersion: current.version, providerModelId: id })).toBe(false);
       expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
-      expect((await roles.resolve("skillSuggestions")).ok).toBe(true);
       expect((await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).providerModelId)
         .toBe(before.providerModelId);
     });
