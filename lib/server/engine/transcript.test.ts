@@ -225,7 +225,7 @@ describe("transcript projection", () => {
     expect(switched[1]).toMatchObject({ tool_calls: [{ id: "tool_1" }] });
   });
 
-  it("pulls results up to their calls, records an unknown outcome for a call without one and drops orphans", () => {
+  it("pulls results up to their calls, keeps the latest result of a call, records an unknown outcome for a call without one and drops orphans", () => {
     const chat = transcript();
     chat.user("Look up A-17 and B-42");
     chat.respond(codex, responsesHistoryFromOutput([
@@ -235,8 +235,8 @@ describe("transcript projection", () => {
     ]));
     chat.result("call_b", "B");
     chat.user("Also C-5", true);
+    chat.result("call_a", "Waiting for approval", "error");
     chat.result("call_a", "A");
-    chat.result("call_a", "duplicate");
     chat.result("call_gone", "orphan");
     chat.respond(codex, responsesHistoryFromOutput([
       { arguments: "{}", call_id: "call_c", name: "lookup_order", type: "function_call" }
