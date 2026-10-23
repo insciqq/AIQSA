@@ -127,6 +127,94 @@ describe("native run conversation", () => {
     expect(withStoppedNativeAnswers(branch, [])).toEqual(branch);
   });
 
+  // Regression: a native answer's delivered follow-ups and the text before them entered later runs twice, once as the
+  // context's follow-up messages and once from the run's own items.
+  describe("follow-ups of an earlier answer", () => {
+    const branch = () => conversationMessagesFromPathRows([
+      { chatId: "chat", messageContent: textMessageContent("Write a poem"), messageId: "user-1", messageRole: "user",
+        messageStatus: "complete" },
+      { chatId: "chat", messageContent: textMessageContent("Roses are red, violets are blue."), messageId: "answer-1",
+        messageParentId: "user-1", messageRole: "assistant", messageStatus: "complete", followups: [
+          { delivered: true, id: "f1", ordinal: 1, precedingText: "Roses are red", text: "Make it rhyme" },
+          { delivered: false, id: "f2", ordinal: 2, precedingText: null, text: "Add a title" }
+        ] },
+      { chatId: "chat", messageContent: textMessageContent("Shorter"), messageId: "current-user-message", messageRole: "user",
+        messageStatus: "complete" }
+    ]);
+    const answered: TranscriptItem[] = [
+      { id: "a1", kind: "assistant_text", text: "Roses are red" },
+      { followup: true, id: "u1", kind: "user", text: "Make it rhyme" },
+      { id: "a2", kind: "assistant_text", text: "Roses are red, violets are blue." }
+    ];
+    const texts = (items: readonly TranscriptItem[]) => items.map((item) => "text" in item ? item.text : "");
+
+    it("enters a native answer's delivered follow-ups once, from its items, and keeps the undelivered one", () => {
+      const conversation = buildRunConversation({ continuationTurns: new Set(), current: { messageId: "user-2", mode: "input" },
+        messages: branch(), nativeAnswers: new Map([["answer-1", answered]]) });
+      expect(conversation.items).toEqual([
+        { id: "msg-user-1", kind: "user", text: "Write a poem" },
+        { id: "msg-f2", kind: "user", text: "Follow-up not delivered to the previous answer:\nAdd a title" },
+        ...answered,
+        { id: "msg-user-2", kind: "user", text: "Shorter" }
+      ]);
+      expect(texts(conversation.items).filter((text) => text.includes("Make it rhyme"))).toHaveLength(1);
+      expect(texts(conversation.items).some((text) => text.includes("Partial answer before follow-up"))).toBe(false);
+    });
+
+    it("keeps an old-core answer's follow-ups as text, as before", () => {
+      const conversation = buildRunConversation({ continuationTurns: new Set(), current: { messageId: "user-2", mode: "input" },
+        messages: branch(), nativeAnswers: new Map() });
+      expect(conversation.items).toEqual([
+        { id: "msg-user-1", kind: "user", text: "Write a poem" },
+        { id: "msg-f1-partial", kind: "assistant_text", text: "Partial answer before follow-up:\nRoses are red" },
+        { id: "msg-f1", kind: "user", text: "Follow-up:\nMake it rhyme" },
+        { id: "msg-f2", kind: "user", text: "Follow-up not delivered to the previous answer:\nAdd a title" },
+        { id: "msg-answer-1", kind: "assistant_text", text: "Roses are red, violets are blue." },
+        { id: "msg-user-2", kind: "user", text: "Shorter" }
+      ]);
+    });
+
+    it("leaves out a delivered follow-up of a native answer that stopped without text once it is back on the branch", () => {
+      const messages = conversationMessagesFromPathRows([
+        { chatId: "chat", messageContent: textMessageContent("Write a poem"), messageId: "user-1", messageRole: "user",
+          messageStatus: "complete" },
+        { chatId: "chat", messageContent: textMessageContent(""), messageId: "answer-1", messageParentId: "user-1",
+          messageRole: "assistant", messageStatus: "error",
+          followups: [{ delivered: true, id: "f1", ordinal: 1, precedingText: "Roses are red", text: "Make it rhyme" }] },
+        { chatId: "chat", messageContent: textMessageContent("Continue"), messageId: "current-user-message", messageRole: "user",
+          messageStatus: "complete" }
+      ]);
+      const placed = withStoppedNativeAnswers(messages, [{ assistantMessageId: "answer-1", nextUserMessageId: "current-user-message" }]);
+      expect(placed.map((entry) => entry.id)).toEqual(["user-1", "f1-partial", "f1", "answer-1", "current-user-message"]);
+      const stopped = answered.slice(0, 2);
+      expect(buildRunConversation({ continuationTurns: new Set(), current: { messageId: "user-2", mode: "input" }, messages: placed,
+        nativeAnswers: new Map([["answer-1", stopped]]) }).items.map((item) => item.id)).toEqual(["msg-user-1", "a1", "u1", "msg-user-2"]);
+      // A run with nothing recorded keeps the context's copies.
+      expect(buildRunConversation({ continuationTurns: new Set(), current: { messageId: "user-2", mode: "input" }, messages: placed,
+        nativeAnswers: new Map([["answer-1", []]]) }).items.map((item) => item.id))
+        .toEqual(["msg-user-1", "msg-f1-partial", "msg-f1", "msg-user-2"]);
+    });
+
+    it("still drops an approval turn whose native answer took follow-ups", () => {
+      const messages = conversationMessagesFromPathRows([
+        { chatId: "chat", messageContent: textMessageContent("Create the issue"), messageId: "user-1", messageRole: "user",
+          messageStatus: "complete" },
+        { chatId: "chat", messageContent: textMessageContent("I need approval."), messageId: "answer-1", messageParentId: "user-1",
+          messageRole: "assistant", messageStatus: "complete" },
+        { chatId: "chat", messageContent: textMessageContent("The user approved `create` on `Jira`. Continue the task."),
+          messageId: "turn-native", messageParentId: "answer-1", messageRole: "user", messageStatus: "complete" },
+        { chatId: "chat", messageContent: textMessageContent("Roses are red, violets are blue."), messageId: "answer-2",
+          messageParentId: "turn-native", messageRole: "assistant", messageStatus: "complete",
+          followups: [{ delivered: true, id: "f1", ordinal: 1, precedingText: "Roses are red", text: "Make it rhyme" }] },
+        { chatId: "chat", messageContent: textMessageContent("Thanks"), messageId: "current-user-message", messageRole: "user",
+          messageStatus: "complete" }
+      ]);
+      expect(buildRunConversation({ continuationTurns: new Set(["turn-native"]), current: { messageId: "user-3", mode: "input" },
+        messages, nativeAnswers: new Map([["answer-1", nativeTurn], ["answer-2", answered]]) }).items.map((item) => item.id))
+        .toEqual(["msg-user-1", "n1", "n2", "a1", "u1", "a2", "msg-user-3"]);
+    });
+  });
+
   it("requires the run's own user message last", () => {
     expect(() => buildRunConversation({
       continuationTurns: new Set(), current: { messageId: "x", mode: "input" },

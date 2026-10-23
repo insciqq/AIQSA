@@ -140,12 +140,16 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
         ...entry, delivered: entry.delivery === "delivered", precedingText: entry.precedingText ?? null
       }));
     const followupMessages: ProviderConversationMessage[] = row.messageRole === "assistant" && row.messageParentId
-      ? followups.flatMap(entry => [
-          ...(entry.precedingText ? [{ id: `${entry.id}-partial`, role: "assistant" as const,
-            content: textMessageContent(`Partial answer before follow-up:\n${entry.precedingText}`) }] : []),
-          { id: entry.id, contextTurnId: row.messageParentId!, role: "user" as const,
-            content: textMessageContent(`${entry.delivered ? "Follow-up" : "Follow-up not delivered to the previous answer"}:\n${entry.text}`) }
-        ]) : [];
+      ? followups.flatMap(entry => {
+          // Which answer the follow-up went to, and whether it reached it: that answer's native items may hold it already.
+          const marker = row.messageId ? { followupOf: { answerId: row.messageId, delivered: entry.delivered } } : {};
+          return [
+            ...(entry.precedingText ? [{ id: `${entry.id}-partial`, ...marker, role: "assistant" as const,
+              content: textMessageContent(`Partial answer before follow-up:\n${entry.precedingText}`) }] : []),
+            { id: entry.id, contextTurnId: row.messageParentId!, ...marker, role: "user" as const,
+              content: textMessageContent(`${entry.delivered ? "Follow-up" : "Follow-up not delivered to the previous answer"}:\n${entry.text}`) }
+          ];
+        }) : [];
     const terminalWithText = row.messageRole === "assistant" &&
       (row.messageStatus === "cancelled" || row.messageStatus === "error") &&
       isRecord(row.messageContent) &&
