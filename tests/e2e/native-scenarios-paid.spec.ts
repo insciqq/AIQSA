@@ -20,12 +20,23 @@
  * would pay again). What each scenario needs besides the Codex LB pair and
  * AIQSA_NATIVE_ENGINE_USERS='*' (or the operator's id or email) on the app:
  *
- *   1. Search with sources   codex-lb hosted web search. A second codex-lb
- *                            connection is set up with `nativeSearch`; when
- *                            its hosted search check does not pass (codex-lb
- *                            has rejected it with 400 before, see
- *                            `usage-search-paid.spec.ts`), the model offers
- *                            no hosted source and the scenario skips.
+ *   0. Context window        nothing more: the shared codex-lb model is set
+ *                            up with the template window, which setup
+ *                            replaces with the gateway listing's window
+ *                            (`lib/server/admin/providers/codexLbContextWindow.ts`);
+ *                            the test reads the listing itself (a free
+ *                            model-list read) and compares.
+ *   1. Search with sources   codex-lb hosted web search first: a second
+ *                            codex-lb connection is set up with
+ *                            `nativeSearch`. When its hosted search check
+ *                            does not pass (codex-lb rejects it), the model
+ *                            offers no hosted source and, with
+ *                            DEEPSEEK_API_KEY, the built-in DeepSeek Search
+ *                            API source answers instead, set up as
+ *                            `prod-1018-paid.spec.ts` scenario 7 does
+ *                            (`support/deepSeekSearchApi.ts`); the answer
+ *                            model stays the codex-lb one on the native
+ *                            engine. Skips only when neither is available.
  *   2. Skill with a bundle   a real Workspace runner (below).
  *   3. Image generate + edit the codex-lb `gpt-image-2` model that custom
  *                            setup adds beside a Codex gateway's answer model
@@ -58,11 +69,16 @@
  *     -e AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME=0 -e CODEX_LB_API_KEY -e CODEX_LB_BASE_URL \
  *     app npx playwright test --project=chromium tests/e2e/native-scenarios-paid.spec.ts
  *
- * Expected paid calls (Codex LB only): custom setup for the shared answer
+ * Expected paid calls (Codex LB, plus DeepSeek only on the search fallback):
+ * custom setup for the shared answer
  * connection once per worker (discovery plus its model checks, the image
  * model's included; a failed test restarts the worker, so the next test sets
- * up again), and once more for the search connection. Then: search one or
- * two model requests with one hosted search; Skill two to four (load_skill,
+ * up again), and once more for the search connection; one free model-list
+ * read for the window check. Then: search one or two model requests with one
+ * hosted search, or on the DeepSeek path one DeepSeek Search API request
+ * (plus, only when no keyed DeepSeek connection or set-up source exists yet,
+ * at most 8 probes of DeepSeek V4.1 Flash and one probe search on Save; no
+ * DeepSeek model answers); Skill two to four (load_skill,
  * one or two Workspace commands, the answer); images two turns of two
  * requests each plus exactly two gpt-image-2 calls (low quality, 1024x1024),
  * and one image model check only when generation or editing is unverified;
@@ -93,6 +109,7 @@ import { decodeCatalogResponse, type CatalogModel, type CatalogSearchStrategy } 
 import { decodeThreadGeneratedImage, type ImageGenerationParameters } from "../../lib/contracts/imageGeneration";
 import type { SkillImportResponse } from "../../lib/contracts/skills";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
+import { CODEX_LB_TEMPLATE_CONTEXT_WINDOW } from "../../lib/server/admin/providers/codexLbContextWindow";
 import { writeZip } from "../../lib/server/artifacts/zip";
 import { getWorkspaceConfig, WorkspaceConfigError, type WorkspaceConfig } from "../../lib/server/workspace/config";
 import { modelInConnection, readConnections, type JourneyConnection } from "../../scripts/context-compaction-journey-support";
@@ -100,10 +117,13 @@ import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { keepAccountMcpDefault } from "./support/chatDefaults";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/composerToolsOff";
+import {
+  DEEPSEEK_SEARCH_API_COST_MICROS, DEEPSEEK_SEARCH_API_USAGE_MODEL, deepSeekConnection, deepSeekSearchApiSource
+} from "./support/deepSeekSearchApi";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import {
-  newExcludedChat, paidEnv, PAID_SETUP_TIMEOUT_MS, pollUntil, setupCodexLbAnswerModel, type PaidAnswerModel
+  newExcludedChat, paidEnv, PAID_SETUP_TIMEOUT_MS, pollUntil, setupCodexLbAnswerModel, waitForCatalogModel, type PaidAnswerModel
 } from "./support/paidProviders";
 import { disableMemoryRecall, lastAnswer } from "./support/workspace";
 
@@ -234,12 +254,33 @@ type Stand = Readonly<{
 /** One shared codex-lb connection per worker; the search scenario sets up its own. */
 let answerModel: PaidAnswerModel | null = null;
 
+/**
+ * The shared codex-lb answer model. It declares the template window, which
+ * setup treats as replaceable and fills from the gateway listing, so the
+ * window check reads what setup does on its own; an explicit window would be
+ * the administrator's and kept.
+ */
 async function sharedAnswerModel(page: Page, stand: Stand): Promise<PaidAnswerModel> {
   answerModel ??= await setupCodexLbAnswerModel(page.request, {
-    label: "Native scenarios", nativeSearch: false, preferredModel: paidEnv("AIQSA_FEATURES_CODEX_MODEL")
+    contextWindow: CODEX_LB_TEMPLATE_CONTEXT_WINDOW, label: "Native scenarios", nativeSearch: false,
+    preferredModel: paidEnv("AIQSA_FEATURES_CODEX_MODEL")
   });
   stand.summary.answerModel = answerModel.upstreamModelId;
   return answerModel;
+}
+
+const MEMORY_TOGGLES = { learnAutomatically: true, referenceChatHistory: true, useMemoryFacts: true } satisfies Prisma.UserMemorySettingsSelect;
+type MemoryToggles = Prisma.UserMemorySettingsGetPayload<{ select: typeof MEMORY_TOGGLES }>;
+
+/** A content-free failure code: a stable error code (Prisma's or the product's) or the error class, never the message. */
+function failureCode(error: unknown): string {
+  if (error && typeof error === "object") {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(code)) return code;
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(name)) return name;
+  }
+  return "unknown";
 }
 
 /**
@@ -255,12 +296,14 @@ async function withStand(page: Page, testInfo: TestInfo, label: string, body: (s
   const cleanup: (() => Promise<unknown>)[] = [];
   const summary: Record<string, unknown> = { scenario: label };
   let restoreDefaults: (() => Promise<void>) | null = null;
+  let memoryToggles: MemoryToggles | null = null;
   try {
     // A cold `next dev` compiles the shell on the first visit.
     await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
     await authenticateWithLocalToken(page.request);
     const userId = ((await (await page.request.get("/api/me")).json()) as { user: { id: string } }).user.id;
     restoreDefaults = await snapshotComposerDefaults(prisma, userId);
+    memoryToggles = await prisma.userMemorySettings.findUnique({ select: MEMORY_TOGGLES, where: { userId } });
     await keepAccountMcpDefault(page);
     await disableMemoryRecall(page);
     await body({ chatIds, cleanup, summary, userId });
@@ -273,7 +316,13 @@ async function withStand(page: Page, testInfo: TestInfo, label: string, body: (s
     await page.goto("about:blank").catch(() => undefined);
     for (const chatId of chatIds) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 60_000 }).catch(() => undefined);
     for (const step of cleanup.reverse()) await step().catch(() => { summary.cleanup = "failed"; });
-    await restoreDefaults?.().catch(() => { summary.composerDefaultsRestore = "failed"; });
+    // Memory toggles go back through the product's own settings route first, as the user would switch them, so the
+    // shared restore below finds them unchanged; it then restores the composer defaults.
+    if (memoryToggles) {
+      summary.memoryTogglesRestore = await page.request.patch("/api/me/memory/settings", { data: memoryToggles })
+        .then((response) => response.status()).catch((error: unknown) => failureCode(error));
+    }
+    await restoreDefaults?.().catch((error: unknown) => { summary.composerDefaultsRestore = { code: failureCode(error), failed: true }; });
     await testInfo.attach(`${label}-summary.json`, { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
     console.log(`native_scenarios_paid_summary ${label} ${JSON.stringify(summary)}`);
   }
@@ -817,23 +866,87 @@ async function codingComparison(page: Page, testInfo: TestInfo, task: CodingTask
 
 // ---------------------------------------------------------------------------
 
+/** A listed window as `lib/server/admin/providers/credentialTester.ts` reads it: `context_length` or `context_window`, never `max_context_window`. */
+function listedWindow(entry: Record<string, unknown>): number | null {
+  const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const capabilities = record(entry.capabilities);
+  const metadata = record(entry.metadata);
+  const value = [entry.contextWindow, entry.context_length, entry.context_window, capabilities.context_length, metadata.context_window]
+    .find((candidate) => Number.isInteger(candidate) && Number(candidate) > 0 && Number(candidate) <= 10_000_000);
+  return value === undefined ? null : Number(value);
+}
+
+/** The gateway's own model listing (`<CODEX_LB_BASE_URL>/models`, a free read) for one model: its window, or why there is none. */
+async function gatewayListing(upstreamModelId: string): Promise<Readonly<{ listed: number | null; listing: string }>> {
+  const response = await fetch(`${paidEnv("CODEX_LB_BASE_URL")!.replace(/\/+$/u, "")}/models`, {
+    headers: { accept: "application/json", authorization: `Bearer ${paidEnv("CODEX_LB_API_KEY")!}` }, signal: AbortSignal.timeout(30_000)
+  }).catch(() => null);
+  if (!response?.ok) return { listed: null, listing: `unreadable_${response?.status ?? "network"}` };
+  const data = (await response.json().catch(() => null) as { data?: unknown } | null)?.data;
+  if (!Array.isArray(data)) return { listed: null, listing: "unreadable_shape" };
+  const entry = (data as unknown[]).find((candidate) => candidate && typeof candidate === "object" &&
+    (candidate as { id?: unknown }).id === upstreamModelId) as Record<string, unknown> | undefined;
+  if (!entry) return { listed: null, listing: "model_not_listed" };
+  const listed = listedWindow(entry);
+  return { listed, listing: listed === null ? "listing_has_no_window" : "listed" };
+}
+
 test.describe("native engine scenario set on Codex LB", () => {
-  test("1. search with sources: the codex-lb hosted web search answers with a source shown", async ({ page, browser, baseURL },
-    testInfo) => {
-    test.setTimeout(45 * 60_000);
+  test("0. the shared codex-lb model's context window is the gateway listing's", async ({ page }, testInfo) => {
+    test.setTimeout(30 * 60_000);
+    await withStand(page, testInfo, "codex-lb-context-window", async (stand) => {
+      const model = await sharedAnswerModel(page, stand);
+      const { listed, listing } = await gatewayListing(model.upstreamModelId);
+      const storedWindow = async () => {
+        const row = await prisma.providerModel.findUnique({ select: { activeConfig: true }, where: { id: model.modelId } });
+        const capabilities = (row?.activeConfig as { capabilities?: { contextWindow?: unknown } } | null)?.capabilities;
+        return typeof capabilities?.contextWindow === "number" ? capabilities.contextWindow : null;
+      };
+      // Setup's background checks fill the window; give them a little time after the model became selectable.
+      const stored = listed === null ? await storedWindow()
+        : await pollUntil(120_000, async () => await storedWindow() === listed ? listed : null, "codex_lb_window_not_listed")
+          .catch(() => storedWindow());
+      Object.assign(stand.summary, { listing, window: { listed, stored, templateDefault: CODEX_LB_TEMPLATE_CONTEXT_WINDOW } });
+      if (listed !== null) expect(stored, "the stored window is the gateway listing's").toBe(listed);
+      else expect(stored, `${listing}: the template default is kept`).toBe(CODEX_LB_TEMPLATE_CONTEXT_WINDOW);
+    });
+  });
+
+  test("1. search with sources: codex-lb hosted web search, else the DeepSeek Search API, answers with a source shown", async ({ page,
+    browser, baseURL }, testInfo) => {
+    test.setTimeout(60 * 60_000);
     await withStand(page, testInfo, "native-search-sources", async (stand) => {
       // A connection of its own: declaring hosted search must not change the other scenarios' model.
       const model = await setupCodexLbAnswerModel(page.request, {
         label: "Native scenarios search", nativeSearch: true, preferredModel: paidEnv("AIQSA_FEATURES_CODEX_MODEL")
       });
       stand.summary.answerModel = model.upstreamModelId;
-      const source = await hostedSearchSource(page.request, model);
-      stand.summary.searchSource = source ? { adapterKind: source.adapterKind ?? null, kind: source.kind,
-        modes: source.executionModes ?? null } : null;
-      if (!source) skipScenario(stand, "codex-lb hosted web search unavailable: the search connection's model offers no hosted Search source");
+      const hosted = await hostedSearchSource(page.request, model);
+      stand.summary.hostedSource = hosted ? { adapterKind: hosted.adapterKind ?? null, kind: hosted.kind,
+        modes: hosted.executionModes ?? null } : null;
+      let path: "codex_lb_hosted" | "deepseek_search_api";
+      let sourceName: string;
+      if (hosted) {
+        path = "codex_lb_hosted";
+        sourceName = hosted.displayName;
+      } else {
+        const secret = paidEnv("DEEPSEEK_API_KEY");
+        if (!secret) skipScenario(stand, "no web search source: codex-lb offers no hosted Search source and DEEPSEEK_API_KEY is not set");
+        path = "deepseek_search_api";
+        const deepSeekSummary: Record<string, unknown> = {};
+        stand.summary.deepSeek = deepSeekSummary;
+        const deepSeek = await deepSeekConnection(page.request, secret, "Native scenarios DeepSeek", deepSeekSummary);
+        const source = await deepSeekSearchApiSource(page, prisma, deepSeek.id, deepSeekSummary);
+        // The codex-lb answer model is offered the source once the catalog lists it for that model.
+        await waitForCatalogModel(page.request, model.connectionId, (candidate) => candidate.modelId === model.modelId &&
+          candidate.searchStrategyIds.includes(source.strategyId));
+        const strategy = (await catalogState(page.request))?.searchStrategies.find((entry) => entry.strategyId === source.strategyId);
+        sourceName = strategy?.displayName ?? source.displayName;
+      }
+      stand.summary.searchPath = path;
 
       const chatId = await openChat(page, stand, model, "Native search");
-      await chooseSearchStrategy(page, escapeRegExp(source.displayName));
+      await chooseSearchStrategy(page, escapeRegExp(sourceName));
       const turn = await nativeTurn(page, chatId, "Use web search exactly once, with a single query, to find the year the Eiffel " +
         "Tower opened to the public. Do not search again and do not use any other tool. Answer in one short sentence that " +
         "includes the year.");
@@ -841,10 +954,19 @@ test.describe("native engine scenario set on Codex LB", () => {
       const searches = await searchCalls(turn.run.id, usage);
       const text = await answerText(turn.run);
       const searchCount = Math.max(searches.hostedReported ?? 0, searches.searchRuns, searches.searchArtifacts);
+      const webSearchRows = await prisma.usageEvent.findMany({ select: { estimatedCostMicros: true, modelId: true, operationCount: true,
+        provider: true, webSearchCount: true }, where: { modelRunId: turn.run.id, purpose: "web_search" } });
       Object.assign(stand.summary, { answerHasYear: text.includes("1889"), calls: (await toolCalls(turn.run.id)).names, searches,
-        oneSearchCall: searchCount === 1, status: turn.run.status, stream: streamTimings(turn.records, turn.sent.browserAt), usage });
+        oneSearchCall: searchCount === 1, status: turn.run.status, stream: streamTimings(turn.records, turn.sent.browserAt), usage,
+        webSearchRows });
 
       expect(searchCount, "the answer searched the web").toBeGreaterThanOrEqual(1);
+      if (path === "deepseek_search_api") {
+        expect(webSearchRows, "exactly one billed web_search usage row").toHaveLength(1);
+        // DeepSeek reports no cost: one result-bearing request at the published per-request price.
+        expect(webSearchRows[0]).toMatchObject({ estimatedCostMicros: DEEPSEEK_SEARCH_API_COST_MICROS,
+          modelId: DEEPSEEK_SEARCH_API_USAGE_MODEL, operationCount: 1, provider: "deepseek", webSearchCount: 1 });
+      }
       expect(text.includes("1889"), "the answer states the year").toBe(true);
       await page.reload();
       const toggle = page.getByTestId("answer-sources-toggle").last();
