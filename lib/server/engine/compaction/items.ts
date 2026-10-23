@@ -12,7 +12,7 @@ export type CompactionItemRules = Readonly<{
   awaitingApproval: (result: TranscriptToolResultItem) => boolean;
   /** Server-added run context in user items (the Skills index and
    * instructions), rebuilt for every run: never retained or summarized as
-   * the user's words. */
+   * the user's words (replay keeps it, `TranscriptUserItem.runContext`). */
   runContext: (item: TranscriptItem) => boolean;
   /** The kept tail may start only at an item whose id later runs keep, so the
    * compaction finds its tail again when the conversation is rebuilt. */
@@ -38,8 +38,8 @@ const RUN_CONTEXT_ID = /^ctx-/u;
 export function engineItemRules(unstableInputId: string | null = null): CompactionItemRules {
   return {
     awaitingApproval: (result) => result.outcome === "error" && result.output === APPROVAL_PENDING_TEXT,
-    runContext: (item) => item.kind === "user" && RUN_CONTEXT_ID.test(item.id),
-    stableId: (item) => !RUN_CONTEXT_ID.test(item.id) && item.id !== unstableInputId
+    runContext: (item) => item.kind === "user" && (item.runContext === true || RUN_CONTEXT_ID.test(item.id)),
+    stableId: (item) => !RUN_CONTEXT_ID.test(item.id) && !(item.kind === "user" && item.runContext === true) && item.id !== unstableInputId
   };
 }
 
