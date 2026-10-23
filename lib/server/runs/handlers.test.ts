@@ -14,6 +14,8 @@ import {
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
+import type { NativeEngineHandlerDeps } from "../engine/handlerSupport";
+import { parseNativeEngineUsers } from "../engine/routing";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   ProviderAdapter,
@@ -7030,5 +7032,68 @@ describe("usage limit admission", () => {
     expect(state.created).toMatchObject({ chatId: "chat-1", userId: config.bootstrapUserId });
     expect(state.completed).not.toBeNull();
     expect(usageLimits.loadUsageLimitStatus).toHaveBeenCalledOnce();
+  });
+});
+
+/** The native engine's stores in memory; `published` collects the answers it published. */
+function nativeEngineFake(listed: readonly string[]) {
+  const published: string[] = [];
+  const deps: NativeEngineHandlerDeps = {
+    allowlist: () => parseNativeEngineUsers(listed.join(",")),
+    engine: {
+      approvedCall: async () => null,
+      mcpBindingRows: async () => [],
+      observations: async () => ({ withReservation: vi.fn() }) as never,
+      runs: {
+        applyUsageTotals: async () => undefined,
+        complete: async () => true,
+        publishAnswer: async (_scope, input) => { published.push(input.text); return true; },
+        writeUsageRows: async () => undefined
+      },
+      savedResults: { read: async () => null },
+      toolCalls: { begin: async () => ({ kind: "inactive" }), refuse: async () => null, settle: async () => true },
+      transcripts: { append: async () => undefined, approvalContinuationTurns: async () => new Set(), loadRuns: async () => new Map(),
+        nativeRunsForAnswers: async () => new Map(), nextSequence: async () => 0 }
+    },
+    findOrphans: async () => []
+  };
+  return { deps, published };
+}
+
+describe("native engine routing of interactive sends", () => {
+  beforeEach(() => {
+    resetBootOrphanSweepForTest();
+  });
+
+  const toolCallingModel = { contextWindow: 32_768, nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: true,
+    streaming: true, toolCalling: true, vision: true };
+  const send = (deps: TestRunHandlerDeps) => createSendMessageHandler(deps)(new Request("http://app.local/api/chats/chat-1/messages", {
+    body: JSON.stringify({ content: { blocks: [{ text: "Hello QSA", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+      searchPlan: { mode: "all_selected", optionIds: [] } }),
+    headers: { cookie: authCookie() }, method: "POST"
+  }), { params: { chatId: "chat-1" } });
+
+  it("admits a listed user's send with the native engine marker and answers on it", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const native = nativeEngineFake([config.bootstrapUserId]);
+    const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() }, repository });
+    const events = parseSse(await response.text());
+    expect(state.created).toMatchObject({ engine: "native" });
+    expect(native.published).toEqual(["Fake answer: Hello QSA"]);
+    expect(events.map((event) => event.type)).toContain("answer_complete");
+    expect(events.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+    expect(state.completed).toBeNull();
+  });
+
+  it("keeps an unlisted user, and a model without verified tool calling, on the old core", async () => {
+    for (const [listed, capabilities] of [[["someone-else"], toolCallingModel], [[config.bootstrapUserId],
+      { ...toolCallingModel, toolCalling: false }]] as const) {
+      const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, capabilities);
+      const native = nativeEngineFake(listed);
+      const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() }, repository });
+      await response.text();
+      expect(state.created?.engine).toBeUndefined();
+      expect(native.published).toEqual([]);
+    }
   });
 });

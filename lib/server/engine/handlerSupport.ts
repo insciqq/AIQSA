@@ -1,0 +1,77 @@
+import { logEvent } from "../observability";
+import type { ProviderAdapter } from "../providers/types";
+import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import type { RunRepository } from "../runs/runRepositoryContract";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { createNativeRunExecutionResponse, type NativeEngineDeps, type NativeRunServices } from "./execution";
+import { processBootedAt, reconcileNativeRuns, type NativeRecoveryDeps } from "./recovery";
+import { nativeEngineRoute, type NativeEngineAllowlist, type NativeEngineRoute } from "./routing";
+import type { ToolRegistryServices } from "./toolRegistry";
+
+/**
+ * What the interactive send and regenerate routes add to admit native runs.
+ * Only those two routes carry it: the scheduled task runner, Telegram and
+ * answer review build their handlers without it and stay on the old core.
+ */
+export type NativeEngineHandlerDeps = Readonly<{
+  allowlist(): NativeEngineAllowlist;
+  engine: NativeEngineDeps;
+  findOrphans: NativeRecoveryDeps["findOrphans"];
+  mcpRuntime?: ToolRegistryServices["mcpRuntime"];
+}>;
+
+/** Before a user's admission: their native runs no execution owns end interrupted, so the chat is free. */
+export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps | undefined, deps: Readonly<{
+  repository: Pick<RunRepository, "failRun">;
+  workspaceCoordinator?: WorkspaceCoordinator;
+}>, userId: string): Promise<void> {
+  if (!native) return;
+  await reconcileNativeRuns({ bootedAt: processBootedAt(), findOrphans: native.findOrphans,
+    liveRunIds: () => activeRunControllerRegistry.ids(), repository: deps.repository, runs: native.engine.runs,
+    ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}) }, { userId }).catch((error: unknown) => {
+    logEvent("run_recovery", { action: "retry", code: "native_run_recovery_failed", error, outcome: "failed", stage: "recovery",
+      subsystem: "run_recovery" });
+  });
+}
+
+/** The engine of a run about to be admitted; the old core without native deps. */
+export function routeRun(native: NativeEngineHandlerDeps | undefined, input: Readonly<{
+  answerReview: boolean;
+  prepared: MaterializedPreparedRunData;
+  scheduled: boolean;
+  user: Readonly<{ email: string | null; id: string }>;
+  workspacePredecessor: boolean;
+}>): NativeEngineRoute {
+  if (!native) return { engine: "v1", reason: "not_listed" };
+  return nativeEngineRoute({ ...input, allowlist: native.allowlist() });
+}
+
+/** The native execution of an admitted run. */
+export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readonly<{
+  adapter: ProviderAdapter;
+  approvalId?: string;
+  chatTitleGenerator?: import("../chats/titleGeneration").ChatTitleGenerator;
+  created: Readonly<{ acceptedAt?: Date; assistantMessageId: string; runId: string; userMessageId: string }>;
+  prepared: MaterializedPreparedRunData;
+  repository: RunRepository;
+  searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
+  services: Omit<NativeRunServices, "searchRuntimes">;
+  userId: string;
+  workspace?: WorkspaceCoordinator;
+}>): Response {
+  return createNativeRunExecutionResponse({
+    adapter: input.adapter,
+    ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),
+    ...(input.chatTitleGenerator ? { chatTitleGenerator: input.chatTitleGenerator } : {}),
+    created: input.created,
+    engine: native.engine,
+    ...(native.mcpRuntime ? { mcpRuntime: native.mcpRuntime } : {}),
+    prepared: input.prepared,
+    repository: input.repository,
+    services: { ...input.services, ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}) },
+    userId: input.userId,
+    ...(input.workspace ? { workspace: input.workspace } : {})
+  });
+}

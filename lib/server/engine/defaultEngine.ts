@@ -1,10 +1,17 @@
 import type { PrismaClient } from "@prisma/client";
+import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { MCP_APPROVAL_TTL_MS } from "../mcp/writeApproval";
 import { prisma } from "../prisma";
+import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import type { RunRepository } from "../runs/runRepositoryContract";
 import { defaultToolObservations } from "../toolObservations/defaultService";
 import type { StorageAdapter } from "../uploads/storage";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { NativeEngineDeps } from "./execution";
 import { engineTestFaults } from "./faults";
+import type { NativeEngineHandlerDeps } from "./handlerSupport";
+import { createNativeOrphanFinder, processBootedAt, type NativeRecoveryDeps } from "./recovery";
+import { NATIVE_ENGINE_USERS_ENV, parseNativeEngineUsers } from "./routing";
 import { createNativeRunStore } from "./runStore";
 import { createToolCallStore } from "./toolCallStore";
 import { createSavedToolResultReader } from "./toolResults";
@@ -42,5 +49,30 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
     savedResults: createSavedToolResultReader({ prisma: client, storage }),
     toolCalls: createToolCallStore(client),
     transcripts: createTranscriptRepository(client)
+  };
+}
+
+/** The native engine as the interactive send and regenerate routes admit it. */
+export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: PrismaClient = prisma): NativeEngineHandlerDeps {
+  return {
+    allowlist: () => parseNativeEngineUsers(process.env[NATIVE_ENGINE_USERS_ENV]),
+    engine: defaultNativeEngineDeps(storage, client),
+    findOrphans: createNativeOrphanFinder(client),
+    mcpRuntime: () => getDefaultMcpRuntimeCoordinator()
+  };
+}
+
+/** The installation-wide recovery pass of native runs, beside the old core's. */
+export function defaultNativeRecoveryDeps(input: Readonly<{
+  repository: Pick<RunRepository, "failRun">;
+  workspace?: WorkspaceCoordinator;
+}>, client: PrismaClient = prisma): NativeRecoveryDeps {
+  return {
+    bootedAt: processBootedAt(),
+    findOrphans: createNativeOrphanFinder(client),
+    liveRunIds: () => activeRunControllerRegistry.ids(),
+    repository: input.repository,
+    runs: createNativeRunStore(client),
+    ...(input.workspace ? { workspace: input.workspace } : {})
   };
 }
