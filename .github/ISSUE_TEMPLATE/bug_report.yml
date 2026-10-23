@@ -48,7 +48,7 @@ body:
     id: context
     attributes:
       label: Provider, model, and enabled capabilities
-      description: Which provider and model were selected, and whether Search, Knowledge, Memory, MCP tools, or Workspace were enabled for the run.
+      description: Which provider and model were selected, and whether Search, Memory, MCP tools, or Workspace were enabled for the run.
   - type: input
     id: incident-time
     attributes:
