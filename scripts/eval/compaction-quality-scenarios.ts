@@ -17,10 +17,10 @@ import { mulberry32 } from "../spikes/compaction-scale";
  * versus remaining work, and a call waiting for approval at the end), plus
  * the continuation each one checks. Tool results are stored the way the
  * engine stores them (`lib/server/engine/toolResults.ts`): a result longer
- * than the engine shows inline is saved whole with a handle and appears as
- * head and tail; with `handles: "all"` every result is saved with a handle,
- * the alternative where any earlier result can be read again. A call that
- * waits for approval carries the engine's placeholder result.
+ * than its save bound is saved whole with a handle, and one longer than it
+ * shows inline appears as head and tail; with `handles: "all"` every result
+ * is saved with a handle. A call that waits for approval carries the
+ * engine's placeholder result.
  */
 
 type Rng = () => number;
@@ -45,13 +45,18 @@ export type ProbeField = Readonly<{
 
 export type Probe = Readonly<{ category: ProbeCategory; fields: readonly ProbeField[]; id: string; phase: number }>;
 
-/** A continuation expectation over the agent's tool calls (name and JSON arguments) and final text. */
+/**
+ * A continuation expectation over the agent's tool calls and final text.
+ * Arguments are matched in their compact JSON form (`JSON.stringify` of the
+ * parsed call: no spacing, no escaped characters), whatever the model sent.
+ */
 export type ContinuationCheck = Readonly<{
   id: string;
-  /** `next`: some call (or the text) shows the expected next step. `forbidden`: nothing may match. */
+  /** `next`: some call (or the text) shows the expected next step, so the
+   * agent named it on its own. `forbidden`: nothing may match. */
   kind: "forbidden" | "next";
   pattern: RegExp;
-  /** Calls to tools whose name matches; absent: calls and the final text. */
+  /** Calls to tools whose name matches, by their arguments; absent: each call's name and arguments, and the final text. */
   tool?: RegExp;
 }>;
 
@@ -62,7 +67,7 @@ export type Continuation = Readonly<{
   repeated: readonly Readonly<{ id: string; pattern: RegExp; tool: RegExp }>[];
 }>;
 
-/** Which results are saved with a handle: the engine's long results only, or all of them. */
+/** Which results are saved with a handle: those the engine saves (over `TOOL_RESULT_LIMITS.saveChars`), or all of them. */
 export type HandlePolicy = "all" | "large";
 
 export type BuiltScenario = Readonly<{
@@ -130,7 +135,7 @@ export class EvalTranscript {
   }
 
   result(callId: string, name: string, output: string, outcome: "complete" | "error" | "unknown" = "complete"): void {
-    const saved = this.policy === "all" || output.length > TOOL_RESULT_LIMITS.inlineChars;
+    const saved = this.policy === "all" || output.length > TOOL_RESULT_LIMITS.saveChars;
     const handle = saved ? evalHandle(this.scenario, callId) : null;
     if (handle) {
       this.handles.set(callId, handle);
@@ -716,7 +721,8 @@ const research = scenario({
   },
   continuation: {
     checks: [
-      { id: "draftRemainingSection", kind: "next", pattern: /procurement/iu, tool: /write_file/u },
+      // The remaining section is section 4, the recommendations: drafted into the file or in the answer.
+      { id: "draftRemainingSection", kind: "next", pattern: /recommendation|section\s*4|##\s*4\b/iu },
       { id: "supersededAudience", kind: "forbidden", pattern: /\bCFOs?\b/u, tool: /write_file/u },
       { id: "excludedSource", kind: "forbidden", pattern: /Gartner/u, tool: /write_file/u }
     ],
@@ -846,7 +852,7 @@ const requirements = scenario({
   continuation: {
     checks: [
       { id: "draftToCaterer", kind: "next", pattern: /Сезон/u, tool: /draft_email/u },
-      { id: "currentDate", kind: "next", pattern: /2026-03-28|28 марта/u, tool: /draft_email/u },
+      { id: "currentDate", kind: "next", pattern: /2026-03-28|28\.03\.2026|28(?:-?го)?\s+марта/u, tool: /draft_email/u },
       { id: "supersededDates", kind: "forbidden", pattern: /2026-03-21|21 марта|2026-03-14|14 марта/u, tool: /draft_email/u },
       { id: "supersededHeadcount", kind: "forbidden", pattern: /\b120\b/u, tool: /draft_email/u }
     ],
@@ -986,7 +992,8 @@ const sequential = scenario({
   },
   continuation: {
     checks: [
-      { id: "dunningLetters", kind: "next", pattern: /./u, tool: /send_dunning_letters/u },
+      // The remaining work is the dunning letters: sent, or named as the next step (the overdue invoices are not in the session).
+      { id: "dunningLetters", kind: "next", pattern: /dunning|напоминан|претензи/iu },
       { id: "currencyStaysEur", kind: "forbidden", pattern: /USD/u }
     ],
     prompt: "While the transfer waits for my approval, continue with the remaining work.",

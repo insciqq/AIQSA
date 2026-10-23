@@ -85,7 +85,7 @@ export type EvalOptions = Readonly<{
   dryRun: boolean;
   /** Reasoning effort of the recall and continuation calls. */
   effort: string;
-  /** Which results are saved with a handle: the engine's long ones (today) or all. */
+  /** Which results are saved with a handle: those the engine saves, or all. */
   handles: HandlePolicy;
   /** Output each request reserves from the window. */
   maxOutputTokens: number;
@@ -120,8 +120,8 @@ Flags:
   --model id              (default gpt-6.1-sol)
   --switch-model id       second model of the switch scenario (default gpt-6-astra)
   --tokens N              size of each session in estimated tokens (default 160000)
-  --handles large|all     results saved with a handle: those over 24000 characters, as the engine
-                          does today (default), or every result, to measure that alternative
+  --handles large|all     results saved with a handle: those over 2000 characters, as the engine
+                          does (default), or every result
   --window N|auto         context window for planning (default auto: the session at 75 %)
   --max-output N          output each request reserves (default 32000)
   --mode m                background|foreground compaction budgets (default background)
@@ -470,6 +470,8 @@ export function scoreRecall(text: string, probes: readonly Probe[]): RecallScore
 }
 
 export type ContinuationScore = Readonly<{
+  /** Whether each `next` check matched, by id: which part of the next step was missed. */
+  next: Readonly<Record<string, boolean>>;
   nextStep: boolean;
   repeated: readonly string[];
   /** Re-issued the call that waits for approval. */
@@ -478,20 +480,39 @@ export type ContinuationScore = Readonly<{
   violations: readonly string[];
 }>;
 
+/** Arguments as compact JSON, whatever spacing or escapes the model sent, so patterns see one form. */
+export function compactArguments(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text));
+  } catch {
+    return text;
+  }
+}
+
 export function scoreContinuation(continuation: Continuation, calls: readonly CallRecord[], text: string,
   pending: CallRecord | null): ContinuationScore {
+  const compact = calls.map((call) => ({ arguments: compactArguments(call.arguments), name: call.name }));
   const matches = (tool: RegExp | undefined, pattern: RegExp) => tool
-    ? calls.some((call) => tool.test(call.name) && pattern.test(call.arguments))
-    : calls.some((call) => pattern.test(call.arguments)) || pattern.test(text);
-  const next = continuation.checks.filter((check) => check.kind === "next");
+    ? compact.some((call) => tool.test(call.name) && pattern.test(call.arguments))
+    : compact.some((call) => pattern.test(`${call.name} ${call.arguments}`)) || pattern.test(text);
+  const next = Object.fromEntries(continuation.checks.filter((check) => check.kind === "next")
+    .map((check) => [check.id, matches(check.tool, check.pattern)]));
+  const pendingArguments = pending ? compactArguments(pending.arguments) : null;
   return {
-    nextStep: next.length > 0 && next.every((check) => matches(check.tool, check.pattern)),
-    repeated: continuation.repeated.filter((check) => calls.some((call) => check.tool.test(call.name) && check.pattern.test(call.arguments)))
+    next,
+    nextStep: Object.keys(next).length > 0 && Object.values(next).every(Boolean),
+    repeated: continuation.repeated.filter((check) => compact.some((call) => check.tool.test(call.name) && check.pattern.test(call.arguments)))
       .map((check) => check.id),
-    repeatedPending: pending !== null && calls.some((call) => call.name === pending.name && call.arguments === pending.arguments),
+    repeatedPending: pending !== null && compact.some((call) => call.name === pending.name && call.arguments === pendingArguments),
     toolCalls: calls.length,
     violations: continuation.checks.filter((check) => check.kind === "forbidden" && matches(check.tool, check.pattern)).map((check) => check.id)
   };
+}
+
+/** The scenario's tool names the continuation called, in order; any other name counts as `other` (names only, never arguments). */
+export function calledTools(scenario: Pick<EvalScenario, "tools">, calls: readonly CallRecord[]): string[] {
+  const known = new Set([...scenario.tools.map((tool) => tool.name), READ_TOOL_RESULT.name]);
+  return calls.map((call) => known.has(call.name) ? call.name : "other");
 }
 
 // ---------------------------------------------------------------- the runs
@@ -559,7 +580,8 @@ async function continueWork(run: Run, env: EvalEnvironment, items: readonly Tran
   try {
     const conversation = await converse(run, items, run.scenario.continuation.prompt, [...run.scenario.tools, READ_TOOL_RESULT], 4, env.now);
     const score = scoreContinuation(run.scenario.continuation, conversation.calls, conversation.text, pendingCall(items));
-    env.emit({ ...base, event: "continuation", model: run.target.model, ...conversationRecord(conversation), ...score });
+    env.emit({ ...base, calledTools: calledTools(run.scenario, conversation.calls), event: "continuation", model: run.target.model,
+      ...conversationRecord(conversation), ...score });
     return score;
   } catch (error) {
     env.emit({ ...base, code: errorCode(error), event: "error", stage: "continuation" });
