@@ -405,18 +405,12 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   failureCode: string | null;
   hardCapTokens: number | null;
   itemCount: number | null;
-  lexicalBackendCounts: Readonly<Record<string, number>>;
-  lexicalCandidateProviderBackendCounts: Readonly<Record<string, number>>;
   lexicalCandidateProviderEvidenceCount: number;
   lexicalCandidateProviderFailureReasonCounts: Readonly<Record<string, number>>;
   lexicalCandidateProviderFallbackCount: number;
-  lexicalCandidateProviderProjectionCaughtUpCount: number;
-  lexicalCandidateProviderProjectionNotCaughtUpCount: number;
   lexicalEvidenceCount: number;
   lexicalFailureReasonCounts: Readonly<Record<string, number>>;
   lexicalFallbackCount: number;
-  lexicalProjectionCaughtUpCount: number;
-  lexicalProjectionNotCaughtUpCount: number;
   localRetrievalMs: number | null;
   memoryPrepareLatencyBucket: string | null;
   memoryPrepareMs: number | null;
@@ -476,23 +470,6 @@ export type LongMemEvalRetrievalAudit = Readonly<{
   utilityCallCounts: Readonly<Record<string, number>>;
   utilityFailureReasonCounts: Readonly<Record<string, number>>;
 }>;
-
-/** The cutover concerns only replaceable lexical candidate providers.
- * PostgreSQL exact/entity/digest lanes are canonical authority stages, not an
- * OpenSearch fallback. They remain in the overall lexical audit but cannot
- * make a healthy provider cutover fail. */
-export function longMemEvalLexicalCutoverHealthy(
-  audit: LongMemEvalRetrievalAudit
-): boolean {
-  return audit.lexicalCandidateProviderEvidenceCount > 0 &&
-    audit.lexicalCandidateProviderBackendCounts.OPENSEARCH ===
-      audit.lexicalCandidateProviderEvidenceCount &&
-    (audit.lexicalCandidateProviderBackendCounts.POSTGRES ?? 0) === 0 &&
-    Object.keys(audit.lexicalCandidateProviderFailureReasonCounts).length === 0 &&
-    audit.lexicalCandidateProviderProjectionCaughtUpCount ===
-      audit.lexicalCandidateProviderEvidenceCount &&
-    audit.lexicalCandidateProviderProjectionNotCaughtUpCount === 0;
-}
 
 /** Builds a content-free provider-request distribution from the durable
  * document-batch receipts. Query embeddings remain one-input requests. */
@@ -715,92 +692,43 @@ function memoryLatencyBucket(value: unknown): string | null {
 }
 
 function lexicalAudit(value: unknown): Readonly<{
-  backendCounts: Readonly<Record<string, number>>;
-  candidateProviderBackendCounts: Readonly<Record<string, number>>;
-  candidateProviderCaughtUpCount: number;
   candidateProviderEvidenceCount: number;
   candidateProviderFailureReasonCounts: Readonly<Record<string, number>>;
   candidateProviderFallbackCount: number;
-  candidateProviderNotCaughtUpCount: number;
-  caughtUpCount: number;
   evidenceCount: number;
   failureReasonCounts: Readonly<Record<string, number>>;
   fallbackCount: number;
-  notCaughtUpCount: number;
 }> {
-  const backendCounts: Record<string, number> = {};
-  const candidateProviderBackendCounts: Record<string, number> = {};
   const candidateProviderFailureReasonCounts: Record<string, number> = {};
   const failureReasonCounts: Record<string, number> = {};
-  let candidateProviderCaughtUpCount = 0;
   let candidateProviderEvidenceCount = 0;
   let candidateProviderFallbackCount = 0;
-  let candidateProviderNotCaughtUpCount = 0;
-  let caughtUpCount = 0;
   let evidenceCount = 0;
   let fallbackCount = 0;
-  let notCaughtUpCount = 0;
-  if (!Array.isArray(value)) {
-    return Object.freeze({
-      backendCounts: Object.freeze(backendCounts),
-      candidateProviderBackendCounts: Object.freeze(candidateProviderBackendCounts),
-      candidateProviderCaughtUpCount,
-      candidateProviderEvidenceCount,
-      candidateProviderFailureReasonCounts:
-        Object.freeze(candidateProviderFailureReasonCounts),
-      candidateProviderFallbackCount,
-      candidateProviderNotCaughtUpCount,
-      caughtUpCount,
-      evidenceCount,
-      failureReasonCounts: Object.freeze(failureReasonCounts),
-      fallbackCount,
-      notCaughtUpCount
-    });
-  }
-  for (const candidate of value.slice(0, 256)) {
-    if (!isRecord(candidate) ||
-      (candidate.backend !== "OPENSEARCH" && candidate.backend !== "POSTGRES")) {
-      continue;
-    }
+  for (const candidate of Array.isArray(value) ? value.slice(0, 256) : []) {
+    if (!isRecord(candidate) || typeof candidate.lane !== "string") continue;
+    const failureCode = typeof candidate.failureCode === "string" &&
+      /^memory_[a-z0-9_]{1,96}$/u.test(candidate.failureCode)
+      ? candidate.failureCode
+      : null;
     evidenceCount += 1;
-    backendCounts[candidate.backend] = (backendCounts[candidate.backend] ?? 0) + 1;
     if (candidate.fallbackUsed === true) fallbackCount += 1;
-    if (candidate.projectionCaughtUp === true) caughtUpCount += 1;
-    if (candidate.projectionCaughtUp === false) notCaughtUpCount += 1;
-    if (typeof candidate.failureCode === "string" &&
-      /^memory_[a-z0-9_]{1,96}$/u.test(candidate.failureCode)) {
-      failureReasonCounts[candidate.failureCode] =
-        (failureReasonCounts[candidate.failureCode] ?? 0) + 1;
-    }
+    if (failureCode) failureReasonCounts[failureCode] = (failureReasonCounts[failureCode] ?? 0) + 1;
     if (!isMemoryLexicalCandidateProviderLane(candidate.lane)) continue;
     candidateProviderEvidenceCount += 1;
-    candidateProviderBackendCounts[candidate.backend] =
-      (candidateProviderBackendCounts[candidate.backend] ?? 0) + 1;
     if (candidate.fallbackUsed === true) candidateProviderFallbackCount += 1;
-    if (candidate.projectionCaughtUp === true) candidateProviderCaughtUpCount += 1;
-    if (candidate.projectionCaughtUp === false) {
-      candidateProviderNotCaughtUpCount += 1;
-    }
-    if (typeof candidate.failureCode === "string" &&
-      /^memory_[a-z0-9_]{1,96}$/u.test(candidate.failureCode)) {
-      candidateProviderFailureReasonCounts[candidate.failureCode] =
-        (candidateProviderFailureReasonCounts[candidate.failureCode] ?? 0) + 1;
+    if (failureCode) {
+      candidateProviderFailureReasonCounts[failureCode] =
+        (candidateProviderFailureReasonCounts[failureCode] ?? 0) + 1;
     }
   }
   return Object.freeze({
-    backendCounts: Object.freeze(backendCounts),
-    candidateProviderBackendCounts: Object.freeze(candidateProviderBackendCounts),
-    candidateProviderCaughtUpCount,
     candidateProviderEvidenceCount,
-    candidateProviderFailureReasonCounts:
-      Object.freeze(candidateProviderFailureReasonCounts),
+    candidateProviderFailureReasonCounts: Object.freeze(candidateProviderFailureReasonCounts),
     candidateProviderFallbackCount,
-    candidateProviderNotCaughtUpCount,
-    caughtUpCount,
     evidenceCount,
     failureReasonCounts: Object.freeze(failureReasonCounts),
-    fallbackCount,
-    notCaughtUpCount
+    fallbackCount
   });
 }
 
@@ -861,21 +789,13 @@ export function sanitizeLongMemEvalRetrievalAudit(
       : null,
     hardCapTokens: nonNegativeInteger(budget.hardCapTokens),
     itemCount: nonNegativeInteger(budget.itemCount),
-    lexicalBackendCounts: lexical.backendCounts,
-    lexicalCandidateProviderBackendCounts: lexical.candidateProviderBackendCounts,
     lexicalCandidateProviderEvidenceCount: lexical.candidateProviderEvidenceCount,
     lexicalCandidateProviderFailureReasonCounts:
       lexical.candidateProviderFailureReasonCounts,
     lexicalCandidateProviderFallbackCount: lexical.candidateProviderFallbackCount,
-    lexicalCandidateProviderProjectionCaughtUpCount:
-      lexical.candidateProviderCaughtUpCount,
-    lexicalCandidateProviderProjectionNotCaughtUpCount:
-      lexical.candidateProviderNotCaughtUpCount,
     lexicalEvidenceCount: lexical.evidenceCount,
     lexicalFailureReasonCounts: lexical.failureReasonCounts,
     lexicalFallbackCount: lexical.fallbackCount,
-    lexicalProjectionCaughtUpCount: lexical.caughtUpCount,
-    lexicalProjectionNotCaughtUpCount: lexical.notCaughtUpCount,
     localRetrievalMs: nonNegativeInteger(budget.localRetrievalMs),
     memoryPrepareLatencyBucket: memoryLatencyBucket(budget.memoryPrepareLatencyBucket),
     memoryPrepareMs: nonNegativeInteger(budget.memoryPrepareMs),

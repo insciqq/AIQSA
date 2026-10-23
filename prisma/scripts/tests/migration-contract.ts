@@ -65,6 +65,7 @@ import {
   TELEMETRY_DURATION_BUCKETS_MIGRATION, telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql
 } from "./telemetry-duration-buckets-adoption";
 import { MODEL_RUN_ENGINE_MIGRATION, modelRunEngineFixtureSql, modelRunEngineProofSql } from "./model-run-engine-adoption";
+import { STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION, stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql } from "./stop-memory-lexical-projection-capture-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7894,6 +7895,10 @@ function main(
   // previous-release writer starts after it, are old-core runs.
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_RUN_ENGINE_MIGRATION,
     modelRunEngineFixtureSql, modelRunEngineProofSql, modelRunEngineProofSql);
+  // Retirement step one: capture stops, rows and the previous release's enqueue path stay.
+  runForwardAdoptionProof(shadowDatabase, migrations, STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION,
+    stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql,
+    stopMemoryLexicalProjectionCaptureProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

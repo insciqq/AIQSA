@@ -222,21 +222,5 @@ export type EventFields = {
   }>;
   provider_request: ProviderFields;
   provider_retry: ProviderFields;
-  /** One compared lexical lane of an operator shadow rollout; counts and codes only. */
-  memory_lexical_shadow: Readonly<{
-    stage: "BASELINE" | "ENRICHED" | "INTRA_CHAT";
-    lane?: "FACT_LEXICAL_UNICODE" | "FACT_LEXICAL_NGRAM" | "HISTORY_RECALL_LEXICAL_UNICODE";
-    outcome: "completed" | "failed"; duration_ms?: number; code?: string; timed_out?: boolean;
-    opensearch_duration_ms?: number; opensearch_code?: string; opensearch_timed_out?: boolean; opaque_id_present?: boolean;
-    raw_candidate_count?: number; canonical_accepted_count?: number; rejected_authority_count?: number;
-    rejected_generation_count?: number; rejected_hash_count?: number; projection_caught_up?: boolean;
-    projection_event_lag?: number; projection_revision_lag?: number; projection_visible_age_ms?: number;
-    folded_count?: number; ngram_count?: number; transliterated_count?: number; unicode_count?: number;
-    postgres_raw_candidate_count?: number; postgres_canonical_accepted_count?: number;
-    reference_top10_count?: number; candidate_top10_count?: number; top10_intersection_count?: number;
-    reference_top10_in_candidate_top50_count?: number;
-    /** Candidate top-50 rank of the reference's first entry; 0 when absent. */
-    first_reference_rank?: number;
-  }>;
   provider_stream_safety_terminated: ProviderIdentity & Readonly<{ code: string; durationMs: number; limit: number; observed: number; totalStreamBytes: number; termination: string; unit: string }>;
 };

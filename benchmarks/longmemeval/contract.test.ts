@@ -17,7 +17,6 @@ import {
   longMemEvalExpectedUtilityModelIds,
   longMemEvalHybridRebuildFailureCode,
   longMemEvalHybridRebuildFailed,
-  longMemEvalLexicalCutoverHealthy,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
@@ -132,62 +131,21 @@ describe("LongMemEval adapter contract", () => {
     }).passed).toBe(true);
   });
 
-  it("scopes OpenSearch cutover health to candidate-provider lanes", () => {
-    const healthy = sanitizeLongMemEvalRetrievalAudit({
+  it("counts candidate-provider lanes apart from canonical lexical lanes", () => {
+    const audit = sanitizeLongMemEvalRetrievalAudit({
       lexicalEvidence: [
-        {
-          backend: "POSTGRES",
-          failureCode: null,
-          fallbackUsed: false,
-          lane: "FACT_EXACT",
-          projectionCaughtUp: true
-        },
-        {
-          backend: "POSTGRES",
-          failureCode: null,
-          fallbackUsed: false,
-          lane: "HISTORY_DIGEST_FTS_SIMPLE",
-          projectionCaughtUp: true
-        },
-        {
-          backend: "OPENSEARCH",
-          failureCode: null,
-          fallbackUsed: false,
-          lane: "HISTORY_RECALL_LEXICAL_UNICODE",
-          projectionCaughtUp: true
-        }
+        { failureCode: null, fallbackUsed: false, lane: "FACT_EXACT" },
+        { failureCode: "memory_lexical_lane_unavailable", fallbackUsed: true, lane: "FACT_LEXICAL_NGRAM" },
+        { failureCode: null, fallbackUsed: false, lane: "HISTORY_RECALL_LEXICAL_UNICODE" }
       ]
     });
-    expect(healthy.lexicalBackendCounts).toEqual({
-      OPENSEARCH: 1,
-      POSTGRES: 2
+    expect(audit).toMatchObject({
+      lexicalCandidateProviderEvidenceCount: 2,
+      lexicalCandidateProviderFailureReasonCounts: { memory_lexical_lane_unavailable: 1 },
+      lexicalCandidateProviderFallbackCount: 1,
+      lexicalEvidenceCount: 3,
+      lexicalFallbackCount: 1
     });
-    expect(healthy.lexicalCandidateProviderBackendCounts).toEqual({
-      OPENSEARCH: 1
-    });
-    expect(longMemEvalLexicalCutoverHealthy(healthy)).toBe(true);
-
-    const providerFallback = sanitizeLongMemEvalRetrievalAudit({
-      lexicalEvidence: [{
-        backend: "POSTGRES",
-        failureCode: "memory_opensearch_timeout",
-        fallbackUsed: true,
-        lane: "HISTORY_RECALL_LEXICAL_UNICODE",
-        projectionCaughtUp: false
-      }]
-    });
-    expect(longMemEvalLexicalCutoverHealthy(providerFallback)).toBe(false);
-    expect(longMemEvalLexicalCutoverHealthy(
-      sanitizeLongMemEvalRetrievalAudit({
-        lexicalEvidence: [{
-          backend: "POSTGRES",
-          failureCode: null,
-          fallbackUsed: false,
-          lane: "HISTORY_RECALL_EXACT",
-          projectionCaughtUp: true
-        }]
-      })
-    )).toBe(false);
   });
 
   it("keeps the official and product profiles explicit and non-interchangeable", () => {
@@ -640,28 +598,21 @@ describe("LongMemEval adapter contract", () => {
       itemCount: 5,
       lexicalEvidence: [
         {
-          backend: "OPENSEARCH",
           failureCode: null,
           fallbackUsed: false,
-          lane: "HISTORY_RECALL_LEXICAL_UNICODE",
-          opaqueId: "private-opaque-id",
-          projectionCaughtUp: true
+          lane: "HISTORY_RECALL_LEXICAL_UNICODE"
         },
         {
-          backend: "POSTGRES",
-          failureCode: "memory_opensearch_timeout",
+          failureCode: "memory_lexical_settle_timeout",
           fallbackUsed: true,
-          lane: "FACT_LEXICAL_NGRAM",
-          projectionCaughtUp: false
+          lane: "FACT_LEXICAL_NGRAM"
         },
         {
-          backend: "POSTGRES",
           failureCode: null,
           fallbackUsed: false,
-          lane: "HISTORY_RECALL_EXACT",
-          projectionCaughtUp: true
+          lane: "HISTORY_RECALL_EXACT"
         },
-        { backend: "private backend", private_text: "hidden" }
+        { private_text: "hidden" }
       ],
       localRetrievalMs: 31,
       memoryPrepareLatencyBucket: "GT_12S",
@@ -729,20 +680,14 @@ describe("LongMemEval adapter contract", () => {
       failureCode: "memory_expansion_database_p2010",
       hardCapTokens: 5_000,
       itemCount: 5,
-      lexicalBackendCounts: { OPENSEARCH: 1, POSTGRES: 2 },
-      lexicalCandidateProviderBackendCounts: { OPENSEARCH: 1, POSTGRES: 1 },
       lexicalCandidateProviderEvidenceCount: 2,
       lexicalCandidateProviderFailureReasonCounts: {
-        memory_opensearch_timeout: 1
+        memory_lexical_settle_timeout: 1
       },
       lexicalCandidateProviderFallbackCount: 1,
-      lexicalCandidateProviderProjectionCaughtUpCount: 1,
-      lexicalCandidateProviderProjectionNotCaughtUpCount: 1,
       lexicalEvidenceCount: 3,
-      lexicalFailureReasonCounts: { memory_opensearch_timeout: 1 },
+      lexicalFailureReasonCounts: { memory_lexical_settle_timeout: 1 },
       lexicalFallbackCount: 1,
-      lexicalProjectionCaughtUpCount: 2,
-      lexicalProjectionNotCaughtUpCount: 1,
       localRetrievalMs: 31,
       memoryPrepareLatencyBucket: "GT_12S",
       memoryPrepareMs: 80_500,

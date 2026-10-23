@@ -6396,22 +6396,13 @@ describe("Personal Memory v1 run admission", () => {
 
   it("persists the content-free lexical lane contract in attempt diagnostics", async () => {
     const lexicalEvidence = Object.freeze([Object.freeze({
-      backend: "POSTGRES" as const,
       canonicalAcceptedCount: 1,
       durationMs: 12,
       failureCode: null,
       fallbackUsed: false,
       lane: "FACT_LEXICAL_UNICODE" as const,
       matchMode: "UNICODE" as const,
-      opaqueId: null,
-      projectionCaughtUp: true,
-      projectionEventLag: null,
-      projectionRevisionLag: null,
-      projectionVisibleAgeMs: null,
       rawCandidateCount: 1,
-      rejectedAuthorityCount: 0,
-      rejectedGenerationCount: 0,
-      rejectedHashCount: 0,
       requestedLimit: 20,
       timedOut: false
     })]);

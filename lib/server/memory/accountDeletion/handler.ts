@@ -8,9 +8,6 @@ import { detachExpiredMemoryExecutionBindings } from "../execution/lifecycle";
 import { pruneUnreferencedMemoryEntities } from "../learning/entities/lifecycle";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
 import {
-  enqueueMemoryLexicalProjectionUserPurgeInTransaction
-} from "../searchProjection/repository";
-import {
   parseAccountMemoryDeletionClaim,
   type AccountMemoryDeletionClaim
 } from "./contract";
@@ -245,6 +242,10 @@ async function purgeReusableAndPrivateMemory(
       where: { id: { in: leaves.map(({ id }) => id) }, userId }
     });
   }
+  // The retired lexical projection tables have no foreign key to the user and
+  // nothing writes them any more; remove what the user left there.
+  await tx.memoryLexicalProjectionEvent.deleteMany({ where: { userId } });
+  await tx.memoryLexicalProjectionState.deleteMany({ where: { userId } });
 
   // Never-dispatched cancellation evidence is disposable. Settled calls with
   // durable usage stay as detached, content-free evidence until the global
@@ -360,6 +361,8 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'receipts', COUNT(*)::integer FROM "MemoryOperationReceipt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'generations', COUNT(*)::integer FROM "MemoryIndexGeneration" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'search', COUNT(*)::integer FROM "MemorySearchEntry" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'lexical-projection-events', COUNT(*)::integer FROM "MemoryLexicalProjectionEvent" WHERE "userId" = ${input.userId}
+      UNION ALL SELECT 'lexical-projection-states', COUNT(*)::integer FROM "MemoryLexicalProjectionState" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'embedding-batch-items', COUNT(*)::integer FROM "MemoryEmbeddingBatchItem" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'attempts', COUNT(*)::integer FROM "MemoryRetrievalAttempt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'attempt-items', COUNT(*)::integer FROM "MemoryRetrievalAttemptItem" WHERE "userId" = ${input.userId}
@@ -428,80 +431,20 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
   return rows.map((row) => row.owner);
 }
 
-async function inspectAccountMemoryDeletionProjectionObligation(
-  tx: Prisma.TransactionClient,
-  userId: string
-): Promise<readonly string[]> {
-  const purges = await tx.memoryLexicalProjectionEvent.findMany({
-    orderBy: { sequence: "asc" },
-    select: { sequence: true },
-    where: { operation: "PURGE_USER", userId }
-  });
-  if (purges.length !== 1) return ["lexical-projection-purge-obligation"];
-  const later = await tx.memoryLexicalProjectionEvent.count({
-    where: { sequence: { gt: purges[0]!.sequence }, userId }
-  });
-  return later === 0 ? [] : ["lexical-projection-purge-order"];
-}
-
-export async function inspectAccountMemoryDeletionProjectionResiduals(
-  tx: Prisma.TransactionClient,
-  userId: string
-): Promise<readonly string[]> {
-  const rows = await tx.$queryRaw<ResidualRow[]>(Prisma.sql`
-    SELECT owner, residual FROM (
-      SELECT 'lexical-projection-states' AS owner, COUNT(*)::integer AS residual
-      FROM "MemoryLexicalProjectionState"
-      WHERE "userId" = ${userId}
-      UNION ALL
-      SELECT 'lexical-projection-events' AS owner,
-        CASE
-          WHEN COUNT(*) = 1 AND COUNT(*) FILTER (
-            WHERE "operation" = 'PURGE_USER'::"MemoryLexicalProjectionOperation"
-              AND "state" = 'SUCCEEDED'::"MemoryLexicalProjectionEventState"
-              AND "completedAt" IS NOT NULL
-              AND "indexGenerationId" IS NULL
-              AND "searchEntryId" IS NULL
-          ) = 1 THEN 0
-          ELSE 1
-        END::integer AS residual
-      FROM "MemoryLexicalProjectionEvent"
-      WHERE "userId" = ${userId}
-    ) AS projection
-    WHERE residual <> 0
-    ORDER BY owner
-  `);
-  if (rows.some((row) => !Number.isSafeInteger(row.residual) || row.residual < 0)) {
-    throw new MemoryCoordinatorError("memory_account_deletion_audit_invalid", true);
-  }
-  return rows.map((row) => row.owner);
-}
-
-/**
- * Audits the final pre-user-delete state. Canonical Memory rows must already
- * be gone and the derived lexical projection must retain only its succeeded
- * terminal purge receipt.
- */
+/** Audits the final pre-user-delete state: canonical Memory rows must already be gone. */
 export async function inspectAccountMemoryDeletionResiduals(
   tx: Prisma.TransactionClient,
   input: Readonly<{ deletionId: string; userId: string }>
 ): Promise<readonly string[]> {
-  const [canonical, projection] = await Promise.all([
-    inspectAccountMemoryDeletionCanonicalResiduals(tx, input),
-    inspectAccountMemoryDeletionProjectionResiduals(tx, input.userId)
-  ]);
-  return [...canonical, ...projection];
+  return inspectAccountMemoryDeletionCanonicalResiduals(tx, input);
 }
 
 export async function assertAccountMemoryDeletionComplete(
   tx: Prisma.TransactionClient,
   input: Readonly<{ deletionId: string; userId: string }>
 ): Promise<void> {
-  const [canonical, projectionObligation] = await Promise.all([
-    inspectAccountMemoryDeletionCanonicalResiduals(tx, input),
-    inspectAccountMemoryDeletionProjectionObligation(tx, input.userId)
-  ]);
-  if (canonical.length > 0 || projectionObligation.length > 0) {
+  const canonical = await inspectAccountMemoryDeletionCanonicalResiduals(tx, input);
+  if (canonical.length > 0) {
     throw new MemoryCoordinatorError("memory_account_deletion_incomplete", true);
   }
 }
@@ -512,15 +455,11 @@ async function applyAccountMemoryDeletion(
   now: Date
 ): Promise<void> {
   await tx.$executeRaw(Prisma.sql`SET CONSTRAINTS ALL DEFERRED`);
-  const memoryRevision = await assertFence(tx, claim);
+  await assertFence(tx, claim);
   await assertGlobalOwnersSettled(tx, claim.userId);
   await cancelUndispatchedWork(tx, claim.userId, now);
   await assertExecutionsSafeToPurge(tx, claim.userId, now);
   await purgeReusableAndPrivateMemory(tx, claim, now);
-  await enqueueMemoryLexicalProjectionUserPurgeInTransaction(tx, {
-    memoryRevision,
-    userId: claim.userId
-  });
   await assertAccountMemoryDeletionComplete(tx, {
     deletionId: claim.id,
     userId: claim.userId

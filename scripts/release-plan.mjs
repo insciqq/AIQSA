@@ -76,8 +76,7 @@ export async function planImageReuse(root, currentTag, postgresTag, resolveDiges
   const inputs = {
     postgres: postgresCopiesContext ? ["."] : [postgresFile, `${postgresFile}.dockerignore`, ".dockerignore"],
     docling: ["ops/docling"],
-    tika: ["ops/tika"],
-    opensearch: ["ops/opensearch"]
+    tika: ["ops/tika"]
   };
   for (const [component, paths] of Object.entries(inputs)) {
     if (git(root, ["diff", "--quiet", base, "HEAD", "--", ...paths], [0, 1]).status !== 0) continue;

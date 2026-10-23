@@ -44,17 +44,11 @@ function result(
       variantOrdinal: 0
     }],
     evidence: {
-      backend: "POSTGRES",
       durationMs: 4,
       failureCode: null,
       fallbackUsed: false,
       lane: "HISTORY_RECALL_LEXICAL_UNICODE",
       matchMode: "UNICODE",
-      opaqueId: null,
-      projectionCaughtUp: true,
-      projectionEventLag: null,
-      projectionRevisionLag: null,
-      projectionVisibleAgeMs: null,
       rawCandidateCount: 1,
       requestedLimit: input.finalLimit,
       timedOut: false
@@ -90,19 +84,21 @@ describe("Memory lexical provider contract", () => {
     const input = request();
     const valid = result(input);
 
-    expect(() => assertMemoryLexicalSearchResult(input, valid, "POSTGRES"))
+    expect(() => assertMemoryLexicalSearchResult(input, valid))
       .not.toThrow();
     expect(() => assertMemoryLexicalSearchResult(input, {
       ...valid,
       candidates: [{ ...valid.candidates[0]!, safeContentHash: "not-a-hash" }]
-    }, "POSTGRES")).toThrow("memory_lexical_search_result_invalid");
+    })).toThrow("memory_lexical_search_result_invalid");
     expect(() => assertMemoryLexicalSearchResult(input, {
       ...valid,
       candidates: [valid.candidates[0]!, valid.candidates[0]!],
       evidence: { ...valid.evidence, rawCandidateCount: 2 }
-    }, "POSTGRES")).toThrow("memory_lexical_search_result_invalid");
-    expect(() => assertMemoryLexicalSearchResult(input, valid, "OPENSEARCH"))
-      .toThrow("memory_lexical_search_result_invalid");
+    })).toThrow("memory_lexical_search_result_invalid");
+    expect(() => assertMemoryLexicalSearchResult(input, {
+      ...valid,
+      evidence: { ...valid.evidence, requestedLimit: input.finalLimit + 1 }
+    })).toThrow("memory_lexical_search_result_invalid");
   });
 
   it("suppresses fallback only for a complete canonically accepted variant", () => {

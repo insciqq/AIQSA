@@ -89,10 +89,6 @@ import {
 import { MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS } from "./wake";
 import { reconcileMemoryShadowGenerations } from "./lifecycle";
 import { logEvent } from "../../observability";
-import {
-  advanceMemoryLexicalProjectionRevisionFence,
-  initializeMemoryLexicalProjectionState
-} from "../searchProjection/repository";
 
 type CurrentSearchItemType = Extract<
   MemorySearchItemType,
@@ -1984,12 +1980,6 @@ async function applyShadowCatchUp(
     where: { id: target.id }
   });
   await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
-  await advanceMemoryLexicalProjectionRevisionFence(tx, {
-    indexGenerationId: target.id,
-    now,
-    targetMemoryRevision: settings.memoryRevision,
-    userId: claim.userId
-  });
   const superseded = await tx.memoryIndexGeneration.updateMany({
     data: { state: "SUPERSEDED", supersededAt: now },
     where: { id: source.id, state: "ACTIVE", userId: claim.userId }
@@ -2264,11 +2254,6 @@ export function createPrismaMemoryRebuildRepository(
             userId
           }
         }) as GenerationConfiguration;
-        await initializeMemoryLexicalProjectionState(tx, {
-          indexGenerationId: replacement.id,
-          targetMemoryRevision: settings.memoryRevision,
-          userId
-        });
         const clonedEntries = await cloneGenerationEntries(tx, {
           now,
           sourceGenerationId: active.id,
@@ -2392,12 +2377,6 @@ export function createPrismaMemoryRebuildRepository(
         }
         const now = input.now ?? new Date();
         await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
-        await advanceMemoryLexicalProjectionRevisionFence(tx, {
-          indexGenerationId: target.id,
-          now,
-          targetMemoryRevision: settings.memoryRevision,
-          userId
-        });
         const superseded = await tx.memoryIndexGeneration.updateMany({
           data: { state: "SUPERSEDED", supersededAt: now },
           where: { id: active.id, state: "ACTIVE", userId }
@@ -2487,11 +2466,6 @@ export function createPrismaMemoryRebuildRepository(
             targetMemoryRevision: settings.memoryRevision,
             userId
           }
-        });
-        await initializeMemoryLexicalProjectionState(tx, {
-          indexGenerationId: generationId,
-          targetMemoryRevision: settings.memoryRevision,
-          userId
         });
         const queued = await enqueueMemoryJob(tx, settings, {
           idempotencyFingerprint: memoryShadowRebuildJobFingerprint({

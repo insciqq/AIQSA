@@ -150,7 +150,6 @@ const CONFIGURED_ENDPOINTS: readonly Readonly<{ fallback?: string; match: Endpoi
   { match: "own_port", variable: "S3_PUBLIC_ENDPOINT" },
   { match: "any_port", variable: "AIQSA_TIKA_URL" },
   { match: "any_port", variable: "AIQSA_DOCLING_URL" },
-  { fallback: "http://opensearch:9200", match: "any_port", variable: "AIQSA_OPENSEARCH_URL" },
   { match: "any_port", variable: "AIQSA_WORKSPACE_RUNNER_URL" },
   { fallback: `http://${AGENT_GATEWAY_HOSTNAME}:4311`, match: "name_only", variable: "AIQSA_AGENT_GATEWAY_URL" },
   { fallback: "http://localhost:3000", match: "own_port", variable: "AIQSA_APP_BASE_URL" }
@@ -159,7 +158,6 @@ const CONFIGURED_ENDPOINTS: readonly Readonly<{ fallback?: string; match: Endpoi
 /** Ports the development Compose file publishes on host loopback, with its defaults. */
 const DEV_PUBLISHED_PORTS: readonly Readonly<{ fallback: number; variable: string }>[] = [
   { fallback: 5432, variable: "AIQSA_DEV_POSTGRES_PORT" },
-  { fallback: 19200, variable: "AIQSA_DEV_OPENSEARCH_PORT" },
   { fallback: 9000, variable: "AIQSA_DEV_MINIO_PORT" }
 ];
 

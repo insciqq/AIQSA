@@ -247,10 +247,6 @@ jobs:
             context: ops/tika
             file: ops/tika/Dockerfile
             target: ""
-          - name: opensearch
-            context: ops/opensearch
-            file: ops/opensearch/Dockerfile
-            target: ""
 
     steps:
       - name: Check out source

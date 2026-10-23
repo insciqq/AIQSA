@@ -1,5 +1,4 @@
 import { createHmac, createSecretKey, randomUUID, type KeyObject } from "node:crypto";
-import { installationRoutingKeyFromEnv } from "../search/opensearch/memoryContract";
 
 /**
  * Stable gateway routing keys for model calls that never overlap
@@ -45,6 +44,19 @@ const globalForGatewayRouting = globalThis as unknown as { __aiqsaGatewayRouting
 /** Shared on `globalThis`, so every route bundle of the process moves a lane for all of them. */
 function registry(): Registry {
   return globalForGatewayRouting.__aiqsaGatewayRouting ??= { epoch: randomUUID(), moved: new Map() };
+}
+
+/**
+ * The installation's routing key: exactly 32 bytes in canonical base64. The variable keeps the name it had when it also
+ * keyed a retired Memory search index, so existing `.env` files keep working (`agent_docs/ENV_VARIABLES.md`).
+ */
+function installationRoutingKeyFromEnv(env: Readonly<Record<string, string | undefined>>): KeyObject {
+  const value = env.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY;
+  const decoded = value && /^[A-Za-z0-9+/]{43}=$/u.test(value) ? Buffer.from(value, "base64") : null;
+  if (!decoded || decoded.byteLength !== 32 || decoded.toString("base64") !== value) {
+    throw new Error("gateway_routing_key_invalid");
+  }
+  return createSecretKey(decoded);
 }
 
 /** The lanes' own key, derived from the installation's routing key; null without a valid one. */

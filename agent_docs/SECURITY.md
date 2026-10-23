@@ -27,7 +27,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - Saved secrets (operator decision 2026-10-22): the agent has full access to its user's saved secrets, names and values, in every chat and without the Workspace VM, and guest commands receive them as environment values. Accepted risk: values the agent reads reach the model provider and the chat transcript, and so wherever that chat's content goes (exports, shares, Telegram). This is not DLP: models and guest code can copy them. They never appear in logs. Installation, provider, database and session credentials never reach the agent or the guest.
 - Logs are structured, allowlisted and content-free: no prompts, answers, queries, instructions, file names or content, endpoints, tool bodies, Memory, credentials or bearer URLs. A failure record carries its class, first application frame, fingerprint and allowlisted cause facts (database or errno codes, syscall, timing), never the message or stack. Records may carry the user's internal id; PostgreSQL telemetry never stores user, run, job or trace ids. Mechanism: `lib/server/observability/`.
 - Exception: operator-controlled Nginx error diagnostics may contain public-share bearer paths. Operators restrict their retention, redact support copies and revoke leaked shares. The exception never covers access or application logs, authorization headers or provider, MCP and session credentials.
-- Telegram Bot API URLs embed the bot token and are never logged; Telegram buttons carry only random server-row ids checked against the link's owner and chat. Raw user ids never become OpenSearch routing or document ids.
+- Telegram Bot API URLs embed the bot token and are never logged; Telegram buttons carry only random server-row ids checked against the link's owner and chat.
 - Anonymous shares are sanitized, immutable snapshots, never live access to a private chat. Reads stay repository-authorized and are served dynamic, no-store, noindex and no-referrer. The hashed bearer token, its expiry and revocation authorize access; crawler directives do not, and bearer URLs are never advertised.
 - Browser mutations pass the shared same-origin and bounded-body guard in `proxy.ts`. A client's address is the socket peer the launcher stamps; forwarding headers count only under explicit proxy trust with a fixed number of reviewed hops (`lib/server/auth/clientIdentity.ts`). Network ranges prove no identity.
 
@@ -83,7 +83,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Deployment
 
-- A persistent deployment binds the app to loopback; private services publish no host ports. OpenSearch is unauthenticated only on its dedicated internal network; moving or exposing it needs an authenticated transport. Liveness has no dependencies; a security contradiction or a failed required data service blocks readiness.
+- A persistent deployment binds the app to loopback; private services publish no host ports. Liveness has no dependencies; a security contradiction or a failed required data service blocks readiness.
 - Images run as non-root with role-specific configuration, build inputs are digest-pinned, and releases record digests. Fake providers never make implicit real calls.
 
 ## Dependencies

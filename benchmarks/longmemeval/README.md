@@ -77,13 +77,12 @@ provider bindings. It never inserts benchmark-selected facts.
 
 The overlay has an explicit compose name, container names, network names,
 volume names, database identity, and loopback-only ports. Its defaults are app
-`3137`, PostgreSQL `55437`, OpenSearch `19237`, and object storage (S3) `19100`;
+`3137`, PostgreSQL `55437` and object storage (S3) `19100`;
 it does not share state with the default development installation.
-The frozen reader-first qualifications run Memory lexical retrieval on OpenSearch-primary
-and keeps PostgreSQL fallback available, but any observed fallback, dirty
-projection, or non-OpenSearch candidate-provider lane fails that case before
-judging. Canonical exact/entity authority lanes remain
-PostgreSQL and are reported separately from this cutover health. The
+Memory lexical retrieval reads PostgreSQL only (operator decision
+2026-10-23). The frozen reader-first qualifications from `v7` pin the retired
+lexical search index and an exact application commit, so they run only at that
+commit; on the current tree the runner refuses them as a runtime mismatch. The
 benchmark overlay runs at most eight Memory jobs globally and four per
 benchmark user. The
 per-user bound preserves provider parallelism without building a same-owner
@@ -118,8 +117,7 @@ the active revision, every retrieval/chunk/contextual version, embedding
 deployment/document-vector-space identity, and every entry state match the
 current runtime contract. An exact historical execution snapshot may prove a
 metadata-only embedding configuration change compatible; a real document-space
-change rebuilds that layer. OpenSearch is always reconstructed from the
-canonical PostgreSQL outbox.
+change rebuilds that layer.
 
 After a logical restore and its migrations, quarantine unfinished derived work
 before the first app start. The command fails closed for non-benchmark owners,
@@ -134,7 +132,7 @@ docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f ben
 
 ```bash
 docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml run --rm -T app sh -c "npm run db:migrate:deploy && npm run db:seed"
-docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml up -d app memory-search-worker
+docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml up -d app
 docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts ensure
 docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts prepare-memory-qualification
 docker compose -p aiqsa-memory-benchmark-second -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml exec -T app npx tsx .aiqsa/local-dev-profile/cli.ts select-memory-system-model gpt-5.6-luna
@@ -161,7 +159,7 @@ FU-09's original content-free selection remains frozen as the provenance-only
 the earlier diagnostic, pre-resolver, interrupted, Luna, and 9-second fast-model
 comparison waves.
 The historical fast-model matrix reused the exact 50 case IDs across all six
-upstream categories and froze the official profile, OpenSearch-primary lexical
+upstream categories and froze the official profile, index-primary lexical
 retrieval, the ordered three-model reranker route and per-model floors, and all
 other runtime bounds:
 
@@ -177,8 +175,8 @@ verify the final production policy and explicit-action split. Ordinary reads do
 not invoke or bind `MEMORY_CONTROL` or `MEMORY_QUERY_RESOLVE`; explicit and
 automatic Memory writes retain strict control. The manifest uses case
 concurrency one. Incorrect official-evaluator labels are journaled and counted
-without stopping the next case; runtime failures, non-`USED` Memory, an observed
-read-utility call, and unhealthy lexical cutover still stop admission.
+without stopping the next case; runtime failures, non-`USED` Memory and an observed
+read-utility call still stop admission.
 
 These are frozen dated model IDs (not the mutable Gemini `latest` alias).
 Selection or runtime override flags are rejected when a manifest is present.
@@ -188,14 +186,12 @@ vectors are retained):
 ```bash
 docker compose -p aiqsa-memory-benchmark-second \
   -f docker-compose.dev.yml -f benchmarks/longmemeval/docker-compose.yml \
-  up -d --force-recreate app memory-search-worker
+  up -d --force-recreate app
 ```
 
-Run the active manifest with the exact lexical environment below:
+Run a manifest (a frozen one only at its pinned commit):
 
 ```bash
-AIQSA_MEMORY_LEXICAL_BACKEND=OPENSEARCH \
-AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID=20260831-lme-v7-r2 \
 AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE \
@@ -251,7 +247,7 @@ the runner emit `case_complete` or `case_failed`; at batch completion it rebuild
 Resume an interrupted run with the identical selection, semantic runtime, and
 output directory by adding `--resume`. Terminal cases are skipped by default;
 add `--retry-unhealthy` to rerun only execution failures, completed non-`USED`
-Memory outcomes, or failed OpenSearch cutover evidence while retaining every
+Memory outcomes while retaining every
 prior attempt. `--single-wave` admits at most one fixed case-concurrency wave,
 emits `benchmark_paused` after that wave settles, and exits without producing a
 premature aggregate. Repeat it with `--resume` after an app-only restart to keep
@@ -265,7 +261,7 @@ other qualification-manifest override.
 The active qualification judges each completed answer immediately with the
 unchanged official evaluator and atomically binds the private verdict to the
 answer hash and checkpoint attempt under `case-evaluations/`. A runtime
-failure or unhealthy OpenSearch cutover observation stops admission of new
+failure stops admission of new
 cases; an incorrect verdict remains visible and the next wave continues. On
 resume, a missing verdict is recovered before new work, while an existing
 verdict is never purchased again. A product-code change invalidates the frozen

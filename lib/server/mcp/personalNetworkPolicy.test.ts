@@ -55,12 +55,13 @@ const containerHost = host({
     "aiqsa.example.test": ["93.184.216.34"],
     "host.docker.internal": ["172.17.0.1"],
     minio: ["172.20.0.11"],
-    opensearch: ["192.168.73.9"],
-    postgres: ["172.20.0.10"]
+    postgres: ["172.20.0.10"],
+    tika: ["192.168.73.9"]
   },
   env: {
     AIQSA_APP_BASE_URL: "https://aiqsa.example.test",
     AIQSA_PORT: "3100",
+    AIQSA_TIKA_URL: "http://tika:9998",
     DATABASE_URL: "postgresql://aiqsa:private-password@postgres:5432/aiqsa?schema=public",
     NODE_ENV: "development",
     S3_ENDPOINT: "http://minio:9000"
@@ -80,7 +81,6 @@ const workstation = host({
   container: false,
   env: {
     AIQSA_APP_BASE_URL: "http://localhost:3000",
-    AIQSA_OPENSEARCH_URL: "http://localhost:19200",
     DATABASE_URL: "postgresql://aiqsa:private-password@localhost:5432/aiqsa",
     NODE_ENV: "development",
     S3_ENDPOINT: "http://localhost:9000"
@@ -121,13 +121,13 @@ describe("personal MCP address policy in a container", async () => {
     ["the container's own address", "http://192.168.73.4:8080/mcp", "192.168.73.4"],
     ["a sibling on the default network", "http://10.0.0.1.nip.example:8080/mcp", "172.20.0.30"],
     ["a sibling on an IPv6 Compose network", "http://[fd00:aa::9]/mcp", "fd00:aa::9"],
-    ["OpenSearch by name on another port", "http://opensearch:9300/", "203.0.113.200"],
-    ["OpenSearch through its address", "http://search.internal.example:9200/", "192.168.73.9"],
+    ["a parser by name on another port", "http://tika:9300/", "203.0.113.200"],
+    ["a parser through its address", "http://parser.internal.example:9998/", "192.168.73.9"],
     ["Postgres by name", "http://postgres:5432/", "172.20.0.10"],
     ["the object storage relay", "http://minio:9000/", "172.20.0.11"],
     ["the host gateway on the published app port", "http://host.docker.internal:3100/mcp", "172.17.0.1"],
     ["the host gateway on the listener port", "http://host.docker.internal:3000/mcp", "172.17.0.1"],
-    ["the host gateway on a dev-published port", "http://host.docker.internal:19200/", "172.17.0.1"],
+    ["the host gateway on a dev-published port", "http://host.docker.internal:9000/", "172.17.0.1"],
     ["the host gateway on the public application port", "https://host.docker.internal/", "172.17.0.1"],
     ["the public application name on its port", "https://aiqsa.example.test/mcp", "93.184.216.99"],
     ["the public application address on its port", "https://other-name.example.test/", "93.184.216.34"],
@@ -221,19 +221,12 @@ describe("personal MCP address policy on a host install", async () => {
   it.each([
     ["the dev app", "http://localhost:3000/", "127.0.0.1"],
     ["Postgres on loopback", "http://localhost:5432/", "127.0.0.1"],
-    ["the dev-published OpenSearch on the LAN address", "http://192.168.1.10:19200/", "192.168.1.10"],
+    ["the dev-published Postgres on the LAN address", "http://192.168.1.10:5432/", "192.168.1.10"],
     ["the dev-published object storage", "http://127.0.0.1:9000/", "127.0.0.1"],
     ["a container on the default bridge", "http://172.17.0.2:8080/mcp", "172.17.0.2"],
     ["a container on a Compose bridge", "http://172.18.0.5:8080/mcp", "172.18.0.5"]
   ])("denies %s", (_label, url, address) => {
     expect(decide(environment, url, address)).toBe(INTERNAL);
-  });
-
-  it("does not reserve the port of an unset default that resolves nowhere", async () => {
-    const { AIQSA_OPENSEARCH_URL: _configured, ...env } = workstation.env;
-    const unset = await buildPersonalMcpNetworkEnvironment({ ...workstation, env });
-    expect(unset.reservedPorts.has(9200)).toBe(false);
-    expect(unset.internalHostnames.has("opensearch")).toBe(true);
   });
 
   it("closes the shared hosts and the LAN when the switch is off", () => {
@@ -297,7 +290,7 @@ describe("personal MCP address policy without every host fact", () => {
     expect(decide(unresolved, "http://192.168.1.30:9998/", "192.168.1.30")).toBe(FORBIDDEN);
     expect(decide(unresolved, "http://localhost:8080/", "127.0.0.1")).toBe(FORBIDDEN);
 
-    // The parser default (opensearch) resolves nowhere on a host install.
+    // An unset default (the runner gateway) resolves nowhere on a host install.
     expect((await buildPersonalMcpNetworkEnvironment(network({}))).degraded).toBe(false);
   });
 });

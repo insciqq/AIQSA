@@ -5,7 +5,7 @@ paths:
 ---
 # Memory
 
-Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. PostgreSQL is the authority; every search index is a rebuildable projection. Memory is kept but frozen (root `AGENTS.md`): changes only simplify or stabilize it.
+Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. PostgreSQL is the authority and the only search store; the separate lexical search index was removed (operator decision 2026-10-23). Memory is kept but frozen (root `AGENTS.md`): changes only simplify or stabilize it.
 
 ## Who may change Memory
 
@@ -49,7 +49,7 @@ Maintenance runs whenever Memory and automatic learning are on (`lib/server/memo
 
 - Ordinary personal turns get a small fixed standing set of current facts, with no dynamic retrieval or external call (`lib/server/memory/retrieval/readBudget.ts`). Deeper recall is an optional read-only tool for the answer model.
 - Temporary, Excluded and Project chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
-- Every hit rejoins its current owner, source, content hash, lifecycle, generation, suppression, deletion and expiry proof before fusion and again before the evidence pack is frozen. An OpenSearch failure falls back to PostgreSQL without weakening those checks.
+- Every hit rejoins its current owner, source, content hash, lifecycle, generation, suppression, deletion and expiry proof before fusion and again before the evidence pack is frozen.
 - Empty, limited, failed and cancelled searches stay distinct, and none proves absence. The standing set is partial, so the model should search before calling a personal detail unknown.
 - Search permissions, destinations and budgets freeze at acceptance (`lib/server/memory/search/admission.ts`), and source authority is rechecked before every disclosure to a model. Exception: context notes may hold Memory search results and, like assistant answers in history, are not rechecked or scrubbed by Forget, edit, exclusion or reset.
 - Reader prompts live in `lib/server/memory/retrieval/`: evidence is untrusted, embedded instructions are ignored, current answers respect later state, and counts come from grounded quantities, never a model-authored total.

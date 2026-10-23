@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -22,19 +22,6 @@ import { memoryMaintenanceOutputHash } from "../maintenance/provider";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createPrismaMemoryFeedbackRepository } from "../review/feedbackRepository";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
-import {
-  createPrismaMemoryLexicalProjectionStore,
-  resetMemoryLexicalProjection
-} from "../searchProjection/repository";
-import { runMemoryLexicalProjectionPass } from "../searchProjection/worker";
-import {
-  memoryOpenSearchConfigurationFromEnv,
-  memoryOpenSearchIntegrityFingerprintMaterial,
-  type MemoryOpenSearchDocument
-} from "../../search/opensearch/memoryContract";
-import type {
-  MemoryOpenSearchClient
-} from "../../search/opensearch/memoryClient";
 import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "./contract";
 import {
   createPrismaAccountMemoryDeletionHandler,
@@ -175,145 +162,9 @@ async function cleanupOwner(userId: string): Promise<void> {
     await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await tx.memoryMaintenanceExecution.deleteMany({ where: { userId } });
     await tx.user.deleteMany({ where: { id: userId } });
-    // Canonical cascades emit projection delete duties. Test teardown removes
-    // the derived rows only after those triggers have finished.
+    // Rows of the retired lexical projection have no foreign key to the user.
     await tx.memoryLexicalProjectionEvent.deleteMany({ where: { userId } });
     await tx.memoryLexicalProjectionState.deleteMany({ where: { userId } });
-  });
-}
-
-function inMemoryMemoryOpenSearch(): Readonly<{
-  client: MemoryOpenSearchClient;
-  purgedUsers: readonly string[];
-}> {
-  const documents = new Map<string, MemoryOpenSearchDocument>();
-  const purgedUsers: string[] = [];
-  const key = (routing: string, searchEntryId: string) =>
-    `${routing}\0${searchEntryId}`;
-  const client: MemoryOpenSearchClient = {
-    async activateReplacementIndex() {},
-    async applyMutations(mutations) {
-      for (const mutation of mutations) {
-        if (mutation.operation === "UPSERT") {
-          documents.set(
-            key(mutation.routing, mutation.document.searchEntryId),
-            mutation.document
-          );
-        } else {
-          documents.delete(key(mutation.routing, mutation.searchEntryId));
-        }
-      }
-      return { applied: mutations.length, opaqueId: randomUUID(), superseded: 0 };
-    },
-    async ensureIndex() {},
-    async inspectGeneration(input) {
-      const entries = [...documents.values()]
-        .filter((document) => document.userScope === input.userScope &&
-          document.generationId === input.generationId)
-        .sort((left, right) => left.searchEntryId.localeCompare(right.searchEntryId));
-      const digest = createHash("sha256");
-      for (const entry of entries) {
-        digest.update(memoryOpenSearchIntegrityFingerprintMaterial({
-          safeContentHash: entry.safeContentHash,
-          searchEntryId: entry.searchEntryId
-        }), "utf8");
-      }
-      return { documentCount: entries.length, fingerprint: digest.digest("hex") };
-    },
-    async purgeGeneration(input) {
-      for (const [documentKey, document] of documents) {
-        if (document.userScope === input.userScope &&
-          document.generationId === input.generationId) {
-          documents.delete(documentKey);
-        }
-      }
-    },
-    async purgeUser(input) {
-      purgedUsers.push(input.userScope);
-      for (const [documentKey, document] of documents) {
-        if (document.userScope === input.userScope) documents.delete(documentKey);
-      }
-    },
-    async prepareReplacementIndex() {
-      documents.clear();
-    },
-    async refreshIndex() {},
-    async searchLexical() {
-      throw new Error("unexpected_memory_lexical_search");
-    }
-  };
-  return Object.freeze({ client: Object.freeze(client), purgedUsers });
-}
-
-async function drainAccountMemoryProjection(userId: string, now: Date) {
-  const search = inMemoryMemoryOpenSearch();
-  const store = createPrismaMemoryLexicalProjectionStore(prisma);
-  const openSearchConfiguration = memoryOpenSearchConfigurationFromEnv({
-    AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: "account-deletion-test",
-    AIQSA_MEMORY_OPENSEARCH_READ_ALIAS: "aiqsa-memory-account-test-read",
-    AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY:
-      "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
-    AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: "account-deletion-test-v1",
-    AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS: "aiqsa-memory-account-test-write"
-  });
-  for (let passNumber = 0; passNumber < 32; passNumber += 1) {
-    const pass = await runMemoryLexicalProjectionPass({
-      configuration: {
-        intervalMs: 250,
-        leaseMs: 60_000,
-        maximumAttempts: 8,
-        projectionBatch: 16,
-        verificationBatch: 4
-      },
-      // Other stateful suites can own unrelated projection generations in the
-      // same disposable database. This helper proves the account's ordered
-      // purge duties; global generation verification belongs to its own lane.
-      deferVerification: true,
-      now: new Date(now.getTime() + passNumber),
-      openSearchConfiguration,
-      search: search.client,
-      store
-    });
-    const targetFailed = await prisma.memoryLexicalProjectionEvent.count({
-      where: {
-        state: { in: ["BLOCKED_REQUIRES_ADMIN", "RETRY_WAIT"] },
-        userId
-      }
-    });
-    if (targetFailed !== 0) throw new Error("account_memory_projection_drain_failed");
-    const targetOutstanding = await prisma.memoryLexicalProjectionEvent.count({
-      where: { state: { not: "SUCCEEDED" }, userId }
-    });
-    if (targetOutstanding === 0) break;
-    if (pass.claimed === 0) throw new Error("account_memory_projection_drain_stalled");
-  }
-  const outstanding = await prisma.memoryLexicalProjectionEvent.count({
-    where: { state: { not: "SUCCEEDED" }, userId }
-  });
-  if (outstanding !== 0 || search.purgedUsers.length !== 1) {
-    throw new Error("account_memory_projection_drain_incomplete");
-  }
-  return search;
-}
-
-async function quiesceUnrelatedProjectionEvents(
-  userId: string,
-  now: Date
-): Promise<void> {
-  await prisma.memoryLexicalProjectionEvent.updateMany({
-    data: {
-      completedAt: now,
-      errorCode: null,
-      leaseExpiresAt: null,
-      leaseToken: null,
-      nextAttemptAt: null,
-      state: "SUCCEEDED",
-      updatedAt: now
-    },
-    where: {
-      state: { not: "SUCCEEDED" },
-      userId: { not: userId }
-    }
   });
 }
 
@@ -1329,7 +1180,6 @@ describe("Prisma account Memory deletion", () => {
     const coordinator = coordinatorFor(coordinatorRegistry, () => new Date(clock));
     const kick = vi.fn();
     let admissionEnabled = true;
-    let projectionQueueQuiesced = false;
     const hook = createAccountMemoryDeletionHook({
       admissionEnabled: () => admissionEnabled,
       kick
@@ -1347,6 +1197,14 @@ describe("Prisma account Memory deletion", () => {
       expect(otherMaintenance.executions).toHaveLength(2);
       expect(otherMaintenance.executions.some((execution) => execution.acceptedOutput !== null)).toBe(true);
       expect(otherMaintenance.suppressions).toHaveLength(1);
+      // Rows the retired lexical projection wrote before the upgrade carry no
+      // foreign key and wait for no worker; the account purge removes them.
+      await prisma.memoryLexicalProjectionEvent.create({ data: {
+        idempotencyFingerprint: `account-memory-leftover-${randomUUID()}`,
+        memoryRevisionSnapshot: 0,
+        operation: "PURGE_USER",
+        userId
+      } });
       await prisma.user.update({ data: { status: "disabled" }, where: { id: userId } });
       expect(await countAccountMemoryOwnedData(prisma, userId)).toBeGreaterThan(0);
 
@@ -1456,21 +1314,9 @@ describe("Prisma account Memory deletion", () => {
       await expect(prisma.$transaction((tx) => replay.apply!(tx, replayClaim)))
         .resolves.toBeUndefined();
 
-      await expect(admin.deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("deletion_pending");
       await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
         where: { id: admitted.id }
       })).resolves.toMatchObject({ state: "SUCCEEDED" });
-
-      // The stateful lane shares one disposable queue. Isolate this account's
-      // terminal purge without discarding other suites' canonical rows; test
-      // teardown reconstructs all unrelated derived work.
-      await quiesceUnrelatedProjectionEvents(userId, clock);
-      projectionQueueQuiesced = true;
-      const projection = await drainAccountMemoryProjection(userId, clock);
-      expect(projection.purgedUsers).toHaveLength(1);
       await expect(prisma.$transaction((tx) =>
         inspectAccountMemoryDeletionResiduals(tx, {
           deletionId: admitted.id,
@@ -1487,6 +1333,8 @@ describe("Prisma account Memory deletion", () => {
       await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
         .resolves.toBe(0);
       await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryLexicalProjectionEvent.count({ where: { userId } }))
+        .resolves.toBe(0);
       await expect(maintenanceArtifacts(otherUserId)).resolves.toEqual(otherMaintenance);
       await expect(prisma.user.findUnique({ where: { id: otherUserId } })).resolves.toMatchObject({ status: "active" });
     } finally {
@@ -1494,12 +1342,6 @@ describe("Prisma account Memory deletion", () => {
       await cleanupOwner(userId);
       await cleanupOwner(otherUserId);
       await cleanupProvider(provider);
-      if (projectionQueueQuiesced) {
-        await resetMemoryLexicalProjection(prisma, {
-          mode: "RESTORE",
-          now: new Date(clock.getTime() + 1)
-        });
-      }
     }
   });
 
