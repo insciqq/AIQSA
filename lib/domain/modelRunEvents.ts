@@ -102,6 +102,8 @@ export type ModelRunSseEvent =
           /** Live only: an MCP approval card (`McpApprovalCard`); its row is the durable state. */
           | "mcp_approval"
           | "reasoning"
+          /** A change to, or a proposal about, the user's own secret, Skill or Assistant (`ResourceChangeCard`). */
+          | "resource_change"
           | "scheduled_task"
           | "search"
           | "skill_save"

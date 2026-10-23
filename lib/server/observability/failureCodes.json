@@ -1511,5 +1511,6 @@
   "connect_device_queue_full",
   "connect_view_queue_full",
   "connect_view_seq_gap",
-  "connect_reply_invalid"
+  "connect_reply_invalid",
+  "self_service_change_failed"
 ]

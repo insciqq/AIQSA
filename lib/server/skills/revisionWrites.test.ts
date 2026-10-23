@@ -153,3 +153,36 @@ describe("Skill revision write conflicts", () => {
     expect(storage.putObject).not.toHaveBeenCalled();
   });
 });
+
+describe("Skill deletion guarded by a proposal's version", () => {
+  function deletionFixture(version: number) {
+    const tx = {
+      $queryRaw: vi.fn(async (_query: TemplateStringsArray, ..._values: unknown[]) => [{ deletedAt: null, id: "skill", version }]),
+      assistantSkill: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+      skillDefinition: { update: vi.fn(async () => ({ id: "skill" })) },
+      skillPublication: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+      skillShareRequest: { updateMany: vi.fn(async () => ({ count: 0 })) }
+    };
+    const repository = createPrismaSkillRepository({
+      $transaction: vi.fn(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx))
+    } as unknown as PrismaClient);
+    const writes = () => [tx.assistantSkill.deleteMany, tx.skillDefinition.update, tx.skillPublication.deleteMany, tx.skillShareRequest.updateMany]
+      .reduce((total, write) => total + write.mock.calls.length, 0);
+    return { repository, tx, writes };
+  }
+
+  it("deletes nothing when a revision was saved after the proposal, checked under the row lock", async () => {
+    const changed = deletionFixture(5);
+    await expect(changed.repository.delete("owner", "skill", 4)).resolves.toBe("version_conflict");
+    expect(changed.tx.$queryRaw.mock.calls[0]![0].join("?")).toContain("FOR UPDATE");
+    expect(changed.writes()).toBe(0);
+
+    const current = deletionFixture(5);
+    await expect(current.repository.delete("owner", "skill", 5)).resolves.toBe("ok");
+    expect(current.tx.skillDefinition.update).toHaveBeenCalledWith({ data: { deletedAt: expect.any(Date), version: { increment: 1 } }, where: { id: "skill" } });
+
+    // Studio's delete names no version.
+    const studio = deletionFixture(9);
+    await expect(studio.repository.delete("owner", "skill")).resolves.toBe("ok");
+  });
+});

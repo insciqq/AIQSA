@@ -106,6 +106,11 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     descriptors.set("manage_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "manage_scheduled_task" });
   }
   if (normalizedRequest.skillSaveTool) descriptors.set("save_skill", { origin: "skill", serverName: "Skills", toolName: "save_skill" });
+  // The native engine's self-service tools (`selfServiceTools.ts`); their cards carry the details.
+  descriptors.set("read_aiqsa_guide", { origin: "session", serverName: "AIQSA guide", toolName: "read_aiqsa_guide" });
+  descriptors.set("manage_secret", { origin: "session", serverName: "Secrets", toolName: "manage_secret" });
+  descriptors.set("manage_skill", { origin: "session", serverName: "Skills", toolName: "manage_skill" });
+  descriptors.set("manage_assistant", { origin: "session", serverName: "Assistants", toolName: "manage_assistant" });
   if (isRecord(normalizedRequest.answerReviewStep)) {
     descriptors.set("submit_answer_review", { origin: "session", serverName: "Answer review", toolName: "submit_answer_review" });
     descriptors.set("record_review_decisions", { origin: "session", serverName: "Answer review", toolName: "record_review_decisions" });

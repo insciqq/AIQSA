@@ -1012,6 +1012,34 @@ describe("assistant publish handler", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: "assistant_skill_audience_mismatch", skills: ["Private draft"] });
   });
+
+  it("publishes only the definition version a confirmed proposal names, and nothing once it changed", async () => {
+    const publish = vi.fn(async (_input: Record<string, unknown>) => ({ kind: "version_conflict" as const }));
+    const deps = handlerDeps({ publish });
+    const post = (body: unknown) => createPublishAssistantHandler(deps)(
+      new Request("http://test/api/me/assistants/assistant-1/publications", {
+        body: JSON.stringify(body),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }),
+      { params: { assistantId: "assistant-1" } }
+    );
+
+    // A definition saved between the proposal and the click: the repository's lock check refuses it.
+    const conflict = await post({ expectedVersion: 4, groupId: "group-1", scope: "group" });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "assistant_version_conflict" });
+    expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ expectedVersion: 4, groupId: "group-1", scope: "group" }));
+
+    // Studio publishes the current definition and names no version.
+    await post({ groupId: "group-1", scope: "group" });
+    expect(publish.mock.calls.at(-1)![0]).not.toHaveProperty("expectedVersion");
+
+    for (const expectedVersion of [0, "4", 1.5, null]) {
+      expect((await post({ expectedVersion, groupId: "group-1", scope: "group" })).status).toBe(400);
+    }
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("assistant publication revoke handler", () => {

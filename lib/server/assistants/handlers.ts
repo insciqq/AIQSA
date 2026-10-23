@@ -118,8 +118,11 @@ export function buildAssistantRunnerCatalogView(input: Readonly<{
   };
 }
 
-async function runnerCatalogView(
-  deps: AssistantHandlerDeps,
+/** The owner's catalog as the Assistant editor validates against it: models, Search sources and MCP servers. */
+export async function loadAssistantCatalogView(
+  deps: Pick<AssistantHandlerDeps, "loadCatalogData"> & Readonly<{
+    repository: Pick<AssistantHandlerDeps["repository"], "loadUserAccessibleMcpServerIds" | "loadUserMcpRunPlanView">;
+  }>,
   userId: string
 ): Promise<RunnerCatalogView | null> {
   const [catalogData, accessibleMcpServerIds, mcpRunPlan] = await Promise.all([
@@ -505,34 +508,51 @@ function detailFromEntry(
   };
 }
 
+/** Why the owner's catalog refuses a draft: the editor's stable code and the row or control it names. */
+export type AssistantDraftCatalogFailure = Readonly<{
+  code: string;
+  status: number;
+  field?: AssistantRunControlField;
+  limit?: number;
+  row?: AssistantRowKey;
+}>;
+
 /**
  * Every concrete row value must be usable by the owner, whatever its policy;
  * inherit values need no catalog entry. A granted, enabled MCP server that is
  * not running yet is accepted (D-11).
  */
-function validateDraftAgainstCatalog(
+export function assistantDraftCatalogFailure(
   draft: Pick<AssistantDraft, "rows">,
   view: RunnerCatalogView
-): Response | null {
+): AssistantDraftCatalogFailure | null {
   // Knowledge is disabled: an Assistant selects no Knowledge (Inherit and None stay).
   if (!KNOWLEDGE_ENABLED && draft.rows.knowledge.value.mode === "explicit") {
-    return errorJson(KNOWLEDGE_DISABLED_CODE, 409, undefined, { row: "knowledge" });
+    return { code: KNOWLEDGE_DISABLED_CODE, row: "knowledge", status: 409 };
   }
   const failure = firstAssistantCatalogFailure(
     assistantRowCatalogFailures(catalogRowValues(draft.rows), view, { mcpRunnability: "accessible" })
   );
-  if (failure === "model") return errorJson("assistant_model_not_available", 400);
+  if (failure === "model") return { code: "assistant_model_not_available", status: 400 };
   if (failure !== null && typeof failure === "object") {
-    return errorJson("assistant_run_controls_invalid", 400, undefined, {
-      field: failure.control,
-      ...(failure.limit !== undefined ? { limit: failure.limit } : {})
-    });
+    return { code: "assistant_run_controls_invalid", field: failure.control, status: 400,
+      ...(failure.limit !== undefined ? { limit: failure.limit } : {}) };
   }
-  if (failure === "search") {
-    return errorJson("assistant_search_option_not_available", 400);
-  }
-  if (failure === "tools") return errorJson("assistant_tools_not_available", 400);
+  if (failure === "search") return { code: "assistant_search_option_not_available", status: 400 };
+  if (failure === "tools") return { code: "assistant_tools_not_available", status: 400 };
   return null;
+}
+
+function validateDraftAgainstCatalog(
+  draft: Pick<AssistantDraft, "rows">,
+  view: RunnerCatalogView
+): Response | null {
+  const failure = assistantDraftCatalogFailure(draft, view);
+  return failure ? errorJson(failure.code, failure.status, undefined, {
+    ...(failure.field ? { field: failure.field } : {}),
+    ...(failure.limit !== undefined ? { limit: failure.limit } : {}),
+    ...(failure.row ? { row: failure.row } : {})
+  }) : null;
 }
 
 async function authAndView(
@@ -546,7 +566,7 @@ async function authAndView(
   if (!session) {
     return { response: errorJson("unauthorized", 401) };
   }
-  const view = await runnerCatalogView(deps, session.userId);
+  const view = await loadAssistantCatalogView(deps, session.userId);
   if (!view) {
     return { response: errorJson("unauthorized", 401) };
   }
@@ -750,18 +770,26 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
     if (scope === "group" && (typeof groupId !== "string" || !groupId.trim())) {
       return errorJson("assistant_publication_invalid", 400);
     }
-    if (Object.keys(body ?? {}).some((key) => key !== "scope" && key !== "groupId")) {
+    if (Object.keys(body ?? {}).some((key) => key !== "scope" && key !== "groupId" && key !== "expectedVersion")) {
+      return errorJson("assistant_publication_invalid", 400);
+    }
+    // Studio publishes the current definition; a publication the user
+    // confirmed in an answer's card names the version it proposed.
+    const expectedVersion = body?.expectedVersion;
+    if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) < 1)) {
       return errorJson("assistant_publication_invalid", 400);
     }
 
     const result = await deps.repository.publish({
       actorIsAdmin: resolved.auth.isAdmin,
       assistantId,
+      ...(expectedVersion === undefined ? {} : { expectedVersion: Number(expectedVersion) }),
       groupId: scope === "group" ? (groupId as string).trim() : null,
       scope,
       userId: resolved.auth.userId
     });
     if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
+    if (result.kind === "version_conflict") return errorJson("assistant_version_conflict", 409);
     if (result.kind === "forbidden") return errorJson("forbidden", 403);
     if (result.kind === "invalid") return errorJson("assistant_publication_invalid", 400);
     if (result.kind === "skill_audience_mismatch") {
