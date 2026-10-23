@@ -755,7 +755,8 @@ describe("Memory safe source snapshot", () => {
     expect(chunks[0]!.safeProjectedText).not.toContain(token);
     expect(chunks[0]!.providerSafeText).not.toContain(token);
     expect(JSON.stringify(chunks)).not.toContain(token);
-    expect(JSON.stringify(projectMemoryRecallRounds(snapshot, chunks))).not.toContain(token);
+    const withIds = chunks.map((chunk) => ({ ...chunk, id: chunk.contentHash }));
+    expect(JSON.stringify(projectMemoryRecallRounds(snapshot, withIds))).not.toContain(token);
     expect(chunks[0]!.safeProjectedText).toContain(
       `DEMO_API_TOKEN со значением ${MEMORY_SAVED_SECRET_MARKER}`
     );
