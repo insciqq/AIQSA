@@ -238,8 +238,23 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId, runItems.get(nativeRunId) ?? []]));
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
-        const conversation = buildRunConversation({ continuationTurns, current: { messageId: input.created.userMessageId,
-          mode: input.approvalContinuation ? "continuation" : "input" }, messages: contextMessages, nativeAnswers });
+        const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
+          current: { messageId: input.created.userMessageId, mode }, messages: contextMessages, nativeAnswers });
+        let conversation = conversationFor(input.approvalContinuation ? "continuation" : "input");
+        // An approval continuation sends the approved call itself, then continues the stopped turn with its result.
+        let approvedCall: ModelToolCall | null = null;
+        if (input.approvalContinuation) {
+          const approved = await engine.approvedCall({ approvalId: input.approvalContinuation.approvalId, chatId: scope.chatId,
+            userId: input.userId });
+          const callItem = approved ? [...conversation.items].reverse().find((item) => item.kind === "tool_call" &&
+            item.callId === approved.providerCallId && item.name === approved.toolName) : undefined;
+          if (callItem?.kind === "tool_call") {
+            approvedCall = { arguments: parsedArguments(callItem.arguments), id: callItem.callId, name: callItem.name };
+          } else {
+            // The old core stopped that turn: the server's turn is the instruction, and the call it allows is made again.
+            conversation = conversationFor("input");
+          }
+        }
         const items: TranscriptItem[] = [...conversation.items];
         let sequence = await engine.transcripts.nextSequence(scope);
         const append = async (added: readonly TranscriptItem[]) => {
@@ -292,18 +307,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           userId: input.userId
         };
 
-        // An approval continuation sends the approved call first; its result continues the stopped turn.
-        if (input.approvalContinuation) {
-          const approved = await engine.approvedCall({ approvalId: input.approvalContinuation.approvalId, chatId: scope.chatId,
-            userId: input.userId });
-          const callItem = approved ? [...items].reverse().find((item) => item.kind === "tool_call" &&
-            item.callId === approved.providerCallId && item.name === approved.toolName) : undefined;
-          if (callItem?.kind === "tool_call") {
-            const call: ModelToolCall = { arguments: parsedArguments(callItem.arguments), id: callItem.callId, name: callItem.name };
-            const batch = await runToolBatch(batchDeps, toolState, { calls: [call], round: 0 });
-            await append(batch.results);
-            if (batch.approvals.length > 0) await emitApprovalCards();
-          }
+        if (approvedCall) {
+          const batch = await runToolBatch(batchDeps, toolState, { calls: [approvedCall], round: 0 });
+          await append(batch.results);
+          if (batch.approvals.length > 0) await emitApprovalCards();
         }
 
         const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId };

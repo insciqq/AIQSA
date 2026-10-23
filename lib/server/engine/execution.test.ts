@@ -42,7 +42,7 @@ function scriptedAdapter(steps: readonly Step[]) {
   return { adapter, requests };
 }
 
-function memoryEngine(overrides: Partial<NativeEngineDeps> = {}) {
+function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readonly<{ allowed?: boolean }> = {}) {
   const order: string[] = [];
   const transcriptRows: TranscriptItem[] = [];
   const rows = new Map<string, ToolCallRow>();
@@ -56,11 +56,13 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}) {
   } satisfies TranscriptRepository;
   const toolCalls = {
     begin: vi.fn(async (input): Promise<ToolCallBeginResult> => {
+      // `allowed`: the recording transaction consumes the user's Allow once.
+      const gated = Boolean(input.approval) && !options.allowed;
       const row: ToolCallRow = { arguments: input.arguments as ToolCallRow["arguments"], id: `row-${rows.size}`, ordinal: input.ordinal,
-        providerCallId: input.providerCallId, result: null, roundIndex: input.roundIndex, startedAt: input.approval ? null : "now",
-        state: input.approval ? "error" : "running", toolName: input.toolName };
+        providerCallId: input.providerCallId, result: null, roundIndex: input.roundIndex, startedAt: gated ? null : "now",
+        state: gated ? "error" : "running", toolName: input.toolName };
       rows.set(row.id, row);
-      return input.approval ? { approvalId: "approval-1", kind: "gated", row } : { kind: "running", row };
+      return gated ? { approvalId: "approval-1", kind: "gated", row } : { kind: "running", row };
     }),
     refuse: vi.fn(async () => null),
     settle: vi.fn(async () => true)
@@ -198,6 +200,56 @@ describe("native run execution", () => {
     expect(result.some((event) => event.type === "artifact" && event.data.artifactType === "mcp_approval")).toBe(true);
     expect(memory.published()).toBe("I'll create it.");
     expect(memory.transcriptRows.at(-1)).toMatchObject({ callId: "call-1", kind: "tool_result", outcome: "error" });
+  });
+
+  it("continues the stopped turn after an Allow: the approved call runs first and its result answers it, with no user turn", async () => {
+    const stopped: TranscriptItem[] = [
+      { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "n1", kind: "tool_call", name: "mcp_jira_create_issue",
+        origin: { model: "fake-qsa", provider: "connection-1" } },
+      { callId: "call-1", id: "n2", kind: "tool_result", name: "mcp_jira_create_issue", outcome: "error", output: "Waiting for approval." }
+    ];
+    const { adapter, requests } = scriptedAdapter([{ text: "Created A-2." }]);
+    const memory = memoryEngine({ approvedCall: vi.fn(async () => ({ providerCallId: "call-1", toolName: "mcp_jira_create_issue" })) },
+      { allowed: true });
+    memory.engine.transcripts.nativeRunsForAnswers = vi.fn(async () => new Map([["answer-0", "run-0"]]));
+    memory.engine.transcripts.loadRuns = vi.fn(async () => new Map([["run-0", stopped]]));
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    const continuation = prepared({
+      context: { messages: [
+        { content: { blocks: [{ text: "Create the issue", type: "text" }] }, id: "user-1", role: "user" },
+        { content: { blocks: [] }, id: "answer-0", role: "assistant" },
+        { content: { blocks: [{ text: "The user approved `Create` on `Jira`. Continue the task.", type: "text" }] },
+          id: "current-user-message", role: "user" }
+      ], mode: "branch_path" },
+      mcp: snapshot, mcpApproval: mcpApprovalAdmission([])
+    });
+    await events(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
+      engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: continuation, repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ arguments: { summary: "x" }, name: "create_issue" }));
+    expect(memory.engine.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ providerCallId: "call-1", roundIndex: 0 }));
+    const history = requests[0]!.history!;
+    expect(history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result"]);
+    expect(history.at(-1)).toMatchObject({ callId: "call-1", output: "Created A-2" });
+    expect(history.some((item) => item.type === "user" && item.text.includes("approved"))).toBe(false);
+    expect(memory.published()).toBe("Created A-2.");
+  });
+
+  it("continues a turn the old core stopped from the server's turn text, so the model makes the allowed call again", async () => {
+    const { adapter, requests } = scriptedAdapter([{ text: "Calling it again." }]);
+    const memory = memoryEngine({ approvedCall: vi.fn(async () => ({ providerCallId: "v1-call", toolName: "mcp_jira_create_issue" })) });
+    const continuation = prepared({ context: { messages: [
+      { content: { blocks: [{ text: "Create the issue", type: "text" }] }, id: "user-1", role: "user" },
+      { content: { blocks: [{ text: "I need your approval.", type: "text" }] }, id: "answer-0", role: "assistant" },
+      { content: { blocks: [{ text: "The user approved `Create` on `Jira`. Continue the task.", type: "text" }] },
+        id: "current-user-message", role: "user" }
+    ], mode: "branch_path" }, mcp: snapshot });
+    await events(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
+      engine: memory.engine, prepared: continuation, repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    const history = requests[0]!.history!;
+    expect(history.map((item) => item.type)).toEqual(["user", "assistant_text", "user"]);
+    expect(history.at(-1)).toMatchObject({ currentInput: true, type: "user" });
+    expect(memory.engine.toolCalls.begin).not.toHaveBeenCalled();
   });
 
   it("fails visibly with a stable code when the request cannot fit", async () => {
