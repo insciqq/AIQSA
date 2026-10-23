@@ -3,6 +3,7 @@
 import type { ShellComposerAssistant } from "@/components/app-shell/powerAppShellV2Contracts";
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import type { AssistantRowKey, AssistantRowValues } from "@/lib/contracts/assistants";
+import type { ReactNode } from "react";
 
 /** What the composer controls need of the chat's Assistant (`composer.assistant` in the shell). */
 export type ComposerV2Assistant = Readonly<{
@@ -131,9 +132,11 @@ const NOTICE_ICONS: Readonly<Record<AssistantRowProvenanceV2["kind"], UiV2IconNa
 
 /** The first line of a control that shows the Assistant's part in its row. */
 export function AssistantRowNoticeV2({
+  action,
   kind,
   text
 }: Readonly<{
+  action?: ReactNode;
   kind: AssistantRowProvenanceV2["kind"];
   text: string;
 }>) {
@@ -141,6 +144,7 @@ export function AssistantRowNoticeV2({
     <div className="v2-composer-provenance" data-kind={kind} data-testid="assistant-row-provenance">
       <UiV2Icon name={NOTICE_ICONS[kind]} />
       <span>{text}</span>
+      {action}
     </div>
   );
 }
