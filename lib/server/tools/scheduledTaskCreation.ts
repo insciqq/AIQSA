@@ -267,6 +267,19 @@ export function localInstant(value: string | null, timeZone: string): string | n
   return `${parts.weekday} ${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
+/**
+ * For a task whose prompt holds links its runs cannot read yet: links a tool
+ * wrote that the user's own text did not give (`../scheduledTasks/promptUrls.ts`).
+ * Saving the instructions once allows them.
+ */
+export function scheduledTaskLinksPending(task: Pick<ScheduledTask, "promptLinksPending">) {
+  return task.promptLinksPending ? {
+    linksPending: true,
+    linksNote: "Runs cannot read the links in this prompt that the user did not write in this chat until the user " +
+      "opens the task with Edit and saves its instructions once. Tell the user which links these are and to do that."
+  } as const : {};
+}
+
 /** The settled result of a creation: what the model confirms, and the answer's card. */
 export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "name">, task: ScheduledTask,
   timeZoneFallback: boolean): ToolExecutionResult {
@@ -289,12 +302,7 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       // Results also go to the user's Telegram (a task created from a Telegram message).
       telegram: task.telegramNotify,
       skills: scheduledTaskModelSkills(task),
-      ...(task.promptLinksPending ? {
-        // A link the model wrote that the user's own text did not give (`promptUrls.ts`).
-        linksPending: true,
-        linksNote: "Runs cannot read the links in this prompt that the user did not write in this chat until the user " +
-          "opens the task with Edit and saves its instructions once. Tell the user which links these are and to do that."
-      } : {}),
+      ...scheduledTaskLinksPending(task),
       note: "The answer shows this task with Edit and Delete; the user manages tasks in Studio > Scheduled."
     } }],
     name: call.name,
