@@ -213,8 +213,10 @@ test("a scheduled monitoring check runs on the native engine and reports its ver
       const created = await page.request.post("/api/me/scheduled-tasks", { data: {
         chatMode: "same", emailNotify: false, historyRetentionDays: 90, kind: "monitoring", memoryEnabled: false,
         modelId: stand.model.modelId, pinnedSkillIds: [],
-        prompt: `Synthetic monitoring check for an end-to-end test. The watched status is fixed: ${value}. Report the watched ` +
-          "status in one short sentence. Use no tool other than the monitoring report.",
+        // An explicit goal that is not met, so the first check is a starting point rather than a reached goal.
+        prompt: `Synthetic monitoring check for an end-to-end test. Watch the synthetic ticket until its status reads DONE. ` +
+          `Its current status is ${value}, which is not DONE, and it does not change. Report the status in one short ` +
+          "sentence. Use no tool other than the monitoring report.",
         provider: stand.model.connectionId, schedule: { kind: "daily", time: "03:00" }, searchEnabled: false, telegramNotify: false,
         timeZone: "UTC", title: `Native rollout check ${randomUUID().slice(0, 8)}`, toolsEnabled: false, workspaceEnabled: false
       } });
