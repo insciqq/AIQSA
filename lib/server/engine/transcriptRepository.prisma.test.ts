@@ -129,14 +129,14 @@ describe("native transcript repository", () => {
     // Another tool's completed call settles nothing here.
     await call(run.id, 2, "complete", "read", "mcp_jira_get_issue");
     await call(run.id, 3, "cancelled", "never sent");
+    // The upgrade retires the run (`endRetiredEngineRuns`' own settlement, here only for this test's runs): its running
+    // call keeps an unknown outcome. A chat holds one active run at a time, so the sibling below starts after it.
+    const runs = createPrismaRunRepository(prisma);
+    await runs.failRun(run.id, answer.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
     // A sibling answer to the same question, which the branch does not follow.
     const sibling = await message("assistant", question.id);
     const siblingRun = await oldRun(question.id, sibling.id);
     await call(siblingRun.id, 0, "running", "sibling");
-    // The upgrade retires both runs (`endRetiredEngineRuns`' own settlement, here only for this test's runs): each running
-    // call keeps an unknown outcome.
-    const runs = createPrismaRunRepository(prisma);
-    await runs.failRun(run.id, answer.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
     await runs.failRun(siblingRun.id, sibling.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
     await expect(prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: sent.id } })).resolves.toMatchObject({ state: "error" });
     // Continue: the answer stopped without text, so the context leaves it out; the next turn still follows it.
