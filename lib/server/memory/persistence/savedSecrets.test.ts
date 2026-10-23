@@ -2,6 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceSecretValue } from "../../../contracts/workspaceSecrets";
+import { serializeEvent } from "../../observability/runtime.cjs";
 import { encryptSecretEnvelope } from "../../secrets/envelope";
 import { MemoryPersistenceError } from "./errors";
 import {
@@ -79,6 +80,8 @@ describe("Memory saved-secret guard", () => {
       code: "memory_saved_secret_unreadable", count: 1, subsystem: "memory"
     }));
     expect(JSON.stringify(logEvent.mock.calls)).not.toContain("unreadable-value-1");
+    const [, fields] = logEvent.mock.calls[0]!;
+    expect(JSON.parse(serializeEvent("service_operation", fields)!)).toMatchObject({ code: "memory_saved_secret_unreadable", count: 1 });
   });
 
   it("finds a saved value anywhere in stored text, structured values and keys included", () => {
@@ -103,6 +106,11 @@ describe("Memory saved-secret guard", () => {
       code: "memory_saved_secret_value", subsystem: "memory"
     }));
     expect(JSON.stringify(logEvent.mock.calls)).not.toContain(TOKEN);
+    // The stable code survives the log allowlist instead of becoming "unknown".
+    for (const [event, fields] of logEvent.mock.calls) {
+      expect(event).toBe("service_operation");
+      expect(JSON.parse(serializeEvent("service_operation", fields)!)).toMatchObject({ code: fields.code });
+    }
     await expect(assertMemoryTextFreeOfSavedSecrets(owner, USER, ["I prefer tea."], () => KEY)).resolves.toBeUndefined();
   });
 });

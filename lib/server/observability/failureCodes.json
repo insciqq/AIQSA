@@ -718,6 +718,8 @@
   "memory_restore_reconciliation_pending",
   "memory_restore_service_identity_invalid",
   "memory_revision_conflict",
+  "memory_saved_secret_unreadable",
+  "memory_saved_secret_value",
   "memory_scope_invalid",
   "memory_scope_unavailable",
   "memory_search_admission_skipped",
