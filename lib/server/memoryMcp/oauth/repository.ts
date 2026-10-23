@@ -268,7 +268,7 @@ function activeGrant(input: Readonly<{
   }>;
   grantRevision: number;
 }>): boolean {
-  // A pending SCIM deactivation keeps the account active only for its Projects: it holds no access.
+  // An administrator SCIM deactivated but left active as the last one holds no access.
   return input.grant.state === "ACTIVE" &&
     input.grant.revision === input.grantRevision &&
     input.grant.user.status === "active" &&

@@ -101,7 +101,7 @@ function savedControlDraft(value: unknown): Record<string, boolean | string> {
 
 /**
  * The user's saved controls for the model as run params, through the same
- * server materialization Assistants and Projects use. A saved control the
+ * server materialization Assistants use. A saved control the
  * model no longer supports is left at the model's default, as the composer
  * shows it; null when the controls cannot be materialized at all (the
  * server then uses the model's defaults).

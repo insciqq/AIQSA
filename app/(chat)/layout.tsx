@@ -10,8 +10,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * Every chat address shares this layout, so moving between `/`, `/c/<id>` and
- * `/p/<id>[/c/<id>]` keeps one mounted shell; the shell reads the address
+ * Every chat address shares this layout, so moving between `/` and `/c/<id>`
+ * keeps one mounted shell; the shell reads the address
  * itself. Without a viewer only the page renders, and it redirects to sign-in.
  */
 export default async function ChatLayout({ children }: Readonly<{ children: ReactNode }>) {

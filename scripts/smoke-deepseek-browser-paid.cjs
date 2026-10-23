@@ -28,9 +28,9 @@ function fail(code) {
   throw error;
 }
 
-/** Mirrors lib/domain/chatRoute.ts: `/c/<id>` and `/p/<project>/c/<id>` name the open chat. */
+/** Mirrors lib/domain/chatRoute.ts: `/c/<id>` names the open chat. */
 function chatIdFromPathname(pathname) {
-  const match = /^\/(?:p\/[^/]+\/)?c\/([^/]+)$/u.exec(pathname);
+  const match = /^\/c\/([^/]+)$/u.exec(pathname);
   if (!match) return null;
   try {
     return decodeURIComponent(match[1]);

@@ -13,7 +13,7 @@ type StoredResult = Parameters<typeof parsePersistedToolExecutionResult>[1];
 
 /**
  * `RunRepository.saveSkillForCall`. One transaction takes the run's
- * settlement locks (Project, owner, chat, then the run), fences the run (active,
+ * settlement locks (owner, chat, then the run), fences the run (active,
  * personal, unscheduled, not an answer to a scheduled task's prompt) and its
  * running call, saves through the shared Skill write core and settles the
  * call with its card. A crash leaves all of it or none of it, so a recovered

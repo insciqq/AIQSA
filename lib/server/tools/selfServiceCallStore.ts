@@ -14,8 +14,8 @@ type StoredResult = Parameters<typeof parsePersistedToolExecutionResult>[1];
  * the native engine records every call running before it sends it and leaves
  * a row its executor settled alone (`lib/server/engine/toolCallStore.ts`),
  * as a scheduled task or a Skill save settles its own. Inside the change's
- * transaction the claim takes the run's settlement locks (Project, owner,
- * chat, then the run), fences the run and finds the running call; the
+ * transaction the claim takes the run's settlement locks (owner, chat, then
+ * the run), fences the run and finds the running call; the
  * settlement stores the result and appends its cards to the answer, so the
  * change, its record and its card commit together or not at all.
  */
