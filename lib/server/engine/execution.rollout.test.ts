@@ -104,6 +104,8 @@ describe("a scheduled monitoring check on the native engine", () => {
 describe("a scheduled run's flat context on the native engine", () => {
   const previous: TranscriptItem[] = [
     { id: "p0", kind: "compaction", origin: NATIVE_RUN_ORIGIN, summary: "SYNTHETIC OLDER RESULTS" },
+    // The owner wrote into the earlier occurrence's running answer: not part of its result.
+    { followup: true, id: "followup", kind: "user", text: "SYNTHETIC OLDER RESULTS" },
     { arguments: "{\"key\":\"A-1\"}", callId: "pc1", id: "p1", kind: "tool_call", name: "mcp_jira_get_issue", origin: NATIVE_RUN_ORIGIN },
     { callId: "pc1", id: "p2", kind: "tool_result", name: "mcp_jira_get_issue", outcome: "complete", output: "A-1: open" },
     { id: "p3", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "A-1 is open." }
@@ -121,7 +123,7 @@ describe("a scheduled run's flat context on the native engine", () => {
     return requests[0]!.history!;
   }
 
-  it("carries the previous result's own items, never a compaction of what came before it", async () => {
+  it("carries the previous result's own items, never a compaction of what came before it nor a follow-up", async () => {
     const flat = await firstHistory(true);
     expect(flat.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "assistant_text", "user"]);
     expect(JSON.stringify(flat)).not.toContain("SYNTHETIC OLDER RESULTS");

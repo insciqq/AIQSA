@@ -287,9 +287,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const nativeRuns = await engine.transcripts.nativeRunsForAnswers({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId });
         const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId, runIds: [...nativeRuns.values()], userId: input.userId });
-        // A scheduled run's flat context takes its previous result's own items, never a compaction of what came before.
+        // A scheduled run's flat context takes only its previous result's own work: never a compaction of what came before
+        // it, nor user input that entered that answer (a follow-up).
         const answerItems = (answer: readonly TranscriptItem[]) => input.scheduled
-          ? answer.filter((item) => item.kind !== "compaction") : answer;
+          ? answer.filter((item) => item.kind !== "compaction" && item.kind !== "user") : answer;
         const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
           answerItems(runItems.get(nativeRunId) ?? [])]));
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
