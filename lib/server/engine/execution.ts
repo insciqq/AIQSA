@@ -116,9 +116,10 @@ export function nativeRequestParams(adapterKind: string, params: Record<string, 
 }
 
 /**
- * Routes that compact natively and take their own compaction items back:
+ * Routes that can compact natively and take their own compaction items back:
  * OpenAI's Responses API and Codex LB (`compaction/native.ts`). Other
- * compatible Responses gateways are not known to.
+ * compatible Responses gateways are not known to. Runs compact with a summary
+ * on these routes too unless `COMPACTION_LIFECYCLE.native` is on (`runContext.ts`).
  */
 export function nativeCompactionRoute(snapshot: Readonly<{ connection?: Parameters<typeof codexLbConnection>[0];
   model: Readonly<{ adapterKind: string }> }>): boolean {
