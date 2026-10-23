@@ -77,6 +77,7 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
     loadRuns: vi.fn(async () => new Map([["run-0", [...earlier]]])),
     nativeRunsForAnswers: vi.fn(async () => new Map([["answer-0", "run-0"]])),
+    nativeRunsBeforeTurns: vi.fn(async () => []),
     retiredRunEffects: vi.fn(async () => []),
     nextSequence: vi.fn(async () => transcriptRows.length),
     runLive: vi.fn(async () => true)

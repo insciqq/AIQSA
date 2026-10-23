@@ -166,6 +166,47 @@ describe("native transcript repository", () => {
       userMessageIds: [next.id] })).resolves.toEqual([]);
   });
 
+  // Regression: a native run interrupted before any text left an answer the context drops; the next turn still follows it.
+  it("finds a stopped native answer through the branch turn that follows it, and only there", async () => {
+    const userId = await owner();
+    const strangerId = await owner();
+    const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Stopped", userId } });
+    const message = (role: "assistant" | "user", parentMessageId?: string, status: "cancelled" | "complete" | "error" = "complete") =>
+      prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(role === "user" ? "Synthetic question" : ""), role,
+        status, ...(parentMessageId ? { parentMessageId } : {}) } });
+    const run = (questionId: string, answerId: string, engine: "native" | "v1" = "native") => prisma.modelRun.create({ data: {
+      assistantMessageId: answerId, chatId: chat.id, engine, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+      status: "error", userId, userMessageId: questionId } });
+
+    const question = await message("user");
+    const stopped = await message("assistant", question.id, "error");
+    const stoppedRun = await run(question.id, stopped.id);
+    const next = await message("user", stopped.id);
+    // A sibling answer that stopped too, followed by a turn the branch does not take.
+    const sibling = await message("assistant", question.id, "cancelled");
+    await run(question.id, sibling.id);
+    const siblingNext = await message("user", sibling.id);
+    // A complete answer stays in the context by itself; an old-core answer is never the native engine's.
+    const complete = await message("assistant", next.id);
+    await run(next.id, complete.id);
+    const afterComplete = await message("user", complete.id);
+    const oldStopped = await message("assistant", afterComplete.id, "error");
+    await run(afterComplete.id, oldStopped.id, "v1");
+    const afterOld = await message("user", oldStopped.id);
+
+    const branch = [question.id, next.id, afterComplete.id, afterOld.id];
+    await expect(transcripts.nativeRunsBeforeTurns({ chatId: chat.id, userId, userMessageIds: branch }))
+      .resolves.toEqual([{ assistantMessageId: stopped.id, nextUserMessageId: next.id, runId: stoppedRun.id }]);
+    await expect(transcripts.nativeRunsBeforeTurns({ chatId: chat.id, userId, userMessageIds: [question.id, siblingNext.id] }))
+      .resolves.toEqual([expect.objectContaining({ assistantMessageId: sibling.id, nextUserMessageId: siblingNext.id })]);
+    // Off the branch, for another owner or in another chat: nothing.
+    await expect(transcripts.nativeRunsBeforeTurns({ chatId: chat.id, userId, userMessageIds: [question.id] })).resolves.toEqual([]);
+    await expect(transcripts.nativeRunsBeforeTurns({ chatId: chat.id, userId: strangerId, userMessageIds: branch }))
+      .resolves.toEqual([]);
+    const other = await chatWithRun(userId);
+    await expect(transcripts.nativeRunsBeforeTurns({ chatId: other.chatId, userId, userMessageIds: branch })).resolves.toEqual([]);
+  });
+
   it("goes with its run", async () => {
     const userId = await owner();
     const run = await chatWithRun(userId);

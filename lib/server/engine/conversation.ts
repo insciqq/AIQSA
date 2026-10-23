@@ -8,7 +8,9 @@ import type { TranscriptItem } from "./transcript";
  * the Skills index, then the run's own message), with every earlier answer of
  * a native run replaced by that run's own items. Earlier answers of the old
  * core, and a native answer stopped before its first round completed, enter
- * as their saved text; old-core tool steps are not fed again. A turn the
+ * as their saved text; old-core tool steps are not fed again. A native answer
+ * that stopped without text enters as its run's items too, once
+ * `withStoppedNativeAnswers` has put it back on the branch. A turn the
  * server wrote after an approval that a native run continued is no user
  * speech: the approved call's result continues that turn instead. A user
  * message is `msg-<messageId>` in its own run and in every later one, so a
@@ -68,6 +70,31 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
   const currentInputId = `msg-${source.current.messageId}`;
   items.push({ id: currentInputId, kind: "user", text: textFromContentBlocks(last.content) });
   return { currentInputId, items };
+}
+
+/**
+ * The branch with each native answer that stopped without text back in its
+ * place, as an empty answer just before the turn that follows it (and before
+ * the run's internal context when that turn is the run's own), so its run's
+ * items enter `buildRunConversation` where the answer stood. The context
+ * leaves such an answer out (`conversationMessagesFromPathRows`); one whose
+ * next turn is not on the branch, or that is on it already, is left as is.
+ */
+export function withStoppedNativeAnswers(messages: readonly ProviderConversationMessage[],
+  stopped: readonly Readonly<{ assistantMessageId: string; nextUserMessageId: string }>[]): ProviderConversationMessage[] {
+  const present = new Set(messages.map((message) => message.id));
+  const before = new Map<number, ProviderConversationMessage[]>();
+  for (const answer of stopped) {
+    if (present.has(answer.assistantMessageId)) continue;
+    let at = messages.findIndex((message) => message.id === answer.nextUserMessageId && message.role === "user" &&
+      message.purpose === undefined && message.contextTurnId === undefined);
+    if (at < 0) continue;
+    while (at > 0 && messages[at - 1]!.purpose !== undefined) at -= 1;
+    present.add(answer.assistantMessageId);
+    before.set(at, [...(before.get(at) ?? []), { content: { blocks: [] }, id: answer.assistantMessageId, role: "assistant" }]);
+  }
+  if (before.size === 0) return [...messages];
+  return messages.flatMap((message, index) => [...(before.get(index) ?? []), message]);
 }
 
 /**
