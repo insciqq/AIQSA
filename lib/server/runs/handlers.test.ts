@@ -4377,6 +4377,7 @@ describe("run HTTP failure containment", () => {
     try {
       const { repository } = createMemoryRepository();
       const deps = { ...authDeps, repository, providers: {}, usageLimits: { loadUsageLimitStatus: async () => NO_USAGE_LIMITS },
+        nativeEngine: nativeEngineFake().deps,
         resolveAuth: async () => { throw new TypeError("PRIVATE_RESOLVER_MESSAGE_CANARY"); } };
       const POST = stage === "send" ? createProductionSendMessageHandler(deps)
         : stage === "regenerate" ? createProductionRegenerateModelRunHandler(deps) : createCancelModelRunHandler(deps);
