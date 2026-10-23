@@ -21,7 +21,9 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import type { ToolObservationSource } from "../toolObservations/contract";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
+import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
+import { recordToolCall, type SettledToolCall } from "./toolCallTelemetry";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
 import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolOutputExcerpt, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
@@ -323,7 +325,10 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   const declared = input.calls.filter((call) => deps.registry.resolve(call.name));
   if (declared.length > 0) deps.onLiveEvent(liveRunPhaseStatus({ count: declared.length, phase: "tools" }));
 
+  // Each call that settles here (refused, held for approval, or run) logs one `tool_call` record once its outcome is
+  // known and before its bookkeeping; a call whose run stopped before it was recorded logs none.
   const runCall = async (call: ModelToolCall, ordinal: number): Promise<TranscriptToolResultItem> => {
+    const kind = engineToolCallKind(deps.registry.resolve(call.name)?.definition);
     const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved);
     // The reserved report's first call that runs uses the reservation; one refused before running (malformed
     // arguments, a blocked repeat) keeps it, so a corrected call still gets its reserved round.
@@ -334,6 +339,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       if (before.budget) budgetExhausted = true;
       const row = await deps.store.refuse({ ...record, result: before.result, toolName: before.toolName });
       if (!row) throw new ToolBatchInactiveError();
+      recordToolCall({ kind, settled: { kind: "result", result: before.result } });
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: before.output };
     }
@@ -342,9 +348,10 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
       const message = "This tool's connection is no longer available to this answer, so nothing was sent.";
-      const row = await deps.store.refuse({ ...record, result: jsonError(call, { error: "tool_binding_unavailable", message }),
-        toolName: call.name });
+      const result = jsonError(call, { error: "tool_binding_unavailable", message });
+      const row = await deps.store.refuse({ ...record, result, toolName: call.name });
       if (!row) throw new ToolBatchInactiveError();
+      recordToolCall({ kind, settled: { kind: "result", result } });
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: message };
     }
@@ -354,6 +361,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
+      recordToolCall({ kind, settled: { kind: "awaiting_approval" } });
       approvals.push(begun.approvalId);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
         output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT };
@@ -361,12 +369,17 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     executed += 1;
     deps.onLiveEvent(liveToolCallStatus(call, { ...tool.activity(call), round: input.round }));
     const execution: EngineToolExecution = { call, ordinal, persistedToolCallId: begun.row.id, round: input.round, signal: deps.signal };
+    const startedAt = performance.now();
+    const settled = (outcome: SettledToolCall) => recordToolCall({ durationMs: performance.now() - startedAt, kind, settled: outcome });
     let result: ToolExecutionResult;
     try {
       result = await executeWithRetries(deps, tool, execution);
     } catch (error) {
       // Stop or the deadline: the run's ending closes the record with an unknown outcome.
-      if (deps.signal.aborted) throw error;
+      if (deps.signal.aborted) {
+        settled({ kind: "aborted", reason: deps.signal.reason });
+        throw error;
+      }
       const code = safeCode(error);
       if (tool.effects === "external") {
         // It may have taken effect: never sent again, and the model is told so.
@@ -375,12 +388,17 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
         result = { callId: call.id, content: [{ type: "json", value: { error: code, message, outcome: "unknown" } }], name: call.name,
           status: "error" };
         deps.unknownEffects.record(call, "unknown");
+        settled({ effectUnknown: true, error, kind: "thrown", result });
         const item = await hooks.afterToolCall(execution, tool, begun.row, result);
         return { ...item, outcome: "unknown" };
       }
       result = { callId: call.id, content: [{ type: "json", value: { error: code, message: "The tool failed; nothing changed." } }],
         name: call.name, status: "error" };
+      settled({ effectUnknown: false, error, kind: "thrown", result });
+      deps.unknownEffects.record(call, result.status);
+      return hooks.afterToolCall(execution, tool, begun.row, result);
     }
+    settled({ kind: "result", result });
     deps.unknownEffects.record(call, result.status);
     return hooks.afterToolCall(execution, tool, begun.row, result);
   };

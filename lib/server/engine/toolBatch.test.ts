@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { ToolCallRepeatHistory, TOOL_CALL_REPEAT_BLOCKED } from "../runs/toolCallRepeatGuard";
 import { TOOL_CALL_UNKNOWN, UNKNOWN_TOOL_CALL_MESSAGE, unknownToolCall } from "../runs/unknownToolCall";
@@ -312,5 +313,54 @@ describe("native tool batch", () => {
     const { store } = fakeStore({ inactive: true });
     await expect(runToolBatch(deps({ lookup: tool("lookup", "none", async ({ call }) => ok(call)) }, store), { calls: 0 },
       { calls: [{ arguments: {}, id: "c1", name: "lookup" }], round: 1 })).rejects.toBeInstanceOf(ToolBatchInactiveError);
+  });
+
+  it("logs one content-free tool_call record per settled call, whatever settled it", async () => {
+    const observation = await captureRunObservation();
+    const { store } = fakeStore({ gated: true });
+    const registry = {
+      lookup: tool("lookup", "none", async ({ call }) => ok(call, "PRIVATE_RESULT")),
+      broken: tool("broken", "none", async () => { throw new Error("PRIVATE_FAILURE"); }),
+      write: tool("write", "external", async () => { throw new Error("PRIVATE_FAILURE"); }),
+      create: tool("create", "external", vi.fn(), { approval: () => approval })
+    };
+    await runToolBatch(deps(registry, store, { maxToolCalls: 4 }), { calls: 0 }, { round: 1, calls: [
+      { arguments: { q: "PRIVATE_ARG" }, id: "c1", name: "lookup" },
+      { arguments: {}, id: "c2", name: "PRIVATE_MADE_UP" },
+      { arguments: invalidProviderToolArguments(), id: "c3", name: "lookup" },
+      { arguments: {}, id: "c4", name: "broken" },
+      { arguments: {}, id: "c5", name: "write" },
+      { arguments: {}, id: "c6", name: "create" },
+      { arguments: { q: "other" }, id: "c7", name: "lookup" }
+    ] });
+    const records = observation.records().filter((record) => record.event === "tool_call");
+    expect(records.map((record) => [record.tool_kind, record.outcome, record.code ?? null, record.error_category ?? null].join(" ")).sort())
+      .toEqual([
+        "mcp awaiting_approval mcp_approval_required ",
+        "mcp completed  ",
+        "mcp failed tool_arguments_invalid ",
+        "mcp failed tool_call_limit_reached ",
+        "mcp failed tool_call_outcome_unknown unexpected",
+        "mcp failed tool_execution_failed unexpected",
+        "other failed tool_call_unknown "
+      ]);
+    expect(records.filter((record) => record.outcome === "completed")[0]).toHaveProperty("duration_ms");
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE_|lookup|"write"|c[1-7]"/u);
+  });
+
+  it("logs a call its run stopped as cancelled, once, and none for a call never recorded", async () => {
+    const observation = await captureRunObservation();
+    const controller = new AbortController();
+    const { store } = fakeStore();
+    await expect(runToolBatch(deps({ slow: tool("slow", "none", async () => {
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    }) }, store, { signal: controller.signal }), { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "slow" }], round: 1 }))
+      .rejects.toBeDefined();
+    const inactive = fakeStore({ inactive: true });
+    await expect(runToolBatch(deps({ lookup: tool("lookup", "none", async ({ call }) => ok(call)) }, inactive.store), { calls: 0 },
+      { calls: [{ arguments: {}, id: "c1", name: "lookup" }], round: 1 })).rejects.toBeInstanceOf(ToolBatchInactiveError);
+    expect(observation.records().filter((record) => record.event === "tool_call").map((record) => [record.outcome, record.code]))
+      .toEqual([["cancelled", "tool_call_cancelled"]]);
   });
 });
