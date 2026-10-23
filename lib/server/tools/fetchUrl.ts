@@ -188,12 +188,6 @@ function read(call: Pick<ModelToolCall, "id" | "name">, value: ReadValue, cached
   };
 }
 
-/** A recovered call that may have been sent before the process stopped: settled, never sent again. */
-export function fetchUrlInterruptedResult(call: Pick<ModelToolCall, "arguments" | "id" | "name">): ToolExecutionResult {
-  return failed(call, { code: "fetch_url_interrupted", dispatched: true, kind: "failed" }, normalizeFetchUrl(call.arguments.url),
-    { pdfMaxBytes: FETCHED_PDF_LIMITS.maxBytes });
-}
-
 const READ_CONTENT_KINDS: ReadonlySet<unknown> = new Set<FetchedContentKind>(["html", "json", "markdown", "pdf", "text"]);
 
 function persistedReadValue(result: unknown, url: string): ReadValue | null {

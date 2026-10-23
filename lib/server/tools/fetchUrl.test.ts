@@ -7,16 +7,7 @@ import type { FetchedPageInput } from "../webFetch/pageText";
 import { syntheticPdf } from "../webFetch/pdf.testFixtures";
 import { WEB_FETCH_LIMITS, WebFetchError, type WebFetchOptions, type WebFetchResponse } from "../webFetch/transport";
 import { fetchUrlDigest } from "../webFetch/urls";
-import {
-  createFetchUrlSession,
-  FETCH_URL_TOOL_NAME,
-  fetchUrlActivityFacts,
-  fetchUrlInterruptedResult,
-  fetchUrlTool,
-  fetchUrlToolsForRequest,
-  isFetchUrlPlan,
-  type FetchUrlPersistedCall
-} from "./fetchUrl";
+import { createFetchUrlSession, FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlTool, fetchUrlToolsForRequest, isFetchUrlPlan, type FetchUrlPersistedCall } from "./fetchUrl";
 import { taskInstructionFetchUrlDigests, userAuthoredFetchUrlDigests } from "./fetchUrlPlan";
 import { invalidProviderToolArguments, type ToolExecutionResult } from "./types";
 
@@ -260,7 +251,7 @@ describe("fetch_url per-run cap and cache", () => {
     const settled = await live.execute(call(urls[0]), { persistedToolCallId: "p0", signal });
     const persisted: FetchUrlPersistedCall[] = [
       { id: "p0", result: settled, state: "complete" },
-      { id: "p1", result: fetchUrlInterruptedResult(call(urls[1])), state: "error" },
+      { id: "p1", result: null, state: "running" },
       { id: "p2", result: null, state: "running" },
       { id: "p3", result: (await live.execute(call(urls[3]), { persistedToolCallId: "p3", signal })), state: "complete" }
     ];
@@ -293,12 +284,6 @@ describe("fetch_url per-run cap and cache", () => {
     expect(after.fetchPage).toHaveBeenCalledTimes(5);
   });
 
-  it("settles an interrupted call without sending it again", () => {
-    const result = fetchUrlInterruptedResult(call(USER_URL));
-    expect(result.status).toBe("error");
-    expect(json(result).error).toBe("fetch_url_interrupted");
-    expect(result.rawPreview).toEqual({ fetchUrl: { version: 1, outcome: "fetch_url_interrupted", dispatched: true, url: USER_URL } });
-  });
 });
 
 describe("fetch_url PDFs", () => {
