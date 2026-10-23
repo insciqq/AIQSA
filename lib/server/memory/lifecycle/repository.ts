@@ -11,7 +11,7 @@ import { prisma } from "../../prisma";
 import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
 import { consumeMemoryMutationAuthorization } from "../persistence/authorizations";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
-import { memoryPersistenceFailure } from "../persistence/errors";
+import { MemoryPersistenceError, memoryPersistenceFailure } from "../persistence/errors";
 import { memoryExplicitEquivalentFactIdsSql } from "../persistence/explicitEquivalence";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import {
@@ -815,11 +815,24 @@ export async function forgetExplicitOriginFactsForPermanentChatDeletion(
   return facts.length;
 }
 
+/** Peer preservation refusals of a Forget (`./sourcePreservation.ts`). */
+const FORGET_PEER_PRESERVATION_REFUSALS: ReadonlySet<string> = new Set([
+  "memory_forget_peer_ineligible_after_fence",
+  "memory_forget_peer_limit",
+  "memory_forget_peer_retrieval_inexact",
+  "memory_forget_source_limit"
+]);
+
 /**
  * System adapter for facts holding a value the owner has since saved as a
  * secret (`../savedSecretScrub.ts`). Each fact is forgotten with the same
  * suppression and fence as the user's Forget, its peers kept, and its text is
- * purged at once: there is no Undo for a secret. The caller holds the owner's
+ * purged at once: there is no Undo for a secret. Where the user's Forget would
+ * refuse because a peer cannot keep its support in a fenced message (legacy
+ * evidence without exact provenance, an inexact retrieval echo, capacity),
+ * the secret must go anyway: the fact then fences its sources without keeping
+ * peers, as a system Forget for a deleted chat does, and peers that relied
+ * only on those messages lose that support. The caller holds the owner's
  * settings lock. Returns the number of facts forgotten.
  */
 export async function forgetMemoryFactsHoldingSavedSecret(
@@ -859,7 +872,17 @@ export async function forgetMemoryFactsHoldingSavedSecret(
         where: { id: deletion.id }
       });
     }
-    await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id);
+    await tx.$executeRawUnsafe("SAVEPOINT memory_saved_secret_forget");
+    try {
+      await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id);
+    } catch (error) {
+      if (!(error instanceof MemoryPersistenceError) ||
+        !FORGET_PEER_PRESERVATION_REFUSALS.has(error.code)) throw error;
+      // The refusal is a decision, not a database error: undo the partial fence.
+      await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_saved_secret_forget");
+      await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id, false);
+    }
+    await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_saved_secret_forget");
   }
   return facts.length;
 }

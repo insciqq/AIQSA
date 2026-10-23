@@ -10,6 +10,7 @@ import { MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION } from "./history/co
 import { createPrismaMemoryHistoryIndexHandler } from "./history/handler";
 import { MEMORY_HISTORY_SOURCE_TARGET_TYPE, memoryHistorySourceDeletionHandler } from "./history/purge";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "./learning/extraction/contract";
+import { loadPersonalEligibleFactVersionIds } from "./persistence/eligibility";
 import { createPrismaMemoryFactRepository, type MemoryFactValueInput } from "./persistence/facts";
 import { memorySha256 } from "./persistence/lexical";
 import { MEMORY_SAVED_SECRET_MARKER } from "./persistence/savedSecretMatching";
@@ -258,7 +259,13 @@ describe("saved secret scrub of existing Memory", () => {
     expect(await prisma.memoryRecallChunk.count({ where: { chatId: chat.id, state: "ACTIVE", userId } })).toBe(1);
   });
 
-  it("forgets a fact holding a newly saved value, keeps its peer and purges its text at once", async () => {
+  /**
+   * The value and a peer fact learned from one message. `exact` gives both
+   * the provenance current extraction records (fingerprint, offsets, content
+   * hash), which lets a Forget keep the peer's support in the fenced message;
+   * without it the evidence has the legacy shape a Forget cannot preserve.
+   */
+  async function scrubSharedMessage(exact: boolean) {
     const userId = await createOwner();
     const held = `My test token is ${TOKEN}.`;
     const peer = "I do not drink coffee.";
@@ -270,15 +277,31 @@ describe("saved secret scrub of existing Memory", () => {
     await prisma.chat.update({ data: { activeLeafMessageId: message.id }, where: { id: chat.id } });
     const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
     const facts = createPrismaMemoryFactRepository(keyring, prisma);
-    const save = (canonicalKey: string, text: string) => facts.save(userId, {
-      evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
-        observedAt: message.createdAt, safeExcerpt: text, safeSourceHash: memorySha256(statement),
-        safetyClass: "NORMAL", sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
-      explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(),
-      scopeId: scope.id, value: automaticValue(canonicalKey, text)
-    });
-    const token = await save("learned.test_token", held);
-    const coffee = await save("learned.coffee", peer);
+    const save = async (canonicalKey: string, text: string, ordinal: number) => {
+      const saved = await facts.save(userId, {
+        evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
+          observedAt: message.createdAt, safeExcerpt: text, safeSourceHash: memorySha256(statement),
+          safetyClass: "NORMAL", sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
+        explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(),
+        scopeId: scope.id, value: automaticValue(canonicalKey, text)
+      });
+      if (exact) {
+        await prisma.memoryEvidence.updateMany({
+          data: {
+            evidenceFingerprint: memorySha256({ messageId: message.id, ordinal }),
+            sourceEndOffset: statement.indexOf(text) + text.length,
+            sourceMessageContentHash: memorySha256(statement),
+            sourceStartOffset: statement.indexOf(text)
+          },
+          where: { factVersionId: saved.versionId, userId }
+        });
+      }
+      return saved;
+    };
+    const token = await save("learned.test_token", held, 0);
+    const coffee = await save("learned.coffee", peer, 1);
+    expect(await loadPersonalEligibleFactVersionIds(prisma, userId, [coffee.versionId]))
+      .toEqual(new Set([coffee.versionId]));
 
     await saveSecret(userId, TOKEN);
     const scrub = await scrubObligation(userId);
@@ -309,6 +332,22 @@ describe("saved secret scrub of existing Memory", () => {
     expect(JSON.stringify({ evidence, versions })).not.toContain(TOKEN);
     expect(await prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: coffee.versionId } }))
       .toMatchObject({ displayText: peer, state: "ACTIVE" });
+    return { coffee, userId };
+  }
+
+  it("forgets a fact holding a newly saved value, keeps its peer and purges its text at once", async () => {
+    const { coffee, userId } = await scrubSharedMessage(true);
+    // The peer's exact support in the fenced message is preserved, as in the user's Forget.
+    expect(await loadPersonalEligibleFactVersionIds(prisma, userId, [coffee.versionId]))
+      .toEqual(new Set([coffee.versionId]));
+  });
+
+  it("still forgets the fact when its peer's legacy support cannot be preserved", async () => {
+    // The user's Forget refuses here; the secret must go anyway, so the
+    // message is fenced as for a deleted chat and the peer loses that support.
+    const { coffee, userId } = await scrubSharedMessage(false);
+    expect(await loadPersonalEligibleFactVersionIds(prisma, userId, [coffee.versionId]))
+      .toEqual(new Set());
   });
 
   it("backfills one cleanup, once, for each owner whose saved secrets predate it", async () => {
