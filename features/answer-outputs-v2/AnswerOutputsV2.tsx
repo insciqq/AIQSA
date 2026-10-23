@@ -59,6 +59,7 @@ import {
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
 import { ScheduledTaskCardsV2 } from "./ScheduledTaskCardV2";
 import { SkillSaveCardsV2 } from "./SkillSaveCardV2";
+import { ResourceChangeCardsV2 } from "./ResourceChangeCardV2";
 import { McpApprovalCardsV2 } from "./McpApprovalCardV2";
 import type { McpApprovalCard, McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
 import { presentSearchSourcesV2 } from "./sourcePresentation";
@@ -559,17 +560,20 @@ export function AnswerOutputsV2({
 }>) {
   const scheduledTasks = artifact?.scheduledTasks ?? [];
   const skillSaves = artifact?.skillSaves ?? [];
+  const resourceChanges = artifact?.resourceChanges ?? [];
   const mcpApprovals = artifact?.mcpApprovals ?? [];
   if (live) {
-    // A created or changed task or a saved Skill already is so: its card does not wait for the answer.
+    // A created or changed task, a saved Skill or a changed secret or Assistant already is so: its card does not wait for the answer.
     // A refused call's card shows at once; its decision waits for the answer.
     const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
-    return drafts.length || scheduledTasks.length || skillSaves.length || mcpApprovals.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
-      {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
-      <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
-      <SkillSaveCardsV2 cards={skillSaves} live />
-      <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
-    </div> : null;
+    return drafts.length || scheduledTasks.length || skillSaves.length || resourceChanges.length || mcpApprovals.length
+      ? <div className="v2-answer-outputs" data-testid="answer-outputs">
+        {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
+        <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
+        <SkillSaveCardsV2 cards={skillSaves} live />
+        <ResourceChangeCardsV2 cards={resourceChanges} live />
+        <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
+      </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
   const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
@@ -586,7 +590,7 @@ export function AnswerOutputsV2({
 
   if ((!artifact || (
     !hasSuggestions && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts &&
-    scheduledTasks.length === 0 && skillSaves.length === 0 && mcpApprovals.length === 0
+    scheduledTasks.length === 0 && skillSaves.length === 0 && resourceChanges.length === 0 && mcpApprovals.length === 0
   )) && !outputStatusCopy) {
     return null;
   }
@@ -608,6 +612,7 @@ export function AnswerOutputsV2({
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
       <SkillSaveCardsV2 cards={skillSaves} />
+      <ResourceChangeCardsV2 cards={resourceChanges} />
       <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />

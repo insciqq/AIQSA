@@ -139,6 +139,8 @@ export type AssistantCreateResult =
 export type AssistantPublishInput = {
   actorIsAdmin: boolean;
   assistantId: string;
+  /** When given (a publication the user confirmed in an answer's card), the definition version it was proposed for. */
+  expectedVersion?: number;
   groupId: string | null;
   scope: "group" | "installation";
   userId: string;
@@ -148,6 +150,7 @@ export type AssistantPublishResult =
   | { kind: "forbidden" }
   | { kind: "invalid" }
   | { kind: "not_found" }
+  | { kind: "version_conflict" }
   | { kind: "skill_audience_mismatch"; skillNames?: string[] }
   | { kind: "ok"; publication: AssistantPublicationRow };
 
@@ -341,6 +344,73 @@ function isPrismaSerializationConflict(error: unknown): boolean {
         typeof error.meta === "object" &&
         error.meta !== null &&
         (error.meta.code === "40001" || error.meta.code === "40P01")));
+}
+
+/**
+ * The owner's new Assistant inside the caller's transaction: every linked
+ * Skill must be usable by the owner. Version 1.
+ */
+export async function createAssistantInTransaction(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  draft: AssistantDraft
+): Promise<AssistantCreateResult> {
+  const links = rowSkillLinks(draft.rows);
+  if (!await lockAndCheckSkillDependencies(tx, userId, links.skillIds)) {
+    return { kind: "skills_not_available" as const };
+  }
+  const definition = await tx.assistantDefinition.create({
+    data: { ...contentDraftData(draft), ownerUserId: userId }
+  });
+  await createAssistantSkillLinks(tx, definition.id, links.skillIds, links.skillModes);
+  return { assistantId: definition.id, kind: "ok" as const };
+}
+
+/**
+ * A revision of the owner's Assistant inside the caller's transaction,
+ * guarded by its version: usable Skills that reach every audience it is
+ * published to, then the content and links replace the old ones and the
+ * version increments. A serialization failure propagates to the caller.
+ */
+export async function updateAssistantInTransaction(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  assistantId: string,
+  expectedVersion: number,
+  draft: AssistantDraft
+): Promise<AssistantWriteResult> {
+  const locked = await tx.$queryRaw<
+    Array<{ archivedAt: Date | null; id: string; version: number }>
+  >`
+    SELECT "id", "archivedAt", "version"
+    FROM "AssistantDefinition"
+    WHERE "id" = ${assistantId} AND "ownerUserId" = ${userId}
+    FOR UPDATE
+  `;
+  const definition = locked[0];
+  if (!definition) return { kind: "not_found" as const };
+  if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
+  if (definition.archivedAt) return { kind: "archived" as const };
+  const links = rowSkillLinks(draft.rows);
+  if (!await lockAndCheckSkillDependencies(tx, userId, links.skillIds)) {
+    return { kind: "skills_not_available" as const };
+  }
+
+  const publications = await tx.assistantPublication.findMany({
+    select: { groupId: true, scope: true }, where: { assistantId }
+  });
+  for (const audience of publications) {
+    if (!await skillsReachPublicationAudience(tx, links.skillIds, audience)) {
+      return { kind: "skill_audience_mismatch" as const };
+    }
+  }
+  await tx.assistantDefinition.update({
+    data: { ...contentDraftData(draft), version: { increment: 1 } },
+    where: { id: assistantId }
+  });
+  await tx.assistantSkill.deleteMany({ where: { assistantId } });
+  await createAssistantSkillLinks(tx, assistantId, links.skillIds, links.skillModes);
+  return { assistantId, kind: "ok" as const };
 }
 
 export type PrismaAssistantRepositoryOptions = {
@@ -876,17 +946,7 @@ export function createPrismaAssistantRepository(
 
   const repository = {
     async create(userId: string, draft: AssistantDraft): Promise<AssistantCreateResult> {
-      return client.$transaction(async (tx) => {
-        const links = rowSkillLinks(draft.rows);
-        if (!await lockAndCheckSkillDependencies(tx, userId, links.skillIds)) {
-          return { kind: "skills_not_available" as const };
-        }
-        const definition = await tx.assistantDefinition.create({
-          data: { ...contentDraftData(draft), ownerUserId: userId }
-        });
-        await createAssistantSkillLinks(tx, definition.id, links.skillIds, links.skillModes);
-        return { assistantId: definition.id, kind: "ok" as const };
-      });
+      return client.$transaction((tx) => createAssistantInTransaction(tx, userId, draft));
     },
 
     async duplicate(
@@ -1103,40 +1163,7 @@ export function createPrismaAssistantRepository(
       draft: AssistantDraft
     ): Promise<AssistantWriteResult> {
       try {
-        return await client.$transaction(async (tx) => {
-          const locked = await tx.$queryRaw<
-            Array<{ archivedAt: Date | null; id: string; version: number }>
-          >`
-            SELECT "id", "archivedAt", "version"
-            FROM "AssistantDefinition"
-            WHERE "id" = ${assistantId} AND "ownerUserId" = ${userId}
-            FOR UPDATE
-          `;
-          const definition = locked[0];
-          if (!definition) return { kind: "not_found" as const };
-          if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
-          if (definition.archivedAt) return { kind: "archived" as const };
-          const links = rowSkillLinks(draft.rows);
-          if (!await lockAndCheckSkillDependencies(tx, userId, links.skillIds)) {
-            return { kind: "skills_not_available" as const };
-          }
-
-          const publications = await tx.assistantPublication.findMany({
-            select: { groupId: true, scope: true }, where: { assistantId }
-          });
-          for (const audience of publications) {
-            if (!await skillsReachPublicationAudience(tx, links.skillIds, audience)) {
-              return { kind: "skill_audience_mismatch" as const };
-            }
-          }
-          await tx.assistantDefinition.update({
-            data: { ...contentDraftData(draft), version: { increment: 1 } },
-            where: { id: assistantId }
-          });
-          await tx.assistantSkill.deleteMany({ where: { assistantId } });
-          await createAssistantSkillLinks(tx, assistantId, links.skillIds, links.skillModes);
-          return { assistantId, kind: "ok" as const };
-        });
+        return await client.$transaction((tx) => updateAssistantInTransaction(tx, userId, assistantId, expectedVersion, draft));
       } catch (error) {
         if (isPrismaSerializationConflict(error)) return { kind: "version_conflict" };
         throw error;
@@ -1201,15 +1228,19 @@ export function createPrismaAssistantRepository(
     async publish(input: AssistantPublishInput): Promise<AssistantPublishResult> {
       return client.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<
-          Array<{ archivedAt: Date | null; id: string }>
+          Array<{ archivedAt: Date | null; id: string; version: number }>
         >`
-          SELECT "id", "archivedAt"
+          SELECT "id", "archivedAt", "version"
           FROM "AssistantDefinition"
           WHERE "id" = ${input.assistantId} AND "ownerUserId" = ${input.userId}
           FOR UPDATE
         `;
         const definition = locked[0];
         if (!definition) return { kind: "not_found" as const };
+        // Checked under the row lock: a definition saved since the proposal is not published.
+        if (input.expectedVersion !== undefined && definition.version !== input.expectedVersion) {
+          return { kind: "version_conflict" as const };
+        }
         if (definition.archivedAt) return { kind: "invalid" as const };
 
         if (input.scope === "installation") {

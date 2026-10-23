@@ -146,6 +146,18 @@ describe("Prisma Skill repository", () => {
         userId: ownerUserId
       });
       expect(replacementPublication.kind).toBe("ok");
+      // A deletion confirmed in an answer's card names the version the
+      // proposal saw: a revision saved since refuses it and keeps everything.
+      const proposed = await prisma.skillDefinition.findUniqueOrThrow({ select: { version: true }, where: { id: skillId } });
+      await expect(repository.revise(ownerUserId, skillId, proposed.version, {
+        description: "Checks factual claims",
+        instructions: "Verify every factual claim twice.",
+        name: "Careful editor"
+      })).resolves.toMatchObject({ kind: "ok" });
+      await expect(repository.delete(ownerUserId, skillId, proposed.version)).resolves.toBe("version_conflict");
+      await expect(prisma.skillPublication.count({ where: { skillId } })).resolves.toBe(1);
+      await expect(prisma.skillDefinition.findUniqueOrThrow({ select: { deletedAt: true }, where: { id: skillId } }))
+        .resolves.toEqual({ deletedAt: null });
       await expect(repository.delete(ownerUserId, skillId)).resolves.toBe("ok");
       await expect(prisma.skillPublication.count({ where: { skillId } })).resolves.toBe(0);
       await expect(prisma.skillDefinition.findUnique({

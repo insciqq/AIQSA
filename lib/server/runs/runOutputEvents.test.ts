@@ -392,3 +392,14 @@ it("persists only an exact safe checkpoint publication and rejects private or mi
     expect(isRunOutputArtifactEvent(invalid)).toBe(false);
   }
 });
+
+it("keeps a resource change card across the durable event boundary exactly, and never a value or an extra field", () => {
+  const payload = { action: "created", envNames: ["GITLAB_TOKEN"], kind: "env", name: "GitLab", previousName: null, proposalId: null, resource: "secret",
+    secretId: "10000000-0000-4000-8000-000000000001", valueReplaced: false, version: 1, versionId: "20000000-0000-4000-8000-000000000001" };
+  const event = { type: "artifact", data: { artifactType: "resource_change", payload } } as const;
+  expect(projectRunOutputArtifactEvent(event)).toEqual(event);
+  expect(isRunOutputArtifactEvent(event)).toBe(true);
+  const leaking = { type: "artifact", data: { artifactType: "resource_change", payload: { ...payload, value: "glpat-synthetic" } } } as const;
+  expect(projectRunOutputArtifactEvent(leaking)).toBeNull();
+  expect(isRunOutputArtifactEvent(leaking)).toBe(false);
+});

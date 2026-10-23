@@ -27,6 +27,7 @@ const artifactTypes = new Set([
   "citation",
   "context_truncated",
   "reasoning",
+  "resource_change",
   "scheduled_task",
   "search",
   "skill_save",

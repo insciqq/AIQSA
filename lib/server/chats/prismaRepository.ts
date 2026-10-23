@@ -15,6 +15,7 @@ import {
   type ScheduledTaskCard
 } from "../../contracts/scheduledTasks";
 import { foldSkillSaveCards } from "../../contracts/skillSaves";
+import { foldResourceChangeCards } from "../../contracts/resourceChanges";
 import {
   foldAnswerReviewCards,
   foldAnswerReviewDecisionsCards,
@@ -1536,6 +1537,8 @@ export function summarizeMessageRunArtifacts(
   const scheduledTasks = answerScheduledTaskCards(artifactPayloads, currentScheduledTasks);
   const skillSaves = foldSkillSaveCards(artifactPayloads.filter((payload) => artifactType(payload) === "skill_save")
     .map(artifactInnerPayload));
+  const resourceChanges = foldResourceChangeCards(artifactPayloads.filter((payload) => artifactType(payload) === "resource_change")
+    .map(artifactInnerPayload));
   const mcpApprovals = projectMcpApprovalCards(run.mcpToolApprovals ?? [],
     { initiator: viewerUserId !== undefined && run.userId === viewerUserId });
   // A review step's report: the first valid card of its run.
@@ -1597,6 +1600,7 @@ export function summarizeMessageRunArtifacts(
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
+    resourceChanges.length === 0 &&
     mcpApprovals.length === 0 &&
     answerReviews.length === 0 &&
     answerReviewDecisions.length === 0 &&
@@ -1632,6 +1636,7 @@ export function summarizeMessageRunArtifacts(
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),
     ...(skillSaves.length > 0 ? { skillSaves } : {}),
+    ...(resourceChanges.length > 0 ? { resourceChanges } : {}),
     ...(mcpApprovals.length > 0 ? { mcpApprovals } : {}),
     ...(answerReviews.length > 0 ? { answerReviews } : {}),
     ...(answerReviewDecisions.length > 0 ? { answerReviewDecisions } : {}),
