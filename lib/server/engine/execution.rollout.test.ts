@@ -20,7 +20,6 @@ import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { createNativeRunExecutionResponse } from "./execution";
 import { nativeRunResponse, type NativeEngineHandlerDeps } from "./handlerSupport";
 import { NEUTRAL_FAMILY_PROMPT } from "./prompts/neutral";
-import { parseNativeEngineUsers } from "./routing";
 import {
   APPROVED_CALL_IN_FLIGHT_OUTPUT, APPROVED_TOOL_UNAVAILABLE, APPROVED_TOOL_UNAVAILABLE_OUTPUT, UNKNOWN_OUTCOME_REPEAT_OUTPUT
 } from "./toolBatch";
@@ -481,7 +480,6 @@ describe("an answer review step on the native engine", () => {
 describe("the tools a native run is offered by kind", () => {
   const secrets: RunSecretSource = { list: vi.fn(async () => []), read: vi.fn() };
   const native = (memory: ReturnType<typeof memoryNativeEngine>): NativeEngineHandlerDeps => ({
-    allowlist: () => parseNativeEngineUsers("*"),
     engine: memory.engine,
     findOrphans: async () => [],
     tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } }

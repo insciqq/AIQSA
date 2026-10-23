@@ -44,7 +44,6 @@ import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDispatchLifecycle";
-import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import {
@@ -137,7 +136,6 @@ export type RunHandlerDeps = {
   knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
-  memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunPreparationDeps["mcp"];
   /**
    * The agent engine every admitted run executes on
