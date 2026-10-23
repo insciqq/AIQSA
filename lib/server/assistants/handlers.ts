@@ -118,8 +118,11 @@ export function buildAssistantRunnerCatalogView(input: Readonly<{
   };
 }
 
-async function runnerCatalogView(
-  deps: AssistantHandlerDeps,
+/** The owner's catalog as the Assistant editor validates against it: models, Search sources and MCP servers. */
+export async function loadAssistantCatalogView(
+  deps: Pick<AssistantHandlerDeps, "loadCatalogData"> & Readonly<{
+    repository: Pick<AssistantHandlerDeps["repository"], "loadUserAccessibleMcpServerIds" | "loadUserMcpRunPlanView">;
+  }>,
   userId: string
 ): Promise<RunnerCatalogView | null> {
   const [catalogData, accessibleMcpServerIds, mcpRunPlan] = await Promise.all([
@@ -505,34 +508,51 @@ function detailFromEntry(
   };
 }
 
+/** Why the owner's catalog refuses a draft: the editor's stable code and the row or control it names. */
+export type AssistantDraftCatalogFailure = Readonly<{
+  code: string;
+  status: number;
+  field?: AssistantRunControlField;
+  limit?: number;
+  row?: AssistantRowKey;
+}>;
+
 /**
  * Every concrete row value must be usable by the owner, whatever its policy;
  * inherit values need no catalog entry. A granted, enabled MCP server that is
  * not running yet is accepted (D-11).
  */
-function validateDraftAgainstCatalog(
+export function assistantDraftCatalogFailure(
   draft: Pick<AssistantDraft, "rows">,
   view: RunnerCatalogView
-): Response | null {
+): AssistantDraftCatalogFailure | null {
   // Knowledge is disabled: an Assistant selects no Knowledge (Inherit and None stay).
   if (!KNOWLEDGE_ENABLED && draft.rows.knowledge.value.mode === "explicit") {
-    return errorJson(KNOWLEDGE_DISABLED_CODE, 409, undefined, { row: "knowledge" });
+    return { code: KNOWLEDGE_DISABLED_CODE, row: "knowledge", status: 409 };
   }
   const failure = firstAssistantCatalogFailure(
     assistantRowCatalogFailures(catalogRowValues(draft.rows), view, { mcpRunnability: "accessible" })
   );
-  if (failure === "model") return errorJson("assistant_model_not_available", 400);
+  if (failure === "model") return { code: "assistant_model_not_available", status: 400 };
   if (failure !== null && typeof failure === "object") {
-    return errorJson("assistant_run_controls_invalid", 400, undefined, {
-      field: failure.control,
-      ...(failure.limit !== undefined ? { limit: failure.limit } : {})
-    });
+    return { code: "assistant_run_controls_invalid", field: failure.control, status: 400,
+      ...(failure.limit !== undefined ? { limit: failure.limit } : {}) };
   }
-  if (failure === "search") {
-    return errorJson("assistant_search_option_not_available", 400);
-  }
-  if (failure === "tools") return errorJson("assistant_tools_not_available", 400);
+  if (failure === "search") return { code: "assistant_search_option_not_available", status: 400 };
+  if (failure === "tools") return { code: "assistant_tools_not_available", status: 400 };
   return null;
+}
+
+function validateDraftAgainstCatalog(
+  draft: Pick<AssistantDraft, "rows">,
+  view: RunnerCatalogView
+): Response | null {
+  const failure = assistantDraftCatalogFailure(draft, view);
+  return failure ? errorJson(failure.code, failure.status, undefined, {
+    ...(failure.field ? { field: failure.field } : {}),
+    ...(failure.limit !== undefined ? { limit: failure.limit } : {}),
+    ...(failure.row ? { row: failure.row } : {})
+  }) : null;
 }
 
 async function authAndView(
@@ -546,7 +566,7 @@ async function authAndView(
   if (!session) {
     return { response: errorJson("unauthorized", 401) };
   }
-  const view = await runnerCatalogView(deps, session.userId);
+  const view = await loadAssistantCatalogView(deps, session.userId);
   if (!view) {
     return { response: errorJson("unauthorized", 401) };
   }
