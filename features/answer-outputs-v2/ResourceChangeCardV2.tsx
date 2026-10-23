@@ -29,7 +29,8 @@ import { deleteSecretVersion, readSecretState, ResourceChangeApiError } from "./
 
 /** What the resource is now, as a settled answer reads it; unknown until read (or while the answer runs). */
 type Remote = "unknown" | "current" | "changed" | "missing" | "archived";
-type Outcome = Readonly<{ heading: string; message: string | null }>;
+/** `declined`: the user kept the resource; a new proposal of a running answer asks again. */
+type Outcome = Readonly<{ heading: string; message: string | null; declined?: true }>;
 
 /**
  * What the user did in a card on this page: the card a settling answer
@@ -130,10 +131,16 @@ function CardV2({ actions, children, confirm, error, heading, headingRef, icon, 
 }
 
 /** Local card state: the user's outcome on this page, the resource as read now, a request in flight and its error. */
-function useCardState(card: ResourceChangeCard) {
+function useCardState(card: ResourceChangeCard, live: boolean) {
   const key = resourceChangeCardKey(card);
   const headingRef = useRef<HTMLParagraphElement>(null);
-  const [outcome, setOutcome] = useState<Outcome | null>(() => outcomes.get(key) ?? null);
+  const [outcome, setOutcome] = useState<Outcome | null>(() => {
+    const kept = outcomes.get(key) ?? null;
+    if (!live || !kept?.declined) return kept;
+    // A running answer proposed it again: the question is asked again.
+    outcomes.delete(key);
+    return null;
+  });
   const [remote, setRemote] = useState<Remote>("unknown");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +177,7 @@ function useRemoteRead(read: ((signal: AbortSignal) => Promise<Remote>) | null, 
 }
 
 function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: boolean }>) {
-  const state = useCardState(card);
+  const state = useCardState(card, live);
   const { outcome, remote } = state;
   const read = useCallback((signal: AbortSignal) => readSecretState(card.secretId, card.versionId, signal), [card.secretId, card.versionId]);
   useRemoteRead(!live && card.action !== "updated" && !outcome ? read : null, state.setRemote);
@@ -227,7 +234,7 @@ function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: b
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete secret" keepLabel="Keep secret" label={`Delete ${card.name}`}
           text={`Delete “${card.name}”? Chats and the Workspace stop receiving it. This cannot be undone.`}
-          onConfirm={() => remove(false)} onKeep={() => state.finish({ heading: "Secret kept", message: null })} />
+          onConfirm={() => remove(false)} onKeep={() => state.finish({ declined: true, heading: "Secret kept", message: null })} />
       ) : null}>
       <small>{kind}</small>
     </CardV2>
@@ -235,7 +242,7 @@ function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: b
 }
 
 function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalCard; live: boolean }>) {
-  const state = useCardState(card);
+  const state = useCardState(card, live);
   const { outcome, remote } = state;
   const read = useCallback((signal: AbortSignal) => loadSkillDetail(card.skillId, signal).then((): Remote => "current", (failure: unknown): Remote => {
     if (failure instanceof SkillRequestError && failure.issue.code === "skill_not_available") return "missing";
@@ -268,7 +275,7 @@ function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalC
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete Skill" keepLabel="Keep Skill" label={`Delete ${card.name}`}
           text={`Delete “${card.name}” with all its versions? This cannot be undone.`} onConfirm={remove}
-          onKeep={() => state.finish({ heading: "Skill kept", message: null })} />
+          onKeep={() => state.finish({ declined: true, heading: "Skill kept", message: null })} />
       ) : null}>
       {asking && consequences.length ? (
         <ul className="v2-resource-change-card-consequences" aria-label="What deleting changes">
@@ -303,7 +310,7 @@ function assistantRefusal(result: Extract<AssistantApiResult<unknown>, { ok: fal
 }
 
 function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; live: boolean }>) {
-  const state = useCardState(card);
+  const state = useCardState(card, live);
   const { outcome, remote } = state;
   const reads = card.action === "created" || card.action === "delete_proposed";
   const read = useCallback(async () => assistantRemote(await fetchAssistantDetail(card.assistantId), card.definitionVersion),
@@ -383,7 +390,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
             text={`Delete “${card.name}”? This cannot be undone.`}
             onConfirm={() => act(() => deleteAssistant(card.assistantId, card.definitionVersion), { heading: "Assistant deleted", message: null },
               "The Assistant could not be deleted. Try again.")}
-            onKeep={() => state.finish({ heading: "Assistant kept", message: null })} />
+            onKeep={() => state.finish({ declined: true, heading: "Assistant kept", message: null })} />
         ) : null}>
         {asking && lines.length ? (
           <ul className="v2-resource-change-card-consequences" aria-label="What deleting changes">
@@ -409,7 +416,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
               { heading: "Assistant published", message: `Members of ${audience.groupName} can use it now.` }, "Publishing failed. Try again.")
             : act(() => requestAssistantListing(card.assistantId, card.definitionVersion),
               { heading: "Listing requested", message: "An administrator reviews it; Studio › Assistants shows the outcome." }, "The listing request failed. Try again.")}
-          onKeep={() => state.finish({ heading: "Not published", message: null })} />
+          onKeep={() => state.finish({ declined: true, heading: "Not published", message: null })} />
       ) : null}>
       <small>{audience?.kind === "group" ? `To ${audience.groupName}` : "For everyone"}</small>
     </CardV2>

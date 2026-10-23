@@ -108,6 +108,22 @@ describe("ResourceChangeCardsV2: secrets", () => {
     await waitFor(() => expect(screen.getByText("Secret kept")).toHaveFocus());
   });
 
+  it("keeps a decline when the answer settles and asks again when a running answer proposes it again", () => {
+    const card = fresh({ ...secret, action: "delete_proposed" as const });
+    const fetchMock = respond({});
+    render(<ResourceChangeCardsV2 cards={[card]} live />);
+    fireEvent.click(screen.getByRole("button", { name: "Keep secret" }));
+    expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Secret kept");
+    cleanup();
+    render(<ResourceChangeCardsV2 cards={[card]} />);
+    expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Secret kept");
+    expect(screen.queryByRole("group")).toBeNull();
+    cleanup();
+    render(<ResourceChangeCardsV2 cards={[card]} live />);
+    expect(screen.getByRole("group", { name: "Delete GitLab" })).toBeVisible();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("deletes nothing when the secret changed after the proposal", async () => {
     const card = fresh({ ...secret, action: "delete_proposed" as const });
     respond({ "POST /api/me/workspace/secrets": error("workspace_secret_conflict", 409) });
