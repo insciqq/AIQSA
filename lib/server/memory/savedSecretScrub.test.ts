@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemoryDeletionClaim } from "./coordinator/types";
 
@@ -17,7 +18,9 @@ vi.mock("./lifecycle/repository", () => ({ forgetMemoryFactsHoldingSavedSecret: 
 vi.mock("./history/sourceLifecycle", () => ({ invalidateMemoryHistoryHoldingSavedSecret: mocks.history }));
 
 import {
+  createMemorySavedSecretScrubBackfill,
   createMemorySavedSecretScrubDeletionHandler,
+  MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID,
   MEMORY_SAVED_SECRET_SCRUB_PASS_LIMIT
 } from "./savedSecretScrub";
 import { MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE } from "./savedSecretScrubRequest";
@@ -197,5 +200,83 @@ describe("saved secret scrub deletion handler", () => {
     expect(mocks.forget).not.toHaveBeenCalled();
     expect(mocks.history).not.toHaveBeenCalled();
     expect(mocks.logEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("saved secret scrub backfill", () => {
+  const key = () => Buffer.alloc(32, 1);
+
+  function backfillDb(owners: readonly string[]) {
+    return {
+      $queryRaw: vi.fn(async (_query: Prisma.Sql) => owners.map((id) => ({ id }))),
+      memoryDeletionOutbox: { createMany: vi.fn(async (..._args: unknown[]) => ({ count: 1 })) },
+      userMemorySettings: { findUnique: vi.fn(async (..._args: unknown[]) => ({ memoryGeneration: 3 })) }
+    };
+  }
+
+  it("enqueues a cleanup for an owner with a screened value and records the others done, holding no value", async () => {
+    mocks.values.mockImplementation(async (_db, userId) => userId === "user-a" ? [TOKEN] : []);
+    const db = backfillDb(["user-a", "user-b"]);
+    await expect(createMemorySavedSecretScrubBackfill(db as never, { key }).reconcile())
+      .resolves.toEqual({ enqueued: 1, settled: 1 });
+    expect(db.memoryDeletionOutbox.createMany).toHaveBeenNthCalledWith(1, {
+      data: [{
+        memoryGeneration: 3, operation: "SOURCE_PURGE", targetId: MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID,
+        targetType: MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE, userId: "user-a"
+      }],
+      skipDuplicates: true
+    });
+    expect(db.memoryDeletionOutbox.createMany).toHaveBeenNthCalledWith(2, {
+      data: [expect.objectContaining({
+        completedAt: expect.any(Date), lastAuditAt: expect.any(Date), state: "SUCCEEDED",
+        targetId: MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID, userId: "user-b"
+      })],
+      skipDuplicates: true
+    });
+    expect(mocks.logEvent).toHaveBeenCalledWith("service_operation", expect.objectContaining({
+      code: "memory_saved_secret_backfill", completed_count: 1, count: 1, outcome: "completed"
+    }));
+    expect(JSON.stringify([db.memoryDeletionOutbox.createMany.mock.calls, mocks.logEvent.mock.calls]))
+      .not.toContain(TOKEN);
+  });
+
+  it("takes a bounded batch and settles the process once no owner is left", async () => {
+    const db = backfillDb([]);
+    const backfill = createMemorySavedSecretScrubBackfill(db as never, { key, limit: 4 });
+    await expect(backfill.reconcile()).resolves.toEqual({ enqueued: 0, settled: 0 });
+    expect(db.$queryRaw.mock.calls[0]![0].values)
+      .toEqual(expect.arrayContaining([4, MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE]));
+    await backfill.reconcile();
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+    // A pass scoped to given owners still reads, and never settles the process.
+    await backfill.reconcile({ userIds: ["user-a"] });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mocks.logEvent).not.toHaveBeenCalled();
+  });
+
+  it("changes nothing without the encryption key, so no owner is recorded done unread", async () => {
+    const db = backfillDb(["user-a"]);
+    const backfill = createMemorySavedSecretScrubBackfill(db as never, {
+      key: () => { throw new Error("encryption key unavailable"); }
+    });
+    await expect(backfill.reconcile()).resolves.toEqual({ enqueued: 0, settled: 0 });
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(db.memoryDeletionOutbox.createMany).not.toHaveBeenCalled();
+    expect(mocks.logEvent).toHaveBeenCalledWith("service_operation", expect.objectContaining({
+      code: "memory_saved_secret_unreadable", outcome: "degraded"
+    }));
+  });
+
+  it("counts an owner a concurrent pass recorded first as nothing, and keeps going past a failing owner", async () => {
+    const db = backfillDb(["user-a", "user-b", "user-c"]);
+    db.memoryDeletionOutbox.createMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockRejectedValueOnce(new Error("database unavailable"))
+      .mockResolvedValueOnce({ count: 1 });
+    await expect(createMemorySavedSecretScrubBackfill(db as never, { key }).reconcile())
+      .resolves.toEqual({ enqueued: 1, settled: 0 });
+    expect(mocks.logEvent).toHaveBeenCalledWith("service_operation", expect.objectContaining({
+      code: "memory_saved_secret_backfill", outcome: "degraded"
+    }));
   });
 });
