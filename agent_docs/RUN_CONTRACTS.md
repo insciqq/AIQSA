@@ -53,7 +53,7 @@ The agent may do for its user everything the user can do with their own resource
 
 - A change goes through the same service as the UI, with its validation, revisions and limits, commits with its tool call and shows a card, with Undo where the owner keeps revisions.
 - Deleting, and sharing or publishing beyond the user (other users, installation-wide listing), needs the user's confirmation in the card. Changing a scheduled task's history retention deletes chats, so it counts as deleting. Other users' resources and administrator settings are never touched.
-- Data-changing MCP calls are sent only after the initiator's approval (`agent_docs/SECURITY.md`); after an Allow the agent continues the same turn with the call's result. Once the user has written since, that turn has ended and a compaction may have cut past the call, so the Allow becomes the next instruction and the agent makes the call again, which the Allow covers only with the same arguments.
+- Data-changing MCP calls are sent only after the initiator's approval (`agent_docs/SECURITY.md`); after an Allow the agent continues the same turn with the call's result. Once the user has written since, that turn has ended and a compaction may have cut past the call, so the Allow becomes the next instruction and the agent makes the call again, which the Allow covers only with the same arguments. The same happens in Auto, whose continuing run has not loaded the tool: the agent finds it again first.
 - Memory is frozen and keeps its own change rules (`agent_docs/MEMORY.md`). Skill store rules are in `agent_docs/BACKEND.md`.
 
 ## Scheduled tasks
