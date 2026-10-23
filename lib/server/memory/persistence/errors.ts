@@ -17,6 +17,7 @@ export const MEMORY_PERSISTENCE_ERROR_CODES = [
   "memory_owner_unavailable",
   "memory_plaintext_not_allowed",
   "memory_revision_conflict",
+  "memory_saved_secret_value",
   "memory_scope_unavailable",
   "memory_settings_conflict",
   "memory_suppression_fingerprint_invalid",

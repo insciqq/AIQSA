@@ -277,7 +277,9 @@ describe("durable Memory command worker", () => {
   it.each([
     { reasonCode: "uncertain" },
     { reasonCode: "unsupported" },
-    { reasonCode: "low_confidence" }
+    { reasonCode: "low_confidence" },
+    // A request to save a credential: the whole message stays out of learning.
+    { reasonCode: "secret_content" }
   ])("does not release learning for excluded NONE $reasonCode", async (decision) => {
     const decoded = decodeMemoryActionControlDecision({ decision: { action: "NONE", ...decision } }, "Synthetic request");
     if (!decoded.ok) throw new Error(decoded.code);

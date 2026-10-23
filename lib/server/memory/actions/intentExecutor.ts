@@ -11,6 +11,7 @@ import {
   redactMemorySecrets
 } from "../explicit/safety";
 import {
+  ExplicitMemoryServiceError,
   MemoryControlledMutationCommittedError,
   type ExplicitMemoryService
 } from "../explicit/service";
@@ -313,6 +314,12 @@ function mutationRejected(
   };
 }
 
+/** Storage refused the text as a secret (for example a saved secret's value):
+ * a policy outcome like any other rejection, not a failure. */
+function secretRejected(error: unknown): boolean {
+  return error instanceof ExplicitMemoryServiceError && error.code === "memory_secret_rejected";
+}
+
 function safeMutationStatement(value: string | null): string | null {
   if (!value || !memoryProjectionHasSourceText(value) ||
     memoryProjectionContainsRedaction(value) ||
@@ -422,7 +429,9 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
         };
       }
 
-      if (mutationIntentContainsRecognizedSecret(intent)) {
+      // The classifier's own SECRET label also ends a mutation: a credential is
+      // never Memory, whatever format Safety Lite recognizes.
+      if (mutationIntentContainsRecognizedSecret(intent) || intent.sensitivity === "SECRET") {
         return mutationRejected(intent.action);
       }
 
@@ -488,6 +497,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
               status: "COMMITTED"
             };
           }
+          if (secretRejected(error)) return mutationRejected("SAVE");
           throw error;
         }
         const target = activeTarget(response.memory);
@@ -609,6 +619,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
               status: "COMMITTED"
             };
           }
+          if (secretRejected(error)) return mutationRejected("UPDATE");
           throw error;
         }
         const updated = activeTarget(response.memory);

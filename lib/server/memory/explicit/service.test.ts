@@ -938,4 +938,30 @@ describe("explicit Memory service", () => {
     expect(memoryPersistenceFailureCode(error)).toBe("memory_mutation_authorization_invalid");
     expect(JSON.stringify(error)).not.toContain("memory_mutation_authorization_invalid");
   });
+
+  it("reports a statement storage refused as a saved secret's value like any other secret", async () => {
+    const facts = factRepository();
+    const refused = async () => { throw new MemoryPersistenceError("memory_saved_secret_value"); };
+    vi.mocked(facts.save).mockImplementation(refused);
+    vi.mocked(facts.edit).mockImplementation(refused);
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizationRepository(),
+      factRepository: facts,
+      readRepository: readRepository(),
+      scopeRepository: scopeRepository()
+    });
+    const created = await service.create("user-1", {
+      mutationAuthorizationId: "authorization-1",
+      scope: { type: "GLOBAL_USER" },
+      statement: "My test token is tok_demo_7f3a9c21b8e4."
+    }).catch((error: unknown) => error);
+    expect(created).toEqual(new ExplicitMemoryServiceError("memory_secret_rejected"));
+    expect(memoryPersistenceFailureCode(created)).toBe("memory_saved_secret_value");
+    await expect(service.update("user-1", "fact-1", {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-2",
+      statement: "My test token is tok_demo_7f3a9c21b8e4."
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_secret_rejected"));
+    expect(facts.edit).toHaveBeenCalledOnce();
+  });
 });

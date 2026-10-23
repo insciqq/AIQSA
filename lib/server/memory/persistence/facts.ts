@@ -41,6 +41,7 @@ import {
   normalizeMemorySearchText
 } from "./lexical";
 import { memorySourceIsInsidePause } from "./pauseIntervals";
+import { assertMemoryTextFreeOfSavedSecrets } from "./savedSecrets";
 import { requireActiveOwnedMemoryScope } from "./scopes";
 import { assertMemoryWriteNotSuppressed } from "./suppressions";
 import { memoryPurgeTargetType } from "../purge/contract";
@@ -685,12 +686,18 @@ async function requireAutomaticEvidenceAfterSourceCutoff(
   }
 }
 
+/** The text a write stores: its statement, structured value and evidence excerpt. */
+function storedFactText(input: MemoryFactMutationCommonInput): readonly unknown[] {
+  return [input.value.displayText, input.value.structuredValue, input.evidence.safeExcerpt];
+}
+
 async function prepareFactWrite(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   keyring: MemorySuppressionKeyring,
   input: MemoryFactMutationCommonInput
 ): Promise<MemoryActiveIndex> {
+  await assertMemoryTextFreeOfSavedSecrets(tx, settings.userId, storedFactText(input));
   await requireEvidenceOwner(tx, settings.userId, input.evidence);
   await requireAutomaticEvidenceAfterSourceCutoff(tx, settings.userId, input);
   await assertMemoryWriteNotSuppressed(
@@ -1037,6 +1044,7 @@ export function createPrismaMemoryFactRepository(
           }
         });
         if (!currentVersion) return memoryPersistenceFailure("memory_fact_version_stale");
+        await assertMemoryTextFreeOfSavedSecrets(tx, userId, storedFactText(input));
         const safety = await governedFactSafety(tx, userId, input);
 
         await requireEvidenceOwner(tx, userId, input.evidence);
