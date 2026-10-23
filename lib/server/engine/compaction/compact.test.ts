@@ -151,6 +151,24 @@ describe("summary compaction", () => {
     });
   });
 
+  it("keeps long excerpts of results nothing can read again while the span fits one call", async () => {
+    const chat = transcriptBuilder();
+    chat.user("Pull the report.");
+    chat.tool("run_report", { id: 7 }, `${"x".repeat(2_400)}MIDDLE-VALUE-42${"y".repeat(2_400)}`);
+    chat.answer("Pulled.");
+    const keep = chat.user("Next.");
+    chat.answer("Ok.");
+    const rich = fakeCall(summaryReply());
+    await compact(input(chat, keep, rich.call, { path: "summary" }));
+    expect(requestText(rich.requests[0]!)).toContain("MIDDLE-VALUE-42");
+    // A span larger than one call carries goes in with the short excerpts, in as few chunks as that allows.
+    const lean = fakeCall(summaryReply());
+    await compact(input(chat, keep, lean.call, { path: "summary", usable: 9_000 }));
+    const sent = lean.requests.map(requestText).join("\n");
+    expect(sent).not.toContain("MIDDLE-VALUE-42");
+    expect(sent).toContain("characters omitted");
+  });
+
   it("folds a span larger than one call may carry through chunks, each updating the last summary", async () => {
     const { chat, keep } = workChat();
     const { call, requests } = fakeCall(...Array.from({ length: 12 }, (_, index) => summaryReply(`${SUMMARY}\nchunk ${index + 1}`)));

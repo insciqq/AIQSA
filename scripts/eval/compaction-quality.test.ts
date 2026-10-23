@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { contextTokenEstimator } from "../../lib/domain/tokenEstimate";
 import { normalizeTokenUsage } from "../../lib/domain/usage";
 import { findCompactionCut } from "../../lib/server/engine/compaction";
+import { APPROVAL_PENDING_TEXT } from "../../lib/server/engine/compaction/items";
+import { TOOL_RESULT_LIMITS } from "../../lib/server/engine/toolResults";
 import { SUMMARIZER_INSTRUCTIONS, SUMMARY_SECTIONS } from "../../lib/server/engine/compaction/summaryPrompt";
 import { contextItemTokens } from "../../lib/server/engine/contextMeasure";
 import { selectTranscript, type TranscriptItem, type TranscriptTarget } from "../../lib/server/engine/transcript";
@@ -18,15 +20,15 @@ import {
   type EvalModel,
   type EvalOptions
 } from "./compaction-quality";
-import { evalHandle, SCENARIO_IDS, SCENARIOS, type BuiltScenario, type ScenarioId } from "./compaction-quality-scenarios";
+import { evalHandle, SCENARIO_IDS, SCENARIOS, type BuiltScenario, type HandlePolicy, type ScenarioId } from "./compaction-quality-scenarios";
 
 const target: TranscriptTarget = { model: "gpt-6.1-sol", nativeCompaction: true, provider: "codex-lb" };
 const estimate = contextTokenEstimator({ modelId: "gpt-6.1-sol", provider: "openai_compatible" });
 const weigh = (item: TranscriptItem) => contextItemTokens(item, target, estimate, "opaque");
 const SIZE = 24_000;
 
-function built(id: ScenarioId, seed = 1, size = SIZE): BuiltScenario {
-  return SCENARIOS[id].build({ seed, targetTokens: size, weigh });
+function built(id: ScenarioId, seed = 1, size = SIZE, handles: HandlePolicy = "large"): BuiltScenario {
+  return SCENARIOS[id].build({ handles, seed, targetTokens: size, weigh });
 }
 
 /** Everything the agent could ever see or read: transcript text and stored results. */
@@ -69,35 +71,44 @@ describe("evaluation sessions", () => {
     }
   });
 
-  it("give every result a handle, store it whole and show long ones as head and tail with the handle", () => {
+  it("store results as the engine does: long ones saved with a handle as head and tail, or every one with a handle", () => {
+    let saved = 0;
     for (const id of SCENARIO_IDS) {
-      const build = built(id);
-      const results = build.items.filter((item) => item.kind === "tool_result");
-      expect(build.handles.size, id).toBe(results.length);
-      for (const result of results) {
-        if (result.kind !== "tool_result") continue;
-        const handle = build.handles.get(result.callId)!;
-        expect(handle).toBe(evalHandle(id, result.callId));
-        const full = build.store.get(handle)!;
-        if (full.length > 8_000) {
-          expect(result.output).toContain(`read_tool_result {"handle":"${handle}"}`);
-          expect(result.output.length).toBeLessThan(full.length);
-        } else {
-          expect(result.output).toBe(full);
+      for (const policy of ["large", "all"] as const) {
+        const build = built(id, 1, 60_000, policy);
+        for (const result of build.items) {
+          if (result.kind !== "tool_result") continue;
+          const handle = build.handles.get(result.callId);
+          expect(result.handle, id).toBe(handle);
+          if (!handle) {
+            expect(policy).toBe("large");
+            expect(result.output.length, id).toBeLessThanOrEqual(TOOL_RESULT_LIMITS.inlineChars);
+            continue;
+          }
+          expect(handle).toBe(evalHandle(id, result.callId));
+          const full = build.store.get(handle)!;
+          if (full.length > TOOL_RESULT_LIMITS.inlineChars) {
+            if (policy === "large") saved += 1;
+            expect(result.output).toContain(`call read_tool_result with handle "${handle}"`);
+            expect(result.output.length).toBeLessThan(full.length);
+          } else {
+            expect(policy).toBe("all");
+            expect(result.output).toBe(full);
+          }
         }
       }
     }
+    expect(saved).toBeGreaterThan(0);
   });
 
   it("end with a call waiting for approval that every cut keeps verbatim, and give sequential three phases", () => {
     for (const id of SCENARIO_IDS) {
       const build = built(id);
       const last = build.items[build.items.length - 1]!;
-      expect(last.kind, id).toBe("tool_call");
-      const cut = findCompactionCut({ estimate, items: build.items, recentTokens: 2_000, target })!;
+      expect(last, id).toMatchObject({ kind: "tool_result", outcome: "error", output: APPROVAL_PENDING_TEXT });
+      const cut = findCompactionCut({ estimate, items: build.items, recentTokens: 1, target })!;
       const window = selectTranscript(build.items, target).window;
-      expect(window.findIndex((item) => item.id === cut.keepFromId), id).toBeLessThanOrEqual(window.length - 1);
-      expect(cut.keptItems, id).toBeGreaterThan(1);
+      expect(window.findIndex((item) => item.id === cut.keepFromId), id).toBeLessThanOrEqual(window.length - 2);
     }
     const phases = built("sequential", 1, 60_000).phaseEnds;
     expect(phases).toHaveLength(3);
@@ -221,7 +232,7 @@ describe("evaluation runs", () => {
       run: async (request) => answer(request)
     };
     const lines: Record<string, unknown>[] = [];
-    const summary = await runCompactionEvaluation(options({ paths: ["native"], scenarios: ["analysis"] }), {
+    const summary = await runCompactionEvaluation(options({ handles: "all", paths: ["native"], scenarios: ["analysis"] }), {
       emit: (line) => lines.push({ ...line }), model: () => model, now: () => 0
     });
     expect(nativeBodies).toHaveLength(1);

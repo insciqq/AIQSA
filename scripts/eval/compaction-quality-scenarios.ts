@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { CompactionToolClassifier } from "../../lib/server/engine/compaction";
 import { defaultCompactionToolKind } from "../../lib/server/engine/compaction";
+import { APPROVAL_PENDING_TEXT } from "../../lib/server/engine/compaction/items";
+import { TOOL_RESULT_LIMITS, toolOutputExcerpt } from "../../lib/server/engine/toolResults";
 import type { TranscriptItem } from "../../lib/server/engine/transcript";
 import { namespacedMcpToolName } from "../../lib/server/mcp/runPlan";
 import { namespacedWorkspaceToolName } from "../../lib/server/workspace/toolCatalog";
@@ -13,9 +15,12 @@ import { mulberry32 } from "../spikes/compaction-scale";
  * constraint, a later correction, exact numbers from tool output, paths and
  * identifiers, a decision with its reason, an error and its fix, finished
  * versus remaining work, and a call waiting for approval at the end), plus
- * the continuation each one checks. Every tool result gets a handle and is
- * kept whole for `read_tool_result`; results longer than the engine shows
- * inline appear as head and tail with their handle, as the engine stores them.
+ * the continuation each one checks. Tool results are stored the way the
+ * engine stores them (`lib/server/engine/toolResults.ts`): a result longer
+ * than the engine shows inline is saved whole with a handle and appears as
+ * head and tail; with `handles: "all"` every result is saved with a handle,
+ * the alternative where any earlier result can be read again. A call that
+ * waits for approval carries the engine's placeholder result.
  */
 
 type Rng = () => number;
@@ -57,6 +62,9 @@ export type Continuation = Readonly<{
   repeated: readonly Readonly<{ id: string; pattern: RegExp; tool: RegExp }>[];
 }>;
 
+/** Which results are saved with a handle: the engine's long results only, or all of them. */
+export type HandlePolicy = "all" | "large";
+
 export type BuiltScenario = Readonly<{
   /** callId → the handle `read_tool_result` reads it by. */
   handles: ReadonlyMap<string, string>;
@@ -71,7 +79,9 @@ export type BuiltScenario = Readonly<{
 }>;
 
 export type EvalScenario = Readonly<{
-  build(options: Readonly<{ seed: number; targetTokens: number; weigh: (item: TranscriptItem) => number }>): BuiltScenario;
+  build(options: Readonly<{
+    handles?: HandlePolicy; seed: number; targetTokens: number; weigh: (item: TranscriptItem) => number;
+  }>): BuiltScenario;
   classify: CompactionToolClassifier;
   continuation: Continuation;
   id: ScenarioId;
@@ -82,11 +92,6 @@ export type EvalScenario = Readonly<{
 }>;
 
 // ------------------------------------------------------------------ builder
-
-/** Results longer than this are shown as head and tail with their handle. */
-const VIEW_LIMIT = 8_000;
-const VIEW_HEAD = 3_000;
-const VIEW_TAIL = 1_500;
 
 export function evalHandle(scenario: string, callId: string): string {
   return `tor1_${createHash("sha256").update(`${scenario}:${callId}`).digest("hex").slice(0, 32)}`;
@@ -100,7 +105,8 @@ export class EvalTranscript {
   private calls = 0;
   private next = 0;
 
-  constructor(private readonly scenario: string, private readonly weigh: (item: TranscriptItem) => number) {}
+  constructor(private readonly scenario: string, private readonly weigh: (item: TranscriptItem) => number,
+    private readonly policy: HandlePolicy = "large") {}
 
   readonly nextId = (): string => `t${++this.next}`;
 
@@ -124,14 +130,19 @@ export class EvalTranscript {
   }
 
   result(callId: string, name: string, output: string, outcome: "complete" | "error" | "unknown" = "complete"): void {
-    const handle = evalHandle(this.scenario, callId);
-    this.handles.set(callId, handle);
-    this.store.set(handle, output);
-    const view = output.length > VIEW_LIMIT
-      ? `${output.slice(0, VIEW_HEAD)}\n…[${(output.length - VIEW_HEAD - VIEW_TAIL).toLocaleString("en-US")} characters omitted; ` +
-        `the full result: read_tool_result {"handle":"${handle}"}]…\n${output.slice(-VIEW_TAIL)}`
-      : output;
-    this.push({ callId, id: this.nextId(), kind: "tool_result", name, outcome, output: view });
+    const saved = this.policy === "all" || output.length > TOOL_RESULT_LIMITS.inlineChars;
+    const handle = saved ? evalHandle(this.scenario, callId) : null;
+    if (handle) {
+      this.handles.set(callId, handle);
+      this.store.set(handle, output);
+    }
+    this.push({ callId, ...(handle ? { handle } : {}), id: this.nextId(), kind: "tool_result", name, outcome,
+      output: toolOutputExcerpt(output, handle ? { handle } : null).output });
+  }
+
+  /** A call that waits for the user's approval, as the engine records it. */
+  awaitingApproval(name: string, args: Readonly<Record<string, unknown>>): void {
+    this.result(this.call(name, args), name, APPROVAL_PENDING_TEXT, "error");
   }
 
   tool(name: string, args: Readonly<Record<string, unknown>>, output: string, outcome: "complete" | "error" | "unknown" = "complete"): void {
@@ -156,8 +167,8 @@ function scenario(spec: ScenarioSpec): EvalScenario {
   const { closing, filler, initialState, opening, phases, plants, ...rest } = spec;
   return {
     ...rest,
-    build({ seed, targetTokens, weigh }) {
-      const transcript = new EvalTranscript(spec.id, weigh);
+    build({ handles = "large", seed, targetTokens, weigh }) {
+      const transcript = new EvalTranscript(spec.id, weigh, handles);
       const state: State = { ...initialState };
       const rng = mulberry32(seed);
       const ends = phases ?? [1];
@@ -339,7 +350,7 @@ function codingScenario(id: "coding" | "switch", values: CodingValues): EvalScen
     classify: classifyBy({ [JIRA_TRANSITION]: "external_write" }),
     closing(t) {
       t.user(`Move ${values.issue} to In Review in Jira.`);
-      t.call(JIRA_TRANSITION, { issue: values.issue, status: "In Review" });
+      t.awaitingApproval(JIRA_TRANSITION, { issue: values.issue, status: "In Review" });
     },
     continuation: {
       checks: [
@@ -359,7 +370,8 @@ function codingScenario(id: "coding" | "switch", values: CodingValues): EvalScen
       t.user(prose(rng, CODING_USER, int(rng, 1, 2), slots));
       switch (int(rng, 0, 3)) {
         case 0:
-          t.tool(WS_READ, { path: `/workspace/project/${file}` }, codeFile(rng, int(rng, 40, 140), pick(rng, ["run", "transform", "stage"])));
+          t.tool(WS_READ, { path: `/workspace/project/${file}` }, codeFile(rng, rng() < 0.12 ? int(rng, 300, 420) : int(rng, 40, 140),
+            pick(rng, ["run", "transform", "stage"])));
           break;
         case 1:
           t.tool(WS_READ, { path: `/workspace/project/${file}` }, codeFile(rng, int(rng, 30, 90), "run"));
@@ -511,7 +523,7 @@ const analysis = scenario({
     write_file: "workspace_write" }),
   closing(t) {
     t.user("Проведи корректировку по складу W-305 в учёте.");
-    t.call(JOURNAL_ENTRY, { account: "62.01", amount: "1250.00", entry: "JE-2026-0412" });
+    t.awaitingApproval(JOURNAL_ENTRY, { account: "62.01", amount: "1250.00", entry: "JE-2026-0412" });
   },
   continuation: {
     checks: [
@@ -532,7 +544,8 @@ const analysis = scenario({
       switch (int(rng, 0, 3)) {
         case 0:
           t.tool("run_sql", { query: `SELECT warehouse, region, gross, net_margin, units, share FROM ${pick(rng, ANALYSIS_TABLES)} ` +
-            `WHERE region = '${pick(rng, REGIONS)}' AND month = '${ANALYSIS_SLOTS.month(rng)}'` }, marginTable(rng, int(rng, 20, 110)));
+            `WHERE region = '${pick(rng, REGIONS)}' AND month = '${ANALYSIS_SLOTS.month(rng)}'` },
+          marginTable(rng, rng() < 0.12 ? int(rng, 380, 520) : int(rng, 20, 110)));
           break;
         case 1:
           t.tool("run_pipeline", { job_id: jobId(rng), stage: pick(rng, STAGES) }, logLines(rng, int(rng, 20, 100)));
@@ -699,7 +712,7 @@ const research = scenario({
   classify: classifyBy({ [CRM_NOTE]: "external_write", [DOCS_FETCH]: "other", [DOCS_SEARCH]: "other" }),
   closing(t) {
     t.user("Log a short note on the ACME account that the report is in progress.");
-    t.call(CRM_NOTE, { account: "ACME-778", text: "Procurement benchmark report in progress; draft sections 1–3 done." });
+    t.awaitingApproval(CRM_NOTE, { account: "ACME-778", text: "Procurement benchmark report in progress; draft sections 1–3 done." });
   },
   continuation: {
     checks: [
@@ -715,7 +728,7 @@ const research = scenario({
     t.user(prose(rng, RESEARCH_USER, 1, { ...RESEARCH_SLOTS, topic: () => topic }));
     t.tool(DOCS_SEARCH, { query: `${topic} ${pick(rng, ["2025", "2026", "survey", "benchmark"])}` }, searchResults(rng, topic));
     for (let round = int(rng, 1, 2); round > 0; round -= 1) {
-      t.tool(DOCS_FETCH, { doc_id: docId(rng) }, documentText(rng, topic, int(rng, 6, 26)));
+      t.tool(DOCS_FETCH, { doc_id: docId(rng) }, documentText(rng, topic, rng() < 0.12 ? int(rng, 110, 150) : int(rng, 6, 26)));
     }
     if (rng() < 0.3) {
       t.tool("write_file", { content: `## Notes on ${topic}\n${prose(rng, RESEARCH_ANSWER, 3, RESEARCH_SLOTS)}`, path: DRAFT }, "{\"ok\":true}");
@@ -828,7 +841,7 @@ const requirements = scenario({
   classify: classifyBy({ book_venue: "external_write", draft_email: "other", [INVOICE]: "external_write" }),
   closing(t) {
     t.user("Выставь площадке предоплату.");
-    t.call(INVOICE, { amount: "250000.00", payee: "Лофт Ткачи" });
+    t.awaitingApproval(INVOICE, { amount: "250000.00", payee: "Лофт Ткачи" });
   },
   continuation: {
     checks: [
@@ -969,7 +982,7 @@ const sequential = scenario({
   classify: classifyBy({ match_invoices: "other", send_dunning_letters: "external_write", [TRANSFER]: "external_write" }),
   closing(t) {
     t.user("Pay the INV-30071 vendor now.");
-    t.call(TRANSFER, { amount: "18240.50", currency: "EUR", iban: "DE89370400440532013000" });
+    t.awaitingApproval(TRANSFER, { amount: "18240.50", currency: "EUR", iban: "DE89370400440532013000" });
   },
   continuation: {
     checks: [
@@ -986,7 +999,7 @@ const sequential = scenario({
       t.tool("validate_iban", { batch: SEQUENTIAL_SLOTS.batch(rng) }, logLines(rng, int(rng, 15, 60)));
     } else {
       const month = SEQUENTIAL_SLOTS.month(rng);
-      t.tool("list_invoices", { month }, invoiceRows(rng, int(rng, 20, 90)));
+      t.tool("list_invoices", { month }, invoiceRows(rng, rng() < 0.12 ? int(rng, 260, 340) : int(rng, 20, 90)));
       if (rng() < 0.5) t.tool("match_invoices", { key: "iban_amount", month }, JSON.stringify({ matched: int(rng, 100, 400), unmatched: int(rng, 0, 60) }));
     }
     t.answer(prose(rng, SEQUENTIAL_ANSWER[Math.min(phase, 2)]!, int(rng, 2, 4), SEQUENTIAL_SLOTS));

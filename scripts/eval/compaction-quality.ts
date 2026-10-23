@@ -62,6 +62,7 @@ import type { ProviderModelCapabilities, ProviderRunRequest, ProviderRunResult }
 import type { RunTool } from "../../lib/server/tools/types";
 import { DEFAULT_ROOT, parseAnswerObject, streamResponses } from "../spikes/compaction-scale";
 import { createSpikeConnection, SPIKE_PROVIDER_PROFILES, SPIKE_PROVIDERS, type SpikeProvider } from "../spikes/transcript-replay-support";
+import { APPROVAL_PENDING_TEXT } from "../../lib/server/engine/compaction/items";
 import {
   SCENARIO_IDS,
   SCENARIOS,
@@ -69,6 +70,7 @@ import {
   type Continuation,
   type EvalScenario,
   type EvalTool,
+  type HandlePolicy,
   type Probe,
   type ProbeCategory,
   type ScenarioId
@@ -81,6 +83,8 @@ export type EvalOptions = Readonly<{
   dryRun: boolean;
   /** Reasoning effort of the recall and continuation calls. */
   effort: string;
+  /** Which results are saved with a handle: the engine's long ones (today) or all. */
+  handles: HandlePolicy;
   /** Output each request reserves from the window. */
   maxOutputTokens: number;
   mode: CompactionMode;
@@ -114,6 +118,8 @@ Flags:
   --model id              (default gpt-6.1-sol)
   --switch-model id       second model of the switch scenario (default gpt-6-astra)
   --tokens N              size of each session in estimated tokens (default 160000)
+  --handles large|all     results saved with a handle: those over 24000 characters, as the engine
+                          does today (default), or every result, to measure that alternative
   --window N|auto         context window for planning (default auto: the session at 75 %)
   --max-output N          output each request reserves (default 32000)
   --mode m                background|foreground compaction budgets (default background)
@@ -156,7 +162,7 @@ export function parseEvalArguments(argv: readonly string[], env: Readonly<Record
     values.set(flag.slice(2), value);
     index += 1;
   }
-  const known = new Set(["scenarios", "paths", "provider", "model", "switch-model", "tokens", "window", "max-output", "mode",
+  const known = new Set(["scenarios", "paths", "provider", "model", "switch-model", "tokens", "handles", "window", "max-output", "mode",
     "summary-max-output", "summary-effort", "effort", "seed", "concurrency", "timeout-ms", "root", "out"]);
   for (const key of values.keys()) if (!known.has(key)) invalid(`--${key}`);
   const list = <T extends string>(flag: string, allowed: readonly T[], fallback: readonly T[]): T[] => {
@@ -174,6 +180,8 @@ export function parseEvalArguments(argv: readonly string[], env: Readonly<Record
   for (const flag of ["summary-effort", "effort"]) if (values.has(flag) && !EFFORT.test(values.get(flag)!)) invalid(`--${flag}`);
   const mode = values.get("mode") ?? "background";
   if (mode !== "background" && mode !== "foreground") invalid("--mode");
+  const handles = values.get("handles") ?? "large";
+  if (handles !== "large" && handles !== "all") invalid("--handles");
   const window = values.get("window") ?? "auto";
   const root = (values.get("root") ?? env.CODEX_LB_ROOT ?? DEFAULT_ROOT).replace(/\/+$/u, "");
   if (!/^https:\/\/[^/\s]+(?:\/[^?#\s]*)?$/u.test(root) || /\/v1$/u.test(root)) invalid("--root");
@@ -181,6 +189,7 @@ export function parseEvalArguments(argv: readonly string[], env: Readonly<Record
     concurrency: count("--concurrency", values.get("concurrency") ?? "2", 1, 6),
     dryRun,
     effort: values.get("effort") ?? "low",
+    handles,
     maxOutputTokens: count("--max-output", values.get("max-output") ?? "32000", 0, 1_000_000),
     mode,
     model: values.get("model") ?? "gpt-6.1-sol",
@@ -489,9 +498,15 @@ function metadataRecord(metadata: CompactionMetadata): Record<string, unknown> {
   return { ...metadata };
 }
 
+/** The latest call still waiting for its result or the user's approval. */
 function pendingCall(items: readonly TranscriptItem[]): CallRecord | null {
-  const answered = new Set(items.flatMap((item) => item.kind === "tool_result" ? [item.callId] : []));
-  const call = [...items].reverse().find((item) => item.kind === "tool_call" && !answered.has(item.callId));
+  const latest = new Map<string, TranscriptItem>();
+  for (const item of items) if (item.kind === "tool_result") latest.set(item.callId, item);
+  const call = [...items].reverse().find((item) => {
+    if (item.kind !== "tool_call") return false;
+    const result = latest.get(item.callId);
+    return !result || (result.kind === "tool_result" && result.output === APPROVAL_PENDING_TEXT);
+  });
   return call?.kind === "tool_call" ? { arguments: call.arguments, name: call.name } : null;
 }
 
@@ -517,7 +532,7 @@ async function compactOnce(run: Run, env: EvalEnvironment, items: readonly Trans
     mode: run.options.mode, nextId: run.build.nextId, now: env.now,
     options: { ...(run.options.summaryMaxOutputTokens ? { summaryOutputTokens: run.options.summaryMaxOutputTokens } : {}),
       summaryReasoningEffort: run.options.summaryEffort },
-    path, resultHandle: (result) => run.build.handles.get(result.callId) ?? null, target: run.target, usable
+    path, target: run.target, usable
   });
   env.emit({ ...base, event: "compaction", model: run.target.model, planned, requestedPath: path, share: Math.round(plan.share * 1_000) / 1_000,
     step, tokens, usable, ...metadataRecord(outcome.metadata) });
@@ -602,7 +617,7 @@ async function runScenarioPath(options: EvalOptions, env: EvalEnvironment, id: S
     return null;
   }
   const sizing = measuring(options, options.model);
-  const build = scenario.build({ seed: options.seed, targetTokens: options.tokens,
+  const build = scenario.build({ handles: options.handles, seed: options.seed, targetTokens: options.tokens,
     weigh: (item) => contextItemTokens(item, sizing.target, sizing.estimate, "opaque", sizing.calibration) });
   const run = runFor(scenario, build, options, model, options.model);
   env.emit({ ...base, event: "transcript", handles: build.handles.size, items: build.items.length, phaseEnds: build.phaseEnds,
@@ -704,7 +719,8 @@ async function pool<T>(tasks: readonly (() => Promise<T>)[], concurrency: number
 }
 
 export async function runCompactionEvaluation(options: EvalOptions, env: EvalEnvironment): Promise<Record<string, unknown>> {
-  env.emit({ concurrency: options.concurrency, dryRun: options.dryRun, effort: options.effort, event: "plan", maxOutputTokens: options.maxOutputTokens,
+  env.emit({ concurrency: options.concurrency, dryRun: options.dryRun, effort: options.effort, event: "plan", handles: options.handles,
+    maxOutputTokens: options.maxOutputTokens,
     mode: options.mode, model: options.model, paths: options.paths, provider: options.provider, scenarios: options.scenarios, seed: options.seed,
     summaryEffort: options.summaryEffort, summaryMaxOutputTokens: options.summaryMaxOutputTokens ?? COMPACTION_DEFAULTS.summaryOutputTokens[options.mode],
     switchModel: options.switchModel, tokens: options.tokens, window: options.window ?? "auto" });

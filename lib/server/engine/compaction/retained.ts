@@ -1,5 +1,6 @@
 import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "../../../domain/workspace";
 import type { TranscriptItem, TranscriptToolCallItem, TranscriptToolResultItem } from "../transcript";
+import { itemRules, type CompactionItemRules } from "./items";
 
 /**
  * What a compaction keeps word for word, built by code from the transcript
@@ -29,9 +30,10 @@ export type CompactionToolKind =
 export type CompactionToolCall = Readonly<{ arguments: string; name: string }>;
 export type CompactionToolClassifier = (call: CompactionToolCall) => CompactionToolKind;
 
-/** The handle `read_tool_result` reads a result by, if it has one. The loop
- * passes the engine's handle scheme; the default finds a quoted handle. */
-export type CompactionResultHandle = (result: Readonly<{ callId: string; name: string; output: string }>) => string | null;
+/** The handle `read_tool_result` reads a result by, if it has one: by
+ * default the saved whole result's handle on the item, else one its text
+ * quotes. */
+export type CompactionResultHandle = (result: Readonly<{ callId: string; handle?: string; name: string; output: string }>) => string | null;
 
 /** Product tool names (`lib/server/tools/*`), kept here so the module stays a light leaf. */
 export const COMPACTION_PRODUCT_TOOLS = Object.freeze({
@@ -46,8 +48,7 @@ export const COMPACTION_PRODUCT_TOOLS = Object.freeze({
 
 const OBSERVATION_HANDLE = /\btor1_[a-f0-9]{32}\b/u;
 
-/** The engine's stored-result handle (`tor1_…`) quoted in a result's text. */
-export const defaultResultHandle: CompactionResultHandle = (result) => OBSERVATION_HANDLE.exec(result.output)?.[0] ?? null;
+export const defaultResultHandle: CompactionResultHandle = (result) => result.handle ?? OBSERVATION_HANDLE.exec(result.output)?.[0] ?? null;
 
 const WORKSPACE_TOOL = /^(?:mcp_workspace_)?(sandbox_[a-z_]+?)(?:_[a-z0-9]{10})?$/u;
 const WORKSPACE_READS = new Set(["sandbox_fs_read", "sandbox_fs_list", "sandbox_fs_stat", "sandbox_fs_exists"]);
@@ -207,11 +208,18 @@ const WRITE_OPERATIONS: Readonly<Record<string, string>> = {
   sandbox_fs_rename: "renamed", sandbox_fs_write: "written", str_replace: "edited", write_file: "written"
 };
 
-type Called = Readonly<{ call: TranscriptToolCallItem; kind: CompactionToolKind; result: TranscriptToolResultItem | undefined }>;
+type Called = Readonly<{
+  call: TranscriptToolCallItem;
+  kind: CompactionToolKind;
+  /** The call's latest result, as replay uses it; absent while none is recorded. */
+  result: TranscriptToolResultItem | undefined;
+  /** The latest result only holds the call's place until the user approves it. */
+  waiting: boolean;
+}>;
 
-function calls(items: readonly TranscriptItem[], classify: CompactionToolClassifier): Called[] {
+function calls(items: readonly TranscriptItem[], classify: CompactionToolClassifier, rules: CompactionItemRules): Called[] {
   const results = new Map<string, TranscriptToolResultItem>();
-  for (const item of items) if (item.kind === "tool_result" && !results.has(item.callId)) results.set(item.callId, item);
+  for (const item of items) if (item.kind === "tool_result") results.set(item.callId, item);
   const seen = new Set<string>();
   const out: Called[] = [];
   for (const item of items) {
@@ -223,7 +231,8 @@ function calls(items: readonly TranscriptItem[], classify: CompactionToolClassif
     } catch {
       kind = "other";
     }
-    out.push({ call: item, kind, result: results.get(item.callId) });
+    const result = results.get(item.callId);
+    out.push({ call: item, kind, result, waiting: result !== undefined && rules.awaitingApproval(result) });
   }
   return out;
 }
@@ -242,11 +251,12 @@ function section(title: string, lines: readonly string[]): string[] {
 export type StateBlockOptions = Readonly<{
   classify?: CompactionToolClassifier;
   resultHandle?: CompactionResultHandle;
+  rules?: Partial<CompactionItemRules>;
 }>;
 
 /** The record of the work, from every tool call in the transcript. Empty when there is nothing to record. */
 export function buildStateBlock(items: readonly TranscriptItem[], options: StateBlockOptions = {}): string {
-  const all = calls(items, options.classify ?? defaultCompactionToolKind);
+  const all = calls(items, options.classify ?? defaultCompactionToolKind, itemRules(options.rules));
   const handleOf = options.resultHandle ?? defaultResultHandle;
 
   const changed = new Map<string, { failed: boolean; operations: Map<string, number> }>();
@@ -269,11 +279,11 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
   const large: string[] = [];
   const errors: string[] = [];
 
-  for (const { call, kind, result } of all) {
+  for (const { call, kind, result, waiting } of all) {
     const identity = `${call.name} ${describeArguments(call.arguments)}`.trim();
-    if (!result) {
-      pending.push(`- ${identity} (call ${clip(call.callId, 64)}): approval or result pending when this record was made; ` +
-        "its outcome follows in the conversation once recorded");
+    if (!result || waiting) {
+      pending.push(`- ${identity} (call ${clip(call.callId, 64)}): ${waiting ? "waits for the user's approval" : "no result recorded yet"} ` +
+        "when this record was made; its outcome follows in the conversation once recorded");
       continue;
     }
     const done = result.outcome === "complete";
@@ -377,8 +387,10 @@ function cutIndex(items: readonly TranscriptItem[], keepFromId: string): number 
 
 /** The newest user messages before the cut within the budget, rendered oldest first. */
 export function earlierUserMessages(items: readonly TranscriptItem[], keepFromId: string, tokens: number,
-  estimate: (value: unknown) => number): string {
-  const users = items.slice(0, cutIndex(items, keepFromId)).flatMap((item) => item.kind === "user" && item.text.trim() ? [item] : []);
+  estimate: (value: unknown) => number, rules?: Partial<CompactionItemRules>): string {
+  const runContext = itemRules(rules).runContext;
+  const users = items.slice(0, cutIndex(items, keepFromId))
+    .flatMap((item) => item.kind === "user" && item.text.trim() && !runContext(item) ? [item] : []);
   if (users.length === 0 || tokens <= 0) return "";
   const kept: string[] = [];
   let remaining = tokens;
@@ -405,10 +417,10 @@ export function earlierUserMessages(items: readonly TranscriptItem[], keepFromId
 
 /** The latest instructions of each Skill loaded before the cut, newest first within the budget. */
 export function skillsInUse(items: readonly TranscriptItem[], keepFromId: string, tokens: number,
-  estimate: (value: unknown) => number): string {
+  estimate: (value: unknown) => number, rules?: Partial<CompactionItemRules>): string {
   const before = items.slice(0, cutIndex(items, keepFromId));
   const latest = new Map<string, string>();
-  for (const { call, result } of calls(before, defaultCompactionToolKind)) {
+  for (const { call, result } of calls(before, defaultCompactionToolKind, itemRules(rules))) {
     if (call.name !== COMPACTION_PRODUCT_TOOLS.loadSkill || result?.outcome !== "complete") continue;
     const skill = parsedArguments(call.arguments).skill;
     if (typeof skill !== "string" || !skill) continue;
@@ -447,21 +459,23 @@ export const RETAINED_PREAMBLE = "Kept from the earlier, compacted part of this 
 export function buildRetainedContext(options: RetainedContextOptions): string {
   const parts = [
     buildStateBlock(options.items, options),
-    skillsInUse(options.items, options.keepFromId, options.skillTokens, options.estimate),
-    earlierUserMessages(options.items, options.keepFromId, options.userMessageTokens, options.estimate)
+    skillsInUse(options.items, options.keepFromId, options.skillTokens, options.estimate, options.rules),
+    earlierUserMessages(options.items, options.keepFromId, options.userMessageTokens, options.estimate, options.rules)
   ].filter((part) => part.length > 0);
   return parts.length > 0 ? [RETAINED_PREAMBLE, ...parts].join("\n\n") : "";
 }
 
 /** An upper bound of the retained text's tokens for a cut, without building it. */
 export function estimateRetainedTokens(items: readonly TranscriptItem[], keepFromId: string,
-  estimate: (value: unknown) => number, budgets: RetainedBudgets & Readonly<{ stateTokens: number }>): number {
+  estimate: (value: unknown) => number, budgets: RetainedBudgets & Readonly<{ stateTokens: number }>,
+  rules?: Partial<CompactionItemRules>): number {
+  const runContext = itemRules(rules).runContext;
   const before = items.slice(0, cutIndex(items, keepFromId));
   let users = 0;
   let skills = 0;
   const loaded = new Set<string>();
   for (const item of before) {
-    if (item.kind === "user") users += estimate(item.text) + 8;
+    if (item.kind === "user" && !runContext(item)) users += estimate(item.text) + 8;
     if (item.kind === "tool_call" && item.name === COMPACTION_PRODUCT_TOOLS.loadSkill) loaded.add(item.callId);
     if (item.kind === "tool_result" && loaded.has(item.callId)) skills += estimate(item.output) + 12;
   }

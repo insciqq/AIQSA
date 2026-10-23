@@ -20,7 +20,8 @@ import type { ProviderHistoryItem, ProviderNativeData } from "../providers/histo
  * - replay starts at the latest compaction the target can use: its own native
  *   compaction item, or a summary text any target can read; a compaction
  *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
- *   after itself, then everything appended since;
+ *   after itself, then everything appended since, and one whose tail is no
+ *   longer found before it is not used;
  * - reasoning with no text or call after it in its response stays out.
  */
 
@@ -220,15 +221,22 @@ export function compactionSummaryText(item: TranscriptCompactionItem): string {
   return [`${COMPACTION_SUMMARY_HEADING}\n\n${item.summary ?? ""}`, ...(item.retained ? [item.retained] : [])].join("\n\n");
 }
 
+/** Where a compaction's kept tail starts: 0 without one, -1 when the tail
+ * is not found before the compaction (an id that did not survive a rebuilt
+ * conversation). Such a compaction is not used: replay never silently drops
+ * the tail it promised to keep. */
+function keptTailIndex(items: readonly TranscriptItem[], index: number, item: TranscriptCompactionItem): number {
+  if (!item.keepFromId) return 0;
+  const keepFrom = items.findIndex((candidate) => candidate.id === item.keepFromId);
+  return keepFrom >= 0 && keepFrom < index ? keepFrom : -1;
+}
+
 /** Replay's items from the base compaction at `start`: the base, the tail it
- * keeps verbatim, then the items after it. A tail that is not found before
- * the base is not replayed twice: replay then continues after the base. */
+ * keeps verbatim, then the items after it. */
 function replayWindow(items: readonly TranscriptItem[], start: number, base: TranscriptCompactionItem | null): TranscriptItem[] {
   if (!base?.keepFromId) return items.slice(start);
-  const keepFrom = items.findIndex((item) => item.id === base.keepFromId);
-  return keepFrom >= 0 && keepFrom < start
-    ? [base, ...items.slice(keepFrom, start), ...items.slice(start + 1)]
-    : items.slice(start);
+  const keepFrom = keptTailIndex(items, start, base);
+  return [base, ...items.slice(keepFrom, start), ...items.slice(start + 1)];
 }
 
 /** The transcript items a request to `target` carries, in replay order. */
@@ -242,7 +250,7 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
   let base: TranscriptCompactionItem | null = null;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;
-    if (item.kind === "compaction" && usableCompaction(item, target)) {
+    if (item.kind === "compaction" && usableCompaction(item, target) && keptTailIndex(items, index, item) >= 0) {
       start = index;
       base = item;
       break;

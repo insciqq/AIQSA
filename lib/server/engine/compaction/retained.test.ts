@@ -9,11 +9,13 @@ import { LOAD_SKILL_TOOL_NAME, READ_SKILL_FILE_TOOL_NAME } from "../../tools/ski
 import { SAVE_SKILL_TOOL_NAME } from "../../tools/skillSave";
 import { namespacedWorkspaceToolName } from "../../workspace/toolCatalog";
 import { charTokens, handleFor, transcriptBuilder } from "./compaction.testFixtures";
+import { APPROVAL_PENDING_TEXT } from "./items";
 import {
   buildRetainedContext,
   buildStateBlock,
   COMPACTION_PRODUCT_TOOLS,
   defaultCompactionToolKind,
+  defaultResultHandle,
   describeArguments,
   earlierUserMessages,
   estimateRetainedTokens,
@@ -122,7 +124,7 @@ describe("state block", () => {
       `- ${namespacedMcpToolName("vault", "set_secret")} name="STRIPE_KEY" → done`,
       `- ${namespacedMcpToolName("crm", "create_ticket")} title="Refund 1001" → done (id=T-1001)`,
       `- ${namespacedMcpToolName("crm", "send_email")} to="ops@example.test" → outcome unknown: check its effect before repeating it`,
-      `- ${namespacedMcpToolName("crm", "update_deal")} deal_id="D-77" (call call_16): approval or result pending`,
+      `- ${namespacedMcpToolName("crm", "update_deal")} deal_id="D-77" (call call_16): no result recorded yet`,
       `- ${handle}: run_sql query="SELECT warehouse, net_margin FROM settlements" (`,
       "Recent tool errors:\n- run_pipeline stage=\"validate\" → ERR_SCHEMA_DRIFT_0x3F2: column settled_at type mismatch"
     ]) expect(block).toContain(line);
@@ -130,6 +132,27 @@ describe("state block", () => {
     // Short results are not listed, whatever handle scheme the loop passes.
     const everyHandle = buildStateBlock(chat.items, { resultHandle: (result) => handleFor(result.callId) });
     expect(everyHandle.match(/^- tor1_/gmu)).toHaveLength(1);
+  });
+
+  it("reads a call's latest result, as replay does, and lists a call waiting for approval as pending", () => {
+    const chat = transcriptBuilder();
+    const name = namespacedMcpToolName("crm", "create_ticket");
+    const approved = chat.call(name, { title: "Refund 1001" });
+    chat.result(approved, name, APPROVAL_PENDING_TEXT, "error");
+    chat.result(approved, name, "{\"id\":\"T-1001\"}");
+    const waiting = chat.call(name, { title: "Refund 1002" });
+    chat.result(waiting, name, APPROVAL_PENDING_TEXT, "error");
+    const block = buildStateBlock(chat.items);
+    expect(block).toContain(`- ${name} title="Refund 1001" → done (id=T-1001)`);
+    expect(block).toContain(`- ${name} title="Refund 1002" (call ${waiting}): waits for the user's approval when this record was made`);
+    expect(block).not.toContain("Recent tool errors");
+  });
+
+  it("takes a result's saved handle from the item before any handle its text quotes", () => {
+    expect(defaultResultHandle({ callId: "c", handle: handleFor("saved"), name: "x", output: `see ${handleFor("quoted")}` }))
+      .toBe(handleFor("saved"));
+    expect(defaultResultHandle({ callId: "c", name: "x", output: `see ${handleFor("quoted")}` })).toBe(handleFor("quoted"));
+    expect(defaultResultHandle({ callId: "c", name: "x", output: "plain" })).toBeNull();
   });
 
   it("records the line of a failed result that names the failure", () => {
@@ -173,6 +196,10 @@ describe("earlier user messages and Skills in use", () => {
     expect(tight).toContain("(1 older user message is covered by the summary only.)");
     expect(tight).not.toContain("[1]");
     expect(earlierUserMessages(chat.items, "i1", 1_000, charTokens)).toBe("");
+    // Run context the server adds again on every run is not the user's words.
+    const withContext = [{ id: "ctx-0", kind: "user" as const, text: "Skills index" }, ...chat.items];
+    expect(earlierUserMessages(withContext, keep, 10_000, charTokens)).not.toContain("Skills index");
+    expect(earlierUserMessages(withContext, keep, 10_000, charTokens, { runContext: () => false })).toContain("Skills index");
   });
 
   it("keeps the latest instructions of each Skill loaded before the cut, newest first within the budget", () => {
