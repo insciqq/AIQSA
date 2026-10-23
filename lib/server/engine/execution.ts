@@ -36,6 +36,7 @@ import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { runAgentLoop, type LoopToolChoice } from "./loop";
 import { callModel } from "./modelCall";
 import type { NativeRunStore } from "./runStore";
+import { withNativeSystemPrompt } from "./systemPrompt";
 import { runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps } from "./toolBatch";
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
@@ -294,6 +295,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspace: input.workspace },
           userId: input.userId
         });
+        // Every request of the run carries one system prompt for its tools (`systemPrompt.ts`).
+        base = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
+          secrets: input.services.secrets, snapshot, tools: registry.definitions() });
         // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.
         const record = (added: readonly TranscriptItem[]) => writer.record(added.map((item) => transcriptRecord(registry, item)));
         const append = async (added: readonly TranscriptItem[]) => {
