@@ -468,8 +468,8 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   forcedToolName?: string;
   /** The native engine's conversation, already selected for this request's
    * provider route and model (`lib/server/engine/transcript.ts`). The
-   * Responses, OpenRouter, Gemini and DeepSeek adapters render it instead of
-   * `context.messages` and `content`; `providerToolMessages` and
+   * Responses, OpenRouter, Gemini, DeepSeek and Anthropic adapters render it
+   * instead of `context.messages` and `content`; `providerToolMessages` and
    * `previousProviderResponseId` must then be absent
    * (`lib/server/providers/history.ts`). */
   history?: readonly import("./history").ProviderHistoryItem[];

@@ -8,11 +8,13 @@ import { geminiInteractionStepForWire } from "./geminiInteractionsProtocol";
  * adapters own the wire formats and only render or capture these items.
  *
  * Provider-native data (reasoning blobs, Gemini thought signatures, Responses
- * item ids) rides on the item that carries it, tagged with its wire format.
- * The engine replays it only to the provider route and model that produced
- * it; a renderer refuses data of another format instead of sending it.
+ * item ids, Anthropic thinking blocks) rides on the item that carries it,
+ * tagged with its wire format. The engine replays it only to the provider
+ * route and model that produced it; a renderer refuses data of another
+ * format instead of sending it. Anthropic Messages renders and captures in
+ * `anthropicMessagesHistory.ts`.
  */
-export type ProviderHistoryFormat = "chat_completions" | "gemini_interactions" | "openai_responses";
+export type ProviderHistoryFormat = "anthropic_messages" | "chat_completions" | "gemini_interactions" | "openai_responses";
 
 export type ProviderNativeData = Readonly<{
   fields: Readonly<Record<string, unknown>>;
