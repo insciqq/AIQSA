@@ -5,6 +5,16 @@ import { memorySavedSecretScreenedValues } from "./persistence/savedSecretMatchi
 /** SOURCE_PURGE target of the obligation `./savedSecretScrub.ts` carries out. */
 export const MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE = "SAVED_SECRET@memory-saved-secret-scrub-v1";
 
+/** Whether the owner's Memory holds any fact or history item, in any state. */
+export function memoryHoldsAnythingSql(userId: Prisma.Sql | string): Prisma.Sql {
+  return Prisma.sql`(
+    EXISTS (SELECT 1 FROM "MemoryFact" WHERE "userId" = ${userId})
+    OR EXISTS (SELECT 1 FROM "MemoryRecallChunk" WHERE "userId" = ${userId})
+    OR EXISTS (SELECT 1 FROM "MemoryRecallRound" WHERE "userId" = ${userId})
+    OR EXISTS (SELECT 1 FROM "MemoryToolEvent" WHERE "userId" = ${userId})
+  )`;
+}
+
 /**
  * Runs in the transaction that saves a secret value, for every path that saves
  * one (`../workspace/secrets/store.ts`), after the owner row is locked. When
@@ -33,10 +43,7 @@ export async function requestMemorySavedSecretScrub(
   });
   if (!settings) return false;
   const [held] = await tx.$queryRaw<Array<{ held: boolean }>>(Prisma.sql`
-    SELECT EXISTS (SELECT 1 FROM "MemoryFact" WHERE "userId" = ${input.userId})
-      OR EXISTS (SELECT 1 FROM "MemoryRecallChunk" WHERE "userId" = ${input.userId})
-      OR EXISTS (SELECT 1 FROM "MemoryRecallRound" WHERE "userId" = ${input.userId})
-      OR EXISTS (SELECT 1 FROM "MemoryToolEvent" WHERE "userId" = ${input.userId}) AS "held"
+    SELECT ${memoryHoldsAnythingSql(input.userId)} AS "held"
   `);
   if (!held?.held) return false;
   await tx.memoryDeletionOutbox.create({
