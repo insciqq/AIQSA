@@ -8,12 +8,13 @@ import { authenticateWithLocalToken, signInWithLocalToken } from "./support/loca
 import { activeChatId, selectFakeModel, sendAndExpect } from "./support/workspace";
 
 /*
- * Projects, Knowledge and native Anthropic are disabled
- * (`lib/domain/disabledAreas.ts`, operator decision 2026-10-22). No surface
- * offers them, an existing Project chat stays readable by its address with a
- * notice in place of the composer, and an ordinary chat still sends. The API
- * refuses to create Projects, so the Project fixture is written through
- * Prisma and removed in `finally`. Screenshots are viewport shots.
+ * Projects and Knowledge are disabled (`lib/domain/disabledAreas.ts`,
+ * operator decision 2026-10-22); native Anthropic stays (operator decision
+ * 2026-10-23). No surface offers the disabled areas, an existing Project
+ * chat stays readable by its address with a notice in place of the
+ * composer, and an ordinary chat still sends. The API refuses to create
+ * Projects, so the Project fixture is written through Prisma and removed in
+ * `finally`. Screenshots are viewport shots.
  */
 
 const prisma = new PrismaClient();
@@ -277,7 +278,7 @@ test.describe("desktop", () => {
     await shot(page, testInfo, "studio-chat-defaults-desktop");
   });
 
-  test("Control Center offers no native Anthropic tile and names its retrieval page Memory", async ({ page }, testInfo) => {
+  test("Control Center offers the native Anthropic tile and names its retrieval page Memory", async ({ page }, testInfo) => {
     await signInWithLocalToken(page);
     await page.goto("/admin?section=providers");
     await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers", { timeout: 30_000 });
@@ -293,8 +294,7 @@ test.describe("desktop", () => {
     await expect(sheet).toBeVisible();
     const tiles = sheet.getByTestId("provider-add-tiles");
     await expect(tiles.getByTestId("provider-add-tile-openai")).toBeVisible();
-    await expect(tiles.getByTestId("provider-add-tile-anthropic")).toHaveCount(0);
-    await expect(tiles.getByRole("button", { name: /Anthropic/u })).toHaveCount(0);
+    await expect(tiles.getByTestId("provider-add-tile-anthropic")).toBeVisible();
     await expectNoHorizontalOverflow(page);
     await shot(page, testInfo, "admin-add-provider-desktop");
   });
