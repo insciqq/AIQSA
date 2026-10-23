@@ -57,10 +57,26 @@ export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps | un
 export function routeRun(native: NativeEngineHandlerDeps | undefined, input: Readonly<{
   prepared: MaterializedPreparedRunData;
   user: Readonly<{ email: string | null; id: string }>;
-  workspacePredecessor: boolean;
 }>): NativeEngineRoute {
   if (!native) return { engine: "v1", reason: "not_listed" };
   return nativeEngineRoute({ ...input, allowlist: native.allowlist() });
+}
+
+/**
+ * The services a native run takes from its entry point: the send handler's
+ * dependencies, or the Workspace follow-up that starts a run admitted behind
+ * the previous answer's hand-off.
+ */
+export function nativeRunServices(deps: Readonly<Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" |
+  "skillTools" | "vision">>): Omit<NativeRunServices, "searchRuntimes"> {
+  return {
+    ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
+    ...(deps.images ? { images: deps.images } : {}),
+    ...(deps.mcp ? { mcp: deps.mcp } : {}),
+    ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
+    ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
+    ...(deps.vision ? { vision: deps.vision } : {})
+  };
 }
 
 /** The native execution of an admitted run. */
