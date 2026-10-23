@@ -12,7 +12,7 @@ For local use by one person with external model providers:
 - **Minimum: 2 CPU cores, 8 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups. Each workspace defaults to 4 GB RAM and 10 GB disk.
 - **Recommended: 16 GB RAM** for several concurrent workspaces, active Knowledge ingestion and OCR.
 
-Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources. OpenSearch requires [`vm.max_map_count` of at least 262144](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/#linux-settings).
+Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources.
 
 ## Install
 
@@ -22,7 +22,7 @@ cd AIQSA
 ./aiqsa.sh install --base-url http://localhost:3000 --admin-email admin@example.com
 ```
 
-`install` checks the host (Docker, Compose, `vm.max_map_count`, memory, disk, port, clock, KVM and the host journal), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. It refuses a host without usable `/dev/kvm` before changing anything and enables Workspace with the matching KVM group. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
+`install` checks the host (Docker, Compose, memory, disk, port, clock, KVM and the host journal), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. It refuses a host without usable `/dev/kvm` before changing anything and enables Workspace with the matching KVM group. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
 
 Open the configured URL ([localhost:3000](http://localhost:3000) by default) and sign in with the email and generated `AIQSA_INITIAL_ADMIN_PASSWORD` from `.env`. Configure model providers in the Control Center. For internet access, put an HTTPS reverse proxy in front of port 3000 and set the public URL in `.env`. Its upstream read timeout must exceed the Memory admission timeout (30 seconds by default, up to 120), because sending a message waits for Memory preparation. The proxy may also refuse paths under `/api/internal/` as optional hardening; AIQSA never relies on that.
 
@@ -37,6 +37,8 @@ The stack uses prebuilt images and persistent Docker volumes. Keep `.env` with y
 **Local MCP servers are removed after v0.2.34.** Local (npm, PyPI, OCI) MCP servers and the bundled ToolHive runtime are removed; remote MCP servers are unaffected. Before the first start of the new release, set `AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1` in `.env`: startup then deletes leftover local servers and local configurations. Without it, startup stops with `local_mcp_removal_acknowledgement_required` and changes nothing; the flag is ignored once nothing local is left. Upstream OAuth grants of removed servers are not revoked; revoke them at the provider if needed. Optionally, before updating, run `docker compose --profile maintenance run --rm mcp-maintenance --execute` in the current release to remove its ToolHive workloads. `--remove-orphans` removes the `toolhive-runtime` container; afterwards remove the `<project>_toolhive_data` volume, any leftover `aiqsa-<hex>-<token>` containers and `toolhivelocal/*` images by hand.
 
 **Container logs move to the host journal.** Releases after v0.3.18 log every service through Docker's journald driver instead of per-container files, so the logs survive the container recreation of every later update. A host with systemd-journald switches by itself. Before that update, add the [journal budget](#journal-budget) and save the current logs you still need (`./aiqsa.sh logs --since 336h > logs.txt`): the update recreates every container, and their old log files go with them. On a host without systemd-journald, add `COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml` to `.env` before updating; otherwise `up` and `upgrade` stop at their preflight, before any container is replaced. `COMPOSE_FILE` turns off the automatic `compose.override.yaml`, so append yours to that list. Logging settings in your own overrides still win; `./aiqsa.sh doctor` shows the resulting log mode.
+
+**The search index service is removed after v0.3.26.** Memory search reads PostgreSQL only, so the `opensearch` and `memory-search-worker` services are gone and nothing needs migrating. Keep `AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY` in `.env`; the other `AIQSA_MEMORY_OPENSEARCH_*`, `AIQSA_OPENSEARCH_*` and `AIQSA_MEMORY_LEXICAL_BACKEND` lines are ignored and may be deleted. `./aiqsa.sh upgrade` and `./aiqsa.sh up` remove the old containers through `--remove-orphans`; with plain Compose run `docker compose up -d --remove-orphans`. The index volume stays until you delete it with `docker volume rm <project>_opensearch_data` (`./aiqsa.sh doctor` prints the exact command). The `vm.max_map_count` setting it needed is no longer required.
 
 **First update to this release.** Released checkouts up to v0.2.34 do not contain `aiqsa.sh`, so this update is manual. If `.env` pins `AIQSA_IMAGE` (the v0.2.34 runbook did), set it to the new release first, for example `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z`. Then update the checkout and start the stack:
 
@@ -100,7 +102,7 @@ An agent working on the host can read everything at once: `./aiqsa.sh health --f
 ./aiqsa.sh logs --warnings --follow        # stream warnings and errors
 ```
 
-`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, OpenSearch, Tika, Docling and SeaweedFS; omit them to read those services.
+`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, Tika, Docling and SeaweedFS; omit them to read those services.
 
 Container logs go to the host journal (Docker's journald driver), so they survive the container recreation of `up` and `upgrade`. Without a time window `logs` prints the current containers; with `--since` or `--until` it reads the journal, which also holds the lines of containers recreated since, with the time of each line:
 
