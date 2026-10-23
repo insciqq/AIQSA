@@ -44,7 +44,6 @@ import {
   type ChatAssistantAdmission
 } from "./assistantRunAdmission";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
-import { conversationContextPolicy } from "./contextCompactionContract";
 import {
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
@@ -106,8 +105,6 @@ import {
   type FetchUrlPlan
 } from "../tools/fetchUrlPlan";
 import { isFetchUrlDigest } from "../webFetch/urls";
-import { readToolCallTool } from "../tools/readToolCall";
-import { TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -213,15 +210,12 @@ type RunPreparationRepository = Pick<
   | "loadScheduledTaskManagement"
   | "manageScheduledTaskForCall"
   | "loadAssistantRowContext"
-  | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
   | "loadProjectAssistantRowContext"
   /** Without it only the current message's links are authorized for `fetch_url`. */
   | "loadScheduledPromptMessageIds"
   /** Without it an interactive run freezes no "Always allow" consent: every write is asked. */
   | "loadMcpToolConsentServerIds"
-  | "loadToolHistory"
-  | "projectToolHistory"
 >>;
 
 /**
@@ -253,17 +247,6 @@ export function scheduledRunContext(
       { content: textMessageContent(copy.answer), id: `${key}:answer`, role: "assistant" }
     ],
     source: "carried"
-  };
-}
-
-/** A scheduled run's frozen tool history follows its context: only the previous result's turn. */
-function scheduledRunToolHistory(history: ToolHistorySnapshot, context: readonly ProviderConversationMessage[]): ToolHistorySnapshot {
-  const [user, answer] = context;
-  if (!user || !answer) return { version: TOOL_HISTORY_VERSION, turns: [] };
-  return {
-    version: history.version,
-    turns: history.turns.filter((turn) => turn.userMessageId === user.id || turn.turnMessageId === answer.id),
-    ...(history.unavailable ? { unavailable: true as const } : {})
   };
 }
 
@@ -749,8 +732,7 @@ function resolveWorkspaceEnabled(
 /** Explicit document retry retains the accepted reader/answer authority, but a
  * sibling needs its own current Workspace admission and derived request. */
 export async function preparePdfRetry(
-  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy"> &
-    Readonly<{ repository?: Pick<RunPreparationDeps["repository"], "projectToolHistory"> }>,
+  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy">,
   input: Readonly<{
     adapter: ProviderAdapter;
     prepared: PreparedRun;
@@ -2237,35 +2219,12 @@ async function prepareRunWith(
     }
   }
   if (turnGuidance.length > 0) prompt = { ...prompt, turnGuidance };
-  // The call reader is a session tool like the status tool: admitted for
-  // every tool-capable answer model, independent of the observation policy.
-  const toolCallReader = modelCapabilities.toolCalling === true &&
-    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   const observationCapable = modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({
       modelId: executionModelId,
       provider: executionProvider
     }) === true;
   const toolObservationVersion: 0 | 1 = observationPolicy === "v1" && observationCapable ? 1 : 0;
-  // References and digests of the branch's eligible calls only: the record
-  // text is projected again, with current authority, for every request.
-  const toolHistoryLeafMessageId = input.source.kind === "send"
-    ? input.source.draftProjectChat || input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
-    : input.source.source.userMessage.id;
-  // A failed or slow history read never refuses the message: the run then
-  // freezes that the history could not be loaded (content-free log), and
-  // every request of it says so instead of implying no earlier calls. A
-  // scheduled run reads it only for its previous result's turn in this chat
-  // (a copy carried from another chat brings no tool history).
-  const historyRead = !scheduledOccurrence || scheduledContext?.source === "path"
-    ? deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId })
-    : undefined;
-  const branchToolHistory: ToolHistorySnapshot = await historyRead?.catch((error: unknown) => {
-    logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
-      code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
-    return { version: TOOL_HISTORY_VERSION, turns: [], unavailable: true as const };
-  }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
-  const toolHistory = scheduledOccurrence ? scheduledRunToolHistory(branchToolHistory, sendContext ?? []) : branchToolHistory;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
   // A task turn with Memory reads it like an ordinary personal turn whatever its chat's mode (an
   // excluded chat keeps it out of learning, not its own reads), and never as a `/memory` command:
@@ -2408,27 +2367,16 @@ async function prepareRunWith(
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
-    ...(toolCallReader ? { toolCallReader: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
     ...(skillSaveTool ? { skillSaveTool: true as const } : {}),
     ...(mcpApproval ? { mcpApproval } : {}),
     ...(fetchUrlPlan ? { fetchUrl: fetchUrlPlan } : {}),
-    toolHistory,
     attachmentIds,
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    // Every run compacts by notes before anything leaves its context, whatever
-    // Knowledge, Memory search, Observation or tool support it has. A
-    // scheduled run's selected context is no branch prefix: it carries no
-    // branch notes (no leaf to reuse them from).
-    contextCompactionPolicy: conversationContextPolicy({
-      leafMessageId: scheduledOccurrence ? null
-        : input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
-      messages: contextMessages
-    }),
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
       knowledgeReviewRepairFeedbackVersion: 1 as const,
@@ -2501,7 +2449,6 @@ async function prepareRunWith(
     ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
-    ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
     ...answerReviewToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),

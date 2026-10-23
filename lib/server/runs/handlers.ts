@@ -91,8 +91,7 @@ export type {
   RunAttachmentRecord,
   RunChatUpdateRecord,
   RunControlRecord,
-  RunRepository,
-  StaleRunControlRecord
+  RunRepository
 } from "./runRepositoryContract";
 
 /**

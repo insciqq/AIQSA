@@ -48,7 +48,6 @@ export function textConversationForRequest(
   options: Readonly<{ redactSkillContext?: boolean }> = {}
 ): TextConversationMessage[] {
   return conversationMessagesForRequest(request)
-    .filter((message) => !(options.redactSkillContext && message.historyClass === "tool_history"))
     .map((message) => ({
       content: options.redactSkillContext && (message.purpose === "skill_context" || message.purpose === "skill_catalog")
         ? SKILL_CONTEXT_PREVIEW_PLACEHOLDER

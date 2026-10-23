@@ -85,7 +85,6 @@ const BRANCH_USER_MESSAGES = 400;
 
 type BranchMessage = Readonly<{
   content: Readonly<{ blocks?: unknown[] }>;
-  historyClass?: string;
   id: string;
   purpose?: string;
   role: string;
@@ -93,8 +92,8 @@ type BranchMessage = Readonly<{
 
 /** The branch's user messages whose text authorizes links, newest first and bounded. */
 export function fetchUrlAuthoringMessages<T extends BranchMessage>(messages: readonly T[]): T[] {
-  return messages.filter((message) => message.role === "user" && message.purpose === undefined &&
-    message.historyClass === undefined).reverse().slice(0, BRANCH_USER_MESSAGES);
+  return messages.filter((message) => message.role === "user" && message.purpose === undefined)
+    .reverse().slice(0, BRANCH_USER_MESSAGES);
 }
 
 /**

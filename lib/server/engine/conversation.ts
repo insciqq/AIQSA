@@ -45,9 +45,9 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
   for (let index = 0; index < messages.length - 1; index += 1) {
     const message = messages[index]!;
     const text = textFromContentBlocks(message.content);
-    if (message.purpose !== undefined || message.historyClass !== undefined) {
+    if (message.purpose !== undefined) {
       // Internal context (Skills index or instructions) is run-scoped input, never compacted.
-      if (message.historyClass === undefined && text.trim()) items.push({ id: `ctx-${index}`, kind: "user", runContext: true, text });
+      if (text.trim()) items.push({ id: `ctx-${index}`, kind: "user", runContext: true, text });
       continue;
     }
     if (message.role === "user") {

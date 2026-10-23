@@ -3,7 +3,6 @@ import type { NormalizedRunRequest, ProviderAdapter, ProviderRunRequest } from "
 import type { ProviderToolBridge } from "../tools/types";
 import type { materializePreparedRunData } from "./runPreparation";
 import { applyProviderRequestContextBudget } from "./requestContextBudget";
-import { contextCompactionPolicyRetired } from "./contextCompactionContract";
 
 export function createPreparingMemoryMaterializer(
   prepared: ReturnType<typeof materializePreparedRunData>,
@@ -24,9 +23,6 @@ export function createPreparingMemoryMaterializer(
       ...normalizedRequest,
       ...(personalContext ? { personalContext } : {})
     };
-    // A request accepted under the retired context policy is never budgeted;
-    // its executor ends it as `context_compaction_policy_retired`.
-    if (contextCompactionPolicyRetired(request)) return null;
     const budgeted = applyProviderRequestContextBudget({
       ...(bridge ? { bridge } : {}),
       request

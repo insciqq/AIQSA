@@ -9,7 +9,7 @@ import {
   ActiveRunConflictError,
   type DurableRunControlRecord
 } from "./runRepositoryContract";
-import type { ProjectRunRecoveryAuthority } from "./toolLoopPersistence";
+import type { ProjectRunRecoveryAuthority } from "./runRepositoryContract";
 
 export function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;

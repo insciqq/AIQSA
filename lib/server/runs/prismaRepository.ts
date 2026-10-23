@@ -88,7 +88,6 @@ import {
   recoveredRunErrorPayload
 } from "./prismaRepositoryToolLoop";
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
-import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
 import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
 import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
@@ -123,7 +122,6 @@ import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { measureTransaction } from "../observability/transactionTiming";
-import { createPrismaRunAnswerOperations, persistCompletedAnswerUsage } from "./prismaRepositoryAnswer";
 import { runAttributionUsageWhere, storedRunAttributionPurpose } from "./prismaRepositoryUsage";
 import { createPrismaRunFollowupOperations, runFollowupSelect, runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
 import { projectRunFollowups } from "./runFollowups";
@@ -215,12 +213,8 @@ export function createPrismaRunRepository(
     });
   const workspaceAvailability = options.workspaceAvailability ??
     defaultWorkspaceAvailabilityService;
-  const toolLoopOperations = createPrismaRunToolLoopOperations(
-    prismaClient,
-    memorySourceHooks
-  );
+  const toolLoopOperations = createPrismaRunToolLoopOperations(prismaClient);
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
-  const toolHistoryOperations = createPrismaToolHistoryOperations(prismaClient);
   const fetchUrlOperations = createPrismaFetchUrlOperations(prismaClient);
   // A chat's scheduled tasks are created and changed under the owner API's own rules.
   const scheduledTaskCreationDeps = {
@@ -531,7 +525,6 @@ export function createPrismaRunRepository(
   }
 
   return {
-    ...createPrismaRunAnswerOperations(prismaClient),
     followups: createPrismaRunFollowupOperations(prismaClient),
     groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input).catch(retainRunPrismaCode),
     groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input).catch(retainRunPrismaCode),
@@ -549,9 +542,6 @@ export function createPrismaRunRepository(
       finalizePreparingRunWithClient(prismaClient, input, memoryExecutionAuthority).catch(retainRunPrismaCode),
     hasPendingPdfPreparation: async (runId) => Boolean(await prismaClient.chatPdfRunPreparation.findFirst({
       select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["pending", "preparing", "answer_ready"] } }
-    }).catch(retainRunPrismaCode)),
-    hasPendingWorkspacePreparation: async (runId) => Boolean(await prismaClient.workspaceFollowup.findFirst({
-      select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["waiting", "preparing"] } }
     }).catch(retainRunPrismaCode)),
     recordMonitoringVerdict: (input) =>
       recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
@@ -575,111 +565,7 @@ export function createPrismaRunRepository(
     settlePreparingRunFailure: (input) =>
       settlePreparingRunFailureWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     ...mcpDiscoveryOperations,
-    ...toolHistoryOperations,
     ...toolLoopOperations,
-    sweepBootOrphanedRuns: async ({ createdBefore, liveRunIds }) => {
-      const liveRunIdFilter = unique(liveRunIds);
-      const payload = {
-        code: "run_orphaned_on_boot",
-        message: "Run was active when this server process started and was marked failed."
-      };
-
-      return prismaClient.$transaction(async (tx) => {
-        const runs = await tx.modelRun.findMany({
-          select: {
-            assistantMessageId: true,
-            chatId: true,
-            id: true,
-            status: true,
-            userId: true
-          },
-          where: {
-            createdAt: {
-              lt: createdBefore
-            },
-            // Old-core runs only; the native engine recovers its own.
-            engine: "v1",
-            ...(liveRunIdFilter.length > 0
-              ? {
-                  id: {
-                    notIn: liveRunIdFilter
-                  }
-                }
-              : {}),
-            status: {
-              in: activeModelRunStatuses
-            },
-            // Project-bound runs require their accepted recovery authority to
-            // be checked by the installation reconciler before they settle.
-            // The generic boot orphan sweep cannot make that authorization
-            // decision and must not mask it with run_orphaned_on_boot.
-            projectRunBinding: null,
-            answerCompletedAt: null,
-            NOT: [
-              { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
-              { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
-            ],
-            providerResponseId: null,
-            toolLoopState: { equals: Prisma.DbNull }
-          }
-        });
-
-        if (runs.length === 0) {
-          return 0;
-        }
-
-        let preparedSettled = 0;
-        let dispatchableSettled = 0;
-        for (const run of runs) {
-          if (run.status === "preparing") {
-            if (await settlePreparingRunInTransaction(tx, {
-              errorCode: payload.code,
-              message: payload.message,
-              runId: run.id,
-              state: "FAILED",
-              userId: run.userId
-            }, memorySourceHooks)) preparedSettled += 1;
-            continue;
-          }
-          const updated = await tx.modelRun.updateMany({
-            data: {
-              errorPayload: json(payload),
-              status: "error"
-            },
-            where: {
-              id: run.id,
-              answerCompletedAt: null,
-              providerResponseId: null,
-              status: { in: dispatchableModelRunStatuses },
-              toolLoopState: { equals: Prisma.DbNull }
-            }
-          });
-          if (updated.count !== 1) continue;
-          if (run.assistantMessageId) {
-            await tx.message.updateMany({
-              data: {
-                errorMessage: payload.message,
-                status: "error"
-              },
-              where: {
-                id: run.assistantMessageId,
-                status: { in: activeMessageStatuses }
-              }
-            });
-          }
-          await settleTerminalMemorySource(tx, {
-            assistantMessageId: run.assistantMessageId,
-            chatId: run.chatId,
-            runId: run.id,
-            status: "error",
-            userId: run.userId
-          }, memorySourceHooks);
-          dispatchableSettled += 1;
-        }
-
-        return preparedSettled + dispatchableSettled;
-      }).catch(retainRunPrismaCode);
-    },
     cancelRun: async (input) => {
       const cancellation = await measureTransaction({ subsystem: "runs", operation: "run_cancel" }, async (tx) => {
         const lockedRun = await lockPreparingRun(tx, input.runId, input.userId);
@@ -777,133 +663,6 @@ export function createPrismaRunRepository(
       // After commit; browser push never notifies the user's own cancellation.
       if (cancellation.kind === "cancelled") signalRunCancelled(input.runId);
       return cancellation;
-    },
-    completeRun: async (input) => {
-      const usage = normalizeTokenUsage(input.usage);
-
-      const completed = await measureTransaction({ subsystem: "runs", operation: "run_complete" }, async (tx) => {
-        await lockRunSettlementScope(tx, input.runId);
-        const [existingRun] = await tx.$queryRaw<
-          Array<{
-            answerCompletedAt: Date | null;
-            followupMode: string | null;
-            assistantMessageId: string | null;
-            chatId: string;
-            projectId: string | null;
-            errorPayload: Prisma.JsonValue | null;
-            modelId: string;
-            provider: string;
-            providerResponseId: string | null;
-            status: ModelRunStatus;
-            userId: string;
-          }>
-        >(Prisma.sql`
-          SELECT
-            run."answerCompletedAt",
-            run."followupMode",
-            run."assistantMessageId",
-            run."chatId",
-            chat."projectId" AS "projectId",
-            run."errorPayload",
-            run."modelId",
-            run."provider",
-            run."providerResponseId",
-            run."status",
-            run."userId"
-          FROM "ModelRun" AS run
-          INNER JOIN "Chat" AS chat ON chat."id" = run."chatId"
-          WHERE run."id" = ${input.runId}
-            AND run."userId" = ${input.userId}
-          FOR UPDATE OF run
-        `);
-        const activeCompletion = Boolean(
-          existingRun && dispatchableModelRunStatuses.includes(existingRun.status)
-        );
-        if (existingRun?.followupMode && !(await runFollowupsAllowCompletion(tx, input.runId, input.followupRevision))) return false;
-        const recoveredCompletion = Boolean(
-          existingRun &&
-            existingRun.status === "error" &&
-            !existingRun.answerCompletedAt &&
-            existingRun.providerResponseId === (input.providerResponseId ?? null) &&
-            !isRecoveredRunTerminalPayload(existingRun.errorPayload)
-        );
-        if (
-          !existingRun ||
-          (!activeCompletion && !recoveredCompletion) ||
-          existingRun.assistantMessageId !== input.assistantMessageId ||
-          existingRun.chatId !== input.chatId ||
-          existingRun.modelId !== input.modelId ||
-          existingRun.provider !== input.provider
-        ) {
-          return false;
-        }
-
-        await tx.modelRun.update({
-          data: {
-            answerCompletedAt: existingRun.answerCompletedAt ?? new Date(),
-            answerCompletionUsage: Prisma.DbNull,
-            errorPayload: Prisma.JsonNull,
-            status: "complete",
-            ...(existingRun.answerCompletedAt ? {} : {
-              cachedInputTokens: usage.cachedInputTokens,
-              cacheWriteInputTokens: usage.cacheWriteInputTokens,
-              estimatedCostMicros: input.estimatedCostMicros ?? null,
-              inputTokens: usage.inputTokens,
-              outputTokens: usage.outputTokens,
-              providerResponseId: input.providerResponseId ?? existingRun.providerResponseId ?? null,
-              reasoningTokens: usage.reasoningTokens,
-              totalTokens: usage.totalTokens,
-              usageCompleteness: usage.completeness === "complete" ? "COMPLETE" as const :
-                usage.completeness === "partial" ? "PARTIAL" as const : "UNAVAILABLE" as const
-            })
-          },
-          where: {
-            id: input.runId
-          }
-        });
-
-        await closeRunningToolLoopCallsInTransaction(tx, input.runId);
-
-        if (!existingRun.answerCompletedAt && input.knowledgeGrounding) {
-          await settleKnowledgeGrounding(tx, input.knowledgeGrounding);
-        }
-
-        await tx.message.updateMany({
-          data: {
-            content: json(textMessageContent(input.finalText)),
-            errorMessage: null,
-            outputTokens: usage.outputTokens,
-            reasoningTokens: usage.reasoningTokens,
-            status: "complete"
-          },
-          where: {
-            id: input.assistantMessageId,
-            OR: [
-              {
-                status: {
-                  in: activeMessageStatuses
-                }
-              },
-              {
-                status: "error"
-              }
-            ]
-          }
-        });
-        await settleTerminalMemorySource(tx, {
-          assistantMessageId: input.assistantMessageId,
-          chatId: input.chatId,
-          runId: input.runId,
-          status: "complete",
-          userId: input.userId
-        }, memorySourceHooks);
-        if (!existingRun.answerCompletedAt) await persistCompletedAnswerUsage(tx, input, existingRun.projectId);
-        if (!existingRun.answerCompletedAt) await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
-        return true;
-      }, (body) => prismaClient.$transaction(body)).catch(retainRunPrismaCode);
-      // After commit; the push sender claims the run at most once.
-      if (completed) signalRunTerminal(input.runId);
-      return completed;
     },
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input,
@@ -1235,64 +994,6 @@ export function createPrismaRunRepository(
         workspaceWaitPending: run.workspaceWaitPending,
         ...(run.answerCompletedAt && run.workspaceRunBinding ? { answerComplete: true as const } : {}) } : null;
     },
-    findStaleActiveRunsForUser: (input) =>
-      prismaClient.modelRun.findMany({
-        select: {
-          assistantMessageId: true,
-          chatId: true,
-          id: true,
-          modelId: true,
-          provider: true,
-          providerResponseId: true,
-          status: true,
-          updatedAt: true
-        },
-        where: {
-          ...(input.chatId ? { chatId: input.chatId } : {}),
-          ...(input.runId ? { id: input.runId } : {}),
-          // Old-core runs only; the native engine recovers its own.
-          engine: "v1",
-          userId: input.userId,
-          status: {
-            in: activeModelRunStatuses
-          },
-          updatedAt: {
-            lt: input.staleBefore
-          }
-        }
-      }).catch(retainRunPrismaCode),
-    findInstallationRecoverableRuns: (input) =>
-      prismaClient.modelRun.findMany({
-        orderBy: { updatedAt: "asc" },
-        select: {
-          assistantMessageId: true,
-          chatId: true,
-          id: true,
-          modelId: true,
-          provider: true,
-          providerResponseId: true,
-          status: true,
-          updatedAt: true,
-          userId: true
-        },
-        take: input.limit,
-        where: {
-          OR: [
-            {
-              createdAt: { lt: input.bootedBefore },
-              OR: [
-                { answerCompletedAt: { not: null } },
-                { providerResponseId: { not: null } },
-                { toolLoopState: { not: Prisma.DbNull } }
-              ]
-            },
-            { updatedAt: { lt: input.staleBefore } }
-          ],
-          // Old-core runs only; the native engine recovers its own.
-          engine: "v1",
-          status: { in: activeModelRunStatuses }
-        }
-      }).catch(retainRunPrismaCode),
     findRegenerationSource: async (sourceMessageId, userId) => {
       const sourceMessage = await prismaClient.message.findFirst({
         include: {
@@ -1781,29 +1482,6 @@ export function createPrismaRunRepository(
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }).catch(retainRunPrismaCode);
     },
-    isSearchStrategyEnabled: async (searchOptionId) => {
-      const option = await prismaClient.searchOption.findFirst({
-        select: { id: true },
-        where: {
-          archivedAt: null,
-          enabled: true,
-          optionId: searchOptionId,
-          strategies: {
-            some: {
-              activeRevisionId: { not: null },
-              archivedAt: null,
-              enabled: true
-            }
-          }
-        }
-      }).catch(retainRunPrismaCode);
-
-      return Boolean(option);
-    },
-    loadConversationContext: async (chatId, userId) => {
-      const context = await loadConversationPath(chatId, userId, { kind: "active" });
-      return context.messages;
-    },
     loadConversationContextForExpectedLeaf: async (
       chatId,
       userId,
@@ -1965,12 +1643,6 @@ export function createPrismaRunRepository(
       return passages;
     },
     loadEntitlements: (userId) => loadEntitlementsForUser(userId).catch(retainRunPrismaCode),
-    isRetiredAgentRun: async (input) => {
-      const [row] = await prismaClient.$queryRaw<Array<{ agent: boolean | null }>>`
-        SELECT jsonb_typeof("normalizedRequest" -> 'agent') = 'object' AS "agent"
-        FROM "ModelRun" WHERE "id" = ${input.runId} AND "userId" = ${input.userId}`.catch(retainRunPrismaCode);
-      return row?.agent === true;
-    },
     loadModelPricing: async (provider, modelId, providerModelId) => {
       const models = await prismaClient.providerModel.findMany({
         // Answers and Search engines can report the web searches they ran.
@@ -1985,50 +1657,5 @@ export function createPrismaRunRepository(
     },
     loadProviderModelCostBasis: (providerModelId) =>
       loadProviderModelCostBasis(prismaClient, providerModelId).catch(retainRunPrismaCode),
-    loadRunUsageAttributions: async (input) => {
-      const rows = await prismaClient.usageEvent.findMany({
-        orderBy: { createdAt: "asc" },
-        select: {
-          cachedInputTokens: true,
-          cacheWriteInputTokens: true,
-          costReported: true,
-          createdAt: true,
-          estimatedCostMicros: true,
-          inputTokens: true,
-          modelId: true,
-          operationCount: true,
-          outputTokens: true,
-          provider: true,
-          providerModelId: true,
-          purpose: true,
-          reasoningTokens: true,
-          totalTokens: true,
-          usageCompleteness: true,
-          webSearchCount: true
-        },
-        where: { ...runAttributionUsageWhere(input.runId), userId: input.userId }
-      }).catch(retainRunPrismaCode);
-      return rows.map((row) => ({
-        ...(row.costReported ? { costReported: true as const } : {}),
-        estimatedCostMicros: row.estimatedCostMicros,
-        modelId: row.modelId,
-        operationCount: row.operationCount,
-        provider: row.provider,
-        ...(row.providerModelId ? { providerModelId: row.providerModelId } : {}),
-        purpose: storedRunAttributionPurpose(row.purpose),
-        recordedAt: row.createdAt.toISOString(),
-        usage: {
-          cachedInputTokens: row.cachedInputTokens,
-          cacheWriteInputTokens: row.cacheWriteInputTokens,
-          inputTokens: row.inputTokens,
-          outputTokens: row.outputTokens,
-          reasoningTokens: row.reasoningTokens,
-          totalTokens: row.totalTokens,
-          completeness: row.usageCompleteness === "COMPLETE" ? "complete" :
-            row.usageCompleteness === "PARTIAL" ? "partial" : "unavailable",
-          ...(row.webSearchCount !== null ? { webSearchCount: row.webSearchCount } : {})
-        }
-      }));
-    },
   };
 }
