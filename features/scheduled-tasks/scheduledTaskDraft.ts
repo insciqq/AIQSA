@@ -394,7 +394,7 @@ export function validateScheduledTaskDraft(
   const model = catalogModel(catalog, draft);
   const keptModel = original && original.modelId === draft.modelId && original.provider === draft.provider;
   if (!draft.modelId || (!model && !keptModel)) errors.model = "Choose a model.";
-  else if (!model) errors.model = "This model is no longer available to you. Choose another model.";
+  else if (!model) errors.model = "This model is not available to you for scheduled tasks. Choose another model.";
   else if (draft.searchEnabled && !modelHasSearch(catalog, model)) {
     errors.search = "Web search is not available with this model. Turn it off or choose another model.";
   }

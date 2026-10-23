@@ -4,7 +4,8 @@ import { resolveScheduledTaskModel, type ScheduledTaskCatalog } from "./catalog"
 const catalog: ScheduledTaskCatalog = {
   models: [
     { capabilities: { toolCalling: true }, modelId: "model-a", provider: "connection-a", searchStrategyIds: ["off", "gemini", "web"] },
-    { capabilities: { toolCalling: false }, modelId: "model-a", provider: "connection-b", searchStrategyIds: ["off"] }
+    { capabilities: { toolCalling: false }, modelId: "model-a", provider: "connection-b", searchStrategyIds: ["off"] },
+    { capabilities: { toolCalling: true }, modelId: "model-a", provider: "connection-d", searchStrategyIds: ["off"] }
   ],
   searchStrategies: [
     { kind: "none", strategyId: "off" }, { kind: "web_search", strategyId: "web" }, { kind: "gemini_google_search", strategyId: "gemini" }
@@ -23,7 +24,7 @@ describe("scheduled task model admission", () => {
   });
 
   it("requires a concrete Search option only when Search is requested", () => {
-    const plain = { ...standard, modelId: "model-a", provider: "connection-b" };
+    const plain = { ...standard, modelId: "model-a", provider: "connection-d" };
     expect(resolveScheduledTaskModel(catalog, { ...plain, searchEnabled: false })).toEqual({ ok: true, searchOptionIds: [] });
     expect(resolveScheduledTaskModel(catalog, { ...plain, searchEnabled: true }))
       .toEqual({ ok: false, code: "scheduled_task_search_unavailable" });
@@ -45,7 +46,8 @@ describe("scheduled task model admission", () => {
     expect(resolveScheduledTaskModel(catalog, { ...monitoring, provider: "connection-a" })).toEqual({ ok: true, searchOptionIds: ["gemini", "web"] });
     expect(resolveScheduledTaskModel(catalog, { ...monitoring, provider: "connection-b" }))
       .toEqual({ ok: false, code: "scheduled_task_model_cannot_report" });
-    // The same model stays fine for a standard task.
-    expect(resolveScheduledTaskModel(catalog, { ...monitoring, kind: "standard", provider: "connection-b" }).ok).toBe(true);
+    // Every run is an agent run, so a standard task with tools off refuses the same model.
+    expect(resolveScheduledTaskModel(catalog, { ...monitoring, kind: "standard", provider: "connection-b" }))
+      .toEqual({ ok: false, code: "scheduled_task_model_unavailable" });
   });
 });

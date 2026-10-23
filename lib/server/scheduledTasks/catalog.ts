@@ -74,5 +74,7 @@ export function resolveScheduledTaskModel(
   if (task.searchEnabled && searchOptionIds.length === 0) return { ok: false, code: "scheduled_task_search_unavailable" };
   if (task.toolsEnabled && !model.capabilities.toolCalling) return { ok: false, code: "scheduled_task_tools_unavailable" };
   if (task.workspaceEnabled && !model.capabilities.toolCalling) return { ok: false, code: "scheduled_task_workspace_unavailable" };
+  // Every run is an agent run, so admission refuses a model without tool calling even with tools off.
+  if (model.capabilities.toolCalling !== true) return { ok: false, code: "scheduled_task_model_unavailable" };
   return { ok: true, searchOptionIds };
 }

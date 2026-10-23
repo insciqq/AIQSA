@@ -2241,9 +2241,6 @@ cmd_restore() {
   RESTORE_PHASE=started
   FAIL_COUNT=0 WARN_COUNT=0 PASS_COUNT=0
   up_stack none
-  # The reconciliation reset the Memory search projection to pending; the running
-  # search worker recreates the index and projects everything from PostgreSQL.
-  say "The Memory search index is being rebuilt from PostgreSQL by the search worker."
   post_start_check
   say "Restore complete."
 }

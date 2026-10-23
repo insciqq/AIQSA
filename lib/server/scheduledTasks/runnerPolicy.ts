@@ -559,6 +559,8 @@ const TRANSIENT_CODES = new Set([
 const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
   ["model_cannot_report", "model_cannot_report"],
   ["model_not_available", "model_unavailable"],
+  ["model_adapter_unsupported", "model_unavailable"],
+  ["model_tool_calling_required", "model_unavailable"],
   ["search_strategy_not_available", "search_unavailable"],
   ["user_not_available", "account_inactive"],
   ["provider_not_available", "provider_unavailable"],

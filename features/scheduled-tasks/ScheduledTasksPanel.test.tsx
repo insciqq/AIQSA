@@ -146,7 +146,7 @@ describe("ScheduledTasksPanel", () => {
     expect(within(sheet).getByRole("switch", { name: "Web search" })).toBeDisabled();
     expect(within(sheet).getByText("Not available with this model.")).toBeInTheDocument();
     fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
-    const error = await within(sheet).findByText("This model is no longer available to you. Choose another model.");
+    const error = await within(sheet).findByText("This model is not available to you for scheduled tasks. Choose another model.");
     expect(within(sheet).getByLabelText("Model")).toHaveAttribute("aria-describedby", error.id);
     expect(within(sheet).getByLabelText("Name")).toHaveValue("Brief");
   });
