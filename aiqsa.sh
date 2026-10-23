@@ -72,6 +72,8 @@ readonly JOURNAL_DROPIN=/etc/systemd/journald.conf.d/50-aiqsa.conf
 RESTORE_OVERRIDE_HOOK=${AIQSA_CLI_RESTORE_OVERRIDE:-}
 readonly BACKUP_FORMAT=1
 # Services that keep running while the backup stops application writers.
+# docling stays listed: a plain `docker compose up -d` after its removal leaves
+# an orphaned container that Compose can no longer restart.
 readonly BACKUP_KEEP_RUNNING=" postgres seaweedfs minio docling tika workspace-runner "
 readonly ONE_SHOT_SERVICES=" migrate-bootstrap storage-init "
 readonly KEY_ID_PATTERN='^[a-z][a-z0-9_-]{0,63}$'
@@ -983,6 +985,7 @@ doctor_stack() {
   doctor_host_probe
   doctor_toolhive_leftovers
   doctor_search_leftovers
+  doctor_docling_leftovers
   local usage="" entry
   while IFS= read -r entry; do
     [[ -n $entry ]] && usage+="${usage:+; }$entry"
@@ -1034,6 +1037,28 @@ doctor_search_leftovers() {
   (( ${#lines[@]} )) || return 0
   check WARN search-leftovers "the search index and Knowledge services were removed; they left Docker state behind" \
     "Nothing reads it any more. Once this release works, remove it with:" "${lines[@]/#/  }"
+}
+
+# Releases after v0.3.26 removed the docling parser; Tika reads Office and HTML
+# attachments (operator decision 2026-10-23). `./aiqsa.sh up` and `upgrade`
+# remove its orphaned container; a plain `docker compose up -d` keeps it
+# running. Its image stays on disk until the operator deletes it.
+doctor_docling_leftovers() {
+  local lines=() image
+  load_project_name
+  [[ -n $PROJECT_NAME ]] || return 0
+  if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
+    --filter label=com.docker.compose.service=docling 2>/dev/null) ]]; then
+    lines+=("./aiqsa.sh up   # --remove-orphans removes the docling container")
+  fi
+  image=$(env_value AIQSA_DOCLING_IMAGE)
+  image=${image:-ghcr.io/insciqq/aiqsa:docling}
+  if run docker image inspect "$image" >/dev/null 2>&1; then
+    lines+=("docker image rm $image")
+  fi
+  (( ${#lines[@]} )) || return 0
+  check WARN docling-leftovers "the docling parser was removed; it left Docker state behind" \
+    "Nothing uses it any more. Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
 doctor_runner() {
@@ -2325,7 +2350,7 @@ cmd_logs() {
   ensure_temp_dir
   errors=$TEMP_DIR/logs.err
   if [[ -n $levels ]] && (( ! QUIET )); then
-    note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, Tika, Docling, SeaweedFS) are hidden."
+    note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, Tika, SeaweedFS) are hidden."
   fi
   if logs_from_journal; then
     # Same-field matches are alternatives, so this is the project AND any listed service.
@@ -2455,7 +2480,7 @@ Options:
   --errors               logs: keep only AIQSA JSON lines at level error or fatal.
   --warnings             logs: keep only AIQSA JSON lines at level warn, error or fatal.
                          Both filters drop plain-text lines, which includes every line
-                         of PostgreSQL, Tika, Docling and SeaweedFS.
+                         of PostgreSQL, Tika and SeaweedFS.
   --since <duration>     logs: only lines newer than a duration (30m, 2h, 1h30m)
                          or an RFC 3339 time (2026-01-31T08:00:00Z); without
                          --tail every line in that window is printed.

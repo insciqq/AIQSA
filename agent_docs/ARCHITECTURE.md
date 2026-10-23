@@ -27,6 +27,7 @@ Process and deployment shape, dependency direction, and every place data leaves 
 - `docker-compose.dev.yml` is disposable and never shares state with a persistent installation.
 - Only the application is public; data services, parsers and the Workspace runner stay on private networks.
 - Sidecars are bounded helpers, never tenancy or durable-state authorities, and an optional integration failing stays local to its feature. The Workspace runner owns only guest lifecycle and tool transport; the application keeps admission, storage, recovery and presentation.
+- Attachment text comes from Tika alone (operator decision 2026-10-23). The docling sidecar was removed: it held 0.5–2.7 GiB, answered worse than Tika on Office and HTML files, and its layout never spared a vision call when reading PDFs.
 - Companion images under `ops/` build reproducibly with pins compatible with the application runtime; validate image changes on disposable targets.
 
 ## Data stores

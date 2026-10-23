@@ -75,7 +75,6 @@ export async function planImageReuse(root, currentTag, postgresTag, resolveDiges
   const postgresCopiesContext = /^\s*(?:COPY|ADD)\s/imu.test(readFileSync(path.join(root, postgresFile), "utf8"));
   const inputs = {
     postgres: postgresCopiesContext ? ["."] : [postgresFile, `${postgresFile}.dockerignore`, ".dockerignore"],
-    docling: ["ops/docling"],
     tika: ["ops/tika"]
   };
   for (const [component, paths] of Object.entries(inputs)) {

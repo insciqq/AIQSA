@@ -22,9 +22,6 @@ services:
       - "127.0.0.1:${AIQSA_MEMORY_BENCHMARK_APP_PORT:-3137}:3000"
     restart: unless-stopped
 
-  docling:
-    container_name: aiqsa-memory-benchmark-second-docling
-
   tika:
     container_name: aiqsa-memory-benchmark-second-tika
 
