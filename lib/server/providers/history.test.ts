@@ -179,6 +179,26 @@ describe("provider history rendering", () => {
       type: "user_input" });
   });
 
+  it("closes a Gemini turn that ended after a tool result before the next user input, adding no text", () => {
+    const gemini = buildGeminiInteractionsRequest(request([
+      { text: "Run ls", type: "user" },
+      { arguments: "{\"command\":\"ls\"}", callId: "call_1", name: "shell", type: "tool_call" },
+      { callId: "call_1", name: "shell", output: "a.txt", type: "tool_result" },
+      { currentInput: true, text: "Which file?", type: "user" }
+    ], { modelId: "gemini-3.5-flash-lite", params: { maxOutputTokens: 128, stream: true }, provider: "gemini" }));
+    expect(gemini.input.map((step) => step.type)).toEqual(["user_input", "function_call", "function_result", "model_output", "user_input"]);
+    expect(gemini.input[3]).toEqual({ content: [], type: "model_output" });
+    const answered = buildGeminiInteractionsRequest(request([
+      { text: "Run ls", type: "user" },
+      { arguments: "{}", callId: "call_1", name: "shell", type: "tool_call" },
+      { callId: "call_1", name: "shell", output: "a.txt", type: "tool_result" },
+      { text: "There is a.txt.", type: "assistant_text" },
+      { currentInput: true, text: "Which file?", type: "user" }
+    ], { modelId: "gemini-3.5-flash-lite", params: { maxOutputTokens: 128, stream: true }, provider: "gemini" }));
+    expect(answered.input.map((step) => step.type)).toEqual(["user_input", "function_call", "function_result", "model_output", "user_input"]);
+    expect(answered.input[3]).toEqual({ content: [{ text: "There is a.txt.", type: "text" }], type: "model_output" });
+  });
+
   it("redacts reasoning, signatures, arguments and tool output in previews", () => {
     const responses = buildOpenAIResponsesRequestPreview(request(responsesTurn, { provider: "openai" }));
     expect(responses.body.input).toEqual([

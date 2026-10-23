@@ -348,52 +348,67 @@ function geminiArguments(value: string): Record<string, unknown> {
   }
 }
 
-/** Interaction steps for the history; the adapter validates and previews them. */
+/**
+ * Interaction steps for the history; the adapter validates and previews them.
+ * Gemini rejects a function result followed directly by user input (HTTP 400),
+ * which a turn that ended after a tool result leaves behind (Stop, a failure,
+ * an interrupted run): an empty model output closes that turn, adding no text.
+ */
 export function geminiStepsFromHistory(
   history: readonly ProviderHistoryItem[],
   options: Pick<ProviderHistoryRenderOptions<Record<string, unknown>[]>, "currentInput">
 ): Readonly<{ current: boolean; step: Record<string, unknown> }>[] {
-  return history.map((item) => {
-    switch (item.type) {
-      case "user":
-        return item.currentInput
-          ? { current: true, step: { content: options.currentInput(item.text), type: "user_input" } }
-          : { current: false, step: { content: [{ text: item.text || "[attachment]", type: "text" }], type: "user_input" } };
-      case "assistant_text":
-        nativeFields(item.native, "gemini_interactions");
-        return { current: false, step: { content: [{ text: item.text, type: "text" }], type: "model_output" } };
-      case "reasoning": {
-        const fields = nativeFields(item.native, "gemini_interactions");
-        if (fields.type !== "thought") throw new Error("provider_history_item_invalid");
-        return { current: false, step: { ...fields } };
-      }
-      case "tool_call": {
-        const fields = nativeFields(item.native, "gemini_interactions");
-        return {
-          current: false,
-          step: {
-            arguments: geminiArguments(item.arguments),
-            id: item.callId,
-            name: item.name,
-            ...(typeof fields.signature === "string" ? { signature: fields.signature } : {}),
-            type: "function_call"
-          }
-        };
-      }
-      case "tool_result":
-        return {
-          current: false,
-          step: {
-            call_id: item.callId,
-            ...(item.isError ? { is_error: true } : {}),
-            name: item.name,
-            result: [{ text: item.output, type: "text" }],
-            type: "function_result"
-          }
-        };
-      case "compaction":
-        nativeFields(item.native, "gemini_interactions");
-        throw new Error("provider_history_item_invalid");
-    }
+  return history.flatMap((item, index) => {
+    const step = geminiStep(item, options);
+    return item.type === "tool_result" && history[index + 1]?.type === "user"
+      ? [step, { current: false, step: { content: [], type: "model_output" } }]
+      : [step];
   });
+}
+
+function geminiStep(
+  item: ProviderHistoryItem,
+  options: Pick<ProviderHistoryRenderOptions<Record<string, unknown>[]>, "currentInput">
+): Readonly<{ current: boolean; step: Record<string, unknown> }> {
+  switch (item.type) {
+    case "user":
+      return item.currentInput
+        ? { current: true, step: { content: options.currentInput(item.text), type: "user_input" } }
+        : { current: false, step: { content: [{ text: item.text || "[attachment]", type: "text" }], type: "user_input" } };
+    case "assistant_text":
+      nativeFields(item.native, "gemini_interactions");
+      return { current: false, step: { content: [{ text: item.text, type: "text" }], type: "model_output" } };
+    case "reasoning": {
+      const fields = nativeFields(item.native, "gemini_interactions");
+      if (fields.type !== "thought") throw new Error("provider_history_item_invalid");
+      return { current: false, step: { ...fields } };
+    }
+    case "tool_call": {
+      const fields = nativeFields(item.native, "gemini_interactions");
+      return {
+        current: false,
+        step: {
+          arguments: geminiArguments(item.arguments),
+          id: item.callId,
+          name: item.name,
+          ...(typeof fields.signature === "string" ? { signature: fields.signature } : {}),
+          type: "function_call"
+        }
+      };
+    }
+    case "tool_result":
+      return {
+        current: false,
+        step: {
+          call_id: item.callId,
+          ...(item.isError ? { is_error: true } : {}),
+          name: item.name,
+          result: [{ text: item.output, type: "text" }],
+          type: "function_result"
+        }
+      };
+    case "compaction":
+      nativeFields(item.native, "gemini_interactions");
+      throw new Error("provider_history_item_invalid");
+  }
 }
