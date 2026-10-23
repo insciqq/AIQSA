@@ -86,17 +86,13 @@ describe("the one conversation policy", () => {
 
   it("retires a run without the policy, under the legacy mode or with a legacy checkpoint", () => {
     const accepted = request();
-    const { contextCompactionPolicy: _policy, ...absent } = accepted;
-    void _policy;
     expect(contextCompactionPolicyRetired(accepted)).toBe(false);
-    expect(contextCompactionPolicyRetired(absent)).toBe(true);
+    // A request without the policy, such as a turn of the removed Codex Agent.
+    expect(contextCompactionPolicyRetired({})).toBe(true);
     expect(contextCompactionPolicyRetired({ ...accepted, contextCompactionPolicy: { ...accepted.contextCompactionPolicy!,
       mode: "legacy_compatible" } })).toBe(true);
     expect(contextCompactionPolicyRetired(accepted, { policyRevision: "legacy-compatible-v1" })).toBe(true);
     expect(contextCompactionPolicyRetired(accepted, { policyRevision: "hybrid-v1" })).toBe(false);
-    // A turn of the removed Codex Agent never carried a policy: it ends the same way.
-    const agentTurn = { ...absent, agent: {} };
-    expect(contextCompactionPolicyRetired(agentTurn)).toBe(true);
     expect(CONTEXT_COMPACTION_POLICY_RETIRED).toEqual({ code: "context_compaction_policy_retired",
       message: "This answer was interrupted by an application update. Regenerate to try again." });
   });

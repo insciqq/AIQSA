@@ -8262,9 +8262,7 @@ describe("run recovery", () => {
     });
 
     it("settles a published answer as before", async () => {
-      const { contextCompactionPolicy: _policy, ...legacy } = normalizedToolRequest();
-      void _policy;
-      expect(contextCompactionPolicyRetired(legacy)).toBe(true);
+      expect(contextCompactionPolicyRetired({})).toBe(true);
       expect(contextCompactionPolicyRetired(normalizedToolRequest())).toBe(false);
     });
   });

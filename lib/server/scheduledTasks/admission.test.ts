@@ -257,7 +257,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
     });
     expect(request.mcp).toBeUndefined();
     expect(request.mcpDiscovery).toBeUndefined();
-    expect(request.agent).toBeUndefined();
     expect(request.workspace).toBeUndefined();
     expect(request.memoryStandingVersion).toBeUndefined();
     expect(f.state.failedCode).toBeNull();
@@ -390,7 +389,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(created).toMatchObject({ personalChat: { memoryMode: "EXCLUDED" }, workspaceEnabled: true });
     expect(created.workspaceAdmissionPlan).toBeDefined();
     expect(created.normalizedRequest.knowledgePlan).toMatchObject({ mode: "none" });
-    expect(created.normalizedRequest.agent).toBeUndefined();
     // The lapsed server the previous result relied on: named to the model and frozen with the occurrence.
     expect(created.scheduledUnavailableSources).toEqual([
       { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }
