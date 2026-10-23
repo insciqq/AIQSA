@@ -47,7 +47,9 @@ import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDi
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
-import { nativeRunResponse, recoverUserNativeRuns, routeRun, type NativeEngineHandlerDeps } from "../engine/handlerSupport";
+import {
+  nativeRunResponse, nativeRunServices, recoverUserNativeRuns, routeRun, type NativeEngineHandlerDeps
+} from "../engine/handlerSupport";
 import { resolveAnswerReviewAuto } from "../answerReviews/autoAdmission";
 import {
   materializePreparedRunData,
@@ -410,18 +412,6 @@ function recoveryDeps(
     ...(deps.searchProviders ? { searchProviders: deps.searchProviders } : {}),
     ...(deps.storage ? { storage: deps.storage } : {}),
     ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
-  };
-}
-
-/** The tool services a native run uses, the same ones the old core gets. */
-function nativeServices(deps: RunHandlerDeps) {
-  return {
-    ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
-    ...(deps.images ? { images: deps.images } : {}),
-    ...(deps.mcp ? { mcp: deps.mcp } : {}),
-    ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
-    ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
-    ...(deps.vision ? { vision: deps.vision } : {})
   };
 }
 
@@ -819,15 +809,21 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ? { ok: true as const }
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
-    const route = routeRun(deps.nativeEngine, { prepared: preparedData, user: { email: auth.user.email, id: auth.userId },
-      workspacePredecessor: Boolean(predecessorRunId) });
+    const route = routeRun(deps.nativeEngine, { prepared: preparedData, user: { email: auth.user.email, id: auth.userId } });
+    const systemTurn = continuationBody && body?.systemTurn && typeof body.systemTurn === "object"
+      ? body.systemTurn as Record<string, unknown> : null;
+    const approvalId = typeof systemTurn?.approvalId === "string" ? systemTurn.approvalId : undefined;
+    // A send behind the previous answer's Workspace hand-off waits for it on either engine; a native run keeps the
+    // entry facts its execution needs when the follow-up starts it.
+    const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), ...(route.engine === "native" ? { native: {
+      ...(approvalId ? { approvalId } : {}), ...(deps.telegramTurn ? { telegram: true as const } : {}) } } : {}) });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
         ...(route.engine === "native" ? { engine: "native" as const } : {}),
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
-          admissionKey, predecessorRunId, snapshot: acceptedRunSnapshot(preparedData)
+          admissionKey, predecessorRunId, snapshot: followupSnapshot()
         } } : {}),
         ...deferredPdfInput(preparedData, admissionKey),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
@@ -961,17 +957,15 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
     if (route.engine === "native" && deps.nativeEngine) {
-      const systemTurn = continuationBody && body?.systemTurn && typeof body.systemTurn === "object"
-        ? body.systemTurn as Record<string, unknown> : null;
       return nativeRunResponse(deps.nativeEngine, {
         adapter: runtime?.adapter ?? preparation.adapter,
-        ...(typeof systemTurn?.approvalId === "string" ? { approvalId: systemTurn.approvalId } : {}),
+        ...(approvalId ? { approvalId } : {}),
         ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
         created, prepared: preparedData, repository: deps.repository,
         ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
         ...(deps.telegramTurn ? { telegram: true } : {}),
         ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-        services: nativeServices(deps), userId: auth.userId,
+        services: nativeRunServices(deps), userId: auth.userId,
         ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
       });
     }
@@ -1116,7 +1110,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     // A document retry keeps the old core's frozen preparation.
     const route = retry ? { engine: "v1" as const } : routeRun(deps.nativeEngine, { prepared: preparedData,
-      user: { email: auth.user.email, id: auth.userId }, workspacePredecessor: false });
+      user: { email: auth.user.email, id: auth.userId } });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
@@ -1229,7 +1223,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
         created, prepared: preparedData, repository: deps.repository,
         ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-        services: nativeServices(deps), userId: auth.userId,
+        services: nativeRunServices(deps), userId: auth.userId,
         ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
       });
     }

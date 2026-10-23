@@ -123,6 +123,14 @@ export type RunContext = Readonly<{
   prepare(request: ProviderRunRequest): Promise<ProviderRunRequest>;
   /** The request completed: its reported input count anchors the next measure. */
   observe(usage: Pick<TokenUsage, "inputTokens">): void;
+  /**
+   * The context the run's latest request carries with what the transcript
+   * holds now (an answer added after it included), as the next request is
+   * measured: the provider's last reported input plus the estimate of what
+   * was added since, or the whole transcript's estimate after a compaction.
+   * Null before the first request or without a window.
+   */
+  measured(): Readonly<{ request: ProviderRunRequest; tokens: number }> | null;
   /** The request was rejected for its size: the request to send once more, or null. */
   overflow(request: ProviderRunRequest, error: unknown): Promise<ProviderRunRequest | null>;
   /** The answer is published: a finished compaction is kept now, a running one goes on detached. Never waits. */
@@ -558,6 +566,10 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       // A request fitted by handle measured less than the transcript replays next time.
       if (fitted) return;
       anchor = contextAnchor({ itemCount: requestItems, target, usage }) ?? anchor;
+    },
+
+    measured() {
+      return window && latest ? { request: latest, tokens: measure(latest) } : null;
     },
 
     async overflow(request, error) {
