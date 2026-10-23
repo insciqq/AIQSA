@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
-import { nativeEngineAllowsUser, nativeEngineRoute, parseNativeEngineUsers } from "./routing";
+import {
+  logNativeEngineAllowlist, nativeEngineAllowlistMode, nativeEngineAllowsUser, nativeEngineRoute, parseNativeEngineUsers
+} from "./routing";
 
 const user = { email: "Pilot@Example.test", id: "user-1" };
 
@@ -24,6 +27,28 @@ describe("native engine routing", () => {
     expect(nativeEngineAllowsUser(parseNativeEngineUsers(undefined), user)).toBe(false);
     expect(nativeEngineAllowsUser(parseNativeEngineUsers(""), user)).toBe(false);
     expect(nativeEngineAllowsUser(parseNativeEngineUsers("user-2,other@example.test"), user)).toBe(false);
+  });
+
+  it("names the allowlist's mode and size for the startup line, never an entry", () => {
+    expect(nativeEngineAllowlistMode(parseNativeEngineUsers(undefined))).toEqual({ count: 0, mode: "none" });
+    expect(nativeEngineAllowlistMode(parseNativeEngineUsers(" , "))).toEqual({ count: 0, mode: "none" });
+    expect(nativeEngineAllowlistMode(parseNativeEngineUsers("user-1, Pilot@Example.test,pilot@example.test"))).toEqual({ count: 2, mode: "list" });
+    expect(nativeEngineAllowlistMode(parseNativeEngineUsers("*"))).toEqual({ count: 0, mode: "all" });
+    expect(nativeEngineAllowlistMode(parseNativeEngineUsers("user-1,*"))).toEqual({ count: 1, mode: "all" });
+  });
+
+  it("logs the mode at startup as a content-free line", async () => {
+    const observed = await captureRunObservation();
+    logNativeEngineAllowlist({ AIQSA_NATIVE_ENGINE_USERS: "user-1, Pilot@Example.test" });
+    logNativeEngineAllowlist({ AIQSA_NATIVE_ENGINE_USERS: "*" });
+    logNativeEngineAllowlist({});
+    const lines = observed.records().filter((record) => String(record.code ?? "").startsWith("native_engine_users_"));
+    expect(lines.map((record) => [record.code, record.count])).toEqual([
+      ["native_engine_users_list", 2], ["native_engine_users_all", 0], ["native_engine_users_none", 0]
+    ]);
+    expect(lines[0]).toMatchObject({ event: "runtime_lifecycle", level: "info", outcome: "completed", stage: "startup",
+      subsystem: "configuration" });
+    expect(JSON.stringify(observed.records())).not.toMatch(/user-1|pilot@example/iu);
   });
 
   it("runs a listed user's personal chat natively", () => {

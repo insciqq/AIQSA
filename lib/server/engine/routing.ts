@@ -1,3 +1,4 @@
+import { logEvent } from "../observability";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 
 /**
@@ -28,6 +29,26 @@ export function parseNativeEngineUsers(value: string | undefined): NativeEngineA
 export function nativeEngineAllowsUser(allowlist: NativeEngineAllowlist, user: Readonly<{ email: string | null; id: string }>): boolean {
   return allowlist.all || allowlist.userIds.has(user.id) ||
     (user.email !== null && allowlist.emails.has(user.email.trim().toLowerCase()));
+}
+
+/**
+ * The allowlist's shape for the startup log line, without any id or email:
+ * `all` for `*`, `list` with how many entries, `none` when empty.
+ */
+export function nativeEngineAllowlistMode(allowlist: NativeEngineAllowlist): Readonly<{ count: number; mode: "all" | "list" | "none" }> {
+  const count = allowlist.userIds.size + allowlist.emails.size;
+  return allowlist.all ? { count, mode: "all" } : count > 0 ? { count, mode: "list" } : { count: 0, mode: "none" };
+}
+
+/**
+ * The startup line naming which users the native engine takes, without any
+ * id or email: `native_engine_users_none`, `_list` with how many entries the
+ * list has, or `_all` (`AIQSA_NATIVE_ENGINE_USERS=*`, after the switch).
+ */
+export function logNativeEngineAllowlist(env: Readonly<Record<string, string | undefined>> = process.env): void {
+  const { count, mode } = nativeEngineAllowlistMode(parseNativeEngineUsers(env[NATIVE_ENGINE_USERS_ENV]));
+  logEvent("runtime_lifecycle", { code: `native_engine_users_${mode}`, count, outcome: "completed", stage: "startup",
+    subsystem: "configuration" });
 }
 
 /** Answer adapters that render the neutral history (`lib/server/providers/history.ts`). */

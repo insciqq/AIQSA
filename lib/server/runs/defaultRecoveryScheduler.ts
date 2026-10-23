@@ -10,6 +10,7 @@ import { reconcileInstallationRuns } from "./runRecovery";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
 import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
 import { defaultNativeRecoveryDeps } from "../engine/defaultEngine";
+import { logNativeEngineAllowlist } from "../engine/routing";
 import { reconcileNativeRuns } from "../engine/recovery";
 
 const globalForRecoveryScheduler = globalThis as unknown as {
@@ -53,6 +54,13 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   return globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler;
 }
 
+/**
+ * Starts recovery at startup: each engine settles the runs this process does
+ * not own (the old core ends or resumes its own, `reconcileInstallationRuns`;
+ * the native engine ends its own interrupted, `reconcileNativeRuns`), and the
+ * log names which users the native engine takes.
+ */
 export function startDefaultRunRecoveryScheduler(): void {
+  logNativeEngineAllowlist();
   getDefaultRunRecoveryScheduler().start();
 }
