@@ -74,7 +74,7 @@ function service(overrides: Partial<AgentAssistantService> = {}) {
 
 describe("manage_assistant", () => {
   it("changes the user's Assistants without approval or the VM", () => {
-    expect(manageAssistantTool).toMatchObject({ effects: "external", name: "manage_assistant", needsApproval: false, requiresVm: false });
+    expect(manageAssistantTool).toMatchObject({ effects: "local", name: "manage_assistant", needsApproval: false, requiresVm: false });
   });
 
   it("lists and reads the user's Assistants by name, with settings the model can act on", async () => {

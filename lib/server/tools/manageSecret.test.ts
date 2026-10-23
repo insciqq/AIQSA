@@ -44,7 +44,7 @@ const card = (result: ToolExecutionResult) => decodeResourceChangeCard((result.a
 
 describe("manage_secret", () => {
   it("is an account change that needs neither approval nor the VM", () => {
-    expect(manageSecretTool).toMatchObject({ effects: "external", name: "manage_secret", needsApproval: false, requiresVm: false });
+    expect(manageSecretTool).toMatchObject({ effects: "local", name: "manage_secret", needsApproval: false, requiresVm: false });
     expect(manageSecretTool.tool).toMatchObject({ capability: "session", name: "manage_secret" });
   });
 

@@ -6,12 +6,14 @@
  *
  * - `read_aiqsa_guide` (no effects): the readable guide behind the system
  *   prompt's self-service section (`lib/server/engine/prompts/selfService.ts`).
- * - `manage_secret`, `manage_skill`, `manage_assistant` (account changes,
- *   declared `external` so they are never replayed blindly): each change goes
+ * - `manage_secret`, `manage_skill`, `manage_assistant` (`local` in the
+ *   registry's terms: the user's own AIQSA state, through its owner, which
+ *   settles the call itself, so they are never retried): each change goes
  *   through its owner's Studio path and commits with the call and its card
- *   (`selfServiceCall.ts`); deleting and publishing only prepare a card the
- *   user confirms. `executeSelfServiceTool` builds their services for one
- *   call from the run's dependencies.
+ *   (`selfServiceCall.ts`, `selfServiceCallStore.ts`); deleting and
+ *   publishing only prepare a card the user confirms.
+ *   `executeSelfServiceTool` builds their services for one call from the
+ *   run's dependencies.
  *
  * Scheduled tasks and artifacts keep their own tools and cards.
  */

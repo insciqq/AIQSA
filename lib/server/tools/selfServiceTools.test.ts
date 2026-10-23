@@ -46,7 +46,7 @@ describe("self-service tools", () => {
       expect(toolActivityDescriptors({}).get(tool.name)).toMatchObject({ origin: "session", toolName: tool.name });
     }
     expect(SELF_SERVICE_TOOLS.find((tool) => tool.name === "read_aiqsa_guide")?.effects).toBe("none");
-    expect(SELF_SERVICE_TOOLS.filter((tool) => tool.effects === "external").map((tool) => tool.name))
+    expect(SELF_SERVICE_TOOLS.filter((tool) => tool.effects === "local").map((tool) => tool.name))
       .toEqual(["manage_secret", "manage_skill", "manage_assistant"]);
   });
 

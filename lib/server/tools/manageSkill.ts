@@ -63,8 +63,8 @@ const INPUT_SCHEMA = {
 
 export const manageSkillTool: HarnessToolDescriptor = Object.freeze({
   description: DESCRIPTION,
-  // It changes the user's Skill library outside this chat, so it is never replayed blindly; see `selfServiceCall.ts`.
-  effects: "external",
+  // The user's own Skill library, through the Skill store, which settles the call itself (`EngineToolEffects`): never retried.
+  effects: "local",
   inputSchema: INPUT_SCHEMA,
   name: MANAGE_SKILL_TOOL_NAME,
   needsApproval: false,
