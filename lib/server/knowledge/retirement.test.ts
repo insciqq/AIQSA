@@ -21,11 +21,10 @@ function fixture(pages: string[][]) {
     return { admitted: true, deletionPending: true, readyForUserDeletion: false };
   });
   const drain = vi.fn(async () => drained);
-  const dropSearchIndex = vi.fn(async () => undefined);
   const retire = createKnowledgeRetirement({
-    advance, client, drain, dropSearchIndex, now: () => new Date("2026-10-23T12:00:00.000Z"), ownerBatch: 2
+    advance, client, drain, now: () => new Date("2026-10-23T12:00:00.000Z"), ownerBatch: 2
   });
-  return { advance, drain, dropSearchIndex, queries, retire, transactions };
+  return { advance, drain, queries, retire, transactions };
 }
 
 describe("Knowledge retirement", () => {
@@ -35,7 +34,6 @@ describe("Knowledge retirement", () => {
     expect(f.transactions).toEqual(["owner-a", "owner-b"]);
     expect(f.advance).toHaveBeenCalledWith({ kind: "tx" }, { now: new Date("2026-10-23T12:00:00.000Z"), userId: "owner-a" });
     expect(f.drain).toHaveBeenCalledOnce();
-    expect(f.dropSearchIndex).not.toHaveBeenCalled();
   });
 
   it("rotates through owners so one that keeps failing never starves the rest", async () => {
@@ -53,15 +51,13 @@ describe("Knowledge retirement", () => {
     const f = fixture([["owner-a", "owner-b"], []]);
     await f.retire();
     await expect(f.retire()).resolves.toBeNull();
-    expect(f.dropSearchIndex).not.toHaveBeenCalled();
     expect(f.queries.map((values) => values[0])).toEqual(["", "owner-b"]);
   });
 
-  it("removes the search index once nothing is left and then stays idle", async () => {
+  it("reports done once nothing is left and then stays idle", async () => {
     const f = fixture([[]]);
     await expect(f.retire()).resolves.toEqual({ done: true, drain: null, failedOwners: 0, owners: 0 });
     await expect(f.retire()).resolves.toBeNull();
-    expect(f.dropSearchIndex).toHaveBeenCalledOnce();
     expect(f.queries).toHaveLength(1);
     expect(f.drain).not.toHaveBeenCalled();
   });

@@ -274,6 +274,7 @@ async function validSourceChat(
       id: chatId,
       memoryMode: "NORMAL",
       permanentDeletionAt: null,
+      projectId: null,
       userId
     }
   })) === 1;

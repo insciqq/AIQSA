@@ -24,7 +24,9 @@ function createDefaultChatPdf() {
     registry: activeRunControllerRegistry, repository: pdfRepository, storage,
     async authorize(claim) {
       const loaded = await pdfRepository.load(claim);
-      return Boolean((loaded.snapshot as unknown as ChatPdfRunSnapshot).prepared);
+      // Only the claiming user's own chat: a job a removed Project left behind never reaches a provider.
+      return loaded.modelRun.chat.userId === claim.userId &&
+        Boolean((loaded.snapshot as unknown as ChatPdfRunSnapshot).prepared);
     },
     continueRun: createChatPdfRunContinuation({
       ...defaultRunServices(storage),
