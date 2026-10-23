@@ -57,7 +57,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * The answer's params with the summary's output allowance, and its lower
  * reasoning effort where the model declares that effort and the answer
- * reasons at all; otherwise the admitted effort stays.
+ * reasons at all (on Anthropic, whose effort is not only for reasoning,
+ * wherever the model declares it); otherwise the admitted effort stays.
  */
 export function summaryParams(request: ProviderRunRequest, call: Pick<CompactionModelRequest, "maxOutputTokens" | "reasoningEffort">):
   Record<string, unknown> {
@@ -68,6 +69,10 @@ export function summaryParams(request: ProviderRunRequest, call: Pick<Compaction
   if (effort && isRecord(reasoning) && typeof reasoning.effort === "string" && reasoning.effort !== "none" &&
     reasoning.enabled !== false && request.modelCapabilities.reasoningEfforts?.includes(effort)) {
     params.reasoning = { ...reasoning, effort };
+  }
+  // Anthropic's effort lives in `outputConfig`; its thinking counts toward the summary's output allowance.
+  if (effort && request.provider === "anthropic" && request.modelCapabilities.reasoningEfforts?.includes(effort)) {
+    params.outputConfig = { ...(isRecord(params.outputConfig) ? params.outputConfig : {}), effort };
   }
   return params;
 }

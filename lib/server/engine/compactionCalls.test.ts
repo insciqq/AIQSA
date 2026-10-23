@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { createAnthropicMessagesAdapter, type AnthropicMessagesClient } from "../providers/anthropicMessages";
 import { buildCompatibleResponsesRequest } from "../providers/compatibleResponses";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -63,6 +64,50 @@ describe("compaction calls", () => {
     expect(summaryCompactionRequest({ ...runRequest, modelCapabilities: { ...runRequest.modelCapabilities, maxOutputTokens: 2_000 } },
       { history: [], idleTimeoutMs: 1, kind: "summary", maxOutputTokens: 8_192, signal: new AbortController().signal }).params.maxOutputTokens)
       .toBe(2_000);
+  });
+
+  it("send an Anthropic summary through its adapter: the summarizer's instructions, one user turn, no tools, low effort", async () => {
+    const anthropicRun: ProviderRunRequest = {
+      ...runRequest,
+      modelCapabilities: { ...runRequest.modelCapabilities, reasoningEfforts: ["low", "medium", "high"] },
+      modelId: "claude-haiku-5-5",
+      params: { maxTokens: 32_000, outputConfig: { effort: "high" }, thinking: { budgetTokens: 0, enabled: true, type: "adaptive" } },
+      provider: "anthropic"
+    };
+    const sent: Record<string, unknown>[] = [];
+    const client: AnthropicMessagesClient = {
+      async *stream(body) {
+        sent.push(body);
+        yield { message: { id: "msg_1", usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: 0, input_tokens: 700,
+          output_tokens: 1 } }, type: "message_start" };
+        yield { content_block: { signature: "", thinking: "", type: "thinking" }, index: 0, type: "content_block_start" };
+        yield { delta: { signature: "SIG", type: "signature_delta" }, index: 0, type: "content_block_delta" };
+        yield { index: 0, type: "content_block_stop" };
+        yield { content_block: { text: "", type: "text" }, index: 1, type: "content_block_start" };
+        yield { delta: { text: "## Goal\n- x", type: "text_delta" }, index: 1, type: "content_block_delta" };
+        yield { index: 1, type: "content_block_stop" };
+        yield { delta: { stop_reason: "end_turn" }, type: "message_delta", usage: { output_tokens: 30 } };
+        yield { type: "message_stop" };
+      }
+    };
+    const onUsage = vi.fn();
+    const call = compactionModelCall({ adapter: createAnthropicMessagesAdapter({ client }), deadlineAt: Date.now() + 600_000, onUsage },
+      () => anthropicRun);
+    const result = await call({ history: [{ text: "<conversation>…", type: "user" }], idleTimeoutMs: 1,
+      instructions: SUMMARIZER_INSTRUCTIONS, kind: "summary", maxOutputTokens: 8_192, reasoningEffort: "low",
+      signal: new AbortController().signal });
+    expect(result.text).toBe("## Goal\n- x");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ max_tokens: 8_192, messages: [{ content: [{ text: "<conversation>…", type: "text" }], role: "user" }],
+      model: "claude-haiku-5-5", output_config: { effort: "low" }, system: SUMMARIZER_INSTRUCTIONS, thinking: { type: "adaptive" } });
+    expect(sent[0]).not.toHaveProperty("tools");
+    expect(sent[0]).not.toHaveProperty("tool_choice");
+    expect(JSON.stringify(sent[0])).not.toMatch(/PRIVATE-MEMORY|AAAA/u);
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 700, outputTokens: 30 }), undefined);
+    // An effort the model does not declare is not asked for; the admitted one stays.
+    expect(summaryCompactionRequest({ ...anthropicRun, modelCapabilities: { ...anthropicRun.modelCapabilities, reasoningEfforts: ["high"] } },
+      { history: [], idleTimeoutMs: 1, kind: "summary", reasoningEffort: "low", signal: new AbortController().signal }).params)
+      .toMatchObject({ outputConfig: { effort: "high" } });
   });
 
   it("go through the run's adapter with transport retries, stream nothing into the answer and account every request", async () => {
