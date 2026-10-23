@@ -98,8 +98,8 @@ describe("native Anthropic on the engine", () => {
     const memory = memoryNativeEngine();
     const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
     const prepared = anthropicPrepared();
-    expect(nativeEngineRoute({ allowlist: parseNativeEngineUsers("user-1"), prepared, user: { email: null, id: "user-1" },
-      workspacePredecessor: false })).toEqual({ engine: "native" });
+    expect(nativeEngineRoute({ allowlist: parseNativeEngineUsers("user-1"), prepared, user: { email: null, id: "user-1" } }))
+      .toEqual({ engine: "native" });
     const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
       mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never, prepared,
       repository: nativeRunRepository() as unknown as RunRepository, services: {}, userId: "user-1" }));

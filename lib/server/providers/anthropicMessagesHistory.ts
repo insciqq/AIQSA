@@ -96,8 +96,9 @@ function identity(block: Readonly<Record<string, unknown>>): string {
   return createHash("sha256").update(canonical(block)).digest("base64url");
 }
 
-function isThinkingBlock(block: unknown): block is Record<string, unknown> {
-  return isRecord(block) && (block.type === "thinking" || block.type === "redacted_thinking");
+/** A `thinking` or `redacted_thinking` block. Not a type guard: a block that is neither stays a record. */
+function isThinkingBlock(block: Readonly<Record<string, unknown>>): boolean {
+  return block.type === "thinking" || block.type === "redacted_thinking";
 }
 
 /** A block the API can take back: signed thinking, or redacted thinking with its data. */
@@ -171,7 +172,7 @@ function parts(item: ProviderHistoryItem, options: AnthropicHistoryRenderOptions
     case "reasoning": {
       const fields = nativeFields(item.native);
       const block = fields.block;
-      if (!isThinkingBlock(block) || !replayable(block)) invalid();
+      if (!isRecord(block) || !isThinkingBlock(block) || !replayable(block)) invalid();
       return [{ block: options.preview ? { type: block.type } : { ...block }, role: "assistant",
         thinking: { binding: binding(fields.binding) } }];
     }
@@ -327,7 +328,7 @@ export function anthropicHistoryFromContent(
   const items: ProviderHistoryItem[] = [];
   let digest: PrefixDigest | null = null;
   let previous: string | null = null;
-  if (content.some(isThinkingBlock)) {
+  if (content.some((block) => isRecord(block) && isThinkingBlock(block))) {
     digest = new PrefixDigest({ system: sent.system, tools: Array.isArray(sent.tools) ? sent.tools : [] });
     for (const message of Array.isArray(sent.messages) ? sent.messages : []) {
       if (!isRecord(message) || !Array.isArray(message.content)) continue;
