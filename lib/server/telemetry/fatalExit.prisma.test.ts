@@ -11,7 +11,7 @@ import { createPrismaTelemetryStore } from "./store";
 // A real worker process (tsx, as the Compose workers run) on this database
 // dies on an unhandled error long before its first regular write. Only this
 // file writes rows of its role in the stateful lane; it removes them itself.
-const ROLE = "memory_search";
+const ROLE = "storage_relay";
 const CANARY = "fatal-exit-canary";
 const directory = mkdtempSync(path.join(tmpdir(), "aiqsa-fatal-exit-"));
 const worker = path.join(directory, "crashing-worker.ts");
