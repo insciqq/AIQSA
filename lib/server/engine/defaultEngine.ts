@@ -1,6 +1,4 @@
 import type { PrismaClient } from "@prisma/client";
-import { defaultAssistantDeletionHandlerDeps } from "../assistants/defaultAssistantDeletion";
-import { defaultAssistantHandlerDeps } from "../assistants/defaultAssistants";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { MCP_APPROVAL_TTL_MS } from "../mcp/writeApproval";
 import { prisma } from "../prisma";
@@ -56,6 +54,40 @@ export function defaultNativeEngineDeps(storage: StorageAdapter, client: PrismaC
   };
 }
 
+type AssistantOwners = NonNullable<ToolRegistryServices["selfService"]>["assistants"];
+
+async function loadAssistantOwners() {
+  const [{ defaultAssistantHandlerDeps }, { defaultAssistantDeletionHandlerDeps }] = await Promise.all([
+    import("../assistants/defaultAssistants"), import("../assistants/defaultAssistantDeletion")
+  ]);
+  return { deletion: defaultAssistantDeletionHandlerDeps.repository, handlers: defaultAssistantHandlerDeps };
+}
+
+/**
+ * The Studio Assistant routes' own dependencies, imported on first use: the
+ * recovery scheduler loads this module at startup and must not pull in the
+ * routes' defaults (sign-in, mail, MCP repositories) with it.
+ */
+function lazyAssistantOwners(): AssistantOwners {
+  let loaded: ReturnType<typeof loadAssistantOwners> | null = null;
+  const load = () => loaded ??= loadAssistantOwners().catch((error: unknown) => {
+    loaded = null;
+    throw error;
+  });
+  const repository = async () => (await load()).handlers.repository;
+  return {
+    deletion: { loadConsequences: async (userId, assistantId) => (await load()).deletion.loadConsequences(userId, assistantId) },
+    loadCatalogData: async (userId) => (await load()).handlers.loadCatalogData(userId),
+    repository: {
+      getDetail: async (userId, assistantId, options) => (await repository()).getDetail(userId, assistantId, options),
+      listForUser: async (userId) => (await repository()).listForUser(userId),
+      listPublishableGroups: async (userId) => (await repository()).listPublishableGroups(userId),
+      loadUserAccessibleMcpServerIds: async (userId) => (await repository()).loadUserAccessibleMcpServerIds(userId),
+      loadUserMcpRunPlanView: async (userId) => (await repository()).loadUserMcpRunPlanView(userId)
+    }
+  };
+}
+
 /**
  * The owners behind the harness and self-service tools: the saved secrets
  * `read_secret` reads in any chat, and the Studio paths the self-service
@@ -65,12 +97,7 @@ export function defaultNativeToolServices(storage: StorageAdapter, client: Prism
   Required<Pick<ToolRegistryServices, "secrets" | "selfService">> {
   return {
     secrets: createRunSecretSource(client),
-    selfService: {
-      assistants: { deletion: defaultAssistantDeletionHandlerDeps.repository, loadCatalogData: defaultAssistantHandlerDeps.loadCatalogData,
-        repository: defaultAssistantHandlerDeps.repository },
-      db: client,
-      storage
-    }
+    selfService: { assistants: lazyAssistantOwners(), db: client, storage }
   };
 }
 
