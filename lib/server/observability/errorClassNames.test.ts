@@ -100,7 +100,7 @@ describe("readable error class names", () => {
     const scanned = sources.flatMap(({ file, text }) => classesIn(file, text));
     // A broken scan must not pass silently.
     expect(scanned.length).toBeGreaterThan(200);
-    expect(scanned).toContainEqual(expect.objectContaining({ className: "RunPipelineError", ownName: "RunPipelineError" }));
+    expect(scanned).toContainEqual(expect.objectContaining({ className: "DocumentParserError", ownName: "DocumentParserError" }));
     expect(unnamedErrorClasses(sources)).toEqual([]);
   });
 

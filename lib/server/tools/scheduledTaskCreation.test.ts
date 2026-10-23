@@ -294,7 +294,7 @@ describe("create_scheduled_task tool", () => {
     for (const [code, phrase] of [
       ["scheduled_task_limit", "up to 10 active and 50 saved"],
       ["scheduled_task_hourly_limit", "up to 3 active hourly tasks"],
-      ["scheduled_task_model_unavailable", "no longer available"],
+      ["scheduled_task_model_unavailable", "not available to you for scheduled tasks"],
       ["scheduled_task_schedule_invalid", "The schedule is invalid or never runs"],
       ["scheduled_task_once_in_past", "at least a minute from now"],
       ["scheduled_task_chat_mode_invalid", "always continue in the same chat"],
