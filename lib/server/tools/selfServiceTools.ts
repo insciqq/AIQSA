@@ -40,6 +40,7 @@ export { READ_AIQSA_GUIDE_TOOL_NAME, executeReadAiqsaGuide, readAiqsaGuideTool }
 export { MANAGE_ASSISTANT_TOOL_NAME, assistantChanges, executeManageAssistant, manageAssistantTool, type ManageAssistantContext } from "./manageAssistant";
 export { MANAGE_SECRET_LIMITS, MANAGE_SECRET_TOOL_NAME, executeManageSecret, manageSecretTool, secretChangeCard, secretChangedResult } from "./manageSecret";
 export { MANAGE_SKILL_LIMITS, MANAGE_SKILL_TOOL_NAME, executeManageSkill, manageSkillTool, type ManageSkillContext } from "./manageSkill";
+export { createToolCallSelfServiceStore } from "./selfServiceCallStore";
 export {
   commitSelfServiceChange,
   logSelfServiceFailure,
