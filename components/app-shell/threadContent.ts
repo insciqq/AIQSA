@@ -3,6 +3,7 @@ import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { THREAD_SEARCH_SOURCE_MAX_ITEMS, decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { foldScheduledTaskCards } from "@/lib/contracts/scheduledTasks";
 import { foldSkillSaveCards } from "@/lib/contracts/skillSaves";
+import { foldResourceChangeCards } from "@/lib/contracts/resourceChanges";
 import { foldMcpApprovalCards } from "@/lib/contracts/mcpApprovals";
 import { foldAnswerReviewCards, foldAnswerReviewDecisionsCards } from "@/lib/contracts/answerReviews";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
@@ -107,6 +108,7 @@ export function summarizeThreadArtifacts(
   const scheduledTasks = foldScheduledTaskCards(events
     .filter((event) => artifactTypeFromEvent(event) === "scheduled_task").map(artifactPayload));
   const skillSaves = foldSkillSaveCards(events.filter((event) => artifactTypeFromEvent(event) === "skill_save").map(artifactPayload));
+  const resourceChanges = foldResourceChangeCards(events.filter((event) => artifactTypeFromEvent(event) === "resource_change").map(artifactPayload));
   // Live approval cards; the saved answer's cards carry their decisions.
   const mcpApprovals = foldMcpApprovalCards(events.filter((event) => artifactTypeFromEvent(event) === "mcp_approval")
     .map(artifactPayload));
@@ -144,6 +146,7 @@ export function summarizeThreadArtifacts(
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
+    resourceChanges.length === 0 &&
     mcpApprovals.length === 0 &&
     answerReviews.length === 0 &&
     answerReviewDecisions.length === 0 &&
@@ -169,6 +172,7 @@ export function summarizeThreadArtifacts(
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length ? { scheduledTasks } : {}),
     ...(skillSaves.length ? { skillSaves } : {}),
+    ...(resourceChanges.length ? { resourceChanges } : {}),
     ...(mcpApprovals.length ? { mcpApprovals } : {}),
     ...(answerReviews.length ? { answerReviews } : {}),
     ...(answerReviewDecisions.length ? { answerReviewDecisions } : {}),
@@ -202,16 +206,20 @@ export function mergeLiveThreadArtifacts(
   const sourceOwner = live.sources.length > 0 ? live : saved;
   // One card per approval: a saved card carries the decision, so it wins.
   const mcpApprovals = foldMcpApprovalCards([...live.mcpApprovals ?? [], ...saved.mcpApprovals ?? []]);
+  // Changes are facts: a live summary of some events never drops a saved card.
+  const resourceChanges = foldResourceChangeCards([...saved.resourceChanges ?? [], ...live.resourceChanges ?? []]);
   const {
     citationsTruncated: _citationsTruncated,
     mcpApprovals: _mcpApprovals,
     reasoningTruncated: _reasoningTruncated,
+    resourceChanges: _resourceChanges,
     sourcesTruncated: _sourcesTruncated,
     ...merged
   } = { ...saved, ...live };
   return {
     ...merged,
     ...(mcpApprovals.length ? { mcpApprovals } : {}),
+    ...(resourceChanges.length ? { resourceChanges } : {}),
     citations: citationOwner.citations,
     ...(citationOwner.citationsTruncated ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),

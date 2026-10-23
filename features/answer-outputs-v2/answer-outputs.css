@@ -939,6 +939,33 @@
 .v2-skill-save-status:focus { outline: none; }
 .v2-skill-save-error { margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
 
+/* A change the answer made to the user's own secret or Assistant, or a proposal it asks about. */
+.v2-resource-change-cards { margin-top: 0.375rem; }
+.v2-resource-change-cards > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.v2-resource-change-card { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
+.v2-resource-change-card-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-text2); background: var(--v2-color-active); }
+.v2-resource-change-card:is([data-state="done"], [data-state="missing"]) .v2-resource-change-card-tile { color: var(--v2-color-text3); background: var(--v2-color-surface2); }
+.v2-resource-change-card-copy { display: grid; min-width: 0; flex: 1 1 14rem; gap: 0.125rem; }
+.v2-resource-change-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
+.v2-resource-change-card-heading:focus { outline: none; }
+.v2-resource-change-card-copy > strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.v2-resource-change-card-copy small { color: var(--v2-color-text3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.v2-resource-change-card-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin-left: auto; }
+.v2-resource-change-card-link { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.5rem; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); font-size: 0.8125rem; text-decoration: none; }
+.v2-resource-change-card-link:hover { background: var(--v2-color-hover); }
+.v2-resource-change-card-changes, .v2-resource-change-card-consequences { display: grid; gap: 0.25rem; margin: 0.25rem 0 0; padding: 0; list-style: none; font-size: 0.8125rem; line-height: 1.45; }
+.v2-resource-change-card-changes > li, .v2-resource-change-card-consequences > li { min-width: 0; overflow-wrap: anywhere; }
+.v2-resource-change-card-changes strong { font-weight: 600; }
+.v2-resource-change-card-confirm { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--v2-color-border); }
+.v2-resource-change-card-confirm > p { flex: 1 1 14rem; margin: 0; font-size: 0.8125rem; line-height: 1.45; overflow-wrap: anywhere; }
+.v2-resource-change-card-confirm > span { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.v2-resource-change-card-status { flex: 1 1 100%; margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.v2-resource-change-card-error { flex: 1 1 100%; margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
+@media (max-width: 30rem) {
+  /* The verbs move under the text, aligned with it, instead of squeezing it. */
+  .v2-resource-change-card-actions { margin-left: 3.25rem; }
+}
+
 .v2-answer-skill-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
 .v2-answer-skill-pin [role="alert"] { color: var(--v2-color-danger); overflow-wrap: anywhere; }
 

@@ -99,6 +99,7 @@ import {
   type ScheduledTaskCheckOutcome
 } from "./scheduledTasks";
 import { foldSkillSaveCards, type SkillSaveCard } from "./skillSaves";
+import { foldResourceChangeCards, type ResourceChangeCard } from "./resourceChanges";
 import {
   foldMcpApprovalCards,
   isMessageSystemTurnKind,
@@ -280,6 +281,8 @@ export type ThreadArtifactSummary = {
   scheduledTasks?: ScheduledTaskCard[];
   /** Skills the answer's `save_skill` call saved; see `SkillSaveCard`. */
   skillSaves?: SkillSaveCard[];
+  /** Changes the answer made to, or proposed for, the user's own secrets, Skills and Assistants; see `ResourceChangeCard`. */
+  resourceChanges?: ResourceChangeCard[];
   /** MCP calls the answer's run refused for its initiator's approval; see `McpApprovalCard`. */
   mcpApprovals?: McpApprovalCard[];
   /** A review step's review (`submit_answer_review`); see `AnswerReviewCard`. */
@@ -1189,6 +1192,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ? value.workDurationMs as number
     : undefined;
   const skillSaves = Array.isArray(value.skillSaves) ? foldSkillSaveCards(value.skillSaves) : undefined;
+  const resourceChanges = Array.isArray(value.resourceChanges) ? foldResourceChangeCards(value.resourceChanges) : undefined;
   const mcpApprovals = Array.isArray(value.mcpApprovals) ? foldMcpApprovalCards(value.mcpApprovals) : undefined;
   const answerReviews = Array.isArray(value.answerReviews) ? foldAnswerReviewCards(value.answerReviews) : undefined;
   const answerReviewDecisions = Array.isArray(value.answerReviewDecisions)
@@ -1215,6 +1219,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks?.length ? { scheduledTasks } : {}),
     ...(skillSaves?.length ? { skillSaves } : {}),
+    ...(resourceChanges?.length ? { resourceChanges } : {}),
     ...(mcpApprovals?.length ? { mcpApprovals } : {}),
     ...(answerReviews?.length ? { answerReviews } : {}),
     ...(answerReviewDecisions?.length ? { answerReviewDecisions } : {}),
