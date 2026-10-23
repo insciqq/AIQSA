@@ -392,7 +392,8 @@ export type ThreadWorkspaceActivityEntry = Readonly<{
   groupId?: string;
   hasLifecycle?: boolean;
   id: string;
-  items?: readonly Readonly<{ completed: boolean; text: string }>[];
+  /** `plan` only: the steps in order; `active` marks the step in progress, which no completed step is. */
+  items?: readonly Readonly<{ active?: true; completed: boolean; text: string }>[];
   kind: WorkspaceActivityKind;
   mcp?: Readonly<{ discovery?: boolean; serverName?: string; toolName: string }>;
   phase: WorkspaceActivityPhase;
@@ -656,10 +657,11 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     if (!Array.isArray(value.items) || value.items.length > WORKSPACE_ACTIVITY_MAX_PLAN_ITEMS) return null;
     const decoded: NonNullable<ThreadWorkspaceActivityEntry["items"]>[number][] = [];
     for (const item of value.items) {
-      if (!isRecord(item) || !hasOnlyKeys(item, new Set(["completed", "text"])) || typeof item.completed !== "boolean") return null;
+      if (!isRecord(item) || !hasOnlyKeys(item, new Set(["active", "completed", "text"])) || typeof item.completed !== "boolean" ||
+        item.active !== undefined && (item.active !== true || item.completed)) return null;
       const text = boundedText(item.text, 512);
       if (!text) return null;
-      decoded.push({ completed: item.completed, text });
+      decoded.push({ ...(item.active ? { active: true as const } : {}), completed: item.completed, text });
     }
     items = decoded;
   } else if (value.items !== undefined) return null;

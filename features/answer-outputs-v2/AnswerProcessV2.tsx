@@ -9,7 +9,7 @@ import { mcpUnavailableServerCopy } from "@/lib/contracts/mcp";
 import { runningSearchEngineCalls, unknownSearchEngineCalls,
   type ThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
-import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
+import type { ThreadWorkspaceActivity, ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   answerProcessLabelV2,
@@ -17,6 +17,7 @@ import {
   describeToolCallV2,
   fetchCallSkippedV2,
   memorySearchCallHiddenV2,
+  planCallHiddenV2,
   toolActivityOriginV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
@@ -24,6 +25,8 @@ import {
   visibleWorkspaceActivityV2,
   workspaceActivityOutcomeV2,
   workspaceOutputStatusCopyV2,
+  workspacePlanSummaryV2,
+  workspacePlanV2,
   workspaceProcessLabelV2
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { MemorySourcesV2 } from "./MemorySourcesV2";
@@ -77,6 +80,43 @@ function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
       {status === "complete" ? <UiV2Icon name="check" /> : null}
       {status === "error" ? <UiV2Icon name="alert" /> : null}
     </span>
+  );
+}
+
+type PlanStepState = "active" | "complete" | "pending";
+
+/** A plan step's mark: done is checked, the current step spins while the answer runs, the rest wait. */
+function PlanMarkV2({ live, state }: Readonly<{ live: boolean; state: PlanStepState }>) {
+  if (state === "active" && live) {
+    return <span className="v2-answer-process-mark v2-spinner" data-status="running" aria-hidden="true" />;
+  }
+  return (
+    <span className="v2-answer-process-mark" data-status={state} aria-hidden="true">
+      {state === "complete" ? <UiV2Icon name="check" /> : null}
+    </span>
+  );
+}
+
+const PLAN_STEP_STATE_COPY: Readonly<Record<PlanStepState, string>> = { active: "In progress", complete: "Done", pending: "Not started" };
+
+/** The agent's plan as its steps, each with its state in words for assistive technology. */
+function PlanV2({ live, plan }: Readonly<{ live: boolean; plan: ThreadWorkspaceActivityEntry }>) {
+  return (
+    <section className="v2-answer-process-section" data-testid="answer-plan">
+      <h3>Plan</h3>
+      <ol className="v2-answer-process-steps v2-answer-plan" aria-label="Plan steps">
+        {(plan.items ?? []).map((item, index) => {
+          const state: PlanStepState = item.completed ? "complete" : item.active ? "active" : "pending";
+          return (
+            <li data-state={state} key={`${index}:${item.text}`}>
+              <PlanMarkV2 live={live} state={state} />
+              <span className="v2-answer-process-step-name">{item.text}</span>
+              <span className="v2-sr-only">{PLAN_STEP_STATE_COPY[state]}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 
@@ -174,10 +214,13 @@ export function AnswerProcessV2({
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
   // A failed Memory search leaves no step: the answer continues without it.
+  // The plan tool's calls show as the plan itself.
   const calls = (toolActivity?.calls ?? []).filter((call) =>
-    toolActivityOriginV2(call) !== "workspace" && !memorySearchCallHiddenV2(call));
+    toolActivityOriginV2(call) !== "workspace" && !memorySearchCallHiddenV2(call) && !planCallHiddenV2(call));
   const searchEngines = toolActivity?.searchEngines ?? [];
   const searchSummary = searchActivitySummary(searchEngines);
+  const plan = workspacePlanV2(workspaceActivity);
+  const planSummary = plan ? workspacePlanSummaryV2(plan) : null;
   const timeline = visibleWorkspaceActivityV2(workspaceActivity, generatedFileCount);
   const outputOnlyCount = generatedFileCount > 0 && !timeline?.entries.some(entry =>
     entry.kind === "outputs_export" && (entry.count ?? 0) > 0
@@ -197,7 +240,7 @@ export function AnswerProcessV2({
   }));
   const compactionLabel = compaction?.label ?? earlierCompactionFailures.at(-1)?.label ?? null;
 
-  if (liveLabel && !timeline && !searchSummary && !calls.some(call =>
+  if (liveLabel && !timeline && !plan && !searchSummary && !calls.some(call =>
     (call.origin === "memory" && call.toolName === "memory_search") || (call.origin === "mcp" && call.details && runId)
   ) && !contextCompaction && earlierCompactionFailures.length === 0) {
     return (
@@ -220,11 +263,11 @@ export function AnswerProcessV2({
         stepCount: calls.length,
         workDurationMs
       });
-  const displayLabel = [searchSummary, label, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
+  const displayLabel = [searchSummary, label, planSummary, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
   if (!displayLabel) return warning;
   // Nothing to unfold yet (the thinking arrives with the settled answer): the
   // same row as plain text, so the line neither disappears nor moves.
-  if (!live && !compactionLabel && !timeline && !reasoning && searchEngines.length === 0 && calls.length === 0 &&
+  if (!live && !compactionLabel && !timeline && !plan && !reasoning && searchEngines.length === 0 && calls.length === 0 &&
     listedMemorySources.length === 0) {
     return (
       <>
@@ -252,7 +295,7 @@ export function AnswerProcessV2({
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
           <span className="v2-answer-process-label">
-            {live && liveLabel ? searchSummary ? `${liveLabel} · ${searchSummary}` : liveLabel
+            {live && liveLabel ? [liveLabel, searchSummary, planSummary].filter(Boolean).join(" · ")
               : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
           </span>
           {live ? (
@@ -274,6 +317,7 @@ export function AnswerProcessV2({
               {compaction?.detail ? <p className="v2-answer-process-step-meta">{compaction.detail}</p> : null}
             </section>
           ) : null}
+          {plan ? <PlanV2 live={live} plan={plan} /> : null}
           {timeline ? (
             <section className="v2-answer-process-section" data-testid="workspace-activity-section">
               <h3>Workspace</h3>

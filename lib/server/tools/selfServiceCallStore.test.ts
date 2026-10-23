@@ -20,7 +20,8 @@ function transaction(options: Readonly<{ run?: unknown; call?: unknown; settled?
       return [];
     }),
     modelRun: {},
-    modelRunEvent: { aggregate: vi.fn(async () => ({ _max: { sequence: 7 } })), createMany: vi.fn(async () => ({ count: 1 })) },
+    modelRunEvent: { aggregate: vi.fn(async () => ({ _max: { sequence: 7 } })), createMany: vi.fn(async () => ({ count: 1 })),
+      findFirst: vi.fn(async () => null) },
     modelRunToolCall: {
       findFirst: vi.fn(async () => options.call === undefined ? { providerCallId: "provider_call_1", result: null, state: "running", toolName: "manage_secret" }
         : options.call),
@@ -60,6 +61,9 @@ describe("the ModelRunToolCall call store of a self-service change", () => {
       data: expect.objectContaining({ state: "complete" }), where: { id: "call_row_1", modelRunId: "run_1", state: "running" } }));
     expect(tx.modelRunEvent.createMany).toHaveBeenCalledWith({ data: [expect.objectContaining({ eventType: "artifact", modelRunId: "run_1",
       payload: { artifactType: "resource_change", payload: expect.objectContaining({ action: "created", name: "GitLab" }) }, sequence: 8 })] });
+    // The engine publishes the same result's card again later; the answer keeps the first.
+    expect(tx.modelRunEvent.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { eventType: "artifact", modelRunId: "run_1",
+      payload: { equals: { artifactType: "resource_change", payload: expect.objectContaining({ action: "created", name: "GitLab" }) } } } }));
   });
 
   it("refuses to settle a call another writer settled, so the change rolls back", async () => {

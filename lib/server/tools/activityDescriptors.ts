@@ -106,6 +106,11 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     descriptors.set("manage_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "manage_scheduled_task" });
   }
   if (normalizedRequest.skillSaveTool) descriptors.set("save_skill", { origin: "skill", serverName: "Skills", toolName: "save_skill" });
+  // The native engine's harness tools (`harnessTools.ts`): a patch is a Workspace step whose
+  // row is in the Workspace activity, and the plan shows as the answer's plan.
+  descriptors.set("apply_patch", { origin: "workspace", serverName: "Workspace", toolName: "apply_patch" });
+  descriptors.set("update_plan", { origin: "session", serverName: "Plan", toolName: "update_plan" });
+  descriptors.set("read_secret", { origin: "session", serverName: "Secrets", toolName: "read_secret" });
   // The native engine's self-service tools (`selfServiceTools.ts`); their cards carry the details.
   descriptors.set("read_aiqsa_guide", { origin: "session", serverName: "AIQSA guide", toolName: "read_aiqsa_guide" });
   descriptors.set("manage_secret", { origin: "session", serverName: "Secrets", toolName: "manage_secret" });

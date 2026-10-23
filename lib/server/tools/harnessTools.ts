@@ -4,12 +4,15 @@
  *
  * - `apply_patch` (local, needs the Workspace VM): `executeApplyPatch` over
  *   `workspaceApplyPatchFiles`, which takes the registry's dispatcher of
- *   Workspace tool calls.
+ *   Workspace tool calls; the thread shows one row of its files
+ *   (`harnessActivity.ts`).
  * - `update_plan` (no effects): `executeUpdatePlan`; the validated plan is in
- *   the result's `rawPreview.plan` for the progress display.
+ *   the result's `rawPreview.plan`, and the thread shows it as the answer's
+ *   plan (`harnessActivity.ts`).
  * - `read_secret` (no effects, no VM): `executeReadSecret` over
  *   `createRunSecretSource` (`lib/server/workspace/secrets/runSecrets.ts`),
- *   whose `list` also gives the secret names for the system prompt.
+ *   whose `list` also gives the secret names for the system prompt
+ *   (`lib/server/engine/systemPrompt.ts`).
  */
 import { applyPatchTool } from "./applyPatch";
 import type { HarnessToolDescriptor } from "./harnessTool";
@@ -19,6 +22,7 @@ import { updatePlanTool } from "./updatePlan";
 export {
   APPLY_PATCH_LIMITS,
   APPLY_PATCH_TOOL_NAME,
+  APPLY_PATCH_WORKSPACE_TOOLS,
   ApplyPatchFileError,
   applyPatchTool,
   executeApplyPatch,

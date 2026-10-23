@@ -195,6 +195,33 @@ div.v2-answer-process[data-pending],
   content: "";
 }
 
+/* Plan steps: a step still to do waits as a ring; the current one of a
+   settled answer is a dot (it spins while the answer runs). */
+.v2-answer-process-mark[data-status="pending"]::before,
+.v2-answer-process-mark[data-status="active"]::before {
+  width: 0.5rem;
+  height: 0.5rem;
+  box-sizing: border-box;
+  border-radius: 50%;
+  content: "";
+}
+
+.v2-answer-process-mark[data-status="pending"]::before {
+  border: 1px solid currentcolor;
+}
+
+.v2-answer-process-mark[data-status="active"]::before {
+  background: currentcolor;
+}
+
+.v2-answer-plan li[data-state="active"] .v2-answer-process-step-name {
+  color: var(--v2-color-text);
+}
+
+.v2-answer-plan li[data-state="complete"] .v2-answer-process-step-name {
+  color: var(--v2-color-text3);
+}
+
 .v2-answer-process-step {
   display: flex;
   min-width: 0;

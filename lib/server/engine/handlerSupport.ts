@@ -20,7 +20,21 @@ export type NativeEngineHandlerDeps = Readonly<{
   engine: NativeEngineDeps;
   findOrphans: NativeRecoveryDeps["findOrphans"];
   mcpRuntime?: ToolRegistryServices["mcpRuntime"];
+  /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
+  tools?: Pick<ToolRegistryServices, "secrets" | "selfService">;
 }>;
+
+/**
+ * Whether a run's chat takes the self-service tools: an interactive personal
+ * or temporary chat. Only the interactive routes carry native deps; Project,
+ * Assistant, Agent, review and monitoring runs never take them, and every
+ * change fences its run again as it commits (`selfServiceRunAllowedInTransaction`).
+ */
+export function selfServiceChat(prepared: MaterializedPreparedRunData): boolean {
+  const request = prepared.normalizedRequest;
+  return !prepared.project && !prepared.assistant && !prepared.chatAssistant && !request.agent && !request.answerReviewStep &&
+    !request.monitoringVerdictTool;
+}
 
 /** Before a user's admission: their native runs no execution owns end interrupted, so the chat is free. */
 export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps | undefined, deps: Readonly<{
@@ -61,6 +75,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>): Response {
+  const tools = native.tools;
   return createNativeRunExecutionResponse({
     adapter: input.adapter,
     ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),
@@ -70,7 +85,12 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     ...(native.mcpRuntime ? { mcpRuntime: native.mcpRuntime } : {}),
     prepared: input.prepared,
     repository: input.repository,
-    services: { ...input.services, ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}) },
+    services: {
+      ...input.services,
+      ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
+      ...(tools?.secrets ? { secrets: tools.secrets } : {}),
+      ...(tools?.selfService && selfServiceChat(input.prepared) ? { selfService: tools.selfService } : {})
+    },
     userId: input.userId,
     ...(input.workspace ? { workspace: input.workspace } : {})
   });
