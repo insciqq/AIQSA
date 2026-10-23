@@ -625,6 +625,24 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: "/workspace/project/.uv" });
   });
 
+  it("delivers a text secret named like a variable to every command under that name, and lists it in the guide", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const token = "synthetic-demo-token-0123456789";
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, secrets: [
+      { id: randomUUID(), versionId: randomUUID(), name: "DEMO_API_TOKEN", description: "", value: { kind: "text", text: token } },
+      { id: randomUUID(), versionId: randomUUID(), name: "Notes", description: "", value: { kind: "text", text: "synthetic note" } }
+    ] });
+    const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: unknown; guide: string };
+    expect(bundle.environment).toEqual({ DEMO_API_TOKEN: token });
+    expect(bundle.guide).toContain("Environment variable (the value is already in command environments): `DEMO_API_TOKEN`");
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await value.runtime.callBoundTool({ ...callInput, originalName, arguments: { command: "env" } });
+      expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, DEMO_API_TOKEN: token });
+    }
+  });
+
   it("adds the run's code bearer over saved env, and each command's own invocation id over requested env", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);

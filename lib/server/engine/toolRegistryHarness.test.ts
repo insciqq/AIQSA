@@ -25,7 +25,7 @@ function request(extra: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
 }
 
 const secrets = (): RunSecretSource & { list: ReturnType<typeof vi.fn>; read: ReturnType<typeof vi.fn> } => ({
-  list: vi.fn(async () => [{ description: "", envNames: [], kind: "text" as const, name: "GitLab", valueId: "value-1" }]),
+  list: vi.fn(async () => [{ byteSize: 40, description: "", envNames: [], kind: "text" as const, name: "GitLab", valueId: "value-1" }]),
   read: vi.fn(async () => ({ description: "", id: "secret-1", name: "GitLab", value: { kind: "text" as const, text: "glpat-synthetic" } }) as never)
 });
 
