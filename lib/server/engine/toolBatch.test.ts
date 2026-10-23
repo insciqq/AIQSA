@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { ToolCallRepeatHistory, TOOL_CALL_REPEAT_BLOCKED } from "../runs/toolCallRepeatGuard";
-import { TOOL_CALL_UNKNOWN } from "../runs/unknownToolCall";
+import { TOOL_CALL_UNKNOWN, UNKNOWN_TOOL_CALL_MESSAGE, unknownToolCall } from "../runs/unknownToolCall";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { invalidProviderToolArguments } from "../tools/types";
 import {
@@ -89,6 +89,24 @@ describe("native tool batch", () => {
     expect(lookup).toHaveBeenCalledTimes(2);
     const unknown = [...rows.values()].find((row) => row.providerCallId === "c2")!;
     expect(JSON.stringify(unknown.result)).toContain(TOOL_CALL_UNKNOWN);
+    expect(outcome.results[1]!.output).toBe(UNKNOWN_TOOL_CALL_MESSAGE);
+  });
+
+  it("tells a call of a replaced tool what to use instead, and records it as an unknown call", async () => {
+    const { rows, store } = fakeStore();
+    const batch = deps({ lookup: tool("lookup", "none", vi.fn()) }, store);
+    const registry: ToolRegistry = { ...batch.registry,
+      replacement: (name) => name === "save_skill" ? "save_skill is not available in this chat. Use manage_skill instead." : undefined };
+    const outcome = await runToolBatch({ ...batch, registry }, { calls: 0 }, { round: 1, calls: [
+      { arguments: { directory: "/workspace/project/x" }, id: "c1", name: "save_skill" },
+      { arguments: {}, id: "c2", name: "made_up" }
+    ] });
+    expect(outcome.results.map((item) => [item.outcome, item.output])).toEqual([
+      ["error", "save_skill is not available in this chat. Use manage_skill instead."], ["error", UNKNOWN_TOOL_CALL_MESSAGE]
+    ]);
+    // The step list reads both as the plain unknown calls they are.
+    for (const row of rows.values()) expect(unknownToolCall({ ...row, result: row.result as never })).not.toBeNull();
+    expect(outcome.executed).toBe(0);
   });
 
   it("ends at the approval point: a gated call is not sent and gets a waiting result", async () => {
