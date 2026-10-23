@@ -67,10 +67,10 @@ export async function finalizeProjectDeletion(input: Readonly<{
         await tx.workspaceSession.count({ where: { chat: { projectId }, OR: [
           { runtimeSandboxId: { not: null } }, { operationOwner: { not: null } }
         ] } })) throw new Error("project_cleanup_pending");
-      const attachments = await tx.attachment.findMany({
-        select: { storageKey: true },
-        where: { projectId: input.projectId }
-      });
+      // A Project's files, and any other file of its chats (a generated image
+      // or output saved without the Project), go with them.
+      const projectFiles = { OR: [{ projectId }, { chat: { projectId }, savedAt: null }] };
+      const attachments = await tx.attachment.findMany({ select: { storageKey: true }, where: projectFiles });
       if (attachments.length > 0) {
         await tx.attachmentDeletionJob.createMany({
           data: attachments.map(({ storageKey }) => ({ storageKey })),
@@ -91,7 +91,7 @@ export async function finalizeProjectDeletion(input: Readonly<{
       // ModelRun. Queue object removal first, then remove relational
       // attachments and runs explicitly so the fenced WorkspaceSession can
       // be settled before Chat rows cascade with the Project.
-      await tx.attachment.deleteMany({ where: { projectId: input.projectId } });
+      await tx.attachment.deleteMany({ where: projectFiles });
       await tx.modelRun.deleteMany({
         where: { chat: { projectId: input.projectId } }
       });
