@@ -67,7 +67,9 @@ export function assistantRowSummary(
     }
     case "skills": {
       const mode = rows.skills.value.mode === "auto" ? "Auto" : "Off";
-      if (rows.skills.value.links.length === 0) return `${mode} · no Skills linked`;
+      if (rows.skills.value.links.length === 0 && !rows.skills.value.hiddenCount) {
+        return mode === "Auto" ? "Auto · enabled Skills, like a regular chat" : "Off · no Skills linked";
+      }
       const counts = assistantSkillCounts(rows);
       return `${mode} · ${counts.always} always · ${counts.onDemand} on demand`;
     }
