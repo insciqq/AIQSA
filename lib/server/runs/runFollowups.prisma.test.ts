@@ -40,7 +40,6 @@ async function fixture<T>(execute: (fixture: {
         searchPlan: { mode: "all_selected", optionIds: [] } }),
       followupAdmission: { budgetTokens: 4_096 },
       normalizedRequest: { attachmentIds: [], chatId: chat.id, content, toolMode: "auto",
-        knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
         modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
         modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
         followupContextReserveTokens: 4_096, searchPlan: { mode: "all_selected", options: [] } } };

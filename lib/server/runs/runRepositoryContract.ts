@@ -28,16 +28,6 @@ import type {
   McpRunPlanBinding,
   McpRunPlanSnapshot
 } from "../mcp/runPlan";
-import type {
-  KnowledgeRunAdmissionAuthorizationSnapshot,
-  KnowledgeRunAdmissionExclusion,
-  KnowledgeRunAdmissionPlan
-} from "../knowledge/runAdmission";
-import type {
-  KnowledgeFullContextDispatchRecovery,
-  KnowledgeRunFinalizationEnvelope
-} from "../knowledge/evidenceRepository";
-import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   SearchAdapterKind,
@@ -201,13 +191,6 @@ export class ProviderAdmissionConflictError extends Error {
   constructor() {
     super("provider_admission_changed");
     this.name = "ProviderAdmissionConflictError";
-  }
-}
-
-export class KnowledgeRunPlanConflictError extends Error {
-  constructor() {
-    super("knowledge_base_not_available");
-    this.name = "KnowledgeRunPlanConflictError";
   }
 }
 
@@ -518,7 +501,6 @@ export type CreateRunInput = {
   content: { blocks: unknown[] };
   defaults?: AcceptedRunDefaults;
   expectedActiveLeafId: string | null;
-  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   initialChatMode?: MemoryInitialChatMode;
   mcpBindings?: McpRunPlanBinding[];
   skillBindings?: AcceptedSkillRun[];
@@ -570,7 +552,6 @@ export type CreateRegenerationRunInput = {
   chatAssistant?: AcceptedChatAssistant;
   chatId: string;
   defaults?: AcceptedRunDefaults;
-  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   skillBindings?: AcceptedSkillRun[];
   modelId: string;
@@ -651,7 +632,6 @@ export type CreatedRun = Readonly<{
 export type PreparingRunFinalizationInput = Readonly<{
   assistant?: AcceptedAssistantRun;
   attemptId: string;
-  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: readonly McpRunPlanBinding[];
   skillBindings?: readonly AcceptedSkillRun[];
   normalizedRequest: NormalizedRunRequest;
@@ -736,19 +716,6 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }>): Promise<boolean>;
-  groundKnowledgeAnswer?(input: Readonly<{
-    answer: string;
-    runId: string;
-    userId: string;
-  }>): Promise<KnowledgeRunFinalizationEnvelope | null>;
-  groundKnowledgeAnswerV5?(input: Readonly<{
-    runId: string;
-    userId: string;
-  }> & KnowledgeAnswerContractVersions): Promise<KnowledgeRunFinalizationEnvelope>;
-  groundKnowledgeAnswerV21?(input: Readonly<{
-    runId: string;
-    userId: string;
-  }>): Promise<KnowledgeRunFinalizationEnvelope>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -845,16 +812,6 @@ export type RunRepository = {
   }): Promise<RunChatUpdateRecord | null>;
   loadAttachments(userId: string, attachmentIds: string[], runId?: string): Promise<RunAttachmentRecord[]>;
   loadWorkspaceFileFacts(input: import("../workspace/inboxFacts").WorkspaceInboxFactsInput): Promise<import("../workspace/inboxFacts").WorkspaceInboxFacts>;
-  /** Purpose-bound recovery loader for a full-context manifest accepted into
-   * the evidence session before any current Draft provider operation exists. */
-  loadKnowledgeFullContextDispatchRecovery?(input: {
-    knowledgeEvidencePackingVersion?: 2 | 3 | 4 | 5;
-    maximumTokens: number;
-    modelId: string;
-    provider: string;
-    runId: string;
-    userId: string;
-  }): Promise<KnowledgeFullContextDispatchRecovery | null>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   loadModelPricing(provider: string, modelId: string, providerModelId?: string): Promise<ModelTokenPricing | null>;
   /** A deployment's own class and stored token prices, which price system

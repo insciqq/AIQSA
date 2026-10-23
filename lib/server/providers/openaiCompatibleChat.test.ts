@@ -12,7 +12,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     attachments: [],
     chatId: "chat-1",
     content: { blocks: [{ text: "Hello", type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

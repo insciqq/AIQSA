@@ -12,7 +12,6 @@ import { workspaceFileContext, workspaceFileReferences } from "../workspace/file
 import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { decodeKnowledgeSelection, EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { mcpPersonalCredentialRejectedMessage } from "../../contracts/runs";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
@@ -68,7 +67,6 @@ import {
   decodeMemoryInitialChatMode,
   type MemoryInitialChatMode
 } from "../../contracts/memory";
-import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import {
   mcpPersonalCredentialRejections,
   type McpCapabilityCatalog,
@@ -370,8 +368,6 @@ export type MaterializedPreparedRunData = {
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
   initialChatMode?: MemoryInitialChatMode;
-  /** Never set by admission any more; kept so prepared runs the old core still reads decode. */
-  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   /** A scheduled send: the relevant personal sources its Auto catalog could not offer. */
   scheduledUnavailableSources?: ScheduledUnavailableSource[];
@@ -603,13 +599,6 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     expectedActiveLeafId: prepared.expectedActiveLeafId,
     ...(prepared.initialChatMode
       ? { initialChatMode: mutablePreparedData<MemoryInitialChatMode>(prepared.initialChatMode) }
-      : {}),
-    ...(prepared.knowledgeAdmissionPlan
-      ? {
-          knowledgeAdmissionPlan: mutablePreparedData<KnowledgeRunAdmissionPlan>(
-            prepared.knowledgeAdmissionPlan
-          )
-        }
       : {}),
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
@@ -927,8 +916,12 @@ function assistantPrompt(
  */
 function legacyKnowledgePlanRefused(body: Readonly<Record<string, unknown>> | null): boolean {
   if (!body || !Object.hasOwn(body, "knowledgePlan")) return false;
-  const decoded = decodeKnowledgeSelection(body.knowledgePlan);
-  return !decoded.ok || decoded.plan.mode !== "none";
+  const plan = body.knowledgePlan;
+  if (typeof plan !== "object" || plan === null || Array.isArray(plan)) return true;
+  const fields = plan as Record<string, unknown>;
+  return Object.keys(fields).sort().join(",") !== "baseIds,mode,sourceIds,version" || fields.version !== 1 ||
+    fields.mode !== "none" || !Array.isArray(fields.baseIds) || fields.baseIds.length > 0 ||
+    !Array.isArray(fields.sourceIds) || fields.sourceIds.length > 0;
 }
 
 function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
@@ -1968,8 +1961,6 @@ export async function prepareRun(
     content,
     context: { messages: contextMessages, mode: "branch_path" },
     generationBudget,
-    // The old core still reads the field: a run never carries Knowledge.
-    knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
     modelCapabilities,
     modelId: executionModelId,
     ...(mcpDiscoveryEnabled && mcpCatalog

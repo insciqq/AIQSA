@@ -52,8 +52,7 @@ async function oldCoreAnswer(userId: string) {
 function regenerationInput(chatId: string, userId: string, answerId: string, questionId: string) {
   const content = textMessageContent("Old question");
   const normalizedRequest: CreateRunInput["normalizedRequest"] = {
-    attachmentIds: [], chatId, content, knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-    modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true, vision: false },
+    attachmentIds: [], chatId, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
   };

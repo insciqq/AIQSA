@@ -422,7 +422,6 @@ it("carries exact artifact context into a summarized chat and keeps it after sou
     artifactTool: true, artifactReferences: [{ artifactId: version!.artifactId, versionId: version!.id }],
     attachmentIds: [], attachments: [], chatId: result.chatId,
     content: textMessageContent("Read the accepted release deck."),
-    knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true, vision: false },
     modelId: "continuation-artifact-read", provider: "fake", params: {},
     prompt: { system: null, developer: null }, searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"

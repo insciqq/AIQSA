@@ -56,7 +56,6 @@ function request(): ProviderRunRequest {
     chatId: "internal-request",
     content: { blocks: [{ text: "bounded", type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: snapshot().model.capabilities,
     modelId: "gpt-test",
     params: { stream: false },

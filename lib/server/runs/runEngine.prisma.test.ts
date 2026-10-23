@@ -45,8 +45,7 @@ function sendInput(chatId: string, userId: string, expectedActiveLeafId: string 
     defaults: { controlDefaults: {}, modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection,
       searchPlan: { mode: "all_selected", optionIds: [] }, userId },
     normalizedRequest: {
-      attachmentIds: [], chatId, content, knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+      attachmentIds: [], chatId, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
       modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
       searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
     }

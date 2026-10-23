@@ -24,7 +24,6 @@ function request(chatId: string, text: string): NormalizedRunRequest {
       messages: [{ content, id: `context-${randomUUID()}`, role: "user" }],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,

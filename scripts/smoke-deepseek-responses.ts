@@ -102,7 +102,6 @@ function request(input: Readonly<{
     }] : [],
     chatId: "deepseek-smoke",
     content: { blocks: [{ text: input.text, type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       ...capabilities,
       vision: Boolean(attachment)

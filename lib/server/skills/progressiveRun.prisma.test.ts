@@ -88,7 +88,6 @@ async function createFixture(input: { ownerId: string; userId: string; groupId: 
     status: "streaming", content: textMessageContent("") } });
   const request: NormalizedRunRequest = {
     attachmentIds: [], chatId: chat.id, content: textMessageContent("Apply the procedure"),
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
     modelId: "fixture-model", provider: "fake", params: {}, prompt: { developer: null, system: null },
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", skills: manifest

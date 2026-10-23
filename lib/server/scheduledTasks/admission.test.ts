@@ -237,7 +237,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
     });
     const request = f.state.created!.normalizedRequest;
     expect(request).toMatchObject({
-      knowledgePlan: { mode: "none" },
       prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow" } },
       searchPlan: { options: [] },
       skills: { mode: "off" },
@@ -375,7 +374,7 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(created.normalizedRequest.workspace).toMatchObject({ enabled: true, sessionId: "ws-scheduled" });
     expect(created).toMatchObject({ personalChat: { memoryMode: "EXCLUDED" }, workspaceEnabled: true });
     expect(created.workspaceAdmissionPlan).toBeDefined();
-    expect(created.normalizedRequest.knowledgePlan).toMatchObject({ mode: "none" });
+    expect(created.normalizedRequest).not.toHaveProperty("knowledgePlan");
     // The lapsed server the previous result relied on: named to the model and frozen with the occurrence.
     expect(created.scheduledUnavailableSources).toEqual([
       { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }

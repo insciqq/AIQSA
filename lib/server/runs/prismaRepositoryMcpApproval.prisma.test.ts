@@ -65,7 +65,6 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
         providerConnectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel,
         searchPlan: { mode: "all_selected", optionIds: [] } }),
       normalizedRequest: { attachmentIds: [], chatId: chat.id, content, toolMode: "auto",
-        knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
         mcpApproval: mcpApprovalAdmission([]),
         modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
         modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",

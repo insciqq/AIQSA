@@ -1,4 +1,3 @@
-import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { maxOutputTokenParamKeys, maxOutputTokensFromParams } from "../../domain/providerParams";
 import type { GatewayRoutingLane } from "../providers/gatewayRouting";
@@ -89,7 +88,6 @@ export function summaryCompactionRequest(request: ProviderRunRequest, call: Comp
     content: { blocks: [] },
     ...(request.generationBudget ? { generationBudget: request.generationBudget } : {}),
     history: call.history,
-    knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
     modelCapabilities: request.modelCapabilities,
     modelId: request.modelId,
     params: summaryParams(request, call),

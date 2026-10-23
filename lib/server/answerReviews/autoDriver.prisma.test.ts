@@ -83,8 +83,7 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
       const content = textMessageContent(text);
       return repository.createRun({
         chatId: chat.id, content, modelId: "fake-qsa", provider: "fake", providerAdmissionPlan: plan, providerRequestPreview: {}, userId,
-        normalizedRequest: { attachmentIds: [], chatId: chat.id, content, knowledgePlan: { baseIds: [], mode: "none", sourceIds: [],
-          version: 1 }, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true,
+        normalizedRequest: { attachmentIds: [], chatId: chat.id, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true,
           vision: false }, modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
           searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto" },
         ...overrides

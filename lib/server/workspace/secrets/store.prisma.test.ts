@@ -53,8 +53,7 @@ async function plan(userId: string): Promise<PreparingRunAdmissionInput> {
   return {
     admissionKind: "NORMAL_SEND", chatId: chat.id, content, expectedActiveLeafId: null, modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, userId, workspaceEnabled: true,
     normalizedRequest: {
-      attachmentIds: [], chatId: chat.id, content, knowledgePlan: { baseIds: [], sourceIds: [], mode: "none", version: 1 },
-      modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+      attachmentIds: [], chatId: chat.id, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
       modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", workspace: normalized
     },
     workspaceAdmissionPlan: {

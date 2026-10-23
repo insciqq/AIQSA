@@ -199,9 +199,6 @@ function canonicalJson(value: ToolLoopJsonValue): string {
 }
 
 const recoveredRunTerminalMarker = "recoveryTerminal";
-const knowledgeBudgetCancellationFailure = "operation_cancelled";
-const knowledgeBudgetPostDispatchCancellationFailure =
-  "operation_cancelled_after_dispatch";
 
 export function recoveredRunErrorPayload(error: { code: string; message: string }) {
   return {
@@ -211,9 +208,9 @@ export function recoveredRunErrorPayload(error: { code: string; message: string 
 }
 
 /**
- * Cancels the run's still-pending calls and settles any attached Knowledge
- * capacity in the same transaction. The caller must hold the owning ModelRun
- * row lock before entering this helper.
+ * Cancels the run's still-pending calls (only the old core left calls
+ * pending). The caller must hold the owning ModelRun row lock before
+ * entering this helper.
  */
 export async function cancelPendingToolLoopCallsInTransaction(
   tx: Prisma.TransactionClient,
@@ -231,64 +228,6 @@ export async function cancelPendingToolLoopCallsInTransaction(
   if (pendingCalls.length === 0) return 0;
 
   const pendingCallIds = pendingCalls.map((call) => call.id);
-  await tx.knowledgeBudgetReservation.updateMany({
-    data: {
-      failureCode: knowledgeBudgetCancellationFailure,
-      leaseExpiresAt: null,
-      leaseToken: null,
-      releasedAt: now,
-      state: "released"
-    },
-    where: {
-      modelRunId: runId,
-      modelRunToolCallId: { in: pendingCallIds },
-      purgedAt: null,
-      state: "reserved"
-    }
-  });
-  await tx.knowledgeBudgetReservation.updateMany({
-    data: {
-      leaseExpiresAt: null,
-      leaseToken: null,
-      releasedAt: now,
-      state: "released"
-    },
-    where: {
-      modelRunId: runId,
-      modelRunToolCallId: { in: pendingCallIds },
-      purgedAt: { not: null },
-      state: "reserved"
-    }
-  });
-  await tx.knowledgeBudgetReservation.updateMany({
-    data: {
-      ambiguousAt: now,
-      failureCode: knowledgeBudgetPostDispatchCancellationFailure,
-      leaseExpiresAt: null,
-      leaseToken: null,
-      state: "ambiguous"
-    },
-    where: {
-      modelRunId: runId,
-      modelRunToolCallId: { in: pendingCallIds },
-      purgedAt: null,
-      state: "dispatched"
-    }
-  });
-  await tx.knowledgeBudgetReservation.updateMany({
-    data: {
-      ambiguousAt: now,
-      leaseExpiresAt: null,
-      leaseToken: null,
-      state: "ambiguous"
-    },
-    where: {
-      modelRunId: runId,
-      modelRunToolCallId: { in: pendingCallIds },
-      purgedAt: { not: null },
-      state: "dispatched"
-    }
-  });
   const cancelled = await tx.modelRunToolCall.updateMany({
     data: {
       completedAt: now,

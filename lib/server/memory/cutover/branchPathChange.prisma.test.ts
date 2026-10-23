@@ -50,7 +50,6 @@ function normalizedRequest(chatId: string, text: string): NormalizedRunRequest {
       messages: [{ content, id: "current-user-message", role: "user" }],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

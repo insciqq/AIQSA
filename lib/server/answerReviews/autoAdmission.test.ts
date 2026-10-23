@@ -9,7 +9,6 @@ function prepared(overrides: Readonly<{
   return {
     ...(overrides.assistant ? { assistant: { assistantId: "assistant-1" } } : {}),
     normalizedRequest: {
-      knowledgePlan: { mode: "none" }
     },
     providerAdmissionPlan: {
       answer: {

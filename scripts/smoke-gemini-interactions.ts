@@ -6,11 +6,10 @@
  * - AIQSA_GEMINI_SMOKE_MODEL: model id, default gemini-3.6-flash.
  * - AIQSA_GEMINI_SMOKE_SEARCH=1: hosted Google Search stream.
  * - AIQSA_GEMINI_SMOKE_ATTACHMENT_CONTEXT=1: attachment-only history request shape.
- * - AIQSA_GEMINI_SMOKE_FORCED_TOOLS=1: one non-streaming forced Knowledge round
- *   built by the production request builder with search_knowledge, the ordinary
- *   first-party tools and, when microsandbox-mcp is installed, the official
- *   Workspace catalog. Passes on requires_action with exactly one
- *   search_knowledge call.
+ * - AIQSA_GEMINI_SMOKE_FORCED_TOOLS=1: one non-streaming forced find_tools round
+ *   built by the production request builder with the ordinary first-party
+ *   tools and, when microsandbox-mcp is installed, the official Workspace
+ *   catalog. Passes on requires_action with exactly one find_tools call.
  * Without a mode flag the script runs the two-round tool-loop smoke. Output is
  * limited to statuses, step types, counts and token usage.
  */
@@ -18,7 +17,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { knowledgeRetrievalToolsForRequest } from "../lib/server/knowledge/knowledgeTools";
 import { mcpFindToolsTool } from "../lib/server/mcp/discovery";
 import {
   buildGeminiInteractionsRequest,
@@ -166,7 +164,6 @@ const request: ProviderRunRequest = {
         forceNonStreaming: true
       }
     : {}),
-  knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
   toolMode: "auto",
   modelCapabilities,
   modelId,
@@ -331,12 +328,9 @@ async function officialWorkspaceTools(): Promise<RunTool[] | null> {
 }
 
 async function runForcedToolSetProbe(): Promise<void> {
-  const knowledgeTools = knowledgeRetrievalToolsForRequest({ knowledgeSearchInstructionVersion: 3 });
-  const forcedToolName = knowledgeTools.find((tool) => tool.capability === "knowledge")?.name;
-  if (!forcedToolName) throw new Error("gemini_smoke_knowledge_tool_missing");
+  const forcedToolName = mcpFindToolsTool.name;
   const workspaceTools = await officialWorkspaceTools();
   const tools: RunTool[] = [
-    ...knowledgeTools,
     loadSkillTool,
     readSkillFileTool,
     sessionStatusTool,
@@ -352,14 +346,14 @@ async function runForcedToolSetProbe(): Promise<void> {
   const forcedRequest: ProviderRunRequest = {
     ...request,
     content: {
-      blocks: [{ text: "What do the selected Knowledge sources say about the AIQSA smoke marker?", type: "text" }]
+      blocks: [{ text: "Which connected tool can look up the AIQSA smoke marker?", type: "text" }]
     },
     forceNonStreaming: true,
     forcedToolName,
     params: { maxTokens: 512, reasoning: { effort: "medium" }, stream: false },
     prompt: {
       developer: null,
-      system: "This is a bounded AIQSA forced Knowledge round smoke test. Search the selected Knowledge sources before answering."
+      system: "This is a bounded AIQSA forced tool round smoke test. Find a connected tool before answering."
     },
     toolChoice: "required",
     tools

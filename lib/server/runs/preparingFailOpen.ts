@@ -6,7 +6,6 @@ import {
 import { MemoryPreparingRunConflictError, memoryPreparingHash } from "./preparingRun";
 import {
   AssistantRunConflictError,
-  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   SkillRunConflictError
@@ -126,9 +125,6 @@ export function nonMemoryPreparationConflictCode(
   }
   if (error instanceof McpRunPlanConflictError || errorNamed(error, "McpRunPlanConflictError")) {
     return "mcp_not_ready";
-  }
-  if (error instanceof KnowledgeRunPlanConflictError || errorNamed(error, "KnowledgeRunPlanConflictError")) {
-    return "knowledge_base_not_available";
   }
   if (error instanceof AssistantRunConflictError || errorNamed(error, "AssistantRunConflictError")) {
     return "assistant_not_available";

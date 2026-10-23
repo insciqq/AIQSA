@@ -162,7 +162,6 @@ export function modelPdfProviderRequest(input: Readonly<{
     chatId: "knowledge-pdf-transcription",
     content: { blocks: [{ text: input.prompt, type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       ...input.snapshot.model.capabilities,
       nativePdfInput: input.mode === "system_model_direct_pdf"

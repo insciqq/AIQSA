@@ -17,7 +17,6 @@ const RUN = "run-1";
 function request(extra: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
     attachmentIds: [], attachments: [], chatId: "chat-1", content: { blocks: [] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
     modelId: "gpt-6-astra", params: {}, prompt: { developer: null, system: null }, provider: "codex", searchPlan: { mode: "all_selected", options: [] },
     toolMode: "auto", ...extra

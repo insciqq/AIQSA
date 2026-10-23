@@ -7,7 +7,6 @@ import { deliverSkillWorkspaceBundle } from "./workspaceDelivery";
 
 function fixture() {
   const request = { attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ type: "text", text: "Question" }] },
-    knowledgePlan: { baseIds: [], sourceIds: [], mode: "none", version: 1 },
     modelCapabilities: { contextWindow: 6_000, defaultMaxOutputTokens: 512, nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
     modelId: "model", provider: "openai", params: {}, prompt: { system: null, developer: null },
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", workspace: {

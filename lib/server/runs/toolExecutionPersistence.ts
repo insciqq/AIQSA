@@ -13,10 +13,6 @@ import {
   compactSearchToolExecutionResult,
   rehydratePersistedSearchToolExecutionResult
 } from "../search/toolResult";
-import {
-  compactKnowledgeToolExecutionResult,
-  rehydratePersistedKnowledgeToolExecutionResult
-} from "../knowledge/toolResult";
 
 const artifactTypes = new Set([
   "answer_review",
@@ -171,17 +167,14 @@ export function parsePersistedToolExecutionResult(
     status: value.status,
     ...(usage ? { usage } : {})
   });
-  return searchResult ? rehydratePersistedKnowledgeToolExecutionResult(searchResult) : null;
+  return searchResult;
 }
 
 export function snapshotToolExecutionResult(
   result: ToolExecutionResult,
   maxBytes: number
 ): ToolLoopJsonValue | null {
-  const knowledgeResult = compactKnowledgeToolExecutionResult(result);
-  const durableResult = knowledgeResult
-    ? compactSearchToolExecutionResult(knowledgeResult)
-    : null;
+  const durableResult = compactSearchToolExecutionResult(result);
   if (!durableResult) return null;
   const snapshot = snapshotToolLoopJson(durableResult, maxBytes);
   return snapshot && parsePersistedToolExecutionResult(
@@ -208,8 +201,7 @@ function toolResultPersistenceFailure(result: ToolExecutionResult, maxBytes: num
   });
   let durable: ToolExecutionResult | null;
   try {
-    const knowledge = compactKnowledgeToolExecutionResult(result);
-    durable = knowledge ? compactSearchToolExecutionResult(knowledge) : null;
+    durable = compactSearchToolExecutionResult(result);
   } catch {
     durable = null;
   }
