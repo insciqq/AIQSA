@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { isUint8Array } from "node:util/types";
 import { readStreamWithAbort } from "../http/byteStream";
-import { compactSearchToolExecutionResult } from "../search/toolResult";
-import type { ToolExecutionResult } from "../tools/types";
 import { ObservationStoreError, type ToolObservationDescriptor } from "./contract";
 
 // Three Search engines, each with at most MAX_SEARCH_FINDINGS_BYTES of findings
@@ -21,14 +19,6 @@ export type SearchObservationOriginal = Readonly<{
   status: "complete" | "error";
   content: readonly [Readonly<{ type: "text"; text: string }>];
 }>;
-
-export function searchObservationOriginal(result: ToolExecutionResult): SearchObservationOriginal | null {
-  // A versioned result must carry exactly its Search owner's canonical text.
-  if (!compactSearchToolExecutionResult(result)) return null;
-  const [part] = result.content;
-  if (result.content.length !== 1 || part?.type !== "text") return null;
-  return { status: result.status, content: [{ type: "text", text: part.text }] };
-}
 
 function decodeSearchObservationOriginal(value: unknown): SearchObservationOriginal | null {
   if (!record(value) || Object.keys(value).sort().join(",") !== "content,status" ||

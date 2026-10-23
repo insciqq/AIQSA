@@ -120,6 +120,8 @@ function readerResponse(reference: ToolObservationDescriptor, fragment: Observat
   return batched;
 }
 
+export type ToolObservationService = ReturnType<typeof createToolObservationService>;
+
 export function createToolObservationService(input: Readonly<{
   repository: ToolObservationRepository;
   storage: StorageAdapter;
