@@ -6,9 +6,11 @@ const mocks = vi.hoisted(() => {
   return {
     artifacts: service("artifacts"),
     images: service("images"),
+    logAllowlist: vi.fn(),
     reconcile: vi.fn(async (_deps: Record<string, unknown>) => undefined),
     reconcileNative: vi.fn(async (_deps: Record<string, unknown>) => ({ settled: 0 })),
     schedulerInput: [] as Array<{ reconcile(signal: AbortSignal): Promise<void> }>,
+    started: vi.fn(),
     skillTools: { kind: "skillTools" },
     storage,
     vision: service("vision"),
@@ -40,13 +42,15 @@ vi.mock("./prismaRepository", () => ({ createPrismaRunRepository: () => ({ kind:
 vi.mock("./runRecovery", () => ({ reconcileInstallationRuns: mocks.reconcile }));
 vi.mock("../engine/defaultEngine", () => ({ defaultNativeRecoveryDeps: (input: Record<string, unknown>) => ({ kind: "nativeRecovery", ...input }) }));
 vi.mock("../engine/recovery", () => ({ reconcileNativeRuns: mocks.reconcileNative }));
+vi.mock("../engine/routing", () => ({ logNativeEngineAllowlist: mocks.logAllowlist }));
 vi.mock("./recoveryScheduler", () => ({
   RunRecoveryScheduler: class {
     constructor(input: { reconcile(signal: AbortSignal): Promise<void> }) { mocks.schedulerInput.push(input); }
+    start() { mocks.started(); }
   }
 }));
 
-import { getDefaultRunRecoveryScheduler } from "./defaultRecoveryScheduler";
+import { getDefaultRunRecoveryScheduler, startDefaultRunRecoveryScheduler } from "./defaultRecoveryScheduler";
 
 afterEach(() => {
   delete (globalThis as { __aiqsaRunRecoveryScheduler?: unknown }).__aiqsaRunRecoveryScheduler;
@@ -83,5 +87,11 @@ describe("default run recovery scheduler", () => {
       storage: mocks.storage,
       workspace: { kind: "workspace", storage: mocks.storage }
     });
+  });
+
+  it("names the native engine's allowlist mode once as recovery starts", () => {
+    startDefaultRunRecoveryScheduler();
+    expect(mocks.logAllowlist).toHaveBeenCalledOnce();
+    expect(mocks.started).toHaveBeenCalledOnce();
   });
 });

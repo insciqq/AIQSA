@@ -125,3 +125,76 @@ describe("native agent loop", () => {
     expect(ports.callModel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("the run's reserved report", () => {
+  /** A harness whose `report` call is the reserved one, outstanding until a batch runs it. */
+  function reservedHarness(responses: readonly ProviderRunResult[], options: Parameters<typeof harness>[1] & Readonly<{
+    budgetExhaustedBy?: string; made?: boolean; timeLeft?: boolean;
+  }> = {}) {
+    let made = options.made ?? false;
+    const reservedRounds: number[] = [];
+    const run = harness(responses, { ...options, batch: (calls) => {
+      if (calls.some((entry) => entry.name === "report")) made = true;
+      const spent = options.budgetExhaustedBy !== undefined && calls.some((entry) => entry.id === options.budgetExhaustedBy);
+      return { ...(spent ? { budgetExhausted: true } : {}), ...options.batch?.(calls) };
+    } });
+    const prepare = run.ports.prepareRequest;
+    const ports: AgentLoopPorts = {
+      ...run.ports,
+      prepareRequest: async (input) => {
+        if (input.reserved) reservedRounds.push(input.round);
+        return prepare(input);
+      },
+      reservedCall: { name: "report", outstanding: () => !made },
+      ...(options.timeLeft === false ? { toolTimeLeft: () => false } : {})
+    };
+    return { ...run, ports, reservedRounds };
+  }
+
+  it("is offered alone once the call budget is spent, and only its call runs", async () => {
+    const { choices, items, ports, reservedRounds } = reservedHarness([
+      response("", [call("c1")]), response("", [call("v1", "report"), call("c2")]), response("Done")
+    ], { budgetExhaustedBy: "c1" });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(reservedRounds).toEqual([2]);
+    expect(vi.mocked(ports.runTools).mock.calls.map(([calls]) => calls.map((entry) => entry.id))).toEqual([["c1"], ["v1"]]);
+    // The other call of the reserved round gets its result without running.
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+  });
+
+  it("is offered after the last tool round too", async () => {
+    const { choices, ports, reservedRounds } = reservedHarness([
+      response("", [call("c1")]), response("", [call("v1", "report")]), response("Done")
+    ], { maxToolRounds: 1 });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(reservedRounds).toEqual([2]);
+  });
+
+  it("is offered once: a reserved round whose response makes only other calls answers without tools next", async () => {
+    const { choices, items, ports, reservedRounds } = reservedHarness([
+      response("", [call("c1")]), response("", [call("c2")]), response("Done")
+    ], { budgetExhaustedBy: "c1" });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(reservedRounds).toEqual([2]);
+    expect(ports.runTools).toHaveBeenCalledTimes(1);
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+  });
+
+  it("is not offered once made, after a batch without progress, or when the tool time ran out", async () => {
+    const made = reservedHarness([response("", [call("v1", "report"), call("c1")]), response("Done")], { budgetExhaustedBy: "c1" });
+    await runAgentLoop(made.ports);
+    expect(made.choices).toEqual(["auto", "none"]);
+    expect(made.reservedRounds).toEqual([]);
+    const stalled = reservedHarness([response("", [call("c1")]), response("Done")], { batch: () => ({ executed: 0 }) });
+    await runAgentLoop(stalled.ports);
+    expect(stalled.choices).toEqual(["auto", "none"]);
+    expect(stalled.reservedRounds).toEqual([]);
+    const late = reservedHarness([response("Done")], { timeLeft: false });
+    await runAgentLoop(late.ports);
+    expect(late.choices).toEqual(["none"]);
+    expect(late.reservedRounds).toEqual([]);
+  });
+});

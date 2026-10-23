@@ -3,6 +3,7 @@ import { defaultAssistantRepository } from "../assistants/defaultAssistants";
 import { getAuthConfig } from "../auth/config";
 import { isTestModeAllowedEnv } from "../auth/csrf";
 import { createPrismaChatTitleGenerator } from "../chats/titleGeneration";
+import { defaultNativeEngineHandlerDeps } from "../engine/defaultEngine";
 import { defaultInstructionPresets } from "../instructions/defaultInstructions";
 import { defaultSkillCatalogRelevance, defaultSkillRepository } from "../skills/defaultSkills";
 import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
@@ -18,7 +19,9 @@ import { installationToolBudgetPolicy } from "./toolBudgets";
 /**
  * Everything the ordinary send admission needs except who is sending: the chat
  * messages route adds the request session, the scheduled task runner the task
- * owner. Both entry points therefore admit through identical services.
+ * owner, Telegram the linked user and answer review the session's initiator.
+ * Every entry point therefore admits through identical services, the native
+ * engine included (`lib/server/engine/routing.ts` decides per run).
  */
 export function createDefaultSendMessageDeps(): Omit<RunHandlerDeps, "resolveAuth" | "scheduledOccurrence"> {
   const storage = createS3StorageAdapter();
@@ -30,6 +33,7 @@ export function createDefaultSendMessageDeps(): Omit<RunHandlerDeps, "resolveAut
     getConfig: () => getAuthConfig(),
     ...defaultRunServices(storage),
     chatPdf: getDefaultChatPdf(),
+    nativeEngine: defaultNativeEngineHandlerDeps(storage),
     workspaceFollowup: getDefaultWorkspaceFollowup(),
     providers: {},
     repository: createPrismaRunRepository(),

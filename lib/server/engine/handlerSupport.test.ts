@@ -15,4 +15,9 @@ describe("the self-service tools' chats", () => {
       expect(selfServiceChat(other)).toBe(false);
     }
   });
+
+  it("never include a scheduled task's occurrence, which changes nothing of its owner's own", () => {
+    expect(selfServiceChat(prepared(), { scheduled: true })).toBe(false);
+    expect(selfServiceChat(prepared(), { scheduled: false })).toBe(true);
+  });
 });

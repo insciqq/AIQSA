@@ -101,7 +101,7 @@ export function defaultNativeToolServices(storage: StorageAdapter, client: Prism
   };
 }
 
-/** The native engine as the interactive send and regenerate routes admit it. */
+/** The native engine as every send entry point and the regenerate route admit it. */
 export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: PrismaClient = prisma): NativeEngineHandlerDeps {
   return {
     allowlist: () => parseNativeEngineUsers(process.env[NATIVE_ENGINE_USERS_ENV]),
