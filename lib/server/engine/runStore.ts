@@ -54,9 +54,24 @@ export function nativeUsageRowId(runId: string, key: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "usageEvent">,
+export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "modelRun" | "usageEvent">,
   memorySourceHooks: MemorySourceMutationHooks = defaultMemorySourceMutationHooks) {
   return {
+    /**
+     * Records when the answer started, once, and returns the run's work
+     * duration exactly as a reload reads it (answer start minus run creation,
+     * `runWorkDurationMs` in `lib/server/chats/prismaRepository.ts`), so the
+     * live answer shows the same figure. Null when the run is not on record.
+     */
+    async answerStarted(scope: NativeRunScope, at: Date): Promise<number | null> {
+      const where = { chatId: scope.chatId, id: scope.runId, userId: scope.userId };
+      await client.modelRun.updateMany({ data: { answerStartedAt: at }, where: { ...where, answerStartedAt: null } });
+      const run = await client.modelRun.findFirst({ select: { answerStartedAt: true, createdAt: true }, where });
+      if (!run?.answerStartedAt) return null;
+      const duration = run.answerStartedAt.getTime() - run.createdAt.getTime();
+      return Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null;
+    },
+
     /**
      * Publishes the answer: the message completes with this text and the run
      * records that its answer exists. Only an active native run of the scope
