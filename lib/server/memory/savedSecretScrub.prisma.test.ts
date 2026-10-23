@@ -18,7 +18,11 @@ import { withLockedMemoryTransaction } from "./persistence/transaction";
 import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS, memoryPurgeTargetType } from "./purge/contract";
 import { registerMemoryDeletionContributors } from "./purge/leaves";
 import { MemoryDeletionContributorRegistry } from "./purge/registry";
-import { createMemorySavedSecretScrubDeletionHandler } from "./savedSecretScrub";
+import {
+  createMemorySavedSecretScrubBackfill,
+  createMemorySavedSecretScrubDeletionHandler,
+  MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID
+} from "./savedSecretScrub";
 import { MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE } from "./savedSecretScrubRequest";
 import { defaultMemorySourceMutationHooks } from "./sourceHooks";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "./sourceState";
@@ -27,7 +31,7 @@ import { MemorySuppressionKeyring } from "./suppressionKeyring";
 const TOKEN = "tok_demo_7f3a9c21b8e4";
 const encryptionKey = randomBytes(32);
 const keyring = MemorySuppressionKeyring.parse(
-  `current=scrub-v1,scrub-v1=${Buffer.alloc(32, 7).toString("base64")}`
+  `current=scrub-v1,scrub-v1=${Buffer.from(Array.from({ length: 32 }, (_, index) => index + 91)).toString("base64")}`
 );
 const scrubHandler = () => createMemorySavedSecretScrubDeletionHandler(prisma, {
   keyring: () => ({ keyring, status: "ready" })
@@ -174,6 +178,23 @@ function automaticValue(canonicalKey: string, displayText: string): MemoryFactVa
   };
 }
 
+/** One automatic fact learned from its own user message. */
+async function saveFact(userId: string, canonicalKey: string, text: string) {
+  const chat = await prisma.chat.create({ data: { title: "Saved secret fact", userId } });
+  const message = await prisma.message.create({ data: {
+    chatId: chat.id, content: textMessageContent(text), role: "user", status: "complete"
+  } });
+  await prisma.chat.update({ data: { activeLeafMessageId: message.id }, where: { id: chat.id } });
+  const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+  return createPrismaMemoryFactRepository(keyring, prisma).save(userId, {
+    evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
+      observedAt: message.createdAt, safeExcerpt: text, safeSourceHash: memorySha256(text),
+      safetyClass: "NORMAL", sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
+    explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(),
+    scopeId: scope.id, value: automaticValue(canonicalKey, text)
+  });
+}
+
 describe("saved secret scrub of existing Memory", () => {
   beforeEach(() => {
     vi.stubEnv("AIQSA_ENCRYPTION_KEY", encryptionKey.toString("base64"));
@@ -288,5 +309,47 @@ describe("saved secret scrub of existing Memory", () => {
     expect(JSON.stringify({ evidence, versions })).not.toContain(TOKEN);
     expect(await prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: coffee.versionId } }))
       .toMatchObject({ displayText: peer, state: "ACTIVE" });
+  });
+
+  it("backfills one cleanup, once, for each owner whose saved secrets predate it", async () => {
+    // Saved before the cleanup existed: the Memory already holds the value and no obligation was recorded.
+    const legacy = await createOwner();
+    const held = await saveFact(legacy, "learned.test_token", `My test token is ${TOKEN}.`);
+    await saveSecret(legacy, TOKEN);
+    await prisma.memoryDeletionOutbox.deleteMany({
+      where: { targetType: MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE, userId: legacy }
+    });
+    // Only a plain value is saved: recorded as done, nothing to clean.
+    const plain = await createOwner();
+    await saveFact(plain, "learned.coffee", "I do not drink coffee.");
+    await saveSecret(plain, "localhost", "DB_HOST");
+    // No Memory at all: nothing to backfill.
+    const empty = await createOwner();
+    await saveSecret(empty, TOKEN);
+    const userIds = [legacy, plain, empty];
+    const backfill = createMemorySavedSecretScrubBackfill(prisma);
+
+    await expect(backfill.reconcile({ userIds })).resolves.toEqual({ enqueued: 1, settled: 1 });
+    // Restarts and repeated passes find every owner done.
+    await expect(backfill.reconcile({ userIds })).resolves.toEqual({ enqueued: 0, settled: 0 });
+    await expect(createMemorySavedSecretScrubBackfill(prisma).reconcile({ userIds }))
+      .resolves.toEqual({ enqueued: 0, settled: 0 });
+    const rows = await prisma.memoryDeletionOutbox.findMany({
+      where: { targetType: MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE, userId: { in: userIds } }
+    });
+    expect(rows).toHaveLength(2);
+    const pending = rows.find(({ userId }) => userId === legacy)!;
+    expect(pending).toMatchObject({
+      operation: "SOURCE_PURGE", state: "PENDING", targetId: MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID
+    });
+    expect(rows.find(({ userId }) => userId === plain)).toMatchObject({
+      state: "SUCCEEDED", targetId: MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID
+    });
+    expect(JSON.stringify(rows)).not.toContain(TOKEN);
+
+    // The backfilled obligation removes the value like any other cleanup.
+    await runDeletion(legacy, pending.id, scrubHandler());
+    expect(await prisma.memoryFact.findUniqueOrThrow({ where: { id: held.factId } }))
+      .toMatchObject({ state: "FORGOTTEN" });
   });
 });

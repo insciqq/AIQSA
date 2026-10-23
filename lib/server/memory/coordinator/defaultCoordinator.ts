@@ -45,6 +45,7 @@ import { repairFencedMemoryHistoryJobs } from "../history/fenceRepair";
 import { workspaceRuntime } from "../../workspace/defaultServices";
 import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
 import { createPrismaMemoryEmbeddingSweep } from "../embedding/sweep";
+import { defaultMemorySavedSecretScrubBackfill } from "../savedSecretScrub";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -62,6 +63,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
   cutover?: () => Promise<unknown>;
   historyFenceRepair?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
+  savedSecretBackfill?: () => Promise<unknown>;
   embeddingSweep?: () => Promise<unknown>;
   extractionHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
@@ -84,6 +86,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
         getDefaultMemoryCoordinatorRuntime().policy.maxJobParallelPerUser
       )
     ),
+    savedSecretBackfill: () => defaultMemorySavedSecretScrubBackfill.reconcile(),
     embeddingSweep: () => defaultMemoryEmbeddingSweep.reconcile(new Date()),
     extractionHeal: () => healFailedMemoryFactExtractions(prisma, { now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
@@ -114,6 +117,8 @@ export async function reconcileDefaultMemoryWork(
     // Released fence casualties are indexed by the same pass's backfill.
     work.historyFenceRepair,
     work.historyBackfill,
+    // Bounded per pass, once per owner: saved secrets older than their cleanup.
+    work.savedSecretBackfill,
     // Bounded once per interval: vectors stranded without live batch work.
     work.embeddingSweep,
     // Bounded per pass and owner; each source holds one key per policy version.

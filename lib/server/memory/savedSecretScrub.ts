@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { logEvent } from "../observability";
 import { prisma } from "../prisma";
+import { getSecretEncryptionKey } from "../secrets/envelope";
 import { MemoryCoordinatorError } from "./coordinator/errors";
 import type { MemoryDeletionHandler } from "./coordinator/types";
 import { invalidateMemoryHistoryHoldingSavedSecret } from "./history/sourceLifecycle";
@@ -9,7 +10,10 @@ import { forgetMemoryFactsHoldingSavedSecret } from "./lifecycle/repository";
 import { memoryValueContainsSavedSecret } from "./persistence/savedSecretMatching";
 import { memorySavedSecretValues } from "./persistence/savedSecrets";
 import { lockMemorySettings } from "./persistence/transaction";
-import { MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE } from "./savedSecretScrubRequest";
+import {
+  MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE,
+  memoryHoldsAnythingSql
+} from "./savedSecretScrubRequest";
 import { loadMemorySuppressionKeyring } from "./suppressionKeyring";
 
 /**
@@ -257,3 +261,125 @@ export function createMemorySavedSecretScrubDeletionHandler(
 }
 
 export const memorySavedSecretScrubDeletionHandler = createMemorySavedSecretScrubDeletionHandler();
+
+/** Target of the one obligation the upgrade backfill records per owner. */
+export const MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID = "upgrade-backfill-v1";
+const BACKFILL_OWNERS_PER_PASS = 16;
+
+export type MemorySavedSecretBackfillResult = Readonly<{
+  /** Owners given a cleanup obligation. */
+  enqueued: number;
+  /** Owners recorded as done because no saved value of theirs is screened. */
+  settled: number;
+}>;
+
+/**
+ * Coordinator reconciliation for secrets saved before the cleanup existed
+ * (decision 2026-10-23). Once per installation, every active owner with a
+ * saved non-browser secret, any Memory fact or history, and no cleanup
+ * obligation yet gets one: a pending obligation when a saved value is
+ * screened, otherwise a completed one that only records the owner as done.
+ * Either row holds no value, so a restart or a repeated pass finds the owner
+ * done, and concurrent passes insert it once. Owners are taken a bounded batch
+ * per pass; a pass that finds none settles the process. Later owners need no
+ * backfill: their saves request the cleanup and Memory written since refuses
+ * or redacts saved values. Without the encryption key a pass changes nothing,
+ * so no owner is recorded done unread.
+ */
+export function createMemorySavedSecretScrubBackfill(
+  client: PrismaClient = prisma,
+  options: Readonly<{ key?: () => Buffer; limit?: number }> = {}
+) {
+  const key = options.key ?? getSecretEncryptionKey;
+  const limit = options.limit ?? BACKFILL_OWNERS_PER_PASS;
+  let done = false;
+  const none: MemorySavedSecretBackfillResult = Object.freeze({ enqueued: 0, settled: 0 });
+
+  async function backfillOwner(userId: string): Promise<"enqueued" | "settled" | null> {
+    const values = await memorySavedSecretValues(client, userId, key);
+    const settings = await client.userMemorySettings.findUnique({
+      select: { memoryGeneration: true },
+      where: { userId }
+    });
+    if (!settings) return null;
+    const now = new Date();
+    const pending = values.length > 0;
+    const { count } = await client.memoryDeletionOutbox.createMany({
+      data: [{
+        memoryGeneration: settings.memoryGeneration,
+        operation: "SOURCE_PURGE",
+        targetId: MEMORY_SAVED_SECRET_BACKFILL_TARGET_ID,
+        targetType: MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE,
+        userId,
+        ...(pending ? {} : { completedAt: now, lastAuditAt: now, state: "SUCCEEDED" as const })
+      }],
+      skipDuplicates: true
+    });
+    if (count !== 1) return null;
+    return pending ? "enqueued" : "settled";
+  }
+
+  return Object.freeze({
+    /** `scope` limits a pass to the given owners and never settles the process. */
+    async reconcile(scope?: Readonly<{ userIds: readonly string[] }>): Promise<MemorySavedSecretBackfillResult> {
+      if ((done && !scope) || scope?.userIds.length === 0) return none;
+      try {
+        key();
+      } catch {
+        logEvent("service_operation", {
+          action: "skip", code: "memory_saved_secret_unreadable", outcome: "degraded",
+          stage: "reconcile", subsystem: "memory"
+        });
+        return none;
+      }
+      const owners = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT owner."id"
+        FROM "User" AS owner
+        INNER JOIN "UserMemorySettings" AS settings ON settings."userId" = owner."id"
+        WHERE owner."status" = 'active'::"UserStatus"
+          ${scope ? Prisma.sql`AND owner."id" IN (${Prisma.join(scope.userIds)})` : Prisma.empty}
+          AND EXISTS (
+            SELECT 1 FROM "WorkspaceSecret" AS secret
+            WHERE secret."userId" = owner."id" AND secret."browserFileName" IS NULL
+          )
+          AND ${memoryHoldsAnythingSql(Prisma.sql`owner."id"`)}
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemoryDeletionOutbox" AS obligation
+            WHERE obligation."userId" = owner."id"
+              AND obligation."operation" = 'SOURCE_PURGE'::"MemoryDeletionOperation"
+              AND obligation."targetType" = ${MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE}
+          )
+        ORDER BY owner."id"
+        LIMIT ${limit}
+      `);
+      if (owners.length === 0) {
+        if (!scope) done = true;
+        return none;
+      }
+      let enqueued = 0;
+      let settled = 0;
+      for (const { id } of owners) {
+        try {
+          const outcome = await backfillOwner(id);
+          if (outcome === "enqueued") enqueued += 1;
+          if (outcome === "settled") settled += 1;
+        } catch (error) {
+          // A later pass retries this owner; the others are not held back.
+          logEvent("service_operation", {
+            action: "retry", code: "memory_saved_secret_backfill", error, outcome: "degraded",
+            stage: "reconcile", subsystem: "memory"
+          });
+        }
+      }
+      if (enqueued + settled > 0) {
+        logEvent("service_operation", {
+          action: "complete", code: "memory_saved_secret_backfill", completed_count: settled,
+          count: enqueued, outcome: "completed", stage: "reconcile", subsystem: "memory"
+        });
+      }
+      return { enqueued, settled };
+    }
+  });
+}
+
+export const defaultMemorySavedSecretScrubBackfill = createMemorySavedSecretScrubBackfill();
