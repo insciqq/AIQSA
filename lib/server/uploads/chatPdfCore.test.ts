@@ -141,7 +141,7 @@ describe("chat PDF adaptive preparation", () => {
     expect(restored).toEqual(admitted);
     expect(chatPdfCompatibilityKey(restored, versions)).toBe(acceptedCompatibilityKey);
     const core = createChatPdfCore({ inspect: vi.fn().mockResolvedValue({ pageCount: 2 }),
-      extractGeometry: vi.fn().mockRejectedValue(new Error("synthetic_native_text_unavailable")), parseDocling: null });
+      extractGeometry: vi.fn().mockRejectedValue(new Error("synthetic_native_text_unavailable")) });
     const planned = await core.plan({ admission: restored, acceptedCompatibilityKey, bytes, onPageCount: vi.fn() });
     expect(planned.plan.compatibilityKey).toBe(acceptedCompatibilityKey);
     expect(planned.plan.units.map(({ route }) => route)).toEqual(["vision_required", "vision_required"]);
@@ -156,12 +156,10 @@ describe("chat PDF adaptive preparation", () => {
     const admitted: ChatPdfAttachmentAdmission = { ...admission(bytes), mode: "use_pdf_reader",
       route: "system_pdf", policyVersion: 2, snapshot: reader.snapshot, authority: reader.authority ?? null };
     const extractGeometry = vi.fn();
-    const parseDocling = vi.fn();
-    const core = createChatPdfCore({ extractGeometry, parseDocling });
+    const core = createChatPdfCore({ extractGeometry });
     const planned = await core.plan({ admission: admitted, bytes, onPageCount: vi.fn() });
     expect(planned.plan.units.map((unit) => unit.route)).toEqual(["pdf_required", "pdf_required"]);
     expect(extractGeometry).not.toHaveBeenCalled();
-    expect(parseDocling).not.toHaveBeenCalled();
     const prepared = await core.page({ admission: admitted, bytes, ...planned, page: 2 });
     expect(prepared.request).toMatchObject({ modelId: "fixture-model", toolChoice: "none", tools: [],
       modelCapabilities: { nativePdfInput: true }, searchPlan: { options: [] } });
@@ -184,7 +182,7 @@ describe("chat PDF adaptive preparation", () => {
     const prepare = async (snapshot: ReturnType<typeof reasoning>) => {
       const admitted: ChatPdfAttachmentAdmission = { ...admission(bytes), mode: "use_pdf_reader",
         route: "system_pdf", policyVersion: 2, snapshot, authority: reader.authority ?? null };
-      const core = createChatPdfCore({ parseDocling: null });
+      const core = createChatPdfCore();
       const planned = await core.plan({ admission: admitted, bytes, onPageCount: vi.fn() });
       return core.page({ admission: admitted, bytes, ...planned, page: 1 });
     };
@@ -200,7 +198,7 @@ describe("chat PDF adaptive preparation", () => {
     const visionReader = { ...vision, snapshot: { ...vision.snapshot!, model: { ...vision.snapshot!.model,
       defaultParams: { reasoning: { effort: "low", enabled: true } },
       capabilities: { ...vision.snapshot!.model.capabilities, reasoning: true, defaultMaxOutputTokens: undefined } } } };
-    const visionCore = createChatPdfCore({ parseDocling: null });
+    const visionCore = createChatPdfCore();
     const visionPlan = await visionCore.plan({ admission: visionReader, bytes, onPageCount: vi.fn() });
     expect((await visionCore.page({ admission: visionReader, bytes, ...visionPlan, page: 1 })).request.params.maxOutputTokens)
       .toBe(32_768);
@@ -216,7 +214,7 @@ describe("chat PDF adaptive preparation", () => {
     const versions = { parserVersion: 14, promptVersion: 6, renderVersion: 1 };
     const acceptedCompatibilityKey = chatPdfCompatibilityKey(admitted, versions);
     expect(acceptedCompatibilityKey).not.toBe(chatPdfCompatibilityKey(admitted));
-    const core = createChatPdfCore({ parseDocling: null });
+    const core = createChatPdfCore();
     const planned = await core.plan({ admission: admitted, bytes, acceptedCompatibilityKey,
       onPageCount: async () => undefined });
     expect(planned.plan).toMatchObject({ ...versions, compatibilityKey: acceptedCompatibilityKey,
@@ -234,7 +232,7 @@ describe("chat PDF adaptive preparation", () => {
 
   it("discovers pages before slow inspection and prepares bounded isolated requests with real native rendering", async () => {
     const bytes = await source();
-    const core = createChatPdfCore({ parseDocling: null });
+    const core = createChatPdfCore();
     const admitted = admission(bytes);
     const count = vi.fn().mockResolvedValue(undefined);
     const planned = await core.plan({ admission: admitted, bytes, onPageCount: count });
@@ -264,7 +262,7 @@ describe("chat PDF adaptive preparation", () => {
       capabilities: { ...original.snapshot!.model.capabilities, imageInputLimits: {
         imageBytes: 9000000, imageCount: 1, imagePixels: 1, payloadBytes: 9000000
       } } } } };
-    const core = createChatPdfCore({ parseDocling: null });
+    const core = createChatPdfCore();
     const planned = await core.plan({ admission: admitted, bytes, onPageCount: async () => undefined });
     expect(planned.plan.limits).toMatchObject({ imageBytes: 6 * 1024 * 1024, imageCount: 1, imagePixels: 1 });
     await expect(core.page({ admission: admitted, bytes, ...planned, page: 1 }))
@@ -273,7 +271,7 @@ describe("chat PDF adaptive preparation", () => {
 
   it("uses local text only for an admitted local route and refuses a silent Vision downgrade", async () => {
     const bytes = await source();
-    const core = createChatPdfCore({ parseDocling: null });
+    const core = createChatPdfCore();
     const admitted = admission(bytes, true);
     const planned = await core.plan({ admission: admitted, bytes, onPageCount: async () => undefined });
     expect(core.assemble({ admission: admitted, ...planned, results: [] }).text).toContain("usable native text");
@@ -285,7 +283,7 @@ describe("chat PDF adaptive preparation", () => {
   it("fences cancelled work and rejects source substitution before parser or provider work", async () => {
     const bytes = await source();
     const inspect = vi.fn();
-    const core = createChatPdfCore({ inspect, parseDocling: null });
+    const core = createChatPdfCore({ inspect });
     await expect(core.plan({ admission: admission(bytes), bytes: Buffer.from("different"), onPageCount: vi.fn() }))
       .rejects.toThrow("pdf_preparation_invalid");
     const controller = new AbortController();

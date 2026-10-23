@@ -18,7 +18,7 @@ function attachment(status: "failed" | "processing" | "ready") {
       fileName: "lifecycle-report.docx",
       id: "attachment-lifecycle-e2e",
       kind: "document",
-      metadata: status === "ready" ? { document: { engine: "docling" } } : {},
+      metadata: status === "ready" ? { document: { engine: "tika" } } : {},
       mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       processingErrorCode: status === "failed" ? "parser_unavailable" : null,
       status,

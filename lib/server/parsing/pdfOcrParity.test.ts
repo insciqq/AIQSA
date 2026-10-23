@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ChatPdfAttachmentAdmission } from "../uploads/chatPdfAdmission";
 import { chatPdfCompatibilityKey, createChatPdfCore } from "../uploads/chatPdfCore";
-import { finalizeParsedDocument } from "./assessment";
 import { modelPdfPageEndMarker, modelPdfPageStartMarker } from "./modelPdfOutput";
 import type { NativePdfGeometry } from "./nativePdf";
 import { pdfOcrImageLimits, preparePdfOcrPage } from "./pdfOcrPipeline";
@@ -67,7 +66,7 @@ describe("attachment PDF OCR", () => {
       .toMatchObject({ imageBytes: 16 * 1024 * 1024, payloadBytes: 32 * 1024 * 1024 });
   });
 
-  const routes = ["no_native", "native", "layout", "math_native_layer"] as const;
+  const routes = ["no_native", "native", "math_native_layer"] as const;
   it.each([19, 20].flatMap(parserVersion => routes.map(route => ({ parserVersion, route }))))(
     "assembles the model transcription with $route and accepted profile $parserVersion", async ({ parserVersion, route }) => {
       const bytes = Buffer.from("%PDF-neutral-parity-source");
@@ -81,9 +80,6 @@ describe("attachment PDF OCR", () => {
         if (route === "no_native") throw new Error("native_unavailable");
         return native;
       });
-      const parseDocling = route === "layout" || route === "math_native_layer" ? vi.fn(async () => finalizeParsedDocument({
-        blocks: native.blocks, engine: "docling", mediaType: "application/pdf", pageCount: 1, status: "complete"
-      })) : null;
       const inspect = vi.fn(async () => ({ pageCount: 1 }));
       const prepare = vi.fn(async () => ({ kind: "images" as const, pageStart: 1, pageEnd: 1,
         images: [{ bytes: image, width: 200, height: 200, sourceWidth: 200, sourceHeight: 200,
@@ -100,7 +96,7 @@ describe("attachment PDF OCR", () => {
       const modelText = [modelPdfPageStartMarker(1), String.raw`The radius is \(q_i\leq\sqrt{7}\,s_i\).`,
         formula, "Region\tMeasure\tValue", "West\tA\t7", "\tB\t11",
         "Figure B4: Sections of 64³ cells.", modelPdfPageEndMarker(1)].join("\n");
-      const core = createChatPdfCore({ inspect, extractGeometry, parseDocling, prepare });
+      const core = createChatPdfCore({ inspect, extractGeometry, prepare });
       const acceptedCompatibilityKey = chatPdfCompatibilityKey(admitted, {
         parserVersion, promptVersion: 8, renderVersion: parserVersion === 19 ? 1 : 2
       });

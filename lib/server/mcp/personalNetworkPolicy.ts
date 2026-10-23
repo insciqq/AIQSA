@@ -149,7 +149,6 @@ const CONFIGURED_ENDPOINTS: readonly Readonly<{ fallback?: string; match: Endpoi
   { match: "any_port", variable: "S3_ENDPOINT" },
   { match: "own_port", variable: "S3_PUBLIC_ENDPOINT" },
   { match: "any_port", variable: "AIQSA_TIKA_URL" },
-  { match: "any_port", variable: "AIQSA_DOCLING_URL" },
   { match: "any_port", variable: "AIQSA_WORKSPACE_RUNNER_URL" },
   { fallback: `http://${AGENT_GATEWAY_HOSTNAME}:4311`, match: "name_only", variable: "AIQSA_AGENT_GATEWAY_URL" },
   { fallback: "http://localhost:3000", match: "own_port", variable: "AIQSA_APP_BASE_URL" }
