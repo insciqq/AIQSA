@@ -227,6 +227,24 @@ export function estimateApproxTokensFromProjectedParts(
   return tokensFromUnits(total);
 }
 
+/**
+ * How much of a window a request reserves for its output. A model's maximum
+ * output (often 64k or more) would fill a small window on its own, so the
+ * reserve never leaves the input less than three quarters of the window, or
+ * `inputTokens`, whichever is smaller. Windows above `inputTokens` plus the
+ * maximum output keep the full maximum as their reserve.
+ */
+export const CONTEXT_OUTPUT_RESERVE = Object.freeze({ inputTokens: 64_000, maxWindowShare: 0.25 });
+
+/** The output a request reserves from `contextWindow` (see `CONTEXT_OUTPUT_RESERVE`). An unknown window keeps the maximum. */
+export function contextOutputReserveTokens(contextWindow: number, maxOutputTokens: number): number {
+  const output = Number.isFinite(maxOutputTokens) ? Math.max(0, Math.floor(maxOutputTokens)) : 0;
+  const window = Number.isFinite(contextWindow) ? Math.floor(contextWindow) : 0;
+  if (window <= 0) return output;
+  const cap = Math.max(Math.floor(window * CONTEXT_OUTPUT_RESERVE.maxWindowShare), window - CONTEXT_OUTPUT_RESERVE.inputTokens);
+  return Math.min(output, cap);
+}
+
 export function calculateContextBudgetLimits({
   contextWindow,
   maxOutputTokens = 0,
@@ -238,7 +256,9 @@ export function calculateContextBudgetLimits({
   const normalizedContextWindow = Math.max(0, Math.floor(contextWindow));
   const requestedMaxOutputTokens = Math.max(0, Math.floor(maxOutputTokens));
   const normalizedMaxOutputTokens =
-    provider === "fake" && requestedMaxOutputTokens >= normalizedContextWindow ? 0 : requestedMaxOutputTokens;
+    provider === "fake" && requestedMaxOutputTokens >= normalizedContextWindow
+      ? 0
+      : contextOutputReserveTokens(normalizedContextWindow, requestedMaxOutputTokens);
   const safetyMarginTokens = Math.floor(normalizedContextWindow * safetyMarginRatio);
 
   return {

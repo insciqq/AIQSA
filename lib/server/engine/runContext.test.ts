@@ -555,6 +555,29 @@ describe("a native run's context", () => {
     expect(JSON.stringify(run.appended)).not.toContain("PRIVATE-MEMORY-FACT");
   });
 
+  it("reserves only a share of a small window for the output: a fresh chat runs, a long one compacts", async () => {
+    // A 40k window with a 65,536-token maximum output left no room for any request.
+    const small = { contextWindow: 40_000, maxOutputTokens: 65_536 };
+    const fresh = transcriptBuilder();
+    fresh.user("What is the capital of France?");
+    const first = harness(fresh.items, { call: async () => summaryReply(), window: small });
+    await expect(first.context.prepare(request(fresh.items))).resolves.toBeDefined();
+    expect(first.calls).toHaveLength(0);
+
+    // A quarter of the window stays reserved: 30,000 tokens are usable.
+    const chat = transcriptBuilder();
+    for (let turn = 1; measured(chat.items) < 28_000; turn += 1) {
+      chat.user(`question ${turn}: ${"q".repeat(200)}`);
+      chat.tool("lookup", { turn }, `result ${turn} ${"r".repeat(2_000)}`);
+      chat.answer(`answer ${turn} ${"a".repeat(300)}`);
+    }
+    expect(measured(chat.items)).toBeLessThan(30_000);
+    const long = harness(chat.items, { call: async () => summaryReply(), window: small });
+    const sent = await long.context.prepare(request(chat.items));
+    expect(long.calls.length).toBeGreaterThanOrEqual(1);
+    expect(firstText(sent).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+  });
+
   it("measures nothing without a window", async () => {
     const chat = workChat(8, 2_000);
     const run = harness(chat.items, { call: async () => summaryReply(), window: null });
