@@ -1748,13 +1748,12 @@ describe("the composer's reasoning effort chip", () => {
       .toBeEnabled();
   });
 
-  it("sits after the tools, and five capabilities and the level keep their labels", () => {
+  it("sits after the tools, beside labelled capabilities", () => {
     // Pending comments count as a chip.
     render(<ComposerV2 {...props({ comments: [{ id: "one", quote: "Fragment", text: "Comment" }], reasoningEffort: reasoning() })} />);
     const row = screen.getByLabelText("Active capabilities");
     const buttons = within(row).getAllByRole("button");
     expect(buttons.at(-1)).toBe(chip());
     expect(buttons.at(-2)).toBe(screen.getByRole("button", { name: "Change Skills mode" }));
-    expect(row).not.toHaveAttribute("data-compact-labels");
   });
 });

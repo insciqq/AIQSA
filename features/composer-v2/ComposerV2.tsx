@@ -1361,11 +1361,6 @@ export function ComposerV2({
   const reasoningDescription = reasoningChip
     ? `Reasoning effort: ${reasoningChip.value}${assistantRowDescription(reasoningProvenance)}`
     : "";
-  // A labelled row holds six chips: the level as the seventh (or later) chip
-  // turns every capability into its icon instead of adding a second row.
-  const otherChipCount = (comments.length > 0 ? 1 : 0) +
-    (searchChipVisible ? 1 : 0) + (knowledgeChipVisible ? 1 : 0) + 2;
-  const compactChipLabels = Boolean(reasoningChip) && otherChipCount >= 6;
   // A refreshed model without a reasoning control takes the level away with
   // its open menu (user actions elsewhere already dismiss it).
   if (layer === "reasoning" && !reasoningChip) {
@@ -1624,8 +1619,7 @@ export function ComposerV2({
 
             {/* The model is chosen in the header (operator, 2026-09-02); the
                 composer row holds only this message's tools. */}
-            <div className="v2-composer-indicators" aria-label="Active capabilities"
-              data-compact-labels={compactChipLabels || undefined}>
+            <div className="v2-composer-indicators" aria-label="Active capabilities">
               <ComposerCommentsV2 key={sessionKey} comments={comments} onUpdate={onUpdateComment} onRemove={onRemoveComment} />
               {searchChipVisible ? (
                 <button ref={searchTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
