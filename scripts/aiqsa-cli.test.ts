@@ -158,7 +158,8 @@ class Fixture {
       { match: " exec -T app node", stdout: "200\n" },
       { match: " exec -T workspace-runner node", stdout: "200 ready \n" },
       { match: " port app 3000", exit: 1 },
-      { match: "^volume inspect", exit: 1 }
+      { match: "^volume inspect", exit: 1 },
+      { match: "^image inspect", exit: 1 }
     ];
     writeFileSync(path.join(this.state, "docker.rules"), [...this.rules, ...defaults]
       .map((rule) => [rule.match, rule.exit ?? 0, escape(rule.stdout ?? ""), escape(rule.stderr ?? ""), rule.delay ?? ""].join("\x1f")).join("\n") + "\n");
@@ -608,6 +609,24 @@ describe("doctor", () => {
     expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm) /mu);
   });
 
+  it("lists docling leftovers with exact removal commands and stays quiet without them", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    const clean = fixture.run(["doctor", "--stack-only"]);
+    expect(clean.status).toBe(0);
+    expect(clean.stdout).not.toContain("docling-leftovers");
+    fixture.rules.push(
+      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=docling", stdout: "c51\n" },
+      { match: "^image inspect ghcr.io/insciqq/aiqsa:docling", stdout: "[]\n" }
+    );
+    const result = fixture.run(["doctor", "--stack-only"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("WARN docling-leftovers: the docling parser was removed");
+    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the docling container");
+    expect(result.stdout).toContain("docker image rm ghcr.io/insciqq/aiqsa:docling");
+    expect(fixture.dockerLog).not.toMatch(/^(rm|image rm) /mu);
+  });
+
   it("reads .env strictly: quotes, CRLF, spaces, export and shell metacharacters", () => {
     const fixture = new Fixture();
     const secret = "pa$$ word`id`$(touch pwned)\"'";
@@ -691,12 +710,12 @@ describe("up and install", () => {
     // Compose lists ps rows by container name: the created app comes first.
     fixture.rules.push(
       { match: " up -d ", exit: 1, stderr: "timeout waiting for services\n" },
-      { match: " ps -a --format", stdout: "app|created||0|c1\nmigrate-bootstrap|exited||0|c2\ndocling|running|starting|0|c4\n" }
+      { match: " ps -a --format", stdout: "app|created||0|c1\nmigrate-bootstrap|exited||0|c2\ntika|running|starting|0|c4\n" }
     );
     const result = fixture.run(["up", "--timeout", "5"]);
     expect(result.status).toBe(5);
-    expect(result.stderr).toContain("Last 60 log lines of docling:");
-    expect(fixture.dockerLog).toContain("logs --no-color --tail 60 docling");
+    expect(result.stderr).toContain("Last 60 log lines of tika:");
+    expect(fixture.dockerLog).toContain("logs --no-color --tail 60 tika");
     expect(fixture.dockerLog).not.toContain("logs --no-color --tail 60 app");
   });
 
@@ -716,7 +735,7 @@ describe("up and install", () => {
   });
 
   it.each([
-    ["an exited service before a still starting one", "app|created||0|c1\nmemory-worker|exited||137|c5\ndocling|running|starting|0|c4\n", "memory-worker"],
+    ["an exited service before a still starting one", "app|created||0|c1\nmemory-worker|exited||137|c5\ntika|running|starting|0|c4\n", "memory-worker"],
     ["a running one-shot before a created service", "app|created||0|c1\nmigrate-bootstrap|running||0|c2\n", "migrate-bootstrap"],
     ["a created service when nothing else is pending", "app|created||0|c1\npostgres|running|healthy|0|c3\n", "app"]
   ])("diagnoses a timeout by rank: %s", (_name, rows, service) => {
@@ -1361,7 +1380,7 @@ describe("logs", () => {
       `app-1  | ${json("fatal", "process_exit")}`,
       `app-1  |   {"timestamp":"t", "level": "error", "event":"spaced"}`
     ]);
-    expect(result.stderr).toContain("plain-text lines (PostgreSQL, Tika, Docling, SeaweedFS) are hidden");
+    expect(result.stderr).toContain("plain-text lines (PostgreSQL, Tika, SeaweedFS) are hidden");
     expectNoSecrets(result.output, body);
   });
 

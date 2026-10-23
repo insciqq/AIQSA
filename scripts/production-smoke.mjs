@@ -15,7 +15,6 @@ const images = JSON.parse(await readFile(process.argv[3], "utf8"));
 const imageKeys = {
   app: "AIQSA_IMAGE",
   postgres: "AIQSA_POSTGRES_IMAGE",
-  docling: "AIQSA_DOCLING_IMAGE",
   tika: "AIQSA_TIKA_IMAGE"
 };
 for (const name of Object.keys(imageKeys)) {
