@@ -236,16 +236,26 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         faults, price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope, store: engine.runs
       });
       let answerPublished = false;
-      let firstOutput = true;
+      // The answer's start, recorded once: at its first streamed text, or at
+      // publication for an answer without text. The work duration a reload
+      // shows is sent live as well, so the steps row reads the same figure.
+      let answerStart: Promise<void> | null = null;
+      const startAnswer = (): Promise<void> => {
+        if (answerStart) return answerStart;
+        const acceptedAt = input.created.acceptedAt;
+        if (acceptedAt) logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
+          duration_ms: Math.max(0, Date.now() - acceptedAt.getTime()), outcome: "completed", providerFamily: snapshot.providerFamily,
+          providerModelId: snapshot.providerModelId, run_id: runId, stage: "first_output" });
+        const at = new Date();
+        // Bookkeeping: its failure never reaches the answer.
+        answerStart = Promise.resolve().then(() => engine.runs.answerStarted(scope, at)).then((workDurationMs) => {
+          if (workDurationMs !== null) sink.send({ data: { artifactType: "work_duration", payload: { workDurationMs } }, type: "artifact" });
+        }).catch(() => undefined);
+        return answerStart;
+      };
       const answer = createAnswerStream({
         onFirstOutput() {
-          if (!firstOutput) return;
-          firstOutput = false;
-          void input.repository.markRunAnswerStarted({ at: new Date(), runId }).catch(() => undefined);
-          const acceptedAt = input.created.acceptedAt;
-          if (acceptedAt) logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
-            duration_ms: Math.max(0, Date.now() - acceptedAt.getTime()), outcome: "completed", providerFamily: snapshot.providerFamily,
-            providerModelId: snapshot.providerModelId, run_id: runId, stage: "first_output" });
+          void startAnswer();
         },
         save: (text) => input.repository.appendAssistantText(scope.assistantMessageId, text, { runId }),
         send: sink.send
@@ -585,6 +595,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         answerPublished = true;
         sink.send({ data: { assistantMessageId: scope.assistantMessageId, runId }, type: "answer_complete" });
+        // Recorded before the settled projection is read, which takes its duration from it.
+        await startAnswer();
         // Answer first: a finished compaction is kept now, a running one goes on detached and never holds the run.
         await context.afterAnswer();
         // The transcript is on record (or given up) before the run completes and the next turn can read it.

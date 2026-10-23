@@ -82,6 +82,15 @@ describe("native run store", () => {
     await expect(prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: open.id } })).resolves.toMatchObject({ state: "error" });
   });
 
+  it("records the answer's start once and returns the work duration a reload reads", async () => {
+    const scope = await nativeRun();
+    const { createdAt } = await prisma.modelRun.findUniqueOrThrow({ select: { createdAt: true }, where: { id: scope.runId } });
+    await expect(store.answerStarted(scope, new Date(createdAt.getTime() + 6_400))).resolves.toBe(6_400);
+    // A later start (a reset after a follow-up) keeps the first.
+    await expect(store.answerStarted(scope, new Date(createdAt.getTime() + 9_000))).resolves.toBe(6_400);
+    await expect(store.answerStarted({ ...scope, userId: "someone-else" }, new Date())).resolves.toBeNull();
+  });
+
   it("publishes nothing for a stopped run or a run of the old core", async () => {
     await expect(store.publishAnswer(await nativeRun("native", "cancelled"), { followupRevision: 0, text: "x" })).resolves.toBe(false);
     await expect(store.publishAnswer(await nativeRun("v1"), { followupRevision: 0, text: "x" })).resolves.toBe(false);
