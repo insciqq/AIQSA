@@ -388,6 +388,16 @@ describe("management results", () => {
         prompt: "Remind me to send the weekly report." }) } }]);
   });
 
+  it("tells the model when the task's runs cannot read links in its prompt until the user saves it", () => {
+    const updated = scheduledTaskManagementResult(call({ action: "update", taskId: "task-1" }),
+      { action: "update", changed: true, task: task({ promptLinksPending: true }) });
+    expect(updated.content).toEqual([{ type: "json", value: expect.objectContaining({ task: expect.objectContaining({
+      linksPending: true, linksNote: expect.stringContaining("opens the task with Edit and saves its instructions once")
+    }) }) }]);
+    expect(JSON.stringify(scheduledTaskManagementResult(call({ action: "get", taskId: "task-1" }),
+      { action: "get", task: task() }).content)).not.toContain("linksPending");
+  });
+
   it("shows a change and a proposal with a card, and an unchanged task without one", () => {
     const unchanged = scheduledTaskManagementResult(call({ action: "pause", taskId: "task-1" }),
       { action: "pause", changed: false, task: task({ status: "paused", nextRunAt: null }) });

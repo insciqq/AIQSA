@@ -737,6 +737,36 @@ describe("answer outputs v2", () => {
     }
   );
 
+  it("shows an image file output inline and in the viewer through the authorized preview, keeping its card", async () => {
+    render(<AnswerOutputsV2 canSaveFiles artifact={{
+      citations: [],
+      generatedFiles: [
+        { attachmentId: "chart-id", byteSize: 226_918, fileName: "profit_by_month_2026.png", mimeType: "image/png",
+          relativePath: "charts/profit_by_month_2026.png" },
+        { attachmentId: "table-id", byteSize: 2_048, fileName: "profit.csv", mimeType: "text/csv", relativePath: "profit.csv" }
+      ],
+      reasoningText: [],
+      sources: []
+    }} />);
+
+    const region = screen.getByRole("region", { name: "Generated files" });
+    const inline = within(region).getAllByRole("img");
+    expect(inline.map((image) => image.getAttribute("src"))).toEqual(["/api/attachments/chart-id/content?preview=image"]);
+    // The card keeps its verbs; the inline image adds no second Download.
+    expect(within(region).getAllByRole("link", { name: "Download" }).map((link) => link.getAttribute("href")))
+      .toEqual(["/api/attachments/chart-id/content", "/api/attachments/table-id/content"]);
+    expect(within(region).queryByRole("button", { name: "profit.csv" })).toBeNull();
+
+    const name = within(region).getByRole("button", { name: "profit_by_month_2026.png" });
+    name.focus();
+    fireEvent.click(name);
+    const viewer = screen.getByRole("dialog", { name: "profit_by_month_2026.png" });
+    expect(viewer.querySelector("img")?.getAttribute("src")).toBe("/api/attachments/chart-id/content?preview=image");
+    fireEvent.keyDown(viewer, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(name).toHaveFocus();
+  });
+
   it("renders settled generated files with safe metadata and authorized downloads", () => {
     render(<AnswerOutputsV2 artifact={{
       citations: [],

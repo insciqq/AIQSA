@@ -1,11 +1,77 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import {
-  parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide,
-  WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES, WORKSPACE_SECRETS_REQUEST_MAX_BYTES
+  WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES
+} from "@/lib/contracts/workspaceSecrets";
+import {
+  parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, workspaceSecretVariables,
+  WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES, WORKSPACE_SECRETS_REQUEST_MAX_BYTES, WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES
 } from "./manifest";
 import type { AcceptedWorkspaceSecret } from "./store";
+
+const saved = (name: string, value: AcceptedWorkspaceSecret["value"]): AcceptedWorkspaceSecret =>
+  ({ id: randomUUID(), versionId: randomUUID(), name, description: "", value });
+
+/** A secret as the run's admitted list describes it, with the size the store records (`createWorkspaceSecretRevision`). */
+const stored = ({ name, value }: AcceptedWorkspaceSecret) => ({ byteSize: Buffer.byteLength(JSON.stringify(value), "utf8"),
+  envNames: value.kind === "env" ? value.entries.map((entry) => entry.name) : [], kind: value.kind, name });
+
+describe("Workspace variables of saved secrets", () => {
+  it("sets a text secret named like a variable under that name in every command, and the guide says which", () => {
+    const secrets = [
+      saved("API access", { kind: "env", entries: [{ name: "SERVICE_TOKEN", value: "synthetic-service" }] }),
+      saved("DEMO_API_TOKEN", { kind: "text", text: "synthetic-demo-token" }),
+      saved("Notes", { kind: "text", text: "synthetic note" }),
+      saved("github_token", { kind: "text", text: "synthetic lowercase" }),
+      saved("SSH_AUTH_SOCK", { kind: "text", text: "synthetic reserved" })
+    ];
+    expect(parseAcceptedWorkspaceSecrets(secrets)).toEqual(secrets);
+    expect(workspaceSecretEnvironment(secrets)).toEqual({ DEMO_API_TOKEN: "synthetic-demo-token", SERVICE_TOKEN: "synthetic-service" });
+    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SERVICE_TOKEN"], ["DEMO_API_TOKEN"], [], [], []]);
+    const guide = workspaceSecretsGuide(secrets);
+    expect(guide).toContain("## DEMO\\_API\\_TOKEN\n\nEnvironment variable (the value is already in command environments): `DEMO_API_TOKEN`\n" +
+      "Text secret:\n```\nsynthetic-demo-token\n```");
+    expect(guide).toContain("## Notes\n\nText secret:\n```\nsynthetic note\n```");
+    expect(guide).toContain("## github\\_token\n\nText secret:\n```\nsynthetic lowercase\n```");
+    expect(guide).toContain("## SSH\\_AUTH\\_SOCK\n\nNot an environment variable here; use the text below.\nText secret:");
+  });
+
+  it("keeps an env secret's variable over a text secret of that name and leaves two text secrets of one name out", () => {
+    const secrets = [
+      saved("SHARED_TOKEN", { kind: "text", text: "synthetic text" }),
+      saved("Shared", { kind: "env", entries: [{ name: "SHARED_TOKEN", value: "synthetic env" }] }),
+      saved("TWIN", { kind: "text", text: "synthetic first" }),
+      saved("TWIN", { kind: "text", text: "synthetic second" })
+    ];
+    expect(workspaceSecretEnvironment(secrets)).toEqual({ SHARED_TOKEN: "synthetic env" });
+    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([[], ["SHARED_TOKEN"], [], []]);
+    expect(workspaceSecretsGuide(secrets).match(/Not an environment variable here/gu)).toHaveLength(3);
+  });
+
+  it("bounds a text variable like one env value, and the saved environment by its budget, as the stored sizes predict", () => {
+    // A text value's stored size is its JSON plus 25 bytes of kind.
+    const largest = saved("LARGEST", { kind: "text", text: "x".repeat(WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES - 25) });
+    const larger = saved("LARGER", { kind: "text", text: "x".repeat(WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES - 24) });
+    expect(Object.keys(workspaceSecretEnvironment([largest, larger]))).toEqual(["LARGEST"]);
+    // Env secrets use most of the budget; the first text variable still fits, the next does not.
+    const env = saved("Bulk", { kind: "env", entries: Array.from({ length: 8 }, (_, index) => ({ name: `BULK_${index}`, value: "v".repeat(16_000) })) });
+    const small = saved("SMALL", { kind: "text", text: "synthetic small" });
+    const medium = saved("MEDIUM", { kind: "text", text: "m".repeat(4_000) });
+    const bounded = [env, small, medium];
+    expect(parseAcceptedWorkspaceSecrets(bounded)).toEqual(bounded);
+    expect(Object.keys(workspaceSecretEnvironment(bounded))).toEqual([...Array.from({ length: 8 }, (_, index) => `BULK_${index}`), "SMALL"]);
+    expect(workspaceSecretVariables(bounded.map(stored)).map((names) => names.length)).toEqual([8, 1, 0]);
+    // Long names and escape-heavy values: the environment the guest receives stays within its bound.
+    const many = Array.from({ length: 32 }, (_, index) =>
+      saved(`T${String(index).padStart(2, "0")}${"_".repeat(117)}`, { kind: "text", text: "\n".repeat(8_000) }));
+    expect(parseAcceptedWorkspaceSecrets(many)).toEqual(many);
+    const environment = workspaceSecretEnvironment(many);
+    expect(Object.keys(environment).length).toBeGreaterThan(0);
+    expect(Object.keys(environment).length).toBeLessThan(many.length);
+    expect(Buffer.byteLength(JSON.stringify(environment), "utf8")).toBeLessThanOrEqual(WORKSPACE_SECRET_ENV_MAX_BYTES);
+    expect(workspaceSecretVariables(many.map(stored)).flat()).toEqual(Object.keys(environment));
+  });
+});
 
 describe("accepted Workspace secret installation", () => {
   it("keeps original files separate, names literal, and text accessible without exposing env/key values in the guide", () => {

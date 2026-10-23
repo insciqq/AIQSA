@@ -1726,18 +1726,24 @@ export function PowerAppShellV2({
     return resolveChatAddress(route, resolution, await catalog);
   }
 
+  /**
+   * Leaves Studio (through its draft and busy guards) before a navigation to
+   * a chat, so the chat shows instead of only taking the address behind it.
+   */
+  function leaveStudioThen(proceed: () => void) {
+    if (studio.busy) return;
+    const studioOpen = !projectContext &&
+      Boolean(librarySnapshot.open || knowledgeSnapshot.open || memoryOpen);
+    // An open Skill dialog is keyed by the chat and would drop its unsaved draft.
+    requestSkillDialogNavigation(() => {
+      if (studioOpen) studio.exit(proceed);
+      else proceed();
+    });
+  }
+
   useChatRouteHistory({
     currentRoute: chatRouteForState,
-    requestNavigation(proceed) {
-      if (studio.busy) return;
-      const studioOpen = !projectContext &&
-        Boolean(librarySnapshot.open || knowledgeSnapshot.open || memoryOpen);
-      // An open Skill dialog is keyed by the chat and would drop its unsaved draft.
-      requestSkillDialogNavigation(() => {
-        if (studioOpen) studio.exit(proceed);
-        else proceed();
-      });
-    },
+    requestNavigation: leaveStudioThen,
     resolve(route, resolution) {
       void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
     }
@@ -2325,23 +2331,25 @@ export function PowerAppShellV2({
     projectRunContextRef.current = projectContext;
   }, [projectCatalog, projectContext]);
   // Scheduled results: unread rows, one notice per new result, seen on open.
+  const scheduledChatVisible = !projectContext && !librarySnapshot.open && !knowledgeSnapshot.open && !memoryOpen && !settingsOpen;
   useScheduledTaskUpdates({
     accountId,
     activeChatId,
-    chatVisible: !projectContext && !librarySnapshot.open && !knowledgeSnapshot.open && !memoryOpen && !settingsOpen,
+    chatVisible: scheduledChatVisible,
     onNewResult: (task) => {
       const result = scheduledTaskResultNotice(task);
       if (!result) return;
       const chatId = result.open === "chat" ? task.chatId : null;
-      // The open chat rereads its transcript itself; elsewhere the notice opens the chat or the task's runs.
-      const open = chatId !== null && chatId === useWorkspaceStore.getState().activeChatId;
+      // The shown chat rereads its transcript itself; elsewhere the notice opens the chat or the task's runs.
+      const open = chatId !== null && scheduledChatVisible && chatId === useWorkspaceStore.getState().activeChatId;
       setNotice({
         ...(open ? {} : {
           action: {
             label: "Open",
             onClick: () => {
               setNotice(null);
-              if (chatId) void activatePersonalChatDeepLink(chatId);
+              // Like a chat row: Studio closes and the chat opens as one history entry.
+              if (chatId) leaveStudioThen(() => navigateChatRoute(() => void activatePersonalChatDeepLink(chatId)));
               else studio.open("scheduled");
             }
           }

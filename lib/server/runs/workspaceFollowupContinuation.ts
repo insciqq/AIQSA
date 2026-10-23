@@ -1,3 +1,4 @@
+import { nativeRunResponse, nativeRunServices, type NativeEngineHandlerDeps } from "../engine/handlerSupport";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { NormalizedRunRequest } from "../providers/types";
@@ -19,6 +20,8 @@ type Dependencies = Omit<RunExecutionInput,
   "adapter" | "created" | "prepared" | "repository" | "userId" | "toolBridge" | "searchRuntimes" | "structuredOutputAdapter"> & Readonly<{
   followups: ReturnType<typeof createWorkspaceFollowupRepository>;
   kickPdf(): void;
+  /** Starts a native successor (`ModelRun.engine = native`); without it such a successor fails visibly. */
+  nativeEngine?: NativeEngineHandlerDeps;
   providerRuntime: ProviderRuntimeResolver;
   repository: RunRepository;
   storage: StorageAdapter;
@@ -36,6 +39,9 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     if (prepared.project && !await deps.repository.isProjectRunAccessCurrent?.({ ...prepared.project, userId: claim.userId })) {
       throw new WorkspaceFollowupError("workspace_followup_unavailable");
     }
+    // A native successor starts on the native engine once the predecessor handed its Workspace off, like an old-core one.
+    const nativeEngine = loaded.modelRun.engine === "native" ? deps.nativeEngine : undefined;
+    if (loaded.modelRun.engine === "native" && !nativeEngine) throw new WorkspaceFollowupError("workspace_followup_unavailable");
     const admission = (): PreparingRunAdmissionInput => ({
       ...prepared, admissionKind: "NORMAL_SEND", chatId: loaded.modelRun.chatId,
       content: prepared.normalizedRequest.content, expectedActiveLeafId: prepared.expectedActiveLeafId,
@@ -57,21 +63,27 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       claim.userId, prepared.normalizedRequest.attachmentIds, { capabilities: prepared.normalizedRequest.modelCapabilities,
         limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled,
         ...(prepared.project ? { projectId: prepared.project.projectId } : {}) });
-    const recovered = loaded.modelRun.status === "streaming" && !loaded.modelRun.workspaceWaitPending
+    // A native successor is never resumed here: one already past its activation was cut off, and native recovery ends it.
+    const recovered = !nativeEngine && loaded.modelRun.status === "streaming" && !loaded.modelRun.workspaceWaitPending
       ? loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest | null : null;
     // A request accepted under the retired context policy ends before its
-    // budget, provider or tool step.
-    if (contextCompactionPolicyRetired(recovered ?? prepared.normalizedRequest)) {
+    // budget, provider or tool step (the old core's policy; the native engine keeps its own context).
+    if (!nativeEngine && contextCompactionPolicyRetired(recovered ?? prepared.normalizedRequest)) {
       throw new WorkspaceFollowupError(CONTEXT_COMPACTION_POLICY_RETIRED.code);
     }
-    const budget = applyProviderRequestContextBudget({
-      request: { ...prepared.providerRequest, ...(recovered ?? {}), attachments },
-      ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {})
-    });
-    if (!budget.ok || !budget.request.context) throw new WorkspaceFollowupError("workspace_followup_invalid");
-    prepared = { ...prepared, contextTruncation: budget.contextTruncation,
-      normalizedRequest: { ...(recovered ?? prepared.normalizedRequest), context: budget.request.context },
-      providerRequest: budget.request, providerRequestPreview: runtime.adapter.buildRequestPreview(budget.request) };
+    if (nativeEngine) {
+      // The native engine measures and compacts its own context: the run keeps its admitted branch, with its attachments.
+      prepared = { ...prepared, providerRequest: { ...prepared.providerRequest, attachments } };
+    } else {
+      const budget = applyProviderRequestContextBudget({
+        request: { ...prepared.providerRequest, ...(recovered ?? {}), attachments },
+        ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {})
+      });
+      if (!budget.ok || !budget.request.context) throw new WorkspaceFollowupError("workspace_followup_invalid");
+      prepared = { ...prepared, contextTruncation: budget.contextTruncation,
+        normalizedRequest: { ...(recovered ?? prepared.normalizedRequest), context: budget.request.context },
+        providerRequest: budget.request, providerRequestPreview: runtime.adapter.buildRequestPreview(budget.request) };
+    }
     let created: CreatedRun = { assistantMessageId: admitted.assistantMessageId, runId: claim.runId, userMessageId: admitted.userMessageId };
     if (loaded.modelRun.status === "preparing") {
       if (!deps.repository.continueWorkspacePreparedRun) throw new WorkspaceFollowupError("workspace_followup_unavailable");
@@ -92,8 +104,14 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     signal.throwIfAborted();
     if (!await deps.followups.markAnswerDispatched(claim)) throw new WorkspaceFollowupError("workspace_followup_unavailable");
     releaseRegistry();
-    const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, agentResponses: runtime.agentResponses, created, prepared,
-      searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
+    const entry = snapshot.native;
+    const response = nativeEngine
+      ? nativeRunResponse(nativeEngine, { adapter: runtime.adapter, ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
+        ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
+        repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
+        userId: claim.userId, ...(deps.workspace ? { workspace: deps.workspace } : {}) })
+      : createRunExecutionResponse({ ...deps, adapter: runtime.adapter, agentResponses: runtime.agentResponses, created, prepared,
+        searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
     void (async () => {
       const reader = response.body?.getReader();
       if (!reader) return;

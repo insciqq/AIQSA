@@ -20,6 +20,7 @@ import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { quoteSelectionInComposer } from "@/components/app-shell/composerQuoteSelection";
 import { composerCommentRefusalMessage } from "@/components/app-shell/composerComments";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { composerDraftTooLargeToStore, subscribeComposerDraftRefusals } from "@/components/app-shell/composerDraftStorage";
 import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { boundedRouteId, parseChatRoutePath } from "@/lib/domain/chatRoute";
@@ -614,23 +615,33 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     activateArtifactLibraryAccount(session.accountId);
     closeArtifactPanel(false);
   }, [session.accountId]);
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has("library")) return;
-    // The account-scoped OAuth owner consumes the destination with its outcome.
-    if (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth")) return;
-    const target = libraryTabGroups.flatMap(group => group.tabs).find(id => id === url.searchParams.get("library"));
+  /**
+   * Opens the Studio destination of a `?library=<tab>` query: on load from the
+   * address, and from a card link inside a chat, which keeps the chat's
+   * address because Studio has none of its own.
+   */
+  const openLibraryQuery = useEventCallback((query: URLSearchParams) => {
+    const target = libraryTabGroups.flatMap(group => group.tabs).find(id => id === query.get("library"));
     // `?library=assistants&assistant=<id>` opens that Assistant's detail sheet; both are consumed together.
-    const assistantLink = url.searchParams.has("assistant") ? boundedRouteId(url.searchParams.get("assistant")) : undefined;
-    url.searchParams.delete("library");
-    url.searchParams.delete("assistant");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    const assistantLink = query.has("assistant") ? boundedRouteId(query.get("assistant")) : undefined;
     if (!target) return;
     if (settings.studio) {
       if (target === "assistants" && assistantLink !== undefined) settings.studio.open(target, () => openAssistantDetail(assistantLink));
       else settings.studio.open(target);
     } else settings.openLibrary();
-  }, [settings]);
+  });
+  const openLibraryHref = (href: string) => openLibraryQuery(new URL(href, window.location.origin).searchParams);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("library")) return;
+    // The account-scoped OAuth owner consumes the destination with its outcome.
+    if (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth")) return;
+    const query = new URLSearchParams(url.searchParams);
+    url.searchParams.delete("library");
+    url.searchParams.delete("assistant");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    openLibraryQuery(query);
+  }, [openLibraryQuery, settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   /** Groups of monitoring checks with no update the reader opened, by group id. */
   const [openScheduledChecks, setOpenScheduledChecks] = useState<ReadonlySet<string>>(() => new Set());
@@ -1743,6 +1754,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onOpenArtifact={projectContext || temporarySession ? undefined : (generated, source) => {
                   if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source);
                 }}
+                onOpenLibrary={openLibraryHref}
                 onStartAssistantChat={workspace.pane.actions.openAssistantAddress}
                 onUseImageInArtifact={projectContext || temporarySession || !composer.reuseFile ? undefined : async (attachmentId) => {
                   const chatId = session.activeChatId;

@@ -24,7 +24,8 @@ const SECRETS = [
 ];
 
 function entry(value: AcceptedWorkspaceSecret): RunSecretEntry {
-  return { description: value.description, envNames: value.value.kind === "env" ? value.value.entries.map((item) => item.name) : [],
+  return { byteSize: Buffer.byteLength(JSON.stringify(value.value)), description: value.description,
+    envNames: value.value.kind === "env" ? value.value.entries.map((item) => item.name) : [],
     kind: value.value.kind, name: value.name, valueId: value.versionId };
 }
 

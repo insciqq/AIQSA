@@ -103,7 +103,7 @@ Studio sections and their addresses (give the user these links):
 
   secrets: `# Secrets
 - Kinds: Text (a token or note), Environment (KEY=value variables), SSH key (private key and optional passphrase), File (any file, original bytes) and Browser session (a saved website sign-in for the Workspace browser, created there).
-- The agent reads values with read_secret in any chat, without the Workspace. In the Workspace they are environment variables and files, listed in /workspace/SECRETS.md.
+- The agent reads values with read_secret in any chat, without the Workspace. In the Workspace every command gets an Environment secret's variables, and a Text secret named like a variable (capitals, digits and underscores, such as DEMO_API_TOKEN) under that name; SSH keys and files are files; /workspace/SECRETS.md lists what each secret provides.
 - Accepted risk: a value the agent reads goes to the model provider and stays in that chat's history; it never appears in logs.
 - Limits: ${WORKSPACE_SECRET_MAX_COUNT} secrets and ${limit(WORKSPACE_SECRET_TOTAL_MAX_BYTES)} in total, ${limit(WORKSPACE_SECRET_ENV_MAX_BYTES)} of environment variables, ${limit(WORKSPACE_SECRET_FILE_MAX_BYTES)} per file. Variable names are unique across secrets.
 - The agent can create, update and rename secrets when the user asks (manage_secret); a new secret's card offers Undo. Earlier values are not kept, so replacing a value cannot be undone. Deleting waits for the user's click in the card. Studio: /?library=secrets.`,
@@ -125,6 +125,7 @@ Studio sections and their addresses (give the user these links):
   scheduled_tasks: `# Scheduled tasks
 - A scheduled task runs a saved prompt as the user: once, daily, weekly, monthly or every few hours within a window, in the task's time zone. Standard tasks post their result; monitoring tasks check for a change and stay quiet when there is none.
 - A task can use web search, the user's tools and Skills (in Auto mode, plus pinned Skills), the Workspace and Memory; it needs no approval for MCP calls while it runs. Results can also arrive by email or Telegram.
+- A run reads only the web pages whose links are in its saved instructions, besides what its own web search finds. When a task depends on particular sites, write their exact links into the instructions and tell the user which sources it uses. A link the agent added that the user did not write in the chat is allowed once the user opens the task and saves its instructions.
 - Limits: ${SCHEDULED_TASK_MAX_ACTIVE} active tasks (${SCHEDULED_TASK_MAX_ACTIVE_HOURLY} of them hourly) and ${SCHEDULED_TASK_MAX_TOTAL} in total.
 - The agent creates tasks with create_scheduled_task and changes, pauses or resumes them with manage_scheduled_task; deleting waits for the user's click. The model and how long old chats are kept are changed by the user in the task's editor: /?library=scheduled.`,
 

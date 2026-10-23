@@ -16,7 +16,7 @@ function prepared(overrides: Record<string, unknown> = {}, request: Record<strin
 }
 
 const route = (input: Partial<Parameters<typeof nativeEngineRoute>[0]> = {}) => nativeEngineRoute({
-  allowlist: parseNativeEngineUsers("user-1"), prepared: prepared(), user, workspacePredecessor: false, ...input
+  allowlist: parseNativeEngineUsers("user-1"), prepared: prepared(), user, ...input
 });
 
 describe("native engine routing", () => {
@@ -80,6 +80,5 @@ describe("native engine routing", () => {
     expect(route({ prepared: prepared({}, { modelCapabilities: {} }) })).toMatchObject({ reason: "tool_calling_unverified" });
     expect(route({ prepared: prepared({ chatPdfAdmissions: [{ route: "prepared_text" }] }) })).toMatchObject({ reason: "deferred_preparation" });
     expect(route({ prepared: prepared({ chatPdfAdmissions: [{ route: "direct_pdf" }] }) })).toEqual({ engine: "native" });
-    expect(route({ workspacePredecessor: true })).toMatchObject({ reason: "workspace_predecessor" });
   });
 });

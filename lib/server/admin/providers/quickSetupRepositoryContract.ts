@@ -28,10 +28,14 @@ export type AdminProviderQuickSetupActor = Readonly<{
 export type AdminProviderQuickSetupInspection = Readonly<{
   actingUserDefault: boolean;
   authorized: boolean;
-  /** Whether the family's canonical (template) connection row exists. */
+  /**
+   * Whether the family's canonical (template) connection is in use: its row
+   * exists and is more than the unconfigured bootstrap placeholder, which the
+   * family's first setup configures (`isUnconfiguredProviderTemplate`).
+   */
   canonicalConnection: boolean;
   configured: boolean;
-  /** Display names of every connection of this family, for distinct naming. */
+  /** Display names of every connection of this family but the placeholder, for distinct naming. */
   connectionNames: readonly string[];
   fingerprint: string;
   mode: "initial" | "recovery" | "replacement" | null;
@@ -63,7 +67,7 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
   candidate: AdminProviderQuickSetupPolicyCandidate;
   candidates: readonly AdminProviderQuickSetupPolicyCandidate[];
   checkedAt: Date;
-  /** Name for a canonical connection created by this commit; ignored otherwise. */
+  /** Name for a canonical connection this commit creates or first activates; ignored otherwise. */
   connectionDisplayName?: string;
   credential: Readonly<{
     draftVersion: number;

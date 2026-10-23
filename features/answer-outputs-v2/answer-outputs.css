@@ -129,6 +129,28 @@
   white-space: nowrap;
 }
 
+/* An image file's name opens the image viewer. */
+.v2-generated-file-name {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: start;
+  cursor: zoom-in;
+}
+
+.v2-generated-file-name > strong {
+  display: block;
+}
+
+.v2-generated-file-name:hover > strong {
+  text-decoration: underline;
+}
+
 .v2-generated-file-copy small {
   color: var(--v2-color-text3);
   font-size: 0.75rem;

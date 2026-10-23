@@ -262,6 +262,35 @@ describe("check summaries", () => {
     expect(modelEditorCheck(connection, model, "cred-primary", NOW)).toMatchObject({ status: "Check failed", message: expect.stringContaining("No earlier result is available.") });
   });
 
+  it("names an optional probe the saved check could not confirm instead of calling the check failed", () => {
+    const connection = workingConnection();
+    const model = connection.models[0]!;
+    const verified = "verified" as const;
+    connection.activeChecks = [fixtureCheck({ credentialId: "cred-primary", providerModelId: model.id, evidence: {
+      capabilitySetup: { policyVersion: 2,
+        attempts: { hostedSearch: { attempts: 1, reason: "timeout", status: "incomplete" } },
+        checks: { directPdf: verified, forcedToolCall: verified, hostedSearch: "incomplete", modelAccess: verified, streaming: verified,
+          structuredOutput: verified, toolCalling: verified, vision: verified } },
+      compatibility: { directPdf: verified, forcedToolCall: verified, modelAccess: verified, probeVersion: 2, streaming: verified,
+        structuredOutput: verified, toolCalling: verified, usage: verified, vision: verified },
+      detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: model.draftConfig.upstreamModelId
+    } })];
+    // The automatic check saved everything but Hosted Search, so its run lists the model as failed.
+    connection.checkRun = fixtureCheckRun({ credentialId: "cred-primary", failed: [model.id], id: "run", state: "completed" });
+    const result = modelEditorCheck(connection, model, "cred-primary", NOW);
+    expect(result).toMatchObject({ status: "Check incomplete",
+      message: "The last check with key Primary could not confirm Hosted Search (check timed out). Everything else it checked was saved." });
+    expect(result.summary).toMatch(/works without hosted Search; tools and JSON output are fine\.$/u);
+    expect(result.summary).not.toMatch(/works without tools/u);
+    // A check that could not finish at all still says so.
+    connection.activeChecks = [{ ...connection.activeChecks[0]!, latestRefreshError: { code: "provider_refresh_failed", version: 1 } }];
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW)).toMatchObject({ status: "Check failed",
+      message: expect.stringContaining("could not finish") });
+    // So does a run that failed after an older saved result.
+    connection.activeChecks = [{ ...connection.activeChecks[0]!, checkedAt: "2026-09-07T12:00:00.000Z", latestRefreshError: null }];
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW).status).toBe("Check failed");
+  });
+
   it.each(["credential version", "model version", "connection version", "model removed"])("keeps stale check summaries out of Edit after %s changes", (change) => {
     const connection = workingConnection();
     const model = connection.models[0]!;

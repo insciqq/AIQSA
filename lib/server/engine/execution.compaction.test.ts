@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
@@ -92,6 +93,7 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
   } satisfies ToolCallStore;
   let published: string | null = null;
   const runs = {
+    workDurationMs: vi.fn(async () => null as number | null),
     applyUsageTotals: vi.fn(async () => undefined),
     complete: vi.fn(async () => true),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { published = input.text; return true; }),
@@ -128,7 +130,7 @@ function repository() {
 }
 
 /** Each test its own chat: compactions that outlive their run are listed per chat, process-wide. */
-function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`): MaterializedPreparedRunData {
+function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`, defaultMaxOutputTokens = 1_000): MaterializedPreparedRunData {
   const text = (value: string) => ({ blocks: [{ text: value, type: "text" }] });
   const request = {
     attachmentIds: [], attachments: [], chatId, content: text("Next step, please."),
@@ -138,7 +140,7 @@ function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`): Mater
       { content: text("Next step, please."), id: "current-user-message", role: "user" as const }
     ], mode: "branch_path" as const },
     knowledgePlan: { baseIds: [], mode: "none" as const, sourceIds: [], version: 1 as const },
-    modelCapabilities: { contextWindow, defaultMaxOutputTokens: 1_000, nativePdfInput: false, nativeSearch: false, pdf: false,
+    modelCapabilities: { contextWindow, defaultMaxOutputTokens, nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system: "Be brief." }, provider: "fake",
     searchPlan: { mode: "all_selected" as const, options: [] }, toolMode: "auto" as const
@@ -176,6 +178,19 @@ const firstText = (request: ProviderRunRequest) => {
 };
 
 describe("native run compaction", () => {
+  it("asks a small window for no more output than its reserve, so input and output together fit it", async () => {
+    for (const [window, expected] of [[40_000, 10_000], [200_000, undefined]] as const) {
+      const scripted = scriptedAdapter([{ text: "Paris." }]);
+      const memory = memoryEngine([]);
+      await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+        prepared: prepared(window, undefined, 65_536), repository: repository() as unknown as RunRepository, services: {},
+        userId: "user" }));
+      expect(memory.published()).toBe("Paris.");
+      // A large window keeps the configured output: nothing is added to the request.
+      expect(scripted.answers[0]!.params.maxOutputTokens).toBe(expected);
+    }
+  });
+
   it("completes the turn that crosses the background threshold without waiting; its run records the compaction when it finishes", async () => {
     const scripted = scriptedAdapter([{ text: "Done with the next step." }], 300);
     const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
@@ -221,6 +236,36 @@ describe("native run compaction", () => {
     expect(scripted.answers[1]!.history?.some((item) => item.type === "tool_call" && item.callId === "call-read")).toBe(true);
     expect(compactionStatuses(result)).toEqual([expect.objectContaining({ state: "complete" })]);
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["tool_call", "tool_result", "compaction", "assistant_text"]);
+  });
+
+  it("records the context the chat header shows from the engine's own measure, which drops once a compaction is in", async () => {
+    const scripted = scriptedAdapter([
+      { calls: [{ arguments: { handle: `tor1_${"a".repeat(32)}` }, id: "call-read", name: "read_tool_result" }] },
+      { text: "Read it; continuing." }
+    ]);
+    const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const runRepository = repository();
+    const contextWindow = windowFor(0.78);
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(contextWindow), repository: runRepository as unknown as RunRepository, services: {}, userId: "user" }));
+    // On record (the chat detail reads the latest run's latest one) and live, each as the header decodes it.
+    const recorded = runRepository.appendRunOutputEvent.mock.calls.flatMap(([, event]) => {
+      const artifact = event as { data?: { artifactType?: string; payload?: unknown }; type?: string };
+      return artifact.type === "artifact" && artifact.data?.artifactType === "context_status"
+        ? [decodeSessionContextStatus(artifact.data.payload)] : [];
+    });
+    const live = result.filter((event) => event.type === "artifact" && event.data.artifactType === "context_status");
+    expect(recorded.map((status) => status?.phase)).toEqual(["request", "request", "after_answer"]);
+    expect(live).toHaveLength(3);
+    const [first, second, settled] = recorded as SessionContextStatus[];
+    // The first request carries the whole earlier work; the second its summary and kept tail, after the swap.
+    expect(first!.approximateInputTokens).toBeGreaterThan(CONTEXT_TOKENS);
+    expect(second!.approximateInputTokens).toBeLessThan(first!.approximateInputTokens);
+    // After the answer: the provider's input report of the last request (100) plus the answer added after it.
+    expect(settled!.approximateInputTokens).toBeGreaterThan(100);
+    expect(settled!.approximateInputTokens).toBeLessThan(second!.approximateInputTokens);
+    expect(settled).toMatchObject({ contextWindow, droppedMessages: 0, loadedTools: expect.any(Number), modelId: "fake-qsa",
+      provider: "fake", version: 1 });
   });
 
   it("compacts in the foreground on a size rejection and sends the request once more", async () => {

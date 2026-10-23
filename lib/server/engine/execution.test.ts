@@ -71,6 +71,7 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     settle: vi.fn(async () => true)
   } satisfies ToolCallStore;
   const runs = {
+    workDurationMs: vi.fn(async () => null as number | null),
     applyUsageTotals: vi.fn(async () => { order.push("usage-totals"); }),
     complete: vi.fn(async () => { order.push("complete"); return true; }),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { order.push("publish"); published = input.text; return true; }),
@@ -138,10 +139,46 @@ describe("native run execution", () => {
     const memory = memoryEngine();
     const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
       repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
-    expect(result.map((event) => event.type)).toEqual(["run_start", "message_start", "artifact", "token", "token", "answer_complete", "done"]);
+    expect(result.map((event) => event.type))
+      .toEqual(["run_start", "artifact", "message_start", "artifact", "token", "token", "answer_complete", "done"]);
     expect(memory.published()).toBe("Hello there.");
     expect(memory.order).toEqual(["publish", "complete", "usage-rows", "usage-totals"]);
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text"]);
+  });
+
+  it("reports the whole run as its work duration once the answer is published, however early it talked", async () => {
+    // A preamble, a tool round, then the rest of the answer.
+    const { adapter } = scriptedAdapter([
+      { calls: [{ arguments: { key: "A-1" }, id: "call-1", name: "mcp_jira_get_issue" }], text: "Let me check. " },
+      { text: "A-1 is open." }
+    ]);
+    const memory = memoryEngine();
+    memory.runs.workDurationMs.mockImplementation(async () => {
+      memory.order.push("duration");
+      return 127_000;
+    });
+    const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot }), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    const durations = result.flatMap((event) => event.type === "artifact" && event.data.artifactType === "work_duration"
+      ? [event.data.payload] : []);
+    // Announced without a value at the start, so the live answer never shows a client guess; the figure after publication.
+    expect(durations).toEqual([{ workDurationMs: null }, { workDurationMs: 127_000 }]);
+    expect(memory.runs.workDurationMs).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }));
+    expect(memory.order.slice(0, 3)).toEqual(["publish", "duration", "complete"]);
+    const types = result.map((event) => event.type === "artifact" ? `${event.type}:${event.data.artifactType}` : event.type);
+    expect(types.lastIndexOf("artifact:work_duration")).toBeGreaterThan(types.indexOf("answer_complete"));
+  });
+
+  it("keeps the answer when the duration cannot be read", async () => {
+    const { adapter } = scriptedAdapter([{ text: "Done." }]);
+    const memory = memoryEngine();
+    memory.runs.workDurationMs.mockRejectedValue(new Error("database_unavailable"));
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    expect(memory.published()).toBe("Done.");
   });
 
   it("shows the whole answer when every usage write fails", async () => {

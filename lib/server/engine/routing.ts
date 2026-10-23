@@ -10,8 +10,9 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
  * Telegram, scheduled task occurrences and answer review steps. Everything
  * else stays on the old core: Project and Knowledge work, Codex Agent turns,
  * a model without verified tool calling or whose adapter cannot replay the
- * neutral history, and a send that must wait for PDF preparation or for the
- * previous answer's Workspace (those continuations run on the old core).
+ * neutral history, and a send that must wait for PDF preparation (that
+ * continuation runs on the old core). A send behind the previous answer's
+ * Workspace hand-off waits for it as a Workspace follow-up on either engine.
  */
 export const NATIVE_ENGINE_USERS_ENV = "AIQSA_NATIVE_ENGINE_USERS";
 
@@ -69,8 +70,7 @@ export type NativeEngineRefusal =
   | "knowledge"
   | "not_listed"
   | "project_chat"
-  | "tool_calling_unverified"
-  | "workspace_predecessor";
+  | "tool_calling_unverified";
 
 export type NativeEngineRoute = Readonly<{ engine: "native" }> | Readonly<{ engine: "v1"; reason: NativeEngineRefusal }>;
 
@@ -78,8 +78,6 @@ export function nativeEngineRoute(input: Readonly<{
   allowlist: NativeEngineAllowlist;
   prepared: MaterializedPreparedRunData;
   user: Readonly<{ email: string | null; id: string }>;
-  /** The send waits for the previous answer's Workspace to settle. */
-  workspacePredecessor: boolean;
 }>): NativeEngineRoute {
   const refuse = (reason: NativeEngineRefusal): NativeEngineRoute => ({ engine: "v1", reason });
   if (!nativeEngineAllowsUser(input.allowlist, input.user)) return refuse("not_listed");
@@ -93,6 +91,5 @@ export function nativeEngineRoute(input: Readonly<{
   }
   if (request.modelCapabilities.toolCalling !== true) return refuse("tool_calling_unverified");
   if (prepared.chatPdfAdmissions?.some((admission) => admission.route !== "direct_pdf")) return refuse("deferred_preparation");
-  if (input.workspacePredecessor) return refuse("workspace_predecessor");
   return { engine: "native" };
 }
