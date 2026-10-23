@@ -11,7 +11,6 @@ import type {
   ChatContextStats,
   WorkspaceChatSummary,
   CatalogModel,
-  FolderSummary,
   ThreadMessage
 } from "@/components/app-shell/types";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
@@ -32,10 +31,8 @@ type PowerAppShellViewModelInput = {
   draft: string;
   contextConfigurationKey?: string;
   contextRejectionGeneration?: number | null;
-  folders: FolderSummary[];
   maxOutputTokens: string;
   pendingChatFolderId: string | null;
-  projectSettingsFolderId: string | null;
   renderActiveLeafId: string | null;
   runSurface: RunSurfaceSnapshot;
   selectedAssistantPromptCharacterCount: number | null;
@@ -126,9 +123,7 @@ export function usePowerAppShellViewModel({
   draft,
   contextConfigurationKey,
   contextRejectionGeneration = null,
-  folders,
   maxOutputTokens,
-  projectSettingsFolderId,
   renderActiveLeafId,
   runSurface,
   selectedAssistantPromptCharacterCount,
@@ -175,7 +170,6 @@ export function usePowerAppShellViewModel({
     () => summarizeThreadArtifacts(runEvents),
     [runEvents]
   );
-  const projectSettingsFolder = folders.find((folder) => folder.id === projectSettingsFolderId) ?? null;
   const activeChatTitle = activeChat?.title ?? "New Chat";
   const composerDisabledHint =
     catalog && catalog.models.length === 0
@@ -358,7 +352,6 @@ export function usePowerAppShellViewModel({
     currentModel,
     currentParameterControls,
     liveArtifactSummary,
-    projectSettingsFolder,
     renderActiveLeafId,
     threadFollowKey,
     threadReadingAnchorKey,

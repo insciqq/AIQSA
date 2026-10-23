@@ -14,14 +14,14 @@ Personal Memory: what it may learn, who may change it, how it is retrieved and f
 - A request to save a credential, to create or change the assistant's own resources (Skills, Assistants, scheduled tasks, saved secrets), or a standing instruction for how to do a kind of task is never a Memory command (operator report 2026-10-23).
 - A pending acknowledgement promises nothing; only a committed receipt confirms a change.
 - Inbound Memory MCP is a separate delegated boundary: an active owner-bound OAuth grant authorizes only the exact validated facts-only call, and it creates no chat, run or System Model call.
-- Optional retrieval signals (scores, rerankers, usefulness) never weaken ownership, lifecycle, deletion, safety, or the Project and temporary-chat fences.
+- Optional retrieval signals (scores, rerankers, usefulness) never weaken ownership, lifecycle, deletion, safety, or the Temporary and Excluded chat fences.
 
 ## Scope and settings
 
-- Memory is global per user. Temporary and Project chats neither create nor receive any Memory state. Public shares strip all of it. Legacy non-global or Project data is never widened into Personal Memory.
+- Memory is global per user. Temporary chats neither create nor receive any Memory state. Public shares strip all of it. Legacy non-global data is never widened into Personal Memory.
 - Imported chats, their continuations and branch copies are Excluded and cannot be resumed (operator decision 2026-10-04); a database check in `prisma/migrations/20261005121500_chat_import_source/` enforces this for every writer.
 - Preferences default to on, and upgrades preserve choices and pauses. Pausing stops new use and work but deletes nothing. Resume admits only messages after its cutoff; there is never an automatic historical backfill.
-- Memory has its own Utility Model role; editing the System Model never changes it. A verified Memory Utility Model assignment authorizes Memory generation without a separate egress consent. Verified Knowledge embeddings may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
+- Memory has its own Utility Model role; editing the System Model never changes it. A verified Memory Utility Model assignment authorizes Memory generation without a separate egress consent. The installation embedding default, frozen in the retired Knowledge profile row until a Memory-owned setting replaces it (`agent_docs/PERSISTENCE.md`), may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
 
 ## What Memory keeps
 
@@ -48,7 +48,7 @@ Maintenance runs whenever Memory and automatic learning are on (`lib/server/memo
 ## Retrieval
 
 - Ordinary personal turns get a small fixed standing set of current facts, with no dynamic retrieval or external call (`lib/server/memory/retrieval/readBudget.ts`). Deeper recall is an optional read-only tool for the answer model.
-- Codex Agent runs, temporary, Excluded and Project chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
+- Codex Agent runs, temporary and Excluded chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
 - Every hit rejoins its current owner, source, content hash, lifecycle, generation, suppression, deletion and expiry proof before fusion and again before the evidence pack is frozen. An OpenSearch failure falls back to PostgreSQL without weakening those checks.
 - Empty, limited, failed and cancelled searches stay distinct, and none proves absence. The standing set is partial, so the model should search before calling a personal detail unknown.
 - Search permissions, destinations and budgets freeze at acceptance (`lib/server/memory/search/admission.ts`), and source authority is rechecked before every disclosure to a model. Exception: context notes may hold Memory search results and, like assistant answers in history, are not rechecked or scrubbed by Forget, edit, exclusion or reset.

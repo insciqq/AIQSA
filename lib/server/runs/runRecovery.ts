@@ -293,7 +293,6 @@ import {
   type ContextSummaryReceiptWrite,
   type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
-  type ProjectRunRecoveryAuthority,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
@@ -382,7 +381,6 @@ export type RunRecoveryRepository = Pick<
   | "hasPendingPdfPreparation"
   | "hasPendingWorkspacePreparation"
   | "interruptExpiredAgentRun"
-  | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
   | "loadKnowledgeFullContextDispatchRecovery"
@@ -428,16 +426,12 @@ export type RunRecoveryDeps = Readonly<{
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   knowledgeAdmission?: Readonly<{
     authorizeSnapshot?(input: {
-      executionScope?: "project";
-      projectId?: string;
       snapshot: KnowledgeRunAdmissionAuthorizationSnapshot;
       userId: string;
     }): Promise<boolean>;
     load(input: {
-      executionScope?: "project";
       knowledgePlan: ProviderRunRequest["knowledgePlan"];
       preferredProfileRevisionId?: string;
-      projectId?: string;
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
@@ -458,11 +452,9 @@ export type RunRecoveryDeps = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
-    prepareProject?(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>): Promise<McpRunPlanResult>;
   }>;
   providerAdmission?: Readonly<{
     load(input: {
-      executionScope?: "project";
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
@@ -638,7 +630,7 @@ function focusedAnswerFailure(error: unknown): ReturnType<typeof focusedKnowledg
  */
 async function recoveredKnowledgeImageObservation(deps: RunRecoveryDeps, input: Readonly<{
   request: Pick<NormalizedRunRequest, "chatId" | "content" | "knowledgeAnswerWorkflowVersion" | "knowledgeGenerationBudget" | "knowledgeImageObservation">;
-  control: Readonly<{ modelId: string; provider: string; project?: ProjectRunRecoveryAuthority }>;
+  control: Readonly<{ modelId: string; provider: string }>;
   runId: string;
   signal: AbortSignal;
   userId: string;
@@ -654,7 +646,7 @@ async function recoveredKnowledgeImageObservation(deps: RunRecoveryDeps, input: 
   const outcome = await deps.vision.observeKnowledgeImages({
     plan, question: textFromContentBlocks(input.request.content), chatId: input.request.chatId, runId: input.runId, userId: input.userId,
     authorize: () => plan.route === "answer_model" ? currentDirectAnswerDispatchAllowed(deps, input.control, input.userId)
-      : input.control.project ? currentProjectRecoveryAuthorityAllowed(deps, input.control.project, input.userId) : Promise.resolve(true),
+      : Promise.resolve(true),
     ...(plan.route === "answer_model" && input.request.knowledgeGenerationBudget
       ? { timeoutMs: input.request.knowledgeGenerationBudget.timeoutMs,
         maxOutputTokens: knowledgeImageObservationAnswerOutputTokens(input.request.knowledgeGenerationBudget) } : {}),
@@ -1244,40 +1236,6 @@ function recoveredToolCallRoutes(context: RecoveryToolContext): ToolCallRoutes {
   };
 }
 
-async function currentProjectRecoveryAuthorityAllowed(
-  deps: RunRecoveryDeps,
-  project: ProjectRunRecoveryAuthority,
-  userId: string
-): Promise<boolean> {
-  if (!deps.repository.isProjectRunAccessCurrent || !deps.providerAdmission) {
-    return false;
-  }
-  try {
-    const accessCurrent = await deps.repository.isProjectRunAccessCurrent({
-      accessRevision: project.accessRevision,
-      instructionsRevision: project.instructionsRevision,
-      memoryRevision: project.memoryRevision,
-      policyRevision: project.policyRevision,
-      projectId: project.projectId,
-      userId
-    });
-    if (!accessCurrent) return false;
-    const current = await deps.providerAdmission.load({
-      executionScope: "project",
-      providerConnectionId: project.providerConnectionId,
-      providerModelId: project.providerModelId,
-      ...(project.providerRequiresClientTools
-        ? { requiresClientToolCoexistence: true }
-        : {}),
-      searchPlan: project.providerSearchPlan,
-      userId
-    });
-    return current.fingerprint === project.providerAdmissionFingerprint;
-  } catch {
-    return false;
-  }
-}
-
 async function loadRecoveryRunControl(
   deps: RunRecoveryDeps,
   runId: string,
@@ -1288,47 +1246,20 @@ async function loadRecoveryRunControl(
     : deps.repository.getRunControlForUser(runId, userId);
 }
 
-async function failProjectRecoveryAuthority(
+/** Projects are removed (operator decision 2026-10-23): a run left active in a
+ * legacy Project chat never resumes, and recovery ends it without provider or
+ * tool I/O. */
+async function endedLegacyProjectRun(
   deps: RunRecoveryDeps,
-  control: Readonly<{ assistantMessageId: string | null }>,
-  runId: string,
-  message = "Project provider authority is no longer current."
-): Promise<void> {
-  if (!control.assistantMessageId) return;
-  await failRecoveredRun(deps.repository,
-    runId,
-    control.assistantMessageId,
-    { code: "provider_admission_changed", message },
-    { recoveryTerminal: true }
-  );
-}
-
-async function projectRecoveryAuthorityAllowsProceed(
-  deps: RunRecoveryDeps,
-  control: Readonly<{
-    assistantMessageId: string | null;
-    project?: ProjectRunRecoveryAuthority;
-    projectRecoveryInvalid?: true;
-  }>,
-  runId: string,
-  userId: string
+  control: Readonly<{ assistantMessageId: string | null; legacyProjectChat?: true }>,
+  runId: string
 ): Promise<boolean> {
-  if (control.projectRecoveryInvalid) {
-    await failProjectRecoveryAuthority(
-      deps,
-      control,
-      runId,
-      "The saved Project run does not contain complete recovery authority."
-    );
-    return false;
-  }
-  if (control.project && !(await currentProjectRecoveryAuthorityAllowed(
-    deps,
-    control.project,
-    userId
-  ))) {
-    await failProjectRecoveryAuthority(deps, control, runId);
-    return false;
+  if (!control.legacyProjectChat) return false;
+  if (control.assistantMessageId) {
+    await failRecoveredRun(deps.repository, runId, control.assistantMessageId, {
+      code: "provider_admission_changed",
+      message: "Projects were removed, so this run cannot continue."
+    }, { recoveryTerminal: true });
   }
   return true;
 }
@@ -1337,14 +1268,10 @@ async function currentDirectAnswerDispatchAllowed(
   deps: RunRecoveryDeps,
   control: Readonly<{
     modelId: string;
-    project?: ProjectRunRecoveryAuthority;
     provider: string;
   }>,
   userId: string
 ): Promise<boolean> {
-  if (control.project) {
-    return currentProjectRecoveryAuthorityAllowed(deps, control.project, userId);
-  }
   if (!deps.repository.loadEntitlements) return process.env.NODE_ENV !== "production";
   try {
     return validateRunAccess(await deps.repository.loadEntitlements(userId), {
@@ -1359,7 +1286,6 @@ async function currentDirectAnswerDispatchAllowed(
 async function currentFocusedKnowledgeRecoveryAuthorization(
   deps: RunRecoveryDeps,
   input: Readonly<{
-    project?: ProjectRunRecoveryAuthority;
     runId: string;
     userId: string;
   }>
@@ -1383,8 +1309,6 @@ async function currentFocusedKnowledgeRecoveryAuthorization(
       return { authorized: false, failure: "authorization_changed", scope: null };
     }
     const authorized = await authorizeSnapshot({
-      ...(input.project ? { executionScope: "project" as const } : {}),
-      ...(input.project ? { projectId: input.project.projectId } : {}),
       snapshot: scope,
       userId: input.userId
     });
@@ -1428,13 +1352,6 @@ async function currentDirectSearchDispatchAllowed(
 async function currentRecoverySearchDispatchAllowed(
   context: RecoveryToolContext
 ): Promise<boolean> {
-  if (context.run.project) {
-    return currentProjectRecoveryAuthorityAllowed(
-      context.deps,
-      context.run.project,
-      context.run.userId
-    );
-  }
   if (!context.deps.repository.loadEntitlements ||
     !context.deps.repository.isSearchStrategyEnabled) {
     return process.env.NODE_ENV !== "production";
@@ -1459,19 +1376,13 @@ async function currentRecoveryMcpDispatchFailure(
   callName: string,
   generationId: string
 ): Promise<McpDispatchFailureCode | null> {
-  if (context.run.project && !(await currentProjectRecoveryAuthorityAllowed(
-    context.deps, context.run.project, context.run.userId
-  ))) return "memory_egress_destination_revoked";
   if (!context.deps.mcp) return process.env.NODE_ENV !== "production" ? null : "mcp_runtime_unavailable";
   const route = resolveMcpRunTool(context.activeMcpSnapshot, callName);
   if (!route) return "mcp_accepted_generation_changed";
   try {
     if (!(await context.deps.mcp.filterTools(context.run.userId, [route.tool])).length) return "mcp_tool_access_denied";
     const selection = { allowedToolNames: [route.tool.namespacedName] };
-    const current = context.run.project
-      ? context.deps.mcp.prepareProject
-        ? await context.deps.mcp.prepareProject(context.run.userId, [route.serverId], selection) : null
-      : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId], ...selection });
+    const current = await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId], ...selection });
     return currentMcpDispatchFailure(current, route, generationId);
   } catch {
     return "mcp_runtime_unavailable";
@@ -1749,11 +1660,7 @@ async function executePersistedToolCallInContext(
   if (context.fetchSession && isFetchUrlCall(context.run.normalizedRequest, call.name) &&
     (claim.kind === "claimed" || claim.kind === "ambiguous")) {
     // A page request that may have left before the process stopped is never
-    // sent again; a new one rechecks Project authority before it leaves.
-    if (claim.kind === "claimed" && context.run.project &&
-      !(await currentProjectRecoveryAuthorityAllowed(context.deps, context.run.project, context.run.userId))) {
-      throw new ToolLoopRecoveryError("project_access_changed", "Project access changed during the run");
-    }
+    // sent again.
     const result = claim.kind === "ambiguous" ? fetchUrlInterruptedResult(call)
       : await context.fetchSession.execute(call, { persistedToolCallId: persisted.id, signal });
     const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
@@ -2117,7 +2024,6 @@ async function executePersistedToolCallInContext(
           ? await context.deps.images!.authorize(context.run.normalizedRequest.imagePlan!)
           : isRecoveredKnowledgeCall(context, call.name)
           ? (await currentFocusedKnowledgeRecoveryAuthorization(context.deps, {
-              ...(context.run.project ? { project: context.run.project } : {}),
               runId: context.run.id,
               userId: context.run.userId
             })).authorized
@@ -2178,8 +2084,7 @@ async function executePersistedToolCallInContext(
       result = preflightResult;
     } else if (isRecoveredSkillCall(context, call.name)) {
       if (!context.deps.skillTools) throw recoveryToolUnavailable("skill_tool_unavailable");
-      const execute = () => context.deps.skillTools!.execute(call, { ...executionContext,
-        ...(context.run.project ? { projectId: context.run.project.projectId } : {}) });
+      const execute = () => context.deps.skillTools!.execute(call, executionContext);
       const manifest = decodeFrozenSkillManifest(context.run.normalizedRequest.skills);
       const skill = manifest && [...manifest.pinned, ...manifest.available].find(skill => skill.alias === call.arguments.skill);
       result = context.run.normalizedRequest.toolObservationVersion === 1 && skill
@@ -2593,7 +2498,6 @@ async function recoverCheckpointedToolLoop(
       {
         capabilities: run.normalizedRequest.modelCapabilities,
         runId: run.id,
-        ...(run.project ? { projectId: run.project.projectId } : {}),
         limits: attachmentLimits,
         signal,
         workspaceEnabled: run.normalizedRequest.workspace !== undefined
@@ -2877,16 +2781,6 @@ async function recoverCheckpointedToolLoop(
           throw new ToolLoopRecoveryError(
             "memory_egress_receipt_unavailable",
             "Provider dispatch evidence is unavailable."
-          );
-        }
-        if (run.project && !(await currentProjectRecoveryAuthorityAllowed(
-          deps,
-          run.project,
-          run.userId
-        ))) {
-          throw new ToolLoopRecoveryError(
-            "provider_admission_changed",
-            "Project provider authority is no longer current."
           );
         }
         if (requestHasHostedSearchCapability(request) &&
@@ -4183,7 +4077,6 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
   control: Readonly<{
     chatId: string;
     modelId: string;
-    project?: ProjectRunRecoveryAuthority;
     provider: string;
   }>;
   deps: RunRecoveryDeps;
@@ -4254,7 +4147,6 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
       capabilities: normalizedRequest.modelCapabilities,
       runId: input.runId,
       limits: attachmentLimits,
-      ...(input.control.project ? { projectId: input.control.project.projectId } : {}),
       signal: input.signal
     }
   );
@@ -4316,7 +4208,6 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
   adapter: ProviderAdapter;
   control: Readonly<{
     modelId: string;
-    project?: ProjectRunRecoveryAuthority;
     provider: string;
   }>;
   deps: RunRecoveryDeps;
@@ -4355,7 +4246,6 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
 
   try {
     const knowledgeAuthorization = await currentFocusedKnowledgeRecoveryAuthorization(input.deps, {
-      ...(input.control.project ? { project: input.control.project } : {}),
       runId: input.runId,
       userId: input.userId
     });
@@ -4367,10 +4257,8 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
     }
     if (!(await currentDirectAnswerDispatchAllowed(input.deps, input.control, input.userId))) {
       throw new ToolLoopRecoveryError(
-        input.control.project ? "provider_admission_changed" : "model_not_available",
-        input.control.project
-          ? "Project provider authority is no longer current."
-          : "The selected model is no longer available."
+        "model_not_available",
+        "The selected model is no longer available."
       );
     }
     if (egressReceiptRequired && !input.deps.memoryEgress &&
@@ -4749,7 +4637,6 @@ async function recoverKnowledgeAnswerGrounding(
   const authorize = async (): Promise<void> => {
     if (input.signal.aborted) throw new ToolLoopRecoveryStopped();
     const knowledge = await currentFocusedKnowledgeRecoveryAuthorization(deps, {
-      ...(input.control.project ? { project: input.control.project } : {}),
       runId: input.runId,
       userId: input.userId
     });
@@ -4765,7 +4652,7 @@ async function recoverKnowledgeAnswerGrounding(
       input.userId
     ))) {
       throw new ToolLoopRecoveryError(
-        input.control.project ? "provider_admission_changed" : "model_not_available",
+        "model_not_available",
         "The accepted answer-model authority is no longer current."
       );
     }
@@ -4996,12 +4883,6 @@ async function recoverKnowledgeAnswerGrounding(
     input.userId
   );
   if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
-  if (!(await projectRecoveryAuthorityAllowsProceed(
-    deps,
-    latest,
-    input.runId,
-    input.userId
-  ))) return;
   const persistedUsage = await deps.repository.loadRunUsageAttributions({
     runId: input.runId,
     userId: input.userId
@@ -5253,8 +5134,7 @@ async function refreshProviderRunOnceRegistered(
   if (!control || !isRefreshableRun(control)) {
     return;
   }
-  if (!(await projectRecoveryAuthorityAllowsProceed(deps, control, runId, userId))) return;
-
+  if (await endedLegacyProjectRun(deps, control, runId)) return;
   const publishedAnswer = await deps.repository.loadPublishedRunAnswer?.({ runId, userId });
   if (publishedAnswer) {
     const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
@@ -5566,7 +5446,6 @@ async function refreshProviderRunOnceRegistered(
           );
         }
         const authorization = await currentFocusedKnowledgeRecoveryAuthorization(deps, {
-          ...(control.project ? { project: control.project } : {}),
           runId,
           userId
         });
@@ -5603,7 +5482,6 @@ async function refreshProviderRunOnceRegistered(
           capabilities: acceptedRequest.modelCapabilities,
           runId,
           limits: attachmentLimits,
-          ...(control.project ? { projectId: control.project.projectId } : {}),
           signal
         });
         if (attachments.length !== attachmentIds.length) {
@@ -5992,15 +5870,6 @@ async function refreshProviderRunOnceRegistered(
     return;
   }
 
-  if (control.project && !(await currentProjectRecoveryAuthorityAllowed(
-    deps,
-    control.project,
-    userId
-  ))) {
-    await failProjectRecoveryAuthority(deps, control, runId);
-    return;
-  }
-
   const adapter = directAdapter ??
     (await resolveAnswerRuntime(deps, runId, control.provider))?.adapter ?? null;
   if (!directlyRefreshed && !adapter?.refresh) {
@@ -6051,13 +5920,6 @@ async function refreshProviderRunOnceRegistered(
   if (!latestBeforeAppend || !isRefreshableRun(latestBeforeAppend)) {
     return;
   }
-  if (!(await projectRecoveryAuthorityAllowsProceed(
-    deps,
-    latestBeforeAppend,
-    runId,
-    userId
-  ))) return;
-
   const refreshedProviderResponseId =
     refreshed.result?.providerResponseId ?? refreshed.providerResponseId ?? latestBeforeAppend.providerResponseId;
   if (refreshedProviderResponseId && refreshedProviderResponseId !== latestBeforeAppend.providerResponseId) {
@@ -6097,13 +5959,6 @@ async function refreshProviderRunOnceRegistered(
   if (!latestBeforeFinalize || !isRefreshableRun(latestBeforeFinalize)) {
     return;
   }
-  if (!(await projectRecoveryAuthorityAllowsProceed(
-    deps,
-    latestBeforeFinalize,
-    runId,
-    userId
-  ))) return;
-
   if (refreshed.result?.synthesisToolCallForbidden || (refreshed.result?.toolCalls?.length ?? 0) > 0) {
     const payload = refreshed.result?.synthesisToolCallForbidden
       ? TOOL_SYNTHESIS_FAILURE
@@ -6287,12 +6142,7 @@ export async function reconcileInstallationRuns(
     // Observe each rejection before allSettled preserves independent progress.
     return observeRecoveryRun(run.id, run.userId, () => recoverOrEndInvalidRun(deps, run.id, run.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, run.userId);
-      if (control && !(await projectRecoveryAuthorityAllowsProceed(
-        deps,
-        control,
-        run.id,
-        run.userId
-      ))) return;
+      if (control && await endedLegacyProjectRun(deps, control, run.id)) return;
       if (await deps.repository.hasPendingPdfPreparation?.(run.id) ||
         await deps.repository.hasPendingWorkspacePreparation?.(run.id)) return;
       if (await deps.repository.loadPublishedRunAnswer?.({ runId: run.id, userId: run.userId })) {
@@ -6367,13 +6217,7 @@ export async function reconcileStaleRuns(
     // logged it, and the run stays for a later attempt.
     await observeRecoveryRun(run.id, input.userId, () => recoverOrEndInvalidRun(deps, run.id, input.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, input.userId);
-      if (control && !(await projectRecoveryAuthorityAllowsProceed(
-        deps,
-        control,
-        run.id,
-        input.userId
-      ))) return;
-
+      if (control && await endedLegacyProjectRun(deps, control, run.id)) return;
       if (await deps.repository.hasPendingPdfPreparation?.(run.id) ||
         await deps.repository.hasPendingWorkspacePreparation?.(run.id)) return;
       if (await deps.repository.loadPublishedRunAnswer?.({ runId: run.id, userId: input.userId })) {

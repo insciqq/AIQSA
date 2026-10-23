@@ -14,7 +14,6 @@ import { appUrl, formatSignInTime } from "@/components/admin/signIn/signInView";
 import { UiV2Button } from "@/components/ui-v2";
 import { ADMIN_SCIM_ACTIVE_TOKEN_MAX, type AdminScimToken, type AdminScimTokenRequest } from "@/lib/contracts/adminScim";
 import { SCIM_LINK_METHODS, type ScimLinkMethod } from "@/lib/contracts/authSignInMethods";
-import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const helpClass = "text-xs leading-5 text-ink-muted";
@@ -30,10 +29,8 @@ const scimFailureMessages: Record<string, string> = {
   admin_disabled: "an administrator disabled the account, so SCIM could not re-enable it",
   invalid_request: "the identity provider sent a request AIQSA could not accept",
   last_admin: "the deactivation would have left no active administrator",
-  // Projects are disabled (`lib/domain/disabledAreas.ts`), so ownership cannot move.
-  owner_transfer_required: PROJECTS_ENABLED
-    ? "a deactivated user still owns Projects alone; transfer their ownership"
-    : "a deactivated user still owns Projects alone, and Projects are turned off, so the account stays active with its sessions revoked",
+  // Recorded before the upgrade that removed shared ownership; kept readable.
+  owner_transfer_required: "the deactivation waited for an ownership transfer",
   request_failed: "AIQSA could not complete the request",
   token_invalid: "the bearer token is unknown or revoked",
   uniqueness: "a user or group with that name or external ID already exists"
@@ -250,7 +247,7 @@ export function ScimSignInCard({ appBaseUrl, controller, state }: AdminSignInMet
     <SignInMethodCardFrame
       controller={controller}
       copyValues={[{ label: "SCIM base URL", value: appUrl(appBaseUrl, "/scim/v2") }]}
-      description="Your identity provider (Entra ID, Okta, Authentik and others) creates, updates and deactivates users and groups over SCIM 2.0. A deactivation ends the user's sessions and connected apps at once; a user who alone owns a Project stays active until ownership moves."
+      description="Your identity provider (Entra ID, Okta, Authentik and others) creates, updates and deactivates users and groups over SCIM 2.0. A deactivation ends the user's sessions and connected apps at once."
       draft={draft}
       healthWording={scimHealthWording}
       state={state}

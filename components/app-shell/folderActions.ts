@@ -3,12 +3,10 @@ import {
   composerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
-import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type { WorkspaceChatSummary, FolderSummary, NameSaveResult, Notice } from "@/components/app-shell/types";
 import type { WorkspaceFolderMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 import { sortFoldersByOrder, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import { EMPTY_KNOWLEDGE_SELECTION } from "@/lib/contracts/knowledge";
 
 type FolderActionsInput = {
   activeChat: WorkspaceChatSummary | null;
@@ -224,64 +222,10 @@ export function createFolderActions({
     }
   }
 
-  async function saveProjectSettings(folder: FolderSummary) {
-    folderMutation.beginAction(folder.id);
-    try {
-      const response = await shellFetch(`/api/folders/${folder.id}`, {
-        body: JSON.stringify({
-          defaultKnowledgePlan: { baseIds: folderMutation.projectKnowledgeBaseIds }
-        }),
-        headers: {
-          "content-type": "application/json"
-        },
-        method: "PATCH"
-      });
-
-      if (!response.ok) {
-        throw new Error(await responseErrorMessage(response, `default_knowledge_failed_${response.status}`));
-      }
-
-      const body = (await response.json()) as { folder: FolderSummary };
-      useWorkspaceStore
-        .getState()
-        .updateFolders((current) =>
-          sortFoldersByOrder(current.map((candidate) => (candidate.id === body.folder.id ? body.folder : candidate)))
-        );
-      const workspace = useWorkspaceStore.getState();
-      const currentChat = workspace.activeChatId
-        ? workspace.chats.find((candidate) => candidate.id === workspace.activeChatId) ?? null
-        : null;
-      const currentProjectId = currentChat?.folderId ?? (
-        workspace.activeChatId === null ? workspace.pendingChatFolderId : null
-      );
-      const controls = useComposerControlStore.getState();
-      if (currentProjectId === body.folder.id && controls.knowledgePlanSource === "project") {
-        controls.setSelectedKnowledgePlan(
-          body.folder.defaultKnowledgePlan ?? EMPTY_KNOWLEDGE_SELECTION,
-          body.folder.defaultKnowledgePlan ? "project" : "off",
-          "system"
-        );
-      }
-      folderMutation.completeProjectSave();
-      setNotice({
-        kind: "success",
-        text: `Default Knowledge saved: ${body.folder.name}`
-      });
-    } catch (error) {
-      setNotice({
-        kind: "error",
-        text: errorMessage(error)
-      });
-    } finally {
-      folderMutation.endAction();
-    }
-  }
-
   return {
     createFolder,
     deleteFolder,
     renameFolder,
-    saveProjectSettings,
     updateFolderParent
   };
 }

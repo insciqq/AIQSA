@@ -70,7 +70,6 @@ import { isMcpApprovalAdmission, isMcpApprovalRequest, type McpApprovalRequest }
 import { isAnswerReviewStepMarker } from "../tools/answerReview";
 import { consumeMcpApproval, countAvailableMcpApprovals, requestMcpApproval } from "../mcp/writeApprovalRepository";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
-import { resolveProjectAccess } from "../projects/access";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { KNOWLEDGE_EVIDENCE_MESSAGE_ID } from "../knowledge/evidenceContext";
 import {
@@ -115,7 +114,6 @@ import {
   isRecord,
   json,
   lockRunSettlementScope,
-  projectRunRecoveryAuthority,
   retryRollbackSafeSettlement
 } from "./prismaRepositoryShared";
 export { isRecoveredRunTerminalPayload } from "./prismaRepositoryShared";
@@ -1791,20 +1789,6 @@ export function createPrismaRunToolLoopOperations(
               sourceBindingStrategy: true
             }
           },
-          projectRunBinding: {
-            select: {
-              accessRevision: true,
-              instructionsRevision: true,
-              memoryRevision: true,
-              policyRevision: true,
-              projectId: true,
-              providerAdmissionFingerprint: true,
-              providerConnectionId: true,
-              providerModelId: true,
-              providerRequiresClientTools: true,
-              providerSearchPlan: true
-            }
-          },
           toolCalls: {
             include: toolLoopCallInclude,
             orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }]
@@ -1881,9 +1865,6 @@ export function createPrismaRunToolLoopOperations(
           : {}),
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest as unknown as CheckpointedToolLoopRun["normalizedRequest"],
-        ...(run.projectRunBinding
-          ? { project: projectRunRecoveryAuthority(run.projectRunBinding)! }
-          : {}),
         provider: run.provider,
         providerResponseId: run.providerResponseId,
         status: run.status,
@@ -1895,7 +1876,6 @@ export function createPrismaRunToolLoopOperations(
         select: {
           chat: {
             select: {
-              projectId: true,
               userId: true
             }
           },
@@ -1906,13 +1886,7 @@ export function createPrismaRunToolLoopOperations(
         },
         where: { id: input.runId }
       }).catch(retainRunPrismaCode);
-      if (!run) return null;
-      if (run.chat.userId !== input.userId) {
-        if (!run.chat.projectId || !(await resolveProjectAccess(prismaClient, {
-          projectId: run.chat.projectId,
-          userId: input.userId
-        }))) return null;
-      }
+      if (!run || run.chat.userId !== input.userId) return null;
       const request = decodeProviderDispatchRecoveryRequest(run.normalizedRequest, {
         ...run,
         runId: input.runId

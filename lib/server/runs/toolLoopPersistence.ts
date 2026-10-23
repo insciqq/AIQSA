@@ -1,7 +1,6 @@
 import { getMcpRequestMaxBytes } from "../mcp/responseLimits";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 import type { ModelRunStatus } from "@prisma/client";
-import type { SearchPlan } from "../../domain/search";
 import { mergeTokenUsage, normalizeTokenUsage, type NormalizedTokenUsage, type TokenUsageField } from "../../domain/usage";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { KnowledgePlan } from "../../contracts/knowledge";
@@ -79,20 +78,6 @@ export type PersistedToolLoopCall = Readonly<{
   usageAccountedAt?: string | null;
 }>;
 
-/** Immutable Project authority needed before recovery performs external I/O. */
-export type ProjectRunRecoveryAuthority = Readonly<{
-  accessRevision: number;
-  instructionsRevision: number;
-  memoryRevision: number;
-  policyRevision: number;
-  projectId: string;
-  providerAdmissionFingerprint: string;
-  providerConnectionId: string;
-  providerModelId: string;
-  providerRequiresClientTools: boolean;
-  providerSearchPlan: SearchPlan;
-}>;
-
 export type KnowledgeRunRecoveryScope = Readonly<{
   bindings: readonly Readonly<{
     includeWholeBase: boolean;
@@ -121,7 +106,6 @@ export type CheckpointedToolLoopRun = Readonly<{
   knowledgeScope?: KnowledgeRunRecoveryScope;
   modelId: string;
   normalizedRequest: NormalizedRunRequest;
-  project?: ProjectRunRecoveryAuthority;
   provider: string;
   providerResponseId: string | null;
   status: ModelRunStatus;

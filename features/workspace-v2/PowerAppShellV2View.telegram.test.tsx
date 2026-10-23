@@ -31,7 +31,6 @@ function shellProps(telegramAvailable: boolean | undefined): PowerAppShellV2Prop
     composer: {
       attachments: [], catalog: composerGalleryConfig.catalog, draft: "", currentParameterControls: defaultParameterControls(),
       assistant: { current: null, pickerItems: [], recentIds: [], openPicker: false, stripItems: [] },
-      knowledge: { bases: [], sources: [], documentTotal: null },
       memory: { mode: "NORMAL" }, workspace: { available: false, enabled: false },
       composerActions: {}, selectedSearchOptionIds: []
     },
@@ -43,11 +42,7 @@ function shellProps(telegramAvailable: boolean | undefined): PowerAppShellV2Prop
     thread: { visibleMessages: [], events: [], refreshLayout: vi.fn() },
     overlays: { share: { target: null }, confirmations: {} },
     workspace: {
-      pane: { state: {}, actions: {} }, projectSettings: { folder: null },
-      projects: {
-        selectedProjectId: null, projects: [], workspace: { chats: [], folders: [] }, detail: null,
-        actions: { refresh: vi.fn(), leave: vi.fn() }
-      }
+      pane: { state: {}, actions: {} }
     }
   } as unknown as PowerAppShellV2Props;
 }

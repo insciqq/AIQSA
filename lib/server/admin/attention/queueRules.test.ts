@@ -12,7 +12,6 @@ function sources(overrides: Partial<AdminAttentionSources> = {}): AdminAttention
   return {
     dashboard: vi.fn().mockResolvedValue({ users: [] }),
     email: vi.fn().mockResolvedValue(null),
-    knowledge: vi.fn().mockRejectedValue(new Error("not needed")),
     mcp: vi.fn().mockResolvedValue([]),
     memory: vi.fn().mockRejectedValue(new Error("not needed")),
     providers: vi.fn().mockResolvedValue([]),

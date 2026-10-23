@@ -51,7 +51,6 @@ import {
   type AdminProviderCheckRun
 } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
@@ -578,8 +577,7 @@ function AddSheetBody({ connections, memoryAssigned, onClose, onCreated, onOpenM
           </UiV2Button>}
           <UiV2Button disabled={Boolean(savedSetup) && submitting} onClick={busy ? () => void stopSetup() : savedSetup ? () => onCreated(savedSetup.connectionId) : requestClose} tone={savedSetup && !unfinished ? "primary" : "ghost"} type="button">{busy ? "Stop" : savedSetup ? "View provider" : interrupted ? "Close and review providers" : "Cancel"}</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted sm:ml-auto sm:text-right">
-            {/* Knowledge is disabled (`lib/domain/disabledAreas.ts`): the caption does not name it. */}
-            Checks supported models and Search, then fills empty roles{KNOWLEDGE_ENABLED ? ", including Knowledge" : ""}. Assigned PDF readers receive page images and text. Uses small paid requests.
+            Checks supported models and Search, then fills empty roles. Assigned PDF readers receive page images and text. Uses small paid requests.
           </span>
         </>
       )}

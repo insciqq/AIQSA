@@ -3,7 +3,6 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
-import { ProjectsDisabledError, projectsDisabledResponse } from "../projects/disabled";
 import { createShareToken, hashShareToken } from "./tokens";
 import {
   projectPublicShareSnapshot,
@@ -115,19 +114,13 @@ export function createShareChatHandler(deps: ShareHandlerDeps) {
       return bodyError;
     }
     const shareToken = createShareToken();
-    let share: Awaited<ReturnType<ShareRepository["createChatShare"]>>;
-    try {
-      share = await deps.repository.createChatShare({
-        activeLeafMessageId: typeof body?.activeLeafMessageId === "string" ? body.activeLeafMessageId : null,
-        chatId: params.chatId,
-        shareToken,
-        slugHash: hashShareToken(shareToken),
-        userId: auth.session.userId
-      });
-    } catch (error) {
-      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
-      throw error;
-    }
+    const share = await deps.repository.createChatShare({
+      activeLeafMessageId: typeof body?.activeLeafMessageId === "string" ? body.activeLeafMessageId : null,
+      chatId: params.chatId,
+      shareToken,
+      slugHash: hashShareToken(shareToken),
+      userId: auth.session.userId
+    });
 
     if (!share) {
       return Response.json({ error: "chat_not_found_or_empty_branch" }, { status: 404 });

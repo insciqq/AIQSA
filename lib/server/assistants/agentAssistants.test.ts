@@ -17,7 +17,7 @@ const scope = { callId: "call_1", chatId: "chat_1", runId: "run_1", userId: USER
 const avatar = assistantAvatarRecipeFromBytes(new Uint8Array(ASSISTANT_AVATAR_RECIPE_MIN_BYTES));
 const result: ToolExecutionResult = { callId: "provider_call", content: [{ text: "saved", type: "text" }], name: "manage_assistant", status: "complete" };
 const rows = (model: AssistantRows["model"]["value"] = { mode: "inherit" }): AssistantRows => ({
-  controls: { policy: "adjustable", value: {} }, knowledge: { policy: "adjustable", value: { mode: "none" } },
+  controls: { policy: "adjustable", value: {} },
   model: { policy: "adjustable", value: model }, search: { policy: "adjustable", value: { mode: "inherit" } },
   skills: { policy: "adjustable", value: { links: [], mode: "auto" } }, tools: { policy: "adjustable", value: { mode: "inherit" } }
 });

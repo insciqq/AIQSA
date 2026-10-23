@@ -4,6 +4,7 @@ paths:
   - "lib/server/retention/**"
   - "lib/server/bootstrap/**"
   - "lib/server/storageMigration/**"
+  - "lib/server/projects/**"
   - "aiqsa.sh"
 ---
 # Persistence
@@ -17,13 +18,14 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - The Memory history and round source guards validate each chat once per batch of deferred events. Every table their asserts read must carry the statement-level trigger that forgets checked keys, or a later write in the same batch escapes validation (`prisma/migrations/20261005180000_memory_source_guard_once_per_batch/migration.sql`).
 - Accepted revisions, bindings, generations and recovery evidence are immutable and protected by restrictive references while referenced. Skill revisions and bundle objects are append-only.
 - To retire stored data: remove the projections that read it, prove recovery no longer needs it, stop writes, then drop it in a forward migration. Retired values stay readable only where history or recovery needs them; new work never writes them.
-- Projects and Knowledge are disabled (root `AGENTS.md`). Their rows stay in place and Project chats stay readable; nothing deletes them implicitly, and retiring their tables follows the procedure above.
+- Projects and Knowledge were removed together with their data (operator decisions 2026-10-23). The upgrade migration (`prisma/migrations/20261023210000_retire_projects/migration.sql`) fences every remaining Project for deletion, revokes its chats' public shares, drops the Project-owner triggers that blocked offboarding, completes the SCIM deactivations that waited on them and deletes the Project-only shared MCP runtimes. Workspace maintenance finalizes fenced Projects through `lib/server/projects/deletion.ts`, which needs the Workspace runner to remove their VMs, and the object-deletion worker deletes any remaining Knowledge through `lib/server/knowledge/retirement.ts`.
+- The Project and Knowledge tables stay this release: nothing new writes them, retirement empties them, and the release stays rollback-safe to the previous image, which still reads them while Compose replaces containers (decision 2026-10-23). The old run core also still reads Knowledge run tables, and the Memory embedding default the installation `KnowledgeIndexProfile` row. The next release, once retirement has emptied them on both installations, drops the Project tables, columns, triggers and functions in a forward migration prepared beside this one; Knowledge tables follow once the old core is gone and the Memory embedding default has moved to a Memory-owned setting.
 
 ## Ownership rules that are easy to get wrong
 
-- Personal and Project principals are disjoint. Deleting an account removes its memberships, not shared content; nullable actors keep history readable.
+- Deleting an account removes its group memberships; nullable actor references keep history readable.
 - Publishing a Skill grants future use only; accepted revisions survive unpublication and deletion. Deleting an Assistant clears run and chat references but keeps their snapshots.
-- Removing a personal saved file keeps copies already admitted into chats. Project and Temporary chat attachments never become personal files implicitly. Artifact deduplication is scoped to one owner.
+- Removing a personal saved file keeps copies already admitted into chats. Temporary chat attachments never become personal files implicitly. Artifact deduplication is scoped to one owner.
 - The protected `Full access` group gives its explicit members every current and future active provider connection, answer model and Search source; its name and lifecycle cannot change. MCP servers are never included implicitly and the group never confers personal identity or secrets.
 
 ## Recovery and derived state
@@ -50,8 +52,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - Deletion first fences future admission, recall and sharing and records a durable obligation, then acknowledges. Handlers reauthorize the exact aggregate, settle active work and retry idempotently; an obligation an administrator blocked waits, it is never abandoned.
 - Object deletion rechecks every reference before removing bytes; the application drains due deletions itself.
 - `npm run prune -- --dry-run` is read-only and comes before any explicitly authorized `--execute`. Pruning never touches active sessions or runs, evidence still visible to retrieval, or referenced objects.
-- Account deletion drains personal MCP servers and owned Knowledge and Memory dependencies before deleting their parents, and stays pending until then. Disconnecting a personal MCP server wipes its saved values immediately. Revoking an inbound Memory OAuth grant keeps the facts.
-- Deleting a Project is an explicit action of its Owner; account deletion and Project archival never substitute for it, and unlinking personal resources from a Project does not delete them.
+- Account deletion drains personal MCP servers, owned Memory and any remaining Knowledge before deleting their parents, and stays pending until then. Disconnecting a personal MCP server wipes its saved values immediately. Revoking an inbound Memory OAuth grant keeps the facts.
 - A missing Workspace disk is recreated from canonical originals and the UI never claims the old files survived.
 - Data already sent to external providers or tools, and their own retention and backups, are outside the application's erasure claims.
 
@@ -68,6 +69,6 @@ Cutoffs and batch sizes live in code; these are the product decisions behind the
 
 `./aiqsa.sh backup` and `./aiqsa.sh restore` provide single-host cold backup and empty-target restore. Off-site copies, schedules and multi-host recovery belong to infrastructure.
 
-- Backup stops every writer, fences claimed Memory, Knowledge and object-deletion work, copies PostgreSQL and private objects together, records the schema and the non-secret Memory key ids restore needs, and restarts exactly the writers it stopped. Keys from `.env` are backed up separately (`agent_docs/ENV_VARIABLES.md`).
-- Restore fills only an empty installation of the same version, through an isolated `aiqsa-restore-*` project with no published ports and no application writer, after preflighting format, schema, identities, keys and objects. Memory and Knowledge deletion reconciliation (`npm run memory:restore:reconcile`, `npm run knowledge:restore:reconcile`) must pass before any application role starts. Nothing cuts over a running installation automatically.
+- Backup stops every writer, fences claimed Memory and object-deletion work, copies PostgreSQL and private objects together, records the schema and the non-secret Memory key ids restore needs, and restarts exactly the writers it stopped. Keys from `.env` are backed up separately (`agent_docs/ENV_VARIABLES.md`).
+- Restore fills only an empty installation of the same version, through an isolated `aiqsa-restore-*` project with no published ports and no application writer, after preflighting format, schema, identities, keys and objects. Memory deletion reconciliation (`npm run memory:restore:reconcile`) must pass before any application role starts. Nothing cuts over a running installation automatically.
 - Restore rebuilds OpenSearch from PostgreSQL and passes integrity gates before enabling each retrieval mode. It clears guest disks and runtime identities and resets Workspace sessions so new runs restage originals.

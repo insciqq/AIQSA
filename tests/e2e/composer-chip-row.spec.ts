@@ -19,7 +19,7 @@ async function expectReasoningValueVisible(page: Page, value: string) {
   })).toBe(true);
 }
 
-async function expectContainedControls(page: Page, expectedChips = 5, allowWrapping = false) {
+async function expectContainedControls(page: Page, expectedChips: number, allowWrapping = false) {
   const composer = page.getByTestId("composer-v2");
   const chips = composer.locator(".v2-composer-indicator");
   await expect(chips).toHaveCount(expectedChips);
@@ -60,17 +60,17 @@ for (const viewport of [
   test.describe(`chip geometry ${viewport.width}x${viewport.height}`, () => {
     test.use({ viewport, hasTouch: viewport.touch });
     for (const theme of ["light", "dark"] as const) {
-      test(`keeps five capabilities and the reasoning level reachable in ${theme}`, async ({ context, page }, testInfo) => {
+      test(`keeps four capabilities and the reasoning level reachable in ${theme}`, async ({ context, page }, testInfo) => {
         await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
         await page.goto("/ui-v2-fixture?fixture=composer&state=chips-wide");
         await page.evaluate(() => document.fonts.ready);
         // A phone's narrow chip row may move the level whole to a second row.
         const phone = viewport.width <= 390;
-        await expectContainedControls(page, 6, phone);
+        await expectContainedControls(page, 5, phone);
         const composer = page.getByTestId("composer-v2");
-        // The level is the sixth chip (Workspace has no chip since 2026-10-20):
-        // a labelled row holds six chips, so labels follow the composer width
-        // as in the capability row without a level; the raw level stays text.
+        // The level is the fifth chip (Workspace has no chip since 2026-10-20):
+        // labels follow the composer width as in the capability row without a
+        // level; the raw level stays text.
         const composerWidth = (await composer.boundingBox())!.width;
         for (const label of await composer.locator(".v2-composer-indicator-label").all()) {
           if (composerWidth > 736) await expect(label).toBeVisible();
@@ -78,7 +78,7 @@ for (const viewport of [
         }
         await expectReasoningValueVisible(page, "xhigh");
         await expect(composer.locator(".v2-composer-indicator").last()).toHaveAccessibleName("Reasoning effort: xhigh");
-        await expect(composer.locator(".v2-composer-indicator-count")).toHaveText(["2", "3", "32"]);
+        await expect(composer.locator(".v2-composer-indicator-count")).toHaveText(["2", "32"]);
         if (viewport.touch) {
           for (const button of await composer.locator("button:visible").all()) await expectTouchSafe(button);
         }
@@ -95,23 +95,9 @@ for (const viewport of [
           expect(chips!.y).toBeGreaterThanOrEqual(send!.y + send!.height);
         }
         await page.screenshot({ path: testInfo.outputPath("chips-wide.png") });
-        const agent = composer.getByRole("button", { name: "Agent", exact: true });
-        await expect(agent).toHaveAttribute("aria-disabled", "true");
-        await expect(agent).toHaveAccessibleDescription(/Turn off Knowledge to use Agent/);
-        if (viewport.touch) {
-          const box = (await agent.boundingBox())!;
-          await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
-        } else {
-          await agent.focus();
-          await page.keyboard.press("Enter");
-        }
-        await expect(composer.getByRole("status")).toHaveText("Turn off Knowledge to use Agent.");
-        await expect(agent).toHaveAttribute("aria-pressed", "false");
-        await expectContainedControls(page, 6, phone);
-        await page.screenshot({ path: testInfo.outputPath("agent-blocked.png") });
         await page.goto("/ui-v2-fixture?fixture=composer&state=chips-off-pinned");
-        await expectContainedControls(page);
-        // Five capabilities without a reasoning level keep their labels near the full measure.
+        await expectContainedControls(page, 4);
+        // Four capabilities without a reasoning level keep their labels near the full measure.
         const width = (await composer.boundingBox())!.width;
         for (const label of await composer.locator(".v2-composer-indicator-label").all()) {
           if (width > 736) await expect(label).toBeVisible();
@@ -120,28 +106,44 @@ for (const viewport of [
         await expect(composer.getByRole("button", { name: "Change Skills mode" }))
           .toHaveAccessibleDescription("Skills: Auto off · 32 pinned (always loaded)");
         await page.screenshot({ path: testInfo.outputPath("chips-off-pinned.png") });
+        // An unavailable Agent says why where it was pressed and stays off.
+        const agent = composer.getByRole("button", { name: "Agent", exact: true });
+        await expect(agent).toHaveAttribute("aria-disabled", "true");
+        await expect(agent).toHaveAccessibleDescription(/Ask an administrator to check the Workspace runner\./);
+        if (viewport.touch) {
+          const box = (await agent.boundingBox())!;
+          await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+        } else {
+          await agent.focus();
+          await page.keyboard.press("Enter");
+        }
+        await expect(composer.getByRole("status"))
+          .toHaveText("Agent is unavailable. Ask an administrator to check the Workspace runner.");
+        await expect(agent).toHaveAttribute("aria-pressed", "false");
+        await expectContainedControls(page, 4);
+        await page.screenshot({ path: testInfo.outputPath("agent-blocked.png") });
       });
     }
   });
 }
 
 for (const width of [1920, 1366, 1280]) {
-  test(`pending comments and five capability chips fit at ${width}px`, async ({ page }, testInfo) => {
+  test(`pending comments and four capability chips fit at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/ui-v2-fixture?fixture=composer&state=chips-wide-comments");
     await page.evaluate(() => document.fonts.ready);
     await expect(page.getByRole("button", { name: "3 comments", exact: true })).toBeVisible();
     // Comments must stay contained. Existing capability chips may wrap whole
     // instead of hiding controls or overflowing the reading column.
-    await expectContainedControls(page, 7, true);
+    await expectContainedControls(page, 6, true);
     await expectReasoningValueVisible(page, "xhigh");
     await page.screenshot({ path: testInfo.outputPath("comments-all-capabilities.png") });
   });
 }
 
 /*
- * Composer widths measured on the running application in the worst case (six
- * capability chips with counts, three pending comments, sidebar open, artifact
+ * Composer widths measured on the running application in the worst case (every
+ * capability chip with counts, three pending comments, sidebar open, artifact
  * panel docked): 674px at 1920×1080, 430px at 1366×768 and 392px at 1280×720,
  * where the composer already uses its narrow layout. The gallery sets those
  * widths. The first two keep one chip row for every raw level; at 1280×720 the
@@ -177,7 +179,7 @@ for (const { composerWidth, mayWrap, viewport } of [
       await menu.getByRole("menuitemradio", { name: level, exact: true }).click();
       await expect(menu).toHaveCount(0);
       await expectReasoningValueVisible(page, level);
-      await expectContainedControls(page, 7, true);
+      await expectContainedControls(page, 6, true);
       // The capabilities are icons; the level keeps its text.
       for (const label of await composer.locator(".v2-composer-indicator-label").all()) await expect(label).toBeHidden();
       const rows = await composer.evaluate((root) => {
@@ -238,7 +240,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
       await expect(composer.getByLabel("Active capabilities").getByRole("button", { name: /^Reasoning effort:/u })).toBeVisible();
       await expectTouchSafe(chip);
       await expectReasoningValueVisible(page, "high");
-      await expectContainedControls(page, 5, true);
+      await expectContainedControls(page, 4, true);
       const box = (await chip.boundingBox())!;
       await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
       const sheet = page.getByRole("menu", { name: "Reasoning effort" });
@@ -305,7 +307,7 @@ test("container resizing and zoom preserve the row, draft, and bounded keyboard 
   for (const width of [740, 736, 700, 450, 340]) {
     // A side panel changes the available reading column without changing the viewport.
     await composer.evaluate((element, value) => { element.style.width = `${value}px`; }, width);
-    await expectContainedControls(page, 6, width <= 416);
+    await expectContainedControls(page, 5, width <= 416);
     await expectReasoningValueVisible(page, "xhigh");
     await expect(input).toHaveValue("Keep this draft while opening a side panel.");
     const agent = composer.getByRole("button", { name: "Agent", exact: true });
@@ -329,7 +331,7 @@ test("container resizing and zoom preserve the row, draft, and bounded keyboard 
   // Browser zoom reduces the CSS viewport; enlarged text also exercises rem breakpoints.
   await page.setViewportSize({ width: 720, height: 450 });
   await page.evaluate(() => { document.documentElement.style.fontSize = "20px"; });
-  await expectContainedControls(page, 6, true);
+  await expectContainedControls(page, 5, true);
   await expectReasoningValueVisible(page, "xhigh");
   await expect(input).toHaveValue("Keep this draft while opening a side panel.");
   await page.screenshot({ path: testInfo.outputPath("zoomed.png") });

@@ -102,7 +102,6 @@ export function memoryAdmissibleEntityAliasPredicate(
                 INNER JOIN "Chat" AS evidence_chat
                   ON evidence_chat."userId" = support."userId"
                   AND evidence_chat."id" = support."chatId"
-                  AND evidence_chat."projectId" IS NULL
                   AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
                   AND evidence_chat."permanentDeletionAt" IS NULL
                 INNER JOIN "Message" AS evidence_message

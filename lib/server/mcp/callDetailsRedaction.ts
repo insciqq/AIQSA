@@ -53,7 +53,7 @@ type OAuthConnectionRecord = Readonly<{
  * Exact values redacted from displayed MCP details: the secret values known
  * now, read without starting a runtime or refreshing OAuth. Sources are the
  * accepted runtime generation while it exists, the current secret values of the
- * same server for this user or Project, and the current OAuth tokens and client
+ * same server for this user, and the current OAuth tokens and client
  * secret of the user's connection, whatever their generation. Every source that
  * is missing or cannot be decrypted contributes nothing, and the request is
  * still shown (operator decision 2026-09-30): a value rotated away since the
@@ -61,8 +61,8 @@ type OAuthConnectionRecord = Readonly<{
  * only its initiator reads it. Headers and OAuth tokens are never arguments.
  */
 export async function mcpCallDisplayRedaction(tx: Prisma.TransactionClient, identity: AcceptedMcpCallIdentity,
-  generationId: string | null, userId: string, projectId: string | null): Promise<McpDisplayRedaction> {
-  return { values: (await mcpCallRedactionEvidence(tx, identity, generationId, userId, projectId)).values };
+  generationId: string | null, userId: string): Promise<McpDisplayRedaction> {
+  return { values: (await mcpCallRedactionEvidence(tx, identity, generationId, userId)).values };
 }
 
 /**
@@ -74,7 +74,7 @@ export async function mcpCallDisplayRedaction(tx: Prisma.TransactionClient, iden
  * rotated OAuth tokens alone never makes the evidence incomplete.
  */
 export async function mcpCallRedactionEvidence(tx: Prisma.TransactionClient, identity: AcceptedMcpCallIdentity,
-  generationId: string | null, userId: string, projectId: string | null): Promise<McpRedactionEvidence> {
+  generationId: string | null, userId: string): Promise<McpRedactionEvidence> {
   const accepted = await tx.mcpRevision.findFirst({ where: { id: identity.revisionId, serverId: identity.serverId }, select: { configuration: true } });
   const server = await tx.mcpServer.findFirst({ where: { id: identity.serverId }, select: {
     id: true, sharedConfigEnvelope: true, sharedConfigVersion: true, activeRevision: { select: { configuration: true } }
@@ -83,8 +83,7 @@ export async function mcpCallRedactionEvidence(tx: Prisma.TransactionClient, ide
   const configurations = [acceptedConfiguration, draft(server?.activeRevision?.configuration)]
     .filter((value): value is McpDraftConfiguration => value !== null);
   const sensitive = new Set(configurations.flatMap(value => value.slots.filter(slot => slot.sensitive).map(slot => slot.slotKey)));
-  // Project runs never use OAuth identity or personal values.
-  const oauth = !projectId && configurations.some(value => value.auth.mode === "oauth");
+  const oauth = configurations.some(value => value.auth.mode === "oauth");
   // An unknown accepted configuration cannot prove that no slot was secret.
   const unknownConfiguration = acceptedConfiguration === null;
   if (!sensitive.size && !oauth) return { state: unknownConfiguration ? "incomplete" : "none_needed", values: [] };
@@ -113,7 +112,7 @@ export async function mcpCallRedactionEvidence(tx: Prisma.TransactionClient, ide
 
   const generation = generationId ? await tx.mcpRuntimeGeneration.findFirst({ where: {
     id: generationId, fingerprint: identity.fingerprint, revisionId: identity.revisionId,
-    ...(projectId ? { sharedServerId: identity.serverId } : { userServer: { userId, serverId: identity.serverId } })
+    userServer: { userId, serverId: identity.serverId }
   }, include: { oauthConnection: { include: { oauthClient: true } } } }) : null;
   if (generation && sensitive.size) {
     addSlots(open(generation.effectiveConfigEnvelope, key, () => mcpRuntimeGenerationEnvelopeContext(generation.id, generation.fingerprint)));
@@ -121,7 +120,7 @@ export async function mcpCallRedactionEvidence(tx: Prisma.TransactionClient, ide
   if (server && sensitive.size) {
     addSlots(open(server.sharedConfigEnvelope, key, () => mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)));
   }
-  if (!projectId && sensitive.size) {
+  if (sensitive.size) {
     const personal = await tx.mcpUserServer.findUnique({ where: { userId_serverId: { userId, serverId: identity.serverId } },
       select: { id: true, personalConfigEnvelope: true, personalConfigVersion: true } });
     if (personal) addSlots(open(personal.personalConfigEnvelope, key,

@@ -37,7 +37,7 @@ async function expectPaletteBesideField(page: Page) {
 test.describe("composer / palette on desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("pins a Skill and opens Knowledge with the keyboard only", async ({ page }, testInfo) => {
+  test("pins a Skill and opens MCP tools with the keyboard only", async ({ page }, testInfo) => {
     await page.goto(FIXTURE);
     await field(page).focus();
     await page.keyboard.type("/");
@@ -65,15 +65,15 @@ test.describe("composer / palette on desktop", () => {
     await page.keyboard.press("Backspace");
     await page.keyboard.press("Backspace");
 
-    await page.keyboard.type("/know");
+    await page.keyboard.type("/mcp");
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Home");
-    await expect(await active()).toContainText("Choose Knowledge");
+    await expect(await active()).toContainText("MCP tools");
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("menu", { name: "Knowledge" })).toBeVisible();
+    await expect(page.getByRole("menu", { name: "MCP tools" })).toBeVisible();
     await expect(field(page)).toHaveValue("");
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("menu", { name: "Knowledge" })).toBeHidden();
+    await expect(page.getByRole("menu", { name: "MCP tools" })).toBeHidden();
   });
 });
 

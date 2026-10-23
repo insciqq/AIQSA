@@ -7,7 +7,6 @@ import {
   resetChatAssistantProjectionStoreForTest,
   resetComposerControlStoreForTest,
   resetComposerSessionStoreForTest,
-  resetKnowledgeLibraryStoreForTest,
   resetThreadStoreForTest,
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
@@ -49,7 +48,6 @@ beforeEach(() => {
   resetChatAssistantProjectionStoreForTest();
   resetComposerControlStoreForTest();
   resetComposerSessionStoreForTest();
-  resetKnowledgeLibraryStoreForTest();
   resetThreadStoreForTest();
   resetWorkspaceStoreForTest();
   vi.stubGlobal("fetch", vi.fn(answer));

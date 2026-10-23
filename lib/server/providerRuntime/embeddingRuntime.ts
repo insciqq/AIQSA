@@ -15,7 +15,7 @@ import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
   loadEmbeddingProviderRole,
-  loadProjectEmbeddingProviderRole,
+  loadInstallationEmbeddingProviderRole,
   type AdmissionPrisma,
   type EmbeddingProviderAdmissionRole,
   ProviderAdmissionError
@@ -147,16 +147,13 @@ export function createPrismaEmbeddingRuntime(
     async resolveForInstallation(input: Readonly<{
       providerModelId: string;
     }>): Promise<EmbeddingRuntimeBinding> {
-      return resolveAdmission(await loadProjectEmbeddingProviderRole(prisma, input));
+      return resolveAdmission(await loadInstallationEmbeddingProviderRole(prisma, input));
     },
     async resolveForUser(input: Readonly<{
       providerModelId: string;
       userId: string;
     }>): Promise<EmbeddingRuntimeBinding> {
       return resolveAdmission(await loadEmbeddingProviderRole(prisma, input));
-    },
-    async resolveForProject(input: Readonly<{ providerModelId: string }>): Promise<EmbeddingRuntimeBinding> {
-      return resolveAdmission(await loadProjectEmbeddingProviderRole(prisma, input));
     }
   };
 }

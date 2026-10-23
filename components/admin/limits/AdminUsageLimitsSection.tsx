@@ -115,7 +115,7 @@ function HowLimitsWork() {
           count toward them; their runs are skipped while a budget or the cap is used up.
         </li>
         <li>
-          Budgets count answers, Search and images. System features (Memory, Knowledge, titles) count only toward the
+          Budgets count answers, Search and images. System features (Memory, titles) count only toward the
           monthly cap and are never stopped.
         </li>
       </ul>

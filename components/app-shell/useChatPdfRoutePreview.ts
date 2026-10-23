@@ -7,17 +7,16 @@ import {
   type ChatPdfRouteAvailability
 } from "@/lib/contracts/chatPdfPreparation";
 
-export type ChatPdfRouteTarget = Readonly<{ projectId: string | null; providerConnectionId: string; providerModelId: string }>;
+export type ChatPdfRouteTarget = Readonly<{ providerConnectionId: string; providerModelId: string }>;
 type Target = ChatPdfRouteTarget;
 
 function targetKey(target: Target): string {
-  return JSON.stringify({ projectId: target.projectId, providerConnectionId: target.providerConnectionId,
-    providerModelId: target.providerModelId });
+  return JSON.stringify({ providerConnectionId: target.providerConnectionId, providerModelId: target.providerModelId });
 }
 
 // The composer's current preview, read again by the send gate. It is cleared
 // when its target is no longer previewed, so a send never relies on an
-// answer for another model, Project or an earlier attachment session.
+// answer for another model or an earlier attachment session.
 let latestPreview: { key: string; availability: ChatPdfRouteAvailability } | null = null;
 
 /** The current preview for exactly this target, or null (unknown). */

@@ -1,6 +1,5 @@
 "use client";
 
-import { AdminKnowledgeProcessingRows } from "@/components/admin/roles/AdminKnowledgeProcessingRows";
 import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
 import { AdminReasoningSelect as ReasoningSelect } from "@/components/admin/roles/AdminReasoningSelect";
 import { RoleRow } from "@/components/admin/roles/AdminRoleRow";
@@ -21,7 +20,6 @@ import { ImageParameterFields } from "@/components/admin/providers/models/ImageP
 import { activeChatPdfReader, chatPdfReaderDefaultReasoningEffort, chatPdfUsesNativeReader, initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ImageGenerationParameters, ImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import type { ImageModelUnavailableReason } from "@/lib/contracts/imageModels";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 
 function ImageRoleParameters({ image, modelId, parameters, busy, save, summary = "Image settings" }: {
   image: ImageModelConfiguration; modelId: string; parameters: ImageGenerationParameters; busy: boolean;
@@ -49,7 +47,7 @@ const imageModelLabel = (model: Readonly<{ displayName: string; connectionDispla
 
 /**
  * Image generation publishes several verified models; every user picks one in
- * Studio and Projects use the default. Withdrawal and clearing return users to
+ * Studio. Withdrawal and clearing return users to
  * the default (or to none) in the same save; an unusable model is only marked.
  * Without a default image generation is off for everyone: models a previous
  * release left published stay listed until a default is chosen or the role is
@@ -77,7 +75,7 @@ function ImageGenerationRoleRow({ busy, catalog, controller, requestConfirmation
   return (
     <RoleRow title="Image generation" testId="admin-role-image" status={roleStatus(defaultModel)}
       statusLabel={defaultModel ? defaultModel.available ? "Default ready" : "Default unavailable" : "Not assigned"}
-      description="Creates and edits images in chats. People choose one published model in Studio; Projects always use the default. Each model uses its provider's default key."
+      description="Creates and edits images in chats. People choose one published model in Studio. Each model uses its provider's default key."
       menu={[{ disabled: !published.length || busy, label: "Clear role",
         onSelect: () => requestConfirmation({
           body: `All ${published.length} published image ${published.length === 1 ? "model is" : "models are"} withdrawn and nobody can generate images until you publish one again. Personal choices are cleared. Messages already sent keep their image model.`,
@@ -123,7 +121,7 @@ function ImageGenerationRoleRow({ busy, catalog, controller, requestConfirmation
 }
 
 /**
- * System roles: independent assignments apply on selection with Undo; the Knowledge processing group needs Apply.
+ * System roles: independent assignments apply on selection with Undo.
  */
 export function AdminSystemRolesTable({
   controller,
@@ -452,7 +450,7 @@ export function AdminSystemRolesTable({
       </RoleRow>
 
       <RoleRow
-        description={`Reorders Memory${KNOWLEDGE_ENABLED ? " and Knowledge" : ""} candidates. Dedicated reranker only.`}
+        description="Reorders Memory candidates. Dedicated reranker only."
         menu={[{
           disabled: !policy.rerankerModel || busy,
           label: "Clear assignment",
@@ -491,11 +489,6 @@ export function AdminSystemRolesTable({
       <ImageGenerationRoleRow busy={busy} catalog={catalog} controller={controller} requestConfirmation={requestConfirmation} />
 
       <AdminSpeechToTextRoleRow requestConfirmation={requestConfirmation} />
-
-      {/* Knowledge is disabled: its processing roles are not offered. */}
-      {KNOWLEDGE_ENABLED ? (
-        <AdminKnowledgeProcessingRows controller={controller} requestConfirmation={requestConfirmation} />
-      ) : null}
     </div>
   );
 }

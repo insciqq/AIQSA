@@ -57,7 +57,7 @@ const health: AdminHealth = {
   ],
   providersTruncated: false,
   errorGroups: [{ fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/memory/coordinator/workerProcess.ts:51",
-    count: 12, events: ["job_attempt"], roles: ["knowledge_search"], codes: ["memory_job_failed"],
+    count: 12, events: ["job_attempt"], roles: ["memory_search"], codes: ["memory_job_failed"],
     lastSeenAt: "2026-10-07T09:40:00.000Z", firstSeenAt: "2026-10-07T08:00:00.000Z", isNew: true, usersAtLeast: 3, runsAtLeast: 5 }],
   errorGroupsTruncated: false
 };
@@ -72,7 +72,7 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
       read: vi.fn().mockResolvedValue({ checkedAt: "2026-10-07T09:59:30.000Z", queues: [
         queue({ queue: "attachment_processing" }),
         queue({ queue: "chat_titles", state: "stalled", waiting: 4, running: 0, oldestSeconds: 3 * 3_600 }),
-        queue({ queue: "document_processing", state: "slow", waiting: 2, running: 1, oldestSeconds: 20 * 60, failed24h: 3 }),
+        queue({ queue: "scheduled_tasks", state: "slow", waiting: 2, running: 1, oldestSeconds: 20 * 60, failed24h: 3 }),
         queue({ queue: "memory", state: "unavailable", waiting: null, running: null, failed24h: null })
       ] })
     },
@@ -113,7 +113,7 @@ describe("health report collection", () => {
     expect(report.errorsByCategory).toEqual({ ...categories, providers: 9, requests: 3, runs: 20, background: 10 });
     expect(report.providerFailures.map((row) => row.key)).toEqual(["c", "a"]);
     expect(report.restarts).toEqual([{ role: "app", starts: 3, restarts: 2 }]);
-    expect(report.queues.map((row) => row.queue)).toEqual(["chat_titles", "document_processing", "memory"]);
+    expect(report.queues.map((row) => row.queue)).toEqual(["chat_titles", "scheduled_tasks", "memory"]);
     expect(report.incidents).toHaveLength(10);
     expect(report.incidentsTruncated).toBe(true);
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
@@ -146,12 +146,12 @@ describe("health report text", () => {
     expect(text).toContain("  server errors 3 · provider failures 9 of 240 (3.8%) · browser crashes 1\n");
     expect(text).toContain("  NEW   TypeError · lib/server/memory/coordinator/workerProcess.ts:51\n" +
       "        12 times · at least 3 users · at least 5 runs · job_attempt · memory_job_failed\n" +
-      "        knowledge_search · last 2026-10-07 09:40\n");
+      "        memory_search · last 2026-10-07 09:40\n");
     expect(text).toMatch(/\n {2}OpenAI · gpt-5 +answer +7\/120 +5\.8% {2}quota +2026-10-07 09:58\n/u);
     expect(text).toContain("  app: 3 starts (2 restarts)\n");
     expect(text).not.toContain("memory_coordinator");
     expect(text).toContain("  STALLED      Chat titles · 4 waiting, 0 running · oldest due 3 hours ago\n");
-    expect(text).toContain("  SLOW         Knowledge document processing · 2 waiting, 1 running · oldest due 20 minutes ago\n" +
+    expect(text).toContain("  SLOW         Scheduled tasks · 2 waiting, 1 running · oldest due 20 minutes ago\n" +
       "               3 failed in 24 hours\n");
     expect(text).toContain("  UNAVAILABLE  Memory learning and indexing · could not be read\n");
     expect(text).toContain("  2026-10-07 09:59:12  error  app  provider_operation  ref 1a2b3c4d\n" +

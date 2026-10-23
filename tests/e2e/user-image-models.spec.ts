@@ -18,10 +18,9 @@ import { signInWithLocalToken } from "./support/localAuth";
 import { createPeopleFixture } from "./support/people";
 
 /**
- * Administrator-published image models and the user's one choice. Personal
- * chats (with or without another user's Assistant) generate with the user's
- * effective model and the administrator's parameters for it; Project chats,
- * with or without a bound Assistant, only with the administrator default. A
+ * Administrator-published image models and the user's one choice. Chats
+ * (with or without another user's Assistant) generate with the user's
+ * effective model and the administrator's parameters for it. A
  * generation-only or broken choice is never replaced by another model. The
  * provider is a local stub serving the answer model and two image models.
  */
@@ -106,7 +105,6 @@ async function installImageChoiceFixture(suffix: string) {
   const names = { connection: `Image choice fixture ${suffix}`, chat: `Image Choice Chat ${suffix}`,
     imageA: `Image A ${suffix}`, imageB: `Image B ${suffix}` };
   const chatIds: string[] = [];
-  const projectIds: string[] = [];
   let priorChat: ModelPolicy | null = null;
   let priorRoles: SystemModelPolicy | null = null;
   let priorChoice: string | null = null;
@@ -116,7 +114,6 @@ async function installImageChoiceFixture(suffix: string) {
    * before the models go (Assistants restrict their model's removal).
    */
   async function cleanup(page?: Page, beforeProviderRemoval: () => Promise<void> = async () => undefined) {
-    if (page) for (const projectId of projectIds) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
     const runs = await prisma.modelRun.findMany({ where: { providerRunBindings: { some: { connectionId } } }, select: { chatId: true } });
     const allChats = [...new Set([...runs.map((row) => row.chatId), ...chatIds])];
     const outputs = await prisma.attachment.findMany({ where: { chatId: { in: allChats } }, select: { storageKey: true } });
@@ -145,8 +142,6 @@ async function installImageChoiceFixture(suffix: string) {
     await prisma.publishedImageModel.deleteMany({ where: { providerModelId: { in: fixtureModels } } });
     await beforeProviderRemoval();
     await prisma.providerConnection.updateMany({ where: { id: connectionId }, data: { defaultCredentialId: null } });
-    // A Project deletion may still be pending; its model bindings restrict model removal.
-    await prisma.projectModelBinding.deleteMany({ where: { providerModelId: { in: Object.values(ids) } } });
     await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
     await prisma.providerModel.deleteMany({ where: { connectionId } });
     await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });
@@ -203,7 +198,7 @@ async function installImageChoiceFixture(suffix: string) {
     throw error;
   }
   return {
-    chatIds, cleanup, connectionId, ids, names, projectIds, state,
+    chatIds, cleanup, connectionId, ids, names, state,
     /** Publishes B with the given administrator parameters, as the roles table does. */
     async publishImageModelB(paramsJson: Prisma.InputJsonObject) {
       await prisma.$transaction(async (tx) => {
@@ -236,14 +231,6 @@ async function createPersonalChat(page: Page, chatIds: string[]): Promise<string
   return chatId;
 }
 
-async function createProjectChat(page: Page, projectId: string, title: string, chatIds: string[]): Promise<string> {
-  const created = await page.request.post(`/api/projects/${projectId}/chats`, { data: { title } });
-  expect(created.status()).toBe(201);
-  const chatId = (await created.json()).chat.id as string;
-  chatIds.push(chatId);
-  return chatId;
-}
-
 /** The image model the latest run of a chat was admitted with, or null without an image binding. */
 async function admittedImageModel(chatId: string): Promise<string | null> {
   const run = await prisma.modelRun.findFirstOrThrow({ where: { chatId }, orderBy: { createdAt: "desc" },
@@ -269,7 +256,7 @@ async function openImageRole(page: Page): Promise<Locator> {
   return row;
 }
 
-test("an administrator publishes a second image model; personal chats use the user's choice and Projects the default, through reload", async ({ page }) => {
+test("an administrator publishes a second image model; chats use the user's choice, through reload", async ({ page }) => {
   test.setTimeout(360_000);
   page.setDefaultTimeout(15_000);
   const suffix = randomUUID().slice(0, 8);
@@ -342,64 +329,12 @@ test("an administrator publishes a second image model; personal chats use the us
       .toMatchObject({ assistantId: shared.id, userId: DEFAULT_BOOTSTRAP_USER_ID });
     expect(await admittedImageModel(sharedChatId)).toBe(ids.imageB);
 
-    // A Project chat uses only the administrator default, also for a member who chose B.
-    const projectAssistant = await assistants.create(page.request, { name: "Project illustrator", rows: answerModelRow });
-    const createdProject = await page.request.post("/api/projects", { data: { name: `Image Project ${suffix}`, preferredModelId: ids.chat } });
-    expect(createdProject.status()).toBe(201);
-    const project = (await createdProject.json()).project as { id: string; policyRevision: number };
-    fixture.projectIds.push(project.id);
-    const bound = await page.request.post(`/api/projects/${project.id}/resources`, { data: { expectedAssistantVersion: projectAssistant.version,
-      expectedPolicyRevision: project.policyRevision, resourceId: projectAssistant.id, type: "assistant" } });
-    expect(bound.status()).toBe(201);
-    const projectChatId = await createProjectChat(page, project.id, "Image Project chat", fixture.chatIds);
-    await page.goto(`/p/${project.id}/c/${projectChatId}`);
-    await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
-    // A text-only message is admitted, on the default.
-    state.next = "text";
-    await send(page, "Hello, Project");
-    await expect(page.getByText("Plain answer.")).toBeVisible({ timeout: 45_000 });
-    await settled(page, fixture.connectionId);
-    expect(await admittedImageModel(projectChatId)).toBe(ids.imageA);
-    // The default can edit, so the Project composer takes an image and the edit uses the default.
-    await page.getByLabel("Attach files").setInputFiles({ name: "project-photo.png", mimeType: "image/png", buffer: syntheticPng() });
-    await expect(page.getByRole("region", { name: "Attachments" })).toContainText("project-photo.png");
-    await expect(page.locator(".v2-live-composer-error")).toHaveCount(0);
-    await expect.poll(async () => (await prisma.attachment.findFirst({ where: { fileName: "project-photo.png",
-      OR: [{ projectId: project.id }, { userId: DEFAULT_BOOTSTRAP_USER_ID }] }, orderBy: { createdAt: "desc" } }))?.status ?? null,
-    { timeout: 30_000 }).toBe("ready");
-    const upload = await prisma.attachment.findFirstOrThrow({ where: { fileName: "project-photo.png",
-      OR: [{ projectId: project.id }, { userId: DEFAULT_BOOTSTRAP_USER_ID }] }, orderBy: { createdAt: "desc" } });
-    state.references = [upload.id];
-    state.next = "edit";
-    await send(page, "Make this photo round");
-    await expect(chatImages(page)).toHaveCount(1, { timeout: 45_000 });
-    await settled(page, fixture.connectionId);
-    expect(state.imageCalls.at(-1)).toEqual({ model: "gpt-image-2", quality: "low", edit: true });
-    expect(await admittedImageModel(projectChatId)).toBe(ids.imageA);
-    // A Project chat with a bound Assistant also generates with the default.
-    const assistantChatId = await createProjectChat(page, project.id, "Image Project Assistant chat", fixture.chatIds);
-    await assistants.bindChat(page.request, assistantChatId, { assistantId: projectAssistant.id });
-    await page.goto(`/p/${project.id}/c/${assistantChatId}`);
-    await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
-    state.next = "generate";
-    await send(page, "Draw the Project mascot");
-    await expect(chatImages(page)).toHaveCount(1, { timeout: 45_000 });
-    await settled(page, fixture.connectionId);
-    expect(state.imageCalls.at(-1)).toEqual({ model: "gpt-image-2", quality: "low", edit: false });
-    expect(await prisma.modelRun.findFirstOrThrow({ where: { chatId: assistantChatId }, orderBy: { createdAt: "desc" } }))
-      .toMatchObject({ assistantId: projectAssistant.id });
-    expect(await admittedImageModel(assistantChatId)).toBe(ids.imageA);
-    // Project messages never changed the personal choice.
-    expect(await imageChoice()).toBe(ids.imageB);
 
     // Everything survives a reload.
     await page.goto(`/c/${chatId}`);
     await page.reload();
     await expect(chatImages(page)).toHaveCount(1, { timeout: 30_000 });
     await expect((await openImageModelRow(page)).getByRole("button", { name: "Image model", exact: true })).toContainText(names.imageB);
-    await page.goto(`/p/${project.id}/c/${projectChatId}`);
-    await expect(chatImages(page)).toHaveCount(1, { timeout: 30_000 });
-    await expect(page.getByText("Plain answer.")).toBeVisible();
   } finally {
     await fixture.cleanup(page, async () => {
       await assistants.cleanup();

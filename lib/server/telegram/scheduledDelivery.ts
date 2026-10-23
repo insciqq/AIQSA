@@ -644,7 +644,7 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
         return { ...base, chat: occurrence.chat && { id: occurrence.chat.id, usable: false }, result: null };
       }
       const markdown = scheduledCopyText(message.content);
-      const summary = summarizeMessageRunArtifacts(run, message.content);
+      const summary = summarizeMessageRunArtifacts(run);
       const files = telegramAnswerFiles(summary);
       const exported = telegramRunExport(run.workspaceRunBinding?.exportState);
       const outputs = exported === "pending" || exported === "failed" ? exported : undefined;

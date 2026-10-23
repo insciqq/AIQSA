@@ -275,7 +275,6 @@ export function ChatIntroV2Gallery({ state }: Readonly<{ state: ChatIntroGallery
                   name={current.name}
                   owned={current.owned}
                   ownerDisplayName={current.ownerDisplayName}
-                  projectName={current.project ? current.projectName ?? null : undefined}
                 />
               ) : undefined}
             />
@@ -292,7 +291,6 @@ export function ChatIntroV2Gallery({ state }: Readonly<{ state: ChatIntroGallery
           onBrowse={() => setPickerOpen(false)}
           onClose={() => setPickerOpen(false)}
           onSelect={choose}
-          projectScoped={false}
           recentIds={[]}
         />
       ) : null}

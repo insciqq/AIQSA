@@ -12,7 +12,7 @@ export type FrozenSkillContent = Readonly<{
 }>;
 
 export type SkillToolRepository = Readonly<{
-  resolveFrozen(input: { userId: string; projectId?: string; skillId: string; revisionId: string }): Promise<FrozenSkillContent | null>;
+  resolveFrozen(input: { userId: string; skillId: string; revisionId: string }): Promise<FrozenSkillContent | null>;
   isLoaded(input: { runId: string; skillId: string }): Promise<boolean>;
   readText(input: { revisionId: string; path: string }): Promise<string | null>;
 }>;
@@ -34,7 +34,7 @@ function fits(result: ToolExecutionResult): boolean {
 
 export function createSkillToolService(repository: SkillToolRepository) {
   return {
-    async execute(call: ModelToolCall, context: ToolExecutionContext & { projectId?: string }): Promise<ToolExecutionResult> {
+    async execute(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult> {
       const manifest = decodeFrozenSkillManifest(context.request.skills);
       if (!manifest || !context.userId || !context.runId || !acceptsSkillTool(context.request, call.name)) return skillToolError(call, "skill_unknown");
       const loading = call.name === LOAD_SKILL_TOOL_NAME;
@@ -45,7 +45,7 @@ export function createSkillToolService(repository: SkillToolRepository) {
       const pinned = manifest.pinned.some((skill) => skill.skillId === reference.skillId);
       // Authorization occurs on every new invocation, before returning even a file page.
       const skill = await repository.resolveFrozen({
-        userId: context.userId, ...(context.projectId ? { projectId: context.projectId } : {}),
+        userId: context.userId,
         skillId: reference.skillId, revisionId: reference.revisionId
       });
       if (!skill) return skillToolError(call, "skill_not_available");

@@ -97,7 +97,7 @@ export type AnswerReviewModelWire = Readonly<{ modelId: string; name: string; pr
  * A session as the transcript shows it. `canAct` marks a viewer who may act
  * on it: its initiator, who alone starts its steps, or any member once the
  * initiator's account is gone and the session ended (a new round takes it
- * over). Others (Project members) see it read-only.
+ * over). Others see it read-only.
  */
 export type AnswerReviewSessionWire = Readonly<{
   author: AnswerReviewModelWire;
@@ -137,7 +137,7 @@ export type AnswerReviewStartRequest = Readonly<{
 /** Starts a session's next step (`POST /api/answer-reviews/[sessionId]/steps`); the response is the step's run. */
 export type AnswerReviewStepRequest = Readonly<{
   admissionId: string;
-  /** The chat's current controls (Search, MCP, Workspace, Knowledge, Skills, time zone), never prompt text or a model. */
+  /** The chat's current controls (Search, MCP, Workspace, Skills, time zone), never prompt text or a model. */
   controls: Readonly<Record<string, unknown>>;
   expectedActiveLeafId: string;
   kind: AnswerReviewStepKind;
@@ -235,7 +235,6 @@ export const ANSWER_REVIEW_REFUSALS = [
   "answer_review_not_latest",
   "answer_review_assistant_unsupported",
   "answer_review_agent_unsupported",
-  "answer_review_knowledge_unsupported",
   "answer_review_image_unsupported",
   "answer_review_model_unsupported",
   "answer_review_reviewer_unavailable",
@@ -254,7 +253,6 @@ const REFUSAL_COPY: Readonly<Record<AnswerReviewRefusal, string>> = {
   answer_review_ended: "This review has ended. Use Review… on the latest answer to start a new round.",
   answer_review_image_unsupported: "Answers with generated images can't be reviewed.",
   answer_review_invalid: "This review request is invalid.",
-  answer_review_knowledge_unsupported: "Review isn't available with Knowledge: Knowledge answers stay bound to their sources.",
   answer_review_model_unsupported: "This answer's model can't use tools, so it can't take part in a review.",
   answer_review_not_initiator: ANSWER_REVIEW_NOT_INITIATOR_COPY,
   answer_review_not_latest: "Only the latest answer can be reviewed.",

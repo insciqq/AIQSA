@@ -3,7 +3,6 @@
 import type { AssistantNewAssistantView } from "@/components/assistants/libraryViewContracts";
 import { UiV2Button, UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { useId, useState, type FormEvent } from "react";
 import { ASSISTANT_TEMPLATES } from "./assistantTemplates";
 import "./assistant-editor.css";
@@ -18,24 +17,17 @@ const BLANK: StartChoice = {
 };
 
 const FROM_CURRENT_CHAT: StartChoice = {
-  description: "Copies the model, search, tools, Knowledge and Skills of the open chat as adjustable starting values.",
+  description: "Copies the model, search, tools and Skills of the open chat as adjustable starting values.",
   icon: "chat",
   id: "current-chat",
   name: "From current chat"
 };
 
-/** Knowledge is disabled: the open chat brings no Knowledge, and no template built around it is offered. */
-function offeredTemplates() {
-  return ASSISTANT_TEMPLATES.filter((template) => KNOWLEDGE_ENABLED || template.expandedRow !== "knowledge");
-}
-
 function startChoices(): readonly StartChoice[] {
   return [
     BLANK,
-    KNOWLEDGE_ENABLED
-      ? FROM_CURRENT_CHAT
-      : { ...FROM_CURRENT_CHAT, description: "Copies the model, search, tools and Skills of the open chat as adjustable starting values." },
-    ...offeredTemplates().map((template) => ({
+    FROM_CURRENT_CHAT,
+    ...ASSISTANT_TEMPLATES.map((template) => ({
       description: template.prefill.description,
       icon: template.icon,
       id: template.id,
@@ -70,7 +62,7 @@ export function NewAssistantSheetV2({ disabled = false, view }: Readonly<{
       view.onFromCurrentChat();
       return;
     }
-    const template = offeredTemplates().find((candidate) => candidate.id === choice);
+    const template = ASSISTANT_TEMPLATES.find((candidate) => candidate.id === choice);
     if (!template) return;
     view.onTemplate(
       { ...template.prefill, starterPrompts: [...template.prefill.starterPrompts] },
@@ -118,7 +110,7 @@ export function NewAssistantSheetV2({ disabled = false, view }: Readonly<{
           </div>
         </fieldset>
         <p className="v2-assistant-new-note">
-          Templates are built into AIQSA. They set the name, description, instructions and starters; no models, tools or Knowledge.
+          Templates are built into AIQSA. They set the name, description, instructions and starters; no models or tools.
         </p>
       </form>
     </UiV2Sheet>

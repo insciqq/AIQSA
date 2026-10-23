@@ -38,7 +38,7 @@ describe("tool history classification", () => {
       .toEqual({ kind: "mcp", label: "MCP Tracker › create_issue (tool mcp_tracker_create_issue_abc)" });
     expect(toolHistoryKind({ agent: false, normalizedRequest: {}, toolName: "mcp_tracker_create_issue_abc" }).kind).toBe("tool");
     expect(toolHistoryKind({ agent: false, normalizedRequest: {}, toolName: "memory_search" }).kind).toBe("memory");
-    expect(toolHistoryKind({ agent: false, normalizedRequest: {}, toolName: "search_knowledge" }).kind).toBe("knowledge");
+    expect(toolHistoryKind({ agent: false, normalizedRequest: {}, toolName: "search_knowledge" }).kind).toBe("tool");
     expect(toolHistoryKind({ agent: false, normalizedRequest: {}, toolName: "load_skill" }).kind).toBe("skill");
     expect(toolHistoryKind({ agent: false, normalizedRequest: { searchPlan: { mode: "single", options: [{ adapterKind: "client", displayName: "Engine" }] } },
       toolName: "search_engine_1" }).kind).toBe("web_search");
@@ -142,7 +142,7 @@ describe("tool history records project only what each owner discloses", () => {
         checksum: "c".repeat(64), maskable: true, sourceTruncated: false },
       content: [{ type: "json", value: { observation: {}, preview: "x", reader: "read_tool_result" } }] } }), false);
     expect(saved.result).toEqual({ state: "saved", handle: `tor1_${"a".repeat(32)}`, preview: "{\"text\":[\"created\"]}" });
-    for (const kind of ["memory", "knowledge", "skill", "workspace", "web_search", "artifact", "image", "vision", "tool"] as const) {
+    for (const kind of ["memory", "skill", "workspace", "web_search", "artifact", "image", "vision", "tool"] as const) {
       const record = toolHistoryRecord(facts({ kind, toolName: "x", mcp: undefined, observation: { handle: `tor1_${"b".repeat(32)}`,
         executionOutcome: "complete", preview: "secret preview" } }), false);
       expect(record.arguments).toEqual({ state: "not_applicable" });

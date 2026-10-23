@@ -1,21 +1,24 @@
 import { safeInternalPath } from "../auth/internalPath";
 
 /**
- * A chat address: `/` (new chat), `/c/<chat>`, `/p/<project>` (new Project
- * chat) or `/p/<project>/c/<chat>`. Server links and the browser shell share
- * this one contract; an address implies neither existence nor access.
+ * A chat address: `/` (new chat) or `/c/<chat>`. Server links and the browser
+ * shell share this one contract; an address implies neither existence nor
+ * access. Addresses of removed Projects (`/p/...`) redirect to `/`
+ * (`next.config.mjs`).
  */
 export type ChatRoute = Readonly<{
   chatId: string | null;
-  projectId: string | null;
 }>;
 
-export const BLANK_CHAT_ROUTE: ChatRoute = Object.freeze({ chatId: null, projectId: null });
+export const BLANK_CHAT_ROUTE: ChatRoute = Object.freeze({ chatId: null });
 
 /** One-shot parameters that belong to the chat they arrived with. */
 export const CHAT_SCOPED_ROUTE_PARAMETERS = ["message", "artifactEdit", "artifactId", "versionId"] as const;
 
-/** Legacy query names of the path form; they are read once and never written. */
+/**
+ * Legacy query names of the path form; they are read once and never written.
+ * `project` named a removed Project and is only dropped.
+ */
 const LEGACY_ROUTE_PARAMETERS = ["chat", "project"] as const;
 const ROUTE_ID_MAX_LENGTH = 256;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
@@ -38,19 +41,13 @@ function routeSegment(segment: string | undefined): string | null {
   }
 }
 
-/** Parses one of the four chat pathnames; anything else, including a malformed id, is null. */
+/** Parses one of the two chat pathnames; anything else, including a malformed id, is null. */
 export function parseChatRoutePath(pathname: string): ChatRoute | null {
   if (pathname === "/") return BLANK_CHAT_ROUTE;
   const segments = pathname.split("/").slice(1);
-  if (segments.length === 2 && (segments[0] === "c" || segments[0] === "p")) {
+  if (segments.length === 2 && segments[0] === "c") {
     const id = routeSegment(segments[1]);
-    if (!id) return null;
-    return segments[0] === "c" ? { chatId: id, projectId: null } : { chatId: null, projectId: id };
-  }
-  if (segments.length === 4 && segments[0] === "p" && segments[2] === "c") {
-    const projectId = routeSegment(segments[1]);
-    const chatId = routeSegment(segments[3]);
-    return projectId && chatId ? { chatId, projectId } : null;
+    return id ? { chatId: id } : null;
   }
   return null;
 }
@@ -76,16 +73,15 @@ export function formatAssistantEntryPath(assistantId: string): string {
 
 /** Whether the chat pages serve a pathname, even one naming a malformed id. */
 export function isChatRoutePathname(pathname: string): boolean {
-  return pathname === "/" || /^\/(?:[cp]|assistant)\//u.test(pathname);
+  return pathname === "/" || /^\/(?:c|assistant)\//u.test(pathname);
 }
 
 export function formatChatRoutePath(route: ChatRoute): string {
-  const chat = route.chatId ? `/c/${encodeURIComponent(route.chatId)}` : "";
-  return route.projectId ? `/p/${encodeURIComponent(route.projectId)}${chat}` : chat || "/";
+  return route.chatId ? `/c/${encodeURIComponent(route.chatId)}` : "/";
 }
 
 export function sameChatRoute(left: ChatRoute, right: ChatRoute): boolean {
-  return left.chatId === right.chatId && left.projectId === right.projectId;
+  return left.chatId === right.chatId;
 }
 
 /** The route path followed by the carried query, without legacy route parameters. */
@@ -108,9 +104,9 @@ function singleRouteParameter(params: URLSearchParams, key: string): string | nu
 }
 
 /**
- * Path form of a legacy `/?chat=<id>[&project=<id>]` link carrying its other
- * parameters, or null when the query names no route. A legacy chat link
- * whose id is unusable lands on the new chat without its one-shot parameters.
+ * Path form of a legacy `/?chat=<id>` link carrying its other parameters, or
+ * null when the query names no route. A legacy chat link whose id is unusable
+ * lands on the new chat without its one-shot parameters.
  */
 export function legacyChatRouteHref(params: URLSearchParams): string | null {
   if (!LEGACY_ROUTE_PARAMETERS.some((key) => params.has(key))) return null;
@@ -118,7 +114,7 @@ export function legacyChatRouteHref(params: URLSearchParams): string | null {
   if (params.has("chat") && !chatId) {
     return chatRouteHref(BLANK_CHAT_ROUTE, withoutChatScopedParameters(params));
   }
-  return chatRouteHref({ chatId, projectId: singleRouteParameter(params, "project") }, params);
+  return chatRouteHref({ chatId }, params);
 }
 
 /**

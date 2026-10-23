@@ -1,19 +1,29 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import type { ProjectDeletionStatusWire } from "@/lib/contracts/projects";
 import type { WorkspaceRuntime } from "../workspace/runtime";
 import { removeWorkspaceForDeletion } from "../workspace/removal";
-import { notifyProjectEvent } from "./events";
+
+/*
+ * Projects were removed together with their data (operator decision
+ * 2026-10-23). The migration `20261023210000_retire_projects` fenced every
+ * remaining Project for deletion; Workspace maintenance finalizes them here,
+ * a bounded batch per pass: their Workspace VMs are removed, their stored
+ * objects are queued for deletion, and the Project's chats, messages, runs,
+ * shares and memberships cascade with it. The tables stay until the next
+ * release drops them.
+ */
 
 const CLAIM_MS = 5 * 60_000;
 const activeStatuses = ["preparing", "queued", "streaming", "in_progress"] as const;
 
-/** Only a previously Owner-authorized durable obligation grants this worker authority. */
+export type ProjectDeletionStatus = "pending" | "failed" | "completed";
+
+/** Only a durable deletion fence grants this worker authority. */
 export async function finalizeProjectDeletion(input: Readonly<{
   prisma: PrismaClient;
   projectId: string;
   runtime?: WorkspaceRuntime;
-}>): Promise<ProjectDeletionStatusWire> {
+}>): Promise<ProjectDeletionStatus> {
   const { prisma, projectId } = input;
   const token = randomUUID();
   let claimed = false;
@@ -36,7 +46,6 @@ export async function finalizeProjectDeletion(input: Readonly<{
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     if (claim.status !== "claimed") return claim.status;
     claimed = true;
-    notifyProjectEvent(projectId);
     for (const session of claim.sessions) {
       const renewed = await prisma.project.updateMany({
         where: { id: projectId, status: "DELETING", deletionClaimToken: token, deletionClaimExpiresAt: { gt: new Date() } },
@@ -45,7 +54,7 @@ export async function finalizeProjectDeletion(input: Readonly<{
       if (renewed.count !== 1) return "pending";
       await removeWorkspaceForDeletion({ now: new Date(), prisma, runtime: input.runtime, sessionId: session.id });
     }
-    const status = await prisma.$transaction(async tx => {
+    return await prisma.$transaction(async tx => {
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR UPDATE`);
       const project = await tx.project.findUnique({ where: { id: projectId } });
       if (!project) return "completed" as const;
@@ -66,9 +75,9 @@ export async function finalizeProjectDeletion(input: Readonly<{
         });
       }
       // Project run and Memory evidence is immutable while the Project
-      // exists, but an explicit owner-authorized erasure removes the
-      // aggregate as a whole. Clear restrictive evidence/current-version
-      // edges before the Project cascade removes the remaining rows.
+      // exists; the erasure removes the aggregate as a whole. Clear
+      // restrictive evidence/current-version edges before the Project cascade
+      // removes the remaining rows.
       await tx.projectRunBinding.deleteMany({ where: { projectId: input.projectId } });
       await tx.projectMemoryProposal.deleteMany({ where: { projectId: input.projectId } });
       await tx.projectMemoryFact.updateMany({
@@ -99,8 +108,6 @@ export async function finalizeProjectDeletion(input: Readonly<{
       await tx.project.delete({ where: { id: input.projectId } });
       return "completed" as const;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    notifyProjectEvent(projectId);
-    return status;
   } catch {
     if (claimed) {
       // Failure details are deliberately content-free. An expired claim also
@@ -109,7 +116,6 @@ export async function finalizeProjectDeletion(input: Readonly<{
         where: { id: projectId, status: "DELETING", deletionClaimToken: token },
         data: { deletionLastErrorCode: "project_deletion_failed", deletionClaimToken: null, deletionClaimExpiresAt: null }
       }).catch(() => undefined);
-      notifyProjectEvent(projectId);
       return "failed";
     }
     return "pending";

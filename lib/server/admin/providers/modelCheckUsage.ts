@@ -14,7 +14,7 @@ export type ModelCheckProviderCall = Readonly<{
 }>;
 
 export type ModelCheckUsageRecord = ModelCheckProviderCall & Readonly<{
-  /** The acting administrator; model checks have no chat, run or project. */
+  /** The acting administrator; model checks have no chat or run. */
   userId: string;
   provider: string;
   /** The upstream model the call executed. */

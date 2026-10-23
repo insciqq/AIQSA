@@ -8,9 +8,6 @@ import {
 } from "../http/requestBody";
 import { logEvent } from "../observability";
 import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
-import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
-import { knowledgeDisabledResponse } from "../knowledge/disabled";
-import { ProjectsDisabledError, projectsDisabledResponse } from "../projects/disabled";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import {
   CHAT_TITLE_MAX_LENGTH,
@@ -46,7 +43,6 @@ import {
   UNAVAILABLE_CHAT_WORKSPACE_STATE,
   type ChatWorkspaceState
 } from "../../contracts/workspace";
-import { decodeKnowledgeSelection, type KnowledgePlan } from "../../contracts/knowledge";
 import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import { ChatAssistantUpdateError, type ChatAssistantUpdateErrorCode } from "./assistantUpdateError";
 
@@ -63,7 +59,6 @@ export type ChatMessageRecord = {
   workspaceSettling?: true;
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
-  author?: ChatMessageWire["author"];
   citationMessageId?: string | null;
   content: unknown;
   createdAt: Date | string;
@@ -97,14 +92,12 @@ export type ChatSummaryRecord = {
   /** The chat's bound Assistant; absent reads as none. */
   assistantId?: string | null;
   createdAt: Date | string;
-  defaultKnowledgePlan?: KnowledgePlan | null;
   defaultModelId: string | null;
   defaultProvider: string | null;
   folderId: string | null;
   id: string;
   messageCount: number;
   pinned: boolean;
-  projectId?: string | null;
   title: string;
   updatedAt: Date | string;
   workspace?: ChatWorkspaceState;
@@ -141,7 +134,6 @@ export type ChatBranchGraphRecord = {
 };
 
 export type FolderRecord = {
-  defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
   name: string;
   parentId: string | null;
@@ -174,7 +166,6 @@ export type ChatRepository = {
   }): Promise<ChatMessagesPageResult>;
   listWorkspace(userId: string): Promise<ChatWorkspace | null>;
   updateFolder(input: {
-    defaultKnowledgePlan?: KnowledgePlan | null;
     folderId: string;
     name?: string | null;
     parentId?: string | null;
@@ -190,7 +181,6 @@ export type ChatRepository = {
     assistantId?: string | null;
     assistantOverrides?: ChatAssistantOverridesPatch;
     chatId: string;
-    defaultKnowledgePlan?: KnowledgePlan | null;
     folderId?: string | null;
     pinned?: boolean;
     title?: string | null;
@@ -275,24 +265,6 @@ function workspaceEnabledValue(
     : { ok: false };
 }
 
-function knowledgeDefaultValue(
-  body: { defaultKnowledgePlan?: unknown } | null
-): { ok: true; value: KnowledgePlan | null | undefined } | { ok: false } {
-  if (!body || !("defaultKnowledgePlan" in body)) {
-    return { ok: true, value: undefined };
-  }
-  if (body.defaultKnowledgePlan === null) {
-    return { ok: true, value: null };
-  }
-  const decoded = decodeKnowledgeSelection(body.defaultKnowledgePlan);
-  return decoded.ok ? { ok: true, value: decoded.plan } : { ok: false };
-}
-
-/** Knowledge is disabled: clearing a chat's or folder's Knowledge default stays possible, choosing one does not. */
-function knowledgeDefaultRefused(value: KnowledgePlan | null | undefined): boolean {
-  return !KNOWLEDGE_ENABLED && value !== undefined && value !== null && value.mode !== "none";
-}
-
 function parentFolderValue(body: Record<string, unknown> | null): string | null | undefined {
   if (!body || !("parentId" in body)) {
     return undefined;
@@ -321,7 +293,6 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     ...(message.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary: message.artifactSummary ?? null,
     assistantIdentity: message.assistantIdentity ?? null,
-    author: message.author ?? null,
     citationMessageId: message.citationMessageId ?? null,
     content: message.content,
     createdAt: iso(message.createdAt),
@@ -352,7 +323,6 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     ...(chat.answerReview ? { answerReview: chat.answerReview } : {}),
     assistantId: chat.assistantId ?? null,
     createdAt: iso(chat.createdAt),
-    defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,
@@ -360,7 +330,6 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     id: chat.id,
     messageCount: chat.messageCount,
     pinned: chat.pinned,
-    projectId: chat.projectId ?? null,
     title: chat.title,
     updatedAt: iso(chat.updatedAt),
     workspace: chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
@@ -614,7 +583,6 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (search && !search.ok) {
       return chatRouteErrorJson({ error: "search_plan_invalid" }, { status: 400 });
     }
-    const defaultKnowledgePlan = knowledgeDefaultValue(body);
     const answerReview = body && "answerReview" in body
       ? body.answerReview === null ? null : decodeAnswerReviewAutoConfig(body.answerReview) ?? "invalid"
       : undefined;
@@ -625,10 +593,6 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (!workspaceEnabled.ok) {
       return chatRouteErrorJson({ error: "workspace_state_invalid" }, { status: 400 });
     }
-    if (!defaultKnowledgePlan.ok) {
-      return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
-    }
-    if (knowledgeDefaultRefused(defaultKnowledgePlan.value)) return knowledgeDisabledResponse();
     const title = textValue(body?.title);
     if (chatTitleTooLong(title)) {
       return chatRouteErrorJson({ error: "chat_title_too_long" }, { status: 400 });
@@ -644,7 +608,6 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
         ...(answerReview !== undefined ? { answerReview } : {}),
         ...assistant.update,
         chatId: params.chatId,
-        defaultKnowledgePlan: defaultKnowledgePlan.value,
         ...(body && "defaultSearchPlan" in body ? { defaultSearchPlan: search?.ok ? search.plan : null } : {}),
         folderId: folderValue(body),
         pinned: pinnedValue(body),
@@ -659,7 +622,6 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
       if (isChatAssistantUpdateError(error)) {
         return chatAssistantErrorJson(error.code);
       }
-      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
       throw error;
     }
 
@@ -788,16 +750,10 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     const name = optionalTextValue(body, "name");
     const projectMemory = optionalTextValue(body, "projectMemory");
     const parentId = parentFolderValue(body);
-    const defaultKnowledgePlan = knowledgeDefaultValue(body);
-    if (!defaultKnowledgePlan.ok) {
-      return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
-    }
-    if (knowledgeDefaultRefused(defaultKnowledgePlan.value)) return knowledgeDisabledResponse();
     if (
       name === undefined &&
       projectMemory === undefined &&
-      parentId === undefined &&
-      defaultKnowledgePlan.value === undefined
+      parentId === undefined
     ) {
       return Response.json({ error: "folder_update_required" }, { status: 400 });
     }
@@ -809,7 +765,6 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     }
 
     const folder = await deps.repository.updateFolder({
-      defaultKnowledgePlan: defaultKnowledgePlan.value,
       folderId: params.folderId,
       name,
       parentId,

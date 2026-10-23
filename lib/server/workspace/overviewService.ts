@@ -16,7 +16,7 @@ const MAX_SESSIONS = 10_000;
 const MAX_RUNTIME_PAGES = MAX_SESSIONS / WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE;
 type Observation = WorkspaceRuntimeInventoryPage["entries"][number];
 export type WorkspaceOverviewRecord = Readonly<{
-  context: "personal" | "project";
+  context: "personal" | null;
   id: string;
   lastActiveAt: Date;
   runtimeSandboxId: string | null;
@@ -69,10 +69,7 @@ export function createPrismaWorkspaceOverviewRepository(
       const records = await prisma.workspaceSession.findMany({
         orderBy: { id: "asc" },
         select: {
-          chat: { select: {
-            createdBy: { select: { displayName: true } }, createdByDisplayName: true, projectId: true,
-            user: { select: { displayName: true } }
-          } },
+          chat: { select: { user: { select: { displayName: true } } } },
           id: true, lastActiveAt: true, runtimeSandboxId: true, sandboxName: true, state: true
         },
         take: MAX_SESSIONS + 1
@@ -80,12 +77,11 @@ export function createPrismaWorkspaceOverviewRepository(
       // Never turn a safety limit into a plausible partial total.
       if (records.length > MAX_SESSIONS) throw new Error("workspace_overview_limit_exceeded");
       return records.map((record) => ({
-        context: record.chat.projectId ? "project" as const : "personal" as const,
+        // A chat without an owner is a removed Project's chat awaiting deletion.
+        context: record.chat.user ? "personal" as const : null,
         id: record.id, lastActiveAt: record.lastActiveAt, runtimeSandboxId: record.runtimeSandboxId,
         sandboxName: record.sandboxName, state: record.state,
-        user: record.chat.projectId
-          ? record.chat.createdBy?.displayName ?? (record.chat.createdByDisplayName || null)
-          : record.chat.user?.displayName ?? null
+        user: record.chat.user?.displayName ?? null
       }));
     }
   };

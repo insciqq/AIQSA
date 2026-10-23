@@ -99,7 +99,7 @@ export function createMemorySourceNavigationHandler(
     try {
       const target = await deps.service.resolveOpenSource(session.userId, memoryRef);
       return navigationRedirect(chatRouteHref(
-        { chatId: target.chatId, projectId: null },
+        { chatId: target.chatId },
         new URLSearchParams({ message: target.messageId })
       ));
     } catch {

@@ -22,7 +22,7 @@ const finding = { claim: "It is 42.", id: "F1", problem: "It is 41.", severity: 
 
 type Row = Record<string, unknown>;
 type State = {
-  chat: { activeLeafMessageId: string | null; assistantId: string | null; projectId: string | null };
+  chat: { activeLeafMessageId: string | null; assistantId: string | null };
   claimed: { id: string; userModelRuns: { assistantMessageId: string | null; id: string }[] } | null;
   messages: Row[];
   session: Row;
@@ -67,7 +67,7 @@ function fakePrisma(state: State) {
 
 function newState(overrides: Partial<State> = {}): State {
   return {
-    chat: { activeLeafMessageId: "answer-1", assistantId: null, projectId: null },
+    chat: { activeLeafMessageId: "answer-1", assistantId: null },
     claimed: { id: "turn-0", userModelRuns: [{ assistantMessageId: "step-answer-0", id: "run-0" }] },
     messages: [],
     session: sessionRow(),
@@ -115,16 +115,13 @@ describe("answer review step start", () => {
     expect(deps.resolveAuth).toBe(resolveAuth);
   });
 
-  it("gives a personal step without Search an empty Search, and a Project step none", async () => {
+  it("gives a step without Search an empty Search", async () => {
     await startAnswerReviewStep({ prisma: fakePrisma(newState()).prisma, sendDeps }, input());
     expect(sent[0]?.body.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
-    const project = newState({ chat: { activeLeafMessageId: "answer-1", assistantId: null, projectId: "project-1" } });
-    await startAnswerReviewStep({ prisma: fakePrisma(project).prisma, sendDeps }, input());
-    expect(Object.hasOwn(sent[1]?.body ?? {}, "searchPlan")).toBe(false);
   });
 
   it("starts the revision with the author's model and every finding key of the round", async () => {
-    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null, projectId: null }, messages: stepRows(),
+    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null }, messages: stepRows(),
       claimed: { id: "turn-1", userModelRuns: [{ assistantMessageId: "step-answer-1", id: "run-1" }] } });
     const started = await startAnswerReviewStep({ prisma: fakePrisma(state).prisma, sendDeps },
       input({ expectedActiveLeafId: "step-answer-0", kind: "revision" }));
@@ -137,7 +134,7 @@ describe("answer review step start", () => {
 
   it("shows the round's second reviewer the first one's review", async () => {
     const second = { modelId: "model-c", name: "Gemini", provider: "connection-c" };
-    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null, projectId: null }, messages: stepRows(),
+    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null }, messages: stepRows(),
       claimed: { id: "turn-1", userModelRuns: [{ assistantMessageId: "step-answer-1", id: "run-1" }] },
       session: sessionRow({ reviewers: [reviewer, second] }) });
     const started = await startAnswerReviewStep({ prisma: fakePrisma(state).prisma, sendDeps },
@@ -157,11 +154,11 @@ describe("answer review step start", () => {
       ["answer_review_unavailable", 404, newState(), input({ userId: "user-2" })],
       ["answer_review_step_unavailable", 409, newState(), input({ kind: "revision" })],
       ["active_leaf_changed", 409, newState(), input({ expectedActiveLeafId: "older-answer" })],
-      ["active_leaf_changed", 409, newState({ chat: { activeLeafMessageId: "later-question", assistantId: null, projectId: null } }), input()],
-      ["answer_review_assistant_unsupported", 409, newState({ chat: { activeLeafMessageId: "answer-1", assistantId: "assistant-1",
-        projectId: null } }), input()],
+      ["active_leaf_changed", 409, newState({ chat: { activeLeafMessageId: "later-question", assistantId: null } }), input()],
+      ["answer_review_assistant_unsupported", 409, newState({ chat: { activeLeafMessageId: "answer-1", assistantId: "assistant-1" } }),
+        input()],
       // A running step is never followed by another.
-      ["answer_review_step_unavailable", 409, newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null, projectId: null },
+      ["answer_review_step_unavailable", 409, newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null },
         messages: stepRows({ answerStatus: "streaming", card: null }) }), input({ expectedActiveLeafId: "step-answer-0", kind: "revision" })]
     ];
     for (const [code, status, state, stepInput] of cases) {
@@ -173,7 +170,7 @@ describe("answer review step start", () => {
   });
 
   it("settles a session its last step ended and refuses another step", async () => {
-    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null, projectId: null },
+    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null },
       messages: stepRows({ answerStatus: "cancelled", card: null }) });
     const { prisma, updateMany } = fakePrisma(state);
     const started = await startAnswerReviewStep({ prisma, sendDeps }, input({ expectedActiveLeafId: "step-answer-0", kind: "revision" }));
@@ -226,8 +223,8 @@ describe("answer review step start", () => {
   });
 
   it("takes only control keys from the chat", () => {
+    // A retired Knowledge selection is not a control any more.
     expect(answerReviewStepControls({ content: "x", knowledgePlan: { mode: "none" }, modelId: "m", skillIds: ["s"], tools: "auto",
-      workspace: { enabled: true } })).toEqual({ knowledgePlan: { mode: "none" }, skillIds: ["s"], tools: "auto",
-      workspace: { enabled: true } });
+      workspace: { enabled: true } })).toEqual({ skillIds: ["s"], tools: "auto", workspace: { enabled: true } });
   });
 });

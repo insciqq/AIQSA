@@ -10,7 +10,7 @@ const BOOTSTRAP = Symbol.for("aiqsa.observability.dev-bootstrap.v1");
 
 function installDevBootstrap() {
   installProcessFailureHooks();
-  announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
+  announceProcess({ attachments: "starting", memory: "unknown", mcp: "starting", workspace: "unknown", email: "unknown" });
   if (globalThis[BOOTSTRAP]) return;
   globalThis[BOOTSTRAP] = true;
   for (const transport of [http, https]) {

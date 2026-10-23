@@ -25,15 +25,14 @@ export function acceptedMcpCallIdentity(normalizedRequest: unknown, toolName: st
 /** Both stored-inline and original-observation reads retain current MCP
  * grants/tool restrictions. No discovery, runtime startup or OAuth refresh. */
 export async function canReadAcceptedMcpCall(tx: Prisma.TransactionClient, input: AcceptedMcpCallIdentity & {
-  projectId: string | null; userId: string;
+  userId: string;
 }): Promise<boolean> {
   const memberships = await tx.userGroup.findMany({ where: { userId: input.userId, group: { archivedAt: null } }, select: { groupId: true } });
   const server = await tx.mcpServer.findFirst({ where: { id: input.serverId, enabled: true, archivedAt: null,
-    ...(input.projectId ? { projectBindings: { some: { projectId: input.projectId } }, ownerUserId: null } : {
-      OR: [{ ownerUserId: null }, { ownerUserId: input.userId }],
-      grants: { some: { canUse: true, OR: [{ userId: input.userId }, { groupId: { in: memberships.map(item => item.groupId) } }] } },
-      userServers: { some: { userId: input.userId, enabled: true } }
-    }) }, select: { activeRevision: { select: { configuration: true } } } });
+    OR: [{ ownerUserId: null }, { ownerUserId: input.userId }],
+    grants: { some: { canUse: true, OR: [{ userId: input.userId }, { groupId: { in: memberships.map(item => item.groupId) } }] } },
+    userServers: { some: { userId: input.userId, enabled: true } }
+  }, select: { activeRevision: { select: { configuration: true } } } });
   if (!server?.activeRevision) return false;
   const config = server.activeRevision.configuration;
   if (mcpDetailRecord(config) && Array.isArray(config.disabledToolNames) && config.disabledToolNames.includes(input.originalName)) return false;

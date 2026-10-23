@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type WorkspaceSelectedCapture } from "@prisma/client";
 import { isSafeWorkspaceRelativePath, isWorkspaceOpaqueId, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { readStreamWithAbort } from "../http/byteStream";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
 import type { WorkspaceConfig } from "./config";
 import type { WorkspaceImageSource } from "./imageCapture";
@@ -74,12 +74,11 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
   async function authority(tx: Prisma.TransactionClient, input: WorkspaceCaptureConsumer, active = true) {
     consumer(input);
     const observed = await tx.modelRun.findUnique({ where: { id: input.runId }, select: {
-      chatId: true, chat: { select: { projectId: true } }, workspaceRunBinding: { select: { workspaceSessionId: true } }
+      chatId: true, workspaceRunBinding: { select: { workspaceSessionId: true } }
     } });
     if (!observed?.workspaceRunBinding) throw stale();
     // Match settlement locks from the outset: concurrent readers must not
     // acquire shared authority and then deadlock upgrading Chat or its owner.
-    if (observed.chat.projectId) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${observed.chat.projectId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${input.userId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${observed.chatId} FOR UPDATE`;
     const session = await lockWorkspaceSession(tx, observed.workspaceRunBinding.workspaceSessionId);
@@ -90,7 +89,7 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
     if (!run || run.userId !== input.userId || !run.workspaceRunBinding || !session || run.chatId !== session.chatId ||
       run.chat.permanentDeletionAt || run.chat.archived ||
       !await tx.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } }) ||
-      !await resolveChatAccess(tx, { chatId: run.chatId, userId: input.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })) throw stale();
+      !await resolveChatAccess(tx, { chatId: run.chatId, userId: input.userId })) throw stale();
     // Run ownership has no timed lease; export workers use operationExpiresAt.
     if (active && (!["in_progress", "streaming"].includes(run.status) || session.operationOwner !== workspaceRunOperationOwner(run.id) ||
       session.state === "DELETING" || session.state === "FAILED")) throw stale();

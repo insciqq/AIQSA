@@ -31,7 +31,7 @@ export async function requireMemoryCommandSource(
     JOIN "UserMemorySettings" settings ON settings."userId" = chat."userId"
     JOIN "User" owner ON owner.id = settings."userId" AND owner.status = 'active'
     WHERE chat.id = ${job.chatId} AND chat."userId" = ${userId}
-      AND chat."projectId" IS NULL AND chat."memoryMode" = 'NORMAL'
+      AND chat."memoryMode" = 'NORMAL'
       AND chat."permanentDeletionAt" IS NULL AND source.role = 'user'
       AND settings."useMemoryFacts" = TRUE
       AND settings."memoryGeneration" = ${job.memoryGenerationSnapshot}

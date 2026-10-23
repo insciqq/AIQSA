@@ -72,9 +72,7 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
         await assertChatPdfClaim(tx, claim);
         const attempt = await tx.chatPdfPageAttempt.findFirstOrThrow({ where: {
           id: attemptId, state: "reserved", preparation: { modelRunId: claim.runId, state: "preparing" }
-        }, include: { preparation: { include: { modelRun: { include: {
-          chat: { select: { projectId: true } }
-        } } } } } });
+        }, include: { preparation: { include: { modelRun: true } } } });
         const snapshot = attempt.preparation.bindingSnapshot as Prisma.JsonObject;
         const model = snapshot.model as Prisma.JsonObject;
         const changed = await tx.chatPdfPageAttempt.updateMany({
@@ -91,7 +89,6 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
           chatPdfPreparation: true,
           purpose: "chat_pdf",
           modelId: String(model.upstreamModelId), modelRunId: claim.runId,
-          projectId: attempt.preparation.modelRun.chat.projectId,
           provider: String(snapshot.providerFamily),
           providerModelId: attempt.preparation.providerModelId,
           userId: claim.userId

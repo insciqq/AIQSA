@@ -35,7 +35,6 @@ describe("standalone worker startup", () => {
   it.each([
     ["memory-coordinator.ts", "memory_coordinator"],
     ["memory-search-worker.ts", "memory_search"],
-    ["knowledge-search-worker.ts", "knowledge_search"],
     ["workspace-runner.ts", "workspace_runner"],
     ["workspace-maintenance.ts", "maintenance"],
     ["bootstrap.ts", "bootstrap"]
@@ -74,7 +73,7 @@ describe("standalone worker startup", () => {
   it("covers a failing dependency import through the actual tsx worker loader", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "aiqsa-worker-startup-"));
     directories.push(directory);
-    const target = path.join(directory, "knowledge-search-worker.ts");
+    const target = path.join(directory, "memory-search-worker.ts");
     writeFileSync(path.join(directory, "dependency.ts"), `throw new Error(${JSON.stringify(canary)});`);
     writeFileSync(target, `import ${JSON.stringify(bootstrap)};\nimport './dependency';\n`);
     const result = spawnSync(process.execPath, ["--import", "tsx", target], {
@@ -84,10 +83,10 @@ describe("standalone worker startup", () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
     expect(records(result.stdout)).toEqual([
-      expect.objectContaining({ event: "process.started", role: "knowledge_search" })
+      expect.objectContaining({ event: "process.started", role: "memory_search" })
     ]);
     expect(records(result.stderr)).toEqual([
-      expect.objectContaining({ event: "process.failure", role: "knowledge_search", outcome: "terminated" })
+      expect.objectContaining({ event: "process.failure", role: "memory_search", outcome: "terminated" })
     ]);
     expect(result.stdout + result.stderr).not.toMatch(/canary|Error:|dependency\.ts/);
   });

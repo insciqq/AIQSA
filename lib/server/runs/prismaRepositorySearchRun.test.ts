@@ -130,7 +130,6 @@ describe("Prisma run repository search evidence", () => {
         findUnique: vi.fn().mockResolvedValue({
           archived: false,
           permanentDeletionAt: null,
-          projectId: null,
           userId: "user-1"
         })
       }

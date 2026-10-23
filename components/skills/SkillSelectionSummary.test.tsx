@@ -28,10 +28,10 @@ describe("Skill instruction estimates", () => {
 
   it("does not borrow an estimate from an unrelated personal catalog", () => {
     useSkillLibraryStore.setState({ data: { nextCursor: null, publishableWorkspaces: [], viewer: { canPublishInstallation: false }, skills: [{
-      id: "project-skill", name: "Personal revision", description: "", archived: false, instructionCharacterCount: 20,
+      id: "renamed-skill", name: "Personal revision", description: "", archived: false, instructionCharacterCount: 20,
       instructionApproxTokens: 999, owned: true, ownerDisplayName: "Viewer", scope: { kind: "owner" }, version: 1, updatedAt: "2026-09-21"
     }] } });
-    render(<SkillSelectionSummary includedSkills={[]} manualSkills={[{ id: "project-skill", name: "Project revision" }]} modelContextWindow={1000} onRemove={vi.fn()} />);
+    render(<SkillSelectionSummary includedSkills={[]} manualSkills={[{ id: "renamed-skill", name: "Earlier revision" }]} modelContextWindow={1000} onRemove={vi.fn()} />);
     expect(screen.getByText(/Some estimates are unavailable/)).toBeVisible();
     expect(screen.getByText("1 always included · Instruction estimate unavailable")).toBeVisible();
     expect(screen.getByText(/Yours: unavailable/)).toBeVisible();

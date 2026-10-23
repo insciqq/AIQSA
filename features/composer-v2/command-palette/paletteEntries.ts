@@ -4,13 +4,13 @@ import { SKILL_MAX_PINNED } from "@/lib/contracts/skills";
 import { assistantBylineV2 } from "../AssistantPickerV2";
 import type { ComposerPaletteEntry } from "./paletteModel";
 
-/** A Skill the palette can pin, as the Skill library (or the Project's Skills) lists it. */
+/** A Skill the palette can pin, as the Skill library lists it. */
 export type ComposerPaletteSkill = Readonly<{ id: string; name: string; description: string }>;
 
 /**
- * The Skills the shell hands the palette: the personal Skill library or the
- * Project's Skills, the load state of that list, and the library's own
- * "Always use" pin. `search` asks the library for Skills beyond its first page.
+ * The Skills the shell hands the palette: the personal Skill library, the load
+ * state of that list, and the library's own "Always use" pin. `search` asks
+ * the library for Skills beyond its first page.
  */
 export type ComposerPaletteSkillSource = Readonly<{
   items: readonly ComposerPaletteSkill[];
@@ -42,10 +42,6 @@ export type ComposerPaletteActionsInput = Readonly<{
   attach: PaletteAction;
   /** "+" → Skills… (the Skill library). */
   skillLibrary: PaletteAction | null;
-  /** "+" → Add Knowledge… (the Knowledge layer). */
-  knowledge: PaletteAction | null;
-  /** Knowledge layer rows: each base toggles like its row. */
-  knowledgeBases: readonly (PaletteAction & Readonly<{ id: string; name: string; selected: boolean; current: boolean }>)[];
   /** The MCP chip (its layer). */
   mcp: PaletteAction;
   /** The Search chip (its layer) and its "Turn off search". */
@@ -128,14 +124,6 @@ function actionEntries(input: ComposerPaletteActionsInput): ComposerPaletteEntry
     run: action.run,
     ...extra
   });
-  if (input.knowledge) add("knowledge", "Choose Knowledge…", "book", input.knowledge, ["knowledge", "documents", "bases"]);
-  for (const base of input.knowledgeBases) {
-    add(`knowledge-base:${base.id}`, base.name, "library", base, ["knowledge"], {
-      checked: base.selected,
-      current: base.current,
-      queryOnly: true
-    });
-  }
   add("mcp", "MCP tools…", "tool", input.mcp, ["mcp", "tools", "servers"]);
   if (input.search) add("search", "Web search…", "globe", input.search, ["web", "search", "internet"]);
   if (input.searchOff) add("search-off", "Turn off web search", "globe", input.searchOff, ["web", "search"]);
@@ -172,8 +160,7 @@ function assistantEntries(source: ComposerPaletteAssistantSource): ComposerPalet
     const current = assistant.id === source.currentId;
     const byline = assistantBylineV2({
       owned: assistant.owned,
-      ownerDisplayName: assistant.ownerDisplayName,
-      projectName: assistant.scope.kind === "project" ? assistant.scope.projectName : undefined
+      ownerDisplayName: assistant.ownerDisplayName
     });
     return {
       id: `assistant:${assistant.id}`,

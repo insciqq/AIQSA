@@ -7,12 +7,6 @@ import {
   type AssistantRunControls
 } from "../../contracts/assistants";
 import {
-  decodeKnowledgePlan,
-  EMPTY_KNOWLEDGE_SELECTION,
-  explicitKnowledgeSelection,
-  type KnowledgeSelection
-} from "../../contracts/knowledge";
-import {
   decodeSearchPlan,
   type SearchPlan,
   type SearchPlanMode
@@ -32,14 +26,13 @@ export type StoredAssistantSearchPlan =
 
 export type StoredAssistantMcpMode = "exact" | "inherit" | "off";
 
-export type StoredAssistantKnowledgeSelection = KnowledgeSelection | { mode: "inherit" };
-
-/** The definition columns behind the six rows, as the database stores them. */
+/**
+ * The definition columns behind the five rows, as the database stores them.
+ * The retired Knowledge columns stay in the table until a later migration
+ * drops them; Assistant code neither reads nor writes them.
+ */
 export type StoredAssistantRowColumns = {
   controlsPolicy: AssistantRowPolicy;
-  knowledgePolicy: AssistantRowPolicy;
-  /** `{"mode":"inherit"}` or a none/explicit Knowledge selection. */
-  knowledgeSelection: unknown;
   mcpMode: StoredAssistantMcpMode;
   mcpServerIds: readonly string[];
   modelPolicy: AssistantRowPolicy;
@@ -56,8 +49,7 @@ export type StoredAssistantRowColumns = {
   toolsPolicy: AssistantRowPolicy;
 };
 
-export type StoredAssistantRowWrite = Omit<StoredAssistantRowColumns, "knowledgeSelection" | "searchPlan" | "skillLinks"> & {
-  knowledgeSelection: StoredAssistantKnowledgeSelection;
+export type StoredAssistantRowWrite = Omit<StoredAssistantRowColumns, "searchPlan" | "skillLinks"> & {
   mcpServerIds: string[];
   searchPlan: StoredAssistantSearchPlan;
   skillLinks: { mode: AssistantSkillMode; skillId: string }[];
@@ -69,17 +61,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isInherit(value: unknown): boolean {
   return isRecord(value) && value.mode === "inherit" && Object.keys(value).length === 1;
-}
-
-/**
- * The Knowledge resources a stored value names, for readers that follow
- * resources rather than rows: inherit names none, like None. Null for a value
- * the database should not hold.
- */
-export function storedAssistantKnowledgeResources(value: unknown): KnowledgeSelection | null {
-  if (isInherit(value)) return EMPTY_KNOWLEDGE_SELECTION;
-  const decoded = decodeKnowledgePlan(value);
-  return decoded.ok && (decoded.plan.mode === "none" || decoded.plan.mode === "explicit") ? decoded.plan : null;
 }
 
 /** A plan without Search sources is stored as explicit Off. */
@@ -100,21 +81,11 @@ export function storedAssistantControlsPolicy(runControls: unknown): "adjustable
 }
 
 /**
- * Reads the six rows from stored columns. Returns null for a combination the
+ * Reads the five rows from stored columns. Returns null for a combination the
  * database or the row rules do not allow, which callers treat as an integrity
  * failure.
  */
 export function assistantRowsFromStoredColumns(columns: StoredAssistantRowColumns): AssistantRows | null {
-  const knowledge = isInherit(columns.knowledgeSelection)
-    ? { mode: "inherit" }
-    : (() => {
-        const decoded = decodeKnowledgePlan(columns.knowledgeSelection);
-        if (!decoded.ok) return null;
-        if (decoded.plan.mode === "none") return { mode: "none" };
-        return decoded.plan.mode === "explicit"
-          ? { baseIds: decoded.plan.baseIds, mode: "explicit", sourceIds: decoded.plan.sourceIds }
-          : null;
-      })();
   const search = isInherit(columns.searchPlan) ||
     (isRecord(columns.searchPlan) && columns.searchPlan.mode === "off")
     ? columns.searchPlan
@@ -128,11 +99,10 @@ export function assistantRowsFromStoredColumns(columns: StoredAssistantRowColumn
   const tools = columns.mcpMode === "exact"
     ? { mode: "exact", serverIds: columns.mcpServerIds }
     : columns.mcpServerIds.length === 0 ? { mode: columns.mcpMode } : null;
-  if (!knowledge || !search || !tools) return null;
+  if (!search || !tools) return null;
   const decoded = decodeAssistantRows({
     // Readers have always treated a missing control set as empty.
     controls: { policy: columns.controlsPolicy, value: columns.runControls ?? {} },
-    knowledge: { policy: columns.knowledgePolicy, value: knowledge },
     model: {
       policy: columns.modelPolicy,
       value: columns.providerModelId === null
@@ -157,7 +127,6 @@ export function assistantRowsFromStoredColumns(columns: StoredAssistantRowColumn
 
 /** The flat row fields the current editor and run materialization read. */
 export type AssistantLegacyRowValues = {
-  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   providerModelId: string | null;
   runControls: AssistantRunControls;
@@ -166,18 +135,14 @@ export type AssistantLegacyRowValues = {
 
 /**
  * Flat fields cannot express inherit: an inherited model reads as null and
- * every other inherit value reads like Off or None. Run resolution refuses
- * inherit values before it reads these fields.
+ * every other inherit value reads like Off. Run resolution refuses inherit
+ * values before it reads these fields.
  */
 export function legacyValuesFromAssistantRows(rows: AssistantRows): AssistantLegacyRowValues {
   const model = rows.model.value;
   const search = rows.search.value;
   const tools = rows.tools.value;
-  const knowledge = rows.knowledge.value;
   return {
-    knowledgeSelection: knowledge.mode === "explicit"
-      ? explicitKnowledgeSelection(knowledge)
-      : EMPTY_KNOWLEDGE_SELECTION,
     mcpServerIds: tools.mode === "exact" ? [...tools.serverIds] : [],
     providerModelId: model.mode === "model" ? model.modelId : null,
     runControls: { ...rows.controls.value },
@@ -195,22 +160,15 @@ export function storedColumnsFromAssistantRows(rows: AssistantRows): StoredAssis
   const model = rows.model.value;
   const search = rows.search.value;
   const tools = rows.tools.value;
-  const knowledge = rows.knowledge.value;
   const skills = rows.skills.value;
   if (
     (model.mode === "model" && model.modelId === null) ||
-    "hiddenCount" in search || "hiddenCount" in tools || "hiddenCount" in knowledge || "hiddenCount" in skills
+    "hiddenCount" in search || "hiddenCount" in tools || "hiddenCount" in skills
   ) {
     throw new Error("assistant_rows_redacted");
   }
   return {
     controlsPolicy: rows.controls.policy,
-    knowledgePolicy: rows.knowledge.policy,
-    knowledgeSelection: knowledge.mode === "inherit"
-      ? { mode: "inherit" }
-      : knowledge.mode === "none"
-        ? EMPTY_KNOWLEDGE_SELECTION
-        : explicitKnowledgeSelection(knowledge),
     mcpMode: tools.mode,
     mcpServerIds: tools.mode === "exact" ? [...tools.serverIds] : [],
     modelPolicy: rows.model.policy,

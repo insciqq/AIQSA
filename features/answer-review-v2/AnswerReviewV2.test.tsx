@@ -220,7 +220,7 @@ describe("answer review availability", () => {
   const answer = message("a", "q", "assistant", { modelId: "claude-sonnet-5", provider: "anthropic" });
   const authors = answerReviewAuthorModelsV2(answer, models);
   const base: AnswerReviewAvailabilityInput = { activeRun: false, agentEnabled: false, answer, assistantChat: false,
-    authorModels: authors, candidates: answerReviewReviewerCandidatesV2(models, authors), knowledgeEnabled: false, latest: true,
+    authorModels: authors, candidates: answerReviewReviewerCandidatesV2(models, authors), latest: true,
     mutationReason: null };
 
   it("finds the answer's own catalog model by its execution identity and offers only other tool-calling models", () => {
@@ -235,7 +235,6 @@ describe("answer review availability", () => {
       [{ activeRun: true }, /Wait for the current answer/u],
       [{ latest: false }, /latest answer/u],
       [{ agentEnabled: true }, /Turn Agent off/u],
-      [{ knowledgeEnabled: true }, /Knowledge/u],
       [{ answer: { ...answer, artifactSummary: artifact({ generatedImages: [{ attachmentId: "i", fileName: "x.png" }] as never }) } },
         /generated images/u],
       [{ candidates: [] }, /No other model/u],

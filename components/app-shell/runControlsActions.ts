@@ -30,7 +30,6 @@ import {
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
-import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
 import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
@@ -49,7 +48,6 @@ type RunControlsActionsInput = {
   chatSearchPreferencesRef?: MutableRef<ReturnType<typeof createChatSearchPreferences> | null>;
   catalog: Catalog | null;
   currentModel: CatalogModel | undefined;
-  allowPersonalPersistence?(): boolean;
   isSettingsSessionCurrent?(): boolean;
   pendingControlDefaultsRef: MutableRef<PendingControlDefaults | null>;
   pendingControlDefaultsTimerRef: MutableRef<number | null>;
@@ -61,7 +59,6 @@ type RunControlsActionsInput = {
 };
 
 export function useRunControlsActions({
-  allowPersonalPersistence,
   chatSearchPreferencesRef,
   chatSearchSession,
   isSettingsSessionCurrent,
@@ -383,9 +380,6 @@ export function useRunControlsActions({
     options: { noticeScope?: SettingsNoticeScope } = {}
   ) {
     if (isSettingsSessionCurrent?.() === false) return Promise.resolve(false);
-    if (allowPersonalPersistence?.() === false) {
-      return Promise.resolve(true);
-    }
     if (update.searchPlan !== null) {
       updateLocalCatalogDefaults(update as Partial<Catalog["defaults"]>);
     }
@@ -555,7 +549,7 @@ export function useRunControlsActions({
     const chat = state.chats.find(item => item.id === state.activeChatId);
     if (chat) {
       updateLocalChatSearch(chat.id, plan);
-      if (!chat.pendingPersonalDraft && !chat.pendingProjectDraft) void chatSearchPreferences.save(chat.id, plan);
+      if (!chat.pendingPersonalDraft) void chatSearchPreferences.save(chat.id, plan);
     }
   }
 
@@ -591,7 +585,7 @@ export function useRunControlsActions({
   /**
    * The composer's MCP mode is also the personal default, so new chats keep
    * it. With an Assistant the choice stays this chat's override of its tools
-   * row; a Project chat never writes personal defaults.
+   * row.
    */
   function selectMcpMode(selection: McpRunSelection) {
     const assistantChat = Boolean(boundComposerAssistant(useComposerControlStore.getState()));
@@ -608,16 +602,12 @@ export function useRunControlsActions({
     void persistUserDefaults({ answerReview: config }, { noticeScope: "settings" });
   }
 
-  function setDefaultKnowledgePlan(plan: KnowledgeSelection | null) {
-    void persistUserDefaults({ knowledgePlan: plan }, { noticeScope: "settings" });
-  }
-
   /** Choosing or clearing the default Assistant also clears its unavailable mark. */
   function setDefaultAssistant(assistantId: string | null) {
     void persistUserDefaults({ assistantId, assistantUnavailable: false }, { noticeScope: "settings" });
   }
 
-  // These are account presentation choices even while a Project is open.
+  // These are account presentation choices.
   function setAnswerSoundEnabled(value: boolean) {
     if (isSettingsSessionCurrent?.() === false) return;
     updateLocalCatalogDefaults({ answerSoundEnabled: value });
@@ -730,7 +720,6 @@ export function useRunControlsActions({
     selectModel,
     selectSearchPlan,
     selectSearchStrategy,
-    setDefaultKnowledgePlan,
     setDefaultAnswerReview,
     setDefaultAssistant,
     setDefaultMcpMode,

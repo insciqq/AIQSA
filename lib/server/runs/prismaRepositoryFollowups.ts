@@ -3,7 +3,7 @@ import { decodeRunFollowupInput, RUN_FOLLOWUP_MAX_COUNT, RUN_FOLLOWUP_MAX_TOTAL_
 import { textMessageContent } from "../../domain/content";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { validateRunAccess } from "../auth/entitlements";
-import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { activeModelRunStatuses, json, lockRunSettlementScope } from "./prismaRepositoryShared";
 import { followupTokenCost, projectMessageFollowups, projectRunFollowups, type RunFollowupOperations } from "./runFollowups";
 import { ActiveLeafConflictError, type PreparingRunAdmissionInput } from "./runRepositoryContract";
@@ -54,7 +54,7 @@ async function lockRun(tx: Prisma.TransactionClient, runId: string): Promise<voi
   await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
 }
 
-/** All mutations share admission/terminal lock order: principal, chat, run. */
+/** All mutations share admission/terminal lock order: owner, chat, run. */
 export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowupOperations {
   return {
     accept: async input => {
@@ -65,14 +65,12 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         await lockRun(tx, input.runId);
         const run = await tx.modelRun.findUnique({ where: { id: input.runId }, include: {
           chat: { select: { activeLeafMessageId: true, archived: true } },
-          projectRunBinding: true,
           providerRunBindings: { where: { bindingKey: "answer" } },
           followups: { orderBy: { ordinal: "asc" } }
         } });
         if (!run || run.chatId !== input.chatId || run.assistantMessageId !== input.assistantMessageId) return { kind: "not_found" };
         const actor = await tx.user.findFirst({ where: { id: input.userId, status: "active" }, select: { displayName: true } });
-        const access = actor && await resolveChatAccess(tx, { chatId: run.chatId, userId: input.userId,
-          minimumProjectRole: "CONTRIBUTOR", requireMutable: true });
+        const access = actor && await resolveChatAccess(tx, { chatId: run.chatId, userId: input.userId });
         if (!actor || !access) return { kind: "not_found" };
         const previous = run.followups.find(entry => entry.nonce === input.nonce);
         if (previous) {
@@ -82,18 +80,9 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         if (!run.followupMode || run.followupClosedAt || run.answerCompletedAt || !activeModelRunStatuses.includes(run.status) ||
           run.chat.archived || run.chat.activeLeafMessageId !== run.assistantMessageId) return { kind: "closed" };
         const binding = run.providerRunBindings[0];
-        if (access.kind === "project") {
-          const accepted = run.projectRunBinding;
-          const ownerAccess = accepted && await resolveProjectAccess(tx, { projectId: accepted.projectId,
-            minimumRole: "CONTRIBUTOR", requireActive: true, userId: run.userId });
-          if (!accepted || !ownerAccess || ownerAccess.accessRevision !== accepted.accessRevision ||
-            ownerAccess.instructionsRevision !== accepted.instructionsRevision || ownerAccess.memoryRevision !== accepted.memoryRevision ||
-            ownerAccess.policyRevision !== accepted.policyRevision) return { kind: "closed" };
-        } else {
-          const entitlement = await loadEntitlementsForUser(input.userId, tx);
-          if (!validateRunAccess(entitlement, { provider: binding?.connectionId ?? run.provider,
-            modelId: binding?.providerModelId ?? run.modelId }).ok) return { kind: "closed" };
-        }
+        const entitlement = await loadEntitlementsForUser(input.userId, tx);
+        if (!validateRunAccess(entitlement, { provider: binding?.connectionId ?? run.provider,
+          modelId: binding?.providerModelId ?? run.modelId }).ok) return { kind: "closed" };
         const cost = followupTokenCost(decoded.text);
         if (run.followupRevision >= RUN_FOLLOWUP_MAX_COUNT || cost > run.followupBudgetTokens ||
           run.followups.reduce((sum, entry) => sum + entry.text.length, decoded.text.length) > RUN_FOLLOWUP_MAX_TOTAL_CHARS) {

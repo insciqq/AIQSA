@@ -2048,8 +2048,10 @@ export async function drainKnowledgeDeletionJobs(input: Readonly<{
   leaseMinutes?: number;
   limit?: number;
   now?: Date;
+  /** Removes the jobs' search artifacts; the OpenSearch Knowledge index by default. */
+  searchDeletion?: (indexArtifactIds: readonly string[]) => Promise<void>;
 }> = {}): Promise<KnowledgeDeletionDrainSummary> {
-  const processor = createPrismaKnowledgeDeletionProcessor(input.client ?? prisma);
+  const processor = createPrismaKnowledgeDeletionProcessor(input.client ?? prisma, input.searchDeletion);
   const now = input.now ?? new Date();
   const claims = await processor.claim({
     leaseMinutes: input.leaseMinutes,

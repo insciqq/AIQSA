@@ -21,9 +21,7 @@ import {
   type AssistantRunControlField,
   type AssistantSummary
 } from "../../contracts/assistants";
-import { inheritedKnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
-import { KNOWLEDGE_DISABLED_CODE, KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
@@ -41,7 +39,6 @@ import {
 } from "./catalogValidation";
 import { isMcpRunPlanRecordStartable } from "../mcp/runPlan";
 import type { AdoptChatSetup } from "./adoptChatSetup";
-import { assistantKnowledgeFingerprint } from "./fingerprint";
 import type {
   AssistantAccessEntry,
   AssistantContentRow,
@@ -178,13 +175,6 @@ function catalogRowValues(rows: AssistantRows): AssistantCatalogRowValues {
   };
 }
 
-function knowledgeReason(
-  knowledge: NonNullable<AssistantAccessEntry["dependencyAvailability"]>["knowledge"] | undefined
-): AssistantRowDeviation["reason"] {
-  return knowledge === "not_ready" ? "knowledge_not_ready"
-    : knowledge === "unavailable" ? "knowledge_unavailable" : "knowledge_access";
-}
-
 /**
  * Availability "for you": resources of fixed rows and every Skill link are
  * dependencies, so their loss makes the Assistant unavailable; an unusable
@@ -233,10 +223,6 @@ function availabilityFor(
       reason: "tools_access"
     });
   }
-  const knowledge = entry.dependencyAvailability?.knowledge;
-  if (rows.knowledge.value.mode === "explicit" && knowledge !== "ready") {
-    failed.push({ dependencies: () => [], key: "knowledge", policy: rows.knowledge.policy, reason: knowledgeReason(knowledge) });
-  }
 
   const deviation = (row: (typeof failed)[number]): AssistantRowDeviation => {
     const dependencies = entry.owned ? row.dependencies() : [];
@@ -248,17 +234,14 @@ function availabilityFor(
   }
   const fixed = failed.filter((row) => row.policy === "fixed");
   const skillsMissing = rows.skills.value.links.length > 0 && entry.dependencyAvailability?.skills !== true;
-  // Knowledge follows Skills, as it always has; catalog rows come first.
-  const blocking = fixed.find((row) => row.key !== "knowledge");
+  // Catalog rows come before Skills.
   const unavailable: AssistantAvailability = entry.archived
     ? { ok: false, reason: "archived" }
-    : blocking
-      ? { ok: false, ...deviation(blocking) }
+    : fixed[0]
+      ? { ok: false, ...deviation(fixed[0]) }
       : skillsMissing
         ? { ok: false, reason: "skills_access" }
-        : fixed[0]
-          ? { ok: false, ...deviation(fixed[0]) }
-          : { ok: true };
+        : { ok: true };
   return { availability: unavailable, rowAvailability };
 }
 
@@ -293,7 +276,6 @@ function toolsDependencies(
 /** How the Assistant reaches this viewer; group names are only the viewer's own groups. */
 function accessScope(entry: AssistantAccessEntry): AssistantAccessScope {
   if (entry.owned) return { kind: "owner" };
-  if (entry.projectName !== undefined) return { kind: "project", projectName: entry.projectName };
   return entry.memberGroupNames.length > 0
     ? { groupNames: entry.memberGroupNames, kind: "group" }
     : { kind: "installation" };
@@ -321,7 +303,6 @@ export function buildAssistantSummary(
     featured: entry.featured,
     featuredOrder: entry.featuredOrder,
     fingerprint: {
-      ...assistantKnowledgeFingerprint(entry.content.knowledgeSelection),
       mcpServerCount: entry.content.mcpServerIds.length,
       modelLabel: catalogModel(view, entry.content.providerModelId)?.displayName ?? null,
       reasoningEffort: decoded.runControls.reasoningEffort ?? null,
@@ -348,21 +329,19 @@ function withHiddenCount<T extends object>(value: T, visible: number, total: num
 
 /**
  * Rows as a viewer who does not own the Assistant may see them: resources
- * the viewer can use are identified, the rest are counted (D-10). Without a
- * resolved Knowledge subset every Knowledge resource is counted. The listing
- * review projects rows for the reviewing administrator with it too.
+ * the viewer can use are identified, the rest are counted (D-10). The
+ * listing review projects rows for the reviewing administrator with it too.
  */
 export function viewerRows(
   content: Pick<AssistantContentRow, "rows" | "skillSummaries">,
   view: Pick<RunnerCatalogView, "accessibleMcpServerIds" | "entitledSearchOptionIds" | "modelById">,
-  options: { owned: boolean; visibleKnowledge?: AssistantDetailData["visibleKnowledge"] }
+  options: { owned: boolean }
 ): AssistantRows {
   const rows = content.rows;
   if (options.owned) return rows;
   const model = rows.model.value;
   const search = rows.search.value;
   const tools = rows.tools.value;
-  const knowledge = rows.knowledge.value;
   const skills = rows.skills.value;
   const visibleSkillIds = new Set((content.skillSummaries ?? []).map(({ id }) => id));
   const links = skills.links.filter((link) => visibleSkillIds.has(link.skillId));
@@ -372,19 +351,8 @@ export function viewerRows(
   const serverIds = tools.mode === "exact"
     ? tools.serverIds.filter((serverId) => view.accessibleMcpServerIds.has(serverId))
     : [];
-  const visibleBaseIds = new Set(options.visibleKnowledge?.baseIds ?? []);
-  const visibleSourceIds = new Set(options.visibleKnowledge?.sourceIds ?? []);
-  const baseIds = knowledge.mode === "explicit" ? knowledge.baseIds.filter((id) => visibleBaseIds.has(id)) : [];
-  const sourceIds = knowledge.mode === "explicit" ? knowledge.sourceIds.filter((id) => visibleSourceIds.has(id)) : [];
   return {
     controls: rows.controls,
-    knowledge: {
-      policy: rows.knowledge.policy,
-      value: knowledge.mode === "explicit"
-        ? withHiddenCount({ baseIds, mode: "explicit" as const, sourceIds }, baseIds.length + sourceIds.length,
-          knowledge.baseIds.length + knowledge.sourceIds.length)
-        : knowledge
-    },
     model: {
       policy: rows.model.policy,
       value: model.mode === "model" && catalogModel(view, model.modelId) === undefined
@@ -417,7 +385,7 @@ export function viewerRows(
 function definitionContent(
   content: AssistantContentRow,
   view: RunnerCatalogView,
-  options: { owned: boolean; visibleKnowledge?: AssistantDetailData["visibleKnowledge"] }
+  options: { owned: boolean }
 ): AssistantContent {
   const decoded = decodeStoredContent(content);
   const modelVisible = catalogModel(view, content.providerModelId) !== undefined;
@@ -427,11 +395,6 @@ function definitionContent(
     category: assistantCategory(content.category),
     description: content.description,
     responseReminder: content.responseReminder ?? "",
-    // The flat Knowledge field serves the current editor only; consumers
-    // read their visible subset from `rows`.
-    knowledgeSelection: options.owned
-      ? content.knowledgeSelection
-      : inheritedKnowledgeSelection("assistant"),
     // Consumers never learn hidden dependency ids: unresolvable model ids
     // project as null and MCP ids narrow to the runner's accessible servers.
     mcpServerIds: options.owned
@@ -475,7 +438,6 @@ function detailFromEntry(
       ? {
           featuredOrder: entry.featuredOrder,
           ...(entry.listingRequest !== undefined ? { listingRequest: entry.listingRequest } : {}),
-          ...(entry.projects ? { projects: entry.projects } : {}),
           ...(entry.recentChatCount !== undefined ? { recentChatCount: entry.recentChatCount } : {})
         }
       : {}),
@@ -496,10 +458,7 @@ function detailFromEntry(
       : {}),
     rowAvailability,
     scope: accessScope(entry),
-    content: definitionContent(entry.content, view, {
-      owned: entry.owned,
-      ...(entry.visibleKnowledge ? { visibleKnowledge: entry.visibleKnowledge } : {})
-    }),
+    content: definitionContent(entry.content, view, { owned: entry.owned }),
     ...(!entry.owned || skillSummaries.length === entry.content.skillIds.length
       ? { skills: skillSummaries.map((skill) => ({ ...skill })) }
       : {}),
@@ -526,10 +485,6 @@ export function assistantDraftCatalogFailure(
   draft: Pick<AssistantDraft, "rows">,
   view: RunnerCatalogView
 ): AssistantDraftCatalogFailure | null {
-  // Knowledge is disabled: an Assistant selects no Knowledge (Inherit and None stay).
-  if (!KNOWLEDGE_ENABLED && draft.rows.knowledge.value.mode === "explicit") {
-    return { code: KNOWLEDGE_DISABLED_CODE, row: "knowledge", status: 409 };
-  }
   const failure = firstAssistantCatalogFailure(
     assistantRowCatalogFailures(catalogRowValues(draft.rows), view, { mcpRunnability: "accessible" })
   );
@@ -861,9 +816,9 @@ export type AdoptChatSetupHandlerDeps = AssistantHandlerDeps & { adoptChatSetup:
  * "Save chat setup to Assistant" (owner only, PRD 8.5): the rows changed in
  * one of the owner's personal chats bound to this Assistant become its
  * values; policies stay. The rows are validated like an ordinary save. An
- * Assistant the caller does not own, another user's chat, a Project chat and
- * a chat bound elsewhere all answer the same neutral 404. Nothing changed for
- * the chat is an ordinary success that writes nothing.
+ * Assistant the caller does not own, another user's chat and a chat bound
+ * elsewhere all answer the same neutral 404. Nothing changed for the chat is
+ * an ordinary success that writes nothing.
  */
 export function createAdoptChatSetupHandler(deps: AdoptChatSetupHandlerDeps) {
   return async function POST(

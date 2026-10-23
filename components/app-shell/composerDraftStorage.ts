@@ -28,7 +28,7 @@ export function composerDraftStorageKey(accountId: string): string {
 
 export function isStoredComposerSessionKey(value: unknown): value is ComposerSessionKey {
   if (typeof value !== "string" || value.length > 512) return false;
-  if (!/^(?:chat:[^:]+|blank:(?:(?:excluded:)?(?:root|folder:[^:]+)|project:[^:]+:(?:root|folder:[^:]+)))$/u.test(value)) return false;
+  if (!/^(?:chat:[^:]+|blank:(?:excluded:)?(?:root|folder:[^:]+))$/u.test(value)) return false;
   try { return value.split(":").every(segment => Boolean(decodeURIComponent(segment))); } catch { return false; }
 }
 

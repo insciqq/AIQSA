@@ -33,9 +33,9 @@ const ref = (call: Readonly<{ id: string }>) => toolCallRef(call.id)!;
 
 type RunStatus = "complete" | "error" | "in_progress";
 
-async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolean }> = {}) {
-  const userIds = Array.from({ length: 3 }, () => randomUUID());
-  const [initiatorId, memberId, strangerId] = userIds as [string, string, string];
+async function fixture(options: Readonly<{ sensitive?: boolean }> = {}) {
+  const userIds = Array.from({ length: 2 }, () => randomUUID());
+  const [initiatorId, strangerId] = userIds as [string, string];
   const serverId = randomUUID();
   const revisionId = randomUUID();
   const generationId = randomUUID();
@@ -43,7 +43,6 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
   const namespace = `history_${randomUUID().replaceAll("-", "")}`;
   const toolName = namespacedMcpToolName(namespace, "records");
   let chatId: string | undefined;
-  let projectId: string | null = null;
   cleanups.push(async () => {
     if (chatId) {
       await prisma.modelRun.deleteMany({ where: { chatId } });
@@ -51,7 +50,6 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
       await prisma.message.deleteMany({ where: { chatId } });
       await prisma.chat.deleteMany({ where: { id: chatId } });
     }
-    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.mcpRuntimeGeneration.deleteMany({ where: { revisionId } });
     await prisma.mcpUserServer.deleteMany({ where: { serverId } });
     await prisma.mcpRevision.deleteMany({ where: { serverId } });
@@ -60,11 +58,6 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
   await prisma.user.createMany({ data: userIds.map(id => ({ id, displayName: "Synthetic history member", status: "active" })) });
-  if (options.project) {
-    projectId = (await prisma.project.create({ data: { name: "Synthetic history Project", createdByUserId: initiatorId,
-      createdByDisplayName: "Synthetic history member", grants: { create: [{ userId: initiatorId, role: "OWNER" },
-        { userId: memberId, role: "CONTRIBUTOR" }] } } })).id;
-  }
   const configuration = {
     auth: { mode: options.sensitive ? "static" : "none" },
     runtime: { startupTimeoutMs: 30_000, callTimeoutMs: 30_000 },
@@ -77,22 +70,16 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
   await prisma.mcpRevision.create({ data: { id: revisionId, serverId, revisionNumber: 1, configuration,
     validationEvidence: {}, draftHash: "a".repeat(64), identityHash: "b".repeat(64) } });
   await prisma.mcpServer.update({ where: { id: serverId }, data: { activeRevisionId: revisionId } });
-  await prisma.mcpGrant.createMany({ data: [initiatorId, memberId].map(userId => ({ serverId, userId, canUse: true })) });
+  await prisma.mcpGrant.create({ data: { serverId, userId: initiatorId, canUse: true } });
   const userServer = await prisma.mcpUserServer.create({ data: { serverId, userId: initiatorId, enabled: true } });
-  await prisma.mcpUserServer.create({ data: { serverId, userId: memberId, enabled: true } });
-  if (projectId) {
-    await prisma.projectMcpBinding.create({ data: { projectId, serverId } });
-    await prisma.mcpSharedRuntime.create({ data: { serverId } });
-  }
   if (options.sensitive) vi.stubEnv("AIQSA_ENCRYPTION_KEY", syntheticKey.toString("base64"));
   await prisma.mcpRuntimeGeneration.create({ data: {
     id: generationId, revisionId, fingerprint, state: "ready",
-    ...(projectId ? { sharedServerId: serverId } : { userServerId: userServer.id }),
+    userServerId: userServer.id,
     ...(options.sensitive ? { effectiveConfigEnvelope: encryptMcpEnvelope({ version: 1, values: { authorization: syntheticSecret } },
       syntheticKey, mcpRuntimeGenerationEnvelopeContext(generationId, fingerprint)) } : {})
   } });
-  const chat = await prisma.chat.create({ data: { title: "Synthetic tool history", memoryMode: "EXCLUDED",
-    ...(projectId ? { projectId, createdByUserId: initiatorId, createdByDisplayName: "Synthetic history member" } : { userId: initiatorId }) } });
+  const chat = await prisma.chat.create({ data: { title: "Synthetic tool history", memoryMode: "EXCLUDED", userId: initiatorId } });
   chatId = chat.id;
   const accepted = (eligible: boolean) => ({
     workspace: { enabled: true },
@@ -104,10 +91,8 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
     ...(eligible ? { toolHistory: { version: 1, turns: [] } } : {})
   });
   let clock = Date.now() - 600_000;
-  const question = (parentMessageId: string | null, authorId = initiatorId) => prisma.message.create({ data: {
-    chatId: chat.id, role: "user", status: "complete", parentMessageId, content: textMessageContent("Synthetic question"),
-    ...(projectId ? { authorUserId: authorId, authorDisplayName: "Synthetic history member",
-      authorProjectRole: authorId === initiatorId ? "OWNER" as const : "CONTRIBUTOR" as const } : {}) } });
+  const question = (parentMessageId: string | null) => prisma.message.create({ data: {
+    chatId: chat.id, role: "user", status: "complete", parentMessageId, content: textMessageContent("Synthetic question") } });
   /** One run answering `userMessage` with its own new answer message. */
   const answer = async (userMessage: Readonly<{ id: string }>, input: Readonly<{
     agent?: boolean; eligible?: boolean; status?: RunStatus; userId?: string;
@@ -118,10 +103,7 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
       status: status === "in_progress" ? "streaming" : status, content: textMessageContent("Synthetic answer") } });
     const run = await prisma.modelRun.create({ data: { chatId: chat.id, userId, userMessageId: userMessage.id,
       assistantMessageId: message.id, provider: "fake", modelId: "fake-qsa", status, createdAt: new Date(clock += 1000),
-      normalizedRequest: { ...accepted(input.eligible ?? true), ...(input.agent ? { agent: agentConfiguration } : {}) },
-      ...(projectId ? { projectRunBinding: { create: { projectId, initiatorUserId: userId,
-        acceptedRole: userId === initiatorId ? "OWNER" as const : "CONTRIBUTOR" as const, accessRevision: 1, policyRevision: 1,
-        instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true } } } : {}) } });
+      normalizedRequest: { ...accepted(input.eligible ?? true), ...(input.agent ? { agent: agentConfiguration } : {}) } } });
     const binding = await prisma.mcpRunBinding.create({ data: { modelRunId: run.id, runtimeGenerationId: generationId,
       runtimeGenerationFingerprint: fingerprint } });
     return { answer: message, run, binding, actor: { runId: run.id, userId } };
@@ -141,7 +123,7 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
         content: [{ type: "text", text: `result ${input.item}` }], rawPreview: { isError: false, unsupportedContentTypes: [] } }
     } });
   };
-  return { chat, initiatorId, memberId, strangerId, serverId, revisionId, generationId, fingerprint, toolName, question, answer, call };
+  return { chat, initiatorId, strangerId, serverId, revisionId, generationId, fingerprint, toolName, question, answer, call };
 }
 
 describe("Prisma cross-turn tool history", () => {
@@ -262,29 +244,6 @@ describe("Prisma cross-turn tool history", () => {
     for (const leaked of [syntheticSecret, escapedSecret, "item 1"]) expect(unverified.full).not.toContain(leaked);
     vi.stubEnv("AIQSA_ENCRYPTION_KEY", "");
     expect((await entry()).full).toContain("Arguments: withheld (their secrets cannot be verified as redacted)");
-  });
-
-  it("authorizes Project records by the reading run's initiator", async () => {
-    const f = await fixture({ project: true });
-    const answered = await f.answer(await f.question(null));
-    const saved = await f.call(answered, { round: 1, ordinal: 0, item: 1 });
-    await prisma.mcpToolAccessPolicy.create({ data: { serverId: f.serverId, toolName: "records", restricted: true,
-      users: { create: { userId: f.initiatorId } } } });
-    const member = await f.answer(await f.question(answered.answer.id, f.memberId), { status: "in_progress", userId: f.memberId });
-    const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: answered.answer.id, userId: f.memberId });
-    expect(toolHistory.turns[0]!.callRefs).toEqual([ref(saved)]);
-    // The restricted participant sees that the call happened and its outcome, never its details.
-    const entry = (await operations.projectToolHistory({ actor: member.actor, readers, toolHistory })).blocks[0]!.entries[0]!;
-    expect(entry.full).toContain("executed; the tool reported success");
-    expect(entry.full).toContain("Arguments: unavailable to this run. Result: unavailable to this run.");
-    expect(await operations.readToolCall(member.actor, ref(saved))).toMatchObject({
-      arguments: { state: "withheld", reason: "access_unavailable" }, result: { state: "withheld" } });
-    expect(await operations.toolCallsAvailable(member.actor, [ref(saved)])).toBe(false);
-    // The initiator, whom the restriction allows, reads them in a later turn.
-    await prisma.modelRun.update({ where: { id: member.run.id }, data: { status: "complete" } });
-    const initiator = await f.answer(await f.question(member.answer.id), { status: "in_progress" });
-    expect((await operations.readToolCall(initiator.actor, ref(saved)))?.arguments).toEqual({ state: "available", text: '{"query":"item 1"}' });
-    expect(await operations.toolCallsAvailable(initiator.actor, [ref(saved)])).toBe(true);
   });
 
   it("reads the fifth of ten calls with repeated ordinals and refuses other edits, chats, users and revoked details", async () => {

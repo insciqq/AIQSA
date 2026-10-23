@@ -26,14 +26,8 @@ function invalidatesCandidates(event: MemoryRetainedSourceMutationEvent): boolea
     event.mutations.includes("SOURCE_EXCLUDE");
 }
 
-function isProjectSource(event: MemoryRetainedSourceMutationEvent): boolean {
-  return (event.snapshot.projectId !== null && event.snapshot.projectId !== undefined) ||
-    (event.previous.projectId !== null && event.previous.projectId !== undefined);
-}
-
 function shouldExtract(event: MemoryRetainedSourceMutationEvent): boolean {
   if (
-    isProjectSource(event) ||
     event.snapshot.memoryMode !== "NORMAL" ||
     event.snapshot.activeLeafMessageId === null
   ) return false;
@@ -101,10 +95,6 @@ export async function applyMemoryLearningSourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
-  // Project chats never enter the personal automatic-facts lifecycle.
-  if (isProjectSource(event)) {
-    return;
-  }
   const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null =
     await normalizeMemoryFactsForSourceMutation(tx, event);

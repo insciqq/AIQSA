@@ -122,8 +122,8 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
 
   /**
    * Copy the exact bytes behind each asset_ref, of any type. A reference names
-   * a file of the accepted base version, or an attachment of this owner outside
-   * Projects that a model run admitted from its chat or produced itself. The
+   * a file of the accepted base version, or an attachment of this owner that a
+   * model run admitted from its chat or produced itself. The
    * owner's own route may name its chat, or else a file of a personal chat that
    * is neither temporary nor being deleted, or an upload not yet sent: a durable
    * artifact never outlives a temporary chat's files. Checks
@@ -154,7 +154,6 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       where: {
         id: { in: pending },
         userId,
-        projectId: null,
         ...(source.allowedAssetRefs !== undefined ? {
           // A run names only files of its own chat: the conversation files
           // admitted with the run or the files the run produced itself.
@@ -174,7 +173,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
               // An unsent upload is what a send could still attach: no chat, no
               // message and not a saved Files item. Invisible ids answer like missing ones.
               OR: [
-                { chat: { userId, projectId: null, memoryMode: { not: "TEMPORARY" as const }, permanentDeletionAt: null } },
+                { chat: { userId, memoryMode: { not: "TEMPORARY" as const }, permanentDeletionAt: null } },
                 { chatId: null, messageId: null, savedAt: null }
               ]
             })
@@ -258,7 +257,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     }
     let operation = normalizeArtifactOperation(input.operation, baseOperation);
     if (input.sourceChatId && !await db.chat.findFirst({ where: {
-      id: input.sourceChatId, userId: input.ownerUserId, projectId: null, memoryMode: { not: "TEMPORARY" }
+      id: input.sourceChatId, userId: input.ownerUserId, memoryMode: { not: "TEMPORARY" }
     }, select: { id: true } })) throw new Error("artifact_not_found");
     let artifactId = input.artifactId;
     if (artifactId && operation.intent !== "update") throw new Error("artifact_operation_invalid");
@@ -357,7 +356,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
         await tx.artifactChatBinding.updateMany({ where: { artifactId: version.artifactId }, data: { versionId: version.id } });
         if (input.sourceChatId) {
           const sourceChat = await tx.chat.findFirst({ where: {
-            id: input.sourceChatId, userId: input.ownerUserId, projectId: null
+            id: input.sourceChatId, userId: input.ownerUserId
           }, select: { id: true } });
           if (sourceChat) {
             await tx.artifactChatBinding.upsert({
@@ -402,7 +401,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     if (!versions || !shares) return null;
     return {
       id: artifact.id, kind: artifact.kind, title: artifact.title,
-      sourceChatId: artifact.sourceChatId && await db.chat.count({ where: { id: artifact.sourceChatId, userId: ownerUserId, projectId: null, archived: false, permanentDeletionAt: null } }) ? artifact.sourceChatId : null,
+      sourceChatId: artifact.sourceChatId && await db.chat.count({ where: { id: artifact.sourceChatId, userId: ownerUserId, archived: false, permanentDeletionAt: null } }) ? artifact.sourceChatId : null,
       currentVersionId: artifact.currentVersionId, createdAt: artifact.createdAt.toISOString(), updatedAt: artifact.updatedAt.toISOString(),
       versions: versions.versions, versionsNextCursor: versions.nextCursor, publications: shares.publications, publicationsNextCursor: shares.nextCursor
     };
@@ -464,9 +463,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       const artifact = await tx.artifact.findFirst({ where: { id: input.artifactId, ownerUserId: input.ownerUserId, archivedAt: null } });
       if (!artifact) throw new Error("artifact_not_found");
       if (artifact.currentVersionId !== input.versionId) throw new Error("artifact_version_conflict");
-      const existing = input.chatId ? await tx.chat.findFirst({ where: { id: input.chatId, userId: input.ownerUserId, projectId: null,
+      const existing = input.chatId ? await tx.chat.findFirst({ where: { id: input.chatId, userId: input.ownerUserId,
         memoryMode: { not: "TEMPORARY" }, archived: false, permanentDeletionAt: null } }) : (await tx.artifactChatBinding.findFirst({
-          where: { artifactId: artifact.id, chat: { userId: input.ownerUserId, projectId: null, memoryMode: { not: "TEMPORARY" }, archived: false, permanentDeletionAt: null } },
+          where: { artifactId: artifact.id, chat: { userId: input.ownerUserId, memoryMode: { not: "TEMPORARY" }, archived: false, permanentDeletionAt: null } },
           orderBy: { updatedAt: "desc" }, include: { chat: true }
         }))?.chat;
       if (input.chatId && !existing) throw new Error("artifact_chat_unavailable");
@@ -502,7 +501,6 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
         artifact: { ownerUserId: input.ownerUserId, archivedAt: null },
         chat: {
           userId: input.ownerUserId,
-          projectId: null,
           memoryMode: { not: "TEMPORARY" },
           archived: false,
           permanentDeletionAt: null
@@ -881,7 +879,6 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
             where: {
               id: { in: sourceChatIds },
               userId: ownerUserId,
-              projectId: null,
               archived: false,
               permanentDeletionAt: null
             },

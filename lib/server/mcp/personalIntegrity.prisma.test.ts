@@ -15,7 +15,6 @@ import { listAdminDashboard } from "../auth/adminDashboardQueries";
 import { createPrismaAdminRepository } from "../auth/adminRepository";
 import { ensureFullAccessGroup } from "../auth/fullAccessGroup";
 import type { RequestAuthResolver } from "../auth/requestAuth";
-import { knowledgeObservationOwner } from "../knowledge/observationOwner";
 import { prisma } from "../prisma";
 import { createToolObservationRepository } from "../toolObservations/repository";
 import { createToolObservationService } from "../toolObservations/service";
@@ -765,7 +764,7 @@ describe("personal MCP tool observations", () => {
       roundIndex: 1, state: "running", toolName: name
     } });
     const service = createToolObservationService({
-      repository: createToolObservationRepository({ prisma, ...createObservationSourceOwners(knowledgeObservationOwner) }),
+      repository: createToolObservationRepository({ prisma, ...createObservationSourceOwners() }),
       storage: createMemoryStorageAdapter()
     });
     const actor = { runId: run.id, userId: ownerId };

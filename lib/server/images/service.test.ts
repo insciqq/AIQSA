@@ -6,21 +6,21 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { imageInputFailure, ImageInputError } from "./inputError";
 import { imageDispatchMustStop } from "./errors";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatAccess } from "../projects/access";
+import type { ChatAccess } from "../chats/access";
 import type { ProviderAttachment, ProviderRunRequest } from "../providers/types";
 import { StoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 
 const access = vi.hoisted(() => ({ value: null as ChatAccess | null }));
-vi.mock("../projects/access", () => ({ resolveChatAccess: vi.fn(async () => access.value) }));
+vi.mock("../chats/access", () => ({ resolveChatAccess: vi.fn(async () => access.value) }));
 vi.mock("../providers/credentialSecrets", () => ({ decryptProviderCredentialSecret: vi.fn(() => "fixture-secret") }));
 
 const { createPrismaImageGenerationService } = await import("./service");
 
 type Row = { id: string; byteSize: number; checksum: string | null; fileName: string; mimeType: string; storageKey: string;
-  kind: string; status: string; savedAt: Date | null; userId: string | null; projectId: string | null };
+  kind: string; status: string; savedAt: Date | null; userId: string | null };
 
 const USER = "user-1";
-const personal: ChatAccess = { kind: "personal", project: null, userId: USER };
+const personal: ChatAccess = { userId: USER };
 
 function bytes(id: string, size = 16): Buffer {
   return Buffer.alloc(size, id);
@@ -29,7 +29,7 @@ function bytes(id: string, size = 16): Buffer {
 function row(id: string, overrides: Partial<Row> = {}): Row {
   const body = bytes(id, overrides.byteSize);
   return { id, byteSize: body.byteLength, checksum: createHash("sha256").update(body).digest("hex"), fileName: `${id}.png`,
-    mimeType: "image/png", storageKey: `key-${id}`, kind: "image", status: "ready", savedAt: null, userId: USER, projectId: null, ...overrides };
+    mimeType: "image/png", storageKey: `key-${id}`, kind: "image", status: "ready", savedAt: null, userId: USER, ...overrides };
 }
 
 function current(id: string, kind = "image"): ProviderAttachment {
@@ -39,9 +39,9 @@ function current(id: string, kind = "image"): ProviderAttachment {
 }
 
 function harness(rows: Row[], bodies: Record<string, Buffer> = {}) {
-  const findMany = vi.fn(async ({ where }: { where: { id: { in: string[] }; kind: string; status: string; savedAt: null; userId?: string; projectId?: string } }) =>
+  const findMany = vi.fn(async ({ where }: { where: { id: { in: string[] }; kind: string; status: string; savedAt: null; userId: string } }) =>
     rows.filter((entry) => where.id.in.includes(entry.id) && entry.kind === where.kind && entry.status === where.status &&
-      entry.savedAt === null && ("projectId" in where ? entry.projectId === where.projectId : entry.userId === where.userId)));
+      entry.savedAt === null && entry.userId === where.userId));
   const getObject = vi.fn(async (storageKey: string) => {
     const entry = rows.find((candidate) => candidate.storageKey === storageKey)!;
     return { body: bodies[entry.id] ?? bytes(entry.id, entry.byteSize), contentType: entry.mimeType };
@@ -196,10 +196,6 @@ describe("withConversationPixels", () => {
     const earlier = history(2);
     const foreign = harness([row("h1"), row("h2", { userId: "other-user" })]);
     expect(ids(await foreign.service.withConversationPixels(request([], earlier), USER))).toEqual(["h1"]);
-
-    const project = harness([row("h1", { userId: null, projectId: "p1" }), row("h2", { userId: USER, projectId: null })]);
-    access.value = { kind: "project", project: { projectId: "p1" } as never, userId: null };
-    expect(ids(await project.service.withConversationPixels(request([], earlier), USER))).toEqual(["h1"]);
 
     access.value = null;
     await expect(harness([row("h1")]).service.withConversationPixels(request([], earlier), USER)).rejects.toThrow("image_access_revoked");

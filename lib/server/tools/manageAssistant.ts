@@ -214,7 +214,6 @@ function resolveModel(reference: string, catalog: AgentAssistantCatalog): Assist
 
 const defaultRows = (): AssistantRows => ({
   controls: { policy: "adjustable", value: {} },
-  knowledge: { policy: "adjustable", value: { mode: "none" } },
   model: { policy: "adjustable", value: { mode: "inherit" } },
   search: { policy: "adjustable", value: { mode: "inherit" } },
   skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -293,8 +292,7 @@ const CATALOG_MESSAGES: Readonly<Record<string, string>> = {
   assistant_model_not_available: "The chosen model is not available to the user; choose another model or \"default\".",
   assistant_run_controls_invalid: "The Assistant's model settings do not fit this model; the user can adjust them in Studio > Assistants.",
   assistant_search_option_not_available: "The Assistant's web search sources are not available to the user or this model; set webSearch to \"default\" or \"off\".",
-  assistant_tools_not_available: "An MCP server of the Assistant is not available to the user, or the model cannot call tools; change mcpTools.",
-  knowledge_disabled: "The Assistant selects Knowledge, which is turned off here; the user can change it in Studio > Assistants."
+  assistant_tools_not_available: "An MCP server of the Assistant is not available to the user, or the model cannot call tools; change mcpTools."
 };
 
 function refusalOf(value: AgentAssistantRefusal): Refusal {

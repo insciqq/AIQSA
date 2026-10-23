@@ -396,16 +396,6 @@ export function createPrismaMemorySettingsRepository(
                 'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
                 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
               )
-              AND (
-                job."chatId" IS NULL
-                OR NOT EXISTS (
-                  SELECT 1
-                  FROM "Chat" AS job_chat
-                  WHERE job_chat."userId" = job."userId"
-                    AND job_chat."id" = job."chatId"
-                    AND job_chat."projectId" IS NOT NULL
-                )
-              )
           `);
         }
         if (masterPause) await reconcileMemoryShadowGenerations(tx, userId, cutoff);

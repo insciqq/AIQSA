@@ -3,7 +3,6 @@ import { deactivateArchivedChats } from "@/components/app-shell/archivedChatsSto
 import { useChatAssistantProjectionStore } from "@/components/app-shell/chatAssistantProjectionStore";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
-import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { deactivateMemoryManager } from "@/components/app-shell/memoryManagerStore";
 import { deactivateMemorySettings } from "@/components/app-shell/memorySettingsStore";
@@ -36,10 +35,6 @@ export function resetComposerControlStoreForTest(): void {
 
 export function resetComposerSessionStoreForTest(): void {
   resetZustandStore(useComposerSessionStore);
-}
-
-export function resetKnowledgeLibraryStoreForTest(): void {
-  resetZustandStore(useKnowledgeLibraryStore);
 }
 
 export function resetMcpSettingsStoreForTest(): void {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { decodeToolObservationSourceBinding } from "../toolObservations/contract";
 import { displayedToolCallState } from "../runs/toolLoopPersistence";
 import { acceptedMcpCallIdentity, canReadAcceptedMcpCall, mcpDetailRecord as record } from "./callDetailsAuthority";
@@ -18,7 +18,7 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         if (!user) return null;
         const run = await tx.modelRun.findFirst({ where: { id: key.runId, userId: key.userId },
           select: { id: true, chatId: true, normalizedRequest: true, status: true, workspaceRunBinding: { select: { agent: { select: { modelRunId: true } } } },
-            chat: { select: { projectId: true, memoryMode: true, temporaryRetentionDeadline: true } } } });
+            chat: { select: { memoryMode: true, temporaryRetentionDeadline: true } } } });
         if (!run || run.workspaceRunBinding?.agent || record(run.normalizedRequest) && run.normalizedRequest.agent ||
           !await resolveChatAccess(tx, { chatId: run.chatId, userId: key.userId })) return null;
         const call = await tx.modelRunToolCall.findUnique({ where: { modelRunId_roundIndex_ordinal: {
@@ -26,8 +26,8 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         } }, include: { observation: true, mcpRunBinding: true } });
         if (!call || call.workspaceRunBindingId || call.mcpRunBinding?.modelRunId !== run.id) return null;
         const identity = acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, call.mcpRunBinding.runtimeGenerationFingerprint);
-        if (!identity || !await canReadAcceptedMcpCall(tx, { ...identity, projectId: run.chat.projectId, userId: key.userId })) return null;
-        const redaction = await mcpCallDisplayRedaction(tx, identity, call.mcpRunBinding.runtimeGenerationId, key.userId, run.chat.projectId);
+        if (!identity || !await canReadAcceptedMcpCall(tx, { ...identity, userId: key.userId })) return null;
+        const redaction = await mcpCallDisplayRedaction(tx, identity, call.mcpRunBinding.runtimeGenerationId, key.userId);
         const observation = call.observation;
         let original = null;
         if (observation) {

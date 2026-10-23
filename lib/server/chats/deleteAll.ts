@@ -54,7 +54,7 @@ export function createPrismaPersonalChatLister(
         memoryMode: true,
         memorySourceRevision: true
       },
-      where: { permanentDeletionAt: null, projectId: null, userId }
+      where: { permanentDeletionAt: null, userId }
     });
     return chats.map((chat) => ({
       archived: chat.archived,
@@ -69,8 +69,7 @@ export function createPrismaPersonalChatLister(
  * Every personal chat goes through the existing lifecycle: permanent deletion
  * admission (which archives and schedules the purge) when that capability is
  * open, otherwise archive only. Temporary chats expire on their own and chats
- * with an active run are left untouched and counted as skipped. Project chats
- * are never selected.
+ * with an active run are left untouched and counted as skipped.
  */
 export async function deleteAllPersonalChats(
   deps: Pick<DeleteAllPersonalChatsDeps, "archive" | "capability" | "deletion" | "listPersonalChats">,

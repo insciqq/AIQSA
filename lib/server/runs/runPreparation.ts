@@ -11,21 +11,14 @@ import { randomUUID } from "node:crypto";
 import { workspaceFileContext, workspaceFileReferences } from "../workspace/fileContext";
 import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { textMessageContent } from "../../domain/content";
-import { KNOWLEDGE_DISABLED_CODE, KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import {
-  decodeKnowledgePlan,
-  decodeKnowledgeSelection,
-  EMPTY_KNOWLEDGE_SELECTION,
-  type KnowledgePlan
-} from "../../contracts/knowledge";
+import { decodeKnowledgeSelection, EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { mcpPersonalCredentialRejectedMessage } from "../../contracts/runs";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import { renderAssistantInstructions, renderInstructionPreset } from "../../domain/instructionTemplates";
 import { materializeAssistantRowControls, assistantRunRowProvenance } from "../assistants/rowResolution";
-import { materializeAssistantRunParams, runControlsFromSavedValues } from "../assistants/runControlMaterialization";
 import type {
   AssistantRunMaterialization,
   AssistantRunResolver
@@ -39,7 +32,6 @@ import {
   assistantRowFailure,
   chatAssistantSource,
   chatAssistantWithPatch,
-  knowledgeSelectionFromRow,
   searchPlanFromRow,
   type ChatAssistantAdmission
 } from "./assistantRunAdmission";
@@ -85,11 +77,7 @@ import {
   decodeMemoryInitialChatMode,
   type MemoryInitialChatMode
 } from "../../contracts/memory";
-import {
-  knowledgeRunAdmissionHasReadySources,
-  KnowledgeRunAdmissionError,
-  type KnowledgeRunAdmissionPlan
-} from "../knowledge/runAdmission";
+import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import {
   mcpPersonalCredentialRejections,
   type McpCapabilityCatalog,
@@ -140,19 +128,6 @@ import { agentPrompts } from "../agents/prompt";
 import { supportsAgentResponses } from "../providers/agentResponses";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
-import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
-import { KNOWLEDGE_IMAGE_OBSERVATION_LIMITS, type KnowledgeImageObservationPlan } from "../knowledge/imageObservation";
-import {
-  knowledgeAdmissionMayFitFullContext,
-  knowledgeAnsweringRequestSnapshot,
-  KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT,
-  planKnowledgeAnswering,
-  type KnowledgeAnsweringPlan
-} from "../knowledge/fullContext";
-import {
-  knowledgeEvidenceMessageFromDispatchDraft,
-  withAutomaticKnowledgeEvidence
-} from "../knowledge/automaticEvidence";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { requestWithRunFollowups } from "./runFollowupExecution";
 import { followupAdmissionBudgetTokens, followupTokenCost, type RunFollowupAdmission, type RegenerationFollowups } from "./runFollowups";
@@ -172,7 +147,6 @@ import type {
   AcceptedChatAssistant,
   AcceptedRunDefaults,
   AcceptedSkillRun,
-  ProjectRunAdmission,
   RunModelConfiguration,
   RunRepository,
   ScheduledOccurrenceAdmission,
@@ -193,10 +167,6 @@ const pdfTextUnavailableMessage =
   "No extractable text was found. Choose a model with native PDF support or remove this file.";
 const zeroEmittedPdfTextUnavailableMessage =
   "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
-const KNOWLEDGE_IMAGE_REFUSAL =
-  "This model can't read images and no Vision Model is available to describe them for the Knowledge answer. Remove the image, choose a model that supports images, ask an administrator to assign the Vision Model, or ask without Knowledge.";
-const KNOWLEDGE_IMAGE_LIMIT_REFUSAL =
-  `A Knowledge answer can use at most ${KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.maxImages} images from one message. Remove some images and try again.`;
 
 /** The parameter dialect params are materialized and validated in for a model. */
 export function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
@@ -227,8 +197,6 @@ type RunPreparationRepository = Pick<
   | "manageScheduledTaskForCall"
   | "loadAssistantRowContext"
   | "loadBranchContextCheckpoints"
-  | "loadKnowledgeFullContextPassages"
-  | "loadProjectAssistantRowContext"
   /** Without it only the current message's links are authorized for `fetch_url`. */
   | "loadScheduledPromptMessageIds"
   /** Without it an interactive run freezes no "Always allow" consent: every write is asked. */
@@ -335,15 +303,6 @@ export type RunPreparationDeps = Readonly<{
   assistants?: AssistantRunResolver;
   instructions?: Pick<import("../instructions/store").InstructionPresetStore, "resolveForRun">;
   getAttachmentLimits?: () => RunAttachmentLimits;
-  knowledgeAdmission?: Readonly<{
-    load(input: {
-      executionScope?: "project";
-      knowledgePlan: KnowledgePlan;
-      preferredProfileRevisionId?: string;
-      projectId?: string;
-      userId: string;
-    }): Promise<KnowledgeRunAdmissionPlan>;
-  }>;
   mcp?: Readonly<{
     filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
     catalog?(userId: string): Promise<McpCapabilityCatalog>;
@@ -364,15 +323,10 @@ export type RunPreparationDeps = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
-    /** Project MCP admission is intentionally independent of the initiating
-     * user's server grants, personal slots, and OAuth connections. Tool restrictions
-     * additionally use the initiating user. */
-    prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
   }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
   providerAdmission?: Readonly<{
     load(input: {
-      executionScope?: "project";
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
@@ -409,18 +363,14 @@ export type SendRunPreparationSource = Readonly<{
     activeLeafMessageId: string | null;
     assistantId?: string | null;
     assistantOverrides?: unknown;
-    defaultKnowledgePlan?: unknown;
     defaultModelId: string;
     defaultProvider: string;
-    folderDefaultKnowledgePlan?: unknown;
     id: string;
     memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     messageCount?: number;
     projectMemory: string | null;
-    project?: ProjectRunAdmission;
     workspaceEnabled?: boolean;
   }>;
-  draftProjectChat?: boolean;
   draftPersonalChat?: boolean;
   kind: "send";
   /** Server-only: the scheduled task occurrence this send admits. */
@@ -440,14 +390,11 @@ export type RegenerateRunPreparationSource = Readonly<{
     chat: Readonly<{
       assistantId?: string | null;
       assistantOverrides?: unknown;
-      defaultKnowledgePlan?: unknown;
       defaultModelId: string;
       defaultProvider: string;
-      folderDefaultKnowledgePlan?: unknown;
       id: string;
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
-      project?: ProjectRunAdmission;
       workspaceEnabled?: boolean;
     }>;
     userMessage: Readonly<{
@@ -500,6 +447,7 @@ export type MaterializedPreparedRunData = {
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
   initialChatMode?: MemoryInitialChatMode;
+  /** Never set by admission any more; kept so prepared runs the old core still reads decode. */
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   /** A scheduled send: the relevant personal sources its Auto catalog could not offer. */
@@ -511,7 +459,6 @@ export type MaterializedPreparedRunData = {
   providerRequest: ProviderRunRequest;
   providerRequestPreview: Record<string, unknown>;
   sourceKind: RunPreparationInput["source"]["kind"];
-  project?: ProjectRunAdmission;
 };
 
 export type PreparedRun = DeepReadonly<MaterializedPreparedRunData>;
@@ -731,7 +678,6 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
-    ...(prepared.project ? { project: mutablePreparedData<ProjectRunAdmission>(prepared.project) } : {}),
     ...(prepared.initialChatMode
       ? { initialChatMode: mutablePreparedData<MemoryInitialChatMode>(prepared.initialChatMode) }
       : {}),
@@ -1099,43 +1045,15 @@ function assistantPrompt(
   };
 }
 
-function resolvedOrdinaryKnowledgePlan(
-  body: Readonly<Record<string, unknown>> | null,
-  chat: Readonly<{
-    defaultKnowledgePlan?: unknown;
-    folderDefaultKnowledgePlan?: unknown;
-  }>
-): ReturnType<typeof decodeKnowledgePlan> {
-  if (body && "knowledgePlan" in body) {
-    return decodeKnowledgeSelection(body.knowledgePlan);
-  }
-  // Knowledge is disabled: a chat's or folder's saved Knowledge default stays
-  // stored but no longer applies, so the chat answers without Knowledge.
-  if (!KNOWLEDGE_ENABLED) return decodeKnowledgeSelection(EMPTY_KNOWLEDGE_SELECTION);
-  if (chat.defaultKnowledgePlan !== null && chat.defaultKnowledgePlan !== undefined) {
-    return decodeKnowledgePlan(chat.defaultKnowledgePlan);
-  }
-  if (
-    chat.folderDefaultKnowledgePlan !== null &&
-    chat.folderDefaultKnowledgePlan !== undefined
-  ) {
-    return decodeKnowledgePlan(chat.folderDefaultKnowledgePlan);
-  }
-  return decodeKnowledgeSelection(EMPTY_KNOWLEDGE_SELECTION);
-}
-
-function promptWithSharedProjectContext(
-  prompt: NormalizedRunRequest["prompt"],
-  project: ProjectRunAdmission
-): NormalizedRunRequest["prompt"] {
-  const instructions = project.instructions.trim();
-  return {
-    ...prompt,
-    system: [
-      prompt.system,
-      ...(instructions ? [`Project Instructions:\n${instructions}`] : [])
-    ].filter((part): part is string => Boolean(part?.trim())).join("\n\n") || null
-  };
+/**
+ * Knowledge was removed (operator decision 2026-10-23): a run never carries
+ * it. A browser bundle from before the removal still sends an explicit
+ * "none", which is accepted; any other selection is refused visibly.
+ */
+function legacyKnowledgePlanRefused(body: Readonly<Record<string, unknown>> | null): boolean {
+  if (!body || !Object.hasOwn(body, "knowledgePlan")) return false;
+  const decoded = decodeKnowledgeSelection(body.knowledgePlan);
+  return !decoded.ok || decoded.plan.mode !== "none";
 }
 
 function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
@@ -1245,58 +1163,10 @@ function validateMcpCapabilities(input: Readonly<{
   return null;
 }
 
-function validateKnowledgeCapabilities(input: Readonly<{
-  bridge?: ProviderToolBridge;
-  capabilities: ProviderModelCapabilities;
-  enabled: boolean;
-  modelId: string;
-  provider: string;
-}>): { code: string; status: 400 } | null {
-  if (!input.enabled) return null;
-  return input.bridge?.supportsToolCalling({
-    modelId: input.modelId,
-    provider: input.provider
-  }) && input.capabilities.toolCalling === true
-    ? null
-    : { code: "knowledge_tool_calling_not_supported", status: 400 };
-}
-
-/**
- * Prepares a run. A Project default applied implicitly to a new Project chat
- * never fails the run: when preparing with it fails for any reason,
- * the run is prepared again as an ordinary Project run in an unbound chat, so
- * neither its instructions nor any of its rows apply. An optional Skill
- * catalog decision already requested for the first attempt is not requested
- * again.
- */
+/** Prepares a run. */
 export async function prepareRun(
   deps: RunPreparationDeps,
   input: RunPreparationInput
-): Promise<RunPreparationResult> {
-  const attempt = { implicitProjectDefault: false, skillCatalogRelevanceUsed: false };
-  const relevance = deps.skillCatalogRelevance;
-  const result = await prepareRunWith(relevance
-    ? {
-        ...deps,
-        skillCatalogRelevance: (request) => {
-          attempt.skillCatalogRelevanceUsed = true;
-          return relevance(request);
-        }
-      }
-    : deps, input, attempt);
-  if (result.ok || !attempt.implicitProjectDefault) return result;
-  const { skillCatalogDecision: _decision, ...withoutDecision } = input;
-  return prepareRunWith(deps, attempt.skillCatalogRelevanceUsed ? withoutDecision : input, {
-    implicitProjectDefault: false,
-    skillCatalogRelevanceUsed: false,
-    withoutProjectDefault: true
-  });
-}
-
-async function prepareRunWith(
-  deps: RunPreparationDeps,
-  input: RunPreparationInput,
-  attempt: { implicitProjectDefault: boolean; skillCatalogRelevanceUsed: boolean; withoutProjectDefault?: true }
 ): Promise<RunPreparationResult> {
   const body = input.body;
   const artifactIntentValue = body && Object.hasOwn(body, "artifactIntent") ? body.artifactIntent
@@ -1332,34 +1202,21 @@ async function prepareRunWith(
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
   }
-  // Keep the persisted Project Memory contract intact while making the
-  // admission snapshot explicitly dormant. This prevents callers supplying a
-  // stale/enabled in-memory snapshot from reintroducing Project Memory text or
-  // bindings into a new send or regeneration.
-  const project = chat.project
-    ? { ...chat.project, memoryEnabled: false, memoryItems: [] }
-    : undefined;
   // A chat runs with its bound Assistant; the request may only bind an
-  // unbound chat or repeat the binding. A new Project chat whose first
-  // message names no Assistant and carries no ordinary composer key starts
-  // with the Project's default.
-  const newProjectChat = Boolean(project && input.source.kind === "send" && input.source.draftProjectChat &&
-    !attempt.withoutProjectDefault);
-  const assistantSource = chatAssistantSource(body, chat, newProjectChat ? project!.defaults.assistantId : null);
+  // unbound chat or repeat the binding.
+  const assistantSource = chatAssistantSource(body, chat);
   if (!assistantSource.ok) return failure(assistantSource.code, assistantSource.status);
-  attempt.implicitProjectDefault = assistantSource.projectDefault === true;
   // The Assistant fixes the model, and Agent's Codex owns its own loop.
   if (answerReviewStep && assistantSource.assistantId) return failure("answer_review_assistant_unsupported", 409);
   if (answerReviewStep && agentEnabled) return failure("answer_review_agent_unsupported", 409);
   if (agentEnabled && !workspaceEnabled) return failure("agent_workspace_required", 400);
-  if (agentEnabled && (project || assistantSource.assistantId)) return failure("agent_personal_chat_required", 400);
+  if (agentEnabled && assistantSource.assistantId) return failure("agent_personal_chat_required", 400);
 
   let assistantRun: AssistantRunMaterialization | null = null;
   let chatAssistant: ChatAssistantAdmission | null = null;
   if (assistantSource.assistantId) {
     const admitted = await admitChatAssistant(deps, {
       body,
-      scope: project ? { kind: "project", projectId: project.projectId } : { kind: "personal" },
       source: { ...assistantSource, assistantId: assistantSource.assistantId },
       storedOverrides: chat.assistantOverrides,
       userId: input.userId
@@ -1389,112 +1246,29 @@ async function prepareRunWith(
       code: "skills_count_exceeded", field: "pinned", actual: effectiveSkillIds.length, limit: SKILL_MAX_PINNED
     } };
   }
-  const catalogIds = assistantRun ? assistantAvailableIds : project && skillsMode === "auto" ? project.skillIds ?? [] : [];
+  const catalogIds = assistantRun ? assistantAvailableIds : [];
   const requiredSkillIds = resolveEffectiveSkillIds(effectiveSkillIds, catalogIds);
   let skillRuns: SkillRunMaterialization[] = [];
   let availableSkillRuns: SkillRunCatalogEntry[] = [];
   if (requiredSkillIds.length > 0) {
     if (!deps.skills) return failure("skill_not_available", 404);
-    if (project && requiredSkillIds.some((skillId) => !project.skillIds?.includes(skillId))) {
-      return failure("skill_not_available", 404);
-    }
-    const resolution = project
-      ? deps.skills.resolveForProject
-        ? await deps.skills.resolveForProject(project.projectId, requiredSkillIds)
-        : { code: "skill_not_available" as const, ok: false as const, status: 404 as const }
-      : await deps.skills.resolveForRun(input.userId, requiredSkillIds);
+    const resolution = await deps.skills.resolveForRun(input.userId, requiredSkillIds);
     if (!resolution.ok) return failure(resolution.code, resolution.status);
     skillRuns = effectiveSkillIds.map((id) => resolution.skills.find((skill) => skill.skillId === id)!);
     if (skillRuns.some((skill) => !skill)) return failure("skill_not_available", 404);
     availableSkillRuns = resolution.skills.filter((skill) => !effectiveSkillIds.includes(skill.skillId));
   }
 
-  if (project && (
-    Object.hasOwn(body ?? {}, "chatMode") ||
-    Object.hasOwn(body ?? {}, "temporaryRetentionPolicyVersion")
-  )) {
-    return failure("memory_temporary_chat_forbidden", 409);
-  }
-  const resolvedChatMode = project
-    ? { mode: "EXCLUDED" as const }
-    : resolveRunChatMode(body, input.source);
+  const resolvedChatMode = resolveRunChatMode(body, input.source);
   if ("ok" in resolvedChatMode) {
     return resolvedChatMode;
   }
-  let decodedKnowledgePlan = chatAssistant
-    ? { ok: true as const, plan: knowledgeSelectionFromRow(chatAssistant.resolution.rows.knowledge.value) }
-    : resolvedOrdinaryKnowledgePlan(body, chat);
-  if (!decodedKnowledgePlan.ok) {
-    return failure(decodedKnowledgePlan.code, 400);
-  }
-  if (body && Object.hasOwn(body, "knowledgePlan") &&
-    decodedKnowledgePlan.plan.mode === "inherited") {
-    return failure("knowledge_plan_invalid", 400);
-  }
-  if (decodedKnowledgePlan.plan.mode === "inherited" &&
-    (!project || decodedKnowledgePlan.plan.inheritedFrom !== "project")) {
-    return failure("knowledge_plan_invalid", 400);
-  }
-  if (project && decodedKnowledgePlan.plan.mode === "all_my_knowledge") {
-    return failure("knowledge_base_not_available", 404);
-  }
-  if (project && (
-    decodedKnowledgePlan.plan.baseIds.some((id) => !project.knowledgeBaseIds.includes(id)) ||
-    (project.knowledgeBaseIds.length === 0 && decodedKnowledgePlan.plan.baseIds.length > 0)
-  )) {
-    return failure("knowledge_base_not_available", 404);
-  }
-  let knowledgeAdmissionPlan: KnowledgeRunAdmissionPlan | undefined;
-  if (decodedKnowledgePlan.plan.mode !== "none") {
-    // Knowledge is disabled: a request that still selects it is refused visibly.
-    if (!KNOWLEDGE_ENABLED) return failure(KNOWLEDGE_DISABLED_CODE, 409);
-    if (!deps.knowledgeAdmission) {
-      return failure("knowledge_base_not_available", 503);
-    }
-    try {
-      knowledgeAdmissionPlan = await deps.knowledgeAdmission.load({
-        ...(project ? { executionScope: "project" as const } : {}),
-        knowledgePlan: decodedKnowledgePlan.plan,
-        ...(project ? { projectId: project.projectId } : {}),
-        userId: input.userId
-      });
-    } catch (error) {
-      if (error instanceof KnowledgeRunAdmissionError) {
-        // The Assistant's own Knowledge is its dependency: the failure stays
-        // neutral. The user's own choices report as in an ordinary chat.
-        return chatAssistant?.resolution.rows.knowledge.provenance === "assistant"
-          ? failure("assistant_not_available", 409)
-          : failure(error.code, 404);
-      }
-      throw error;
-    }
-    if (!knowledgeRunAdmissionHasReadySources(knowledgeAdmissionPlan)) {
-      const emptyAllKnowledge = decodedKnowledgePlan.plan.mode === "all_my_knowledge" &&
-        knowledgeAdmissionPlan.sources !== undefined &&
-        knowledgeAdmissionPlan.sources.length === 0 &&
-        knowledgeAdmissionPlan.bindings.length === 0 &&
-        knowledgeAdmissionPlan.exclusions.length === 0;
-      if (emptyAllKnowledge) {
-        decodedKnowledgePlan = { ok: true as const, plan: EMPTY_KNOWLEDGE_SELECTION };
-        knowledgeAdmissionPlan = undefined;
-      } else {
-        return failure(
-          "sources_processing",
-          409,
-          "Selected Knowledge documents are still processing."
-        );
-      }
-    }
-  }
-  const knowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";
-  if (agentEnabled && knowledgeRequested) return failure("agent_knowledge_unsupported", 400);
-  // Knowledge composes Source-bound answers: no route there writes a review or a revision.
-  if (answerReviewStep && knowledgeRequested) return failure("answer_review_knowledge_unsupported", 409);
+  if (legacyKnowledgePlanRefused(body)) return failure("knowledge_plan_invalid", 400);
 
   const decodedSearchPlan = assistantRun
     ? null
-    : decodeSearchPlan(body?.searchPlan ?? (project ? project.defaults.searchPlan : undefined));
-  if (!assistantRun && body?.searchPlan === undefined && !project) {
+    : decodeSearchPlan(body?.searchPlan);
+  if (!assistantRun && body?.searchPlan === undefined) {
     return failure("search_plan_invalid", 400);
   }
   if (decodedSearchPlan && !decodedSearchPlan.ok) {
@@ -1509,11 +1283,6 @@ async function prepareRunWith(
     plan: import("../../domain/search").SearchPlan | null;
     source: "organization" | "personal";
   } | null = null;
-  if (project && body && (
-    "searchPreferencePlan" in body || "searchPreferenceSource" in body
-  )) {
-    return failure("search_preference_invalid", 400);
-  }
   if (!assistantRun && body &&
     ("searchPreferencePlan" in body || "searchPreferenceSource" in body)) {
     if (body.searchPreferenceSource === "organization") {
@@ -1540,66 +1309,9 @@ async function prepareRunWith(
       : input.source.kind === "send"
         ? chat.defaultModelId
         : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
-  const firstProjectSend = Boolean(
-    project && input.source.kind === "send" && input.source.draftProjectChat
-  );
-  if (firstProjectSend && !project?.defaults.providerModelId) {
-    return failure(
-      "project_setup_required",
-      409,
-      "Choose a Project default model before starting a shared chat."
-    );
-  }
-  if (firstProjectSend && project && (
-    !project.modelIds.includes(project.defaults.providerModelId!) ||
-    chat.defaultModelId !== project.defaults.providerModelId ||
-    !chat.defaultProvider
-  )) {
-    return failure(
-      "project_default_model_unavailable",
-      409,
-      "The Project default model is unavailable."
-    );
-  }
-  if (project && !project.modelIds.includes(selectedModelId)) {
-    return failure("provider_not_available", 403);
-  }
-  if (project && assistantRun && !project.assistantBindings.some((binding) =>
-    binding.assistantId === assistantRun.assistantId
-  )) {
-    return failure("assistant_not_available", 404);
-  }
-  if (project && (
-    requestedSearchPlan.optionIds.some((id) => !project.searchOptionIds.includes(id)) ||
-    (project.searchOptionIds.length === 0 && requestedSearchPlan.optionIds.length > 0)
-  )) {
-    return failure("search_plan_invalid", 404);
-  }
   const providerAdmission = deps.providerAdmission;
   if (!providerAdmission) {
-    return firstProjectSend
-      ? failure("project_default_model_unavailable", 409, "The Project default model is unavailable.")
-      : failure("provider_not_available", 503);
-  }
-  if (firstProjectSend && project?.defaults.providerModelId) {
-    try {
-      await providerAdmission.load({
-        executionScope: "project",
-        providerConnectionId: chat.defaultProvider,
-        providerModelId: project.defaults.providerModelId,
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        userId: input.userId
-      });
-    } catch (error) {
-      if (error instanceof ProviderAdmissionError) {
-        return failure(
-          "project_default_model_unavailable",
-          409,
-          "The Project default model is unavailable."
-        );
-      }
-      throw error;
-    }
+    return failure("provider_not_available", 503);
   }
   let admissionPlan: ProviderAdmissionPlan;
   let executionProvider = selectedProvider;
@@ -1607,15 +1319,14 @@ async function prepareRunWith(
   let modelConfiguration: RunModelConfiguration;
   try {
     admissionPlan = await providerAdmission.load({
-      ...(project ? { executionScope: "project" as const } : {}),
       providerConnectionId: selectedProvider,
       providerModelId: selectedModelId,
-      ...(knowledgeRequested || workspaceEnabled
+      ...(workspaceEnabled
         ? { requiresClientToolCoexistence: true }
         : {}),
       ...(agentEnabled ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: requestedSearchPlan,
-      ...(requestedSearchPreference && !project
+      ...(requestedSearchPreference
         ? {
             searchPreferencePlan: requestedSearchPreference.plan,
             searchPreferenceSource: requestedSearchPreference.source
@@ -1636,11 +1347,6 @@ async function prepareRunWith(
   if (agentEnabled && !supportsAgentResponses(admissionPlan.answer.snapshot)) return failure("agent_model_unsupported", 400);
   let acceptedSearchPlan = admissionPlan.requestedSearchPlan;
   requestedSearchPlan = acceptedSearchPlan;
-  if (project && requestedSearchPlan.optionIds.some((id) =>
-    !project.searchOptionIds.includes(id)
-  )) {
-    return failure("search_plan_invalid", 404);
-  }
   if (requestedSearchPreference) {
     requestedSearchPreference = {
       plan: admissionPlan.requestedSearchPreferencePlan !== undefined
@@ -1669,21 +1375,20 @@ async function prepareRunWith(
   }
 
   // An Assistant's Tools row is its exact allowlist (Load all semantics) or
-  // an ordinary chat mode over the chat's servers: the runner's own in a
-  // personal chat, the Project's in a Project chat.
+  // an ordinary chat mode over the runner's own servers.
   const assistantTools = chatAssistant && body?.tools !== "none"
     ? chatAssistant.resolution.rows.tools.value
     : null;
   const assistantMcpServerIds = assistantTools?.mode === "exact" ? assistantTools.serverIds : [];
   const assistantMcpMode = assistantTools && assistantTools.mode !== "exact" ? { mode: assistantTools.mode } : null;
-  const ordinaryMcpSelection = project || body?.tools === "none"
+  const ordinaryMcpSelection = body?.tools === "none"
     ? null
     : chatAssistant
       ? assistantMcpMode
       : body?.mcp === undefined
         ? { mode: "auto" as const }
         : decodeMcpRunSelection(body.mcp);
-  if (!project && !assistantRun && body?.tools !== "none" &&
+  if (!assistantRun && body?.tools !== "none" &&
     ordinaryMcpSelection === null) {
     return failure("mcp_selection_invalid", 400);
   }
@@ -1693,43 +1398,7 @@ async function prepareRunWith(
   const ordinaryLoadAllMcpUnavailable = Boolean(
     ordinaryMcpSelection?.mode === "load_all" && !deps.mcp
   );
-  const projectMcpSelection = project && body?.tools !== "none"
-    ? chatAssistant
-      ? assistantMcpMode
-      : body?.mcp === undefined
-        ? { mode: project.defaults.mcpMode }
-        : decodeMcpRunSelection(body.mcp)
-    : null;
-  if (project && !chatAssistant && body?.tools !== "none" &&
-    projectMcpSelection === null) {
-    return failure("mcp_selection_invalid", 400);
-  }
-  const projectMcpServerIds = project
-    ? chatAssistant
-      ? assistantMcpServerIds.length > 0
-        ? assistantMcpServerIds
-        : projectMcpSelection && projectMcpSelection.mode !== "off" ? project.mcpServerIds : []
-      : projectMcpSelection?.mode === "off"
-        ? []
-        : project.mcpServerIds
-    : [];
-  if (project && assistantMcpServerIds.some((id) => !project.mcpServerIds.includes(id))) {
-    return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
-  }
-  if (project && !project.policy.externalToolsEnabled && (
-    requestedSearchPlan.optionIds.length > 0 || projectMcpServerIds.length > 0
-  )) {
-    return failure("project_external_tools_disabled", 403);
-  }
-  const mcpPlan = project
-    ? projectMcpServerIds.length > 0 && deps.mcp
-      ? deps.mcp.prepareProject
-        ? await deps.mcp.prepareProject(input.userId, projectMcpServerIds)
-        : process.env.NODE_ENV === "production"
-          ? null
-          : await deps.mcp.prepare(input.userId, { allowedServerIds: projectMcpServerIds })
-      : null
-    : assistantMcpServerIds.length > 0
+  const mcpPlan = assistantMcpServerIds.length > 0
     ? deps.mcp
       ? await deps.mcp.prepare(input.userId, {
           allowedServerIds: assistantMcpServerIds
@@ -1749,36 +1418,11 @@ async function prepareRunWith(
   const scheduledMissingSources = scheduledOccurrence && mcpCatalogRead
     ? scheduledUnavailableSources(mcpCatalogRead.omitted, scheduledOccurrence.relevantMcpServerIds)
     : [];
-  if (project && projectMcpServerIds.length > 0 && !mcpPlan) {
-    return failure(
-      "project_mcp_not_configured",
-      503,
-      "Project shared MCP execution is not configured."
-    );
-  }
-  const mcpDiscoveryEnabled = !project && Boolean(mcpCatalog?.servers.length);
-  if (project && mcpPlan?.ok && mcpPlan.snapshot.servers.some((server) =>
-    server.credentialSources?.some((source) => source === "oauth" || source === "personal")
-  )) {
-    return failure(
-      "project_mcp_personal_credentials_forbidden",
-      403,
-      "Project chats can use only shared or no-auth MCP credentials."
-    );
-  }
-  if (project && mcpPlan && !mcpPlan.ok && mcpPlan.issues.some((issue) =>
-    issue.errorCode === "mcp_project_credentials_unavailable"
-  )) {
-    return failure(
-      "project_mcp_personal_credentials_forbidden",
-      403,
-      "Project chats can use only shared or no-auth MCP credentials."
-    );
-  }
+  const mcpDiscoveryEnabled = Boolean(mcpCatalog?.servers.length);
 
   const mcpToolsEnabled = mcpDiscoveryEnabled ||
     Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const requiresClientToolCoexistence = knowledgeRequested || mcpToolsEnabled || workspaceEnabled ||
+  const requiresClientToolCoexistence = mcpToolsEnabled || workspaceEnabled ||
     modelConfiguration.capabilities.toolCalling === true;
   if (
     requiresClientToolCoexistence &&
@@ -1787,13 +1431,12 @@ async function prepareRunWith(
   ) {
     try {
       admissionPlan = await providerAdmission.load({
-        ...(project ? { executionScope: "project" as const } : {}),
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
         requiresClientToolCoexistence: true,
         ...(agentEnabled ? { requiresClientSearchRoutes: true } : {}),
         searchPlan: requestedSearchPlan,
-        ...(requestedSearchPreference && !project
+        ...(requestedSearchPreference
           ? {
               searchPreferencePlan: requestedSearchPreference.plan,
               searchPreferenceSource: requestedSearchPreference.source
@@ -1821,14 +1464,6 @@ async function prepareRunWith(
       };
     }
     modelConfiguration = admissionPlan.answer.modelConfiguration;
-  }
-  if (project && requestedSearchPlan.optionIds.some((id) =>
-    !project.searchOptionIds.includes(id)
-  )) {
-    return failure("search_plan_invalid", 404);
-  }
-  if (project && !project.policy.externalToolsEnabled && requestedSearchPlan.optionIds.length > 0) {
-    return failure("project_external_tools_disabled", 403);
   }
 
   // The first plan may only establish that hosted Search conflicts with the
@@ -1859,7 +1494,7 @@ async function prepareRunWith(
     return failure("assistant_instructions_expansion_too_large", 400, "This Assistant's instructions exceed the text limit after date and time substitution. They must be shortened before it can answer.");
   }
   let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
-  if (!assistantRun && !project && deps.instructions) {
+  if (!assistantRun && deps.instructions) {
     try { personalInstructions = await deps.instructions.resolveForRun(input.userId); }
     catch { return failure("instruction_presets_unavailable", 409); }
   }
@@ -1869,15 +1504,8 @@ async function prepareRunWith(
   if (personalInstructions && !renderedInstructions) {
     return failure("instruction_preset_expansion_too_large", 400, "Your instructions exceed the text limit after date and time substitution. Shorten the preset and try again.");
   }
-  // Project Memory (both the legacy folder field and the newer Project
-  // Memory facts) is dormant for Personal Memory v1. Project instructions
-  // remain part of the Project contract; no memory text crosses this
-  // provider boundary for send or regeneration.
-  const scopedPrompt = project
-    ? promptWithSharedProjectContext(normalizedPrompt, project)
-    : normalizedPrompt;
   let prompt: NormalizedRunRequest["prompt"] = {
-    ...scopedPrompt,
+    ...normalizedPrompt,
     ...(renderedInstructions ? { personalInstructions: renderedInstructions.personalInstructions,
       ...(renderedInstructions.overridesAnswerRules ? { developer: null } : {}) } : {}),
     responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? "",
@@ -1885,7 +1513,7 @@ async function prepareRunWith(
   };
   const branchContext =
     input.source.kind === "send"
-      ? input.source.draftProjectChat || input.source.draftPersonalChat
+      ? input.source.draftPersonalChat
         ? []
         : await deps.repository.loadConversationContextForExpectedLeaf(
             chat.id,
@@ -1934,7 +1562,7 @@ async function prepareRunWith(
     return failure("model_cannot_report", 409, "This model cannot report the outcome of a monitoring check.");
   }
   const skillCatalogSupported = skillToolsSupported || agentEnabled;
-  if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && !project && deps.skills?.listEnabledForRun) {
+  if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && deps.skills?.listEnabledForRun) {
     availableSkillRuns = (await deps.skills.listEnabledForRun(input.userId)).filter((skill) => !effectiveSkillIds.includes(skill.skillId));
   }
   if (skillsMode === "auto" && skillCatalogSupported && availableSkillRuns.length > SKILL_MAX_AVAILABLE) {
@@ -1949,7 +1577,7 @@ async function prepareRunWith(
         userId: input.userId, operationKey: input.skillCatalogDecision.operationKey,
         query: textFromContentBlocks(content), candidates: availableSkillRuns, signal: input.signal,
         authorize: skillCatalogAuthorization({
-          userId: input.userId, ...(project ? { projectId: project.projectId } : {}),
+          userId: input.userId,
           assistant: assistantRun, assistants: deps.assistants, skills: deps.skills,
           pinned: skillRuns, available: availableSkillRuns, authorizeScope: input.skillCatalogDecision.authorizeScope
         })
@@ -1984,8 +1612,7 @@ async function prepareRunWith(
   let rowResolution = chatAssistant?.resolution ?? null;
   if (chatAssistant) {
     // The chat's controls over the Assistant's (when the effective model is
-    // its model) over the context's saved values (the user's for the model,
-    // or the Project's), over built-ins.
+    // its model) over the user's saved values for the model, over built-ins.
     const materialized = materializeAssistantRowControls(chatAssistant.resolution, {
       baseParams: defaultParams,
       controls: parameterControls,
@@ -1995,22 +1622,11 @@ async function prepareRunWith(
       // A request value the model does not support is refused like an
       // ordinary invalid param; an Assistant control that no longer fits
       // fails closed with a stable conflict, never clamped or dropped.
-      const rejected = assistantRowFailure(materialized, chatAssistant.scope.kind);
+      const rejected = assistantRowFailure(materialized);
       return failure(rejected.code, rejected.status);
     }
     paramsBody = materialized.params;
     rowResolution = materialized.resolution;
-  } else if (project) {
-    const projectControls = runControlsFromSavedValues(project.defaults.controlValues);
-    if (!projectControls) return failure("project_configuration_unavailable", 409);
-    const materialized = materializeAssistantRunParams({
-      baseParams: defaultParams,
-      controls: parameterControls,
-      parameterProvider,
-      runControls: projectControls
-    });
-    if (!materialized.ok) return failure("project_configuration_unavailable", 409);
-    paramsBody = mergeParamObjects(materialized.params, normalizeParams(body));
   } else {
     paramsBody = normalizeParams(body);
   }
@@ -2077,21 +1693,18 @@ async function prepareRunWith(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
-  // Personal runs (with or without any Assistant, Workspace, Agent) use the
-  // initiating user's effective image model; Project runs, with or without a
-  // bound Assistant, only the administrator default. The scope is the
-  // server-authorized chat scope, never a request field. An unusable model is
-  // never substituted: the run gets no image tool and the answer model is
-  // told why. An installation without image generation stays silent.
+  // Every run (with or without any Assistant, Workspace, Agent) uses the
+  // initiating user's effective image model. An unusable model is never
+  // substituted: the run gets no image tool and the answer model is told why.
+  // An installation without image generation stays silent.
   const imageResolution = !answerReviewStep && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }))
-    ? await deps.images?.resolveFor(project ? { kind: "project" } : { kind: "personal", userId: input.userId }) ?? null : null;
+    ? await deps.images?.resolveFor({ kind: "personal", userId: input.userId }) ?? null : null;
   const imagePlan = imageResolution?.ok ? imageResolution.plan : null;
   const imageUnavailableGuidance = imageResolution && !imageResolution.ok && imageResolution.reason !== "not_configured"
-    ? imageGenerationUnavailableGuidance({ reason: imageResolution.reason, scope: project ? "project" : "personal",
-      source: imageResolution.source })
+    ? imageGenerationUnavailableGuidance({ reason: imageResolution.reason, source: imageResolution.source })
     : null;
-  const artifactToolAvailable = !answerReviewStep && !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
+  const artifactToolAvailable = !answerReviewStep && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
     modelCapabilities.toolCalling === true && (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true);
   const artifactResourcePolicy = artifactToolAvailable ? getArtifactResourcePolicy() : undefined;
   const artifactToolDescription = artifactResourcePolicy ? describeArtifactTool(artifactResourcePolicy) : undefined;
@@ -2118,7 +1731,6 @@ async function prepareRunWith(
         onPdfAdmissions: (items: ChatPdfAttachmentAdmission[]) => { chatPdfAdmissions = items; }
       } : {}),
       limits: attachmentLimits,
-      ...(project ? { projectId: project.projectId } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       workspaceEnabled
     });
@@ -2134,25 +1746,6 @@ async function prepareRunWith(
     return failure("attachment_not_found", 400);
   }
 
-  // A Knowledge answer reads the current message's images only as one frozen
-  // description made before it: by the answer model when it reads images,
-  // otherwise by the System Vision Model. Without either route an image is
-  // refused outside Workspace, never silently ignored.
-  const knowledgeImageIds = knowledgeRequested
-    ? attachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.id) : [];
-  if (knowledgeImageIds.length > KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.maxImages) {
-    return failure("knowledge_image_limit_exceeded", 400, KNOWLEDGE_IMAGE_LIMIT_REFUSAL);
-  }
-  let knowledgeImageObservation: KnowledgeImageObservationPlan | undefined;
-  if (knowledgeImageIds.length > 0) {
-    const knowledgeVision = modelCapabilities.vision === true ? undefined : await deps.vision?.resolve();
-    knowledgeImageObservation = modelCapabilities.vision === true
-      ? { version: 1, route: "answer_model", imageIds: knowledgeImageIds }
-      : knowledgeVision?.available ? { version: 1, route: "system_vision", imageIds: knowledgeImageIds, vision: knowledgeVision } : undefined;
-    if (!knowledgeImageObservation && !workspaceEnabled) {
-      return failure("knowledge_image_not_supported", 400, KNOWLEDGE_IMAGE_REFUSAL);
-    }
-  }
   // The conversation path already ends with the current message; appending it
   // again would list each of its images twice.
   const currentReferenceMessageId = input.source.kind === "send" ? currentSendMessageId : input.source.source.userMessage.id;
@@ -2162,9 +1755,9 @@ async function prepareRunWith(
   const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
   // Answer models without verified vision ask the separately assigned System
   // Vision Model about conversation images on demand (chat System Vision).
-  // Workspace keeps its own form and Knowledge runs never admit it. Only an
-  // available plan is admitted in chat; nothing substitutes another model.
-  const chatVisionEligible = !workspaceEnabled && !knowledgeRequested && modelCapabilities.vision !== true &&
+  // Workspace keeps its own form. Only an available plan is admitted in chat;
+  // nothing substitutes another model.
+  const chatVisionEligible = !workspaceEnabled && modelCapabilities.vision !== true &&
     body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true &&
     (imageReferenceIds.length > 0 || Boolean(imagePlan));
@@ -2176,7 +1769,7 @@ async function prepareRunWith(
     pdfRoute ? { ...modelCapabilities, pdf: true } : modelCapabilities,
     workspaceEnabled,
     imagePlan?.snapshot.model.capabilities.imageEditing === true,
-    Boolean(chatVisionPlan) || knowledgeImageObservation?.route === "system_vision"
+    Boolean(chatVisionPlan)
   );
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
@@ -2196,7 +1789,7 @@ async function prepareRunWith(
   }
 
   const imageRecords = (imagePlan || artifactToolAvailable || workspaceEnabled || chatVisionPlan) && imageReferenceIds.length
-    ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId)
+    ? await deps.repository.loadAttachments(input.userId, imageReferenceIds)
     : [];
   const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
     const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
@@ -2257,7 +1850,7 @@ async function prepareRunWith(
     }));
     const historicalIds = references.map(reference => reference.attachmentId).filter(id => !attachmentIds.includes(id));
     const historicalFiles = historicalIds.length
-      ? await deps.repository.loadAttachments(input.userId, historicalIds, project?.projectId)
+      ? await deps.repository.loadAttachments(input.userId, historicalIds)
       : [];
     const fileContext = workspaceFileContext({
       references,
@@ -2266,7 +1859,6 @@ async function prepareRunWith(
       inboxIndexPath: workspaceAdmission.plan.normalized.inboxIndexPath
     });
     const facts = await deps.repository.loadWorkspaceFileFacts({ chatId: chat.id, userId: input.userId,
-      ...(project ? { projectId: project.projectId } : {}),
       leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       imageIds: imageReferences.map(reference => reference.attachmentId) });
     hasWorkspaceIndexedFiles = attachments.length > 0 || facts.hasFiles;
@@ -2289,9 +1881,8 @@ async function prepareRunWith(
   };
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
   if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
-  // One run binds one System Vision plan: a Knowledge image description already resolved it.
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
-    ? (knowledgeImageObservation?.route === "system_vision" ? knowledgeImageObservation.vision : await deps.vision?.resolve()) : undefined;
+    ? await deps.vision?.resolve() : undefined;
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
   if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, false, {
@@ -2409,7 +2000,7 @@ async function prepareRunWith(
   // References and digests of the branch's eligible calls only: the record
   // text is projected again, with current authority, for every request.
   const toolHistoryLeafMessageId = input.source.kind === "send"
-    ? input.source.draftProjectChat || input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
+    ? input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
     : input.source.source.userMessage.id;
   // A failed or slow history read never refuses the message: the run then
   // freezes that the history could not be loaded (content-free log), and
@@ -2429,7 +2020,7 @@ async function prepareRunWith(
   // A task turn with Memory reads it like an ordinary personal turn whatever its chat's mode (an
   // excluded chat keeps it out of learning, not its own reads), and never as a `/memory` command:
   // its admission reads standing facts only, so such a prompt is answered as text.
-  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode !== "TEMPORARY" && (scheduledPromptAnswer
+  const memoryStandingEligible = !agent && resolvedChatMode.mode !== "TEMPORARY" && (scheduledPromptAnswer
     ? scheduledMemoryRead
     : resolvedChatMode.mode === "NORMAL" && !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content)));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
@@ -2449,14 +2040,14 @@ async function prepareRunWith(
   }
   // The owner's own message in an ordinary personal chat may create one
   // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
-  // Project, Assistant, Agent or Knowledge run, nor one without tool calling.
+  // Assistant or Agent run, nor one without tool calling.
   // Frozen here: the settings the task takes from this run, never mutable chat
   // state read later, and only in the shape recovery decodes. The task reads
   // Memory only when this run itself was admitted to read it: an eligible
   // chat, and the owner's Memory on (search admission, which every run that
   // may create a task attempts, reads exactly that).
-  const scheduledTaskSettings = !scheduledPromptAnswer && !answerReviewStep && !project && !assistantRun &&
-    !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
+  const scheduledTaskSettings = !scheduledPromptAnswer && !answerReviewStep && !assistantRun &&
+    !agentEnabled && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
     ? {
@@ -2472,17 +2063,17 @@ async function prepareRunWith(
   // The owner's own interactive personal chat with Workspace on, or a personal
   // Agent run, may save one Workspace folder per answer as a personal Skill
   // (operator exception, 2026-10-07). Never an answer to a scheduled task's
-  // prompt, a temporary, Project, Assistant or Knowledge run: there the tool
-  // is absent, not refused late.
-  const skillSaveTool = !scheduledPromptAnswer && !answerReviewStep && !project && !assistantRun && !knowledgeRequested &&
+  // prompt, a temporary or Assistant run: there the tool is absent, not
+  // refused late.
+  const skillSaveTool = !scheduledPromptAnswer && !answerReviewStep && !assistantRun &&
     resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
     typeof deps.repository.saveSkillForCall === "function" && (agentEnabled || (modelCapabilities.toolCalling === true &&
       toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true));
-  // One page reader for every tool-calling model, never an Agent run or a
-  // Project with external tools off. Frozen here: the links user-authored text
-  // on this branch authorizes (never a scheduled prompt's), or a scheduled
-  // run's task snapshot, read with the task revision the link fences.
-  const fetchUrlOffered = !agentEnabled && body?.tools !== "none" && (!project || project.policy.externalToolsEnabled) &&
+  // One page reader for every tool-calling model, never an Agent run. Frozen
+  // here: the links user-authored text on this branch authorizes (never a
+  // scheduled prompt's), or a scheduled run's task snapshot, read with the
+  // task revision the link fences.
+  const fetchUrlOffered = !agentEnabled && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   let fetchUrlPlan: FetchUrlPlan | undefined;
@@ -2553,7 +2144,6 @@ async function prepareRunWith(
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const,
       workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
-    ...(knowledgeImageObservation ? { knowledgeImageObservation } : {}),
     ...(agent ? { agent } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
@@ -2581,24 +2171,17 @@ async function prepareRunWith(
     content,
     context: { messages: contextMessages, mode: "branch_path" },
     // Every non-Agent run compacts by notes before anything leaves its
-    // context, whatever Knowledge, Memory search, Observation or tool support
-    // it has; Codex owns Agent context. A scheduled run's selected context is
+    // context, whatever Memory search, Observation or tool support it has;
+    // Codex owns Agent context. A scheduled run's selected context is
     // no branch prefix: it carries no branch notes (no leaf to reuse them from).
     ...(!agent ? { contextCompactionPolicy: conversationContextPolicy({
       leafMessageId: scheduledOccurrence ? null
         : input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       messages: contextMessages
     }) } : {}),
-    ...(knowledgeRequested ? {
-      knowledgeAnswerWorkflowVersion: 11 as const,
-      knowledgeReviewRepairFeedbackVersion: 1 as const,
-      knowledgeGenerationBudget: generationBudget,
-      knowledgeSearchInstructionVersion: 3 as const,
-      knowledgeQueryAnchorVersion: 2 as const,
-      knowledgeEvidencePackingVersion: 5 as const
-    } : {}),
     generationBudget,
-    knowledgePlan: decodedKnowledgePlan.plan,
+    // The old core still reads the field: a run never carries Knowledge.
+    knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
     modelCapabilities,
     modelId: executionModelId,
     ...(mcpDiscoveryEnabled && mcpCatalog
@@ -2650,14 +2233,14 @@ async function prepareRunWith(
           )
         : toolBudgets.maxToolRounds
     },
-    toolMode: workspaceEnabled || knowledgeRequested || body?.tools !== "none" ? "auto" : "none",
+    toolMode: workspaceEnabled || body?.tools !== "none" ? "auto" : "none",
     ...(workspaceAdmissionPlan ? { workspace: workspaceAdmissionPlan.normalized } : {})
   };
   const plannedSearchTools = createSearchPlanToolRouter({
     plan: baseNormalizedRequest.searchPlan,
     runtimes: {}
   })?.tools ?? [];
-  const nonKnowledgeClientTools = [
+  const clientTools = [
     ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
@@ -2681,127 +2264,33 @@ async function prepareRunWith(
       ])
   ];
 
-  let answeringPlan: KnowledgeAnsweringPlan | undefined;
-  if (knowledgeAdmissionPlan) {
-    // Knowledge context injection is independent from Search and MCP tool
-    // availability. Those tools remain callable without forcing a small,
-    // otherwise admissible Knowledge corpus through iterative retrieval.
-    const fullContextEligible = knowledgeAdmissionMayFitFullContext(
-      knowledgeAdmissionPlan,
-      modelCapabilities.contextWindow
-    );
-    const passages = !chatPdfAdmissions.some(({ route }) => route !== "direct_pdf") &&
-      fullContextEligible && deps.repository.loadKnowledgeFullContextPassages &&
-      knowledgeAdmissionPlan.sources
-      ? await deps.repository.loadKnowledgeFullContextPassages(knowledgeAdmissionPlan.sources)
-      : null;
-    answeringPlan = planKnowledgeAnswering({
-      admissionPlan: knowledgeAdmissionPlan,
-      passages,
-      request: {
-        ...baseNormalizedRequest,
-        attachments,
-        ...(nonKnowledgeClientTools.length > 0 ? { tools: nonKnowledgeClientTools } : {})
-      }
-    });
-  }
-
   const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
   if (inheritedFollowups?.entries.length && agentEnabled) {
     return failure("followup_mode_unavailable", 409, "Turn Agent off to regenerate this answer with its follow-ups.");
   }
-  const budgetAnsweringRequest = (plan: KnowledgeAnsweringPlan | undefined) => {
-    const fullContext = plan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
-    const requiresInitialKnowledgeCall = Boolean(
-      plan && !fullContext && knowledgeRequested
-    );
-    const knowledgeTools = baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested
-      ? knowledgeRetrievalToolsForRequest(baseNormalizedRequest) : [];
-    // The forced first round exists to obtain one Knowledge search. Naming it
-    // lets an adapter that can narrow a forced choice restrict it to that
-    // tool instead of forcing a choice over every advertised schema.
-    const forcedToolName = requiresInitialKnowledgeCall
-      ? knowledgeTools.find((tool) => tool.capability === "knowledge")?.name
-      : undefined;
-    const clientTools = [...knowledgeTools, ...nonKnowledgeClientTools];
-    const normalized: NormalizedRunRequest = {
+  const budgetAnsweringRequest = () => applyProviderRequestContextBudget({
+    ...(toolBridge ? { bridge: toolBridge } : {}),
+    request: requestWithRunFollowups({
       ...baseNormalizedRequest,
-      ...(plan ? { knowledgeAnswering: knowledgeAnsweringRequestSnapshot(plan) } : {})
-    };
-    const unbudgeted: ProviderRunRequest = {
-      ...normalized,
       attachments,
-      ...(requiresInitialKnowledgeCall ? { toolChoice: "required" as const, ...(forcedToolName ? { forcedToolName } : {}) } : {}),
       ...(clientTools.length > 0 ? { tools: clientTools } : {})
-    };
-    const withEvidence = fullContext
-      ? withAutomaticKnowledgeEvidence(
-          unbudgeted,
-          knowledgeEvidenceMessageFromDispatchDraft(plan.dispatchDraft)
-        )
-      : unbudgeted;
-    const budget = applyProviderRequestContextBudget({
-      ...(toolBridge ? { bridge: toolBridge } : {}),
-      request: requestWithRunFollowups(withEvidence, inheritedFollowups?.entries ?? [])
-    });
-    const retainedEvidence = fullContext && budget.ok
-      ? budget.request.context?.messages.find((message) =>
-          message.purpose === "knowledge_evidence")
-      : null;
-    const exactEvidenceRetained = !fullContext || Boolean(
-      retainedEvidence &&
-      textFromContentBlocks(retainedEvidence.content) === plan.dispatchDraft.message
-    );
-    const normalizedWithEvidence: NormalizedRunRequest = {
-      ...normalized,
-      ...(withEvidence.context ? { context: withEvidence.context } : {}),
-      prompt: withEvidence.prompt
-    };
-    return { budget, exactEvidenceRetained, normalized: normalizedWithEvidence };
-  };
+    }, inheritedFollowups?.entries ?? [])
+  });
 
-  let budgetedAnswer = budgetAnsweringRequest(answeringPlan);
-  if (answeringPlan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT &&
-    (!budgetedAnswer.budget.ok || !budgetedAnswer.exactEvidenceRetained)) {
-    answeringPlan = planKnowledgeAnswering({
-      admissionPlan: knowledgeAdmissionPlan!,
-      passages: null,
-      request: { ...baseNormalizedRequest, attachments }
-    });
-    budgetedAnswer = budgetAnsweringRequest(answeringPlan);
-  }
-  if (!budgetedAnswer.budget.ok && artifactCompactPrompt) {
+  let providerBudget = budgetAnsweringRequest();
+  if (!providerBudget.ok && artifactCompactPrompt) {
     baseNormalizedRequest.prompt = { ...baseNormalizedRequest.prompt, ...artifactCompactPrompt };
-    budgetedAnswer = budgetAnsweringRequest(answeringPlan);
+    providerBudget = budgetAnsweringRequest();
   }
-  if (!budgetedAnswer.budget.ok) {
+  if (!providerBudget.ok) {
     return { ...failure(
-      budgetedAnswer.budget.error.code,
-      budgetedAnswer.budget.status,
-      budgetedAnswer.budget.error.message
-    ), ...(budgetedAnswer.budget.error.skillBudget ? { skillBudget: budgetedAnswer.budget.error.skillBudget } : {}) };
+      providerBudget.error.code,
+      providerBudget.status,
+      providerBudget.error.message
+    ), ...(providerBudget.error.skillBudget ? { skillBudget: providerBudget.error.skillBudget } : {}) };
   }
-  if (!budgetedAnswer.exactEvidenceRetained) {
-    return failure("context_too_large", 400, "The exact Knowledge evidence did not fit.");
-  }
-  if (answeringPlan?.route !== KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT) {
-    const knowledgeCompatibility = validateKnowledgeCapabilities({
-      ...(toolBridge ? { bridge: toolBridge } : {}),
-      capabilities: modelCapabilities,
-      enabled: knowledgeRequested,
-      modelId: executionModelId,
-      provider: executionProvider
-    });
-    if (knowledgeCompatibility) {
-      return failure(knowledgeCompatibility.code, knowledgeCompatibility.status);
-    }
-  }
-  if (knowledgeAdmissionPlan && answeringPlan) {
-    knowledgeAdmissionPlan = Object.freeze({ ...knowledgeAdmissionPlan, answeringPlan });
-  }
-  const providerBudget = budgetedAnswer.budget;
   const normalizedRequest: NormalizedRunRequest = {
-    ...budgetedAnswer.normalized,
+    ...baseNormalizedRequest,
     context: providerBudget.request.context!
   };
   const providerRequest: ProviderRunRequest = { ...providerBudget.request };
@@ -2854,7 +2343,7 @@ async function prepareRunWith(
   // defaults or the chat's ordinary default columns, so an Assistant run
   // persists no accepted-defaults update; its chat changes are overrides.
   // Nor does a review step: its model is the step's, not a composer choice.
-  const defaults: PreparedRunDefaultsData | null = assistantRun || project || answerReviewStep
+  const defaults: PreparedRunDefaultsData | null = assistantRun || answerReviewStep
     ? null
     : {
         controlDefaults: runControlDefaultsFromBody(body, parameterControls),
@@ -2887,7 +2376,6 @@ async function prepareRunWith(
     ...(resolvedChatMode.initialChatMode
       ? { initialChatMode: resolvedChatMode.initialChatMode }
       : {}),
-    ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
     ...(scheduledMissingSources.length > 0 ? { scheduledUnavailableSources: scheduledMissingSources } : {}),
     ...(skillRuns.length > 0
@@ -2904,8 +2392,7 @@ async function prepareRunWith(
     providerAdmissionPlan: admissionPlan,
     providerRequest,
     providerRequestPreview,
-    sourceKind: input.source.kind,
-    ...(project ? { project } : {})
+    sourceKind: input.source.kind
   });
 
   return Object.freeze({

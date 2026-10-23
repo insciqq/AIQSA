@@ -116,7 +116,7 @@ describe("loadChatTitleFirstTurn", () => {
       titleRevision: 0
     });
     expect(db.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ id: "chat-1", projectId: null, userId: "user-1" })
+      where: expect.objectContaining({ id: "chat-1", userId: "user-1" })
     }));
   });
 

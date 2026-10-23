@@ -6,7 +6,6 @@ import {
   type ChatDefaultMcpMode
 } from "./chatDefaults";
 import type { ErrorResponse, SessionErrorCode } from "./http";
-import type { KnowledgeSelection } from "./knowledge";
 import { decodeCatalogDictation, type CatalogDictation } from "./speechToText";
 import {
   decodeSearchPlan,
@@ -145,7 +144,6 @@ export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
   controlValues: Record<string, unknown>;
   hasPersonalModelDefault: boolean;
   /** Personal chat defaults applied when a new chat starts; absent on older wires. */
-  knowledgePlan?: KnowledgeSelection | null;
   mcpMode?: ChatDefaultMcpMode;
   skillsMode?: import("./chatDefaults").ChatDefaultSkillsMode;
   sendWithEnter?: boolean;
@@ -194,7 +192,7 @@ export const CATALOG_ATTACHMENT_LIMIT_CEILINGS: Readonly<CatalogAttachmentLimits
 export type Catalog = {
   attachmentLimits?: CatalogAttachmentLimits;
   defaults: CatalogDefaults;
-  /** Voice dictation for this account; absent on Project catalogs and older wires (no microphone). */
+  /** Voice dictation for this account; absent on older wires (no microphone). */
   dictation?: CatalogDictation;
   models: CatalogModel[];
   providers: CatalogProvider[];
@@ -500,7 +498,6 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const decodedSearchPlan = decodeSearchPlan(defaults.searchPlan);
   const decodedOrganizationSearchPlan = decodeSearchPlan(defaults.organizationSearchPlan);
   const chatDefaults = decodeOptionalChatDefaults({
-    knowledgePlan: defaults.knowledgePlan,
     mcpMode: defaults.mcpMode,
     skillsMode: defaults.skillsMode,
     sendWithEnter: defaults.sendWithEnter
@@ -555,7 +552,6 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       browserNotificationsEnabled: defaults.browserNotificationsEnabled ?? true,
       controlValues: defaults.controlValues,
       hasPersonalModelDefault: defaults.hasPersonalModelDefault,
-      knowledgePlan: chatDefaults.knowledgePlan,
       mcpMode: chatDefaults.mcpMode,
       skillsMode: chatDefaults.skillsMode,
       modelId: defaults.modelId,

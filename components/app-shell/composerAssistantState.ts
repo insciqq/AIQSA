@@ -8,8 +8,7 @@ import {
   type ComposerAssistantSkill,
   type ComposerAssistantState,
   type ComposerBoundAssistant,
-  type ComposerControlSnapshot,
-  type ComposerKnowledgePlanSource
+  type ComposerControlSnapshot
 } from "@/components/app-shell/composerControlStore";
 import { resolvePreferredSearchPlan, type SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { Catalog, CatalogModel } from "@/components/app-shell/types";
@@ -33,13 +32,6 @@ import type {
   ChatAssistantProjection,
   ChatAssistantRowValues
 } from "@/lib/contracts/chats";
-import {
-  EMPTY_KNOWLEDGE_SELECTION,
-  explicitKnowledgeSelection,
-  inheritedKnowledgeSelection,
-  KNOWLEDGE_SELECTION_VERSION,
-  type KnowledgeSelection
-} from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { SkillsMode } from "@/lib/contracts/skills";
 import type { SearchPlanMode } from "@/lib/domain/search";
@@ -49,17 +41,16 @@ type RowSlice = Partial<ComposerControlSnapshot>;
 
 const SEARCH_DISABLED_OPTION_ID = "search-disabled";
 
-/** Where an Assistant's rows are resolved: the personal or the Project catalog. */
+/** Where an Assistant's rows are resolved: the personal catalog. */
 export type ComposerAssistantContext = {
-  /** The user's saved (or the Project's) parameters for a model over its built-ins. */
+  /** The user's saved parameters for a model over its built-ins. */
   controlDefaults(model: CatalogModel): ControlDefaults;
   models: readonly CatalogModel[];
   skill(skillId: string): Readonly<{ instructionApproxTokens?: number; name: string }> | null;
 };
 
-/** The values inherit and fallback rows take: the user's Chat defaults, or the Project's. */
+/** The values inherit and fallback rows take: the user's Chat defaults. */
 export type ComposerAssistantDefaults = {
-  knowledge: { selection: KnowledgeSelection; source: Exclude<ComposerKnowledgePlanSource, "assistant"> };
   model: { modelId: string; provider: string } | null;
   search: { mode: SearchPlanMode; optionIds: string[] };
   skillsMode: SkillsMode;
@@ -86,18 +77,12 @@ export type ComposerAssistantApplication = {
   controls: RowSlice;
 };
 
-export function personalComposerAssistantDefaults(
-  catalog: Catalog | null,
-  knowledge: KnowledgeSelection | null = catalog?.defaults.knowledgePlan ?? null
-): ComposerAssistantDefaults {
+export function personalComposerAssistantDefaults(catalog: Catalog | null): ComposerAssistantDefaults {
   const model = catalog?.models.find((candidate) =>
     candidate.provider === catalog.defaults.provider && candidate.modelId === catalog.defaults.modelId
   );
   const search = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
   return {
-    knowledge: knowledge && knowledge.mode !== "none"
-      ? { selection: knowledge, source: "explicit" }
-      : { selection: EMPTY_KNOWLEDGE_SELECTION, source: "off" },
     model: model ? { modelId: model.modelId, provider: model.provider } : null,
     search: { mode: search.mode, optionIds: [...search.optionIds] },
     skillsMode: catalog?.defaults.skillsMode ?? "auto",
@@ -155,36 +140,10 @@ function controlsSlice(
   };
 }
 
-function knowledgeSlice(
-  value: ChatAssistantRowValues["knowledge"],
-  origin: AssistantRowProvenance
-): RowSlice {
-  let selection: KnowledgeSelection;
-  if (value.mode === "none") {
-    selection = EMPTY_KNOWLEDGE_SELECTION;
-  } else if (value.mode === "all_my_knowledge") {
-    selection = { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: KNOWLEDGE_SELECTION_VERSION };
-  } else if ((value.hiddenCount ?? 0) > 0) {
-    // Resources the viewer cannot see are only counted; the composer never
-    // turns the visible part into an explicit plan of its own.
-    selection = inheritedKnowledgeSelection("assistant");
-  } else {
-    selection = explicitKnowledgeSelection({ baseIds: value.baseIds, sourceIds: value.sourceIds });
-  }
-  return {
-    knowledgePlanSource: selection.mode === "none"
-      ? "off"
-      : origin === "assistant" ? "assistant" : "explicit",
-    knowledgeSelection: selection,
-    selectedKnowledgeBaseIds: [...selection.baseIds]
-  };
-}
-
 /** The composer fields for an effective row value in the chat vocabulary. */
 function effectiveRowSlice<Key extends AssistantRowKey>(
   key: Key,
   value: ChatAssistantRowValues[Key],
-  origin: AssistantRowProvenance,
   context: ComposerAssistantContext
 ): RowSlice {
   switch (key) {
@@ -211,8 +170,6 @@ function effectiveRowSlice<Key extends AssistantRowKey>(
           : { mode: tools.mode }
       };
     }
-    case "knowledge":
-      return knowledgeSlice(value as ChatAssistantRowValues["knowledge"], origin);
     case "skills":
       return { skillsMode: (value as ChatAssistantRowValues["skills"]).mode };
     default:
@@ -231,12 +188,6 @@ function defaultRowSlice(key: AssistantRowKey, defaults: ComposerAssistantDefaul
       return { searchPlanMode: defaults.search.mode, selectedSearchOptionIds: [...defaults.search.optionIds] };
     case "tools":
       return { mcpSelection: { ...defaults.tools } };
-    case "knowledge":
-      return {
-        knowledgePlanSource: defaults.knowledge.source,
-        knowledgeSelection: defaults.knowledge.selection,
-        selectedKnowledgeBaseIds: [...defaults.knowledge.selection.baseIds]
-      };
     case "skills":
       return { skillsMode: defaults.skillsMode };
     default:
@@ -309,7 +260,7 @@ export function composerAssistantFromDefinition(
       const modelValue = row.value as AssistantRowValues["model"];
       if (modelValue.mode !== "model" || !modelById(context, modelValue.modelId)) return null;
     }
-    slices[key] = effectiveRowSlice(key, row.value as ChatAssistantRowValues[typeof key], origin, context);
+    slices[key] = effectiveRowSlice(key, row.value as ChatAssistantRowValues[typeof key], context);
   }
   const model = modelFor(context, slices.model ?? {});
   const assistantModel = definition.rows.model.value;
@@ -369,7 +320,7 @@ export function composerAssistantFromProjection(
   for (const key of ASSISTANT_ROW_KEYS) {
     if (key === "controls") continue;
     const row = projection.rows[key];
-    slices[key] = effectiveRowSlice(key, row.value, row.provenance, context);
+    slices[key] = effectiveRowSlice(key, row.value, context);
   }
   const model = modelFor(context, slices.model ?? {});
   slices.controls = controlsSlice(context, model, projection.rows.controls.value);
@@ -469,18 +420,6 @@ export function composerAssistantRowValue<Key extends AssistantRowKey>(
     case "tools":
       value = structuredClone(state.mcpSelection);
       break;
-    case "knowledge": {
-      const selection = state.knowledgeSelection;
-      const assistantKnowledge = assistant?.rows.knowledge.assistantValue;
-      value = selection.mode === "inherited"
-        ? assistantKnowledge && assistantKnowledge.mode === "explicit"
-          ? structuredClone(assistantKnowledge)
-          : { mode: "none" }
-        : selection.mode === "explicit"
-          ? { baseIds: [...selection.baseIds], mode: "explicit", sourceIds: [...selection.sourceIds] }
-          : { mode: selection.mode };
-      break;
-    }
     default: {
       const skills = assistant?.rows.skills.assistantValue;
       value = {
@@ -495,7 +434,7 @@ export function composerAssistantRowValue<Key extends AssistantRowKey>(
 
 /**
  * A row's current value as a chat override, or null when the composer holds
- * a value only the Assistant can express (an exact MCP list, a hidden plan).
+ * a value only the Assistant can express (an exact MCP list).
  */
 export function composerAssistantOverride<Key extends AssistantRowKey>(
   state: ComposerControlSnapshot,
@@ -516,15 +455,6 @@ export function composerAssistantOverride<Key extends AssistantRowKey>(
     case "tools":
       value = state.mcpSelection.mode === "exact" ? null : { mode: state.mcpSelection.mode };
       break;
-    case "knowledge": {
-      const selection = state.knowledgeSelection;
-      value = selection.mode === "inherited"
-        ? null
-        : selection.mode === "explicit"
-          ? { baseIds: [...selection.baseIds], mode: "explicit", sourceIds: [...selection.sourceIds] }
-          : { mode: selection.mode };
-      break;
-    }
     default:
       value = { mode: state.skillsMode };
   }

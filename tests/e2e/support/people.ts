@@ -53,11 +53,10 @@ export type PeopleFixture = Readonly<{
    * its chat), then removes in one transaction: the Memory work and recall
    * rows that reference the users' chats, the users' personal chats
    * (Temporary ones included), the Assistants they
-   * own with their listing requests, publications, Project bindings and Skill
-   * links, Assistant and Skill publications to the fixture's groups, the
-   * Skills they own, memberships, the users and the groups. What the users
-   * own elsewhere (Projects, Knowledge) must be deleted through the product
-   * first. Run the Assistant fixture's cleanup before this one. Idempotent.
+   * own with their listing requests, publications and Skill links, Assistant
+   * and Skill publications to the fixture's groups, the Skills they own,
+   * memberships, the users and the groups. Run the Assistant fixture's
+   * cleanup before this one. Idempotent.
    */
   cleanup(): Promise<void>;
   group(label: string): Promise<E2EGroup>;
@@ -234,7 +233,6 @@ async function deleteOwnedSkills(
     where: { OR: [{ skillId: { in: skillIds } }, { groupId: { in: [...groupIds] } }] }
   });
   if (skillIds.length === 0) return;
-  await tx.projectSkillBinding.deleteMany({ where: { skillId: { in: skillIds } } });
   await tx.skillShareRequest.deleteMany({ where: { skillId: { in: skillIds } } });
   await tx.skillDefinition.updateMany({ data: { currentRevisionId: null, sharedRevisionId: null }, where });
   await tx.skillRevisionFile.deleteMany({ where: { skillId: { in: skillIds } } });

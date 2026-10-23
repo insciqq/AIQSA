@@ -33,14 +33,6 @@ describe("Pin a loaded Skill", () => {
     expect(useComposerControlStore.getState().selectedSkills).toEqual([]);
   });
 
-  it("uses only the Project catalog and explains missing access", async () => {
-    const projectSkills = [{ id: "review", name: "Project review", description: "", promptCharacterCount: 80, available: true }];
-    await pinSkillForNextTurn({ skillId: "review", isCurrentScope: () => true, projectSkills });
-    expect(useComposerControlStore.getState().selectedSkills[0]?.name).toBe("Project review");
-    await expect(pinSkillForNextTurn({ skillId: "private", isCurrentScope: () => true, projectSkills })).rejects.toThrow("no longer available in this Project");
-    expect(loadSkillDetail).not.toHaveBeenCalled();
-  });
-
   it("keeps existing pins when access changed or the pinned ceiling was reached", async () => {
     vi.mocked(loadSkillDetail).mockRejectedValueOnce(new Error("not_found")).mockResolvedValue(detail);
     await expect(pinSkillForNextTurn({ skillId: "review", isCurrentScope: () => true })).rejects.toThrow("no longer available");

@@ -49,14 +49,13 @@ export async function fakeModelId(prisma: PrismaClient): Promise<string> {
 }
 
 /**
- * Six rows with the product's defaults for a new Assistant (fixed model,
- * adjustable empty controls, fixed Off/None for the resource rows, Skills
- * auto without links), with the given rows replaced whole.
+ * Five rows with the product's defaults for a new Assistant (fixed model,
+ * adjustable empty controls, fixed Off for the resource rows, Skills auto
+ * without links), with the given rows replaced whole.
  */
 export function e2eAssistantRows(modelId: string, rows: Partial<AssistantRows> = {}): AssistantRows {
   return {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "fixed", value: { mode: "none" } },
     model: { policy: "fixed", value: { mode: "model", modelId } },
     search: { policy: "fixed", value: { mode: "off" } },
     skills: { policy: "fixed", value: { links: [], mode: "auto" } },
@@ -99,8 +98,8 @@ export type AssistantFixture = Readonly<{
   /**
    * Removes, for the fixture's records only and in the order the restrictive
    * keys require: its chats, its listing requests and publications, then for
-   * every tracked Assistant its listing requests, publications, Project
-   * bindings, Skill links and the definition. Idempotent.
+   * every tracked Assistant its listing requests, publications, Skill links
+   * and the definition. Idempotent.
    */
   cleanup(): Promise<void>;
   /** Creates through `POST /api/me/assistants` as the signed-in owner of `owner`. */
@@ -135,13 +134,12 @@ export type AssistantFixture = Readonly<{
   track(assistantId: string): void;
 }>;
 
-/** Listing requests, publications, Project bindings, Skill links, then the definitions. */
+/** Listing requests, publications, Skill links, then the definitions. */
 export async function deleteAssistantRows(tx: Prisma.TransactionClient, assistantIds: readonly string[]): Promise<void> {
   if (assistantIds.length === 0) return;
   const where = { assistantId: { in: [...assistantIds] } };
   await tx.assistantListingRequest.deleteMany({ where });
   await tx.assistantPublication.deleteMany({ where });
-  await tx.projectAssistantBinding.deleteMany({ where });
   await tx.assistantSkill.deleteMany({ where });
   await tx.assistantDefinition.deleteMany({ where: { id: { in: [...assistantIds] } } });
 }
@@ -293,7 +291,6 @@ export function createAssistantFixture(
             category: content.category,
             description: content.description,
             id,
-            knowledgeSelection: columns.knowledgeSelection as unknown as Prisma.InputJsonValue,
             name: content.name,
             ownerUserId,
             responseReminder: content.responseReminder,

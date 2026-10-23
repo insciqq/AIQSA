@@ -36,9 +36,6 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       throw new WorkspaceFollowupError("workspace_followup_invalid");
     }
     let prepared = snapshot.prepared;
-    if (prepared.project && !await deps.repository.isProjectRunAccessCurrent?.({ ...prepared.project, userId: claim.userId })) {
-      throw new WorkspaceFollowupError("workspace_followup_unavailable");
-    }
     // A native successor starts on the native engine once the predecessor handed its Workspace off, like an old-core one.
     const nativeEngine = loaded.modelRun.engine === "native" ? deps.nativeEngine : undefined;
     if (loaded.modelRun.engine === "native" && !nativeEngine) throw new WorkspaceFollowupError("workspace_followup_unavailable");
@@ -61,8 +58,7 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     const runtime = await deps.providerRuntime.resolve(claim.runId, "answer");
     const attachments = await loadProviderAttachments({ repository: deps.repository, storage: deps.storage },
       claim.userId, prepared.normalizedRequest.attachmentIds, { capabilities: prepared.normalizedRequest.modelCapabilities,
-        limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled,
-        ...(prepared.project ? { projectId: prepared.project.projectId } : {}) });
+        limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled });
     // A native successor is never resumed here: one already past its activation was cut off, and native recovery ends it.
     const recovered = !nativeEngine && loaded.modelRun.status === "streaming" && !loaded.modelRun.workspaceWaitPending
       ? loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest | null : null;

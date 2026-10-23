@@ -1,7 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { WORKSPACE_EXPORT_PAGE_SIZE, type WorkspaceExportEntry } from "../../contracts/workspaceExports";
 import { prisma } from "../prisma";
-import { resolveProjectAccess } from "../projects/access";
 import type { WorkspaceExportHistoryRepository } from "./exportHistoryHandlers";
 
 export function createWorkspaceExportHistoryRepository(client: PrismaClient = prisma): WorkspaceExportHistoryRepository {
@@ -9,13 +8,10 @@ export function createWorkspaceExportHistoryRepository(client: PrismaClient = pr
     async list({ chatId, cursor, userId }) {
       return client.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
-          select: { activeLeafMessageId: true, projectId: true, userId: true },
+          select: { activeLeafMessageId: true, userId: true },
           where: { id: chatId, permanentDeletionAt: null }
         });
-        if (!chat) return null;
-        if (chat.projectId) {
-          if (!(await resolveProjectAccess(tx, { projectId: chat.projectId, userId }))) return null;
-        } else if (chat.userId !== userId) return null;
+        if (!chat || chat.userId !== userId) return null;
         const rows = await tx.$queryRaw<Array<Omit<WorkspaceExportEntry, "createdAt"> & { createdAt: Date }>>(Prisma.sql`
           WITH RECURSIVE path AS (
             SELECT "id", "parentMessageId", "createdAt" FROM "Message"

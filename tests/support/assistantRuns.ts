@@ -3,9 +3,9 @@ import type { AssistantRowContext, AssistantRowResourceIds } from "@/lib/server/
 import type { AssistantRowContextDefaults } from "@/lib/server/assistants/rowResolution";
 
 /**
- * A row-context loader for run admission tests: every named Knowledge base,
- * Source, Skill, MCP server and Search source is usable unless listed in
- * `unavailable`; models are exactly `models` (id to connection).
+ * A row-context loader for run admission tests: every named Skill, MCP
+ * server and Search source is usable unless listed in `unavailable`; models
+ * are exactly `models` (id to connection).
  */
 export function assistantRowContextLoader(input: Readonly<{
   defaultModelId: string;
@@ -19,9 +19,6 @@ export function assistantRowContextLoader(input: Readonly<{
   const models = new Map(Object.entries(input.models));
   return async () => ({
     available: {
-      allMyKnowledge: true,
-      knowledgeBaseIds: usable,
-      knowledgeSourceIds: usable,
       mcpServerIds: usable,
       modelIds: new Set([...models.keys()].filter((id) => !unavailable.has(id))),
       searchOptionIds: usable,
@@ -29,7 +26,6 @@ export function assistantRowContextLoader(input: Readonly<{
     },
     defaults: {
       controlsForModel: (modelId) => ({ ...input.savedControls?.[modelId] }),
-      knowledge: { mode: "none" },
       modelId: input.defaultModelId,
       search: { mode: "off" },
       tools: { mode: "auto" },

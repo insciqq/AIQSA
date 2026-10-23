@@ -7,14 +7,10 @@ const { announceProcess, setProcessRole } = require("../lib/server/observability
 const roles = new Map([
   ["memory-coordinator.ts", "memory_coordinator"],
   ["memory-search-worker.ts", "memory_search"],
-  ["knowledge-search-worker.ts", "knowledge_search"],
   ["workspace-runner.ts", "workspace_runner"],
   ["workspace-maintenance.ts", "maintenance"],
   ["memory-restore-reconcile.ts", "maintenance"],
   ["memory-suppression-preflight.ts", "maintenance"],
-  ["knowledge-source-backfill.ts", "maintenance"],
-  ["knowledge-restore-reconcile.ts", "maintenance"],
-  ["knowledge-search-integrity.ts", "maintenance"],
   ["prune.ts", "maintenance"],
   ["bootstrap.ts", "bootstrap"]
 ]);

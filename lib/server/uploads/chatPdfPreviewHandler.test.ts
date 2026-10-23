@@ -2,19 +2,16 @@ import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
-import { resolveProjectAccess } from "../projects/access";
 import { createChatPdfPreviewHandler } from "./chatPdfPreviewHandler";
 
 vi.mock("../providerRuntime/admission", async (original) => ({
   ...await original<typeof import("../providerRuntime/admission")>(), loadProviderAdmissionPlan: vi.fn()
 }));
-vi.mock("../projects/access", () => ({ resolveProjectAccess: vi.fn() }));
 
 function fixture() {
   const tx = { systemModelPolicy: { findUnique: vi.fn(async () => ({
     version: 1, chatPdfProcessingMode: "PREFER_CHAT_MODEL", chatPdfFallbackMethod: "PAGE_IMAGES"
-  })) },
-    projectModelBinding: { findUnique: vi.fn(async () => null) } };
+  })) } };
   const db = { $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)) };
   const auth = createTestAuth({ user: { id: "owner", role: "user" } });
   const resolveAuth = vi.fn(auth.resolveAuth);
@@ -63,17 +60,15 @@ describe("private PDF route preview", () => {
     expect(loadProviderAdmissionPlan).not.toHaveBeenCalled();
   });
 
-  it("requires current Project contribution and a Project model binding", async () => {
+  it("previews the requester's own route whatever Project an older browser still names", async () => {
     const h = fixture();
-    vi.mocked(resolveProjectAccess).mockResolvedValueOnce(null);
-    const denied = await h.handler(h.request({ projectId: "project" }));
-    expect(denied.status).toBe(404);
-    expect(await denied.json()).toEqual({ error: "model_not_available" });
-    expect(h.tx.projectModelBinding.findUnique).not.toHaveBeenCalled();
-    expect(loadProviderAdmissionPlan).not.toHaveBeenCalled();
-    vi.mocked(resolveProjectAccess).mockResolvedValueOnce({ projectId: "project" } as never);
-    expect((await h.handler(h.request({ projectId: "project" }))).status).toBe(404);
-    expect(loadProviderAdmissionPlan).not.toHaveBeenCalled();
+    const response = await h.handler(h.request({ projectId: "project" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: 1, route: "direct_pdf" });
+    expect(loadProviderAdmissionPlan).toHaveBeenCalledWith(h.tx, {
+      userId: "owner", providerConnectionId: "connection", providerModelId: "model",
+      searchPlan: { mode: "all_selected", optionIds: [] }
+    });
   });
 
   it("does not reveal provider failures or stale route details", async () => {

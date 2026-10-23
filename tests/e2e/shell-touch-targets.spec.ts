@@ -63,20 +63,6 @@ async function createOwnedChat(page: Page): Promise<Readonly<{ chatId: string; t
   return { chatId, title };
 }
 
-/** A Project with one shared chat; the caller deletes the Project. */
-async function createOwnedProjectChat(page: Page): Promise<Readonly<{ chatId: string; projectId: string }>> {
-  await authenticateWithLocalToken(page.request);
-  const suffix = randomUUID().slice(0, 8);
-  const project = await page.request.post("/api/projects", {
-    data: { name: `Touch geometry Project ${suffix}`, preferredModelId: providerTemplateIds.fakeModel }
-  });
-  expect(project.status(), await project.text()).toBe(201);
-  const projectId = ((await project.json()) as { project: { id: string } }).project.id;
-  const chat = await page.request.post(`/api/projects/${projectId}/chats`, { data: { title: `Touch geometry Project chat ${suffix}` } });
-  expect(chat.status(), await chat.text()).toBe(201);
-  return { chatId: ((await chat.json()) as { chat: { id: string } }).chat.id, projectId };
-}
-
 async function openChat(page: Page, path: string): Promise<Locator> {
   await page.goto(path);
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
@@ -171,44 +157,6 @@ async function expectPhoneIslandSegments(page: Page): Promise<void> {
 }
 
 /**
- * Phone touch in a Project chat: the projects section has no "+" float, so
- * the header row (the model island, then the Project chip pill) sits centred
- * between the menu island and "⋯" instead of reserving room for "+".
- */
-async function expectProjectChatIslandGaps(page: Page): Promise<void> {
-  await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-shell-section", "projects");
-  const header = page.locator(".v2-live-header");
-  // The loaded Project chat: "⋯" and the Project chip are both in the row.
-  const more = page.getByTestId("header-more-trigger");
-  await expect(more).toBeVisible({ timeout: 30_000 });
-  await expect(header.getByRole("complementary", { name: "Shared project context" })).toBeVisible({ timeout: 30_000 });
-  await expect(sidebarFloats(page).newChat).toHaveCount(0);
-  const menu = await expectTarget(sidebarFloats(page).showList, "menu island");
-  const island = await boxOf(page.locator(".v2-live-header-island"), "model island");
-  const titlePill = header.locator(".v2-live-title");
-  const last = await titlePill.isVisible() ? await boxOf(titlePill, "Project chip pill") : island;
-  const moreBox = await expectTarget(more, "Chat actions island");
-  const left = island.x - (menu.x + menu.width);
-  const right = moreBox.x - (last.x + last.width);
-  expect(left, "menu → model gap").toBeGreaterThanOrEqual(7.5);
-  expect(right, "header row → Chat actions gap").toBeGreaterThanOrEqual(7.5);
-  expect(Math.abs(left - right), `Project chat header row gaps ${left} / ${right}`).toBeLessThanOrEqual(1);
-  // The chip collapses to the Project mark, keeps its name as the accessible
-  // name, and leaves the model name its room.
-  const chip = header.getByTestId("project-context-trigger");
-  await expect(chip).toHaveAccessibleName(/^Touch geometry Project /u);
-  const chipBox = await expectTarget(chip, "collapsed Project chip");
-  expect(chipBox.width, "collapsed Project chip width").toBeLessThanOrEqual(48);
-  expect(await header.locator(".v2-live-model-name").evaluate((name) => name.scrollWidth <= name.clientWidth),
-    "model name is not ellipsized").toBe(true);
-  await chip.click();
-  const details = page.getByRole("dialog", { name: /^Touch geometry Project .* project context$/u });
-  await expect(details).toBeInViewport({ ratio: 1 });
-  await page.keyboard.press("Escape");
-  await expect(details).toHaveCount(0);
-}
-
-/**
  * Settings on touch: the header row is 56px, so the 44px Close and Back
  * controls keep room above and below inside it, and the content starts
  * under the header.
@@ -265,22 +213,17 @@ async function expectStudioTargets(page: Page, crumbRowRoom: boolean): Promise<v
   await expectTarget(editor.getByRole("button", { name: "Insert time" }), "Insert time");
 }
 
-/** Composer menu links outside the provenance line (component fixtures). */
+/** Composer menu links (component fixtures): the MCP layer's Connections and settings links. */
 async function expectComposerLinkTargets(page: Page): Promise<void> {
-  await page.goto("/ui-v2-fixture?fixture=composer&state=knowledge");
-  let picker = page.getByRole("menu", { name: "Knowledge" });
+  await page.goto("/ui-v2-fixture?fixture=composer&state=mcp-personal");
+  const picker = page.getByRole("menu", { name: "MCP tools" });
   await expect(picker).toBeVisible();
-  const manage = picker.getByRole("menuitem", { name: "Manage Knowledge" });
+  const connections = picker.getByRole("menuitem", { name: "Open Connections in Settings for Notion" });
+  await connections.scrollIntoViewIfNeeded();
+  await expectTarget(connections, "Connections");
+  const manage = picker.getByRole("menuitem", { name: "Manage enabled MCP servers" });
   await manage.scrollIntoViewIfNeeded();
-  await expectTarget(manage, "Manage Knowledge");
-
-  await page.goto("/ui-v2-fixture?fixture=composer&state=project-knowledge");
-  picker = page.getByRole("menu", { name: "Knowledge" });
-  await expect(picker).toBeVisible();
-  const override = picker.locator(".v2-composer-knowledge-inherited")
-    .getByRole("menuitem", { name: "Override for this chat" });
-  await override.scrollIntoViewIfNeeded();
-  await expectTarget(override, "Override for this chat");
+  await expectTarget(manage, "Manage enabled MCP servers");
 }
 
 const compactTouchProfiles = [
@@ -320,7 +263,6 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
   test("phone islands keep equal gaps and Studio and composer links are 44px touch targets · phone portrait 390×844", async ({ page }) => {
     test.setTimeout(150_000);
     const { chatId } = await createOwnedChat(page);
-    let projectId: string | null = null;
     try {
       await openChat(page, "/");
       expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
@@ -335,17 +277,10 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
       // Account Settings from a personal chat.
       await expectSettingsHeaderRoom(page);
 
-      const project = await createOwnedProjectChat(page);
-      projectId = project.projectId;
-      await openChat(page, `/p/${project.projectId}/c/${project.chatId}`);
-      await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-chat-active", "true");
-      await expectProjectChatIslandGaps(page);
-
       await openChat(page, `/c/${chatId}`);
       await expectStudioTargets(page, false);
       await expectComposerLinkTargets(page);
     } finally {
-      if (projectId) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
       await deleteOwnedChatPermanently(page.request, chatId);
     }
   });

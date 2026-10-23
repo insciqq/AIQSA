@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
 import { messageFromApi } from "@/components/app-shell/shellApi";
 import { visibleMessagePath } from "@/components/app-shell/threadPath";
@@ -14,9 +14,6 @@ import {
 } from "./exportChat";
 
 type Load = ExportChatHandlerDeps["load"];
-
-const access = vi.hoisted(() => ({ resolveChatAccess: vi.fn() }));
-vi.mock("../projects/access", () => ({ resolveChatAccess: access.resolveChatAccess }));
 
 const auth = createTestAuth();
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 1, 12, minute));
@@ -73,10 +70,6 @@ function fakeReadClient(rows: readonly Record<string, unknown>[] = messageRows) 
   };
 }
 
-beforeEach(() => {
-  access.resolveChatAccess.mockReset();
-});
-
 describe("chat export source", () => {
   it("reads one chat's messages and only its referenced attachments in a fixed number of queries", async () => {
     const db = fakeReadClient();
@@ -100,34 +93,28 @@ describe("authorized chat export source", () => {
     return { db: { $transaction: async (run: (client: typeof tx) => unknown) => run(tx) }, tx };
   }
 
-  it("uses the chat read rule for active personal and Project chats", async () => {
-    const { db } = fakePrisma({ ...chatRow, memoryMode: "NORMAL" });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "personal", project: null, userId: "u1" });
+  it("reads only the requester's own chat", async () => {
+    const { db, tx } = fakePrisma({ ...chatRow, memoryMode: "NORMAL" });
     expect(await loadAuthorizedChatExportSource(db as never, { chatId: "db-chat", userId: "u1" })).not.toBeNull();
-    expect(access.resolveChatAccess).toHaveBeenCalledWith(expect.anything(), { chatId: "db-chat", userId: "u1" });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "project", project: {}, userId: null });
-    expect(await loadAuthorizedChatExportSource(db as never, { chatId: "db-chat", userId: "viewer" })).not.toBeNull();
+    expect(tx.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "db-chat", permanentDeletionAt: null, userId: "u1" }
+    }));
   });
 
-  it("returns nothing without chat access and reads no messages", async () => {
-    const { db, tx } = fakePrisma({ ...chatRow, memoryMode: "NORMAL" });
-    access.resolveChatAccess.mockResolvedValueOnce(null);
+  it("returns nothing for a chat the requester does not own and reads no messages", async () => {
+    const { db, tx } = fakePrisma(null);
     expect(await loadAuthorizedChatExportSource(db as never, { chatId: "db-chat", userId: "stranger" })).toBeNull();
-    expect(tx.chat.findFirst).not.toHaveBeenCalled();
     expect(tx.messageQueries).toEqual([]);
   });
 
-  it("opens archived chats only for their personal owner and never temporary ones", async () => {
+  it("opens the owner's archived chats and never temporary ones", async () => {
     const archived = fakePrisma({ ...chatRow, archived: true, memoryMode: "NORMAL" });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "personal", project: null, userId: "u1" });
     expect(await loadAuthorizedChatExportSource(archived.db as never, { chatId: "db-chat", userId: "u1" })).toMatchObject({
       chat: { archived: true }
     });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "project", project: {}, userId: null });
-    expect(await loadAuthorizedChatExportSource(archived.db as never, { chatId: "db-chat", userId: "viewer" })).toBeNull();
     const temporary = fakePrisma({ ...chatRow, archived: true, memoryMode: "TEMPORARY" });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "personal", project: null, userId: "u1" });
     expect(await loadAuthorizedChatExportSource(temporary.db as never, { chatId: "db-chat", userId: "u1" })).toBeNull();
+    expect(temporary.tx.messageQueries).toEqual([]);
   });
 });
 

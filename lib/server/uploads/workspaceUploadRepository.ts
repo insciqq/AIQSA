@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { WorkspaceUploadWire } from "@/lib/contracts/workspaceUploads";
-import { resolveProjectAccess } from "../projects/access";
 import { WORKSPACE_UPLOAD_IDLE_MS, WORKSPACE_UPLOAD_LEASE_MS, WORKSPACE_UPLOAD_LIFETIME_MS, WORKSPACE_UPLOAD_PART_BYTES } from "./workspaceUploadConfig";
 
 const include = { objects: true, attachment: true } satisfies Prisma.AttachmentUploadInclude;
@@ -24,13 +23,10 @@ async function lock(tx: Prisma.TransactionClient, id: string) {
   return tx.attachmentUpload.findUnique({ where: { id }, include });
 }
 
-async function authorized(tx: Prisma.TransactionClient, row: WorkspaceUploadRecord, userId: string, projectLock = false) {
-  if (row.userId !== userId) return false;
-  if (!await tx.user.findFirst({ where: { id: userId, status: "active" }, select: { id: true } })) return false;
-  if (!row.projectScoped) return row.projectId === null;
-  if (!row.projectId) return false;
-  if (projectLock) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${row.projectId} FOR UPDATE`;
-  return !!await resolveProjectAccess(tx, { projectId: row.projectId, userId, requireActive: true, minimumRole: "CONTRIBUTOR" });
+async function authorized(tx: Prisma.TransactionClient, row: WorkspaceUploadRecord, userId: string) {
+  // An upload a removed Project started never completes.
+  if (row.userId !== userId || row.projectScoped || row.projectId !== null) return false;
+  return Boolean(await tx.user.findFirst({ where: { id: userId, status: "active" }, select: { id: true } }));
 }
 
 function writable(row: WorkspaceUploadRecord, now: Date) {
@@ -57,7 +53,7 @@ export function workspaceUploadProjection(row: WorkspaceUploadRecord): Workspace
 
 export function createWorkspaceUploadRepository(db: PrismaClient) {
   return {
-    async create(input: { userId: string; projectId: string | null; idempotencyKey: string; fileName: string; mimeType: string; byteSize: number }, now = new Date()) {
+    async create(input: { userId: string; idempotencyKey: string; fileName: string; mimeType: string; byteSize: number }, now = new Date()) {
       return db.$transaction(async tx => {
         // Serializes the bounded per-owner admission across sessions/processes.
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`attachment-upload:${input.userId}`}, 0))::text`;
@@ -66,7 +62,7 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
         }, include });
         if (prior) {
           if (!await authorized(tx, prior, input.userId)) throw new WorkspaceUploadError("upload_not_found", 404);
-          if (prior.projectId !== input.projectId || prior.fileName !== input.fileName || prior.mimeType !== input.mimeType || prior.byteSize !== input.byteSize) {
+          if (prior.fileName !== input.fileName || prior.mimeType !== input.mimeType || prior.byteSize !== input.byteSize) {
             throw new WorkspaceUploadError("upload_conflict");
           }
           return prior;
@@ -74,19 +70,13 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
         if (!await tx.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } })) {
           throw new WorkspaceUploadError("upload_not_found", 404);
         }
-        if (input.projectId) {
-          await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${input.projectId} FOR UPDATE`;
-          if (!await resolveProjectAccess(tx, { projectId: input.projectId, userId: input.userId, requireActive: true, minimumRole: "CONTRIBUTOR" })) {
-            throw new WorkspaceUploadError("upload_not_found", 404);
-          }
-        }
         const count = await tx.attachmentUpload.count({ where: {
           userId: input.userId, state: { in: ["uploading", "verifying"] }, deadlineAt: { gt: now },
           OR: [{ state: "verifying" }, { expiresAt: { gt: now } }, { leaseExpiresAt: { gt: now } }]
         } });
         if (count >= 2) throw new WorkspaceUploadError("upload_busy", 429);
         return tx.attachmentUpload.create({ data: {
-          ...input, projectScoped: input.projectId !== null,
+          ...input,
           expiresAt: new Date(now.getTime() + WORKSPACE_UPLOAD_IDLE_MS),
           deadlineAt: new Date(now.getTime() + WORKSPACE_UPLOAD_LIFETIME_MS)
         }, include });
@@ -194,16 +184,15 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
       return db.$transaction(async tx => {
         const row = await lock(tx, input.id);
         if (!row || row.state !== "verifying" || row.claimToken !== input.claimToken || !row.leaseExpiresAt || row.leaseExpiresAt <= now || row.deadlineAt <= now) return false;
-        if (!row.userId || !await authorized(tx, row, row.userId, true)) {
+        if (!row.userId || !await authorized(tx, row, row.userId)) {
           await tx.attachmentUpload.update({ where: { id: row.id }, data: { state: "failed", errorCode: "upload_unavailable",
             claimToken: null, leaseExpiresAt: null } });
           return false;
         }
         const output = row.objects.find(object => object.storageKey === input.storageKey && object.partNumber === null);
         if (!output) throw new WorkspaceUploadError("upload_conflict");
-        const user = await tx.user.findUniqueOrThrow({ where: { id: row.userId }, select: { displayName: true } });
         const attachment = await tx.attachment.create({ data: {
-          ...(row.projectId ? { projectId: row.projectId, uploaderUserId: row.userId, uploaderDisplayName: user.displayName } : { userId: row.userId }),
+          userId: row.userId,
           byteSize: row.byteSize, checksum: input.checksum, fileName: input.fileName ?? row.fileName, kind: "file",
           mimeType: input.mimeType ?? row.mimeType, storageKey: input.storageKey, status: "ready", extractedText: null,
           metadata: { workspaceOriginalOnly: true }
@@ -228,8 +217,9 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
     async claimCleanup(now = new Date()) {
       return db.$transaction(async tx => {
         await tx.attachmentUpload.updateMany({ where: { state: "uploading", expiresAt: { lte: now } }, data: { state: "expired" } });
+        // Uploads of deleted accounts and of removed Projects end here.
         await tx.attachmentUpload.updateMany({ where: { state: { in: ["uploading", "verifying"] },
-          OR: [{ userId: null }, { projectScoped: true, projectId: null }] }, data: { state: "expired" } });
+          OR: [{ userId: null }, { projectScoped: true }] }, data: { state: "expired" } });
         const candidates = await tx.$queryRaw<{ id: string }[]>`
           SELECT u."id" FROM "AttachmentUpload" u WHERE u."state" IN ('completed','cancelled','expired','failed')
           AND u."cleanedAt" IS NULL AND (u."leaseExpiresAt" IS NULL OR u."leaseExpiresAt" <= ${now})

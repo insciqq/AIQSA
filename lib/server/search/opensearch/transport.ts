@@ -307,6 +307,40 @@ export class AiqsaOpenSearchTransport {
     }
   }
 
+  /** Whether the Knowledge index exists. Knowledge was removed, so deletion
+   * reads it this way and never creates it. */
+  async knowledgeIndexExists(): Promise<boolean> {
+    if (this.#namespace !== "knowledge") {
+      throw new OpenSearchTransportError("opensearch_index_incompatible");
+    }
+    await this.#ensureServerVersion();
+    const head = await this.#request({
+      acceptedStatuses: [200, 404],
+      indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
+      maximumResponseBytes: 0,
+      method: "HEAD",
+      path: KNOWLEDGE_SEARCH_INDEX_NAME,
+      timeoutMs: HEALTH_TIMEOUT_MS
+    });
+    return head.status === 200;
+  }
+
+  /** Removes the retired Knowledge index; a missing index is already gone. */
+  async deleteKnowledgeIndex(): Promise<void> {
+    if (this.#namespace !== "knowledge") {
+      throw new OpenSearchTransportError("opensearch_index_incompatible");
+    }
+    await this.#ensureServerVersion();
+    await this.#request({
+      acceptedStatuses: [200, 404],
+      indexName: KNOWLEDGE_SEARCH_INDEX_NAME,
+      maximumResponseBytes: SMALL_RESPONSE_MAX_BYTES,
+      method: "DELETE",
+      path: KNOWLEDGE_SEARCH_INDEX_NAME,
+      timeoutMs: WRITE_TIMEOUT_MS
+    });
+  }
+
   async #ensureServerVersion(): Promise<void> {
     await this.#core.ensureServerVersion(AIQSA_OPENSEARCH_VERSION);
   }

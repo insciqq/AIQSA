@@ -29,12 +29,6 @@ export function composerAssistantRowsFixture(
       origin: "assistant",
       policy: policies.controls ?? "adjustable"
     },
-    knowledge: {
-      assistantValue: { mode: "none" },
-      deviation: null,
-      origin: "assistant",
-      policy: policies.knowledge ?? "adjustable"
-    },
     model: {
       assistantValue: { mode: "model", modelId: "assistant-model" },
       deviation: null,

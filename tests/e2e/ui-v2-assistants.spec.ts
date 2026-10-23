@@ -115,11 +115,8 @@ test("Assistant detail sheet shows the owner's and the consumer's view", async (
   await expect(owner.getByRole("button", { name: "Unpin" })).toHaveAttribute("aria-pressed", "true");
   await expect(owner.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
   await expect(owner.getByRole("region", { name: "Conversation starters" }).getByRole("button")).toHaveCount(3);
-  await expect(owner.getByRole("row")).toHaveCount(6);
-  await expect(owner.getByRole("row", { name: /Knowledge/u })).toContainText("HR handbook, Benefits FAQ");
-  await expect(owner.getByRole("row", { name: /Knowledge/u })).toContainText("Fixed");
+  await expect(owner.getByRole("row")).toHaveCount(5);
   await expect(owner.getByRole("region", { name: "Sharing" })).toContainText("Everyone in this installation · Groups: Support team · Featured #1");
-  await expect(owner.getByRole("region", { name: "Sharing" })).toContainText("Used by Projects: People Ops, 1 other Project");
   await expect(owner.getByRole("region", { name: "Usage" })).toContainText("38 chats in the last 30 days");
   await captureState(page, testInfo, "assistant-detail-owner", {
     atEachSize: async ({ size }) => {
@@ -145,7 +142,6 @@ test("Assistant detail sheet shows the owner's and the consumer's view", async (
   await expect(consumer.getByRole("row", { name: /Tools/u })).toContainText("1 MCP server you can't access");
   await expect(consumer.getByRole("row", { name: /Tools/u })).toContainText("Not available to you");
   await expect(consumer.getByRole("row", { name: /Model/u })).toContainText("Your default will be used");
-  await expect(consumer.getByRole("row", { name: /Knowledge/u })).toContainText("Pricing base · 1 base or document you can't access");
   await captureState(page, testInfo, "assistant-detail-consumer", { atEachSize: () => expectNoHorizontalOverflow(page) });
 
   await page.goto("/ui-v2-fixture?fixture=assistants&state=detail-instructions");
@@ -172,7 +168,6 @@ test("Delete lists its consequences before it removes the card", async ({ page }
   await expect(dialog.getByRole("listitem")).toHaveText([
     "It stops being available to everyone in this installation.",
     "It is unshared from the group Support team.",
-    "Projects stop using it: People Ops (its default Assistant), 1 other Project.",
     "38 chats keep their messages and show that the Assistant was deleted."
   ]);
   await captureState(page, testInfo, "assistant-delete-dialog", {
@@ -191,7 +186,7 @@ test("Delete lists its consequences before it removes the card", async ({ page }
   await more.click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   const confirm = page.getByRole("dialog", { name: "Delete “Translator”?" });
-  await expect(confirm).toContainText("It isn't shared, used by a Project or bound to a chat.");
+  await expect(confirm).toContainText("It isn't shared or bound to a chat.");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toHaveCount(0);
   await expect(more).toBeFocused();
@@ -271,14 +266,14 @@ test("editor states keep errors, conflicts and Setup rows inside the page", asyn
     await expect(editor).toBeVisible();
     if (state === "editor-new") {
       await expect(editor.getByTestId("assistant-editor-save")).toHaveText("Create");
-      await expect(editor.getByRole("button", { name: "Adjustable" })).toHaveCount(6);
+      await expect(editor.getByRole("button", { name: "Adjustable" })).toHaveCount(5);
       await expect(editor.getByRole("button", { name: "Manage sharing…" })).toBeDisabled();
       await expect(editor.getByText("Save first")).toBeVisible();
     }
     if (state === "editor-errors") {
       await expect(editor.getByLabel("Name Required")).toHaveAttribute("aria-invalid", "true");
       await expect(editor.getByTestId("assistant-setup-row-tools")).toContainText("Choose at least one MCP server, or turn Tools off.");
-      await expect(editor.getByTestId("assistant-setup-row-knowledge")).toContainText("Choose a value to fix, or make this row Adjustable.");
+      await expect(editor.getByTestId("assistant-setup-row-model")).toContainText("Choose a value to fix, or make this row Adjustable.");
     }
     if (state === "editor-conflict") {
       await expect(editor.getByTestId("assistant-editor-conflict")).toContainText("Latest saved version: Jira desk (team)");
@@ -309,7 +304,7 @@ test("New assistant starts from a template without saving", async ({ page }, tes
   await page.goto("/ui-v2-fixture?fixture=assistants&state=new-sheet");
   const sheet = page.getByRole("dialog", { name: "New assistant" });
   await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole("radio")).toHaveCount(8);
+  await expect(sheet.getByRole("radio")).toHaveCount(7);
   await captureState(page, testInfo, "assistant-new-sheet", { atEachSize: () => expectNoHorizontalOverflow(page) });
 
   await sheet.getByText("Code reviewer", { exact: true }).click();
@@ -319,7 +314,7 @@ test("New assistant starts from a template without saving", async ({ page }, tes
   await expect(editor.getByLabel("Name Required")).toHaveValue("Code reviewer");
   await expect(editor.getByRole("textbox", { name: "Conversation starter 1", exact: true })).toHaveValue("Review this diff before I merge it");
   await expect(editor.getByRole("textbox", { name: "Instructions" })).toHaveValue(/^# Role/u);
-  await expect(editor.getByRole("button", { name: "Adjustable" })).toHaveCount(6);
+  await expect(editor.getByRole("button", { name: "Adjustable" })).toHaveCount(5);
   await expect(editor.getByTestId("assistant-editor-save")).toHaveText("Create");
 });
 

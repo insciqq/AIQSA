@@ -96,7 +96,6 @@ function memoryHistorySourceAuthorityPredicate(
   const authority = Prisma.sql`
     ${chat}."userId" = ${source}."userId"
     AND ${chat}."id" = ${source}."chatId"
-    AND ${chat}."projectId" IS NULL
     AND ${chat}."memoryMode" = 'NORMAL'::"MemoryChatMode"
     AND ${checkpoint}."userId" = ${chat}."userId"
     AND ${checkpoint}."chatId" = ${chat}."id"

@@ -273,7 +273,6 @@ export function createPrismaAdminMemoryStatusRepository(
                   AND checkpoint."sourceRevision" = chat."memorySourceRevision"
                   AND checkpoint."lastIndexedMessageId" = chat."activeLeafMessageId"
                   AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-                  AND chat."projectId" IS NULL
                   AND leaf."createdAt" > COALESCE((
                     SELECT MAX(barrier."sourceCreatedAtCutoff")
                     FROM "MemorySourceBarrier" AS barrier
@@ -299,7 +298,6 @@ export function createPrismaAdminMemoryStatusRepository(
                   ON chat."userId" = chunk."userId"
                   AND chat."id" = chunk."chatId"
                   AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-                  AND chat."projectId" IS NULL
                   AND chat."memoryBranchGeneration" = chunk."branchGeneration"
                   AND chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
                 INNER JOIN "Message" AS leaf

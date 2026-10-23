@@ -3,7 +3,7 @@ import { MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION } from "../parsing/modelPdfOutput
 import { freezeKnowledgeDocumentReasoning } from "./documentReasoning";
 import {
   loadEmbeddingProviderRole,
-  loadProjectEmbeddingProviderRole,
+  loadInstallationEmbeddingProviderRole,
   ProviderAdmissionError,
   type AdmissionPrisma,
   type EmbeddingProviderAdmissionRole
@@ -293,7 +293,7 @@ export async function resolveKnowledgeProfileRevisionRole(
 }> | null> {
   try {
     const role = revision.executionAuthority === "installation"
-      ? await loadProjectEmbeddingProviderRole(client, {
+      ? await loadInstallationEmbeddingProviderRole(client, {
           providerModelId: revision.embeddingProviderModelId
         })
       : userId

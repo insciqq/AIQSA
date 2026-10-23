@@ -70,7 +70,7 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 | MCP and OAuth | Deterministic protocol and security tests, then the relevant disposable runtime. Hosted consent and upstream OAuth need their own authority. |
 | Workspace and KVM | Policy, protocol and output tests, disposable database race checks, image builds, isolated browser flows, then opt-in real KVM evidence covering execution loss, Stop, runner restart, export and recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
 | Upload parsers | Deterministic routing, bounds and decoders, then the disposable parser smoke; a stopped parser must degrade locally without breaking readiness. |
-| Memory, Knowledge, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence and concurrency, and an isolated OpenSearch for retrieval or index changes. Integrity and rebuild output stays content-free. |
+| Memory, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence and concurrency, and an isolated OpenSearch for retrieval or index changes. Integrity and rebuild output stays content-free. |
 | Publishing (push, PR) | `npm run release:privacy:check` and the root final review; reuse existing verification. Publishing still needs an explicit request. |
 
 ## Images and releases
@@ -87,11 +87,11 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 - Read an opt-in script and its guards before running it; flags, fixtures, limits, cleanup and assertions belong to the script.
 - Paid and live Workspace smokes (`smoke:workspace-live`, `smoke:workspace-user-paid`) need explicit disposable opt-in, real KVM and synthetic data; `smoke:memory-browser-paid` and `smoke:memory-mcp-codex` need explicit permission and their own disposable target. Diagnose a failure before any paid retry.
 - An unexplained Personal Memory `DEGRADED` result fails a provider smoke, benchmark or qualification even when the answer is right. Find and fix the shared cause, or show that the scenario injected that fallback on purpose.
-- Benchmarks are opt-in and outside product lint, types and tests. Knowledge benchmarks (`benchmarks/knowledge/README.md`) need isolated disposable infrastructure, provider permission, frozen public datasets and content-free output.
+- Benchmarks are opt-in and outside product lint, types and tests. A benchmark that calls providers needs isolated disposable infrastructure, provider permission, frozen public datasets and content-free output.
 
 ## Writing tests
 
 - Test observable behavior with the cheapest meaningful deterministic regression. Keep fixtures small, isolated, free of real content and independent of order. Cover the affected loading, error, empty and terminal states.
 - No `.only`, broad snapshots, permanent environment skips, real paid calls in ordinary suites or cleanup of resources the test did not create.
-- Knowledge tests prove the changed scope, evidence, citation, egress, degradation or immutability rule with tiny fixtures. Keep scored corpora, relevance labels and large question sets out of co-located tests.
+- Keep scored corpora, relevance labels and large question sets out of co-located tests.
 - Required live or runtime evidence cannot be replaced by a fake or by a written claim. If it cannot be obtained, the work stays blocked.

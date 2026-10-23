@@ -343,34 +343,32 @@ describe("Prisma-backed settings repository", () => {
     });
   });
 
-  it("persists the chat defaults and Send with Enter, clears the Knowledge default with null, and bounds the MCP mode", async () => {
+  it("persists the chat defaults and Send with Enter and bounds the MCP mode", async () => {
     await withSettingsUser(async ({ userId, validationModels }) => {
       const settingsRepository = createTestSettingsRepository(validationModels);
-      const plan = { baseIds: ["kb-1"], mode: "explicit" as const, sourceIds: [], version: 1 as const };
 
       await expect(
         settingsRepository.updateSettings(userId, {
-          defaultKnowledgePlan: plan,
           defaultMcpMode: "load_all",
           defaultSkillsMode: "off",
           sendWithEnter: false
         })
       ).resolves.toMatchObject({
         kind: "updated",
-        settings: { defaultKnowledgePlan: plan, defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false }
+        settings: { defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false }
       });
       await expect(
-        settingsRepository.updateSettings(userId, { defaultKnowledgePlan: null })
+        settingsRepository.updateSettings(userId, { sendWithEnter: true })
       ).resolves.toMatchObject({
         kind: "updated",
-        settings: { defaultKnowledgePlan: null, defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false }
+        settings: { defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: true }
       });
       await expect(
         prisma.userSettings.findUniqueOrThrow({
-          select: { defaultKnowledgePlan: true, defaultMcpMode: true, defaultSkillsMode: true, sendWithEnter: true },
+          select: { defaultMcpMode: true, defaultSkillsMode: true, sendWithEnter: true },
           where: { userId }
         })
-      ).resolves.toEqual({ defaultKnowledgePlan: null, defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false });
+      ).resolves.toEqual({ defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: true });
       await expect(prisma.$executeRaw`UPDATE "UserSettings" SET "defaultSkillsMode" = 'always' WHERE "userId" = ${userId}`).rejects.toThrow();
       await expect(
         prisma.$executeRaw`UPDATE "UserSettings" SET "defaultMcpMode" = 'always' WHERE "userId" = ${userId}`

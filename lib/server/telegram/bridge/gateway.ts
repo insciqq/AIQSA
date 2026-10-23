@@ -38,7 +38,7 @@ export type TelegramAssistantChoice = Readonly<{ id: string; name: string }>;
 export type TelegramRunGateway = Readonly<{
   /** The user's current personal catalog; null when the account has none. */
   loadCatalog(userId: string): Promise<TelegramRunCatalog | null>;
-  /** The chat when it is still the user's own usable personal chat (not archived, Temporary or in a Project). */
+  /** The chat when it is still the user's own usable personal chat (not archived or Temporary). */
   findChat(userId: string, chatId: string): Promise<TelegramChatRecord | null>;
   /** `POST /api/chats/[chatId]/messages` in process, as the user. */
   send(input: Readonly<{ userId: string; chatId: string; body: Record<string, unknown> }>): Promise<Response>;
