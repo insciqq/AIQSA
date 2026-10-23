@@ -121,6 +121,7 @@ export function createCompatibleResponsesAdapter(
           throw new Error("compatible_responses_stream_unavailable");
         }
         const response = await options.client.stream(body, {
+          ...(runOptions.routingKey ? { routingKey: runOptions.routingKey } : {}),
           signal: runOptions.signal,
           ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
         });
@@ -139,6 +140,7 @@ export function createCompatibleResponsesAdapter(
       }
 
       const response = await options.client.create(body, {
+        ...(runOptions.routingKey ? { routingKey: runOptions.routingKey } : {}),
         signal: runOptions.signal,
         ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
       });
