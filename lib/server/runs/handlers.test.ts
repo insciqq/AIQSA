@@ -48,10 +48,6 @@ import {
   type ProjectRunAdmission,
   type RunRepository
 } from "./runRepositoryContract";
-import {
-  type PersistedToolLoopCall
-} from "./toolLoopPersistence";
-import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { decodeUsageLimitRefusal, type UsageLimitRefusalCode } from "../../contracts/usageLimits";
 
@@ -429,9 +425,9 @@ function createMemoryRepository(
   const state: {
     assistantText: string;
     assistantTextWrites: number;
-    bootSweeps: { liveRunIds: string[]; sweptRunIds: string[] }[];
     cancelled: Parameters<RunRepository["cancelRun"]>[0]["payload"] | null;
-    completed: Parameters<RunRepository["completeRun"]>[0] | null;
+    /** A completed answer a test plants; the agent engine fake completes nothing here. */
+    completed: Readonly<{ finalText: string; modelId: string; provider: string; runId: string }> | null;
     created: Parameters<RunRepository["createRun"]>[0] | null;
     events: { event: ModelRunSseEvent; sequence: number }[];
     failed: { error: { code: string; message: string }; runId: string } | null;
@@ -441,12 +437,9 @@ function createMemoryRepository(
     recentActiveRun: (ReturnType<typeof activeRunRecord> & { updatedAt: Date }) | null;
     regenerated: Parameters<RunRepository["createRegenerationRun"]>[0] | null;
     searchRuns: Parameters<RunRepository["createSearchRun"]>[0][];
-    staleActiveRuns: (ReturnType<typeof activeRunRecord> & { updatedAt: Date })[];
-    toolCalls: PersistedToolLoopCall[];
   } = {
     assistantText: "",
     assistantTextWrites: 0,
-    bootSweeps: [],
     cancelled: null,
     completed: null,
     created: null,
@@ -457,19 +450,12 @@ function createMemoryRepository(
     recoverySettled: false,
     recentActiveRun: null,
     regenerated: null,
-    searchRuns: [],
-    staleActiveRuns: [],
-    toolCalls: []
+    searchRuns: []
   };
   const repository: RunRepository = {
     admitPreparingRun: async () => {
       throw new Error("preparing_run_not_supported_by_handler_harness");
     },
-    advanceToolLoopCallBatch: async ({ roundIndex }) =>
-      state.toolCalls.some((call) => call.roundIndex === roundIndex &&
-        call.state !== "complete" && call.state !== "error")
-        ? "incomplete"
-        : "advanced",
     appendAssistantText: async (_assistantMessageId, text) => {
       state.assistantText = text;
       state.assistantTextWrites += 1;
@@ -480,54 +466,6 @@ function createMemoryRepository(
       return event;
     },
     beginPreparingRunAttempt: async () => false,
-    beginToolLoopProviderRound: async () => "started",
-    cancelPendingToolLoopCalls: async () => {
-      let cancelled = 0;
-      state.toolCalls = state.toolCalls.map((call) => {
-        if (call.state !== "pending") return call;
-        cancelled += 1;
-        return { ...call, completedAt: new Date().toISOString(), state: "cancelled" };
-      });
-      return cancelled;
-    },
-    claimToolLoopCall: async ({ callId }) => {
-      const call = state.toolCalls.find((candidate) => candidate.id === callId);
-      if (!call) return { kind: "not_found" };
-      if (call.state === "complete" || call.state === "error") return { call, kind: "settled" };
-      if (call.state === "running") return { call, kind: "ambiguous" };
-      if (call.state === "cancelled") return { call, kind: "cancelled" };
-      const claimed = { ...call, startedAt: new Date().toISOString(), state: "running" as const };
-      state.toolCalls = state.toolCalls.map((candidate) => candidate.id === call.id ? claimed : candidate);
-      return { call: claimed, kind: "claimed" };
-    },
-    sweepBootOrphanedRuns: async ({ liveRunIds }) => {
-      const liveRunIdSet = new Set(liveRunIds);
-      const sweptRuns = [
-        ...(state.recentActiveRun && !liveRunIdSet.has(state.recentActiveRun.id)
-          ? [state.recentActiveRun]
-          : []),
-        ...state.staleActiveRuns.filter((run) => !liveRunIdSet.has(run.id))
-      ];
-
-      state.bootSweeps.push({
-        liveRunIds,
-        sweptRunIds: sweptRuns.map((run) => run.id)
-      });
-
-      if (state.recentActiveRun && !liveRunIdSet.has(state.recentActiveRun.id)) {
-        state.failed = {
-          error: {
-            code: "run_orphaned_on_boot",
-            message: "Run was active when this server process started and was marked failed."
-          },
-          runId: state.recentActiveRun.id
-        };
-        state.recentActiveRun = null;
-      }
-
-      state.staleActiveRuns = state.staleActiveRuns.filter((run) => liveRunIdSet.has(run.id));
-      return sweptRuns.length;
-    },
     cancelRun: async (input) => {
       if (input.runId !== "run-1" || input.userId !== config.bootstrapUserId) {
         return { kind: "not_found" };
@@ -563,20 +501,6 @@ function createMemoryRepository(
       };
     },
     completePreparingRunAttempt: async () => false,
-    completeRun: async (input) => {
-      if (state.cancelled || state.completed || state.recoverySettled) {
-        return false;
-      }
-
-      state.completed = input;
-      state.providerResponseId = input.providerResponseId ?? null;
-      let sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
-      for (const event of input.outputEvents ?? []) {
-        state.events.push({ event, sequence });
-        sequence += 1;
-      }
-      return true;
-    },
     createRun: async (input) => {
       state.created = input;
       state.cancelled = null;
@@ -642,15 +566,6 @@ function createMemoryRepository(
       state.recentActiveRun.updatedAt > since
         ? state.recentActiveRun
         : null,
-    findStaleActiveRunsForUser: async (input) =>
-      input.userId === config.bootstrapUserId
-        ? state.staleActiveRuns.filter(
-            (run) =>
-              run.updatedAt < input.staleBefore &&
-              (!input.chatId || run.chatId === input.chatId) &&
-              (!input.runId || run.id === input.runId)
-          )
-        : [],
     findRegenerationSource: async (sourceMessageId, userId) =>
       (sourceMessageId === "assistant-message-1" || sourceMessageId === "user-message-1") &&
       userId === config.bootstrapUserId
@@ -760,8 +675,6 @@ function createMemoryRepository(
           }
         : null,
     recoverPreparingRun: async () => "not_preparing",
-    isSearchStrategyEnabled: async () => true,
-    loadConversationContext: async () => conversationContext,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, expectedActiveLeafMessageId) =>
       expectedActiveLeafMessageId === (conversationContext.at(-1)?.id ?? null)
         ? conversationContext
@@ -794,82 +707,9 @@ function createMemoryRepository(
     loadEntitlements: async () => entitlements,
     loadModelPricing: async () => modelPricing,
     loadProviderModelCostBasis: async () => null,
-    loadRunUsageAttributions: async () => [],
-    loadCheckpointedToolLoopRun: async () => null,
-    persistToolLoopCallBatch: async (input) => {
-      const existing = state.toolCalls.filter((call) => call.roundIndex === input.roundIndex);
-      if (existing.length > 0) return { calls: existing, kind: "reused" };
-      const calls = input.calls.map((call, index): PersistedToolLoopCall => ({
-        arguments: call.arguments,
-        completedAt: null,
-        id: `tool-call-${input.roundIndex}-${index}`,
-        mcpBinding: call.runtimeGenerationFingerprint
-          ? {
-              id: `binding-${index}`,
-              runtimeGenerationFingerprint: call.runtimeGenerationFingerprint,
-              runtimeGenerationId: "generation-1"
-            }
-          : null,
-        ordinal: call.ordinal,
-        providerCallId: call.providerCallId,
-        // Like the durable repository, a blocked repeat settles with its batch.
-        result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
-          repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
-        roundIndex: input.roundIndex,
-        startedAt: null,
-        state: call.repeatBlocked ? "error" : "pending",
-        toolName: call.toolName,
-        ...(call.repeatBlocked ? { completedAt: "2026-07-12T09:00:00.000Z" } : {})
-      }));
-      state.toolCalls.push(...calls);
-      return { calls, kind: "persisted" };
-    },
-    recordRunUsageEvents: async () => true,
-    settleRecoveredRunError: async (input) => {
-      if (
-        input.runId !== "run-1" ||
-        input.userId !== config.bootstrapUserId ||
-        state.cancelled ||
-        state.completed ||
-        state.recoverySettled
-      ) {
-        return false;
-      }
-
-      state.failed = {
-        error: input.error,
-        runId: input.runId
-      };
-      state.providerResponseId = input.providerResponseId ?? state.providerResponseId;
-      state.recoverySettled = true;
-      let sequence = state.events.reduce((max, event) => Math.max(max, event.sequence), -1) + 1;
-      for (const event of input.outputEvents) {
-        state.events.push({ event, sequence });
-        sequence += 1;
-      }
-      return true;
-    },
-    settleToolLoopCall: async ({ callId, result, state: callState }) => {
-      const call = state.toolCalls.find((candidate) => candidate.id === callId);
-      if (!call) return "not_found";
-      state.toolCalls = state.toolCalls.map((candidate) => candidate.id === callId
-        ? {
-            ...candidate,
-            completedAt: new Date().toISOString(),
-            result,
-            state: callState
-          }
-        : candidate);
-      return "settled";
-    },
-    resetToolLoopAssistantDraft: async () => true,
     markRunAnswerStarted: async () => undefined,
     retryPreparingRunAttempt: async () => null,
     settlePreparingRunFailure: async () => false,
-    updateRunProviderResponseId: async (_runId, providerResponseId) => {
-      state.providerResponseId = providerResponseId;
-      return "published";
-    }
   };
 
   repositoryHarnesses.set(repository, { entitlements, modelCapabilities, published: state.published });
@@ -997,7 +837,6 @@ describe("model run route handlers", () => {
       : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-1" } });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "artifact_edit_invalid" });
-    expect(state.bootSweeps).toEqual([]);
     expect(state.created).toBeNull();
     expect(state.regenerated).toBeNull();
   });
@@ -1032,8 +871,7 @@ describe("model run route handlers", () => {
       await expect(response.json()).resolves.toMatchObject({ error: "request_body_too_large" });
       expect(findOwnedChat).not.toHaveBeenCalled();
       expect(findRegenerationSource).not.toHaveBeenCalled();
-      expect(state.bootSweeps).toEqual([]);
-      expect(state.created).toBeNull();
+        expect(state.created).toBeNull();
       expect(state.regenerated).toBeNull();
     }
   );
@@ -4948,7 +4786,6 @@ describe("usage limit admission", () => {
     "refuses a send at %s with its facts and retry-after, before any run, provider call or usage",
     async (code) => {
       const { repository, state } = createMemoryRepository();
-      const recordUsage = vi.spyOn(repository, "recordRunUsageEvents");
       const adapter = createFakeProviderAdapter();
       const stream = vi.spyOn(adapter, "stream");
       const usageLimits = limitsReading(reached[code].status);
@@ -4967,7 +4804,6 @@ describe("usage limit admission", () => {
       expect(decodeUsageLimitRefusal(body)).toEqual(body);
       expect(state.created).toBeNull();
       expect(stream).not.toHaveBeenCalled();
-      expect(recordUsage).not.toHaveBeenCalled();
     }
   );
 
