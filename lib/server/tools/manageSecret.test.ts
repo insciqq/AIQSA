@@ -142,6 +142,9 @@ describe("manage_secret", () => {
     expect(fake.find).toHaveBeenCalledWith({ name: "gitlab" });
     expect(fake.change).not.toHaveBeenCalled();
     expect(json(result)).toMatchObject({ deleted: false, deletionProposed: true, secret: { name: "GitLab" } });
+    // The answer places the card: the model is told not to say where it is.
+    expect(json(result).note).toContain("without saying where it appears");
+    expect(json(result).note).not.toMatch(/above|below/u);
     expect(card(result)).toMatchObject({ action: "delete_proposed", secretId: SECRET_ID, versionId: VERSION_ID });
     const ambiguous = await executeManageSecret(service({ find: vi.fn(async () => ({ kind: "ambiguous" as const,
       matches: [gitlab, { ...gitlab, id: "10000000-0000-4000-8000-000000000002" }] })) }), call({ action: "propose_delete", name: "GitLab" }));
