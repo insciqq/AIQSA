@@ -331,13 +331,18 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
           "warn"
         )
       : null,
-    roleItem(
-      "reranker",
-      "Reranking",
-      policy.rerankerModel,
-      "Knowledge answers use plain ranking until a reranker is assigned",
-      "neutral"
-    )
+    // Without a reranker only Knowledge answers lose ranking (Memory ranks with
+    // the System model), so a missing one matters only while Knowledge is on.
+    // An assigned reranker that is unavailable still breaks Memory ranking.
+    KNOWLEDGE_ENABLED || policy.rerankerModel
+      ? roleItem(
+          "reranker",
+          "Reranking",
+          policy.rerankerModel,
+          "Knowledge answers use plain ranking until a reranker is assigned",
+          "neutral"
+        )
+      : null
   ].filter((item): item is AdminAttentionItem => item !== null);
 }
 

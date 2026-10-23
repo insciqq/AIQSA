@@ -8,6 +8,7 @@ import {
   boundedMemoryFactContextMessageIds,
   currentDirectUserMessageId,
   memoryAssistantContextRunIsEligible,
+  memoryAutomaticCandidateContainsSavedSecret,
   memoryAutomaticCandidateContainsSecret,
   memoryFactContextSourceMessages,
   memoryFactPassedOverReplyIds
@@ -354,5 +355,44 @@ describe("automatic-learning source admission", () => {
     } as unknown as MemoryExtractedCandidate;
 
     expect(memoryAutomaticCandidateContainsSecret(candidate)).toBe(true);
+  });
+
+  it("never stores a candidate that repeats a saved secret's value Safety Lite does not recognize", () => {
+    const token = "tok_demo_7f3a9c21b8e4";
+    const quote = `Сохрани мой секрет DEMO_API_TOKEN со значением ${token} — это тестовый токен.`;
+    const candidate = {
+      displayText: `Мой секрет DEMO_API_TOKEN имеет значение ${token}; это тестовый токен.`,
+      entities: [],
+      evidence: [{ endOffset: quote.length, messageId: "user", quote, sourceTextHash: "a".repeat(64), startOffset: 0 }],
+      proposedValue: null,
+      quote,
+      rawTemporalExpression: null,
+      responsePreference: null,
+      statement: `Мой секрет DEMO_API_TOKEN имеет значение ${token}; это тестовый токен.`,
+      temporalResolutionEvidence: null,
+      unicodeProposedValue: null
+    } as unknown as MemoryExtractedCandidate;
+
+    // The format check alone lets this value through.
+    expect(memoryAutomaticCandidateContainsSecret(candidate)).toBe(false);
+    expect(memoryAutomaticCandidateContainsSavedSecret(candidate, [token])).toBe(true);
+    expect(memoryAutomaticCandidateContainsSavedSecret(candidate, [])).toBe(false);
+    // A value only in the quoted evidence or a structured value is caught as well.
+    const quotedOnly = {
+      ...candidate,
+      displayText: "The user keeps a test token for the demo API.",
+      statement: "The user keeps a test token for the demo API.",
+      quote: "The user keeps a test token for the demo API."
+    } as MemoryExtractedCandidate;
+    expect(memoryAutomaticCandidateContainsSavedSecret(quotedOnly, [token])).toBe(true);
+    expect(memoryAutomaticCandidateContainsSavedSecret({
+      ...quotedOnly,
+      evidence: [{ ...candidate.evidence[0]!, quote: "I keep a demo token." }],
+      unicodeProposedValue: { value: token }
+    } as unknown as MemoryExtractedCandidate, [token])).toBe(true);
+    expect(memoryAutomaticCandidateContainsSavedSecret({
+      ...quotedOnly,
+      evidence: [{ ...candidate.evidence[0]!, quote: "I keep a demo token." }]
+    } as MemoryExtractedCandidate, [token])).toBe(false);
   });
 });

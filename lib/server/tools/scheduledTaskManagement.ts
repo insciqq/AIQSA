@@ -25,7 +25,7 @@ import type {
   ScheduledTaskManagementOutcome
 } from "../runs/runRepositoryContract";
 import { isFetchUrlDigestList } from "./fetchUrlPlan";
-import { localInstant, scheduledTaskToolHistoryText } from "./scheduledTaskCreation";
+import { localInstant, scheduledTaskLinksPending, scheduledTaskToolHistoryText } from "./scheduledTaskCreation";
 import { resolveScheduledTaskSkillReferences, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
@@ -297,7 +297,8 @@ function modelTask(task: ScheduledTask) {
     ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, task[key]])),
     skills: scheduledTaskModelSkills(task),
     // Read only: the owner changes it with Edit.
-    oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays)
+    oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays),
+    ...scheduledTaskLinksPending(task)
   };
 }
 

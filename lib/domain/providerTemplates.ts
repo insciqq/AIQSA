@@ -8,6 +8,31 @@ export const providerTemplateIds = Object.freeze({
   openRouterConnection: "00000000-0000-4000-8000-000000001104"
 });
 
+const providerFamilyTemplateConnectionIds: ReadonlySet<string> = new Set([
+  providerTemplateIds.anthropicConnection,
+  providerTemplateIds.deepSeekConnection,
+  providerTemplateIds.geminiConnection,
+  providerTemplateIds.openAiConnection,
+  providerTemplateIds.openRouterConnection
+]);
+
+/**
+ * Bootstrap creates one built-in connection row per provider family, so that
+ * the family's setup has a fixed identity. Until it is set up (no key, never
+ * activated) that row is a placeholder, not a connection: lists leave it out,
+ * it neither counts as connected nor takes its name, and the family's first
+ * Add provider configures it. A key or an activation makes it an ordinary
+ * connection, so existing installations keep every row they set up.
+ */
+export function isUnconfiguredProviderTemplate(connection: Readonly<{
+  activeVersion: number;
+  credentials: readonly unknown[];
+  id: string;
+}>): boolean {
+  return providerFamilyTemplateConnectionIds.has(connection.id) &&
+    connection.activeVersion === 0 && connection.credentials.length === 0;
+}
+
 export const providerModelTemplateIds = Object.freeze({
   "openai:gpt-6-sol": "00000000-0000-4000-8000-000000001246",
   "openai:gpt-6-luna": "00000000-0000-4000-8000-000000001247",

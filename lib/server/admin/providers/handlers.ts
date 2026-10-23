@@ -17,6 +17,7 @@ import {
   requestBodyErrorResponse
 } from "../../http/requestBody";
 import { NATIVE_ANTHROPIC_DISABLED_CODE, NATIVE_ANTHROPIC_ENABLED } from "../../../domain/disabledAreas";
+import { isUnconfiguredProviderTemplate } from "../../../domain/providerTemplates";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
   AdminProviderServiceError,
@@ -197,11 +198,12 @@ async function safely(operation: () => Promise<Response>, stage: LifecycleStage 
 }
 
 async function catalog(service: AdminProviderService, status = 200): Promise<Response> {
-  // Native Anthropic is disabled: its built-in connection is not offered while
-  // it was never set up; one already set up stays listed so it can be turned
-  // off or deleted.
-  const connections = (await service.listConnections()).filter((connection) => NATIVE_ANTHROPIC_ENABLED ||
-    connection.family !== "anthropic" || connection.activeVersion > 0 || connection.credentials.length > 0);
+  // A family's built-in connection is listed once it was set up; before that
+  // it is a bootstrap placeholder, not a connection (`isUnconfiguredProviderTemplate`).
+  // One already set up stays listed, also for disabled native Anthropic, so it
+  // can be turned off or deleted.
+  const connections = (await service.listConnections()).filter((connection) =>
+    !isUnconfiguredProviderTemplate(connection));
   return Response.json({ connections }, { status });
 }
 

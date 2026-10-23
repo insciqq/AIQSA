@@ -452,7 +452,7 @@ export function AdminSystemRolesTable({
       </RoleRow>
 
       <RoleRow
-        description="Reorders Memory and Knowledge candidates. Dedicated reranker only."
+        description={`Reorders Memory${KNOWLEDGE_ENABLED ? " and Knowledge" : ""} candidates. Dedicated reranker only.`}
         menu={[{
           disabled: !policy.rerankerModel || busy,
           label: "Clear assignment",
