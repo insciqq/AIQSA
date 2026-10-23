@@ -63,20 +63,7 @@ import type { SearchPlanMode } from "@/lib/domain/search";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
-import type {
-  ComposerConfig,
-  ComposerConfigKnowledgeBase,
-  ComposerConfigKnowledgeSource
-} from "@/lib/contracts/composerConfig";
-import {
-  allMyKnowledgeSelection,
-  EMPTY_KNOWLEDGE_SELECTION,
-  explicitKnowledgeSelection,
-  KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES,
-  KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH,
-  type KnowledgeSelection
-} from "@/lib/contracts/knowledge";
-import { knowledgeAggregateStatus } from "@/lib/domain/knowledgePresentation";
+import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import { createPortal } from "react-dom";
 import {
   useEffect,
@@ -96,7 +83,7 @@ import {
 } from "react";
 
 export type ComposerV2Layer =
-  "add" | "commands" | "files" | "knowledge" | "model" | "reasoning" | "search" | "tools" | "skills" | null;
+  "add" | "commands" | "files" | "model" | "reasoning" | "search" | "tools" | "skills" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -112,7 +99,6 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
   commands: "Commands",
   files: "Saved files",
-  knowledge: "Knowledge",
   model: "Choose model",
   reasoning: "Reasoning effort",
   search: "Web search",
@@ -123,7 +109,6 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
   commands: "Commands",
   files: "Saved files",
-  knowledge: "Knowledge",
   model: "Model",
   reasoning: "Reasoning effort",
   search: "Web search",
@@ -136,7 +121,6 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   add: 300,
   commands: 384,
   files: 380,
-  knowledge: 380,
   model: 380,
   reasoning: 340,
   search: 340,
@@ -187,26 +171,6 @@ function searchEngineShortName(
   }
   return (providerFamily && SEARCH_PROVIDER_FAMILY_NAMES[providerFamily.toLocaleLowerCase()]) ||
     strategy.displayName;
-}
-
-function documentCountLabel(count: number): string {
-  return `${count} ${count === 1 ? "document" : "documents"}`;
-}
-
-function resourceCountLabel(count: number): string {
-  return `${count} ${count === 1 ? "resource" : "resources"}`;
-}
-
-function knowledgeBaseReason(base: ComposerConfigKnowledgeBase): string {
-  const status = knowledgeAggregateStatus({
-    attentionDocuments: base.attentionDocumentCount,
-    processingDocuments: base.processingDocumentCount,
-    readyDocuments: base.readyDocumentCount,
-    state: base.readinessState
-  }).label;
-  return `${documentCountLabel(base.documentCount)} · ${
-    status.charAt(0).toLocaleLowerCase() + status.slice(1)
-  }`;
 }
 
 /** Left offset (px, relative to the composer frame) for a chip-anchored layer. */
@@ -397,8 +361,6 @@ export type ComposerV2Props = Readonly<{
   /** Observes which layer is open (the header selector mirrors it as aria-expanded). */
   onLayerChange?(layer: ComposerV2Layer): void;
   onMakeModelDefault?(model: CatalogModel): void;
-  /** Opens the Knowledge section ("Manage Knowledge ›"). */
-  onOpenKnowledgeLibrary?(): void;
   /** Studio's MCP servers ("Manage"/"Configure"). */
   onOpenMcpSettings?(): void;
   /** Settings → Connections, for a personal connection that needs attention. */
@@ -408,18 +370,12 @@ export type ComposerV2Props = Readonly<{
   paletteAssistants?: ComposerPaletteAssistantSource | null;
   /** The Skills the `/` palette can pin ("Always use"); absent lists no Skills. */
   paletteSkills?: ComposerPaletteSkillSource | null;
-  /** Detaches an inherited Project plan before manual selection. */
-  onOverrideKnowledgePlan?(): void;
   onOpenModelParameters?(): void;
   onRemoveAttachment?(id: string): void;
   onRemoveArtifactEdit?(): void;
   onRejectedFiles?(files: readonly File[]): void;
   onRetryConfig?(): void;
   onRetryAttachment?(id: string): void;
-  onSearchKnowledgeSources?(query: string): Promise<readonly ComposerConfigKnowledgeSource[]>;
-  onSelectKnowledgeSelection?(selection: KnowledgeSelection): void;
-  /** @deprecated Use onSelectKnowledgeSelection. */
-  onSelectKnowledgeBaseIds?(baseIds: readonly string[]): void;
   onSelectModel?(model: CatalogModel): void;
   onSelectMcp?(selection: McpRunSelection): void;
   onSelectSearchOptionIds?(optionIds: readonly string[]): void;
@@ -437,23 +393,15 @@ export type ComposerV2Props = Readonly<{
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
   onReuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   runId?: string | null;
-  /** False while Knowledge is disabled (`lib/domain/disabledAreas.ts`): no Knowledge chip, menu row or command. */
-  knowledgeOffered?: boolean;
-  knowledgePlanSource?: "assistant" | "chat" | "explicit" | "off" | "project";
   /** The effective MCP selection; an Assistant's exact server list is read from `assistant`. */
   mcpSelection?: ComposerMcpSelection;
   skillsMode?: "auto" | "off";
   onSelectSkillsMode?(mode: "auto" | "off"): void;
-  selectedKnowledgeSelection?: KnowledgeSelection;
-  /** @deprecated Use selectedKnowledgeSelection. */
-  selectedKnowledgeBaseIds?: readonly string[];
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds?: readonly string[];
   selectedSkillIds?: readonly string[];
   selectedSkills?: readonly { id: string; name: string }[];
-  /** Shared Project uploads are visible to Project members. */
-  sharedProject?: boolean;
   sending?: boolean;
   stopping?: boolean;
   uploading?: boolean;
@@ -598,12 +546,10 @@ export function ComposerV2({
   onDraftChange,
   onLayerChange,
   onMakeModelDefault,
-  onOpenKnowledgeLibrary,
   onOpenMcpSettings,
   onOpenPersonalMcpSettings,
   onOpenModelParameters,
   onOpenSkillLibrary,
-  onOverrideKnowledgePlan,
   paletteAssistants = null,
   paletteSkills = null,
   onRemoveAttachment,
@@ -611,9 +557,6 @@ export function ComposerV2({
   onRejectedFiles,
   onRetryConfig,
   onRetryAttachment,
-  onSearchKnowledgeSources,
-  onSelectKnowledgeSelection,
-  onSelectKnowledgeBaseIds,
   onSelectMcp,
   onSelectModel,
   onSelectSearchOptionIds,
@@ -631,16 +574,11 @@ export function ComposerV2({
   mcpSelection = { mode: "auto" },
   skillsMode = "auto",
   onSelectSkillsMode,
-  selectedKnowledgeSelection,
-  selectedKnowledgeBaseIds = [],
-  knowledgeOffered = true,
-  knowledgePlanSource = "off",
   selectedModelId,
   selectedProvider,
   selectedSearchOptionIds = [],
   selectedSkillIds = [],
   selectedSkills = [],
-  sharedProject = false,
   sending = false,
   stopping = false,
   uploading = false,
@@ -652,17 +590,11 @@ export function ComposerV2({
   const [externalAnchor, setExternalAnchor] = useState<Readonly<{ left: number; top: number }> | null>(null);
   const [layerPlacement, setLayerPlacement] = useState<ComposerLayerPlacement>(INITIAL_LAYER_PLACEMENT);
   const [modelQuery, setModelQuery] = useState("");
-  const [knowledgeQuery, setKnowledgeQuery] = useState("");
-  const [knowledgeSourceSearch, setKnowledgeSourceSearch] = useState<Readonly<{
-    query: string;
-    sources: readonly ComposerConfigKnowledgeSource[];
-  }> | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
-  const knowledgeTriggerRef = useRef<HTMLButtonElement>(null);
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
   const mcpTriggerRef = useRef<HTMLButtonElement>(null);
   const [paletteSessionKey, setPaletteSessionKey] = useState<string | null>(null);
@@ -685,18 +617,15 @@ export function ComposerV2({
   const modelProvenance = assistantRowProvenance(boundAssistant, "model");
   const searchProvenance = assistantRowProvenance(boundAssistant, "search");
   const toolsProvenance = assistantRowProvenance(boundAssistant, "tools");
-  const knowledgeProvenance = assistantRowProvenance(boundAssistant, "knowledge");
   const skillsProvenance = assistantRowProvenance(boundAssistant, "skills");
   const searchFixed = searchProvenance?.kind === "fixed";
   const toolsFixed = toolsProvenance?.kind === "fixed";
-  const knowledgeFixed = knowledgeProvenance?.kind === "fixed";
   const skillsFixed = skillsProvenance?.kind === "fixed";
   const effectiveMcpSelection: ComposerMcpSelection = boundAssistant
     ? boundAssistant.rows.tools.value
     : mcpSelection;
   const includedSkills = boundAssistant?.includedSkills ?? [];
-  const artifactReason = artifactUnavailableReason ?? (sharedProject ? "Not available in projects" : null);
-  const artifactBlockReason = artifactCreate || artifactEdit ? artifactReason : null;
+  const artifactBlockReason = artifactCreate || artifactEdit ? artifactUnavailableReason : null;
   const followupMode = activeRun && Boolean(onFollowup) && Boolean(runId);
   const bootstrapReason = followupMode ? disabledReason : configError
     ? "Could not load available capabilities."
@@ -740,7 +669,7 @@ export function ComposerV2({
      ordinary description. The "+" button itself is off while a response runs. */
   const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
   const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
-  const artifactMenuReason = artifactReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
+  const artifactMenuReason = artifactUnavailableReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
 
   const concreteSearchOptions = config?.catalog.searchStrategies.filter(
     (option) => option.kind !== "none"
@@ -749,62 +678,6 @@ export function ComposerV2({
     currentModel?.searchStrategyIds.filter((id) => id !== "search-disabled") ?? []
   );
   const selectedSearchSet = new Set(selectedSearchOptionIds);
-  const knowledgeSelection = selectedKnowledgeSelection ??
-    explicitKnowledgeSelection({ baseIds: selectedKnowledgeBaseIds });
-  // A Project default stays locked until the user overrides it for the chat;
-  // an Assistant's Knowledge is locked only when the Assistant fixes it.
-  const knowledgeInheritedFrom = knowledgePlanSource === "project"
-    ? "project" as const
-    : knowledgeSelection.mode === "inherited"
-      ? knowledgeSelection.inheritedFrom
-      : null;
-  const knowledgeProjectLocked = knowledgeInheritedFrom === "project";
-  const knowledgeControlsLocked = knowledgeProjectLocked || knowledgeFixed;
-  const selectedKnowledgeSet = new Set(knowledgeSelection.baseIds);
-  const selectedKnowledgeSourceSet = new Set(knowledgeSelection.sourceIds);
-  const assistantKnowledge = boundAssistant?.rows.knowledge.assistantValue;
-  // A privacy-hidden Assistant plan is only counted, never identified.
-  const assistantKnowledgeCount = assistantKnowledge?.mode === "explicit"
-    ? assistantKnowledge.baseIds.length + assistantKnowledge.sourceIds.length + (assistantKnowledge.hiddenCount ?? 0)
-    : 0;
-  const selectedKnowledgeResourceCount = knowledgeSelection.mode === "inherited"
-    ? assistantKnowledgeCount
-    : knowledgeSelection.baseIds.length + knowledgeSelection.sourceIds.length;
-  const knowledgeById = new Map(
-    (config?.knowledgeBases ?? []).map((base) => [base.id, base])
-  );
-  const normalizedKnowledgeQuery = knowledgeQuery.trim().toLocaleLowerCase();
-  const remotelyMatchedSources = knowledgeSourceSearch?.query === normalizedKnowledgeQuery
-    ? knowledgeSourceSearch.sources
-    : [];
-  const allKnowledgeSources = [...new Map([
-    ...(config?.knowledgeSources ?? []),
-    ...remotelyMatchedSources
-  ].map((source) => [source.id, source] as const)).values()];
-  const sourceById = new Map(allKnowledgeSources.map((source) => [source.id, source]));
-  const selectedKnowledgeNames = [
-    ...knowledgeSelection.baseIds.map((id) => knowledgeById.get(id)?.name ?? "unavailable"),
-    ...knowledgeSelection.sourceIds.map((id) => sourceById.get(id)?.name ?? "unavailable")
-  ];
-  const matchingKnowledgeBases = (config?.knowledgeBases ?? []).filter((base) =>
-    !normalizedKnowledgeQuery || `${base.name} ${base.description}`.toLocaleLowerCase()
-      .includes(normalizedKnowledgeQuery));
-  const visibleKnowledgeBases = [...new Map([
-    ...matchingKnowledgeBases,
-    ...(config?.knowledgeBases ?? []).filter((base) => selectedKnowledgeSet.has(base.id))
-  ].map((base) => [base.id, base] as const)).values()];
-  const matchingKnowledgeSources = allKnowledgeSources.filter((source) =>
-    !normalizedKnowledgeQuery || `${source.name} ${source.description}`.toLocaleLowerCase()
-      .includes(normalizedKnowledgeQuery));
-  const visibleKnowledgeSources = [...new Map([
-    ...(normalizedKnowledgeQuery ? matchingKnowledgeSources : matchingKnowledgeSources.slice(0, 5)),
-    ...allKnowledgeSources.filter((source) => selectedKnowledgeSourceSet.has(source.id))
-  ].map((source) => [source.id, source] as const)).values()];
-  const hiddenKnowledgeDocumentCount = typeof config?.knowledgeDocumentTotal === "number"
-    ? Math.max(0, config.knowledgeDocumentTotal - visibleKnowledgeSources.length)
-    : null;
-  const explicitSelectionAtLimit = selectedKnowledgeResourceCount >=
-    KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES;
 
   const groupedModels = useMemo(() => {
     const normalizedQuery = modelQuery.trim().toLocaleLowerCase();
@@ -861,24 +734,6 @@ export function ComposerV2({
   }, [draft]);
 
   useEffect(() => {
-    const query = knowledgeQuery.trim();
-    if (layer !== "knowledge" || !onSearchKnowledgeSources || !query) return;
-    let cancelled = false;
-    const normalizedQuery = query.toLocaleLowerCase();
-    const timer = window.setTimeout(() => {
-      void onSearchKnowledgeSources(query).then((sources) => {
-        if (!cancelled) setKnowledgeSourceSearch({ query: normalizedQuery, sources });
-      }).catch(() => {
-        if (!cancelled) setKnowledgeSourceSearch({ query: normalizedQuery, sources: [] });
-      });
-    }, 180);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [knowledgeQuery, layer, onSearchKnowledgeSources]);
-
-  useEffect(() => {
     if (!layer) return;
     let cancelled = false;
     queueMicrotask(() => {
@@ -889,9 +744,6 @@ export function ComposerV2({
           layerRef.current.querySelector<HTMLElement>('[data-testid="composer-v2-model-parameters"]')
         : layer === "files"
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-file-search]")
-        : layer === "knowledge"
-          ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
-            initialOption(layerRef.current)
           : layer === "search"
             ? focusableElements(layerRef.current)[0]
             : initialOption(layerRef.current);
@@ -938,7 +790,6 @@ export function ComposerV2({
     }
     openerRef.current = opener;
     if (next === "model") setModelQuery("");
-    if (next === "knowledge") setKnowledgeQuery("");
     const external = !composerRef.current?.contains(opener);
     setExternalAnchor(external ? externalLayerAnchor(opener, next) : null);
     setLayerLeft(external ? 0 : layerAnchorLeft(opener, composerRef.current, next));
@@ -982,7 +833,7 @@ export function ComposerV2({
         if (opener) setExternalAnchor(externalLayerAnchor(opener, layer));
         return;
       }
-      // An opener inside a layer that has since been replaced (Add → Knowledge)
+      // An opener inside a layer that has since been replaced (Add → Saved files)
       // is detached: the layer then belongs to the Add trigger.
       const trigger = opener?.isConnected && composer.contains(opener) ? opener : plusTriggerRef.current;
       if (trigger) setLayerLeft(layerAnchorLeft(trigger, composer, layer));
@@ -1135,39 +986,10 @@ export function ComposerV2({
     if (!attachmentSelectionDisabled && files.length > 0) submitFiles(files);
   }
 
-  // Search, Knowledge, Skills, and MCP rows are selection toggles: the menu
+  // Search, Skills, and MCP rows are selection toggles: the menu
   // stays open so several can be combined in one visit. Only rows that hand
   // off to another surface (file dialog, Skill Library,
   // MCP settings, Model parameters) close it.
-  function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
-    if (!onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds) return;
-    if (!selectedKnowledgeSet.has(base.id) && explicitSelectionAtLimit) return;
-    const next = selectedKnowledgeSet.has(base.id)
-      ? knowledgeSelection.baseIds.filter((id) => id !== base.id)
-      : [...knowledgeSelection.baseIds, base.id];
-    selectKnowledge(explicitKnowledgeSelection({
-      baseIds: next,
-      sourceIds: knowledgeSelection.sourceIds
-    }));
-  }
-
-  function selectKnowledge(selection: KnowledgeSelection) {
-    if (onSelectKnowledgeSelection) onSelectKnowledgeSelection(selection);
-    else onSelectKnowledgeBaseIds?.(selection.baseIds);
-  }
-
-  function toggleKnowledgeSource(source: ComposerConfigKnowledgeSource) {
-    if (!onSelectKnowledgeSelection) return;
-    if (!selectedKnowledgeSourceSet.has(source.id) && explicitSelectionAtLimit) return;
-    const next = selectedKnowledgeSourceSet.has(source.id)
-      ? knowledgeSelection.sourceIds.filter((id) => id !== source.id)
-      : [...knowledgeSelection.sourceIds, source.id];
-    selectKnowledge(explicitKnowledgeSelection({
-      baseIds: knowledgeSelection.baseIds,
-      sourceIds: next
-    }));
-  }
-
   function selectMcpMode(mode: McpRunSelection["mode"]) {
     if (!onSelectMcp) return;
     onSelectMcp({ mode });
@@ -1202,39 +1024,6 @@ export function ComposerV2({
     );
   }
 
-  const knowledgeHasBases = (config?.knowledgeBases.length ?? 0) > 0;
-  const knowledgeDocumentCount = typeof config?.knowledgeDocumentTotal === "number"
-    ? config.knowledgeDocumentTotal
-    : (config?.knowledgeSources?.length ?? 0);
-  const knowledgeHasDocuments = knowledgeDocumentCount > 0 ||
-    (config?.knowledgeDocumentTotal === undefined &&
-      (config?.knowledgeBases ?? []).some((base) => base.documentCount > 0));
-  // The Knowledge chip is available only when the current catalog contains a
-  // selectable base or document. An inherited or Assistant-set plan keeps its
-  // chip even when the ordinary picker is unavailable.
-  const knowledgeAvailable = Boolean(onSelectKnowledgeSelection || onSelectKnowledgeBaseIds) && (
-    knowledgeHasBases || knowledgeHasDocuments
-  );
-  const knowledgeChipVisible = knowledgeOffered && Boolean(config) && (
-    knowledgeInheritedFrom !== null || knowledgeSelection.mode !== "none" || knowledgeAvailable ||
-    (knowledgeProvenance !== null && knowledgeProvenance.kind !== "own")
-  );
-  const knownSingleKnowledgeName = selectedKnowledgeResourceCount === 1
-    ? selectedKnowledgeNames[0]
-    : null;
-  const knowledgeChipValue = knowledgeInheritedFrom === "assistant"
-    ? selectedKnowledgeResourceCount > 0
-      ? resourceCountLabel(selectedKnowledgeResourceCount)
-      : "Selected Knowledge"
-    : knowledgeInheritedFrom === "project"
-      ? knownSingleKnowledgeName && knownSingleKnowledgeName !== "unavailable"
-        ? `${knownSingleKnowledgeName} from Project`
-        : selectedKnowledgeResourceCount > 0
-          ? `${selectedKnowledgeResourceCount} from Project`
-          : "Project default"
-      : knowledgeSelection.mode === "all_my_knowledge"
-        ? "All"
-        : knownSingleKnowledgeName ?? String(selectedKnowledgeResourceCount);
   // Keep unavailable saved choices discoverable so the user can remove them.
   const activeSearchStrategies = concreteSearchOptions.filter((option) =>
     selectedSearchSet.has(option.strategyId) && compatibleSearchOptionIds.has(option.strategyId)
@@ -1294,12 +1083,6 @@ export function ComposerV2({
     : effectiveMcpSelection.mode === "load_all" ? "Load all" : effectiveMcpSelection.mode === "off" ? "Off" : "Auto";
   const mcpDescription = `MCP: ${mcpModeLabel}${assistantRowDescription(toolsProvenance)}${mcpAttentionLabel ? `. ${mcpAttentionLabel}` : ""}`;
   const skillsDescription = `Skills: ${effectiveSkillsMode === "off" ? "Auto off" : "Auto"}${effectiveSkillIds.length ? ` · ${effectiveSkillIds.length} pinned (always loaded)` : ""}${assistantRowDescription(skillsProvenance)}`;
-  const knowledgeFallback = knowledgeProvenance?.kind === "fallback";
-  // A fallback already names the Project default: the origin is said once.
-  const knowledgeDescription = `Knowledge: ${knowledgeSelection.mode === "none" && !knowledgeProjectLocked ? "Off"
-    : selectedKnowledgeNames.length ? `${selectedKnowledgeNames.join(", ")}${
-      knowledgeProjectLocked && !knowledgeFallback ? " · from Project" : ""}`
-      : knowledgeChipValue}${assistantRowDescription(knowledgeProvenance)}`;
   // The Assistant's own value of a changed row in the chip's words ("… starts
   // with Off"); null when the user cannot see all of it.
   const assistantRows = boundAssistant?.rows;
@@ -1322,25 +1105,7 @@ export function ComposerV2({
   const assistantToolsLabel = assistantTools?.mode === "off"
     ? "Off"
     : assistantTools?.mode === "exact" ? `${assistantToolsCount} ${assistantToolsCount === 1 ? "server" : "servers"}` : null;
-  const assistantKnowledgeName = assistantKnowledge?.mode === "explicit" && assistantKnowledgeCount === 1
-    ? knowledgeById.get(assistantKnowledge.baseIds[0] ?? "")?.name ?? sourceById.get(assistantKnowledge.sourceIds[0] ?? "")?.name
-    : undefined;
-  const assistantKnowledgeLabel = assistantKnowledge?.mode === "none"
-    ? "Off"
-    : assistantKnowledge?.mode === "explicit" ? assistantKnowledgeName ?? resourceCountLabel(assistantKnowledgeCount) : null;
   const assistantSkillsLabel = assistantRows ? assistantRows.skills.assistantValue.mode === "off" ? "Auto off" : "Auto" : null;
-  const addKnowledgeReason = knowledgeFixed ? assistantRowNoticeText(knowledgeProvenance) : null;
-  const overrideKnowledgeAction = onOverrideKnowledgePlan ? (
-    <button
-      className="v2-composer-layer-link v2-focusable"
-      data-v2-composer-option="true"
-      type="button"
-      role="menuitem"
-      onClick={onOverrideKnowledgePlan}
-    >
-      Override for this chat
-    </button>
-  ) : null;
   // Reasoning effort: how the model thinks, not which tools it has. The
   // Assistant's parameters row governs it only while the Assistant's own
   // model is in use, as in the Parameters dialog; it speaks for the level
@@ -1361,11 +1126,6 @@ export function ComposerV2({
   const reasoningDescription = reasoningChip
     ? `Reasoning effort: ${reasoningChip.value}${assistantRowDescription(reasoningProvenance)}`
     : "";
-  // A labelled row holds six chips: the level as the seventh (or later) chip
-  // turns every capability into its icon instead of adding a second row.
-  const otherChipCount = (comments.length > 0 ? 1 : 0) +
-    (searchChipVisible ? 1 : 0) + (knowledgeChipVisible ? 1 : 0) + 2;
-  const compactChipLabels = Boolean(reasoningChip) && otherChipCount >= 6;
   // A refreshed model without a reasoning control takes the level away with
   // its open menu (user actions elsewhere already dismiss it).
   if (layer === "reasoning" && !reasoningChip) {
@@ -1409,30 +1169,6 @@ export function ComposerV2({
       skillLibrary: onOpenSkillLibrary
         ? { detail: "Choose Auto loading or Always use", disabledReason: null, run: onOpenSkillLibrary }
         : null,
-      knowledge: knowledgeOffered ? {
-        detail: "Base or document for this chat",
-        disabledReason: knowledgeFixed || !knowledgeAvailable ? addKnowledgeReason ?? "Base or document for this chat" : null,
-        run: () => openFromPalette("knowledge", knowledgeTriggerRef.current)
-      } : null,
-      knowledgeBases: knowledgeOffered && knowledgeAvailable ? (config?.knowledgeBases ?? []).map((base) => {
-        const selected = selectedKnowledgeSet.has(base.id);
-        const current = selected && knowledgeControlsLocked;
-        const atLimit = !selected && explicitSelectionAtLimit;
-        const disabledReason = current ? null : knowledgeControlsLocked
-          ? addKnowledgeReason ?? "Managed by the Project"
-          : atLimit
-            ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
-            : base.archived && !selected ? knowledgeBaseReason(base) : null;
-        return {
-          current,
-          detail: `Knowledge base · ${knowledgeBaseReason(base)}`,
-          disabledReason,
-          id: base.id,
-          name: base.name,
-          run: () => toggleKnowledge(base),
-          selected
-        };
-      }) : [],
       mcp: {
         detail: `Mode: ${mcpModeLabel}`,
         disabledReason: null,
@@ -1553,7 +1289,6 @@ export function ComposerV2({
           onRemove={onRemoveAttachment}
           onRetry={onRetryAttachment}
           usage={attachmentLimitUsage}
-          sharedProject={sharedProject}
         />
         {followupMode && (attachmentItems.length > 0 || artifactCreate || artifactEdit) ? (
           <p className="v2-composer-status">Only your text is sent as a follow-up. Files and artifact choices are kept for your next message.</p>
@@ -1624,8 +1359,7 @@ export function ComposerV2({
 
             {/* The model is chosen in the header (operator, 2026-09-02); the
                 composer row holds only this message's tools. */}
-            <div className="v2-composer-indicators" aria-label="Active capabilities"
-              data-compact-labels={compactChipLabels || undefined}>
+            <div className="v2-composer-indicators" aria-label="Active capabilities">
               <ComposerCommentsV2 key={sessionKey} comments={comments} onUpdate={onUpdateComment} onRemove={onRemoveComment} />
               {searchChipVisible ? (
                 <button ref={searchTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
@@ -1639,19 +1373,6 @@ export function ComposerV2({
                   onClick={event => openLayer("search", event.currentTarget)}>
                   <CapabilityChipContent label="Search" icon="globe" count={selectedSearchOptionIds.length > 1 ? selectedSearchOptionIds.length : 0}
                     description={searchDescription} descriptionId={`${layerId}-search-description`} />
-                </button>
-              ) : null}
-              {knowledgeChipVisible ? (
-                <button ref={knowledgeTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
-                  data-quiet={knowledgeSelection.mode === "none" && !knowledgeProjectLocked ? "" : undefined} data-glyph="book"
-                  data-provenance={knowledgeProvenance?.marker ? "assistant" : undefined}
-                  disabled={activeRun || (!knowledgeControlsLocked && !onSelectKnowledgeSelection && !onSelectKnowledgeBaseIds)}
-                  aria-controls={`${layerId}-knowledge`} aria-expanded={layer === "knowledge"} aria-haspopup="menu"
-                  aria-label="Choose Knowledge" aria-describedby={`${layerId}-knowledge-description`}
-                  data-tooltip={knowledgeDescription} data-tooltip-side="top"
-                  onClick={event => openLayer("knowledge", event.currentTarget)}>
-                  <CapabilityChipContent label="Knowledge" icon="book" count={selectedKnowledgeResourceCount > 1 ? selectedKnowledgeResourceCount : 0}
-                    description={knowledgeDescription} descriptionId={`${layerId}-knowledge-description`} />
                 </button>
               ) : null}
               <button ref={mcpTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
@@ -2044,233 +1765,6 @@ export function ComposerV2({
                     ) : null}
                   </div> : null}
                 </div>
-              ) : layer === "knowledge" ? (
-                <div className="v2-composer-layer-scroll">
-                  {/* One notice for one fact: a fallback line carries the
-                      Project's override; the lock box stands alone otherwise. */}
-                  {knowledgeFallback ? (
-                    <AssistantRowNoticeV2
-                      kind="fallback"
-                      text={assistantRowNoticeText(knowledgeProvenance) ?? ""}
-                      action={knowledgeProjectLocked ? overrideKnowledgeAction : null}
-                    />
-                  ) : provenanceNotice(knowledgeProvenance, assistantKnowledgeLabel)}
-                  {knowledgeProjectLocked && !knowledgeFallback ? (
-                    <div className="v2-composer-knowledge-inherited" role="status">
-                      <UiV2Icon name="lock" />
-                      <span>
-                        <strong>This Project controls the default Knowledge.</strong>{" "}
-                        Its selection is used until you override it for this chat.
-                      </span>
-                      {overrideKnowledgeAction}
-                    </div>
-                  ) : null}
-                  {onSearchKnowledgeSources ||
-                    (config?.knowledgeBases.length ?? 0) + (config?.knowledgeSources?.length ?? 0) > 6 ? (
-                    <label className="v2-composer-model-search-wrap">
-                      <UiV2Icon name="search" />
-                      <input
-                        data-v2-knowledge-search
-                        aria-label="Search Knowledge resources"
-                        maxLength={KNOWLEDGE_SOURCE_SEARCH_MAX_LENGTH}
-                        placeholder="Search bases and documents…"
-                        type="search"
-                        value={knowledgeQuery}
-                        onChange={(event) => setKnowledgeQuery(event.currentTarget.value)}
-                      />
-                    </label>
-                  ) : null}
-                  <CapabilityRow
-                    selected={knowledgeSelection.mode === "none"}
-                    current={knowledgeControlsLocked && knowledgeSelection.mode === "none"}
-                    disabled={knowledgeControlsLocked || activeRun}
-                    reason="Answer without reading documents"
-                    selectionRole="radio"
-                    onClick={() => {
-                      selectKnowledge(EMPTY_KNOWLEDGE_SELECTION);
-                      closeLayer();
-                    }}
-                  >
-                    Off
-                  </CapabilityRow>
-                  {!sharedProject && onSelectKnowledgeSelection && knowledgeHasDocuments ? (
-                    <CapabilityRow
-                      selected={knowledgeSelection.mode === "all_my_knowledge"}
-                      current={knowledgeControlsLocked && knowledgeSelection.mode === "all_my_knowledge"}
-                      disabled={knowledgeControlsLocked || activeRun}
-                      reason={`Every ready document you own${
-                        typeof config?.knowledgeDocumentTotal === "number"
-                          ? ` · ${config.knowledgeDocumentTotal} ${config.knowledgeDocumentTotal === 1 ? "file" : "files"}`
-                          : ""
-                      }`}
-                      selectionRole="radio"
-                      onClick={() => {
-                        selectKnowledge(allMyKnowledgeSelection());
-                        closeLayer();
-                      }}
-                    >
-                      All my knowledge
-                    </CapabilityRow>
-                  ) : null}
-                  {(config?.knowledgeBases.length ?? 0) === 0 &&
-                    (config?.knowledgeSources?.length ?? 0) === 0 &&
-                    knowledgeSelection.mode === "none" && !knowledgeControlsLocked ? (
-                    <CapabilityRow icon="library" disabled reason="No knowledge bases available">
-                      Knowledge
-                    </CapabilityRow>
-                  ) : null}
-                  {knowledgeSelection.mode === "inherited" ? (
-                    <>
-                      {/* The first line already names the Assistant. */}
-                      {knowledgeSelection.inheritedFrom === "assistant" && assistantRowNoticeText(knowledgeProvenance)
-                        ? null
-                        : (
-                          <p className="v2-composer-layer-label">
-                            From {knowledgeSelection.inheritedFrom === "assistant"
-                              ? boundAssistant?.name ?? "Assistant"
-                              : "Project"}
-                          </p>
-                        )}
-                      <CapabilityRow
-                        icon="book"
-                        current
-                        reason={knowledgeSelection.inheritedFrom === "assistant" && assistantKnowledgeCount > 0
-                          ? resourceCountLabel(assistantKnowledgeCount)
-                          : "Selection details stay private"}
-                      >
-                        Selected Knowledge
-                      </CapabilityRow>
-                    </>
-                  ) : null}
-                  {/* Reset follows the modes, above lists that can run long. */}
-                  {resetToAssistantRow(knowledgeProvenance)}
-                  {visibleKnowledgeBases.length > 0 ? (
-                    <p className="v2-composer-layer-label">Bases</p>
-                  ) : null}
-                  {visibleKnowledgeBases.map((base) => {
-                    const selected = selectedKnowledgeSet.has(base.id);
-                    const atLimit = !selected && explicitSelectionAtLimit;
-                    const reason = atLimit
-                      ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
-                      : knowledgeBaseReason(base);
-                    return (
-                      <CapabilityRow
-                        key={base.id}
-                        icon="library"
-                        selected={selected}
-                        current={selected && knowledgeControlsLocked}
-                        disabled={knowledgeControlsLocked || activeRun ||
-                          (base.archived && !selected) || atLimit}
-                        reason={reason}
-                        onClick={() => toggleKnowledge(base)}
-                      >
-                        {base.name}
-                      </CapabilityRow>
-                    );
-                  })}
-                  {visibleKnowledgeSources.length > 0 ? (
-                    <p className="v2-composer-layer-label">Single documents</p>
-                  ) : null}
-                  {visibleKnowledgeSources.map((source) => {
-                    const selected = selectedKnowledgeSourceSet.has(source.id);
-                    const unavailable = source.readiness !== "ready";
-                    const atLimit = !selected && explicitSelectionAtLimit;
-                    const reason = knowledgeProjectLocked
-                      ? "Managed by the Project"
-                      : atLimit
-                        ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
-                      : unavailable
-                        ? source.readiness === "processing"
-                          ? "Processing · skipped until ready"
-                          : "Unavailable · not searchable"
-                        : `Ready${source.description ? ` · ${source.description}` : ""}`;
-                    return (
-                      <CapabilityRow
-                        key={`source:${source.id}`}
-                        icon="book"
-                        selected={selected}
-                        current={selected && knowledgeControlsLocked}
-                        disabled={knowledgeControlsLocked || activeRun || !onSelectKnowledgeSelection ||
-                          (unavailable && !selected) || atLimit}
-                        reason={reason}
-                        onClick={() => toggleKnowledgeSource(source)}
-                      >
-                        {source.name}
-                      </CapabilityRow>
-                    );
-                  })}
-                  {!normalizedKnowledgeQuery && hiddenKnowledgeDocumentCount &&
-                  hiddenKnowledgeDocumentCount > 0 ? (
-                    <p className="v2-composer-layer-note">
-                      Type to find any of your other {hiddenKnowledgeDocumentCount} documents.
-                    </p>
-                  ) : null}
-                  {knowledgeSelection.baseIds
-                    .filter((id) => !knowledgeById.has(id))
-                    .map((id) => (
-                      <CapabilityRow
-                        key={id}
-                        icon="library"
-                        selected
-                        disabled={knowledgeControlsLocked || activeRun}
-                        reason={knowledgeProjectLocked
-                          ? "Managed by the Project"
-                          : "Access revoked"}
-                        onClick={() => {
-                          selectKnowledge(explicitKnowledgeSelection({
-                            baseIds: knowledgeSelection.baseIds.filter((candidate) => candidate !== id),
-                            sourceIds: knowledgeSelection.sourceIds
-                          }));
-                        }}
-                      >
-                        Unavailable knowledge base
-                      </CapabilityRow>
-                    ))}
-                  {knowledgeSelection.sourceIds
-                    .filter((id) => !sourceById.has(id))
-                    .map((id) => (
-                      <CapabilityRow
-                        key={`missing-source:${id}`}
-                        icon="book"
-                        selected
-                        disabled={knowledgeControlsLocked || activeRun}
-                        reason={knowledgeProjectLocked
-                          ? "Managed by the Project"
-                          : "Access revoked"}
-                        onClick={() => {
-                          selectKnowledge(explicitKnowledgeSelection({
-                            baseIds: knowledgeSelection.baseIds,
-                            sourceIds: knowledgeSelection.sourceIds.filter((candidate) => candidate !== id)
-                          }));
-                        }}
-                      >
-                        Unavailable Knowledge document
-                      </CapabilityRow>
-                    ))}
-                  <div className="v2-composer-layer-footer">
-                    <div className="v2-composer-layer-footer-row">
-                      <p className="v2-composer-layer-note">
-                        Applies to your next message.
-                      </p>
-                      {onOpenKnowledgeLibrary ? (
-                        <button
-                          className="v2-composer-layer-link v2-focusable"
-                          data-v2-composer-option="true"
-                          data-v2-composer-trailing="true"
-                          type="button"
-                          role="menuitem"
-                          onClick={() => {
-                            onOpenKnowledgeLibrary();
-                            closeLayer();
-                          }}
-                        >
-                          Manage Knowledge
-                          <UiV2Icon name="chevron-right" />
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
               ) : (
                 /* Search, MCP and parameters live behind their own chips. */
                 <div className="v2-composer-layer-scroll">
@@ -2294,7 +1788,7 @@ export function ComposerV2({
                   >
                     Attach files
                   </CapabilityRow>
-                  {!sharedProject && onReuseFile ? (
+                  {onReuseFile ? (
                     <CapabilityRow
                       icon="library"
                       disabled={inputDisabled || activeRun || uploading}
@@ -2302,19 +1796,6 @@ export function ComposerV2({
                       selectionRole="item"
                       onClick={(event) => openLayer("files", plusTriggerRef.current ?? event.currentTarget)}
                     >Saved files…</CapabilityRow>
-                  ) : null}
-                  {knowledgeOffered ? (
-                    <CapabilityRow
-                      icon="book"
-                      disabled={knowledgeFixed || activeRun || !knowledgeAvailable}
-                      reason={addKnowledgeReason ?? "Base or document for this chat"}
-                      selectionRole="item"
-                      onClick={(event) => {
-                        openLayer("knowledge", knowledgeTriggerRef.current ?? event.currentTarget);
-                      }}
-                    >
-                      Add Knowledge…
-                    </CapabilityRow>
                   ) : null}
                   <CapabilityRow
                     icon="wand"
@@ -2333,7 +1814,7 @@ export function ComposerV2({
                     Skills…
                   </CapabilityRow>
                   <p className="v2-composer-privacy-note">
-                    {sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."}
+                    Files are private and visible only to you.
                   </p>
                 </div>
               )}

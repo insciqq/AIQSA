@@ -297,7 +297,6 @@ type ControlMutationLifecycleRow = Readonly<{
   chatActiveLeafMessageId: string | null;
   chatBranchGeneration: number;
   chatMemoryMode: string;
-  chatProjectId: string | null;
   chatSourceRevision: number;
   memoryGeneration: number;
   memoryGenerationSnapshot: number;
@@ -424,7 +423,6 @@ async function requireCurrentControlMutationLifecycle(
       chat."activeLeafMessageId" AS "chatActiveLeafMessageId",
       chat."memoryBranchGeneration" AS "chatBranchGeneration",
       chat."memoryMode"::text AS "chatMemoryMode",
-      chat."projectId" AS "chatProjectId",
       chat."memorySourceRevision" AS "chatSourceRevision",
       settings."memoryGeneration",
       attempt."memoryGenerationSnapshot",
@@ -477,7 +475,7 @@ async function requireCurrentControlMutationLifecycle(
     current.attemptState !== "EXECUTING" || current.runStatus !== "preparing" ||
     !current.useMemoryFacts ||
     current.memoryGeneration !== current.memoryGenerationSnapshot ||
-    current.chatProjectId !== null || current.chatMemoryMode !== "NORMAL" ||
+    current.chatMemoryMode !== "NORMAL" ||
     current.runUserMessageId !== current.admittedUserMessageId ||
     current.chatActiveLeafMessageId !== current.admittedAssistantLeafMessageId ||
     current.chatActiveLeafMessageId !== lifecycle.activeLeafMessageId ||

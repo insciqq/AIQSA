@@ -19,12 +19,9 @@ import {
   type ChatAssistantRowValues,
   type ChatAssistantRows
 } from "../../contracts/chats";
-import type { CatalogWireModel } from "../../contracts/catalog";
-import type { ProviderModelCatalogEntry } from "../../domain/catalog";
 import { isAssistantArchivedFor, isAssistantAvailable } from "../assistants/bindingAccess";
 import {
   loadPersonalAssistantRowInputs,
-  projectAssistantRowContext,
   storedOverridesInEffect,
   type AssistantRowContext,
   type AssistantRowContextClient,
@@ -40,7 +37,6 @@ import {
 import { visibleAssistantRows } from "../assistants/rowRedaction";
 import { assistantRowsFromStoredColumns } from "../assistants/storedContent";
 import { resolveCurrentUserCatalogSelection, type CatalogData } from "../catalog/currentUserCatalog";
-import { loadProjectAssistantAuthority } from "../projects/prismaRepository";
 import { parameterDialect } from "../runs/runPreparation";
 
 /*
@@ -85,19 +81,7 @@ export type ChatAssistantSource = Readonly<{
   definition: ChatAssistantDefinition;
 }>;
 
-/**
- * The seam for Project chats: the Project's chain context and the definition
- * as the viewer resolves it through the Project, or null when they
- * cannot. `loadProjectChatAssistant` below is the application's; without a
- * loader a Project chat projects no Assistant, and personal Chat defaults are
- * never read for one.
- */
-export type ProjectChatAssistantLoader = (
-  client: AssistantRowContextClient,
-  input: Readonly<{ assistantId: string; projectId: string; stored: ChatAssistantOverrides; userId: string }>
-) => Promise<ChatAssistantSource | null>;
-
-type BlockingKey = "knowledge" | "model" | "search" | "skills" | "tools";
+type BlockingKey = "model" | "search" | "skills" | "tools";
 
 /** A fixed row or the Skill links the viewer cannot use, with the ids missing from the context. */
 type BlockedRow = Readonly<{ key: BlockingKey; missing: readonly string[] }>;
@@ -113,7 +97,7 @@ export type ChatAssistantRowsResolution = Readonly<{
 
 function blockedRows(assistant: AssistantRows, available: AssistantRowAvailableResources): BlockedRow[] {
   const blocked: BlockedRow[] = [];
-  for (const key of ["model", "search", "tools", "knowledge"] as const) {
+  for (const key of ["model", "search", "tools"] as const) {
     if (assistant[key].policy !== "fixed") continue;
     const own = assistantValueAvailability(key, assistant, available);
     if (!own.available) blocked.push({ key, missing: own.missing });
@@ -136,9 +120,6 @@ function withBlockedResources(
   };
   return {
     ...available,
-    // Missing Knowledge ids mix bases and sources; ids never collide across the two.
-    knowledgeBaseIds: add(available.knowledgeBaseIds, "knowledge"),
-    knowledgeSourceIds: add(available.knowledgeSourceIds, "knowledge"),
     mcpServerIds: add(available.mcpServerIds, "tools"),
     modelIds: add(available.modelIds, "model"),
     searchOptionIds: add(available.searchOptionIds, "search"),
@@ -187,14 +168,13 @@ export function resolveChatAssistantRows(input: Readonly<{
 }
 
 const unavailableReasons: Readonly<Record<BlockingKey, Exclude<AssistantAvailability, { ok: true }>["reason"]>> = {
-  knowledge: "knowledge_access",
   model: "model_access",
   search: "search_access",
   skills: "skills_access",
   tools: "tools_access"
 };
 
-/** Names for the owner, in the copy of the Assistant detail; Knowledge and Skills name none. */
+/** Names for the owner, in the copy of the Assistant detail; Skills name none. */
 function missingDependencies(key: BlockingKey, definition: ChatAssistantDefinition): AssistantAvailabilityDependency[] {
   if (key === "model") return [{ kind: "model", name: definition.modelDisplayName ?? "Saved model" }];
   if (key === "search") return [{ kind: "search", name: "Web search" }];
@@ -212,8 +192,8 @@ function withDependencies<T extends object>(
 
 /**
  * Archived first; then, like the Assistant detail, a fixed model, Search or
- * Tools row, the Skill links, fixed Knowledge, and finally a control of the
- * Assistant that the effective model does not support.
+ * Tools row, the Skill links, and finally a control of the Assistant that the
+ * effective model does not support.
  */
 function projectionAvailability(
   definition: ChatAssistantDefinition,
@@ -221,7 +201,7 @@ function projectionAvailability(
   context: ChatAssistantChainContext
 ): AssistantAvailability {
   if (definition.archived) return { ok: false, reason: "archived" };
-  const first = (["model", "search", "tools", "skills", "knowledge"] as const)
+  const first = (["model", "search", "tools", "skills"] as const)
     .map((key) => resolved.blocked.find((row) => row.key === key))
     .find((row) => row !== undefined);
   if (first) {
@@ -303,8 +283,6 @@ const definitionSelect = {
   avatar: true,
   controlsPolicy: true,
   id: true,
-  knowledgePolicy: true,
-  knowledgeSelection: true,
   mcpMode: true,
   mcpServerIds: true,
   modelPolicy: true,
@@ -361,15 +339,9 @@ export async function loadPersonalChatAssistantDefinition(
   };
 }
 
-/** The Knowledge and Skill ids the chain checks, as admission collects them. */
-function chainResourceIds(rows: AssistantRows, stored: ChatAssistantOverrides): AssistantRowResourceIds {
-  const explicit = [rows.knowledge.value, stored.knowledge]
-    .flatMap((value) => value?.mode === "explicit" ? [value] : []);
-  return {
-    knowledgeBaseIds: explicit.flatMap((value) => value.baseIds),
-    knowledgeSourceIds: explicit.flatMap((value) => value.sourceIds),
-    skillIds: rows.skills.value.links.map((link) => link.skillId)
-  };
+/** The Skill ids the chain checks, as admission collects them. */
+function chainResourceIds(rows: AssistantRows): AssistantRowResourceIds {
+  return { skillIds: rows.skills.value.links.map((link) => link.skillId) };
 }
 
 function catalogModelParameters(data: CatalogData): ChatAssistantChainContext["modelParameters"] {
@@ -398,77 +370,19 @@ export type ChatAssistantCatalogLoader = (userId: string) => Promise<CatalogData
  */
 export async function loadPersonalChatAssistantContext(
   client: AssistantRowContextClient,
-  input: Readonly<{ rows: AssistantRows; stored: ChatAssistantOverrides; userId: string }>,
+  input: Readonly<{ rows: AssistantRows; userId: string }>,
   options: Readonly<{ loadCatalogData?: ChatAssistantCatalogLoader }> = {}
 ): Promise<ChatAssistantChainContext | null> {
   const inputs = await loadPersonalAssistantRowInputs(client, {
-    ids: chainResourceIds(input.rows, input.stored),
+    ids: chainResourceIds(input.rows),
     userId: input.userId
   }, options);
   return inputs ? { ...inputs.context, modelParameters: catalogModelParameters(inputs.data) } : null;
 }
 
-/** The parameters of the Project's catalog models, derived as for a personal catalog. */
-function projectModelParameters(
-  models: readonly CatalogWireModel[],
-  entries: readonly ProviderModelCatalogEntry[]
-): ChatAssistantChainContext["modelParameters"] {
-  const byId = new Map(models.map((model) => [model.modelId, model]));
-  return (modelId) => {
-    const model = byId.get(modelId);
-    const entry = model && entries.find((candidate) =>
-      candidate.modelId === model.modelId && candidate.provider === model.provider);
-    return model && entry
-      ? {
-          baseParams: model.defaultParams,
-          controls: model.parameterControls,
-          displayName: model.displayName,
-          parameterProvider: parameterDialect(entry.adapterKind, entry.providerFamily)
-        }
-      : null;
-  };
-}
-
-/**
- * The Assistant of a Project chat, resolved as Project run admission does:
- * through the Project binding, never through the viewer's own access, and in
- * the Project's chain context alone (its defaults, resources and catalog).
- * The caller has already authorized the viewer for the chat. An Assistant no
- * longer bound to the Project resolves to null, which projects as
- * unavailable; an archived one projects as archived and nothing more.
- * Members see it as consumers: no owner copy, and names only of the
- * Project's own resources.
- */
-export const loadProjectChatAssistant: ProjectChatAssistantLoader = async (client, input) => {
-  // The Project read carries its bound definitions: one read for both.
-  const authority = await loadProjectAssistantAuthority(client, input.projectId);
-  const definition = authority?.assistants.get(input.assistantId);
-  if (!authority || !definition) return null;
-  const rows = assistantRowsFromStoredColumns(definition);
-  const avatar = decodeAssistantAvatarRecipe(definition.avatar);
-  if (!rows || !avatar) return null;
-  return {
-    context: {
-      ...projectAssistantRowContext(authority),
-      modelParameters: projectModelParameters(authority.catalog.models, authority.modelEntries)
-    },
-    definition: {
-      archived: definition.archivedAt !== null,
-      avatar,
-      id: definition.id,
-      modelDisplayName: null,
-      name: definition.name,
-      owned: false,
-      ownerDisplayName: "Project",
-      rows
-    }
-  };
-};
-
 export type ChatAssistantBinding = Readonly<{
   assistantId: string | null;
   assistantOverrides: unknown;
-  projectId: string | null;
 }>;
 
 /**
@@ -483,32 +397,22 @@ export type ChatAssistantBinding = Readonly<{
 export async function loadChatAssistantProjection(
   client: AssistantRowContextClient,
   input: Readonly<{ chat: ChatAssistantBinding; userId: string }>,
-  options: Readonly<{
-    loadCatalogData?: ChatAssistantCatalogLoader;
-    loadProjectChatAssistant?: ProjectChatAssistantLoader;
-  }> = {}
+  options: Readonly<{ loadCatalogData?: ChatAssistantCatalogLoader }> = {}
 ): Promise<ChatAssistantProjection | null> {
   const { chat, userId } = input;
-  if (chat.projectId !== null && !options.loadProjectChatAssistant) return null;
   const decoded = decodeStoredChatAssistantOverrides(chat.assistantOverrides);
   if (decoded?.kind === "deleted") return { state: "deleted" };
   if (chat.assistantId === null) return null;
   // An undecodable value counts as no overrides, as admission reads it.
   const stored = decoded?.kind === "overrides" ? decoded.overrides : {};
-  const assistantId = chat.assistantId;
-  let source: ChatAssistantSource | null = null;
-  if (chat.projectId !== null) {
-    source = await options.loadProjectChatAssistant!(client, { assistantId, projectId: chat.projectId, stored, userId });
-  } else {
-    const definition = await loadPersonalChatAssistantDefinition(client, { assistantId, userId });
-    if (definition && archivedForConsumer(definition)) return ARCHIVED_FOR_CONSUMER;
-    const context = definition
-      ? await loadPersonalChatAssistantContext(client, { rows: definition.rows, stored, userId }, options)
-      : null;
-    source = definition && context ? { context, definition } : null;
-  }
-  if (source && archivedForConsumer(source.definition)) return ARCHIVED_FOR_CONSUMER;
-  return source ? buildChatAssistantProjection({ ...source, stored }) : { state: "unavailable" };
+  const definition = await loadPersonalChatAssistantDefinition(client, { assistantId: chat.assistantId, userId });
+  if (definition && archivedForConsumer(definition)) return ARCHIVED_FOR_CONSUMER;
+  const context = definition
+    ? await loadPersonalChatAssistantContext(client, { rows: definition.rows, userId }, options)
+    : null;
+  return definition && context
+    ? buildChatAssistantProjection({ context, definition, stored })
+    : { state: "unavailable" };
 }
 
 const ARCHIVED_FOR_CONSUMER: ChatAssistantProjection = { reason: "archived", state: "unavailable" };

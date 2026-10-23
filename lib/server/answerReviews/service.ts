@@ -3,9 +3,8 @@ import {
   ANSWER_REVIEW_MAX_REVIEWERS,
   type AnswerReviewRefusal
 } from "../../contracts/answerReviews";
-import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import type { RunPreparationDeps } from "../runs/runPreparation";
 import {
   answerReviewSessionSelect,
@@ -21,7 +20,7 @@ export type AnswerReviewServiceDeps = Readonly<{
   providerAdmission: NonNullable<RunPreparationDeps["providerAdmission"]>;
 }>;
 
-export type AnswerReviewRoundRefusal = AnswerReviewRefusal | "active_leaf_changed" | typeof PROJECTS_DISABLED_CODE;
+export type AnswerReviewRoundRefusal = AnswerReviewRefusal | "active_leaf_changed";
 
 export type AnswerReviewRoundResult =
   | Readonly<{ ok: true; session: AnswerReviewSessionRecord }>
@@ -50,18 +49,17 @@ export function decodeAnswerReviewReviewerRequest(value: unknown): Array<Readonl
 
 /**
  * The model as the user may run it now, with its display snapshot: admitted
- * through the same provider admission a send uses (entitlement, credentials,
- * Project scope), so a name never reaches the session for a model the user
- * cannot use. Null when it is unavailable or cannot call tools.
+ * through the same provider admission a send uses (entitlement, credentials),
+ * so a name never reaches the session for a model the user cannot use. Null
+ * when it is unavailable or cannot call tools.
  */
 export async function admitAnswerReviewToolModel(
   deps: Pick<AnswerReviewServiceDeps, "providerAdmission">,
   model: Readonly<{ modelId: string; provider: string }>,
-  scope: Readonly<{ projectId: string | null; userId: string }>
+  scope: Readonly<{ userId: string }>
 ): Promise<AnswerReviewModelRef | null> {
   try {
     const plan = await deps.providerAdmission.load({
-      ...(scope.projectId ? { executionScope: "project" as const } : {}),
       providerConnectionId: model.provider,
       providerModelId: model.modelId,
       searchPlan: { mode: "all_selected", optionIds: [] },
@@ -146,14 +144,10 @@ export async function startAnswerReviewRound(
     userId: string;
   }>
 ): Promise<AnswerReviewRoundResult> {
-  const access = await resolveChatAccess(deps.prisma, {
-    chatId: input.chatId, minimumProjectRole: "CONTRIBUTOR", requireMutable: true, userId: input.userId
-  });
+  const access = await resolveChatAccess(deps.prisma, { chatId: input.chatId, userId: input.userId });
   if (!access) return refused("answer_review_unavailable", 404);
-  // Projects are disabled: a review would run in the Project chat.
-  if (access.kind === "project" && !PROJECTS_ENABLED) return refused(PROJECTS_DISABLED_CODE);
   const chat = await deps.prisma.chat.findFirst({
-    select: { activeLeafMessageId: true, assistantId: true, projectId: true },
+    select: { activeLeafMessageId: true, assistantId: true },
     where: { archived: false, id: input.chatId, permanentDeletionAt: null }
   });
   if (!chat) return refused("answer_review_unavailable", 404);
@@ -165,7 +159,7 @@ export async function startAnswerReviewRound(
   if (typeof target === "string") return refused(target);
   // Another member's session stays theirs; one whose initiator is gone and that ended may be taken over.
   if (target.session && !canActOnAnswerReviewSession(target.session, input.userId)) return refused("answer_review_not_initiator");
-  const scope = { projectId: chat.projectId, userId: input.userId };
+  const scope = { userId: input.userId };
 
   let author: AnswerReviewModelRef | null = target.session?.authorModel ?? null;
   if (target.session && author && target.session.userId !== input.userId) {
@@ -177,22 +171,13 @@ export async function startAnswerReviewRound(
     const sourceRun = await deps.prisma.modelRun.findFirst({
       orderBy: { createdAt: "desc" },
       select: {
-        _count: { select: { knowledgeRunBindings: true } },
-        normalizedRequest: true,
         providerRunBindings: { select: { connectionId: true, executionSnapshot: true, providerModelId: true },
           where: { bindingKey: "answer" } },
         workspaceProducedAttachments: { select: { id: true }, take: 1, where: { origin: "IMAGE_OUTPUT" } }
       },
       where: { assistantMessageId: target.sourceId, chatId: input.chatId }
     });
-    const request = sourceRun?.normalizedRequest;
-    const knowledgePlan = typeof request === "object" && request !== null && !Array.isArray(request)
-      ? (request as Record<string, unknown>).knowledgePlan : undefined;
-    // Knowledge answers stay bound to their Sources; image answers are not text to revise.
-    if ((sourceRun?._count.knowledgeRunBindings ?? 0) > 0 ||
-      (typeof knowledgePlan === "object" && knowledgePlan !== null && (knowledgePlan as Record<string, unknown>).mode !== "none")) {
-      return refused("answer_review_knowledge_unsupported");
-    }
+    // Image answers are not text to revise.
     if ((sourceRun?.workspaceProducedAttachments.length ?? 0) > 0) return refused("answer_review_image_unsupported");
     const binding = sourceRun?.providerRunBindings[0];
     if (!binding?.connectionId || !binding.providerModelId) return refused("answer_review_model_unsupported");
@@ -204,13 +189,6 @@ export async function startAnswerReviewRound(
   // An independent model reviews: never the author's own.
   if (input.reviewers.some((reviewer) => reviewer.provider === authorRef.provider && reviewer.modelId === authorRef.modelId)) {
     return refused("answer_review_reviewer_unavailable");
-  }
-  if (chat.projectId) {
-    const project = await deps.prisma.project.findUnique({
-      select: { modelBindings: { select: { providerModelId: true } } }, where: { id: chat.projectId }
-    });
-    const allowed = new Set(project?.modelBindings.map((binding) => binding.providerModelId) ?? []);
-    if (input.reviewers.some((reviewer) => !allowed.has(reviewer.modelId))) return refused("answer_review_reviewer_unavailable");
   }
   const reviewers: AnswerReviewModelRef[] = [];
   for (const reviewer of input.reviewers) {

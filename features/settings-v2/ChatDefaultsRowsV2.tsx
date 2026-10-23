@@ -1,18 +1,11 @@
 "use client";
 
 import type { CatalogSearchStrategy } from "@/lib/contracts/catalog";
-import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
-import {
-  allMyKnowledgeSelection,
-  explicitKnowledgeSelection,
-  type KnowledgeSelection
-} from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { userImageModelErrorMessage, type ImageModelUnavailableReason, type UserImageModelOption } from "@/lib/contracts/imageModels";
 import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import { UiV2Button } from "@/components/ui-v2";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import type { SearchPlan } from "@/lib/domain/search";
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
@@ -27,9 +20,6 @@ const MCP_MODES: readonly Readonly<{ label: string; mode: ChatDefaultMcpMode }>[
   { label: "Load all", mode: "load_all" },
   { label: "Off", mode: "off" }
 ];
-
-const ALL_MY_KNOWLEDGE = "all_my_knowledge";
-const NO_KNOWLEDGE = "";
 
 /** Segmented single choice with roving focus (same contract as the theme segment). */
 export function SettingsSegmentV2<T extends string>({
@@ -115,7 +105,7 @@ export function ImageModelRowV2({ view }: Readonly<{ view: ChatDefaultImageModel
   const unpublished = settings !== null && models.length === 0;
   return (
     <SettingsRowV2
-      description="Creates and edits images in your personal chats. Projects use the organization default."
+      description="Creates and edits images in your chats."
       testId="settings-default-image-model"
       title="Image model"
     >
@@ -150,25 +140,16 @@ export function ImageModelRowV2({ view }: Readonly<{ view: ChatDefaultImageModel
   );
 }
 
-function knowledgeValue(plan: KnowledgeSelection | null): string {
-  if (!plan || plan.mode === "none" || plan.mode === "inherited") return NO_KNOWLEDGE;
-  if (plan.mode === "all_my_knowledge") return ALL_MY_KNOWLEDGE;
-  return plan.baseIds[0] ?? NO_KNOWLEDGE;
-}
-
 /**
  * Chat defaults rows below Default model (PRD §4.9): Web search, MCP tools,
- * Knowledge and Image model. Each change persists the personal default only;
+ * Skills and Image model. Each change persists the personal default only;
  * the open chat's composer keeps its own selection.
  */
 export function ChatDefaultsRowsV2({
   imageModel,
-  knowledgeBases,
-  knowledgePlan,
   mcpMode,
   skillsMode = "auto",
   onSkillsMode,
-  onKnowledgePlan,
   onMcpMode,
   onOpenMcp,
   onOpenSkills,
@@ -179,12 +160,9 @@ export function ChatDefaultsRowsV2({
   searchStrategies
 }: Readonly<{
   imageModel?: ChatDefaultImageModelView;
-  knowledgeBases: readonly ComposerConfigKnowledgeBase[];
-  knowledgePlan: KnowledgeSelection | null;
   mcpMode: ChatDefaultMcpMode;
   skillsMode?: "auto" | "off";
   onSkillsMode?(mode: "auto" | "off"): void;
-  onKnowledgePlan(plan: KnowledgeSelection | null): void;
   onMcpMode(mode: ChatDefaultMcpMode): void;
   onOpenMcp?(): void;
   onOpenSkills?(): void;
@@ -195,12 +173,6 @@ export function ChatDefaultsRowsV2({
   searchStrategies: readonly CatalogSearchStrategy[];
 }>) {
   const engines = searchStrategies.filter((strategy) => strategy.kind !== "none");
-  const activeBases = knowledgeBases.filter((base) => !base.archived);
-  const currentKnowledge = knowledgeValue(knowledgePlan);
-  const orphanBaseId = currentKnowledge !== NO_KNOWLEDGE && currentKnowledge !== ALL_MY_KNOWLEDGE &&
-    !activeBases.some((base) => base.id === currentKnowledge)
-    ? currentKnowledge
-    : null;
 
   return (
     <>
@@ -222,30 +194,6 @@ export function ChatDefaultsRowsV2({
         <SettingsSegmentV2 label="Skills default" options={[{ label: "Auto", value: "auto" }, { label: "Off", value: "off" }]}
           value={skillsMode} onChange={mode => onSkillsMode?.(mode)} />
       </SettingsRowV2>
-      {/* Knowledge is disabled: new chats get no Knowledge default to choose. */}
-      {KNOWLEDGE_ENABLED ? (
-        <SettingsRowV2 description="Base attached to new chats by default." testId="settings-default-knowledge" title="Knowledge">
-          <SettingsSelectV2
-            label="Knowledge default"
-            options={[
-              { label: "None", value: NO_KNOWLEDGE },
-              { label: "All my knowledge", value: ALL_MY_KNOWLEDGE },
-              ...activeBases.map((base) => ({ label: base.name, value: base.id })),
-              ...(orphanBaseId ? [{ label: "Unavailable base", value: orphanBaseId }] : [])
-            ]}
-            value={currentKnowledge}
-            onChange={(next) => {
-              onKnowledgePlan(
-                next === NO_KNOWLEDGE
-                  ? null
-                  : next === ALL_MY_KNOWLEDGE
-                    ? allMyKnowledgeSelection()
-                    : explicitKnowledgeSelection({ baseIds: [next] })
-              );
-            }}
-          />
-        </SettingsRowV2>
-      ) : null}
       {imageModel ? <ImageModelRowV2 view={imageModel} /> : null}
     </>
   );

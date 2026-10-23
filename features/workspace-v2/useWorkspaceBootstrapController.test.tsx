@@ -27,7 +27,7 @@ function catalog(enabled = true): Catalog {
   }, models: [], providers: [], searchStrategies: [] };
 }
 
-function renderBootstrap(settled: ChatRoute | null = { chatId: null, projectId: null }) {
+function renderBootstrap(settled: ChatRoute | null = { chatId: null }) {
   const controls = useComposerControlStore.getState();
   const workspace = useWorkspaceStore.getState();
   const refreshWorkspace = vi.fn(async () => null);
@@ -147,10 +147,10 @@ describe("bootstrapping from the address", () => {
   it("returns a session-expired chat draft to its own session without choosing the chat", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ catalog: catalog() })));
     useWorkspaceStore.setState({ chats: [{ activeLeafMessageId: null, createdAt: "", defaultModelId: "", defaultProvider: "",
-      folderId: null, id: "chat-1", messageCount: 0, pinned: false, projectId: null, title: "Chat", updatedAt: "" }] });
+      folderId: null, id: "chat-1", messageCount: 0, pinned: false, title: "Chat", updatedAt: "" }] });
     rememberSessionExpiredDraft({ accountId: "account-a", epoch: readComposerDraftEpoch("account-a")!, draft: "Unsent", savedAt: Date.now(), sessionKey: composerSessionKey("chat-1") });
     const shown = useComposerSessionStore.getState().activeSessionKey;
-    const { activateBlankWorkspace } = renderBootstrap({ chatId: "chat-2", projectId: null });
+    const { activateBlankWorkspace } = renderBootstrap({ chatId: "chat-2" });
     await waitFor(() => expect(storedSessionExpiredDraft()).toBeNull());
     expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-1")).draft).toBe("Unsent");
     window.dispatchEvent(new Event("pagehide"));
@@ -172,7 +172,7 @@ describe("bootstrapping from the address", () => {
 
     rememberSessionExpiredDraft({ accountId: "account-a", epoch: readComposerDraftEpoch("account-a")!, draft: "Folder draft", savedAt: Date.now(), sessionKey });
     useComposerSessionStore.getState().updateSession(sessionKey, { draft: "" });
-    const chat = renderBootstrap({ chatId: "chat-2", projectId: null });
+    const chat = renderBootstrap({ chatId: "chat-2" });
     await waitFor(() => expect(storedSessionExpiredDraft()).toBeNull());
     expect(chat.activateBlankWorkspace).not.toHaveBeenCalled();
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionKey).draft).toBe("Folder draft");
@@ -185,7 +185,7 @@ describe("bootstrapping from the address", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) { blocked(this); return getItem.call(this, key); });
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) { blocked(this); setItem.call(this, key, value); });
     const temporary = { activeLeafMessageId: null, createdAt: "", defaultModelId: "", defaultProvider: "", folderId: null,
-      id: "temporary-chat", memoryMode: "TEMPORARY" as const, messageCount: 0, pinned: false, projectId: null, title: "Temporary", updatedAt: "" };
+      id: "temporary-chat", memoryMode: "TEMPORARY" as const, messageCount: 0, pinned: false, title: "Temporary", updatedAt: "" };
     useWorkspaceStore.setState({ chats: [temporary] });
     try {
       rememberSessionExpiredDraft({ accountId: "account-a", epoch: null, draft: "Survives expiry", savedAt: Date.now(), sessionKey: composerSessionKey(null) });
@@ -195,7 +195,7 @@ describe("bootstrapping from the address", () => {
       first.unmount();
 
       rememberSessionExpiredDraft({ accountId: "account-a", epoch: null, draft: "Temporary text", savedAt: Date.now(), sessionKey: composerSessionKey(temporary.id) });
-      renderBootstrap({ chatId: temporary.id, projectId: null });
+      renderBootstrap({ chatId: temporary.id });
       await waitFor(() => expect(storedSessionExpiredDraft()).toBeNull());
       expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey(temporary.id)).draft).toBe("");
     } finally {

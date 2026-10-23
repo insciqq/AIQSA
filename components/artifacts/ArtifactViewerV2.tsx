@@ -75,7 +75,7 @@ function MoreMenu({ artifactId, busy, host, onOpenSourceChat, onReset, sourceCha
       {host !== "page" ? <UiV2MenuLink href={`/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}`} icon="external" onClick={closeForAction} rel="noreferrer" role="menuitem" target="_blank">Open in new tab</UiV2MenuLink> : null}
       {host !== "chat" && sourceChatId ? onOpenSourceChat
         ? <UiV2MenuItem disabled={busy} icon="chat" onClick={() => { closeForAction(); onOpenSourceChat(sourceChatId); }} type="button">Open source chat</UiV2MenuItem>
-        : <UiV2MenuLink href={formatChatRoutePath({ chatId: sourceChatId, projectId: null })} icon="chat" onClick={closeForAction} role="menuitem">Open source chat</UiV2MenuLink> : null}
+        : <UiV2MenuLink href={formatChatRoutePath({ chatId: sourceChatId })} icon="chat" onClick={closeForAction} role="menuitem">Open source chat</UiV2MenuLink> : null}
     </UiV2ResponsiveMenu> : null}
   </div>;
 }

@@ -39,7 +39,7 @@ export const TOOL_HISTORY_READER_NAMES: readonly string[] = Object.freeze([...RE
 
 /** What a record discloses about a call depends only on this server-owned
  * class of its accepted tool (never on the provider-supplied name alone). */
-export type ToolHistoryKind = "mcp" | "workspace" | "web_search" | "artifact" | "image" | "vision" | "knowledge" |
+export type ToolHistoryKind = "mcp" | "workspace" | "web_search" | "artifact" | "image" | "vision" |
   "memory" | "skill" | "tool";
 
 const AGENT_SEARCH_TOOL_NAME = "aiqsa_search";
@@ -47,9 +47,10 @@ const AGENT_SEARCH_TOOL_NAME = "aiqsa_search";
 /**
  * The class of one persisted call from its run's accepted request: MCP tools
  * of the accepted plan (including Auto discoveries merged into it), the run's
- * Workspace, Search, Knowledge, Memory, Skill, artifact and image tools.
- * Turns of the retired Codex Agent named MCP tools by admitted tool ids whose
- * records went with it: those calls stay plain tools.
+ * Workspace, Search, Memory, Skill, artifact and image tools. A call of a
+ * removed tool (Knowledge) reads as a generic tool. Turns of the retired
+ * Codex Agent named MCP tools by admitted tool ids whose records went with
+ * it: those calls stay plain tools.
  */
 export function toolHistoryKind(input: Readonly<{
   agent: boolean;
@@ -73,7 +74,6 @@ export function toolHistoryKind(input: Readonly<{
     case "web_search": return { kind: "web_search", label: `Web search ${plain(descriptor.serverName, "source")}` };
     // Page text stays with its call; a record names the call, never the page.
     case "web_fetch": return { kind: "tool", label: "Page reading" };
-    case "knowledge": return { kind: "knowledge", label: "Knowledge search" };
     case "memory": return { kind: "memory", label: `Memory ${plain(descriptor.toolName, "tool")}` };
     case "skill": return { kind: "skill", label: `Skill ${plain(descriptor.toolName, "tool")}` };
     case "image": return { kind: "image", label: "Image generation" };
@@ -348,7 +348,7 @@ function mcpResult(facts: ToolCallFacts, outcome: ToolCallOutcome): ToolHistoryR
 }
 
 /** Workspace, Search, artifacts and images keep their content with the
- * observation reader; Memory, Knowledge and Skills with their owners. A
+ * observation reader; Memory and Skills with their owners. A
  * record names only the saved original's handle, never content. */
 function ownedResult(facts: ToolCallFacts, outcome: ToolCallOutcome): ToolHistoryResult {
   if (outcome.status === "not_executed" || !facts.observation?.handle) return { state: "not_applicable" };

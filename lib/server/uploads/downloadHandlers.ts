@@ -81,7 +81,7 @@ export function createAttachmentDownloadHandler(input: Readonly<{
       const unavailable = () => Response.json({ error: preview === "text" ? "text_preview_unavailable" : "image_preview_unavailable" }, {
         headers: { "cache-control": "private, no-store, max-age=0" }, status: 415
       });
-      // The repository reauthorizes personal/Project access and resolves only ready attachments.
+      // The repository reauthorizes the owner's access and resolves only ready attachments.
       const kind = attachmentPreviewKind({ ...record, status: "ready" });
       if (kind !== (preview === "text" ? "text" : "image")) return unavailable();
       let bytes: Uint8Array;

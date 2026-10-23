@@ -153,8 +153,8 @@ export function proxyWithEnv(
   const egressRefusal = personalMcpEgressRefusal(request);
   if (egressRefusal) return egressRefusal;
   const { pathname } = request.nextUrl;
-  // Every chat address (`/`, `/c/…`, `/p/…`, `/assistant/…`) hosts the artifact side panel.
-  const artifactViewer = pathname === "/" || ["/a", "/artifacts", "/assistant", "/c", "/p"].some(
+  // Every chat address (`/`, `/c/…`, `/assistant/…`) hosts the artifact side panel.
+  const artifactViewer = pathname === "/" || ["/a", "/artifacts", "/assistant", "/c"].some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
   const artifactContent = /^\/api\/artifacts\/[^/]+\/versions\/[^/]+\/content\/?$/u.test(pathname) ||

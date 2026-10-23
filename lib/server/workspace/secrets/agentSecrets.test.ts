@@ -140,7 +140,7 @@ describe("agent secret service", () => {
     fixture.db.attachment.findFirst.mockResolvedValue(row);
     const service = createAgentSecretService({ attachmentIds: ["att_1"], db: fixture.db as never, scope, storage, store: fixture.store });
     expect(await service.readAttachment("att_1", 1_024)).toEqual({ bytes, fileName: "id_ed25519", kind: "file", mimeType: "text/plain" });
-    expect(fixture.db.attachment.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { chatId: "chat_1", id: "att_1", projectId: null,
+    expect(fixture.db.attachment.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { chatId: "chat_1", id: "att_1",
       userId: USER, OR: [{ id: { in: ["att_1"] } }, { producerModelRunId: "run_1" }] } }));
     expect(storage.getObject).toHaveBeenCalledWith("objects/1", { maxBytes: bytes.length });
     expect(await service.readAttachment("att_1", 4)).toEqual({ byteSize: bytes.length, kind: "too_large" });

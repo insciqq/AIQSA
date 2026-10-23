@@ -63,7 +63,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "2 private Memory, Knowledge or personal MCP records will be fenced and durably purged before the account is removed."
+      summary: "2 private Memory or personal MCP records will be fenced and durably purged before the account is removed."
     });
 
     expect(
@@ -186,7 +186,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: false,
       reason: "group_has_grants",
-      summary: "Remove 2 Knowledge Base publications before deleting this group."
+      summary: "Publications of removed Knowledge bases are still being deleted; try again later."
     });
 
     expect(
@@ -212,7 +212,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "No members, active grants, provider credential assignments, Assistant, Skill, or Knowledge Base publications; this group can be deleted."
+      summary: "No members, active grants, provider credential assignments, Assistant or Skill publications; this group can be deleted."
     });
   });
 

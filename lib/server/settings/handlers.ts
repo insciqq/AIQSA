@@ -9,16 +9,11 @@ import {
 } from "../http/requestBody";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
-import { KNOWLEDGE_DISABLED_CODE, KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   decodeChatDefaultMcpMode,
   isAssistantReferenceId,
   type ChatDefaultMcpMode
 } from "../../contracts/chatDefaults";
-import {
-  decodeKnowledgeSelection,
-  type KnowledgeSelection
-} from "../../contracts/knowledge";
 import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import {
   catalogDefaultAssistant,
@@ -45,7 +40,6 @@ export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
   /** Null clears the default; an id must be available to the user. */
   defaultAssistantId: string | null;
   defaultControlValues: Record<string, unknown>;
-  defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
   defaultSkillsMode: SkillsMode;
   defaultWorkspaceEnabled: boolean;
@@ -205,7 +199,6 @@ function buildSettingsUpdate(
     "defaultAnswerReview",
     "defaultAssistantId",
     "defaultControlValues",
-    "defaultKnowledgePlan",
     "defaultMcpMode",
     "defaultSkillsMode",
     "defaultWorkspaceEnabled",
@@ -259,20 +252,6 @@ function buildSettingsUpdate(
         return { error: "default_search_unavailable" };
       }
       update.defaultSearchPlan = decoded.plan;
-    }
-  }
-
-  if ("defaultKnowledgePlan" in body) {
-    if (body.defaultKnowledgePlan === null) {
-      update.defaultKnowledgePlan = null;
-    } else {
-      const decoded = decodeKnowledgeSelection(body.defaultKnowledgePlan);
-      if (!decoded.ok || decoded.plan.mode === "inherited") {
-        return { error: "default_knowledge_plan_invalid" };
-      }
-      // Knowledge is disabled: clearing the saved default stays possible, choosing one does not.
-      if (!KNOWLEDGE_ENABLED && decoded.plan.mode !== "none") return { error: KNOWLEDGE_DISABLED_CODE };
-      update.defaultKnowledgePlan = decoded.plan.mode === "none" ? null : decoded.plan;
     }
   }
 
@@ -367,7 +346,6 @@ function serializeSettings(
     defaultAssistantId: defaultAssistant.assistantId,
     defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
-    defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
     defaultSkillsMode: chatDefaults.skillsMode,
     defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? true,
@@ -404,7 +382,7 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
     if (!result.update) {
       const error = result.error ?? "settings_update_required";
       return Response.json({ error }, {
-        status: error === "assistant_not_available" ? 404 : error === KNOWLEDGE_DISABLED_CODE ? 409 : 400
+        status: error === "assistant_not_available" ? 404 : 400
       });
     }
 

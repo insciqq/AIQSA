@@ -7,7 +7,6 @@ const archivedSummary = {
   activeLeafMessageId: "archive-assistant",
   archived: true,
   createdAt: timestamp,
-  defaultKnowledgePlan: null,
   defaultModelId: "gpt-5.5",
   defaultProvider: "openai",
   folderId: null,
@@ -16,7 +15,6 @@ const archivedSummary = {
   memoryMode: "NORMAL",
   messageCount: 2,
   pinned: false,
-  projectId: null,
   sourceRevision: 7,
   title: "Quarterly evidence review",
   updatedAt: timestamp

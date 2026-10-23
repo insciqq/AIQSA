@@ -121,7 +121,7 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
       if (text) {
         const summary = answer.artifactSummary;
         const rendered = renderTelegramAnswer(answer.text, {
-          citations: summary ? [...summary.citations, ...(summary.knowledgeCitations ?? [])] : [],
+          citations: summary?.citations ?? [],
           sources: summary?.sources ?? []
         });
         continued = take(await bot.outbound.sendContent({

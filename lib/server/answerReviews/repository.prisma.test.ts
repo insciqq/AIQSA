@@ -210,7 +210,7 @@ describe("answer review storage", () => {
     expect(projection.get(review.userMessageId)?.step).toEqual({ kind: "review", reviewer: 0, round: 1, step: 0 });
     expect(projection.get(review.assistantMessageId)?.step).toEqual({ kind: "review", modelName: "Synthetic Reviewer", reviewer: 0,
       round: 1, step: 0 });
-    // Another viewer (a Project member) sees the session without its actions.
+    // Another viewer sees the session without its actions.
     const other = await loadAnswerReviewProjection(prisma, { chatId: f.chatId, messages: [{ answerReviewRound: null,
       answerReviewSessionId: null, answerReviewStep: null, id: first.assistantMessageId, parentMessageId: first.userMessageId,
       role: "assistant", systemTurnKind: null }], viewerUserId: "another-member" });

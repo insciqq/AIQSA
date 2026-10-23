@@ -13,9 +13,8 @@ export type AcceptedImageGenerationPlan = {
   parameters: ImageGenerationParameters;
 };
 
-/** Personal runs use the initiating user's effective choice; Project runs use
- * the administrator default and never read personal preferences. */
-export type ImageModelScope = Readonly<{ kind: "personal"; userId: string }> | Readonly<{ kind: "project" }>;
+/** A run uses the initiating user's effective choice. */
+export type ImageModelScope = Readonly<{ kind: "personal"; userId: string }>;
 
 export type ImageModelResolution =
   | Readonly<{ ok: true; plan: AcceptedImageGenerationPlan; providerModelId: string; source: "organization" | "personal" }>
@@ -97,9 +96,7 @@ export function createImageModelRoleResolver(
     const [policy, settings] = await Promise.all([
       db.systemModelPolicy.findUnique({ where: { id: "installation" },
         select: { version: true, imagePublication: publication } }),
-      scope.kind === "personal"
-        ? db.userSettings.findUnique({ where: { userId: scope.userId }, select: { imagePublication: publication } })
-        : Promise.resolve(null)
+      db.userSettings.findUnique({ where: { userId: scope.userId }, select: { imagePublication: publication } })
     ]);
     // No administrator default turns image generation off for everyone. A
     // previous release can clear the role without withdrawing publications;

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { Prisma, type ChatImportSource, type MessageStatus, type ModelRunStatus } from "@prisma/client";
-import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import {
   applyMemorySourceMutations,
@@ -12,10 +11,7 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { resolveProjectAccess } from "../projects/access";
-import { ProjectsDisabledError } from "../projects/disabled";
 import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
-import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -41,17 +37,10 @@ function isActiveMessageStatus(status: MessageStatus): boolean {
   return activeMessageStatuses.includes(status);
 }
 
-function isProjectChat(chat: LockedOwnedChat): chat is LockedOwnedChat & { projectId: string } {
-  return chat.projectId !== null;
-}
-
 type LockedOwnedChat = LockedMemorySourceChat & {
-  defaultKnowledgePlan: Prisma.JsonValue | null;
   defaultProviderModelId: string | null;
   importSource: ChatImportSource | null;
   importSourceModel: string | null;
-  projectFolderId: string | null;
-  projectId: string | null;
   title: string;
 };
 
@@ -59,21 +48,9 @@ async function lockOwnedChatForMessage(
   tx: Prisma.TransactionClient,
   input: { messageId: string; userId: string }
 ): Promise<LockedOwnedChat | null> {
-  const boundary = await tx.message.findUnique({
-    select: { chat: { select: { projectId: true } } },
-    where: { id: input.messageId }
-  });
-  if (boundary?.chat.projectId) {
-    await tx.$queryRaw(Prisma.sql`
-      SELECT "id" FROM "Project"
-      WHERE "id" = ${boundary.chat.projectId}
-      FOR UPDATE
-    `);
-  }
   const chats = await tx.$queryRaw<LockedOwnedChat[]>`
     SELECT
       chat."activeLeafMessageId",
-      chat."defaultKnowledgePlan",
       chat."defaultProviderModelId",
       chat."folderId",
       chat."id",
@@ -81,8 +58,6 @@ async function lockOwnedChatForMessage(
       chat."importSourceModel",
       chat."title",
       chat."userId",
-      chat."projectFolderId",
-      chat."projectId",
       chat."archived",
       chat."memoryMode",
       chat."memoryBranchGeneration",
@@ -91,44 +66,7 @@ async function lockOwnedChatForMessage(
       chat."temporaryRetentionDeadline"
     FROM "Chat" AS chat
     WHERE chat."archived" = FALSE
-      AND (
-        chat."userId" = ${input.userId}
-        OR (
-          chat."userId" IS NULL
-          AND chat."projectId" IS NOT NULL
-          AND EXISTS (
-            SELECT 1
-            FROM "Project" AS project
-            WHERE project."id" = chat."projectId"
-              AND project."status" = 'ACTIVE'::"ProjectStatus"
-              AND EXISTS (
-                SELECT 1 FROM "User" AS project_user
-                WHERE project_user."id" = ${input.userId}
-                  AND project_user."status" = 'active'::"UserStatus"
-              )
-              AND (
-                EXISTS (
-                  SELECT 1 FROM "ProjectGrant" AS direct_grant
-                  WHERE direct_grant."projectId" = project."id"
-                    AND direct_grant."userId" = ${input.userId}
-                    AND direct_grant."role" IN ('CONTRIBUTOR'::"ProjectRole", 'MANAGER'::"ProjectRole", 'OWNER'::"ProjectRole")
-                )
-                OR EXISTS (
-                  SELECT 1
-                  FROM "ProjectGrant" AS group_grant
-                  INNER JOIN "UserGroup" AS membership
-                    ON membership."groupId" = group_grant."groupId"
-                   AND membership."userId" = ${input.userId}
-                  INNER JOIN "Group" AS granted_group
-                    ON granted_group."id" = membership."groupId"
-                   AND granted_group."archivedAt" IS NULL
-                  WHERE group_grant."projectId" = project."id"
-                    AND group_grant."role" IN ('CONTRIBUTOR'::"ProjectRole", 'MANAGER'::"ProjectRole", 'OWNER'::"ProjectRole")
-                )
-              )
-          )
-        )
-      )
+      AND chat."userId" = ${input.userId}
       AND EXISTS (
         SELECT 1
         FROM "Message" AS message
@@ -255,13 +193,6 @@ function rewriteMessageAttachmentIds(
   });
 }
 
-function storedKnowledgePlan(value: unknown): KnowledgePlan | null {
-  if (value === null || value === undefined) return null;
-  const decoded = decodeKnowledgePlan(value);
-  if (!decoded.ok) throw new Error("knowledge_default_integrity_invalid");
-  return decoded.plan;
-}
-
 export function createPrismaMessageBranchRepository(
   prismaClient = prisma,
   options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
@@ -277,8 +208,6 @@ export function createPrismaMessageBranchRepository(
         if (!lockedChat || lockedChat.memoryMode === "TEMPORARY") {
           return null;
         }
-        // Projects are disabled: no new chat starts from a Project chat.
-        if (isProjectChat(lockedChat) && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
         await assertChatHasNoActiveRun(tx, lockedChat.id);
 
         const source = await tx.message.findFirst({
@@ -320,9 +249,6 @@ export function createPrismaMessageBranchRepository(
             inputTokens: true,
             modelId: true,
             outputTokens: true,
-            authorDisplayName: true,
-            authorProjectRole: true,
-            authorUserId: true,
             parentMessageId: true,
             provider: true,
             reasoningTokens: true,
@@ -356,7 +282,6 @@ export function createPrismaMessageBranchRepository(
         const path = ancestors.filter((message) => !reviewCollapse.removed.has(message.id));
         // The branch's last message stands for its source when the source was a review step.
         const branchLeaf = path.at(-1)!;
-        const defaultKnowledgePlan = storedKnowledgePlan(lockedChat.defaultKnowledgePlan);
 
         const sourceAnswerBinding =
           branchLeaf.role === "assistant"
@@ -371,7 +296,7 @@ export function createPrismaMessageBranchRepository(
                   },
                   where: {
                     assistantMessageId: branchLeaf.id,
-                    ...(isProjectChat(lockedChat) ? {} : { userId })
+                    userId
                   }
                 })
               )?.providerRunBindings[0] ?? null
@@ -381,8 +306,7 @@ export function createPrismaMessageBranchRepository(
         // source run and chat. They join the ordinary attachment clone path.
         const generatedImages = await tx.attachment.findMany({
           where: { chatId: lockedChat.id, messageId: { in: path.map((message) => message.id) },
-            origin: "IMAGE_OUTPUT", kind: "image", status: "ready",
-            ...(isProjectChat(lockedChat) ? { projectId: lockedChat.projectId, userId: null } : { userId }) },
+            origin: "IMAGE_OUTPUT", kind: "image", status: "ready", userId },
           select: { id: true, messageId: true, fileName: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }]
         });
         for (const message of path) {
@@ -420,9 +344,7 @@ export function createPrismaMessageBranchRepository(
                   metadata: true,
                   mimeType: true,
                   status: true,
-                  storageKey: true,
-                  uploaderDisplayName: true,
-                  uploaderUserId: true
+                  storageKey: true
                 },
                 where: {
                   chatId: lockedChat.id,
@@ -432,9 +354,7 @@ export function createPrismaMessageBranchRepository(
                   messageId: {
                     in: path.map((message) => message.id)
                   },
-                  ...(isProjectChat(lockedChat)
-                    ? { projectId: lockedChat.projectId, userId: null }
-                    : { userId })
+                  userId
                 }
               });
         const sourceAttachmentsById = new Map(
@@ -448,57 +368,22 @@ export function createPrismaMessageBranchRepository(
           }
         }
 
-        const projectAuthor = isProjectChat(lockedChat)
-          ? {
-              access: await resolveProjectAccess(tx, {
-                minimumRole: "CONTRIBUTOR",
-                projectId: lockedChat.projectId,
-                requireActive: true,
-                userId
-              }),
-              user: await tx.user.findUnique({
-                select: { displayName: true },
-                where: { id: userId }
-              })
-            }
-          : null;
-        if (projectAuthor && (!projectAuthor.access || !projectAuthor.user)) return null;
-
         const chat = await tx.chat.create({
-          data: isProjectChat(lockedChat)
-            ? {
-                createdByDisplayName: projectAuthor!.user!.displayName,
-                createdByUserId: userId,
-                defaultKnowledgePlan: defaultKnowledgePlan === null
-                  ? Prisma.DbNull
-                  : json(defaultKnowledgePlan),
-                defaultProviderModelId:
-                  sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
-                memoryMode: "EXCLUDED",
-                pinned: false,
-                projectFolderId: lockedChat.projectFolderId,
-                projectId: lockedChat.projectId,
-                title: branchChatTitle(lockedChat.title),
-                userId: null
-              }
-            : {
-                defaultKnowledgePlan: defaultKnowledgePlan === null
-                  ? Prisma.DbNull
-                  : json(defaultKnowledgePlan),
-                defaultProviderModelId:
-                  sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
-                folderId: lockedChat.folderId,
-                // An Excluded source stays excluded; Temporary never branches.
-                memoryMode: lockedChat.memoryMode,
-                // A copy of an imported chat keeps its import marker, never the key,
-                // so it can no more use Memory than its source.
-                ...(lockedChat.importSource
-                  ? { importSource: lockedChat.importSource, importSourceModel: lockedChat.importSourceModel }
-                  : {}),
-                pinned: false,
-                title: branchChatTitle(lockedChat.title),
-                userId
-              },
+          data: {
+            defaultProviderModelId:
+              sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
+            folderId: lockedChat.folderId,
+            // An Excluded source stays excluded; Temporary never branches.
+            memoryMode: lockedChat.memoryMode,
+            // A copy of an imported chat keeps its import marker, never the key,
+            // so it can no more use Memory than its source.
+            ...(lockedChat.importSource
+              ? { importSource: lockedChat.importSource, importSourceModel: lockedChat.importSourceModel }
+              : {}),
+            pinned: false,
+            title: branchChatTitle(lockedChat.title),
+            userId
+          },
           select: {
             id: true
           }
@@ -539,13 +424,6 @@ export function createPrismaMessageBranchRepository(
               inputTokens: sourceMessage.inputTokens,
               modelId: sourceMessage.modelId,
               outputTokens: sourceMessage.outputTokens,
-              ...(isProjectChat(lockedChat) && sourceMessage.role === "user"
-                ? {
-                    authorDisplayName: sourceMessage.authorDisplayName,
-                    authorProjectRole: sourceMessage.authorProjectRole,
-                    authorUserId: sourceMessage.authorUserId
-                  }
-                : {}),
               parentMessageId,
               provider: sourceMessage.provider,
               reasoningTokens: sourceMessage.reasoningTokens,
@@ -587,13 +465,7 @@ export function createPrismaMessageBranchRepository(
                 mimeType: sourceAttachment.mimeType,
                 status: sourceAttachment.status,
                 storageKey: sourceAttachment.storageKey,
-                ...(isProjectChat(lockedChat)
-                  ? {
-                      projectId: lockedChat.projectId,
-                      uploaderDisplayName: sourceAttachment.uploaderDisplayName ?? projectAuthor!.user!.displayName,
-                      uploaderUserId: sourceAttachment.uploaderUserId
-                    }
-                  : { userId })
+                userId
               }
             });
           }
@@ -602,31 +474,23 @@ export function createPrismaMessageBranchRepository(
           activeLeafMessageId = cloned.id;
         }
 
-        if (isProjectChat(lockedChat)) {
-          await tx.chat.update({
-            data: { activeLeafMessageId },
-            where: { id: chat.id }
-          });
-        } else {
-          const newChat = await lockMemorySourceChat(tx, {
-            chatId: chat.id,
-            lock: "UPDATE",
-            userId
-          });
-          if (!newChat) throw new Error("branch_chat_disappeared");
-          await applyMemorySourceMutations(tx, {
-            branchSourceChatId: lockedChat.id,
-            chat: newChat,
-            hooks: memorySourceHooks,
-            mutations: ["NORMAL_APPEND"],
-            patch: { activeLeafMessageId }
-          });
-        }
+        const newChat = await lockMemorySourceChat(tx, {
+          chatId: chat.id,
+          lock: "UPDATE",
+          userId
+        });
+        if (!newChat) throw new Error("branch_chat_disappeared");
+        await applyMemorySourceMutations(tx, {
+          branchSourceChatId: lockedChat.id,
+          chat: newChat,
+          hooks: memorySourceHooks,
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId }
+        });
         const updated = await tx.chat.findUniqueOrThrow({
           select: {
             activeLeafMessageId: true,
             createdAt: true,
-            defaultKnowledgePlan: true,
             defaultProviderModel: {
               select: {
                 connectionId: true,
@@ -636,8 +500,6 @@ export function createPrismaMessageBranchRepository(
             folderId: true,
             importSource: true,
             importSourceModel: true,
-            projectFolderId: true,
-            projectId: true,
             id: true,
             pinned: true,
             title: true,
@@ -652,11 +514,8 @@ export function createPrismaMessageBranchRepository(
 
         return {
           ...chatSummary,
-          defaultKnowledgePlan: storedKnowledgePlan(updated.defaultKnowledgePlan),
-          folderId: updated.projectFolderId ?? updated.folderId,
           defaultModelId: defaultProviderModel?.id ?? null,
           defaultProvider: defaultProviderModel?.connectionId ?? null,
-          projectId: updated.projectId,
           messageCount: path.length
         } satisfies BranchChatRecord;
       }),
@@ -669,15 +528,13 @@ export function createPrismaMessageBranchRepository(
         if (!lockedChat) {
           return null;
         }
-        // Projects are disabled: a Project chat takes no edited message.
-        if (isProjectChat(lockedChat) && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
         await assertChatHasNoActiveRun(tx, lockedChat.id);
 
         const original = await tx.message.findFirst({
           where: {
             chatId: lockedChat.id,
             id: originalMessageId,
-            role: isProjectChat(lockedChat) ? "user" : { in: ["assistant", "user"] }
+            role: { in: ["assistant", "user"] }
           }
         });
 
@@ -687,22 +544,6 @@ export function createPrismaMessageBranchRepository(
         if (isActiveMessageStatus(original.status)) {
           throw new ActiveMessageMutationConflictError();
         }
-
-        const projectAuthor = isProjectChat(lockedChat)
-          ? {
-              access: await resolveProjectAccess(tx, {
-                minimumRole: "CONTRIBUTOR",
-                projectId: lockedChat.projectId,
-                requireActive: true,
-                userId
-              }),
-              user: await tx.user.findUnique({
-                select: { displayName: true },
-                where: { id: userId }
-              })
-            }
-          : null;
-        if (projectAuthor && (!projectAuthor.access || !projectAuthor.user)) return null;
 
         // The inline editor changes only text. Its sibling must own new
         // attachment rows so deleting either branch cannot detach the other.
@@ -726,9 +567,7 @@ export function createPrismaMessageBranchRepository(
             chatId: lockedChat.id,
             id: { in: attachmentIds },
             messageId: original.id,
-            ...(isProjectChat(lockedChat)
-              ? { projectId: lockedChat.projectId, userId: null }
-              : { projectId: null, userId })
+            userId
           }
         });
         if (attachments.length !== attachmentIds.length) return null;
@@ -742,14 +581,7 @@ export function createPrismaMessageBranchRepository(
             parentMessageId: original.parentMessageId,
             provider: original.provider,
             role: original.role,
-            status: "complete",
-            ...(isProjectChat(lockedChat) && original.role === "user"
-              ? {
-                  authorDisplayName: projectAuthor!.user!.displayName,
-                  authorProjectRole: projectAuthor!.access!.effectiveRole,
-                  authorUserId: userId
-                }
-              : {})
+            status: "complete"
           }
         });
 
@@ -772,30 +604,17 @@ export function createPrismaMessageBranchRepository(
                 : {}),
               status: attachment.status,
               storageKey: attachment.storageKey,
-              ...(isProjectChat(lockedChat)
-                ? {
-                    projectId: lockedChat.projectId,
-                    uploaderDisplayName: attachment.uploaderDisplayName ?? projectAuthor!.user!.displayName,
-                    uploaderUserId: attachment.uploaderUserId
-                  }
-                : { userId })
+              userId
             }
           });
         }
 
-        if (isProjectChat(lockedChat)) {
-          await tx.chat.update({
-            data: { activeLeafMessageId: message.id },
-            where: { id: lockedChat.id }
-          });
-        } else {
-          await applyMemorySourceMutations(tx, {
-            chat: lockedChat,
-            hooks: memorySourceHooks,
-            mutations: ["BRANCH_PATH_CHANGE"],
-            patch: { activeLeafMessageId: message.id }
-          });
-        }
+        await applyMemorySourceMutations(tx, {
+          chat: lockedChat,
+          hooks: memorySourceHooks,
+          mutations: ["BRANCH_PATH_CHANGE"],
+          patch: { activeLeafMessageId: message.id }
+        });
 
         return message;
       }),
@@ -806,12 +625,6 @@ export function createPrismaMessageBranchRepository(
           userId
         });
         if (!lockedChat) {
-          return null;
-        }
-        // Message deletion is a personal-workspace operation. Project chats
-        // retain their shared history; the Project role matrix intentionally
-        // exposes branching and chat archival instead.
-        if (isProjectChat(lockedChat)) {
           return null;
         }
         await assertChatHasNoActiveRun(tx, lockedChat.id);
@@ -928,32 +741,21 @@ export function createPrismaMessageBranchRepository(
             messageId: {
               in: deletedMessageIds
             },
-            ...(isProjectChat(lockedChat)
-              ? { projectId: lockedChat.projectId }
-              : { userId })
+            userId
           }
         });
-        if (!isProjectChat(lockedChat)) {
-          await deleteMemorySourceJobsForMessages(tx, {
-            chatId: root.chatId,
-            messageIds: deletedMessageIds,
-            userId
-          });
-        }
+        await deleteMemorySourceJobsForMessages(tx, {
+          chatId: root.chatId,
+          messageIds: deletedMessageIds,
+          userId
+        });
         if (nextActiveLeafMessageId !== activeLeafMessageId) {
-          if (isProjectChat(lockedChat)) {
-            await tx.chat.update({
-              data: { activeLeafMessageId: nextActiveLeafMessageId },
-              where: { id: lockedChat.id }
-            });
-          } else {
-            await applyMemorySourceMutations(tx, {
-              chat: lockedChat,
-              hooks: memorySourceHooks,
-              mutations: ["BRANCH_PATH_CHANGE"],
-              patch: { activeLeafMessageId: nextActiveLeafMessageId }
-            });
-          }
+          await applyMemorySourceMutations(tx, {
+            chat: lockedChat,
+            hooks: memorySourceHooks,
+            mutations: ["BRANCH_PATH_CHANGE"],
+            patch: { activeLeafMessageId: nextActiveLeafMessageId }
+          });
         }
 
         for (const id of deletedMessageIds.sort((a, b) => (deletedDepths.get(b) ?? 0) - (deletedDepths.get(a) ?? 0))) {

@@ -15,11 +15,10 @@ const emptyFacts = { hasFiles: false, hasEarlierExports: false };
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 afterAll(async () => { await prisma.$disconnect(); });
 
-async function fixture(project = false) {
-  const userIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
-  const [userId, contributorId, viewerId, outsiderId] = userIds as [string, string, string, string];
+async function fixture() {
+  const userIds = [randomUUID(), randomUUID()];
+  const [userId, outsiderId] = userIds as [string, string];
   const chatId = randomUUID();
-  const projectId = project ? randomUUID() : null;
   const storagePrefix = `inbox-facts/${chatId}/`;
   cleanups.push(async () => {
     await prisma.attachment.deleteMany({ where: { storageKey: { startsWith: storagePrefix } } });
@@ -28,40 +27,29 @@ async function fixture(project = false) {
     await prisma.chat.updateMany({ where: { id: chatId }, data: { activeLeafMessageId: null } });
     await prisma.message.deleteMany({ where: { chatId } });
     await prisma.chat.deleteMany({ where: { id: chatId } });
-    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { startsWith: storagePrefix } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
   await prisma.user.createMany({ data: userIds.map(id => ({ id, displayName: "Synthetic inbox actor", status: "active" })) });
-  if (projectId) await prisma.project.create({ data: {
-    id: projectId, name: "Synthetic inbox Project", createdByUserId: userId, createdByDisplayName: "Synthetic inbox actor",
-    grants: { create: [{ userId, role: "OWNER" }, { userId: contributorId, role: "CONTRIBUTOR" }, { userId: viewerId, role: "VIEWER" }] }
-  } });
-  await prisma.chat.create({ data: { id: chatId, title: "Synthetic inbox", workspaceEnabled: true,
-    ...(projectId ? { projectId, memoryMode: "EXCLUDED", createdByUserId: userId, createdByDisplayName: "Synthetic inbox actor" } : { userId }) } });
-  const question = await prisma.message.create({ data: { chatId, role: "user", status: "complete", content: textMessageContent("Synthetic question"),
-    ...(projectId ? { authorUserId: userId, authorDisplayName: "Synthetic inbox actor", authorProjectRole: "OWNER" } : {}) } });
-  return { chatId, userId, contributorId, viewerId, outsiderId, projectId, storagePrefix, question,
-    input: { chatId, userId, ...(projectId ? { projectId } : {}), leafMessageId: question.id, imageIds: [] } satisfies WorkspaceInboxFactsInput };
+  await prisma.chat.create({ data: { id: chatId, title: "Synthetic inbox", workspaceEnabled: true, userId } });
+  const question = await prisma.message.create({ data: { chatId, role: "user", status: "complete", content: textMessageContent("Synthetic question") } });
+  return { chatId, userId, outsiderId, storagePrefix, question,
+    input: { chatId, userId, leafMessageId: question.id, imageIds: [] } satisfies WorkspaceInboxFactsInput };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 async function attachment(f: Fixture, patch: Partial<Prisma.AttachmentUncheckedCreateInput> = {}) {
   return prisma.attachment.create({ data: { byteSize: 4, checksum: "a".repeat(64), chatId: f.chatId,
     fileName: "synthetic.txt", kind: "file", messageId: f.question.id, mimeType: "text/plain", metadata: {},
-    storageKey: `${f.storagePrefix}${randomUUID()}`, status: "ready", origin: "USER_UPLOAD",
-    ...(f.projectId ? { projectId: f.projectId, uploaderUserId: f.userId, uploaderDisplayName: "Synthetic inbox actor" } : { userId: f.userId }),
+    storageKey: `${f.storagePrefix}${randomUUID()}`, status: "ready", origin: "USER_UPLOAD", userId: f.userId,
     ...patch } });
 }
 
 async function turn(f: Fixture, parentMessageId: string | null = f.question.id) {
-  const question = await prisma.message.create({ data: { chatId: f.chatId, parentMessageId, role: "user", status: "complete", content: textMessageContent("Continue"),
-    ...(f.projectId ? { authorUserId: f.userId, authorDisplayName: "Synthetic inbox actor", authorProjectRole: "OWNER" } : {}) } });
+  const question = await prisma.message.create({ data: { chatId: f.chatId, parentMessageId, role: "user", status: "complete", content: textMessageContent("Continue") } });
   const answer = await prisma.message.create({ data: { chatId: f.chatId, parentMessageId: question.id, role: "assistant", status: "complete", content: textMessageContent("Synthetic answer") } });
   const run = await prisma.modelRun.create({ data: { chatId: f.chatId, userId: f.userId,
-    userMessageId: question.id, assistantMessageId: answer.id, status: "complete", normalizedRequest: {}, provider: "fake", modelId: "fake-qsa",
-    ...(f.projectId ? { projectRunBinding: { create: { projectId: f.projectId, initiatorUserId: f.userId,
-      acceptedRole: "OWNER", accessRevision: 1, policyRevision: 1, instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true } } } : {}) } });
+    userMessageId: question.id, assistantMessageId: answer.id, status: "complete", normalizedRequest: {}, provider: "fake", modelId: "fake-qsa" } });
   const session = await prisma.workspaceSession.upsert({ where: { chatId: f.chatId }, update: {}, create: {
     chatId: f.chatId, sandboxName: `inbox-facts-${randomUUID()}`, imageRef: "fixture:inbox", state: "STOPPED",
     internetEnabled: false, policyRevision: 1, expiresAt: new Date(Date.now() + 60_000)
@@ -156,7 +144,7 @@ describe("authorized metadata-only Workspace inbox facts", () => {
     const f = await fixture();
     await attachment(f);
     expect(await loadWorkspaceInboxFacts(prisma, f.input)).toEqual({ hasFiles: true, hasEarlierExports: false });
-    for (const patch of [{ userId: f.outsiderId }, { userId: randomUUID() }, { chatId: randomUUID() }, { projectId: randomUUID() }]) {
+    for (const patch of [{ userId: f.outsiderId }, { userId: randomUUID() }, { chatId: randomUUID() }]) {
       expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, ...patch })).toEqual(emptyFacts);
     }
     await prisma.user.update({ where: { id: f.userId }, data: { status: "disabled" } });
@@ -169,23 +157,8 @@ describe("authorized metadata-only Workspace inbox facts", () => {
     expect(await loadWorkspaceInboxFacts(prisma, f.input)).toEqual(emptyFacts);
   });
 
-  it("requires current Project contributor access and shares originals independently of their uploader", async () => {
-    const f = await fixture(true);
-    await attachment(f, { uploaderUserId: f.contributorId });
-    for (const userId of [f.userId, f.contributorId]) {
-      expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, userId })).toEqual({ hasFiles: true, hasEarlierExports: false });
-    }
-    for (const patch of [{ userId: f.viewerId }, { userId: f.outsiderId }, { projectId: undefined }, { projectId: randomUUID() }]) {
-      expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, ...patch })).toEqual(emptyFacts);
-    }
-    await prisma.projectGrant.delete({ where: { projectId_userId: { projectId: f.projectId!, userId: f.contributorId } } });
-    expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, userId: f.contributorId })).toEqual(emptyFacts);
-    await prisma.project.update({ where: { id: f.projectId! }, data: { status: "ARCHIVED", archivedAt: new Date() } });
-    expect(await loadWorkspaceInboxFacts(prisma, f.input)).toEqual(emptyFacts);
-  });
-
-  it.each([false, true])("includes only ready completed ancestor exports, never sibling, foreign, unready or unpublished output (Project=%s)", async project => {
-    const f = await fixture(project);
+  it("includes only ready completed ancestor exports, never sibling, foreign, unready or unpublished output", async () => {
+    const f = await fixture();
     const first = await turn(f);
     const next = await turn(f, first.answer.id);
     const sibling = await turn(f);
@@ -199,8 +172,6 @@ describe("authorized metadata-only Workspace inbox facts", () => {
     await attachment(f, { origin: "WORKSPACE_OUTPUT", producerModelRunId: first.run.id, messageId: first.answer.id });
     expect(await selected(f, next.answer.id)).toEqual([accepted.id]);
     expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, leafMessageId: next.answer.id })).toEqual({ hasFiles: true, hasEarlierExports: true });
-    if (project) expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, userId: f.contributorId,
-      leafMessageId: next.answer.id })).toEqual({ hasFiles: true, hasEarlierExports: true });
     expect(await workspaceAncestorMessageIds(prisma, f.chatId, foreign.question.id)).toEqual([]);
     expect(await workspaceAncestorMessageIds(prisma, f.chatId, null)).toEqual([]);
     expect(await loadWorkspaceInboxFacts(prisma, { ...f.input, leafMessageId: foreign.question.id })).toEqual(emptyFacts);

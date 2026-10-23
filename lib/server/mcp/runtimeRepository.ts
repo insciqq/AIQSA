@@ -13,7 +13,6 @@ import { prisma } from "@/lib/server/prisma";
 import {
   authorizedMcpPersonalSlotKeys,
   mcpRuntimeFingerprint,
-  mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
   resolveEffectiveMcpValues,
   type EffectiveMcpSlotPlanItem
@@ -183,9 +182,6 @@ type DesiredRecord = Prisma.McpUserServerGetPayload<{
   };
 }>;
 
-/** A server as its installation-owned Project runtime sees it: no member row. */
-type SharedRuntimeServerRecord = Prisma.McpServerGetPayload<{ include: { activeRevision: true } }>;
-
 type RemoteRuntimeFields = {
   allowPrivateNetwork: boolean;
   callTimeoutMs: number;
@@ -212,9 +208,6 @@ type RemoteRuntimeFields = {
 type UserRuntimeOwner = { userId: string; userServerId: string };
 
 export type RemoteRuntimeCandidate = RemoteRuntimeFields & UserRuntimeOwner;
-
-/** The Project runtime of a server: shared or no-auth values only, never a member. */
-export type SharedRuntimeCandidate = RemoteRuntimeFields & { serverId: string };
 
 type EffectiveRuntimeBase = Readonly<{
   configuration: McpDraftConfiguration;
@@ -406,53 +399,6 @@ export function remoteRuntimeCandidate(input: {
   return base ? { ...remoteRuntimeFields(base), userId: base.userId, userServerId: base.userServerId } : null;
 }
 
-/**
- * The installation-owned runtime Project runs use. It is derived from the
- * server alone: shared or literal values, no grant, preference, personal value
- * or OAuth identity, so it is one runtime for every member. Project authority
- * requires a shared value or no authentication, exactly as Project admission.
- */
-export function sharedRuntimeCandidate(input: {
-  key: Buffer;
-  server: SharedRuntimeServerRecord;
-}): SharedRuntimeCandidate | null {
-  const { server } = input;
-  // Only an explicit owner marks a server as personal.
-  if (!server.enabled || server.archivedAt || server.ownerUserId != null) return null;
-  const revision = server.activeRevision;
-  if (!revision) return null;
-  const configuration = revisionConfiguration(revision.configuration);
-  if (!configuration || configuration.auth.mode === "oauth" ||
-    (!server.sharedConfigEnvelope && configuration.auth.mode !== "none")) return null;
-  const shared = storedValues(
-    server.sharedConfigEnvelope,
-    input.key,
-    mcpEndpointBinding(configuration),
-    server.sharedConfigEnvelope
-      ? mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)
-      : undefined
-  );
-  const effective = resolveEffectiveMcpValues({
-    personalSlotKeys: new Set(),
-    personalValues: {},
-    personalVersion: 0,
-    sharedValues: shared.values,
-    sharedVersion: server.sharedConfigVersion,
-    slots: configuration.slots
-  });
-  if (effective.invalidSlotKeys.length || effective.missingSlotKeys.length) return null;
-  const base: EffectiveRuntimeBase = {
-    configuration,
-    credentialSources: safeCredentialSources(configuration, effective.plan, false),
-    effectiveEnvelope: { plan: effective.plan, values: effective.values, version: 1 },
-    externalAccountLabel: null,
-    fingerprint: mcpSharedRuntimeFingerprint({ plan: effective.plan, revisionId: revision.id }),
-    oauthConnectionId: null,
-    revision
-  };
-  return { ...remoteRuntimeFields(base), serverId: server.id };
-}
-
 function generationLaunch(
   candidate: RemoteRuntimeFields,
   generation: Readonly<{ id: string; inventoryUpdatedAt: Date | null; retryAt: Date | null }>,
@@ -515,13 +461,10 @@ export function createPrismaMcpRuntimeRepository(input: {
         }
       }).catch(retainDatabaseFailure);
       if (!generation) return null;
-      // A member's generation or the server's shared Project generation; the
-      // latter proves its identity without any user.
+      // A member's generation; a runtime without a member is not accepted.
       const owner = generation.userServer
         ? { serverId: generation.userServer.serverId, userId: generation.userServer.userId }
-        : generation.sharedServerId !== null
-          ? { serverId: generation.sharedServerId, userId: null }
-          : null;
+        : null;
       if (!owner || generation.revision.serverId !== owner.serverId) return null;
       const configuration = revisionConfiguration(generation.revision.configuration);
       if (!configuration || (configuration.auth.mode === "oauth") !== Boolean(generation.oauthConnectionId)) {
@@ -533,23 +476,18 @@ export function createPrismaMcpRuntimeRepository(input: {
           encryptionKey(),
           mcpRuntimeGenerationEnvelopeContext(generation.id, generation.fingerprint)
         );
-        if (owner.userId === null && snapshot.personalRuntime) return null;
         const configuredSlotKeys = new Set(configuration.slots.map((slot) => slot.slotKey));
         if (snapshot.plan.length !== configuration.slots.length ||
           Object.keys(snapshot.values).length !== configuration.slots.length ||
           snapshot.plan.some((item) => !configuredSlotKeys.has(item.slotKey)) ||
           configuration.slots.some((slot) => !Object.hasOwn(snapshot.values, slot.slotKey) ||
             !validateMcpSlotValue(slot, snapshot.values[slot.slotKey]))) return null;
-        const fingerprint = owner.userId === null
-          ? snapshot.plan.some((item) => item.source === "personal")
-            ? null
-            : mcpSharedRuntimeFingerprint({ plan: snapshot.plan, revisionId: generation.revision.id })
-          : mcpRuntimeFingerprint({
-              oauthConnectionRevision: generation.oauthConnectionId,
-              plan: snapshot.plan,
-              revisionId: generation.revision.id,
-              userId: owner.userId
-            });
+        const fingerprint = mcpRuntimeFingerprint({
+          oauthConnectionRevision: generation.oauthConnectionId,
+          plan: snapshot.plan,
+          revisionId: generation.revision.id,
+          userId: owner.userId
+        });
         if (fingerprint !== generation.fingerprint) return null;
         const commonLaunch = {
           callTimeoutMs: configuration.runtime.callTimeoutMs,
@@ -755,119 +693,6 @@ export function createPrismaMcpRuntimeRepository(input: {
       return launches;
     },
 
-    synchronizeShared: async ({ now, onDemand = false, serverIds }) => {
-      const recentDemandCutoff = new Date(now.getTime() - RECENT_ACTIVITY_MS);
-      if (!onDemand) {
-        // Project demand, not member activity, keeps a shared runtime desired.
-        // An idle or no longer eligible one drains; the next Project run starts
-        // it again on demand.
-        await client.mcpSharedRuntime.updateMany({
-          data: { desiredRuntimeGenerationId: null },
-          where: {
-            desiredRuntimeGenerationId: { not: null },
-            OR: [
-              { requestedAt: { lt: recentDemandCutoff } },
-              { server: { OR: [
-                { enabled: false },
-                { archivedAt: { not: null } },
-                { activeRevisionId: null },
-                { projectBindings: { none: {} } }
-              ] } }
-            ]
-          }
-        }).catch(retainDatabaseFailure);
-      }
-      const servers = await client.mcpServer.findMany({
-        include: { activeRevision: true },
-        where: {
-          activeRevisionId: { not: null },
-          archivedAt: null,
-          enabled: true,
-          ownerUserId: null,
-          projectBindings: { some: {} },
-          ...(onDemand
-            ? { id: { in: [...(serverIds ?? [])] } }
-            : { sharedRuntime: { is: { desiredRuntimeGenerationId: { not: null } } } })
-        }
-      }).catch(retainDatabaseFailure);
-      const key = encryptionKey();
-      const launches: McpRuntimeGenerationLaunch[] = [];
-      for (const server of servers) {
-        let candidate: SharedRuntimeCandidate | null;
-        try {
-          candidate = sharedRuntimeCandidate({ key, server });
-          reportSubsystemHealthy("mcp", "preflight", server.id);
-        } catch (error) {
-          reportSubsystemFailure({ error, subsystem: "mcp", stage: "preflight", scope_id: server.id,
-            code: observedFailureCode(error), action: "skip" });
-          candidate = null;
-        }
-        if (!candidate) {
-          await client.mcpSharedRuntime.updateMany({
-            data: { desiredRuntimeGenerationId: null },
-            where: { serverId: server.id }
-          }).catch(retainDatabaseFailure);
-          continue;
-        }
-        const shared = candidate;
-        const generation = await client.$transaction(async (tx) => {
-          // Concurrent Project runs of several members converge on one row
-          // and one generation instead of failing on a unique fingerprint.
-          await tx.mcpSharedRuntime.createMany({
-            data: [{ requestedAt: now, serverId: shared.serverId }],
-            skipDuplicates: true
-          });
-          const selectedGenerationId = generationId();
-          await tx.mcpRuntimeGeneration.createMany({
-            data: [{
-              credentialSources: [...shared.credentialSources],
-              effectiveConfigEnvelope: encryptMcpEnvelope(
-                shared.effectiveEnvelope,
-                key,
-                mcpRuntimeGenerationEnvelopeContext(selectedGenerationId, shared.fingerprint)
-              ),
-              externalAccountLabel: null,
-              fingerprint: shared.fingerprint,
-              id: selectedGenerationId,
-              oauthConnectionId: null,
-              revisionId: shared.revisionId,
-              sharedServerId: shared.serverId,
-              state: "starting"
-            }],
-            skipDuplicates: true
-          });
-          const selected = await tx.mcpRuntimeGeneration.findUnique({
-            where: { fingerprint: shared.fingerprint }
-          });
-          if (!selected || selected.sharedServerId !== shared.serverId || selected.userServerId !== null ||
-            selected.revisionId !== shared.revisionId || selected.oauthConnectionId !== null ||
-            !sameCredentialSources(selected.credentialSources, shared.credentialSources)) {
-            throw runtimeConfigurationError("mcp_runtime_fingerprint_collision");
-          }
-          // Shared values rotated since they were read make this generation stale.
-          const accepted = await tx.mcpSharedRuntime.updateMany({
-            data: {
-              desiredRuntimeGenerationId: selected.id,
-              ...(onDemand ? { requestedAt: now } : {})
-            },
-            where: {
-              server: {
-                activeRevisionId: shared.revisionId,
-                archivedAt: null,
-                enabled: true,
-                sharedConfigVersion: server.sharedConfigVersion
-              },
-              serverId: shared.serverId
-            }
-          });
-          return accepted.count ? selected : null;
-        }).catch(retainDatabaseFailure);
-        if (!generation) continue;
-        launches.push(generationLaunch(shared, generation, now));
-      }
-      return launches;
-    },
-
     markStarting: async ({ fingerprint, generationId, now }) => {
       const count = await client.$executeRaw`
         UPDATE "McpRuntimeGeneration" AS generation
@@ -884,15 +709,6 @@ export function createPrismaMcpRuntimeRepository(input: {
               JOIN "McpServer" AS server ON server."id" = preference."serverId"
               WHERE preference."desiredRuntimeGenerationId" = generation."id"
                 AND preference."enabled" = true
-                AND server."enabled" = true
-                AND server."archivedAt" IS NULL
-                AND server."activeRevisionId" = generation."revisionId"
-            )
-            OR EXISTS (
-              SELECT 1
-              FROM "McpSharedRuntime" AS shared
-              JOIN "McpServer" AS server ON server."id" = shared."serverId"
-              WHERE shared."desiredRuntimeGenerationId" = generation."id"
                 AND server."enabled" = true
                 AND server."archivedAt" IS NULL
                 AND server."activeRevisionId" = generation."revisionId"
@@ -930,15 +746,6 @@ export function createPrismaMcpRuntimeRepository(input: {
               JOIN "McpServer" AS server ON server."id" = preference."serverId"
               WHERE preference."desiredRuntimeGenerationId" = generation."id"
                 AND preference."enabled" = true
-                AND server."enabled" = true
-                AND server."archivedAt" IS NULL
-                AND server."activeRevisionId" = generation."revisionId"
-            )
-            OR EXISTS (
-              SELECT 1
-              FROM "McpSharedRuntime" AS shared
-              JOIN "McpServer" AS server ON server."id" = shared."serverId"
-              WHERE shared."desiredRuntimeGenerationId" = generation."id"
                 AND server."enabled" = true
                 AND server."archivedAt" IS NULL
                 AND server."activeRevisionId" = generation."revisionId"
@@ -1013,11 +820,6 @@ export function createPrismaMcpRuntimeRepository(input: {
             )
             OR EXISTS (
               SELECT 1
-              FROM "McpSharedRuntime" AS shared
-              WHERE shared."desiredRuntimeGenerationId" = generation."id"
-            )
-            OR EXISTS (
-              SELECT 1
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
@@ -1037,8 +839,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           desiredFor: null,
           runBindings: {
             none: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
-          },
-          sharedDesiredFor: null
+          }
         }
       }).catch(retainDatabaseFailure);
       return rows.map((row) => row.id);
@@ -1051,8 +852,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           desiredFor: null,
           runBindings: {
             none: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
-          },
-          sharedDesiredFor: null
+          }
         }
       }).catch(retainDatabaseFailure);
       return deleted.count === 1;

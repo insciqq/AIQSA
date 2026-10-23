@@ -187,8 +187,6 @@ function AdminSectionContent({
     case "retrieval":
       return (
         <AdminRetrievalSection
-          onMutationCommitted={onMutationCommitted}
-          onOpenRoles={() => onJump({ section: "roles" })}
           reportNotice={reportNotice}
           requestConfirmation={requestConfirmation}
         />

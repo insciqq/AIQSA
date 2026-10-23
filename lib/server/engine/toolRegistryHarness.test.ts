@@ -171,7 +171,7 @@ describe("native harness and self-service tools", () => {
       kind: "text", name: "Deploy key" }, id: "c1", name: "manage_secret" }, "row-9"));
     expect(result).toMatchObject({ content: [{ type: "json", value: { code: "secret_attachment_unavailable" } }], status: "error" });
     expect(owners.db.attachment.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
-      chatId: "chat-1", id: "earlier-file", projectId: null, userId: USER,
+      chatId: "chat-1", id: "earlier-file", userId: USER,
       OR: [{ id: { in: ["earlier-file", "current-file"] } }, { producerModelRunId: RUN }] }) }));
     const guide = await registry.resolve("read_aiqsa_guide")!.execute(execution({ arguments: { topic: "secrets" }, id: "c2", name: "read_aiqsa_guide" }));
     expect(guide.status).toBe("complete");

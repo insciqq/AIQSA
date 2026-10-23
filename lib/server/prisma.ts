@@ -1,8 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { aiqsaPostgresRuntimeOptions, aiqsaPostgresRuntimeUrl } from "./postgresRuntimeOptions";
 
-// node-pg's Project LISTEN connection uses PGOPTIONS unless its URL supplies
-// options. Prisma's Rust engine needs the startup options in its datasource URL.
+// node-pg clients use PGOPTIONS unless their URL supplies options. Prisma's Rust engine needs the startup options in its datasource URL.
 process.env.PGOPTIONS = aiqsaPostgresRuntimeOptions(process.env.PGOPTIONS);
 
 const globalForPrisma = globalThis as unknown as {

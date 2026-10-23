@@ -74,11 +74,6 @@ services:
       AIQSA_AUTH_REQUEST_BODY_MAX_BYTES: ${AIQSA_AUTH_REQUEST_BODY_MAX_BYTES:-65536}
       AIQSA_JSON_REQUEST_BODY_MAX_BYTES: ${AIQSA_JSON_REQUEST_BODY_MAX_BYTES:-1048576}
       AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: ${AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS:-1000000}
-      AIQSA_KNOWLEDGE_MAX_FILE_BYTES: ${AIQSA_KNOWLEDGE_MAX_FILE_BYTES:-50000000}
-      AIQSA_KNOWLEDGE_MAX_BATCH_FILES: ${AIQSA_KNOWLEDGE_MAX_BATCH_FILES:-100}
-      AIQSA_KNOWLEDGE_MAX_PAGES: ${AIQSA_KNOWLEDGE_MAX_PAGES:-2000}
-      AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS: ${AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS:-5000000}
-      AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT: ${AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:-10000}
       AIQSA_PDF_EXTRACTION_TIMEOUT_MS: ${AIQSA_PDF_EXTRACTION_TIMEOUT_MS:-300000}
       AIQSA_PDF_MAX_PAGES: ${AIQSA_PDF_MAX_PAGES:-500}
       AIQSA_DOCLING_REQUEST_MAX_BYTES: ${AIQSA_DOCLING_REQUEST_MAX_BYTES:-}
@@ -204,33 +199,6 @@ services:
         condition: service_healthy
       storage-init:
         condition: service_completed_successfully
-
-  knowledge-search-worker:
-    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
-    command: ["npm", "run", "knowledge:search:worker"]
-    environment:
-      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH: ${AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH:-1}
-      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS: ${AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS:-2000}
-      AIQSA_OPENSEARCH_URL: http://opensearch:9200
-      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
-      NEXT_TELEMETRY_DISABLED: "1"
-      NODE_ENV: production
-    cpus: ${AIQSA_KNOWLEDGE_SEARCH_WORKER_CPU_LIMIT:-0.5}
-    depends_on:
-      migrate-bootstrap:
-        condition: service_completed_successfully
-      opensearch:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    init: true
-    logging: *default-logging
-    mem_limit: ${AIQSA_KNOWLEDGE_SEARCH_WORKER_MEMORY_LIMIT:-512m}
-    networks:
-      - default
-      - search-control
-    restart: unless-stopped
-    stop_grace_period: 30s
 
   docling:
     image: ${AIQSA_DOCLING_IMAGE:-ghcr.io/insciqq/aiqsa:docling}

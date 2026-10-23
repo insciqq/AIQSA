@@ -54,7 +54,6 @@ type UserSettingsRow = {
   defaultAnswerReview: unknown;
   defaultAssistantId: string | null;
   defaultControlValues: unknown;
-  defaultKnowledgePlan: unknown;
   defaultMcpMode: string;
   defaultSkillsMode: string;
   defaultWorkspaceEnabled: boolean;
@@ -623,7 +622,6 @@ const catalogSettingsSelect = {
   defaultAnswerReview: true,
   defaultAssistantId: true,
   defaultControlValues: true,
-  defaultKnowledgePlan: true,
   defaultMcpMode: true,
   defaultSkillsMode: true,
   defaultWorkspaceEnabled: true,
@@ -801,7 +799,6 @@ export function createPrismaCatalogDataLoader({
         defaultAnswerReview: user.settings.defaultAnswerReview,
         defaultAssistantId,
         defaultControlValues: user.settings.defaultControlValues,
-        defaultKnowledgePlan: user.settings.defaultKnowledgePlan,
         defaultMcpMode: user.settings.defaultMcpMode,
         defaultSkillsMode: user.settings.defaultSkillsMode,
         defaultWorkspaceEnabled: user.settings.defaultWorkspaceEnabled,

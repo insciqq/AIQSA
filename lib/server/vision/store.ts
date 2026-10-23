@@ -2,7 +2,7 @@ import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTo
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { estimateCostMicros, normalizeTokenUsage, type TokenUsage } from "../../domain/usage";
 import { storedTokenUsage } from "../usage";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import type { ToolLoopJsonValue } from "../runs/toolLoopPersistence";
@@ -43,15 +43,15 @@ export async function authorizeVisionPlan(db: Pick<Prisma.TransactionClient, "pr
 }
 
 /** The run's current chat authority for an image dispatch: an active user who may still write to the chat. */
-export async function visionRunAccess(tx: Pick<Prisma.TransactionClient, "modelRun" | "chat" | "project" | "user">,
+export async function visionRunAccess(tx: Pick<Prisma.TransactionClient, "modelRun" | "chat" | "user">,
   c: Readonly<{ runId: string; userId: string; chatId: string }>) {
   const [run, user, grant] = await Promise.all([
     tx.modelRun.findFirst({ where: { id: c.runId, userId: c.userId, chatId: c.chatId }, select: { status: true } }),
     tx.user.findFirst({ where: { id: c.userId, status: "active" }, select: { id: true } }),
-    resolveChatAccess(tx, { chatId: c.chatId, userId: c.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })
+    resolveChatAccess(tx, { chatId: c.chatId, userId: c.userId })
   ]);
   if (!run || !user || !grant) throw new VisionAnalysisError("vision_analysis_access_denied");
-  return { active: ["streaming", "in_progress"].includes(run.status), projectId: grant.project?.projectId ?? null };
+  return { active: ["streaming", "in_progress"].includes(run.status) };
 }
 
 /** Serializes a run's image dispatch and settlement with its terminal writes. */
@@ -106,7 +106,7 @@ export function createVisionAnalysisStore(prisma: PrismaClient) {
         await tx.visionAnalysisAttempt.create({ data: { toolCallId: c.toolCallId, modelRunId: c.runId,
           providerBindingKey: "vision_analysis", requestHash: c.requestHash, images } });
         await tx.usageEvent.create({ data: { visionAnalysis: true, visionAnalysisAttemptId: c.toolCallId, purpose: "chat_vision",
-          userId: c.userId, chatId: c.chatId, modelRunId: c.runId, projectId: authority.projectId,
+          userId: c.userId, chatId: c.chatId, modelRunId: c.runId,
           provider: plan.snapshot.providerFamily, providerModelId: plan.authority.providerModelId, modelId: plan.snapshot.model.upstreamModelId } });
         return { result: null };
       });

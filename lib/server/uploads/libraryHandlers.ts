@@ -38,8 +38,7 @@ function serializeFile(record: AttachmentLibraryRecord): AttachmentLibraryItemWi
 }
 
 /**
- * Lists saved personal files and active message attachments. Project files have a
- * different owner and remain available through their Project surfaces.
+ * Lists saved personal files and active message attachments.
  */
 export function createAttachmentLibraryHandler(input: Readonly<{
   repository: AttachmentLibraryRepository;

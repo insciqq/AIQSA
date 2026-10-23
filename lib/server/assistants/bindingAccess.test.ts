@@ -46,7 +46,7 @@ describe("Assistant binding access", () => {
     expect(texts[0]).not.toContain("FOR KEY SHARE");
   });
 
-  it("locks the definition for a write and checks a Project binding in Project scope", async () => {
+  it("locks the definition for a write", async () => {
     const personal = recordingClient([{ id: "assistant-1" }]);
     await expect(isAssistantAvailable(personal.client, {
       assistantId: "assistant-1",
@@ -54,15 +54,6 @@ describe("Assistant binding access", () => {
       scope: { kind: "personal", userId: "user-1" }
     })).resolves.toBe(true);
     expect(personal.statements[0]!.sql).toContain("FOR KEY SHARE OF definition");
-
-    const project = recordingClient([{ id: "assistant-1" }]);
-    await expect(isAssistantAvailable(project.client, {
-      assistantId: "assistant-1",
-      scope: { kind: "project", projectId: "project-1" }
-    })).resolves.toBe(true);
-    expect(project.statements[0]!.sql).toContain(`"ProjectAssistantBinding"`);
-    expect(project.statements[0]!.sql).not.toContain(`"AssistantPublication"`);
-    expect(project.statements[0]!.values).toEqual(["assistant-1", "project-1"]);
   });
 
   it("tells whether an archived Assistant is still available to the scope otherwise", async () => {

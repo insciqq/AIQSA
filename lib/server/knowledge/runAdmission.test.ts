@@ -368,7 +368,7 @@ function readySource(ownerUserId = "user-1", knowledgeBaseIds: readonly string[]
 }
 
 describe("Knowledge run admission", () => {
-  it.each(["base", "all_my_knowledge", "inherited", "explicit"].flatMap((mode) =>
+  it.each(["base", "all_my_knowledge", "explicit"].flatMap((mode) =>
     [999, 1_000, 1_001].map((count) => ({ mode, count }))
   ))("accounts for every requested Source in $mode scope at $count", async ({ mode, count }) => {
     const client = store(mode === "base" ? { sourceSummary: {
@@ -387,16 +387,13 @@ describe("Knowledge run admission", () => {
         const selected = query.where?.id?.in;
         return sources.filter(({ id }) => !selected || selected.includes(id)).slice(0, query.take ?? count);
       });
-      client.projectKnowledgeSourceBinding.count.mockResolvedValue(count);
-      client.projectKnowledgeSourceBinding.findMany.mockResolvedValue(sources.slice(0, 999).map(({ id }) => ({ sourceId: id })));
     }
     const knowledgePlan: KnowledgeRunAdmissionPlan["knowledgePlan"] = mode === "base"
       ? { baseIds: ["base-1"], sourceIds: [], mode: "explicit", version: 1 }
-      : mode === "inherited" ? { baseIds: [], sourceIds: [], mode: "inherited", inheritedFrom: "project", version: 1 }
       : mode === "all_my_knowledge" ? { baseIds: [], sourceIds: [], mode: "all_my_knowledge", version: 1 }
       : { baseIds: [], sourceIds: sources.map(({ id }) => id), mode: "explicit", version: 1 };
     const loading = loadKnowledgeRunAdmissionPlan(client as unknown as KnowledgeRunAdmissionStore, {
-      knowledgePlan, userId: "user-1", ...(mode === "inherited" ? { executionScope: "project" as const, projectId: "project-1" } : {})
+      knowledgePlan, userId: "user-1"
     });
     // Explicit selection has its own stricter public bound (128 resources).
     if (mode === "explicit") { await expect(loading).rejects.toBeInstanceOf(KnowledgeRunAdmissionError); return; }
@@ -826,10 +823,9 @@ describe("Knowledge run admission", () => {
     expect(client.knowledgeIndexProfile.findUnique).not.toHaveBeenCalled();
   });
 
-  it("requires an explicit Project Source binding and never falls back to personal access", async () => {
-    const granted = store();
-    granted.projectKnowledgeSourceBinding.findMany.mockResolvedValue([{ sourceId: "source-1" }]);
-    granted.knowledgeSource.findMany.mockResolvedValue([readySource("source-owner")]);
+  it("admits no Project Knowledge, since Projects were removed", async () => {
+    const denied = store();
+    denied.knowledgeSource.findMany.mockResolvedValue([readySource()]);
     const input = {
       executionScope: "project" as const,
       knowledgePlan: {
@@ -839,20 +835,6 @@ describe("Knowledge run admission", () => {
       userId: "user-1"
     };
 
-    const plan = await loadKnowledgeRunAdmissionPlan(
-      granted as unknown as KnowledgeRunAdmissionStore,
-      input
-    );
-    expect(plan.sources).toEqual([
-      expect.objectContaining({
-        authority: { knowledgeBaseIds: [], owner: false, projectId: "project-1" },
-        sourceId: "source-1"
-      })
-    ]);
-    expect(granted.knowledgeBase.findMany).not.toHaveBeenCalled();
-
-    const denied = store();
-    denied.knowledgeSource.findMany.mockResolvedValue([readySource()]);
     await expect(loadKnowledgeRunAdmissionPlan(
       denied as unknown as KnowledgeRunAdmissionStore,
       input

@@ -8,10 +8,9 @@ const [hr] = chatHeaderGalleryAssistants;
 /** The HR Helper with one row falling back, optionally naming what is missing. */
 function fallbackLine(
   row: AssistantRowKey,
-  dependencies?: AssistantAvailabilityDependency[],
-  project?: true
+  dependencies?: AssistantAvailabilityDependency[]
 ): string | null {
-  const bound = chatHeaderGalleryBound(hr!, project ? { project } : {});
+  const bound = chatHeaderGalleryBound(hr!);
   const assistant = {
     ...bound,
     rows: {
@@ -29,10 +28,7 @@ function fallbackLine(
 describe("an Assistant row's fallback line", () => {
   it("agrees with a singular or plural row word", () => {
     expect(fallbackLine("model")).toBe("HR Helper's recommended model isn't available to you; using your default");
-    expect(fallbackLine("knowledge")).toBe("HR Helper's Knowledge isn't available to you; using your default");
     expect(fallbackLine("tools")).toBe("HR Helper's MCP servers aren't available to you; using your default");
-    expect(fallbackLine("tools", undefined, true))
-      .toBe("HR Helper's MCP servers aren't available in this Project; using the Project default");
   });
 
   it("agrees with the names of the missing dependencies", () => {

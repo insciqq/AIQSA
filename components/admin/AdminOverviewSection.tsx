@@ -22,7 +22,6 @@ const sourceLabel: Record<AdminAttentionSource, string> = {
   dashboard: "users",
   email: "email",
   health: "health telemetry",
-  knowledge: "Knowledge",
   mcp: "MCP servers",
   memory: "Memory",
   providers: "providers",

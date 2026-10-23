@@ -67,13 +67,13 @@ export function runControlsLabel(controls: AssistantRunControls): string {
 }
 
 /**
- * The six Setup rows as a person would read them. Inherit, Off or None and
+ * The five Setup rows as a person would read them. Inherit, Off or None and
  * concrete values always read differently; resources outside the
  * administrator's own catalog are counted, never named.
  */
 export function assistantSetupRows({ names, rows }: Pick<AdminAssistantDefinitionReview, "names" | "rows">): AssistantSetupRow[] {
   const model = rows.model.value, search = rows.search.value, tools = rows.tools.value;
-  const knowledge = rows.knowledge.value, skills = rows.skills.value;
+  const skills = rows.skills.value;
 
   const modelName = model.mode === "model" && model.modelId !== null
     ? names.models.find((item) => item.id === model.modelId)?.name
@@ -92,10 +92,6 @@ export function assistantSetupRows({ names, rows }: Pick<AdminAssistantDefinitio
     : resourceList([{ ids: tools.serverIds, names: names.mcpServers }], tools.hiddenCount ?? 0, "MCP server", "MCP servers")
       .join(", ") || "No MCP servers selected";
 
-  const knowledgeValue = knowledge.mode === "inherit" ? "Each person's default" : knowledge.mode === "none" ? "None"
-    : resourceList([{ ids: knowledge.baseIds, names: names.knowledgeBases }, { ids: knowledge.sourceIds, names: names.knowledgeSources }],
-      knowledge.hiddenCount ?? 0, "base or source", "bases or sources").join(", ") || "None";
-
   const delivery = new Map(skills.links.map((link) => [link.skillId, link.delivery === "on_demand" ? "On demand" : "Always"]));
   const linked = resourceList([{ ids: skills.links.map((link) => link.skillId), names: names.skills }], skills.hiddenCount ?? 0,
     "Skill", "Skills", (id, name) => `${name} (${delivery.get(id)})`);
@@ -107,7 +103,6 @@ export function assistantSetupRows({ names, rows }: Pick<AdminAssistantDefinitio
     { label: "Reasoning & parameters", policy: rows.controls.policy, value: runControlsLabel(rows.controls.value) },
     { label: "Web search", policy: rows.search.policy, value: searchValue },
     { label: "Tools", policy: rows.tools.policy, value: toolsValue },
-    { label: "Knowledge", policy: rows.knowledge.policy, value: knowledgeValue },
     { label: "Skills", policy: rows.skills.policy, value: skillsValue }
   ];
 }

@@ -22,7 +22,6 @@ import { navigateChatRoute } from "@/components/app-shell/chatRoute";
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
-import { formatStudioDate } from "@/features/library-v2/studioDate";
 import {
   refreshFileLibrary,
   loadMoreFileLibrary,
@@ -38,30 +37,20 @@ import { prepareArtifactEdit } from "@/components/artifacts/artifactClient";
 import { openArtifactPanel } from "@/components/artifacts/artifactPanelStore";
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
 import type { ArtifactDetail } from "@/lib/contracts/artifacts";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { ArtifactsPanelV2, type ArtifactLibraryFilter } from "@/features/library-v2/ArtifactsPanelV2";
 import type {
   PowerAppShellV2Props,
   ShellComposerView
 } from "@/components/app-shell/powerAppShellV2Contracts";
 import { SkillLibrarySection } from "@/components/skills/SkillLibraryDialog";
-import {
-  isKnowledgeSubview,
-  KnowledgeLibrary,
-  knowledgeReadinessText,
-  knowledgeSubviewChrome,
-  useKnowledgeLibraryExit
-} from "@/components/knowledge/KnowledgeLibrary";
 import { AssistantsTabV2, assistantsTabSubviewV2 } from "@/features/library-v2/assistants/AssistantsTabV2";
 import {
   FilesPanelV2,
-  KnowledgePanelV2,
   LibraryV2,
   MemoryPanelV2
 } from "@/features/library-v2/LibraryV2";
 import type {
   FileSummaryV2,
-  KnowledgeSummaryV2,
   LibraryTabIdV2,
   LibraryTabV2,
   LibrarySubviewV2,
@@ -117,13 +106,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     : undefined;
   const mcpAttention = useStudioMcpAttentionV2(session.accountId);
   const assistantView = settings.library;
-  const knowledgeView = settings.knowledge;
-  const knowledgeExit = useKnowledgeLibraryExit(knowledgeView ?? null, true);
-  const initialTab: LibraryTabIdV2 = requestedInitialTab ?? (settings.memory.open
-    ? "memory"
-    : knowledgeView
-      ? "knowledge"
-      : "assistants");
+  const initialTab: LibraryTabIdV2 = requestedInitialTab ?? (settings.memory.open ? "memory" : "assistants");
   const [localTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
   const activeTab = settings.studio?.tab ?? localTab;
   const artifactLibrary = useArtifactLibraryStore();
@@ -142,7 +125,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const closeLibrary = () => {
     if (settings.studio) { settings.studio.exit(); return; }
     assistantView?.onBackToChat();
-    knowledgeView?.onBackToChat();
     settings.closeMemory();
   };
   const closeArtifactPreview = () => {
@@ -185,12 +167,11 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
 
   const navigationBusy = Boolean(
-    assistantView?.busy || assistantView?.editor?.saving || knowledgeView?.busy || memoryBusy || formBusy
+    assistantView?.busy || assistantView?.editor?.saving || memoryBusy || formBusy
   );
   const requestNavigation = useEventCallback((proceed: () => void, remountForm: boolean = true) => {
     if (navigationBusy) return;
-    if (activeTab === "knowledge" && knowledgeExit.dirty) knowledgeExit.requestExit(proceed);
-    else if (activeTab === "assistants" && assistantDirty) {
+    if (activeTab === "assistants" && assistantDirty) {
       setAssistantExit(() => () => { assistantView?.onDiscardDrafts(); proceed(); });
     } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
     else if (activeTab === "skills" && skillDirty) setSkillExit(() => proceed);
@@ -211,43 +192,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     if (activeTab === "files") void refreshFileLibrary(true).catch(() => undefined);
   }, [activeTab]);
 
-  const knowledge: KnowledgeSummaryV2[] = knowledgeView
-    ? knowledgeView.list.knowledgeBases.map((base) => ({
-      description: base.description,
-        archived: base.archived,
-        sourceCount: base.sourceCount,
-        id: base.id,
-        name: base.name,
-        owned: base.owned,
-        purgeScheduledAt: base.purgeScheduledAt ? formatLibraryDate(base.purgeScheduledAt) : null,
-        readinessLabel: knowledgeReadinessText(base.readiness, base.purgeScheduledAt),
-        sharedBy: base.owned ? undefined : base.ownerDisplayName,
-        status: knowledgeSummaryStatusV2(base),
-        trashed: base.trashed,
-        trashedAt: base.trashedAt,
-        updatedLabel: formatLibraryDate(base.updatedAt)
-      }))
-    : composer.knowledge.bases.map((base) => ({
-        description: base.description,
-        sourceCount: "sourceCount" in base && typeof base.sourceCount === "number"
-          ? base.sourceCount
-          : 0,
-        id: base.id,
-        name: base.name,
-        owned: base.owned,
-        status: knowledgeSummaryStatusV2(base)
-      }));
-  const knowledgeBusy = knowledgeView?.busy ?? false;
-  const knowledgeCatalog = knowledgeView?.list.catalog ?? null;
-  const knowledgeTask = knowledgeView?.task ?? null;
-  const knowledgeHasProcessing = knowledge.some((base) => base.status === "processing");
-  const compactKnowledgePolling = compactKnowledgeRefreshPendingV2({
-    activeTab,
-    busy: knowledgeBusy,
-    catalog: knowledgeCatalog,
-    processing: knowledgeHasProcessing,
-    task: knowledgeTask
-  });
   const files: FileSummaryV2[] = (fileData?.files ?? []).map((file) => ({
     byteSize: file.byteSize,
     canOpenChat: Boolean(file.chatId && file.messageId),
@@ -296,32 +240,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       id: "assistants",
       label: "Assistants"
     },
-    // Knowledge is disabled: Studio has no Knowledge section.
-    ...(KNOWLEDGE_ENABLED ? [{
-      // A base, the Sources catalog, base creation and Source detail render
-      // as sub-views of this section under the Library's own crumb (A14).
-      content: knowledgeView && isKnowledgeSubview(knowledgeView) ? (
-        <KnowledgeLibrary view={knowledgeView} />
-      ) : (
-        <KnowledgePanelV2
-          bases={knowledge}
-          canCreate={knowledgeView?.list.canCreate ?? true}
-          error={knowledgeView?.dataError}
-          filter={knowledgeView?.list.filter}
-          loadState={knowledgeView?.dataState ?? "loading"}
-          onArchiveToggle={(id, archived) => knowledgeView?.list.onArchiveToggle(id, archived)}
-          onBrowseSources={() => knowledgeView?.list.onCatalogChange("sources")}
-          onCreate={() => knowledgeView?.list.onNewBase()}
-          onFilterChange={(filter) => knowledgeView?.list.onFilterChange(filter)}
-          onOpen={(id) => knowledgeView?.list.onOpenBase(id)}
-          onQueryChange={(query) => knowledgeView?.list.onQueryChange(query)}
-          onRetry={() => knowledgeView?.onRetry()}
-          query={knowledgeView?.list.query}
-        />
-      ),
-      id: "knowledge" as const,
-      label: "Knowledge"
-    }] : []),
     {
       content: (
         <FilesPanelV2
@@ -482,10 +400,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 
   return (
     <>
-      <CompactKnowledgePollingV2
-        active={compactKnowledgePolling}
-        onRefresh={knowledgeView?.list.onRefresh}
-      />
       <MemoryListPollingV2
         active={memoryListPollingActiveV2({ activeTab, memory: memoryData })}
         onRefresh={refreshMemoryListInBackgroundV2}
@@ -500,11 +414,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           else settings.studio.exit(proceed);
         }}
         subview={activeTab === "instructions" ? instructionsSubview : activeTab === "assistants" && assistantSubview ? assistantSubview
-          : activeTab === "knowledge" && knowledgeView && isKnowledgeSubview(knowledgeView) ? {
-              ...knowledgeSubviewChrome(knowledgeView),
-              busy: knowledgeView.busy,
-              onBack: () => knowledgeExit.requestExit()
-            }
           : activeTab === "artifacts" && artifactSubview ? {
               backLabel: "Back to artifacts", key: `artifact-${artifactSubview.id}`, label: artifactSubview.title,
               onBack: closeArtifactPreview
@@ -515,11 +424,9 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           if (settings.studio) return;
           setActiveTab(tab);
           if (tab === "assistants") settings.openLibrary();
-          if (tab === "knowledge") settings.openKnowledge();
           if (tab === "memory") settings.openMemory();
         }}
       />
-      {knowledgeExit.confirmation}
       {formExit ? <DiscardChangesConfirmationDialog
         portal label="changes"
         copy={{
@@ -601,111 +508,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 export function useStudioMcpAttentionV2(accountId: string): boolean {
   useEffect(() => observeMcpSettings(), [accountId]);
   return useMcpSettingsStore((state) => state.servers.some((server) => mcpSetupAttention(server) !== null));
-}
-
-type KnowledgeReadinessStateV2 =
-  | "archived"
-  | "empty"
-  | "needs_attention"
-  | "processing"
-  | "ready"
-  | "trashed";
-
-export function knowledgeSummaryStatusV2(base: Readonly<{
-  archived: boolean;
-  readiness?: Readonly<{ state?: unknown }>;
-}>): KnowledgeSummaryV2["status"] {
-  const state = base.readiness?.state;
-  if (typeof state === "string" && [
-    "archived",
-    "empty",
-    "needs_attention",
-    "processing",
-    "ready",
-    "trashed"
-  ].includes(state)) return state as KnowledgeReadinessStateV2;
-  return base.archived ? "archived" : "unavailable";
-}
-
-export function compactKnowledgeRefreshPendingV2(input: Readonly<{
-  activeTab: LibraryTabIdV2;
-  busy: boolean;
-  catalog: "bases" | "sources" | null;
-  processing: boolean;
-  task: "create" | "detail" | "list" | "source-detail" | null;
-}>): boolean {
-  return input.activeTab === "knowledge" &&
-    input.catalog === "bases" &&
-    input.task === "list" &&
-    !input.busy &&
-    input.processing;
-}
-
-export function CompactKnowledgePollingV2({
-  active,
-  onRefresh
-}: Readonly<{
-  active: boolean;
-  onRefresh?(): Promise<void>;
-}>) {
-  const refreshRef = useRef(onRefresh);
-
-  useEffect(() => {
-    refreshRef.current = onRefresh;
-  }, [onRefresh]);
-
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    let running = false;
-    let timer: number | null = null;
-
-    const schedule = (delay = 2_000) => {
-      if (cancelled || timer !== null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        void run();
-      }, delay);
-    };
-    const run = async () => {
-      if (cancelled) return;
-      if (document.visibilityState !== "visible") {
-        schedule();
-        return;
-      }
-      const refresh = refreshRef.current;
-      if (!refresh) {
-        schedule();
-        return;
-      }
-      running = true;
-      try {
-        await refresh();
-      } catch {
-        // The Knowledge owner publishes its own user-safe error state. Polling
-        // remains sequential and retries while processing is still visible.
-      } finally {
-        running = false;
-        schedule();
-      }
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible" || running) return;
-      if (timer !== null) window.clearTimeout(timer);
-      timer = null;
-      schedule(0);
-    };
-
-    schedule();
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [active]);
-
-  return null;
 }
 
 /** Calm cadence for picking up facts saved after a chat finished. */
@@ -793,10 +595,6 @@ export function MemoryListPollingV2({
   }, [active]);
 
   return null;
-}
-
-export function formatLibraryDate(value: string): string {
-  return formatStudioDate(value);
 }
 
 function refreshMemoryListInBackgroundV2(): Promise<void> {

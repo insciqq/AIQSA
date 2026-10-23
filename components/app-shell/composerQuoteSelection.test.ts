@@ -7,7 +7,7 @@ import { useComposerSessionStore, type ComposerSessionKey } from "./composerSess
 afterEach(resetComposerSessionStoreForTest);
 
 describe("quote into the active composer", () => {
-  it.each<ComposerSessionKey>(["chat:personal", "chat:project", "blank:project:project:root", "blank:temporary:root"])("uses the existing keyed draft for %s", sessionKey => {
+  it.each<ComposerSessionKey>(["chat:personal", "blank:root", "blank:folder:folder-1", "blank:temporary:root"])("uses the existing keyed draft for %s", sessionKey => {
     const store = useComposerSessionStore.getState();
     store.activateSession(sessionKey);
     store.updateSession(sessionKey, { draft: "Current request" });

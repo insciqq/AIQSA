@@ -4,13 +4,6 @@ import {
   type SearchPlan,
   type SearchPlanMode
 } from "./search";
-import {
-  decodeKnowledgePlan,
-  decodeKnowledgeSelection,
-  KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES,
-  KNOWLEDGE_SELECTION_VERSION,
-  type KnowledgeSelection
-} from "./knowledge";
 import { ANSWER_RULES_MAX_LENGTH, RESPONSE_REMINDER_MAX_LENGTH } from "./instructionPresets";
 import { decodeAssistantListingStatus, type AssistantListingStatus } from "./assistantListing";
 import { decodeSkillsSelection, SKILL_MAX_PINNED, SKILL_ASSISTANT_MAX_AVAILABLE, type AssistantSkillMode, type SkillsMode, type SkillsSelection } from "./skills";
@@ -354,7 +347,14 @@ function invalidAssistantRunControlField(
   return undefined;
 }
 
-export const ASSISTANT_ROW_KEYS = ["model", "controls", "search", "tools", "knowledge", "skills"] as const;
+export const ASSISTANT_ROW_KEYS = ["model", "controls", "search", "tools", "skills"] as const;
+
+/**
+ * The row Knowledge had before its removal (operator decision 2026-10-23).
+ * Stored chat overrides, run snapshots and clients from that time may still
+ * carry it; readers ignore it.
+ */
+export const RETIRED_ASSISTANT_ROW_KEY = "knowledge";
 
 export type AssistantRowKey = (typeof ASSISTANT_ROW_KEYS)[number];
 
@@ -406,11 +406,6 @@ export type AssistantToolsValue =
   | { mode: "off" }
   | { hiddenCount?: number; mode: "exact"; serverIds: string[] };
 
-export type AssistantKnowledgeValue =
-  | { mode: "inherit" }
-  | { mode: "none" }
-  | { baseIds: string[]; hiddenCount?: number; mode: "explicit"; sourceIds: string[] };
-
 /** Wire names of the stored link modes: `pinned` is `always`, `available` is `on_demand`. */
 export type AssistantSkillDelivery = "always" | "on_demand";
 
@@ -426,7 +421,6 @@ export type AssistantSkillsValue = {
 export type AssistantRowValues = {
   /** A partial set; an unset field uses the user's saved value for the model. */
   controls: AssistantRunControls;
-  knowledge: AssistantKnowledgeValue;
   model: AssistantModelValue;
   search: AssistantSearchValue;
   skills: AssistantSkillsValue;
@@ -536,41 +530,6 @@ export function decodeAssistantToolsValue(
     : null;
 }
 
-export function decodeAssistantKnowledgeValue(
-  value: unknown,
-  mode: AssistantRowDecodeMode = "draft"
-): AssistantKnowledgeValue | null {
-  if (!isRecord(value)) return null;
-  if (value.mode === "inherit" || value.mode === "none") return onlyMode(value) ? { mode: value.mode } : null;
-  if (
-    value.mode !== "explicit" ||
-    !hasOnlyKeys(value, ["baseIds", "hiddenCount", "mode", "sourceIds"]) ||
-    !Array.isArray(value.baseIds) ||
-    !Array.isArray(value.sourceIds)
-  ) {
-    return null;
-  }
-  const hiddenCount = decodeHiddenCount(value, mode);
-  if (hiddenCount === null) return null;
-  let baseIds: string[] = [];
-  let sourceIds: string[] = [];
-  if (value.baseIds.length + value.sourceIds.length > 0) {
-    const decoded = decodeKnowledgeSelection({
-      baseIds: value.baseIds,
-      mode: "explicit",
-      sourceIds: value.sourceIds,
-      version: KNOWLEDGE_SELECTION_VERSION
-    });
-    if (!decoded.ok) return null;
-    baseIds = [...decoded.plan.baseIds];
-    sourceIds = [...decoded.plan.sourceIds];
-  }
-  const total = baseIds.length + sourceIds.length + hiddenCount;
-  return total >= 1 && total <= KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES
-    ? withHiddenCount({ baseIds, mode: "explicit" as const, sourceIds }, hiddenCount)
-    : null;
-}
-
 function skillsValueResult(value: unknown, mode: AssistantRowDecodeMode): ValueResult<AssistantSkillsValue> {
   const invalid = { code: "assistant_skills_invalid", ok: false as const, row: "skills" as const };
   if (
@@ -617,7 +576,6 @@ export function decodeAssistantSkillsValue(
 
 const assistantRowValueCodes: Readonly<Record<AssistantRowKey, string>> = {
   controls: "assistant_run_controls_invalid",
-  knowledge: "assistant_knowledge_bases_invalid",
   model: "assistant_model_invalid",
   search: "assistant_search_plan_invalid",
   skills: "assistant_skills_invalid",
@@ -638,8 +596,7 @@ function rowValueResult(
   }
   const decoded = key === "model" ? decodeAssistantModelValue(value, mode)
     : key === "search" ? decodeAssistantSearchValue(value, mode)
-      : key === "tools" ? decodeAssistantToolsValue(value, mode)
-        : decodeAssistantKnowledgeValue(value, mode);
+      : decodeAssistantToolsValue(value, mode);
   return decoded ? { ok: true, value: decoded } : { code: assistantRowValueCodes[key], ok: false, row: key };
 }
 
@@ -649,7 +606,7 @@ function rowValueResult(
  * parameters of a model the user may replace cannot be fixed.
  */
 export function assistantRowPolicyViolation(rows: AssistantRows): AssistantDecodeError | null {
-  for (const key of ["model", "search", "tools", "knowledge"] as const) {
+  for (const key of ["model", "search", "tools"] as const) {
     if (rows[key].policy === "fixed" && rows[key].value.mode === "inherit") {
       return { code: "assistant_row_fixed_requires_value", ok: false, row: key };
     }
@@ -665,15 +622,16 @@ export function assistantRowPolicyViolation(rows: AssistantRows): AssistantDecod
   return null;
 }
 
-/** Strict decoder for all six rows, including the policy rules. */
+/** Strict decoder for all five rows, including the policy rules; a retired Knowledge row is ignored. */
 export function decodeAssistantRows(
   value: unknown,
   mode: AssistantRowDecodeMode = "draft"
 ): { ok: true; rows: AssistantRows } | AssistantDecodeError {
+  const retired = isRecord(value) && Object.hasOwn(value, RETIRED_ASSISTANT_ROW_KEY) ? 1 : 0;
   if (
     !isRecord(value) ||
-    Object.keys(value).length !== ASSISTANT_ROW_KEYS.length ||
-    !hasOnlyKeys(value, ASSISTANT_ROW_KEYS)
+    Object.keys(value).length !== ASSISTANT_ROW_KEYS.length + retired ||
+    !hasOnlyKeys(value, [...ASSISTANT_ROW_KEYS, RETIRED_ASSISTANT_ROW_KEY])
   ) {
     return { code: "assistant_rows_invalid", ok: false };
   }
@@ -698,7 +656,6 @@ export function decodeAssistantRows(
  * as a compact way to write fixed rows through `assistantRowsFromLegacyFields`.
  */
 export type AssistantLegacyRowFields = {
-  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   providerModelId: string;
   runControls: AssistantRunControls;
@@ -714,20 +671,10 @@ export type AssistantLegacyRowFields = {
  * empty MCP list are explicit Off.
  */
 export function assistantRowsFromLegacyFields(fields: AssistantLegacyRowFields): AssistantRows {
-  const knowledge = fields.knowledgeSelection;
-  if (knowledge.mode === "all_my_knowledge" || knowledge.mode === "inherited") {
-    throw new Error("assistant_legacy_knowledge_invalid");
-  }
   return {
     controls: {
       policy: Object.keys(fields.runControls).length > 0 ? "fixed" : "adjustable",
       value: { ...fields.runControls }
-    },
-    knowledge: {
-      policy: "fixed",
-      value: knowledge.mode === "explicit"
-        ? { baseIds: [...knowledge.baseIds], mode: "explicit", sourceIds: [...knowledge.sourceIds] }
-        : { mode: "none" }
     },
     model: { policy: "fixed", value: { mode: "model", modelId: fields.providerModelId } },
     search: {
@@ -791,7 +738,7 @@ function boundedText(value: unknown, maxLength: number): value is string {
 }
 
 /**
- * Strict decoder for create/revise payloads with all six `rows`. Every bound
+ * Strict decoder for create/revise payloads with all five `rows`. Every bound
  * fails closed with a stable field-scoped code so the editor can attach
  * errors to their section; row errors also name the row. Unknown keys, such
  * as the retired developer prompt or the flat row fields of the first
@@ -874,20 +821,14 @@ export type AssistantAvailabilityReason =
   | "model_access"
   | "search_access"
   | "tools_access"
-  | "skills_access"
-  | "knowledge_access"
-  | "knowledge_not_ready"
-  | "knowledge_unavailable";
+  | "skills_access";
 
 const ASSISTANT_AVAILABILITY_REASONS: readonly AssistantAvailabilityReason[] = [
   "archived",
   "model_access",
   "search_access",
   "tools_access",
-  "skills_access",
-  "knowledge_access",
-  "knowledge_not_ready",
-  "knowledge_unavailable"
+  "skills_access"
 ];
 
 export type AssistantAvailabilityDependency = {
@@ -905,7 +846,7 @@ export type AssistantAvailability =
     };
 
 /** Rows whose adjustable resource can be unavailable without making the Assistant unavailable. */
-export type AssistantRowDeviationKey = "knowledge" | "model" | "search" | "tools";
+export type AssistantRowDeviationKey = "model" | "search" | "tools";
 
 /**
  * The Assistant's adjustable value is unavailable to the viewer, who gets
@@ -922,8 +863,7 @@ export type AssistantRowAvailability = Partial<Record<AssistantRowDeviationKey, 
 export type AssistantAccessScope =
   | { groupNames: string[]; kind: "group" }
   | { kind: "installation" }
-  | { kind: "owner" }
-  | { kind: "project"; projectName: string };
+  | { kind: "owner" };
 
 /**
  * Owner only: who the owner shared the Assistant with. A pending request to
@@ -938,8 +878,6 @@ export type AssistantOwnerAudience = {
 
 export type AssistantCapabilityFingerprint = {
   /** Privacy-safe capability copy; dependency ids and names stay server-side. */
-  knowledgeLabel: string | null;
-  knowledgeResourceCount: number;
   mcpServerCount: number;
   modelLabel: string | null;
   reasoningEffort: string | null;
@@ -983,9 +921,8 @@ export type AssistantContent = {
   responseReminder?: string;
   /*
    * The flat row fields below are a lossy projection of `rows` (inherit reads
-   * as unset, Off or None). The editor and the composer read `rows`.
+   * as unset or Off). The editor and the composer read `rows`.
    */
-  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
   providerModelId: string | null;
@@ -1003,14 +940,8 @@ export type AssistantPublicationView = {
   groupId: string | null;
   groupName: string | null;
   id: string;
-  scope: "group" | "installation" | "project";
+  scope: "group" | "installation";
   updatedAt: string;
-};
-
-/** Projects the owner can open are named; the rest are only counted. */
-export type AssistantProjectUsage = {
-  otherProjectCount: number;
-  projects: { id: string; name: string }[];
 };
 
 export type AssistantDetail = {
@@ -1027,13 +958,11 @@ export type AssistantDetail = {
   owned: boolean;
   ownerDisplayName: string;
   pinned: boolean;
-  /** Owner only. */
-  projects?: AssistantProjectUsage;
   publications?: AssistantPublicationView[];
   /** Owner only: distinct chats with a run of this Assistant in the last 30 days. */
   recentChatCount?: number;
   rowAvailability: AssistantRowAvailability;
-  /** As in the summary; a Project member reads it through the Project. */
+  /** As in the summary. */
   scope: AssistantAccessScope;
   content: AssistantContent;
   skills?: { id: string; name: string; available?: boolean; mode?: AssistantSkillMode; instructionApproxTokens?: number }[];
@@ -1060,7 +989,7 @@ export type AssistantListResponse = {
 };
 export type AssistantDetailResponse = { assistant: AssistantDetail };
 
-/** Rows reset to inherit (none for Knowledge) because the copier cannot use their resources. */
+/** Rows reset to inherit because the copier cannot use their resources. */
 export type AssistantDuplicateReport = {
   downgradedRows: AssistantRowKey[];
   droppedSkillCount: number;
@@ -1126,7 +1055,6 @@ export function decodeAssistantAvailability(value: unknown): AssistantAvailabili
 }
 
 const rowDeviationReasons: Readonly<Record<AssistantRowDeviationKey, readonly AssistantRowDeviation["reason"][]>> = {
-  knowledge: ["knowledge_access", "knowledge_not_ready", "knowledge_unavailable"],
   model: ["model_access"],
   search: ["search_access"],
   tools: ["tools_access"]
@@ -1177,9 +1105,6 @@ function decodeScope(value: unknown): AssistantAccessScope | null {
   ) {
     return { groupNames: value.groupNames as string[], kind: "group" };
   }
-  if (value.kind === "project" && nonEmptyString(value.projectName)) {
-    return { kind: "project", projectName: value.projectName };
-  }
   return null;
 }
 
@@ -1201,10 +1126,6 @@ function decodeOwnerAudience(value: unknown, owned: unknown): AssistantOwnerAudi
 function decodeFingerprint(value: unknown): AssistantCapabilityFingerprint | null {
   if (
     !isRecord(value) ||
-    !stringOrNull(value.knowledgeLabel) ||
-    typeof value.knowledgeResourceCount !== "number" ||
-    !Number.isSafeInteger(value.knowledgeResourceCount) ||
-    value.knowledgeResourceCount < 0 ||
     typeof value.mcpServerCount !== "number" ||
     !stringOrNull(value.modelLabel) ||
     !stringOrNull(value.reasoningEffort) ||
@@ -1213,8 +1134,6 @@ function decodeFingerprint(value: unknown): AssistantCapabilityFingerprint | nul
     return null;
   }
   return {
-    knowledgeLabel: value.knowledgeLabel,
-    knowledgeResourceCount: value.knowledgeResourceCount,
     mcpServerCount: value.mcpServerCount,
     modelLabel: value.modelLabel,
     reasoningEffort: value.reasoningEffort,
@@ -1309,9 +1228,6 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
   const category = decodeCategory(value.category);
   const runControls = decodeAssistantRunControls(value.runControls);
   const searchPlan = decodeSearchPlan(value.searchPlan);
-  const knowledge = decodeKnowledgePlan(value.knowledgeSelection ?? {
-    baseIds: value.knowledgeBaseIds
-  });
   const rows = decodeAssistantRows(value.rows, "projection");
   const skillIds = value.skillIds;
   if (
@@ -1320,9 +1236,6 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
     category === undefined ||
     typeof value.description !== "string" ||
     (value.responseReminder !== undefined && !boundedText(value.responseReminder, RESPONSE_REMINDER_MAX_LENGTH)) ||
-    !knowledge.ok ||
-    knowledge.plan.mode === "all_my_knowledge" ||
-    knowledge.plan.mode === "inherited" && knowledge.plan.inheritedFrom !== "assistant" ||
     !stringArray(value.mcpServerIds) ||
     !nonEmptyString(value.name) ||
     !stringOrNull(value.providerModelId) ||
@@ -1349,7 +1262,6 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
     category,
     description: value.description,
     responseReminder: typeof value.responseReminder === "string" ? value.responseReminder : "",
-    knowledgeSelection: knowledge.plan,
     mcpServerIds: value.mcpServerIds,
     name: value.name,
     providerModelId: value.providerModelId,
@@ -1370,7 +1282,7 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
     !stringOrNull(value.groupId) ||
     !stringOrNull(value.groupName) ||
     !nonEmptyString(value.id) ||
-    (value.scope !== "group" && value.scope !== "installation" && value.scope !== "project") ||
+    (value.scope !== "group" && value.scope !== "installation") ||
     !nonEmptyString(value.updatedAt)
   ) {
     return null;
@@ -1378,8 +1290,7 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
   if (value.scope === "group" && (!nonEmptyString(value.groupId) || !nonEmptyString(value.groupName))) {
     return null;
   }
-  if ((value.scope === "installation" || value.scope === "project") &&
-    (value.groupId !== null || value.groupName !== null)) return null;
+  if (value.scope === "installation" && (value.groupId !== null || value.groupName !== null)) return null;
   return {
     groupId: value.groupId,
     groupName: value.groupName,
@@ -1389,27 +1300,7 @@ function decodePublicationView(value: unknown): AssistantPublicationView | null 
   };
 }
 
-function decodeProjectUsage(value: unknown): AssistantProjectUsage | null {
-  if (
-    !isRecord(value) ||
-    Object.keys(value).length !== 2 ||
-    !nonNegativeInteger(value.otherProjectCount) ||
-    !Array.isArray(value.projects)
-  ) {
-    return null;
-  }
-  const projects: AssistantProjectUsage["projects"] = [];
-  for (const project of value.projects) {
-    if (!isRecord(project) || Object.keys(project).length !== 2 ||
-      !nonEmptyString(project.id) || !nonEmptyString(project.name)) return null;
-    projects.push({ id: project.id, name: project.name });
-  }
-  return new Set(projects.map((project) => project.id)).size === projects.length
-    ? { otherProjectCount: value.otherProjectCount, projects }
-    : null;
-}
-
-const ownerOnlyDetailFields = ["featuredOrder", "listingRequest", "projects", "recentChatCount"] as const;
+const ownerOnlyDetailFields = ["featuredOrder", "listingRequest", "recentChatCount"] as const;
 
 export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
   if (!isRecord(value)) return null;
@@ -1455,8 +1346,6 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     ? value.listingRequest
     : decodeAssistantListingStatus(value.listingRequest);
   if (value.listingRequest !== undefined && value.listingRequest !== null && !listingRequest) return null;
-  const projects = value.projects === undefined ? undefined : decodeProjectUsage(value.projects);
-  if (projects === null) return null;
   if (value.recentChatCount !== undefined && !nonNegativeInteger(value.recentChatCount)) return null;
   let skills: AssistantDetail["skills"];
   if (value.skills !== undefined) {
@@ -1490,7 +1379,6 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     owned: value.owned,
     ownerDisplayName: value.ownerDisplayName,
     pinned: value.pinned,
-    ...(projects ? { projects } : {}),
     ...(publications ? { publications } : {}),
     ...(value.recentChatCount !== undefined ? { recentChatCount: value.recentChatCount as number } : {}),
     rowAvailability,
@@ -1575,8 +1463,10 @@ export function decodeAssistantDuplicateResponse(value: unknown): AssistantDupli
   };
 }
 
+/** A run accepted before Knowledge was removed also names its row, which is ignored. */
 export function decodeAssistantRunRowProvenance(value: unknown): AssistantRunRowProvenance | null {
-  if (!isRecord(value) || Object.keys(value).length !== ASSISTANT_ROW_KEYS.length) return null;
+  if (!isRecord(value) || Object.keys(value).filter((key) => key !== RETIRED_ASSISTANT_ROW_KEY).length !==
+    ASSISTANT_ROW_KEYS.length) return null;
   const provenance: Partial<Record<AssistantRowKey, AssistantRowProvenance>> = {};
   for (const key of ASSISTANT_ROW_KEYS) {
     const decoded = decodeAssistantRowProvenance(value[key]);

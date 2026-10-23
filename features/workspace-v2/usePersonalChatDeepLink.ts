@@ -87,7 +87,7 @@ export function usePersonalChatDeepLink({
     }
     const rawMessageId = url.searchParams.get("message");
     const route = parseChatRoutePath(url.pathname);
-    if (!route?.chatId || route.projectId || activeChatId !== route.chatId) {
+    if (!route?.chatId || activeChatId !== route.chatId) {
       // Returning to the chat later anchors its message again.
       handledRef.current = null;
       return;

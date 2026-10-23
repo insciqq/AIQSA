@@ -225,9 +225,9 @@ export function createAssistantGalleryActions(core: AssistantLibraryCore) {
   }
 
   /**
-   * Deletes at the version the owner confirmed. Publications and Project
-   * bindings do not bump the version, so a conflict reloads the consequences
-   * and asks again instead of deleting against stale ones.
+   * Deletes at the version the owner confirmed. Publications do not bump the
+   * version, so a conflict reloads the consequences and asks again instead of
+   * deleting against stale ones.
    */
   async function confirmDelete() {
     const deletion = store().deletion;
@@ -327,7 +327,7 @@ export function buildAssistantGalleryView(
 }
 
 export function buildAssistantDetailSheetView(
-  input: Pick<AssistantLibraryControllerInput, "catalog" | "knowledgeBases" | "knowledgeSources">,
+  input: Pick<AssistantLibraryControllerInput, "catalog">,
   snapshot: AssistantLibrarySnapshot
 ): AssistantDetailSheetView | null {
   const sheet = snapshot.detail;
@@ -338,8 +338,6 @@ export function buildAssistantDetailSheetView(
     error: sheet.error,
     // The viewer's own catalogs: a row id outside them stays unnamed.
     names: {
-      knowledgeBases: input.knowledgeBases,
-      knowledgeSources: input.knowledgeSources,
       mcpServers: snapshot.mcpOptions,
       models: (input.catalog?.models ?? []).map((model) => ({ id: model.modelId, label: model.displayName })),
       searchOptions: (input.catalog?.searchStrategies ?? [])

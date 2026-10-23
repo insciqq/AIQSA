@@ -697,10 +697,7 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
                   <ul className="v2-skill-audiences">
                     {detail.audiences.map((audience) => (
                       <li key={audience.id}>
-                        <span>
-                          {audience.name}
-                          {audience.kind === "project" ? <small>Project details remain private</small> : null}
-                        </span>
+                        <span>{audience.name}</span>
                         {detail.owned && detail.canUnshare ? (
                           <UiV2Button disabled={busy} tone="destructive" onClick={() => void unshare(detail, audience.id)}>
                             Unshare
@@ -718,7 +715,7 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
                   ? `Approved for sharing: v${detail.sharing.sharedRevision.revisionNumber}.`
                   : "No version approved for sharing yet."}</p>
                 {detail.sharing.sharedRevision && detail.sharing.sharedRevision.id !== detail.sharing.currentRevision.id
-                  ? <p>You use your latest version. Other people and Projects continue using the approved version.</p> : null}
+                  ? <p>You use your latest version. Other people continue using the approved version.</p> : null}
                 {detail.sharing.request ? <div role="status">
                   <p>{skillShareStateLabels[detail.sharing.request.state]} · v{detail.sharing.request.revisionNumber}</p>
                   {detail.sharing.request.reviewNote ? <p className="v2-skill-review-note">{detail.sharing.request.reviewNote}</p> : null}

@@ -65,7 +65,6 @@ export function createAdminAttentionSummaryService(input: Readonly<{
       dashboard: null,
       email: null,
       health,
-      knowledge: null,
       mcp: null,
       memory: null,
       providers,

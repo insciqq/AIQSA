@@ -104,13 +104,6 @@ describe("maintenance context around failed replies", () => {
       await prisma.chat.update({ where: { id: chatId }, data: { archived: true, memoryMode: "EXCLUDED",
         permanentDeletionAt: new Date(), permanentDeletionOperationId: deletion.id } });
     },
-    "moves the chat into a Project": async (userId, chatId) => {
-      const project = await prisma.project.create({ data: { name: "Synthetic Project", createdByUserId: userId,
-        createdByDisplayName: "Maintenance fixture", grants: { create: { userId, role: "OWNER" } } } });
-      cleanups.push(() => prisma.project.deleteMany({ where: { id: project.id } }));
-      await prisma.chat.update({ where: { id: chatId }, data: { userId: null, projectId: project.id, memoryMode: "EXCLUDED",
-        createdByUserId: userId, createdByDisplayName: "Maintenance fixture" } });
-    },
     "edits the question onto another branch": async (_userId, chatId) => {
       const edited = await prisma.message.create({ data: { chatId, content: textMessageContent("Which gym suits my schedule?"),
         role: "user", status: "complete" } });

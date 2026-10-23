@@ -125,8 +125,6 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {
     descriptors.set("analyze_image", { origin: "vision", serverName: "System Vision", toolName: "analyze_image" });
   }
-  descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
-  descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [
     "forget_memory",
     "list_memories",

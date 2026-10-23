@@ -37,36 +37,25 @@ import {
 } from "@/components/app-shell/attachmentLimitUsage";
 import { reconcileCurrentComposerAttachments, reportRejectedAttachments } from "@/components/app-shell/attachmentReconciliation";
 import {
-  initialComposerControlSnapshot,
   useComposerControlStore,
   type ComposerControlSnapshot
 } from "@/components/app-shell/composerControlStore";
 import {
   composerAssistantChangedRows,
-  composerAssistantFromDefinition,
   composerAssistantRowValue,
   composerAssistantSendBlockReason,
-  personalComposerAssistantDefaults,
-  type ComposerAssistantContext,
-  type ComposerAssistantDefaults,
-  type ComposerAssistantDefinition
+  personalComposerAssistantDefaults
 } from "@/components/app-shell/composerAssistantState";
 import {
   createChatAssistantActions,
   type ChatAssistantActions,
   type ChatAssistantChooseScope
 } from "@/components/app-shell/chatAssistantActions";
-import {
-  cachedChatAssistantProjection,
-  useChatAssistantProjectionStore
-} from "@/components/app-shell/chatAssistantProjectionStore";
-import { defaultParameterControls } from "@/components/app-shell/controlDefaults";
+import { useChatAssistantProjectionStore } from "@/components/app-shell/chatAssistantProjectionStore";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
   composerSessionModeFromKey,
-  projectComposerSessionKey,
-  projectIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
@@ -81,7 +70,6 @@ import {
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
 import { PowerAppShellV2View } from "@/features/workspace-v2/PowerAppShellV2View";
-import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import type {
   ShellComposerAssistant,
   ShellComposerView,
@@ -98,12 +86,6 @@ import {
   createAssistantLibraryActions
 } from "@/components/app-shell/assistantLibraryController";
 import { useAssistantLibraryStore } from "@/components/app-shell/assistantLibraryStore";
-import {
-  buildKnowledgeLibraryView,
-  createKnowledgeLibraryActions
-} from "@/components/app-shell/knowledgeLibraryController";
-import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
-import { fetchKnowledgeSources } from "@/components/knowledge/knowledgeApi";
 import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
 import { loadImageModels, selectImageModel, useImageModelStore } from "@/components/app-shell/imageModelStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
@@ -154,8 +136,7 @@ import { useWorkspaceInteractionController } from "@/components/app-shell/useWor
 import { useWorkspaceOutputReconciliation } from "@/components/app-shell/useWorkspaceOutputReconciliation";
 import {
   useWorkspaceActions,
-  type BlankDefaultAssistant,
-  type ChatAssistantScope
+  type BlankDefaultAssistant
 } from "@/components/app-shell/workspaceActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
@@ -190,7 +171,6 @@ import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  modelControlKey,
   resolveModelControlDefaults,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
@@ -206,10 +186,6 @@ import {
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
 import { composerDraftPersistenceAllowed, composerDraftRecoveryBoundary } from "@/components/app-shell/composerDraftPersistence";
 import { buildComposerMessage } from "@/components/app-shell/composerComments";
-import {
-  useProjectWorkspaceController,
-  type ProjectWorkspaceController
-} from "@/features/projects-v2/useProjectWorkspaceController";
 import {
   beginChatRouteResolution,
   cancelChatRouteResolution,
@@ -230,21 +206,13 @@ import {
   type ChatRouteTargets
 } from "@/components/app-shell/chatRoute";
 import { requestSkillDialogNavigation } from "@/components/skills/SkillLibraryDialog";
-import { formatAssistantEntryPath, formatChatRoutePath } from "@/lib/domain/chatRoute";
-import { KNOWLEDGE_ENABLED, PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
-import type { ProjectDetailWire } from "@/lib/contracts/projects";
+import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
 import {
   ASSISTANT_ROW_KEYS,
   type AssistantRowKey,
   type AssistantSummary
 } from "@/lib/contracts/assistants";
-import type { ComposerConfigKnowledgeBase } from "@/lib/contracts/composerConfig";
-import type {
-  KnowledgeBaseSummary,
-  KnowledgeSourceListResponse
-} from "@/lib/contracts/knowledge";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
-import type { McpRunSelection } from "@/lib/contracts/mcp";
 import {
   archiveChatWorkspace,
   loadWorkspaceAvailability,
@@ -263,143 +231,25 @@ export {
   workspaceDefaultControlsFingerprint
 } from "./useWorkspaceBootstrapController";
 
-/** Project catalogs are server-authored authority projections, never a
- * filtered copy of the current member's personal catalog. */
-export function effectiveProjectCatalog(
-  catalog: Catalog | null,
-  project: ProjectDetailWire | null
-): Catalog | null {
-  return project ? project.composer?.catalog ?? null : catalog;
-}
-
-type ProjectRouteOutcome = Awaited<ReturnType<ChatRouteTargets["openProject"]>>;
-
-/** One Project address being opened across the renders that load its Project. */
-type ProjectRouteRequest = {
-  readonly chatId: string | null;
-  finish(outcome: ProjectRouteOutcome): void;
-  phase: "opening" | "selecting" | "waiting";
-  readonly projectId: string;
-  readonly resolution: ChatRouteResolution;
-};
-
 const NO_SCHEDULED_RUNS: readonly ScheduledTaskRenderedRun[] = [];
 
 const CHAT_ROUTE_UNAVAILABLE_COPY = {
   // One text for missing, foreign, archived and unusable Assistants alike.
   assistant: "This Assistant isn't available to you.",
-  chat: "That chat is unavailable.",
-  // Projects are disabled: only a shared chat's own address still opens it.
-  project: PROJECTS_ENABLED ? "That Project is unavailable." : "Projects are turned off. Open a shared chat from its link to read it.",
-  projectChat: "That Project chat is unavailable."
+  chat: "That chat is unavailable."
 } as const;
 
 /**
- * Why the composer cannot send. Project access and lifecycle come first; a
- * chat Assistant that blocks sending comes before any model hint, because the
- * user's next step is choosing in its notice, and the neutral gate hint never
- * names the missing dependency (PRD 10.7).
+ * Why the composer cannot send. A chat Assistant that blocks sending comes
+ * before any model hint, because the user's next step is choosing in its
+ * notice, and the neutral gate hint never names the missing dependency
+ * (PRD 10.7).
  */
 export function effectiveComposerDisabledHint(input: Readonly<{
   assistantBlocked: boolean;
   personalHint: string | null;
-  projectAccessHint: string | null;
-  projectContext: boolean;
-  projectModelHint: string | null;
 }>): string | null {
-  if (input.projectContext && input.projectAccessHint) return input.projectAccessHint;
-  if (input.assistantBlocked) return ASSISTANT_SEND_GATE_HINT;
-  return input.projectContext ? input.projectModelHint : input.personalHint;
-}
-
-function personalComposerKnowledgeBase(
-  base: KnowledgeBaseSummary
-): ComposerConfigKnowledgeBase {
-  return {
-    archived: base.archived,
-    attentionDocumentCount: base.readiness.attentionSources,
-    description: base.description,
-    documentCount: base.sourceCount,
-    id: base.id,
-    name: base.name,
-    owned: base.owned,
-    processingDocumentCount: base.readiness.processingSources,
-    readinessState: base.readiness.state,
-    readyDocumentCount: base.readiness.readySources
-  };
-}
-
-function projectMcpSelection(project: ProjectDetailWire): McpRunSelection {
-  return { mode: project.policy.externalToolsEnabled ? project.defaults.mcpMode : "off" };
-}
-
-function projectDefaultModel(project: ProjectDetailWire): { modelId: string; provider: string } | null {
-  const resource = project.resources.find((candidate) =>
-    candidate.type === "model" && candidate.available &&
-    candidate.resourceId === project.defaults.providerModelId
-  );
-  return resource?.provider && resource.modelId
-    ? { modelId: resource.modelId, provider: resource.provider }
-    : null;
-}
-
-/** A Project's Assistants resolve in the Project catalog with the Project's parameters. */
-function projectAssistantContext(project: ProjectDetailWire): ComposerAssistantContext {
-  return {
-    controlDefaults: (model) => resolveModelControlDefaults(model, {
-      [modelControlKey(model)]: project.defaults.controlValues
-    }),
-    models: project.composer?.catalog.models ?? [],
-    skill: (skillId) => {
-      const resource = project.resources.find((candidate) =>
-        candidate.type === "skill" && candidate.resourceId === skillId
-      );
-      return resource
-        ? {
-            name: resource.label,
-            ...(resource.instructionApproxTokens !== undefined
-              ? { instructionApproxTokens: resource.instructionApproxTokens }
-              : {})
-          }
-        : null;
-    }
-  };
-}
-
-/** In a Project, inherit means the Project's defaults, not personal ones. */
-function projectAssistantDefaults(project: ProjectDetailWire): ComposerAssistantDefaults {
-  return {
-    knowledge: { selection: project.defaults.knowledgePlan, source: "project" },
-    model: projectDefaultModel(project),
-    search: {
-      mode: project.defaults.searchPlan.mode,
-      optionIds: [...project.defaults.searchPlan.optionIds]
-    },
-    skillsMode: "auto",
-    tools: projectMcpSelection(project)
-  };
-}
-
-function projectAssistantDefinition(
-  project: ProjectDetailWire,
-  assistantId: string
-): ComposerAssistantDefinition | null {
-  const entry = project.composer?.assistants.find((assistant) => assistant.summary.id === assistantId);
-  return entry
-    ? {
-        availability: entry.summary.availability,
-        avatar: entry.summary.avatar,
-        description: entry.summary.description,
-        id: entry.summary.id,
-        name: entry.summary.name,
-        owned: entry.summary.owned,
-        ownerDisplayName: entry.summary.ownerDisplayName,
-        promptCharacterCount: entry.promptCharacterCount,
-        rowAvailability: entry.summary.rowAvailability,
-        rows: entry.content.rows,
-        starterPrompts: [...entry.summary.starterPrompts]
-      }
-    : null;
+  return input.assistantBlocked ? ASSISTANT_SEND_GATE_HINT : input.personalHint;
 }
 
 /** The chat's Assistant with each row's effective value, for the shell contract. */
@@ -407,8 +257,6 @@ export function shellComposerAssistant(
   state: ComposerControlSnapshot,
   input: Readonly<{
     model: CatalogModel | undefined;
-    /** A Project chat: inherit and fallback rows read the Project's defaults. */
-    project?: boolean;
     scope: "chat" | "composer";
     summary: AssistantSummary | undefined;
   }>
@@ -435,8 +283,6 @@ export function shellComposerAssistant(
     name: assistant.name,
     owned: assistant.owned,
     ownerDisplayName: assistant.ownerDisplayName,
-    ...(input.project ? { project: true } : {}),
-    ...(input.project && input.summary?.scope.kind === "project" ? { projectName: input.summary.scope.projectName } : {}),
     rows: Object.fromEntries(ASSISTANT_ROW_KEYS.map((row) => [row, {
       ...assistant.rows[row],
       value: composerAssistantRowValue(state, row, input.model)
@@ -445,140 +291,6 @@ export function shellComposerAssistant(
     starterPrompts: assistant.starterPrompts ?? input.summary?.starterPrompts ?? [],
     state: "bound"
   };
-}
-
-function cloneComposerControlSnapshot(
-  state: ComposerControlSnapshot
-): ComposerControlSnapshot {
-  return {
-    ...state,
-    // The chat's Assistant with its rows, baselines and unsynced changes.
-    assistant: structuredClone(state.assistant),
-    knowledgeSelection: {
-      ...state.knowledgeSelection,
-      baseIds: [...state.knowledgeSelection.baseIds],
-      sourceIds: [...state.knowledgeSelection.sourceIds]
-    },
-    mcpSelection: structuredClone(state.mcpSelection),
-    selectedKnowledgeBaseIds: [...state.selectedKnowledgeBaseIds],
-    selectedSearchOptionIds: [...state.selectedSearchOptionIds],
-    selectedSkills: state.selectedSkills.map((skill) => ({ ...skill }))
-  };
-}
-
-export function capturePersonalComposerControls(
-  ref: { current: ComposerControlSnapshot | null }
-): void {
-  if (ref.current) return;
-  ref.current = cloneComposerControlSnapshot(useComposerControlStore.getState());
-}
-
-/**
- * Entering or switching Project authority is synchronous even though its
- * canonical defaults load asynchronously. Preserve the personal snapshot once,
- * then replace every run-scoped selection with a neutral disabled projection so
- * neither personal controls nor Project A can appear inside Project B.
- */
-export function enterProjectComposerControlBoundary(
-  ref: { current: ComposerControlSnapshot | null }
-): void {
-  capturePersonalComposerControls(ref);
-  const current = useComposerControlStore.getState();
-  const neutral = cloneComposerControlSnapshot(initialComposerControlSnapshot);
-  useComposerControlStore.setState({
-    ...neutral,
-    mcpSelection: { mode: "off" },
-    selectedModelId: "",
-    selectedProvider: "",
-    selectedSearchOptionIds: [],
-    // Citation/reasoning visibility are local presentation preferences rather
-    // than Project run authority, so do not flicker them during revalidation.
-    showCitations: current.showCitations,
-    showReasoningBlocks: current.showReasoningBlocks
-  });
-}
-
-export function restorePersonalComposerControls(
-  ref: { current: ComposerControlSnapshot | null }
-): void {
-  if (!ref.current) return;
-  const current = useComposerControlStore.getState();
-  useComposerControlStore.setState({
-    ...cloneComposerControlSnapshot(ref.current),
-    // These are account-level presentation preferences, not Project run
-    // authority. Keep changes made while a Project was open.
-    showCitations: current.showCitations,
-    showReasoningBlocks: current.showReasoningBlocks
-  });
-  ref.current = null;
-}
-
-/**
- * The Project Assistant a new Project chat starts with, resolved in the
- * Project, or null. Only an Assistant the Project composer lists as usable
- * starts a chat; any other starts it without an Assistant, and nothing is
- * said about it (Project settings show the default's state).
- */
-export function projectStartingAssistant(
-  project: ProjectDetailWire,
-  assistantId: string
-): ReturnType<typeof composerAssistantFromDefinition> {
-  const definition = projectAssistantDefinition(project, assistantId);
-  return definition?.availability.ok
-    ? composerAssistantFromDefinition(definition, projectAssistantContext(project), projectAssistantDefaults(project))
-    : null;
-}
-
-/**
- * Where a Project chat's Assistant comes from when the chat opens: only a new
- * chat starts with the Project default; an existing chat shows the Assistant
- * the server projects for it, and none until that projection is read.
- */
-export function projectChatAssistantSource(
-  chat: Pick<WorkspaceChatSummary, "pendingProjectDraft">,
-  projectionKnown: boolean
-): "none" | "project_default" | "projection" {
-  if (chat.pendingProjectDraft) return "project_default";
-  return projectionKnown ? "projection" : "none";
-}
-
-/** The personal state a Project leaves exactly as it found it. */
-type PersonalComposerContextRefs = Readonly<{
-  /** The open personal blank chat's default Assistant mark (see `BlankDefaultAssistant`). */
-  blankDefaultAssistant: { current: BlankDefaultAssistant | null };
-  controls: { current: ComposerControlSnapshot | null };
-  /** That mark as it was when the Project was entered. */
-  personalBlankDefaultAssistant: { current: BlankDefaultAssistant | null };
-}>;
-
-export function enterProjectComposerContext(refs: PersonalComposerContextRefs): void {
-  if (!refs.controls.current) refs.personalBlankDefaultAssistant.current = refs.blankDefaultAssistant.current;
-  enterProjectComposerControlBoundary(refs.controls);
-}
-
-/**
- * Leaving a Project restores the personal composer exactly, including
- * whether the personal default Assistant was taken or removed; a default the
- * personal blank chat began to load on the way out is dropped. Access loss
- * leaves no Assistant at all: not the Project's, not a personal one and not
- * the personal default.
- */
-export function leaveProjectComposerContext(input: PersonalComposerContextRefs & Readonly<{
-  accessLost: boolean;
-  applyPersonalBlankDefaults(): void;
-  skipBlankDefaultAssistant(): void;
-}>): void {
-  if (input.controls.current) {
-    restorePersonalComposerControls(input.controls);
-    // A default still loading when the Project opened never finished for
-    // the personal blank chat; the load started on the way out replaces it.
-    const entered = input.personalBlankDefaultAssistant.current;
-    if (entered?.state !== "loading") input.blankDefaultAssistant.current = entered;
-    input.personalBlankDefaultAssistant.current = null;
-  }
-  if (!input.accessLost) return;
-  input.skipBlankDefaultAssistant();
-  if (useComposerControlStore.getState().assistant) input.applyPersonalBlankDefaults();
 }
 
 export function PowerAppShellV2({
@@ -624,7 +336,6 @@ export function PowerAppShellV2({
     setSavedAccountName({ session: settingsSession, displayName });
   }, [settingsSession]);
   const catalogError = useWorkspaceStore((state) => state.catalogError);
-  const folders = useWorkspaceStore((state) => state.folders);
   const chats = useWorkspaceStore((state) => state.chats);
   const workspaceLoading = useWorkspaceStore((state) => state.workspaceLoading);
   const workspaceReady = useWorkspaceStore((state) => state.workspaceReady);
@@ -689,9 +400,6 @@ export function PowerAppShellV2({
     activeChatId ? Boolean(state.pendingChatIds[activeChatId]) : false
   );
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
-  const knowledgeSelection = useComposerControlStore((state) => state.knowledgeSelection);
-  const knowledgePlanSource = useComposerControlStore((state) => state.knowledgePlanSource);
-  const selectedKnowledgeBaseIds = useComposerControlStore((state) => state.selectedKnowledgeBaseIds);
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
   const selectedProvider = useComposerControlStore((state) => state.selectedProvider);
   const selectedSearchOptionIds = useComposerControlStore((state) => state.selectedSearchOptionIds);
@@ -705,7 +413,6 @@ export function PowerAppShellV2({
   const setDraft = useComposerSessionStore((state) => state.setDraft);
   const setEditingDraft = useComposerSessionStore((state) => state.setEditingDraft);
   const setSelectedModelId = useComposerControlStore((state) => state.setSelectedModelId);
-  const setSelectedKnowledgePlan = useComposerControlStore((state) => state.setSelectedKnowledgePlan);
   const setSelectedProvider = useComposerControlStore((state) => state.setSelectedProvider);
   const setSelectedSearchPlan = useComposerControlStore((state) => state.setSelectedSearchPlan);
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
@@ -718,14 +425,11 @@ export function PowerAppShellV2({
   const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
   const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
   const librarySnapshot = useAssistantLibraryStore();
-  const knowledgeSnapshot = useKnowledgeLibraryStore();
   const skillSnapshot = useSkillLibraryStore();
   const imageModelSnapshot = useImageModelStore();
   const appearance = useShellAppearanceController();
   const { change: changeTheme, id: themeId } = appearance.theme;
   const workspaceInteraction = useWorkspaceInteractionController();
-  const projectSettingsFolderId = workspaceInteraction.projectSettings.folderId;
-  const projectKnowledgeBaseIds = workspaceInteraction.projectSettings.knowledgeBaseIds;
   const shellOverlays = useShellOverlayController();
   const uploading = composerSession.pendingUploadGenerations.length > 0;
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -740,11 +444,6 @@ export function PowerAppShellV2({
   // Sends read availability at dispatch; the reader keeps this beside the state.
   const workspaceInstallationRef = useRef<ChatWorkspaceState | null>(null);
   const [workspaceCapabilityBusy, setWorkspaceCapabilityBusy] = useState(false);
-  // The composer owns an unfiltered, first-page snapshot. Reusing the
-  // Library's mutable query/page state would make its "All" total and recent
-  // documents silently change after browsing the Library.
-  const [composerKnowledgeData, setComposerKnowledgeData] =
-    useState<KnowledgeSourceListResponse | null>(null);
   const [shareDialogTarget, setShareDialogTarget] = useState<ShareDialogTarget | null>(null);
   const [memoryResumeTarget, setMemoryResumeTarget] = useState<WorkspaceChatSummary | null>(null);
   const [personalReadingAnchor, setPersonalReadingAnchor] = useState<Readonly<{
@@ -827,8 +526,6 @@ export function PowerAppShellV2({
   const runCatalogRef = useRef<Catalog | null>(catalog);
   /** The chat's automatic review a send carries now; set from the composer's state below. */
   const answerReviewSendRef = useRef<() => AnswerReviewAutoConfig | null>(() => null);
-  const projectRunContextRef = useRef(false);
-  const personalComposerControlsRef = useRef<ComposerControlSnapshot | null>(null);
   const workspaceRefreshPromiseRef = useRef<Promise<ChatDetail | null> | null>(null);
   const workspaceCapabilityMutationRef = useRef(false);
   const sessionExpiredHandledRef = useRef(false);
@@ -905,7 +602,6 @@ export function PowerAppShellV2({
     currentModel,
     currentParameterControls,
     liveArtifactSummary,
-    projectSettingsFolder,
     threadFollowKey,
     threadReadingAnchorKey,
   } = usePowerAppShellViewModel({
@@ -916,10 +612,8 @@ export function PowerAppShellV2({
     catalog,
     chats,
     draft: buildComposerMessage(draft, composerSession.comments),
-    folders,
     maxOutputTokens,
     pendingChatFolderId,
-    projectSettingsFolderId,
     renderActiveLeafId,
     runSurface: activeRunSurface,
     contextRejectionGeneration: composerSession.contextRejectionGeneration,
@@ -1004,7 +698,6 @@ export function PowerAppShellV2({
     selectSearchPlan,
     setDefaultAnswerReview,
     setDefaultAssistant,
-    setDefaultKnowledgePlan,
     setDefaultMcpMode,
     setDefaultSkillsMode,
     setDefaultSearchPlan,
@@ -1020,7 +713,6 @@ export function PowerAppShellV2({
   } = useRunControlsActions({
     chatSearchPreferencesRef,
     chatSearchSession: settingsSession,
-    allowPersonalPersistence: () => !projectRunContextRef.current,
     isSettingsSessionCurrent: () => activeSettingsSessionRef.current === settingsSession,
     catalog,
     currentModel,
@@ -1071,7 +763,6 @@ export function PowerAppShellV2({
     createFolder,
     deleteFolder,
     renameFolder,
-    saveProjectSettings,
     updateFolderParent
   } = createFolderActions({
     activeChat,
@@ -1084,57 +775,6 @@ export function PowerAppShellV2({
   function resumeChatRun(chat: WorkspaceChatSummary) {
     void runLifecycleActions.resumeChatRun(chat);
   }
-
-  /** A Project chat's values without an Assistant. */
-  const applyProjectChatControls = useEventCallback((
-    project: ProjectDetailWire,
-    chat: WorkspaceChatSummary
-  ) => {
-    const model = (project.composer?.catalog ?? catalog)?.models.find((candidate) =>
-      candidate.provider === chat.defaultProvider && candidate.modelId === chat.defaultModelId
-    );
-    setSelectedProvider(model?.provider ?? chat.defaultProvider, "system");
-    setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
-    const searchPlan = chat.defaultSearchPlan ?? project.defaults.searchPlan;
-    setSelectedSearchPlan(
-      searchPlan.optionIds,
-      searchPlan.mode,
-      "system"
-    );
-    setSelectedKnowledgePlan(
-      chat.defaultKnowledgePlan ?? project.defaults.knowledgePlan,
-      "project",
-      "system"
-    );
-    applyModelControlDefaults(model, model ? {
-      [`${model.provider}:${model.modelId}`]: project.defaults.controlValues
-    } : {});
-    useComposerControlStore.getState().setSelectedSkills([]);
-    useComposerControlStore.getState().setMcpSelection(projectMcpSelection(project), "system");
-  });
-
-  // A Project chat's Assistant resolves in its Project; the Project owner
-  // below supplies the scope once the Project is loaded.
-  const projectDetailRef = useRef<ProjectDetailWire | null>(null);
-  const projectChatAssistantScope = useEventCallback((chat: WorkspaceChatSummary): ChatAssistantScope | null => {
-    const project = projectDetailRef.current;
-    if (!project || project.id !== chat.projectId) return null;
-    return {
-      applyChatDefaults: (projectChat) => applyProjectChatControls(project, projectChat),
-      clearFallback: { mcpSelection: projectMcpSelection(project), skillsMode: "auto" },
-      context: projectAssistantContext(project),
-      known: (assistantId) => {
-        const known = project.composer?.assistants.find((assistant) => assistant.summary.id === assistantId);
-        return known
-          ? {
-              description: known.summary.description,
-              promptCharacterCount: known.promptCharacterCount,
-              starterPrompts: known.summary.starterPrompts
-            }
-          : {};
-      }
-    };
-  });
 
   // The personal default Assistant of the open blank chat; the composer's
   // Assistant actions below choose it.
@@ -1177,11 +817,9 @@ export function PowerAppShellV2({
     chatMutation: workspaceInteraction.chatMutation,
     chooseDefaultAssistant,
     loadingChatDetailIdRef,
-    projectChatAssistantScope,
     resumeChatRun,
     setNotice,
     setSelectedModelId,
-    setSelectedKnowledgePlan,
     setSelectedProvider,
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
@@ -1198,7 +836,7 @@ export function PowerAppShellV2({
   useChatTitleReconciliation({ accountId, chats });
   useWorkspaceOutputReconciliation({
     accountId, chatId: activeChatId, messages: visibleMessages,
-    projectId: activeChat?.projectId, sessionState: activeChat?.workspace?.sessionState,
+    sessionState: activeChat?.workspace?.sessionState,
     streaming: Boolean(activeChatStream), refreshActiveChat
   });
   const pruneThreadCacheEvent = useEventCallback(pruneThreadCache);
@@ -1309,36 +947,8 @@ export function PowerAppShellV2({
     workspaceRefreshPromiseRef
   });
 
-  const knowledgeLibraryActions = useMemo(() => createKnowledgeLibraryActions(), []);
-  // Knowledge is disabled: nothing offers it, so nothing loads it.
-  useEffect(() => {
-    if (KNOWLEDGE_ENABLED && !knowledgeSnapshot.sourceData) {
-      void knowledgeLibraryActions.refreshSources();
-    }
-  }, [knowledgeLibraryActions, knowledgeSnapshot.sourceData]);
-  useEffect(() => {
-    if (!KNOWLEDGE_ENABLED) return;
-    let cancelled = false;
-    void fetchKnowledgeSources({ filter: "all", page: 1, pageSize: 100 }).then((result) => {
-      if (!cancelled && result.ok) setComposerKnowledgeData(result.data);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [knowledgeSnapshot.sourceData]);
-  const searchComposerKnowledgeSources = useEventCallback(async (query: string) => {
-    const result = await fetchKnowledgeSources({ filter: "all", page: 1, pageSize: 100, query });
-    if (!result.ok) return [];
-    return result.data.sources.map((source) => ({
-      description: source.description,
-      id: source.id,
-      name: source.name,
-      owned: source.owned,
-      readiness: source.readiness.state
-    }));
-  });
   const refreshChatAssistantEvent = useEventCallback(refreshChatAssistant);
-  // The scope is defined with the Project context below.
+  // The scope is defined with the composer below.
   const chatAssistantChooseScopeRef = useRef<() => ChatAssistantChooseScope | null>(() => null);
   const chooseChatAssistantScope = useEventCallback(() => chatAssistantChooseScopeRef.current());
   const [chatAssistantActions] = useState(() => createChatAssistantActions({
@@ -1364,148 +974,22 @@ export function PowerAppShellV2({
     chooseAssistant: chatAssistantActions.chooseAssistant,
     catalog,
     catalogError,
-    knowledgeBases: (knowledgeSnapshot.data?.knowledgeBases ?? []).map((base) => ({
-      available: !base.archived,
-      id: base.id,
-      name: base.name
-    })),
-    knowledgeSources: (knowledgeSnapshot.sourceData?.sources ?? []).map((source) => ({
-      available: source.readiness.state === "ready",
-      id: source.id,
-      name: source.name
-    })),
-    knowledgeDataError: knowledgeSnapshot.dataError,
-    knowledgeDataState: knowledgeSnapshot.dataState,
     openMcpSettings,
     retryCatalog: () => void retryCatalog(),
-    retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
     setShellNotice: setNotice,
     skills: skillSnapshot.data?.skills ?? []
   });
 
-  /** Applies a Project Assistant as a new Project chat's starting value, or none. */
-  const applyProjectAssistant = useEventCallback((
-    project: ProjectDetailWire,
-    assistantId: string | null
-  ) => {
-    const applied = assistantId ? projectStartingAssistant(project, assistantId) : null;
-    if (applied) useComposerControlStore.getState().applyAssistantState(applied);
-    else useComposerControlStore.getState().clearAssistant({ mcpSelection: projectMcpSelection(project), skillsMode: "auto" });
-  });
-
-  const applyProjectDefaults = useEventCallback((
-    project: ProjectDetailWire,
-    chat: WorkspaceChatSummary
-  ) => {
-    applyProjectChatControls(project, chat);
-    switch (projectChatAssistantSource(chat, cachedChatAssistantProjection(chat.id) !== undefined)) {
-      case "project_default":
-        applyProjectAssistant(project, project.defaults.assistantId);
-        break;
-      case "projection":
-        applyChatAssistant(chat);
-        break;
-      default:
-        applyProjectAssistant(project, null);
-    }
-  });
-
-  const onProjectAccessLost = useEventCallback((chatIds: readonly string[]) => {
-    for (const chatId of chatIds) {
-      activeStreamAbortRef.current.get(chatId)?.abort();
-      activeStreamAbortRef.current.delete(chatId);
-      chatDetailRequestsRef.current.delete(chatId);
-      useRunLifecycleStore.getState().streamFinished({ chatId });
-      useRunLifecycleStore.getState().ambiguityCleared({ chatId });
-      useThreadStore.getState().removeThread(chatId);
-      useRunSurfaceStore.getState().removeSurface(chatId);
-      useComposerSessionStore.getState().removeSession(composerSessionKey(chatId));
-    }
-  });
-
-  // The Project and policy revision whose defaults the Project's blank chat
-  // started from; a blank chat opened again starts from them again.
-  const projectBlankDefaultsRef = useRef<string | null>(null);
-  const activateProjectBlankWorkspace = useEventCallback((projectId: string) => {
-    projectBlankDefaultsRef.current = null;
-    activateBlankWorkspace(null, "NORMAL", projectId);
-    // Personal blank activation intentionally resolves personal defaults when
-    // no Assistant is selected. Re-apply the already-captured Project fence so
-    // those defaults cannot become the loading projection for this Project.
-    enterProjectComposerControlBoundary(personalComposerControlsRef);
-    useComposerSessionStore.getState().activateSession(projectComposerSessionKey(projectId));
-  });
-  const personalBlankDefaultAssistantRef = useRef<BlankDefaultAssistant | null>(null);
-  const onProjectContextEntered = useEventCallback(() => {
-    enterProjectComposerContext({
-      blankDefaultAssistant: blankDefaultAssistantRef,
-      controls: personalComposerControlsRef,
-      personalBlankDefaultAssistant: personalBlankDefaultAssistantRef
-    });
-  });
-  const onProjectContextLeft = useEventCallback((options?: { accessLost?: boolean }) => {
-    leaveProjectComposerContext({
-      accessLost: options?.accessLost ?? false,
-      applyPersonalBlankDefaults: () => applyPersonalBlankDefaults(),
-      blankDefaultAssistant: blankDefaultAssistantRef,
-      controls: personalComposerControlsRef,
-      personalBlankDefaultAssistant: personalBlankDefaultAssistantRef,
-      skipBlankDefaultAssistant
-    });
-  });
-
-  const projectWorkspace = useProjectWorkspaceController({
-    accountId,
-    activeChatId,
-    activateBlankWorkspace,
-    activateProjectBlankWorkspace,
-    activateChat,
-    applyProjectDefaults,
-    isLocallyStreaming: (chatId) => Boolean(useRunLifecycleStore.getState().activeStreams[chatId]),
-    onProjectContextEntered,
-    onProjectContextLeft,
-    onProjectAccessLost,
-    preferredModelId: selectedModelId || undefined,
-    refreshActiveChat,
-    setNotice
-  });
-  useEffect(() => {
-    projectDetailRef.current = projectWorkspace.detail;
-  });
-  const selectProject = projectWorkspace.actions.selectProject;
-  const selectProjectChat = projectWorkspace.actions.selectChat;
-
-  /**
-   * A removed active chat hands over within its own scope, through the
-   * owners' direct actions so the address is replaced rather than pushed.
-   * A Project chat outside its open Project falls back to the personal blank chat.
-   */
-  const activateRemovedChatFallback = useEventCallback(async (
-    scopeProjectId: string | null,
-    next: WorkspaceChatSummary | null,
-    preserveControls: boolean = false
-  ) => {
-    if (scopeProjectId === null) {
-      if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
-      if (next) await activateChat(next, { preserveControls });
-      else activateBlankWorkspace();
-      return;
-    }
-    if (projectWorkspace.selectedProjectId !== scopeProjectId) {
-      if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
-      activateBlankWorkspace();
-      return;
-    }
-    if (next && await selectProjectChat(next.id)) return;
-    activateProjectBlankWorkspace(scopeProjectId);
-  });
-
+  // A removed active chat hands over to the next chat or the blank chat, so
+  // the address is replaced rather than pushed.
   const reconcilePermanentChatDeletion = useEventCallback(async (chatId: string) => {
-    const { nextChat, scopeProjectId, wasActive } = removePermanentlyDeletedChat(chatId);
+    const { nextChat, wasActive } = removePermanentlyDeletedChat(chatId);
     chatDetailRequestsRef.current.delete(chatId);
     removePermanentlyDeletedArchivedChat(chatId);
     if (shareDialogTarget?.chat.id === chatId) setShareDialogTarget(null);
-    if (wasActive) await activateRemovedChatFallback(scopeProjectId, nextChat, true);
+    if (!wasActive) return;
+    if (nextChat) await activateChat(nextChat, { preserveControls: true });
+    else activateBlankWorkspace();
   });
 
   useEffect(() => {
@@ -1515,109 +999,12 @@ export function PowerAppShellV2({
     );
     return () => deactivatePermanentChatDeletionAccount(accountId);
   }, [accountId, reconcilePermanentChatDeletion]);
-  // A Project address opens through the Project owner. Selecting a Project
-  // updates selectedProjectId before its detail and workspace requests
-  // settle; that render moves the request back to "waiting" so the later
-  // workspace render can open the target chat. Mutating the request only
-  // from a completed promise would not itself cause another render.
-  const projectRouteRef = useRef<ProjectRouteRequest | null>(null);
   const routeResolutionRef = useRef<ChatRouteResolution | null>(null);
-  const [projectRouteGeneration, setProjectRouteGeneration] = useState(0);
-  useEffect(() => {
-    const request = projectRouteRef.current;
-    if (!request || request.phase === "opening") return;
-    if (!isCurrentChatRouteResolution(request.resolution)) {
-      request.finish("superseded");
-      return;
-    }
-    // Projects are disabled: a Project's own address offers nothing to start.
-    if (!PROJECTS_ENABLED && !request.chatId) {
-      request.finish("unavailable");
-      return;
-    }
-    if (projectWorkspace.listLoading) return;
-    if (request.phase === "selecting") {
-      if (projectWorkspace.selectedProjectId !== request.projectId) return;
-      request.phase = "waiting";
-    }
-    if (projectWorkspace.selectedProjectId !== request.projectId) {
-      request.phase = "selecting";
-      void selectProject(request.projectId).then((selected) => {
-        if (projectRouteRef.current !== request) return;
-        if (!selected) {
-          request.finish("unavailable");
-          return;
-        }
-        if (request.phase === "selecting") request.phase = "waiting";
-        setProjectRouteGeneration((generation) => generation + 1);
-      });
-      return;
-    }
-    if (!projectWorkspace.detail || !projectWorkspace.workspace) return;
-    const chatId = request.chatId;
-    if (!chatId || !projectWorkspace.workspace.chats.some((chat) => chat.id === chatId)) {
-      if (!PROJECTS_ENABLED) {
-        request.finish("unavailable");
-        return;
-      }
-      // The accessible Project stays open on its blank chat.
-      if (useWorkspaceStore.getState().activeChatId !== null) activateProjectBlankWorkspace(request.projectId);
-      request.finish(chatId ? "project" : "opened");
-      return;
-    }
-    if (useWorkspaceStore.getState().activeChatId === chatId) {
-      request.finish("opened");
-      return;
-    }
-    request.phase = "opening";
-    void selectProjectChat(chatId).then((opened) => {
-      if (!isCurrentChatRouteResolution(request.resolution)) {
-        request.finish("superseded");
-        return;
-      }
-      if (!opened && useWorkspaceStore.getState().activeChatId !== null) {
-        activateProjectBlankWorkspace(request.projectId);
-      }
-      request.finish(opened ? "opened" : "project");
-    });
-  }, [
-    activateProjectBlankWorkspace,
-    projectRouteGeneration,
-    projectWorkspace.detail,
-    projectWorkspace.listLoading,
-    projectWorkspace.selectedProjectId,
-    projectWorkspace.workspace,
-    selectProject,
-    selectProjectChat
-  ]);
   useEffect(() => () => {
     cancelChatRouteResolution(routeResolutionRef.current);
-    projectRouteRef.current?.finish("superseded");
   }, []);
 
-  function openProjectRoute(
-    projectId: string,
-    chatId: string | null,
-    resolution: ChatRouteResolution
-  ): Promise<ProjectRouteOutcome> {
-    return new Promise((resolve) => {
-      projectRouteRef.current?.finish("superseded");
-      const request: ProjectRouteRequest = {
-        chatId,
-        finish(outcome) {
-          if (projectRouteRef.current === request) projectRouteRef.current = null;
-          resolve(outcome);
-        },
-        phase: "waiting",
-        projectId,
-        resolution
-      };
-      projectRouteRef.current = request;
-      setProjectRouteGeneration((generation) => generation + 1);
-    });
-  }
-
-  /** How an address becomes state: personal chats, Project routes and the blank chat. */
+  /** How an address becomes state: chats, Assistant entries and the blank chat. */
   function chatRouteTargets(
     catalogOverride: Catalog | null,
     resolution: ChatRouteResolution
@@ -1629,22 +1016,19 @@ export function PowerAppShellV2({
         const known = workspace.workspaceReady
           ? workspace.chats.find((chat) => chat.id === chatId)
           : undefined;
-        if (known?.projectId) return { projectId: known.projectId };
-        projectWorkspace.actions.leave();
         if (known) {
           await activateChat(known);
           return "opened";
         }
         const pending = workspaceRefreshPromiseRef.current;
         if (pending) await pending;
-        // A readable Project chat opens in its Project; invisible and missing
-        // chats stay indistinguishable.
-        const target: { outcome: "missing" | Readonly<{ projectId: string }> | null } = { outcome: null };
+        // Invisible and missing chats stay indistinguishable.
+        const target: { outcome: "missing" | null } = { outcome: null };
         await refreshWorkspace(chatId, {
           catalogOverride,
           isCurrent,
-          onTargetUnavailable: (projectId) => {
-            target.outcome = projectId ? { projectId } : "missing";
+          onTargetUnavailable: () => {
+            target.outcome = "missing";
           }
         });
         if (useWorkspaceStore.getState().activeChatId === chatId) return "opened";
@@ -1654,20 +1038,12 @@ export function PowerAppShellV2({
         // The link decides this new chat's Assistant; the personal default does not compete.
         skipBlankDefaultAssistant();
         const outcome = await chatAssistantActions.chooseLinkedAssistant(assistantId, () => isCurrent() &&
-          useWorkspaceStore.getState().activeChatId === null &&
-          projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey) === null);
+          useWorkspaceStore.getState().activeChatId === null);
         return outcome === "unavailable" ? "unavailable" : "opened";
       },
       openBlank() {
-        projectWorkspace.actions.leave();
-        if (
-          useWorkspaceStore.getState().activeChatId !== null ||
-          projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey)
-        ) {
-          activateBlankWorkspace();
-        }
+        if (useWorkspaceStore.getState().activeChatId !== null) activateBlankWorkspace();
       },
-      openProject: (projectId, chatId) => openProjectRoute(projectId, chatId, resolution),
       showUnavailable(target) {
         setNotice({ kind: "error", text: CHAT_ROUTE_UNAVAILABLE_COPY[target] });
       },
@@ -1691,10 +1067,10 @@ export function PowerAppShellV2({
       return null;
     }
     if (
-      (!route || isAssistantEntry(route) || !route.chatId || route.projectId) &&
+      (!route || isAssistantEntry(route) || !route.chatId) &&
       !useWorkspaceStore.getState().workspaceReady
     ) {
-      // Blank, entry and Project addresses still need the personal workspace first.
+      // Blank and entry addresses still need the workspace first.
       const pending = workspaceRefreshPromiseRef.current;
       if (pending) await pending;
       if (!useWorkspaceStore.getState().workspaceReady && isCurrentChatRouteResolution(resolution)) {
@@ -1731,8 +1107,7 @@ export function PowerAppShellV2({
    */
   function leaveStudioThen(proceed: () => void) {
     if (studio.busy) return;
-    const studioOpen = !projectContext &&
-      Boolean(librarySnapshot.open || knowledgeSnapshot.open || memoryOpen);
+    const studioOpen = Boolean(librarySnapshot.open || memoryOpen);
     // An open Skill dialog is keyed by the chat and would drop its unsaved draft.
     requestSkillDialogNavigation(() => {
       if (studioOpen) studio.exit(proceed);
@@ -1748,27 +1123,20 @@ export function PowerAppShellV2({
     }
   });
   const studio = useStudioNavigation({
-    available: ["assistants", "instructions", "skills", ...(KNOWLEDGE_ENABLED ? ["knowledge" as const] : []),
-      "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"],
+    available: ["assistants", "instructions", "skills", "memory", "files", "artifacts", "scheduled", "mcp",
+      "secrets", "defaults"],
     onExit() {
       assistantLibraryActions.closeLibrary();
-      knowledgeLibraryActions.closeLibrary();
       closeMemoryLibrary();
     },
     onSelect(tab) {
-      if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
       closeGeneralSettings();
       if (tab !== "memory") closeMemoryLibrary();
-      if (tab === "knowledge") {
+      if (tab === "memory") {
         assistantLibraryActions.closeLibrary();
-        if (!knowledgeSnapshot.open) knowledgeLibraryActions.openLibrary();
-      } else if (tab === "memory") {
-        assistantLibraryActions.closeLibrary();
-        knowledgeLibraryActions.closeLibrary();
         openMemoryLibrary();
-      } else {
-        knowledgeLibraryActions.closeLibrary();
-        if (!librarySnapshot.open) assistantLibraryActions.openLibrary();
+      } else if (!librarySnapshot.open) {
+        assistantLibraryActions.openLibrary();
       }
     }
   });
@@ -1778,15 +1146,7 @@ export function PowerAppShellV2({
   });
   useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings), openConnectionsSettings);
   const openAssistantLibrary = () => studio.open("assistants");
-  const openKnowledgeLibrary = () => studio.open("knowledge");
-  const openKnowledgeLibrarySource = (sourceId: string) => {
-    studio.open("knowledge", () => knowledgeLibraryActions.openSourceDetail(sourceId));
-  };
-  const openMemoryLibraryDestination = () => {
-    // Personal Memory is never a Project capability, including stale callbacks.
-    if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) return;
-    studio.open("memory");
-  };
+  const openMemoryLibraryDestination = () => studio.open("memory");
   const openSettingsDestination = () => openGeneralSettings();
   const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
   const setAssistantPickerOpenEvent = useEventCallback((open: boolean) => {
@@ -1798,10 +1158,6 @@ export function PowerAppShellV2({
   });
   const loadDefaultAssistantChoices = useEventCallback(() => assistantLibraryActions.ensureList());
 
-  useEffect(() => {
-    if (KNOWLEDGE_ENABLED) void knowledgeLibraryActions.refreshList();
-  }, [knowledgeLibraryActions]);
-
   const { consumeRunStream, createStreamTokenBuffer } = useRunStreaming({
     applyChatUpdate
   });
@@ -1811,25 +1167,17 @@ export function PowerAppShellV2({
     activeChatIdRef,
     activeStreamAbortRef,
     notifyAnswerReady,
-    projectIdForChat: (chatId) => chatId
-      ? useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId)?.projectId ?? null
-      : null,
     refreshActiveChat,
     refreshWorkspaceAvailability: readWorkspaceAvailability,
     setNotice
   });
   const { fetchRun, retryAttachment, reuseFile, stopCurrentRun, uploadFiles } = runLifecycleActions;
 
-  // A selected Project is a local blank context until the first send.  Route
-  // that send through the Project chat endpoint so opening the Project never
-  // creates an empty server chat or accidentally creates a personal chat.
+  // The blank chat becomes a server chat only with its first send.
   const createChatForSend = useEventCallback(async (
     folderId?: string | null,
     sourceSessionKey?: ComposerSessionKey
   ): Promise<WorkspaceChatSummary | null> => {
-    if (projectWorkspace.selectedProjectId && !activeChatId) {
-      return projectWorkspace.actions.createChatForSend(folderId, sourceSessionKey);
-    }
     if (!activeChatId && sourceSessionKey) {
       return createPersonalChatForSend(folderId ?? null, sourceSessionKey);
     }
@@ -1944,7 +1292,6 @@ export function PowerAppShellV2({
     persistActiveLeaf,
     primeAnswerSound,
     refreshActiveChat,
-    refreshProjectWorkspace: projectWorkspace.actions.refresh,
     resolveCatalog: () => runCatalogRef.current,
     resolveWorkspaceInstallationAvailable: () => workspaceInstallationRef.current?.available === true,
     refreshWorkspaceAvailability: readWorkspaceAvailability,
@@ -2000,8 +1347,7 @@ export function PowerAppShellV2({
       });
     },
     rejectAttachments(fileNames: readonly string[]) {
-      void reportRejectedAttachments(fileNames, effectiveCurrentModel, {
-        personalChat: !projectContext,
+      void reportRejectedAttachments(fileNames, currentModel, {
         workspaceAvailable: workspaceUsable
       });
     },
@@ -2032,26 +1378,6 @@ export function PowerAppShellV2({
     adminEntryVisible,
     connectEntryVisible,
     telegramAvailable,
-    copyProjectChatLink: async () => {
-      const workspace = useWorkspaceStore.getState();
-      const chat = workspace.activeChatId
-        ? workspace.chats.find((candidate) => candidate.id === workspace.activeChatId)
-        : null;
-      if (!chat?.projectId) {
-        setNotice({ kind: "error", text: "No Project chat is open." });
-        return;
-      }
-      try {
-        const destination = new URL(
-          formatChatRoutePath({ chatId: chat.id, projectId: chat.projectId }),
-          window.location.origin
-        );
-        await writeClipboardText(destination.toString());
-        setNotice({ kind: "success", text: "Project chat link copied." });
-      } catch (error) {
-        setNotice({ kind: "error", text: `Could not copy the Project chat link: ${errorMessage(error)}` });
-      }
-    },
     dismissNotice: () => setNotice(null),
     notice,
     shareActiveBranch
@@ -2160,7 +1486,7 @@ export function PowerAppShellV2({
       activateChat,
       createChat: activateBlankWorkspace,
       createFolder,
-      deleteChat: (chat: WorkspaceChatSummary) => deleteChat(chat, activateRemovedChatFallback),
+      deleteChat,
       deleteChatPermanently,
       deleteFolder,
       exportChat,
@@ -2170,7 +1496,7 @@ export function PowerAppShellV2({
       openSearchMatch: openSearchMatchEvent,
       openChat: activatePersonalChatDeepLink,
       openChatAddress: (chatId: string) => navigateToChatAddress(
-        { chatId, projectId: null },
+        { chatId },
         (route, resolution) => {
           void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
         }
@@ -2191,46 +1517,18 @@ export function PowerAppShellV2({
     }
   } satisfies ShellWorkspacePaneView;
 
-  // Project navigation chosen by the user adds a history entry; the address
-  // resolver and Studio use the owner's actions directly.
-  const projectNavigation: ProjectWorkspaceController = {
-    ...projectWorkspace,
-    actions: {
-      ...projectWorkspace.actions,
-      createChat: (folderId) => navigateChatRoute(() => projectWorkspace.actions.createChat(folderId)),
-      leave: () => navigateChatRoute(projectWorkspace.actions.leave),
-      selectChat: (chatId) => navigateChatRoute(() => projectWorkspace.actions.selectChat(chatId)),
-      selectProject: (projectId) => navigateChatRoute(() => projectWorkspace.actions.selectProject(projectId))
-    }
-  };
-
   const workspaceView = {
     archived: {
       onRestored: async (chatId: string) => {
-        // A restored chat is personal: leave an open Project before it opens,
-        // as an address of a personal chat does.
-        if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
         await refreshWorkspace(chatId, { preserveControls: true });
       }
     },
-    pane: workspacePaneView,
-    projects: projectNavigation,
-    projectSettings: {
-      changeKnowledgeBaseIds: workspaceInteraction.projectSettings.changeKnowledgeBaseIds,
-      close: workspaceInteraction.projectSettings.close,
-      folder: projectSettingsFolder,
-      knowledgeBaseIds: projectKnowledgeBaseIds,
-      knowledgeBases: knowledgeSnapshot.data?.knowledgeBases ?? [],
-      knowledgeDataError: knowledgeSnapshot.dataError,
-      knowledgeDataState: knowledgeSnapshot.dataState,
-      retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
-      save: saveProjectSettings
-    }
+    pane: workspacePaneView
   } satisfies ShellWorkspaceView;
 
   // A task whose later runs continue in this chat: a quiet line says replies do not change it.
   const scheduledTasks = useScheduledTasksStore((state) => state.tasks);
-  const scheduledChatTask = activeChat?.projectId ? null : scheduledTaskContinuingIn(scheduledTasks, activeChatId);
+  const scheduledChatTask = scheduledTaskContinuingIn(scheduledTasks, activeChatId);
   const scheduledTaskChat = scheduledChatTask ? {
     onEdit: () => studio.open("scheduled", () => requestScheduledTaskEdit(scheduledChatTask.id)),
     title: scheduledChatTask.title
@@ -2303,34 +1601,11 @@ export function PowerAppShellV2({
     visibleMessages
   } satisfies ShellThreadView;
 
-  // Keep the selected Project context alive while the user is on its local
-  // blank-chat composer.  The previous projection only considered an active
-  // server chat, which made a freshly selected Project fall back to the
-  // personal catalog until an empty chat was created.
-  const activeProject = projectWorkspace.detail && (
-    activeChat?.projectId === projectWorkspace.detail.id ||
-    (!activeChat && projectWorkspace.selectedProjectId === projectWorkspace.detail.id)
-  )
-    ? projectWorkspace.detail
-    : null;
-  const activeProjectChat = activeProject && activeChat
-    ? projectWorkspace.workspace?.chats.find((chat) => chat.id === activeChat.id) ?? null
-    : null;
-  const activeProjectModels = activeProject?.resources.filter((resource) =>
-    resource.type === "model" && resource.available
-  ) ?? [];
-  const projectContext = Boolean(
-    activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)
-  );
-  const projectCatalog = activeProject
-    ? effectiveProjectCatalog(catalog, activeProject)
-    : projectContext ? null : catalog;
   useEffect(() => {
-    runCatalogRef.current = projectCatalog;
-    projectRunContextRef.current = projectContext;
-  }, [projectCatalog, projectContext]);
+    runCatalogRef.current = catalog;
+  }, [catalog]);
   // Scheduled results: unread rows, one notice per new result, seen on open.
-  const scheduledChatVisible = !projectContext && !librarySnapshot.open && !knowledgeSnapshot.open && !memoryOpen && !settingsOpen;
+  const scheduledChatVisible = !librarySnapshot.open && !memoryOpen && !settingsOpen;
   useScheduledTaskUpdates({
     accountId,
     activeChatId,
@@ -2367,12 +1642,6 @@ export function PowerAppShellV2({
     },
     renderedUnseenRuns
   });
-  const projectCurrentModel = projectContext
-    ? projectCatalog?.models.find((model) =>
-        model.provider === selectedProvider && model.modelId === selectedModelId
-      )
-    : undefined;
-  const effectiveCurrentModel = projectContext ? projectCurrentModel : currentModel;
   // Workspace is ambient in interactive chats (operator, 2026-10-20): usable
   // exactly when the installation offers it and the model calls tools, with
   // no toggle; unknown while availability loads. A chat's stored flag and the
@@ -2380,7 +1649,7 @@ export function PowerAppShellV2({
   // (`resolveWorkspaceInstallationAvailable`); uploads, attachment checks and
   // chat creation read the active session's flag kept here.
   const workspaceUsable = workspaceInstallation?.available === true &&
-    effectiveCurrentModel?.capabilities.toolCalling === true;
+    currentModel?.capabilities.toolCalling === true;
   // Also re-syncs a session recreated under the same key.
   const activeSessionWorkspaceEnabled = composerSession.workspaceEnabled;
   useEffect(() => {
@@ -2391,13 +1660,10 @@ export function PowerAppShellV2({
   const answerReview = useAnswerReviewAutoV2({
     activeChat,
     assistantChat: Boolean(composerAssistantState),
-    authorModel: effectiveCurrentModel,
+    authorModel: currentModel,
     defaults: catalog?.defaults.answerReview ?? ANSWER_REVIEW_AUTO_DEFAULT,
     draftConfig: composerSession.answerReview,
-    knowledgeEnabled: knowledgeSelection.mode !== "none",
-    models: projectCatalog?.models ?? [],
-    projectContext,
-    refreshProjectWorkspace: projectWorkspace.actions.refresh,
+    models: catalog?.models ?? [],
     sessionKey: activeComposerSessionKey
   });
   useEffect(() => {
@@ -2415,10 +1681,9 @@ export function PowerAppShellV2({
 
   const attachmentLimitContextsRef = useRef(new Map<string, string>());
 
-  // Reconcile against the model this message will use: a Project chat's own
-  // catalog model, never the personal selection behind it.
+  // Reconcile against the model this message will use.
   useEffect(() => {
-    if (!effectiveCurrentModel) {
+    if (!currentModel) {
       return;
     }
 
@@ -2428,10 +1693,10 @@ export function PowerAppShellV2({
 
     const attachmentLimits = catalog?.attachmentLimits;
     const contextFingerprint = [
-      effectiveCurrentModel.provider,
-      effectiveCurrentModel.modelId,
-      effectiveCurrentModel.capabilities.documentInputMode,
-      effectiveCurrentModel.capabilities.imageInput ? "images" : "no-images",
+      currentModel.provider,
+      currentModel.modelId,
+      currentModel.capabilities.documentInputMode,
+      currentModel.capabilities.imageInput ? "images" : "no-images",
       attachmentLimits?.maxCount ?? "default-count",
       attachmentLimits?.maxMaterializedBytes ?? "default-source",
       attachmentLimits?.maxEncodedBytes ?? "default-encoded"
@@ -2442,7 +1707,7 @@ export function PowerAppShellV2({
     const clearResolvedLimitFeedback =
       previousContext !== undefined && previousContext !== contextFingerprint;
 
-    reconcileCurrentComposerAttachments(activeComposerSessionKey, effectiveCurrentModel, {
+    reconcileCurrentComposerAttachments(activeComposerSessionKey, currentModel, {
       clearResolvedLimitFeedback,
       workspaceEnabled: workspaceUsable
     });
@@ -2454,84 +1719,13 @@ export function PowerAppShellV2({
     activeComposerSessionKey,
     attachments,
     catalog?.attachmentLimits,
-    effectiveCurrentModel,
+    currentModel,
     uploading,
     workspaceUsable
   ]);
 
-  const effectiveParameterControls = projectContext
-    ? defaultParameterControls(projectCurrentModel)
-    : currentParameterControls;
-  const projectAssistantItems = activeProject?.composer?.assistants ?? [];
-  /** A blank Project chat's values without an Assistant. */
-  const applyProjectBlankControls = useEventCallback((project: ProjectDetailWire) => {
-    const defaultModel = projectDefaultModel(project);
-    const model = defaultModel
-      ? effectiveProjectCatalog(catalog, project)?.models.find((candidate) =>
-          candidate.provider === defaultModel.provider && candidate.modelId === defaultModel.modelId
-        )
-      : undefined;
-    if (defaultModel) {
-      setSelectedProvider(defaultModel.provider, "system");
-      setSelectedModelId(defaultModel.modelId, "system");
-      applyModelControlDefaults(model, model ? {
-        [`${model.provider}:${model.modelId}`]: project.defaults.controlValues
-      } : {});
-    }
-    setSelectedSearchPlan(
-      project.defaults.searchPlan.optionIds,
-      project.defaults.searchPlan.mode,
-      "system"
-    );
-    setSelectedKnowledgePlan(project.defaults.knowledgePlan, "project", "system");
-    useComposerControlStore.getState().setSelectedSkills([]);
-    useComposerControlStore.getState().setMcpSelection(projectMcpSelection(project), "system");
-  });
-  useEffect(() => {
-    if (!activeProject || activeChat) {
-      if (!activeProject) projectBlankDefaultsRef.current = null;
-      return;
-    }
-    const defaultsKey = `${activeProject.id}:${activeProject.policyRevision}`;
-    if (projectBlankDefaultsRef.current === defaultsKey) return;
-    projectBlankDefaultsRef.current = defaultsKey;
-    applyProjectBlankControls(activeProject);
-    applyProjectAssistant(activeProject, activeProject.defaults.assistantId);
-  }, [
-    activeChat,
-    activeProject,
-    applyProjectAssistant,
-    applyProjectBlankControls
-  ]);
-  const activeModelLinkedToProject = !activeProject || Boolean(effectiveCurrentModel && activeProjectModels.some(
-    (resource) => resource.provider === effectiveCurrentModel.provider &&
-      (resource.modelId ?? resource.resourceId) === effectiveCurrentModel.modelId
-  ));
-  const projectAccessHint = projectContext
-    ? !PROJECTS_ENABLED
-      ? "Projects are turned off, so this shared chat is read-only."
-      : !activeProject
-      ? "Project access is being revalidated."
-      : activeProject.status !== "ACTIVE"
-        ? "This project is archived and read-only."
-        : activeProjectChat?.archived
-          ? "This shared chat is archived and read-only."
-        : !activeProject.capabilities.mutateChats
-          ? "Viewer access is read-only. Ask a project manager for Contributor access."
-          : null
-    : null;
-  const projectModelHint = projectContext && activeProject
-    ? activeProjectModels.length === 0
-      ? activeProject.capabilities.manageProject
-        ? "No model is linked to this project. Add a model in Project Settings."
-        : "This project needs a model before contributors can send messages."
-      : !activeModelLinkedToProject
-        ? "Choose a model linked to this project."
-        : null
-    : null;
-
   const workspaceUnavailableReason = workspaceInstallation?.available === true
-    ? effectiveCurrentModel?.capabilities.toolCalling === true ? undefined : "model_tools_required" as const
+    ? currentModel?.capabilities.toolCalling === true ? undefined : "model_tools_required" as const
     : workspaceInstallation?.unavailableReason;
   const workspaceSessionState = activeChat?.workspace?.sessionState ??
     (workspaceUsable ? "not_started" as const : null);
@@ -2564,7 +1758,7 @@ export function PowerAppShellV2({
       return;
     }
     setUploadConfiguration({ accountId, value: limits });
-    const ordinaryPolicy = attachmentPolicyForModel(effectiveCurrentModel);
+    const ordinaryPolicy = attachmentPolicyForModel(currentModel);
     const workspaceFiles = selected.filter(file => file.size > limits.ordinaryMaxBytes ||
       partitionAttachmentSelection([file], ordinaryPolicy).rejected.length > 0);
     if (workspaceFiles.some(file => file.size > limits.maxBytes)) {
@@ -2582,7 +1776,7 @@ export function PowerAppShellV2({
   }
 
   async function reuseComposerFile(attachmentId: string, fileName: string): Promise<boolean> {
-    if (projectContext || activeChatStreaming) return false;
+    if (activeChatStreaming) return false;
     const sourceKey = useComposerSessionStore.getState().activeSessionKey;
     const currentCount = composerSession.attachments.length;
     const maxCount = catalog?.attachmentLimits?.maxCount;
@@ -2591,7 +1785,7 @@ export function PowerAppShellV2({
       return false;
     }
     const requiresWorkspace = partitionAttachmentSelection(
-      [new File([], fileName)], attachmentPolicyForModel(effectiveCurrentModel)
+      [new File([], fileName)], attachmentPolicyForModel(currentModel)
     ).rejected.length > 0;
     if (requiresWorkspace && !workspaceUsableForFiles()) return false;
     if (useComposerSessionStore.getState().activeSessionKey !== sourceKey) return false;
@@ -2645,47 +1839,30 @@ export function PowerAppShellV2({
   }
 
   // Where the open composer resolves an Assistant it chooses before a chat
-  // exists: the Project's catalog and defaults, or the personal ones.
+  // exists: the personal catalog and defaults.
   const chatAssistantChooseScope = useEventCallback((): ChatAssistantChooseScope | null => {
-    if (projectContext) {
-      if (!activeProject) return null;
-      return {
-        context: projectAssistantContext(activeProject),
-        defaults: projectAssistantDefaults(activeProject),
-        restoreDefaults: () => {
-          applyProjectBlankControls(activeProject);
-          applyProjectAssistant(activeProject, null);
-        }
-      };
-    }
     const personalCatalog = useWorkspaceStore.getState().catalog;
     if (!personalCatalog) return null;
-    const folderPlan = pendingChatFolderId
-      ? folders.find((folder) => folder.id === pendingChatFolderId)?.defaultKnowledgePlan ?? null
-      : null;
-    const defaults = personalComposerAssistantDefaults(personalCatalog);
     return {
       context: {
         controlDefaults: (model) => resolveModelControlDefaults(model, personalCatalog.defaults.controlValues),
         models: personalCatalog.models,
         skill: (skillId) => useSkillLibraryStore.getState().data?.skills.find((skill) => skill.id === skillId) ?? null
       },
-      defaults: folderPlan ? { ...defaults, knowledge: { selection: folderPlan, source: "project" } } : defaults,
-      restoreDefaults: () => applyPersonalBlankDefaults(pendingChatFolderId)
+      defaults: personalComposerAssistantDefaults(personalCatalog),
+      restoreDefaults: () => applyPersonalBlankDefaults()
     };
   });
   useEffect(() => {
     chatAssistantChooseScopeRef.current = chatAssistantChooseScope;
   }, [chatAssistantChooseScope]);
 
-  const assistantSummaries = projectContext
-    ? activeProject ? projectAssistantItems.map((assistant) => assistant.summary) : []
-    : librarySnapshot.data?.assistants ?? [];
-  // The blank personal chat's strip reads the personal list; it is loaded
-  // once when that chat is first shown (a load already in flight is
-  // shared), and the picker refreshes it later.
-  const assistantStripItems = projectContext ? [] : assistantStripItemsV2(librarySnapshot.data?.assistants ?? []);
-  const assistantStripListWanted = !projectContext && !activeChat &&
+  const assistantSummaries = librarySnapshot.data?.assistants ?? [];
+  // The blank chat's strip reads the personal list; it is loaded once when
+  // that chat is first shown (a load already in flight is shared), and the
+  // picker refreshes it later.
+  const assistantStripItems = assistantStripItemsV2(assistantSummaries);
+  const assistantStripListWanted = !activeChat &&
     !librarySnapshot.data && librarySnapshot.listRequestId === 0;
   const loadAssistantStripList = useEventCallback(() => assistantLibraryActions.ensureList());
   useEffect(() => {
@@ -2695,33 +1872,12 @@ export function PowerAppShellV2({
     ? assistantSummaries.find((assistant) => assistant.id === composerAssistantState.id)
     : undefined;
   const currentAssistant = shellComposerAssistant(useComposerControlStore.getState(), {
-    model: effectiveCurrentModel,
-    project: projectContext,
-    scope: activeChat && !activeChat.pendingPersonalDraft && !activeChat.pendingProjectDraft
-      ? "chat"
-      : "composer",
+    model: currentModel,
+    scope: activeChat && !activeChat.pendingPersonalDraft ? "chat" : "composer",
     summary: currentAssistantSummary
   });
   const chooseComposerAssistant = (assistantId: string) => {
     setAssistantPickerOpen(false);
-    if (projectContext) {
-      if (!activeProject) {
-        setNotice({ kind: "error", text: "Project access is still being revalidated." });
-        return;
-      }
-      const definition = projectAssistantDefinition(activeProject, assistantId);
-      if (!definition) {
-        setNotice({ kind: "error", text: "This Project Assistant is no longer available." });
-        return;
-      }
-      void chatAssistantActions.chooseDefinition(
-        definition,
-        projectAssistantContext(activeProject).skill
-      ).then((failure) => {
-        if (failure) setNotice({ kind: "error", text: failure });
-      });
-      return;
-    }
     // In an existing chat the choice is pending from its detail read on, so
     // a message sent meanwhile waits for it (a failed read blocks it).
     void chatAssistantActions.trackOpenChat(
@@ -2733,7 +1889,7 @@ export function PowerAppShellV2({
   const composerView = {
     attachments,
     backgroundMode,
-    catalog: projectCatalog,
+    catalog,
     catalogError,
     changeBackgroundMode,
     changeMaxOutputTokens,
@@ -2757,25 +1913,19 @@ export function PowerAppShellV2({
       current: currentAssistant,
       editById: (assistantId: string) => {
         setAssistantPickerOpen(false);
-        if (projectContext) {
-          projectWorkspace.actions.openSettings();
-          return;
-        }
         studio.open("assistants", () => { void assistantLibraryActions.openAssistantEditor(assistantId); });
       },
-      openLibrary: projectContext ? projectWorkspace.actions.openSettings : openAssistantLibrary,
+      openLibrary: openAssistantLibrary,
       openPicker: assistantPickerOpen,
       pending: assistantUpdatePending,
       pickerItems: assistantSummaries,
-      ...(projectContext ? {} : { loadPickerItems: loadDefaultAssistantChoices }),
-      pickerLoading: projectContext
-        ? !activeProject
-        : librarySnapshot.dataState === "loading" && !librarySnapshot.data,
-      recentIds: projectContext ? [] : librarySnapshot.data?.recentAssistantIds ?? [],
+      loadPickerItems: loadDefaultAssistantChoices,
+      pickerLoading: librarySnapshot.dataState === "loading" && !librarySnapshot.data,
+      recentIds: librarySnapshot.data?.recentAssistantIds ?? [],
       stripItems: assistantStripItems,
       remove: () => void chatAssistantActions.removeAssistant(),
       resetRow: (row: AssistantRowKey) => void chatAssistantActions.resetRow(row),
-      restore: projectContext ? undefined : (assistantId: string) => {
+      restore: (assistantId: string) => {
         const chatId = currentAssistant?.scope === "chat" ? activeChat?.id ?? null : null;
         void chatAssistantActions.restoreArchivedAssistant(
           chatId,
@@ -2789,74 +1939,36 @@ export function PowerAppShellV2({
       setRow: chatAssistantActions.setRow,
       startFromCurrentSetup: () => {
         setAssistantPickerOpen(false);
-        if (projectContext) projectWorkspace.actions.openSettings();
-        else studio.open("assistants", () => assistantLibraryActions.openNewAssistantFromCurrentSetup());
+        studio.open("assistants", () => assistantLibraryActions.openNewAssistantFromCurrentSetup());
       }
     },
     composerContextStats,
     composerDisabledHint: effectiveComposerDisabledHint({
       assistantBlocked: Boolean(currentAssistant?.blockReason),
-      personalHint: composerDisabledHint,
-      projectAccessHint,
-      projectContext,
-      projectModelHint
+      personalHint: composerDisabledHint
     }),
-    currentModel: effectiveCurrentModel,
-    currentParameterControls: effectiveParameterControls,
+    currentModel,
+    currentParameterControls,
     draft,
     sending: Boolean(composerSession.pendingSend),
-    knowledge: {
-      bases: projectContext
-        ? activeProject?.composer?.knowledgeBases ?? []
-        : (knowledgeSnapshot.data?.knowledgeBases ?? []).map(personalComposerKnowledgeBase),
-      documentTotal: projectContext
-        ? activeProject?.composer?.knowledgeDocumentTotal ?? null
-        : composerKnowledgeData?.pagination.totalItems ?? null,
-      override: () => {
-        const controls = useComposerControlStore.getState();
-        // A Knowledge override is an ordinary governed-control edit: detach
-        // Assistant identity while preserving its other resolved controls.
-        // Privacy-hidden inherited plans normalize to Off in the store.
-        controls.setSelectedKnowledgePlan(
-          controls.knowledgeSelection,
-          "explicit",
-          "user"
-        );
-      },
-      planSource: knowledgePlanSource,
-      searchSources: projectContext ? undefined : searchComposerKnowledgeSources,
-      select: (selection) => setSelectedKnowledgePlan(selection, "explicit", "user"),
-      selection: knowledgeSelection,
-      sources: projectContext
-        ? activeProject?.composer?.knowledgeSources ?? []
-        : (composerKnowledgeData?.sources ?? []).map((source) => ({
-            description: source.description,
-            id: source.id,
-            name: source.name,
-            owned: source.owned,
-            readiness: source.readiness.state
-          }))
-    },
-    // Project Skills are a separate publication boundary.  The personal
-    // library remains available only after leaving Project context.
     maxOutputTokens,
     memory: {
-      canToggleTemporary: projectContext ? false : canToggleTemporary,
+      canToggleTemporary,
       explanation: resolveMemoryCopy("temporary.explanation"),
       externalRetention: resolveMemoryCopy("temporary.externalRetention"),
       label: resolveMemoryCopy("temporary.label"),
-      mode: projectContext ? "NORMAL" : composerTemporary ? "TEMPORARY" : "NORMAL",
+      mode: composerTemporary ? "TEMPORARY" : "NORMAL",
       retention: resolveMemoryCopy("temporary.retention"),
       retentionDeadline: activeChat?.temporaryRetentionDeadline ?? null,
-      toggleTemporary: projectContext ? () => undefined : toggleTemporaryComposer
+      toggleTemporary: toggleTemporaryComposer
     },
-    makeModelDefault: projectContext ? undefined : makeModelDefault,
+    makeModelDefault,
     answerReview: {
       save: answerReview.save,
       saving: answerReview.saving,
       state: answerReview.state
     },
-    chatDefaults: projectContext || !catalog ? undefined : {
+    chatDefaults: !catalog ? undefined : {
       assistant: {
         assistantId: catalog.defaults.assistantId ?? null,
         assistants: librarySnapshot.data?.assistants ?? null,
@@ -2881,11 +1993,9 @@ export function PowerAppShellV2({
         config: catalog.defaults.answerReview ?? ANSWER_REVIEW_AUTO_DEFAULT,
         set: setDefaultAnswerReview
       },
-      knowledgePlan: catalog.defaults.knowledgePlan ?? null,
       mcpMode: catalog.defaults.mcpMode ?? "auto",
       skillsMode: catalog.defaults.skillsMode ?? "auto",
       searchPlan: catalog.defaults.searchPlan,
-      setKnowledgePlan: setDefaultKnowledgePlan,
       setMcpMode: setDefaultMcpMode,
       setSkillsMode: setDefaultSkillsMode,
       setSearchPlan: setDefaultSearchPlan,
@@ -2937,7 +2047,7 @@ export function PowerAppShellV2({
     uploadLimitHint: uploadLimits ? workspaceUsable
       ? `Up to ${Number((uploadLimits.maxBytes / 1024 / 1024).toFixed(1))} MiB with Workspace`
       : `Up to ${Number((uploadLimits.ordinaryMaxBytes / 1024 / 1024).toFixed(1))} MiB per file` : undefined,
-    reuseFile: projectContext ? undefined : reuseComposerFile,
+    reuseFile: reuseComposerFile,
     uploading,
     workspace: {
       archive: archiveWorkspace,
@@ -2968,28 +2078,14 @@ export function PowerAppShellV2({
     closeMemory: closeMemoryLibrary,
     closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
-    knowledge: buildKnowledgeLibraryView(knowledgeLibraryActions, knowledgeSnapshot),
     library: buildAssistantLibraryView(
       {
         activateBlankWorkspace: activateAssistantTrialWorkspace,
         chooseAssistant: chatAssistantActions.chooseAssistant,
         catalog,
         catalogError,
-        knowledgeBases: (knowledgeSnapshot.data?.knowledgeBases ?? []).map((base) => ({
-          available: !base.archived,
-          id: base.id,
-          name: base.name
-        })),
-        knowledgeSources: (knowledgeSnapshot.sourceData?.sources ?? []).map((source) => ({
-          available: source.readiness.state === "ready",
-          id: source.id,
-          name: source.name
-        })),
-        knowledgeDataError: knowledgeSnapshot.dataError,
-        knowledgeDataState: knowledgeSnapshot.dataState,
         openMcpSettings,
         retryCatalog: () => void retryCatalog(),
-        retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
         setShellNotice: setNotice,
         skills: skillSnapshot.data?.skills ?? []
       },
@@ -2999,7 +2095,6 @@ export function PowerAppShellV2({
     notice: settingsNotice,
     memory: { open: memoryOpen },
     open: openSettingsDestination,
-    openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
     openMemory: openMemoryLibraryDestination,
     openMcp: openMcpSettings,
@@ -3043,7 +2138,6 @@ export function PowerAppShellV2({
 
   return (
     <DisclosurePreferencesProvider accountId={accountId}>
-    <KnowledgeCitationViewerProvider onOpenLibrarySource={KNOWLEDGE_ENABLED ? openKnowledgeLibrarySource : undefined}>
       <PowerAppShellV2View
         branches={branchesView}
         composer={composerView}
@@ -3053,7 +2147,6 @@ export function PowerAppShellV2({
         thread={threadView}
         workspace={workspaceView}
       />
-    </KnowledgeCitationViewerProvider>
     </DisclosurePreferencesProvider>
   );
 }

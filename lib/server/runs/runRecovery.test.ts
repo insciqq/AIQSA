@@ -51,7 +51,6 @@ import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { extractPage as extractPageText } from "../webFetch/extract";
 import type { FetchedPageInput } from "../webFetch/pageText";
 import { fetchUrlDigest } from "../webFetch/urls";
-import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   FocusedKnowledgeRecoveryScope,
   PersistedRunUsageAttribution,
@@ -67,7 +66,6 @@ import {
   type CheckpointedToolLoopRun,
   type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
-  type ProjectRunRecoveryAuthority,
   type ToolLoopCheckpoint,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
@@ -231,24 +229,6 @@ function control(overrides: Partial<RunControlRecord> = {}): RunControlRecord {
     provider: "openai",
     providerResponseId: "response-old",
     status: "streaming",
-    ...overrides
-  };
-}
-
-function projectRecoveryAuthority(
-  overrides: Partial<ProjectRunRecoveryAuthority> = {}
-): ProjectRunRecoveryAuthority {
-  return {
-    accessRevision: 3,
-    instructionsRevision: 4,
-    memoryRevision: 5,
-    policyRevision: 6,
-    projectId: "project-1",
-    providerAdmissionFingerprint: "a".repeat(64),
-    providerConnectionId: "connection-1",
-    providerModelId: "model-1",
-    providerRequiresClientTools: false,
-    providerSearchPlan: { mode: "all_selected", optionIds: [] },
     ...overrides
   };
 }
@@ -452,7 +432,6 @@ function createHarness(options: Readonly<{
   memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunRecoveryDeps["mcp"];
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
-  projectAccessCurrent?: boolean;
   providerAdmission?: RunRecoveryDeps["providerAdmission"];
   providerDispatchRecoveryRequest?: NormalizedRunRequest | null;
   pricing?: {
@@ -618,7 +597,6 @@ function createHarness(options: Readonly<{
     loadProviderDispatchRecoveryRequest: async () =>
       options.providerDispatchRecoveryRequest ?? null,
     isSearchStrategyEnabled: async () => options.searchStrategyEnabled ?? true,
-    isProjectRunAccessCurrent: async () => options.projectAccessCurrent ?? true,
     loadEntitlements: async () => ({
       fullAccess: true,
       modelKeys: new Set<string>(),
@@ -2467,72 +2445,6 @@ describe("run recovery", () => {
     expect(harness.state.preparingRecoveries).toEqual([{ now, runId, userId }]);
     expect(refresh).not.toHaveBeenCalled();
     expect(harness.state.failed).toEqual([]);
-  });
-
-  it("fails a revoked Project candidate before installation recovery can orphan or dispatch it", async () => {
-    const project = projectRecoveryAuthority();
-    const refresh = vi.fn();
-    const harness = createHarness({
-      controls: [null],
-      projectAccessCurrent: false,
-      providerAdmission: {
-        load: vi.fn(async () => ({ fingerprint: project.providerAdmissionFingerprint }) as ProviderAdmissionPlan)
-      },
-      providers: { openai: providerWithRefresh(refresh) },
-      recoveryControls: [control({ project, providerResponseId: null })]
-    });
-    harness.repository.findInstallationRecoverableRuns = async () => [{
-      ...staleControl({ providerResponseId: null }),
-      userId
-    }];
-
-    await reconcileInstallationRuns(harness.deps, {
-      now: new Date("2026-07-12T10:00:01.000Z")
-    });
-
-    expect(harness.state.failed).toEqual([expect.objectContaining({
-      error: expect.objectContaining({ code: "provider_admission_changed" })
-    })]);
-    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
-    expect(refresh).not.toHaveBeenCalled();
-  });
-
-  it("fails Project background recovery before provider I/O when accepted authority drifted", async () => {
-    const project = projectRecoveryAuthority();
-    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
-      events: [],
-      providerResponseId: "response-old",
-      status: "in_progress",
-      terminal: false
-    }));
-    const load = vi.fn(async () => ({
-      fingerprint: "b".repeat(64)
-    }) as ProviderAdmissionPlan);
-    const harness = createHarness({
-      controls: [control({ project })],
-      projectAccessCurrent: true,
-      providerAdmission: { load },
-      providers: { openai: providerWithRefresh(refresh) }
-    });
-
-    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
-
-    expect(load).toHaveBeenCalledWith({
-      executionScope: "project",
-      providerConnectionId: project.providerConnectionId,
-      providerModelId: project.providerModelId,
-      searchPlan: project.providerSearchPlan,
-      userId
-    });
-    expect(refresh).not.toHaveBeenCalled();
-    expect(harness.state.failed).toEqual([{
-      assistantMessageId: "assistant-1",
-      error: {
-        code: "provider_admission_changed",
-        message: "Project provider authority is no longer current."
-      },
-      runId
-    }]);
   });
 
   it("sweeps boot-orphaned runs once with the injected live-run ids", async () => {
@@ -8364,106 +8276,62 @@ describe("run recovery", () => {
     expect(installed.checkpoint().answerRoundUsage.map((entry) => entry.roundIndex)).toEqual([1]);
   });
 
-  it("terminally fails a Project recovery after initiator access loss without provider or tool I/O", async () => {
-    const project = projectRecoveryAuthority();
+  it.each(["direct", "stale", "installation"])("ends a run left in a legacy Project chat from %s recovery without provider I/O", async (entry) => {
     const refresh = vi.fn(async () => ({ terminal: false }) as ProviderRunRefreshResult);
-    const stream = vi.fn<ProviderAdapter["stream"]>();
-    const providerLoad = vi.fn(async () => ({
-      fingerprint: project.providerAdmissionFingerprint
-    }) as ProviderAdmissionPlan);
-    const runtimeCall = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>();
     const harness = createHarness({
       controls: [null],
-      mcpRuntime: {
-        callTool: runtimeCall,
-        ensureAcceptedGeneration: async () => true
-      },
-      projectAccessCurrent: false,
-      providerAdmission: { load: providerLoad },
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          refresh,
-          stream
-        }
-      },
-      recoveryControls: [control({ project })]
+      providers: { openai: providerWithRefresh(refresh) },
+      recoveryControls: [control({ legacyProjectChat: true })],
+      staleRuns: [staleControl()]
     });
+    harness.repository.findInstallationRecoverableRuns = async () => [{ ...staleControl(), userId }];
 
-    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    await (entry === "direct" ? refreshProviderRunIfNeeded(harness.deps, runId, userId)
+      : entry === "stale" ? reconcileStaleRuns(harness.deps, { userId }) : reconcileInstallationRuns(harness.deps));
 
     expect(harness.state.failed).toEqual([expect.objectContaining({
       error: expect.objectContaining({ code: "provider_admission_changed" })
     })]);
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
-    expect(harness.deps.registry.has(runId)).toBe(false);
-    expect(providerLoad).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
-    expect(stream).not.toHaveBeenCalled();
-    expect(runtimeCall).not.toHaveBeenCalled();
-    expect(harness.state.assistantTexts).toEqual([]);
   });
 
-  it("fails an active legacy Project binding closed without poisoning terminal history", async () => {
-    const refresh = vi.fn(async () => ({ terminal: false }) as ProviderRunRefreshResult);
-    const harness = createHarness({
-      controls: [null],
-      providers: {
-        openai: providerWithRefresh(refresh)
-      },
-      recoveryControls: [control({ projectRecoveryInvalid: true })]
-    });
-
-    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
-
-    expect(harness.state.failed).toEqual([expect.objectContaining({
-      error: expect.objectContaining({ code: "provider_admission_changed" })
-    })]);
-    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
-    expect(refresh).not.toHaveBeenCalled();
-
+  it("leaves a settled run of a legacy Project chat as it is", async () => {
     const terminal = createHarness({
       controls: [null],
-      recoveryControls: [control({ projectRecoveryInvalid: true, status: "complete" })]
+      recoveryControls: [control({ legacyProjectChat: true, status: "complete" })]
     });
     await refreshProviderRunIfNeeded(terminal.deps, runId, userId);
     expect(terminal.state.failed).toEqual([]);
     expect(terminal.state.run.status).toBe("complete");
   });
 
-  it.each([false, true])("rejects a pending MCP call after revocation using the persisted actor (Project: %s)", async (projectScope) => {
+  it("rejects a pending MCP call after revocation using the persisted actor", async () => {
     const callTool = vi.fn();
     const egress = createRecoveryMemoryEgressRecorder();
     const actors: string[] = [];
     const filterTools: import("../mcp/toolAccess").McpToolAccessFilter = async (actorId) => { actors.push(actorId); return []; };
     const prepare = vi.fn();
-    const prepareProject = vi.fn();
-    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
     const harness = createHarness({
       memoryEgress: egress.service,
-      mcp: { filterTools, prepare, prepareProject },
+      mcp: { filterTools, prepare },
       mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
-      projectAccessCurrent: true,
-      ...(projectScope ? { providerAdmission: { load: async () => ({ fingerprint: project.providerAdmissionFingerprint }) as ProviderAdmissionPlan } } : {}),
       providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
         expect(request.tools?.some(({ name }) => name === recoveryToolName)).toBe(false);
         return { ...providerResult, finalText: "Access revoked" };
       } } }
     });
-    const state = installCheckpointState(harness, { ...checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }),
-      ...(projectScope ? { project } : {}) });
+    const state = installCheckpointState(harness, checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }));
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
     expect(callTool).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
-    expect(prepareProject).not.toHaveBeenCalled();
     expect(actors.length).toBeGreaterThan(0);
     expect(actors.every((id) => id === userId)).toBe(true);
     expect(egress.blocked).toEqual(expect.arrayContaining([expect.objectContaining({ errorCode: "mcp_tool_access_denied" })]));
     expect(state.calls()[0]).toMatchObject({ state: "error" });
   });
 
-  it.each([false, true])("recovers a selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
-    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
+  it("recovers a selected tool from a 1024-tool inventory", async () => {
     const record: McpRunPlanRecord = {
       credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
       fingerprint: recoveryFingerprint, generationId: "generation-1", inventory: { version: 1,
@@ -8481,19 +8349,13 @@ describe("run recovery", () => {
     if (!accepted.ok) throw new Error("large_inventory_fixture_invalid");
     const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async (_user, options) =>
       currentPlan(options?.allowedToolNames));
-    const prepareProject = vi.fn<NonNullable<NonNullable<RunRecoveryDeps["mcp"]>["prepareProject"]>>(
-      async (_user, _servers, options) => currentPlan(options?.allowedToolNames));
     const callTool = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
       await beforeDispatch?.();
       return { isError: false, structuredContent: null, text: ["RECOVERED_LATE_TOOL_RESULT"], unsupportedContentTypes: [] };
     });
     const harness = createHarness({
-      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
+      mcp: { filterTools: allowMcpTools, prepare },
       mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
-      projectAccessCurrent: true,
-      ...(projectScope ? { providerAdmission: { load: async () => ({
-        fingerprint: project.providerAdmissionFingerprint
-      }) as ProviderAdmissionPlan } } : {}),
       providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
         expect(JSON.stringify(request.providerToolMessages)).toContain("RECOVERED_LATE_TOOL_RESULT");
         return { ...providerResult, finalText: "Recovered late tool" };
@@ -8503,21 +8365,14 @@ describe("run recovery", () => {
       ...checkpointedRun({ calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: namespacedName }],
         phase: "tools_pending", providerToolMessages: [{ arguments: "{}", call_id: "provider-call-1",
           name: namespacedName, type: "function_call" }] }),
-      normalizedRequest: { ...normalizedToolRequest(), mcp: accepted.snapshot },
-      ...(projectScope ? { project } : {})
+      normalizedRequest: { ...normalizedToolRequest(), mcp: accepted.snapshot }
     });
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
     expect(callTool).toHaveBeenCalledOnce();
     expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: `tool_${MCP_SERVER_TOOL_LIMIT}` }));
     expect(state.calls()[0]).toMatchObject({ state: "complete" });
     expect(harness.state.completed).toMatchObject({ finalText: "Recovered late tool" });
-    if (projectScope) {
-      expect(prepare).not.toHaveBeenCalled();
-      expect(prepareProject).toHaveBeenCalledWith(userId, [record.serverId], { allowedToolNames: [namespacedName] });
-    } else {
-      expect(prepareProject).not.toHaveBeenCalled();
-      expect(prepare).toHaveBeenCalledWith(userId, { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
-    }
+    expect(prepare).toHaveBeenCalledWith(userId, { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
   });
 
   it("refuses a recovered personal tool its owner switched off and dispatches it on the same generation once on", async () => {
@@ -8606,75 +8461,6 @@ describe("run recovery", () => {
     expect(egress.blocked).toEqual([expect.objectContaining({ errorCode, mode: "TOOL_CALL" })]);
     expect(state.calls()[0]).toMatchObject({ state: "error" });
     expect(JSON.stringify(state.calls()[0]?.result)).toContain(errorCode);
-  });
-
-  it("revalidates recovered Project MCP through shared authority only", async () => {
-    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
-    const snapshot = normalizedToolRequest().mcp!;
-    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async () => {
-      throw new Error("personal_mcp_path_used");
-    });
-    const prepareProject = vi.fn<NonNullable<
-      NonNullable<RunRecoveryDeps["mcp"]>["prepareProject"]
-    >>(async () => ({
-      bindings: [{
-        fingerprint: recoveryFingerprint,
-        runtimeGenerationId: "generation-1",
-        serverId: "server-1"
-      }],
-      ok: true,
-      snapshot
-    }));
-    const runtimeCall = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(
-      async () => ({
-        isError: false,
-        structuredContent: { accepted: true },
-        text: ["accepted"],
-        unsupportedContentTypes: []
-      })
-    );
-    const providerLoad = vi.fn(async () => ({
-      fingerprint: project.providerAdmissionFingerprint
-    }) as ProviderAdmissionPlan);
-    const harness = createHarness({
-      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
-      mcpRuntime: {
-        callTool: runtimeCall,
-        ensureAcceptedGeneration: async () => true
-      },
-      projectAccessCurrent: true,
-      providerAdmission: { load: providerLoad },
-      providers: {
-        openai: {
-          buildRequestPreview: () => ({}),
-          async *stream() {
-            return {
-              finalProviderResponsePreview: {},
-              finalText: "Recovered Project MCP",
-              usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: 0 }
-            };
-          }
-        }
-      }
-    });
-    installCheckpointState(harness, {
-      ...checkpointedRun({
-        calls: [persistedRecoveryCall()],
-        phase: "tools_pending"
-      }),
-      project
-    });
-
-    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
-
-    expect(prepare).not.toHaveBeenCalled();
-    expect(prepareProject).toHaveBeenCalledWith("user-1", ["server-1"], { allowedToolNames: [recoveryToolName] });
-    expect(runtimeCall).toHaveBeenCalledOnce();
-    expect(providerLoad).toHaveBeenCalledWith(expect.objectContaining({
-      executionScope: "project",
-      requiresClientToolCoexistence: true
-    }));
-    expect(harness.state.completed).toMatchObject({ finalText: "Recovered Project MCP" });
   });
 
   it("reuses a settled Anthropic Search and recovers usage recorded after the prior snapshot", async () => {

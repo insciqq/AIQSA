@@ -17,7 +17,6 @@ export function useWorkspaceOutputReconciliation(input: Readonly<{
   accountId: string;
   chatId: string | null;
   messages: readonly ThreadMessage[];
-  projectId?: string | null;
   sessionState?: WorkspaceSessionStateWire | null;
   streaming: boolean;
   refreshActiveChat(chatId: string, options: RefreshOptions): Promise<unknown>;
@@ -26,7 +25,7 @@ export function useWorkspaceOutputReconciliation(input: Readonly<{
     ["exporting", "retrying"].includes(message.workspaceActivity?.outputStatus?.state ?? ""))
     .map((message) => message.id).join("\0");
   const runtimePending = ["creating", "ready", "running"].includes(input.sessionState ?? "");
-  const enabled = !input.projectId && !input.streaming && (pending.length > 0 || runtimePending) &&
+  const enabled = !input.streaming && (pending.length > 0 || runtimePending) &&
     !input.messages.some((message) => message.status === "streaming");
   const refresh = useEventCallback(input.refreshActiveChat);
   useEffect(() => {

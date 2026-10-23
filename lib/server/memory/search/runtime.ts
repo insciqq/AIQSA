@@ -48,7 +48,7 @@ async function authority(tx: MemoryTransaction, settings: LockedMemorySettings, 
   const run = await tx.modelRun.findFirst({ where: { id: input.runId, userId: input.userId },
     select: { status: true, chatId: true, assistantId: true, normalizedRequest: true,
       userMessage: { select: { scheduledTaskPrompt: true } },
-      chat: { select: { userId: true, projectId: true, memoryMode: true, permanentDeletionAt: true, folderId: true, memoryBranchGeneration: true } } } });
+      chat: { select: { userId: true, memoryMode: true, permanentDeletionAt: true, folderId: true, memoryBranchGeneration: true } } } });
   const call = await tx.modelRunToolCall.findFirst({ where: { id: input.toolCallId, modelRunId: input.runId },
     select: { state: true, toolName: true } });
   const frozen = object(run?.normalizedRequest) ? decodeMemorySearchSnapshot(run.normalizedRequest.memorySearch) : null;
@@ -56,7 +56,7 @@ async function authority(tx: MemoryTransaction, settings: LockedMemorySettings, 
     memorySha256(frozen) !== memorySha256(input.accepted) ||
     (object(run.normalizedRequest) && (run.normalizedRequest.agent != null || run.normalizedRequest.toolMode !== "auto")) || !settings.useMemoryFacts ||
     settings.memoryGeneration !== frozen.memoryGeneration || !live.has(run.status) ||
-    run.chat.userId !== input.userId || run.chat.projectId !== null ||
+    run.chat.userId !== input.userId ||
     !memoryReadableChatMode(run.chat.memoryMode, run.userMessage.scheduledTaskPrompt) ||
     run.chat.permanentDeletionAt !== null || (input.requireRunning && call.state !== "running")) {
     throw new Error("memory_search_authority_changed");
@@ -93,13 +93,13 @@ export function createPrismaMemorySearchService(client: PrismaClient = prisma,
             select: { useMemoryFacts: true, memoryGeneration: true, referenceChatHistory: true } }),
           client.modelRun.findFirst({ where: { id: scope.runId, userId: scope.userId },
             select: { status: true, userMessage: { select: { scheduledTaskPrompt: true } },
-              chat: { select: { memoryMode: true, projectId: true, permanentDeletionAt: true, memoryBranchGeneration: true } } } })
+              chat: { select: { memoryMode: true, permanentDeletionAt: true, memoryBranchGeneration: true } } } })
         ]).then(([settings, run]) => {
           if (!settings?.useMemoryFacts || settings.memoryGeneration !== accepted.memoryGeneration ||
             (accepted.referenceChatHistory && !settings.referenceChatHistory) || !run || !live.has(run.status) ||
             (admittedBranchGeneration !== null && run.chat.memoryBranchGeneration !== admittedBranchGeneration) ||
             !memoryReadableChatMode(run.chat.memoryMode, run.userMessage.scheduledTaskPrompt) ||
-            run.chat.projectId !== null || run.chat.permanentDeletionAt !== null) {
+            run.chat.permanentDeletionAt !== null) {
             revoked.abort(new Error("memory_search_authority_changed"));
           }
         }).catch(() => revoked.abort(new Error("memory_search_authority_unavailable")))

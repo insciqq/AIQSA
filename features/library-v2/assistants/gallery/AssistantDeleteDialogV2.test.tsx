@@ -9,9 +9,7 @@ function dialogView(overrides: Partial<AssistantDeleteDialogView> = {}): Assista
     consequences: {
       audiences: { groupNames: ["Support team"], installation: true },
       chatCount: 38,
-      hiddenProjectCount: 1,
       pendingListingRequest: true,
-      projects: [{ isDefault: true, name: "People Ops" }, { isDefault: false, name: "Sales" }],
       version: 4
     },
     error: null,
@@ -33,7 +31,6 @@ describe("Assistant delete dialog", () => {
       "It stops being available to everyone in this installation.",
       "It is unshared from the group Support team.",
       "The pending request to list it for everyone is withdrawn.",
-      "Projects stop using it: People Ops (its default Assistant), Sales, 1 other Project.",
       "38 chats keep their messages and show that the Assistant was deleted."
     ]);
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
@@ -47,9 +44,7 @@ describe("Assistant delete dialog", () => {
       consequences: {
         audiences: { groupNames: [], installation: false },
         chatCount: 1,
-        hiddenProjectCount: 0,
         pendingListingRequest: false,
-        projects: [],
         version: 2
       }
     })} />);

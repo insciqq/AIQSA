@@ -475,63 +475,6 @@ describe("provider admission", () => {
         .toBe(upstreamModelId === answer.upstreamModelId);
     }
   );
-  it("uses an explicit Project model with the installation default credential, never personal grants", async () => {
-    const defaultCredentialId = `credential:${officialOpenAiModel.connectionId}`;
-    const { accessGrantCount, db } = admissionDb({
-      answer: officialOpenAiModel,
-      defaultCredentialIdByConnection: {
-        [officialOpenAiModel.connectionId]: defaultCredentialId
-      },
-      directCredential: true,
-      fullAccess: false,
-      options: [off],
-      unassignedPolicy: "require_assignment",
-      userRole: "user"
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      executionScope: "project",
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "all_selected", optionIds: [] },
-      userId: "contributor-without-model-grant"
-    });
-
-    expect(plan.answer).toMatchObject({
-      authority: { credentialId: defaultCredentialId },
-      credentialSource: "default",
-      snapshot: { providerModelId: officialOpenAiModel.id }
-    });
-    expect(accessGrantCount).not.toHaveBeenCalled();
-    expect(db.providerGroupCredentialAssignment.findMany).not.toHaveBeenCalled();
-    expect(db.providerUserCredentialAssignment.findUnique).not.toHaveBeenCalled();
-  });
-
-  it("admits enabled Project resources without a separate publication flag", async () => {
-    const option = openAiOption();
-    const projectResources = admissionDb({
-      answer: officialOpenAiModel,
-      defaultCredentialIdByConnection: {
-        [officialOpenAiModel.connectionId]: `credential:${officialOpenAiModel.connectionId}`
-      },
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-    const plan = await loadProviderAdmissionPlan(
-      projectResources.db as unknown as Prisma.TransactionClient,
-      {
-        executionScope: "project",
-        providerConnectionId: officialOpenAiModel.connectionId,
-        providerModelId: officialOpenAiModel.id,
-        searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-        userId: "user-1"
-      }
-    );
-
-    expect(plan.answer.credentialSource).toBe("default");
-    expect(expectSearch(plan).optionId).toBe(option.optionId);
-  });
-
   it("resolves installation answer work through only the explicit default credential", async () => {
     const credentialId = `credential:${officialOpenAiModel.connectionId}`;
     const { db } = admissionDb({
@@ -698,7 +641,7 @@ describe("provider admission", () => {
       modelId: answer.id, params: {}, prompt: { developer: null, system: null }, provider: "openai",
       searchPlan: { mode: "all_selected", options: [] }, toolMode: "none" };
     const recovery = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "user-1" }, chatId: "chat-1", modelId: answer.id,
+      chat: { userId: "user-1" }, chatId: "chat-1", modelId: answer.id,
       normalizedRequest: JSON.parse(JSON.stringify(stored)), provider: "openai"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const recovered = await recovery.loadProviderDispatchRecoveryRequest!({ runId: "run-1", userId: "user-1" });

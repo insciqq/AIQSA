@@ -9,7 +9,6 @@ function validResponse(): UpdateSettingsResponse {
       answerSoundId: "rise",
       browserNotificationsEnabled: true,
       defaultControlValues: {},
-      defaultKnowledgePlan: null,
       defaultMcpMode: "auto",
       defaultSearchPlan: { mode: "all_selected", optionIds: [] },
       hasPersonalModelDefault: false,
@@ -122,30 +121,29 @@ describe("settings wire contract", () => {
 
   it("falls back to the installation chat defaults when the fields are absent", () => {
     const response = validResponse() as unknown as { settings: Record<string, unknown> };
-    delete response.settings.defaultKnowledgePlan;
     delete response.settings.defaultMcpMode;
     delete response.settings.sendWithEnter;
     expect(decodeUpdateSettingsResponse(response)?.settings).toMatchObject({
-      defaultKnowledgePlan: null,
       defaultMcpMode: "auto",
       sendWithEnter: true
     });
   });
 
   it("decodes present chat defaults strictly", () => {
-    const withPlan = validResponse() as unknown as { settings: Record<string, unknown> };
-    withPlan.settings.defaultKnowledgePlan = { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 };
-    withPlan.settings.defaultMcpMode = "off";
-    withPlan.settings.sendWithEnter = false;
-    expect(decodeUpdateSettingsResponse(withPlan)?.settings).toMatchObject({
-      defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit" },
+    const withDefaults = validResponse() as unknown as { settings: Record<string, unknown> };
+    withDefaults.settings.defaultMcpMode = "off";
+    withDefaults.settings.sendWithEnter = false;
+    // A server from before Knowledge was removed may still send its default; it is ignored.
+    withDefaults.settings.defaultKnowledgePlan = { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 };
+    const decoded = decodeUpdateSettingsResponse(withDefaults)?.settings;
+    expect(decoded).toMatchObject({
       defaultMcpMode: "off",
       sendWithEnter: false
     });
+    expect(decoded).not.toHaveProperty("defaultKnowledgePlan");
     for (const [field, value] of [
       ["defaultMcpMode", "sometimes"],
-      ["sendWithEnter", "true"],
-      ["defaultKnowledgePlan", { baseIds: "kb-1" }]
+      ["sendWithEnter", "true"]
     ] as const) {
       const invalid = validResponse() as unknown as { settings: Record<string, unknown> };
       invalid.settings[field] = value;

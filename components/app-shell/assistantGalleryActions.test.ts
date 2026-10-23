@@ -55,9 +55,7 @@ function consequences(version: number): AssistantDeletionConsequences {
   return {
     audiences: { groupNames: ["Platform"], installation: false },
     chatCount: 4,
-    hiddenProjectCount: 0,
     pendingListingRequest: false,
-    projects: [{ isDefault: true, name: "Support" }],
     version
   };
 }
@@ -135,15 +133,13 @@ describe("Assistant gallery", () => {
   });
 
   it("names Setup resources only from the viewer's own catalogs", () => {
-    const input = { ...assistantControllerInput(), knowledgeBases: [{ available: true, id: "base-1", name: "Handbook" }] };
+    const input = assistantControllerInput();
     store().patch({
       detail: { assistantId: "assistant-1", detail: assistantDetail(), error: null, requestId: 1, state: "ready" },
       mcpOptions: [{ enabled: true, id: "mcp-1", name: "Jira", readiness: "ready" }]
     });
 
     expect(view(input).detail?.names).toEqual({
-      knowledgeBases: [{ available: true, id: "base-1", name: "Handbook" }],
-      knowledgeSources: [],
       mcpServers: [{ enabled: true, id: "mcp-1", name: "Jira", readiness: "ready" }],
       models: [{ id: "model-1", label: "Model one" }],
       searchOptions: []
@@ -266,7 +262,7 @@ describe("Assistant deletion", () => {
     view().gallery.onDelete("assistant-1");
     expect(view().deletion).toMatchObject({ name: "Code reviewer", state: "loading" });
     await vi.waitFor(() => expect(view().deletion?.state).toBe("ready"));
-    expect(view().deletion?.consequences?.projects).toEqual([{ isDefault: true, name: "Support" }]);
+    expect(view().deletion?.consequences?.chatCount).toBe(4);
 
     view().deletion!.onConfirm();
 

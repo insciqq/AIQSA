@@ -9,7 +9,7 @@ import { WORKSPACE_UPLOAD_MAX_BYTES } from "@/lib/contracts/workspaceUploads";
 import { workspaceUploadMaxBytes } from "./workspaceUploadConfig";
 
 const context = { params: Promise.resolve({ uploadId: "owned-session", partNumber: "1" }) } satisfies UploadRouteContext;
-const input = { byteSize: 512 * 1024 * 1024, fileName: "data.bin", mimeType: "application/octet-stream", projectId: null, idempotencyKey: "idempotency-key-123" };
+const input = { byteSize: 512 * 1024 * 1024, fileName: "data.bin", mimeType: "application/octet-stream", idempotencyKey: "idempotency-key-123" };
 
 describe("Workspace upload HTTP admission", () => {
   it("preserves safe error codes across the instrumentation and route bundles", async () => {
@@ -23,7 +23,7 @@ describe("Workspace upload HTTP admission", () => {
   });
   it("bypasses cloning only for part routes and keeps adjacent routes under Proxy", () => {
     expect(unstable_doesMiddlewareMatch({ config: proxyConfig, url: "/api/uploads/sessions/owned-session/parts/1" })).toBe(false);
-    for (const url of ["/api/uploads", "/api/uploads/sessions", "/api/uploads/sessions/owned-session/complete", "/api/uploads/sessions/owned-session/parts/1/extra", "/api/me/knowledge-uploads/base/batch/item/content"]) {
+    for (const url of ["/api/uploads", "/api/uploads/sessions", "/api/uploads/sessions/owned-session/complete", "/api/uploads/sessions/owned-session/parts/1/extra"]) {
       expect(unstable_doesMiddlewareMatch({ config: proxyConfig, url })).toBe(true);
     }
   });
@@ -48,6 +48,9 @@ describe("Workspace upload HTTP admission", () => {
     const service = new WorkspaceUploadService({ repository, available, storage: { getObject: vi.fn(), putObject: vi.fn(), deleteObject: vi.fn() } });
     expect(decodeWorkspaceUploadCreate(input)).toEqual(input);
     expect(decodeWorkspaceUploadCreate({ ...input, secret: true })).toBeNull();
+    // An older browser names no Project with an explicit null; a Project is never accepted.
+    expect(decodeWorkspaceUploadCreate({ ...input, projectId: null })).toEqual(input);
+    expect(decodeWorkspaceUploadCreate({ ...input, projectId: "project-1" })).toBeNull();
     await expect(service.create({ ...input, byteSize: WORKSPACE_UPLOAD_MAX_BYTES + 1 }, "owner")).rejects.toMatchObject({ code: "file_too_large", status: 413 });
     expect(available).not.toHaveBeenCalled(); expect(repository.create).not.toHaveBeenCalled();
     expect(workspaceUploadMaxBytes({})).toBe(WORKSPACE_UPLOAD_MAX_BYTES);

@@ -351,131 +351,10 @@ function serializeRunPlanPreferenceState(preference: RunPlanPreferenceRecord): M
   };
 }
 
-const projectRunServerSelect = {
-  activeRevision: {
-    select: {
-      configuration: true,
-      validationEvidence: true
-    }
-  },
-  activeRevisionId: true,
-  archivedAt: true,
-  description: true,
-  displayName: true,
-  enabled: true,
-  id: true,
-  ownerUserId: true,
-  namespace: true,
-  sharedConfigEnvelope: true,
-  sharedRuntime: {
-    select: {
-      desiredRuntimeGeneration: {
-        select: {
-          credentialSources: true,
-          errorCode: true,
-          fingerprint: true,
-          id: true,
-          inventory: true,
-          inventoryUpdatedAt: true,
-          oauthConnectionId: true,
-          revisionId: true,
-          sharedServerId: true,
-          state: true,
-          userServerId: true
-        }
-      }
-    }
-  }
-} satisfies Prisma.McpServerSelect;
-
-type ProjectRunServerRecord = Prisma.McpServerGetPayload<{
-  select: typeof projectRunServerSelect;
-}>;
-
 function authMode(configuration: unknown): string | null {
   if (!isRecord(configuration) || !isRecord(configuration.auth) ||
     typeof configuration.auth.mode !== "string") return null;
   return configuration.auth.mode;
-}
-
-/** An OAuth identity or a personal-only value can never back a Project runtime. */
-function requiresPersonalCredentials(configuration: unknown): boolean {
-  return authMode(configuration) === "oauth" || (
-    isRecord(configuration) && Array.isArray(configuration.slots) &&
-    configuration.slots.some((slot) => isRecord(slot) && isRecord(slot.policy) && slot.policy.kind === "personal")
-  );
-}
-
-/**
- * Resolve a Project MCP plan from the server's installation-owned shared
- * runtime only: never through McpGrant, a member's McpUserServer or a
- * generation some member started. Only a shared generation of the active
- * revision without OAuth or personal credential sources can cross this
- * boundary; the initiator's tool restrictions are applied afterwards.
- */
-function serializeProjectRunServer(server: ProjectRunServerRecord): McpRunPlanRecord {
-  const configuration = server.activeRevision?.configuration;
-  const unavailable = (errorCode: string): McpRunPlanRecord => ({
-    ...runtimeTimeouts(configuration),
-    catalogTools: [],
-    credentialSources: [],
-    enabled: false,
-    errorCode,
-    externalAccountLabel: null,
-    fingerprint: null,
-    generationId: null,
-    inventory: null,
-    inventoryUpdatedAt: null,
-    namespace: server.namespace,
-    readiness: "unavailable",
-    revisionId: server.activeRevisionId ?? "",
-    serverDescription: server.description,
-    serverId: server.id,
-    serverName: server.displayName
-  });
-  if (!server.enabled || server.archivedAt || !server.activeRevisionId || !server.activeRevision) {
-    return unavailable("mcp_server_unavailable");
-  }
-  if (server.ownerUserId !== null) return unavailable("mcp_project_credentials_unavailable");
-  if (requiresPersonalCredentials(configuration)) return unavailable("mcp_project_credentials_unavailable");
-  if (!server.sharedConfigEnvelope && authMode(configuration) !== "none") {
-    return unavailable("mcp_runtime_unavailable");
-  }
-  const generation = server.sharedRuntime?.desiredRuntimeGeneration;
-  if (!generation) return unavailable("mcp_runtime_unavailable");
-  if (generation.sharedServerId !== server.id || generation.userServerId !== null) {
-    return unavailable("mcp_runtime_stale");
-  }
-  if (generation.oauthConnectionId !== null ||
-    generation.credentialSources.some((source) => source !== "shared")) {
-    return unavailable("mcp_project_credentials_unavailable");
-  }
-  if (generation.revisionId !== server.activeRevisionId) return unavailable("mcp_revision_changed");
-  const runtime = runtimeReadiness(generation.state, generation.errorCode);
-  return {
-    ...runtimeTimeouts(configuration),
-    catalogTools: currentCatalogTools(
-      server.activeRevision.validationEvidence,
-      configuration,
-      generation.inventory
-    ),
-    credentialSources: generation.credentialSources.filter(
-      (source): source is "shared" => source === "shared"
-    ),
-    enabled: true,
-    errorCode: runtime.errorCode,
-    externalAccountLabel: null,
-    fingerprint: generation.fingerprint,
-    generationId: generation.id,
-    inventory: generation.inventory,
-    inventoryUpdatedAt: generation.inventoryUpdatedAt,
-    namespace: server.namespace,
-    readiness: runtime.readiness,
-    revisionId: generation.revisionId,
-    serverDescription: server.description,
-    serverId: server.id,
-    serverName: server.displayName
-  };
 }
 
 async function filterRunPlanRecords(
@@ -549,31 +428,11 @@ export async function loadMcpRunPlanRecordsForServers(
     .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId)), client);
 }
 
-export async function loadMcpRunPlanRecordsForProjectServers(
-  userId: string,
-  serverIds: readonly string[],
-  client: PrismaClient = prisma
-): Promise<McpRunPlanRecord[]> {
-  const uniqueServerIds = [...new Set(serverIds)];
-  if (uniqueServerIds.length === 0) return [];
-  const servers = await client.mcpServer.findMany({
-    select: projectRunServerSelect,
-    where: { id: { in: uniqueServerIds } }
-  });
-  return filterRunPlanRecords(userId, servers
-    .map(serializeProjectRunServer)
-    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId)), client);
-}
-
 export function createPrismaMcpRunPlanLoader(client: PrismaClient = prisma) {
   return (userId: string, serverIds?: readonly string[]) =>
     serverIds
       ? loadMcpRunPlanRecordsForServers(userId, serverIds, client)
       : loadMcpRunPlanRecords(userId, client);
-}
-
-export function createPrismaMcpProjectRunPlanLoader(client: PrismaClient = prisma) {
-  return (userId: string, serverIds: readonly string[]) => loadMcpRunPlanRecordsForProjectServers(userId, serverIds, client);
 }
 
 export function createPrismaMcpCapabilityCatalogLoader(client: PrismaClient = prisma) {

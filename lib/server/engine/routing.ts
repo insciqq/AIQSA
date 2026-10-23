@@ -8,7 +8,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
  * everyone; unset or empty is nobody) that it can run, whichever entry point
  * admitted it: personal, temporary and Assistant chats from the web or
  * Telegram, scheduled task occurrences and answer review steps. Everything
- * else stays on the old core: Project and Knowledge work, a model without
+ * else stays on the old core: a model without
  * verified tool calling or whose adapter cannot replay the
  * neutral history, and a send that must wait for PDF preparation (that
  * continuation runs on the old core). A send behind the previous answer's
@@ -66,9 +66,7 @@ export const NATIVE_ENGINE_ADAPTER_KINDS: ReadonlySet<string> = new Set([
 export type NativeEngineRefusal =
   | "adapter_without_history"
   | "deferred_preparation"
-  | "knowledge"
   | "not_listed"
-  | "project_chat"
   | "tool_calling_unverified";
 
 export type NativeEngineRoute = Readonly<{ engine: "native" }> | Readonly<{ engine: "v1"; reason: NativeEngineRefusal }>;
@@ -82,8 +80,6 @@ export function nativeEngineRoute(input: Readonly<{
   if (!nativeEngineAllowsUser(input.allowlist, input.user)) return refuse("not_listed");
   const prepared = input.prepared;
   const request = prepared.normalizedRequest;
-  if (prepared.project) return refuse("project_chat");
-  if (request.knowledgePlan.mode !== "none") return refuse("knowledge");
   if (!NATIVE_ENGINE_ADAPTER_KINDS.has(prepared.providerAdmissionPlan.answer.snapshot.model.adapterKind)) {
     return refuse("adapter_without_history");
   }

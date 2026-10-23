@@ -1,8 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadAuthorizedChatPrintDocument, loadChatPrintGeneratedImages } from "./printChat";
-
-const access = vi.hoisted(() => ({ resolveChatAccess: vi.fn() }));
-vi.mock("../projects/access", () => ({ resolveChatAccess: access.resolveChatAccess }));
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 1, 12, minute));
 const noRuns = { assistantModelRuns: [], branchFollowups: null };
@@ -55,49 +52,36 @@ function fakePrisma(chat: Record<string, unknown> | null) {
   return { db: { $transaction: transaction }, messageQueries, transaction, tx };
 }
 
-beforeEach(() => {
-  access.resolveChatAccess.mockReset();
-});
-
 describe("authorized chat print document", () => {
-  it("prints the visible branch with the answer's generated images for the owner and Project members", async () => {
-    for (const grant of [{ kind: "personal", project: null, userId: "u1" }, { kind: "project", project: {}, userId: null }]) {
-      const { db, messageQueries } = fakePrisma(chatRow);
-      access.resolveChatAccess.mockResolvedValueOnce(grant);
-      const document = await loadAuthorizedChatPrintDocument(db as never, { chatId: "db-chat", userId: "u1" }, new Date("2026-10-05T00:00:00Z"));
-      expect(document).toMatchObject({ fileBaseName: "отчёт-о-релизе-2026-10-05", title: "Отчёт о релизе" });
-      expect(document?.turns.map((turn) => turn.text)).toEqual(["Первый вопрос", "Ответ с картинкой"]);
-      expect(document?.turns[1]?.images).toEqual([{ attachmentId: "gen-1", height: 768, label: "Generated image", width: 1024 }]);
-      expect(messageQueries[1]).toMatchObject({ where: { chatId: "db-chat", id: { in: ["db-a2"] } } });
-    }
-    expect(access.resolveChatAccess).toHaveBeenCalledWith(expect.anything(), { chatId: "db-chat", userId: "u1" });
+  it("prints the visible branch with the answer's generated images for the owner", async () => {
+    const { db, messageQueries, tx } = fakePrisma(chatRow);
+    const document = await loadAuthorizedChatPrintDocument(db as never, { chatId: "db-chat", userId: "u1" }, new Date("2026-10-05T00:00:00Z"));
+    expect(document).toMatchObject({ fileBaseName: "отчёт-о-релизе-2026-10-05", title: "Отчёт о релизе" });
+    expect(document?.turns.map((turn) => turn.text)).toEqual(["Первый вопрос", "Ответ с картинкой"]);
+    expect(document?.turns[1]?.images).toEqual([{ attachmentId: "gen-1", height: 768, label: "Generated image", width: 1024 }]);
+    expect(messageQueries[1]).toMatchObject({ where: { chatId: "db-chat", id: { in: ["db-a2"] } } });
+    // The chat is read only as its owner's.
+    expect(tx.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "db-chat", permanentDeletionAt: null, userId: "u1" }
+    }));
   });
 
   it("returns the same nothing for a stranger and a missing chat, reading no messages", async () => {
-    const stranger = fakePrisma(chatRow);
-    access.resolveChatAccess.mockResolvedValueOnce(null);
+    const stranger = fakePrisma(null);
     expect(await loadAuthorizedChatPrintDocument(stranger.db as never, { chatId: "db-chat", userId: "stranger" })).toBeNull();
-    expect(stranger.tx.chat.findFirst).not.toHaveBeenCalled();
     expect(stranger.messageQueries).toEqual([]);
 
     const missing = fakePrisma(null);
-    access.resolveChatAccess.mockResolvedValueOnce(null);
     expect(await loadAuthorizedChatPrintDocument(missing.db as never, { chatId: "no-such-chat", userId: "u1" })).toBeNull();
     expect(missing.messageQueries).toEqual([]);
   });
 
-  it("prints archived chats only for their personal owner and never archived temporary ones", async () => {
+  it("prints the owner's archived chats and never archived temporary ones", async () => {
     const archived = fakePrisma({ ...chatRow, archived: true });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "personal", project: null, userId: "u1" });
     expect(await loadAuthorizedChatPrintDocument(archived.db as never, { chatId: "db-chat", userId: "u1" })).not.toBeNull();
-    const projectArchived = fakePrisma({ ...chatRow, archived: true });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "project", project: {}, userId: null });
-    expect(await loadAuthorizedChatPrintDocument(projectArchived.db as never, { chatId: "db-chat", userId: "viewer" })).toBeNull();
     const temporaryArchived = fakePrisma({ ...chatRow, archived: true, memoryMode: "TEMPORARY" });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "personal", project: null, userId: "u1" });
     expect(await loadAuthorizedChatPrintDocument(temporaryArchived.db as never, { chatId: "db-chat", userId: "u1" })).toBeNull();
     const temporary = fakePrisma({ ...chatRow, memoryMode: "TEMPORARY" });
-    access.resolveChatAccess.mockResolvedValueOnce({ kind: "personal", project: null, userId: "u1" });
     expect(await loadAuthorizedChatPrintDocument(temporary.db as never, { chatId: "db-chat", userId: "u1" })).not.toBeNull();
   });
 
@@ -107,7 +91,6 @@ describe("authorized chat print document", () => {
       expect(await loadAuthorizedChatPrintDocument(db as never, { chatId, userId: "u1" })).toBeNull();
     }
     expect(transaction).not.toHaveBeenCalled();
-    expect(access.resolveChatAccess).not.toHaveBeenCalled();
   });
 });
 

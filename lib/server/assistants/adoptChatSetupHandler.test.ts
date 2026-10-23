@@ -68,7 +68,6 @@ function catalogData(): CatalogData {
 
 function rows(modelId: string): AssistantRows {
   return assistantRowsFromLegacyFields({
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     providerModelId: modelId,
     runControls: {},
@@ -87,7 +86,6 @@ function detail(): AssistantDetailData {
       category: null,
       description: "",
       id: "assistant-1",
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       name: "HR Helper",
       providerModelId: "model-1",
@@ -98,7 +96,7 @@ function detail(): AssistantDetailData {
       starterPrompts: [],
       systemPrompt: "Help."
     },
-    dependencyAvailability: { knowledge: "ready", skills: true },
+    dependencyAvailability: { skills: true },
     featured: false,
     featuredOrder: null,
     id: "assistant-1",

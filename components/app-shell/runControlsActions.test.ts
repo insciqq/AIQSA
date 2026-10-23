@@ -160,12 +160,11 @@ describe("parameter persistence with an Assistant", () => {
 });
 
 describe("composer MCP mode", () => {
-  function useMcpActionsForTest(options: { allowPersonalPersistence?: boolean; mcpMode?: "auto" | "load_all" | "off" } = {}) {
+  function useMcpActionsForTest(options: { mcpMode?: "auto" | "load_all" | "off" } = {}) {
     const catalog = { defaults: { controlValues: {}, mcpMode: options.mcpMode ?? "auto" }, models: [] } as unknown as Catalog;
     const enqueue = vi.fn(async () => true);
     const setCatalog = vi.fn();
     const actions = useRunControlsActions({
-      allowPersonalPersistence: () => options.allowPersonalPersistence ?? true,
       catalog,
       currentModel: undefined,
       pendingControlDefaultsRef: { current: null },
@@ -210,15 +209,5 @@ describe("composer MCP mode", () => {
     const assistant = useComposerControlStore.getState().assistant;
     expect(assistant?.state === "bound" && assistant.rows.tools.origin).toBe("chat");
     expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
-  });
-
-  it("never writes personal defaults from a Project chat", () => {
-    const { actions, enqueue, setCatalog } = useMcpActionsForTest({ allowPersonalPersistence: false });
-
-    actions.selectMcpMode({ mode: "off" });
-
-    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "off" });
-    expect(enqueue).not.toHaveBeenCalled();
-    expect(setCatalog).not.toHaveBeenCalled();
   });
 });

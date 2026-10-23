@@ -76,14 +76,6 @@ export function assistantSharingAccessItems(
       tools.value.hiddenCount ?? 0
     ));
   }
-  const knowledge = rows.knowledge;
-  if (knowledge.policy === "fixed" && knowledge.value.mode === "explicit") {
-    items.push(...kindItems(
-      { icon: "book", key: "knowledge", noun: ["Knowledge base or document", "Knowledge bases or documents"] },
-      [...lookup(names.knowledgeBases, knowledge.value.baseIds), ...lookup(names.knowledgeSources, knowledge.value.sourceIds)],
-      knowledge.value.hiddenCount ?? 0
-    ));
-  }
   const skills = rows.skills.value;
   const skillNames = new Map((detail.skills ?? []).map((skill) => [skill.id, skill.name]));
   items.push(...kindItems(

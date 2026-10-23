@@ -9,8 +9,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import { createUploadPermitGate } from "../http/uploadPermitGate";
 import {
   createUploadHandler,
-  type CreatedAttachment,
-  UploadTargetUnavailableError
+  type CreatedAttachment
 } from "./handlers";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import {
@@ -28,15 +27,6 @@ vi.mock("./staticRaster", async (importOriginal) => {
   return { ...actual, validateStaticRaster: vi.fn(actual.validateStaticRaster) };
 });
 
-// Project uploads stay tested as they worked; one test below turns Projects off.
-const areas = vi.hoisted(() => ({ projects: true }));
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  get PROJECTS_ENABLED() {
-    return areas.projects;
-  }
-}));
-
 const oneByOnePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
   "base64"
@@ -50,12 +40,10 @@ const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 function authenticatedUploadRequest(
   file: File,
   signal?: AbortSignal,
-  projectId?: string,
   scope?: "workspace"
 ): Request {
   const form = new FormData();
   form.set("file", file);
-  if (projectId) form.set("projectId", projectId);
   if (scope) form.set("scope", scope);
   return new Request("http://app.local/api/uploads", {
     body: form,
@@ -281,7 +269,6 @@ describe("upload handler", () => {
     const rejected = await unavailable(authenticatedUploadRequest(
       opaqueFile(),
       undefined,
-      undefined,
       "workspace"
     ));
     expect(rejected.status).toBe(503);
@@ -304,7 +291,6 @@ describe("upload handler", () => {
     });
     const accepted = await available(authenticatedUploadRequest(
       opaqueFile(),
-      undefined,
       undefined,
       "workspace"
     ));
@@ -381,56 +367,6 @@ describe("upload handler", () => {
     expect(staged).toHaveLength(1);
     expect(completed).toEqual(["cleanup-job"]);
     expect(storage.objects.size).toBe(0);
-  });
-
-  it("returns an unavailable Project target without retaining the uploaded object", async () => {
-    const storage = createMemoryStorageAdapter();
-    const completed: string[] = [];
-    const POST = createUploadHandler({
-      createAttachment: async () => { throw new UploadTargetUnavailableError(); },
-      deletionOutbox: {
-        async complete(jobId) { completed.push(jobId); },
-        async stage() { return { id: "cleanup-job" }; }
-      },
-      resolveAuth: auth.resolveAuth,
-      resolveTarget: async ({ projectId }) => ({ projectId }),
-      storage
-    });
-
-    const response = await POST(authenticatedUploadRequest(
-      new File([oneByOnePng], "revoked.png", { type: "image/png" }),
-      undefined,
-      "project-1"
-    ));
-
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({ error: "project_not_found" });
-    expect(completed).toEqual(["cleanup-job"]);
-    expect(storage.objects.size).toBe(0);
-  });
-
-  it("refuses an upload into a Project while Projects are disabled, before storing anything", async () => {
-    areas.projects = false;
-    try {
-      const storage = createMemoryStorageAdapter();
-      const resolveTarget = vi.fn();
-      const createAttachment = vi.fn();
-      const POST = createUploadHandler({ createAttachment, resolveAuth: auth.resolveAuth, resolveTarget, storage });
-
-      const response = await POST(authenticatedUploadRequest(
-        new File([oneByOnePng], "shared.png", { type: "image/png" }),
-        undefined,
-        "project-1"
-      ));
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
-      expect(resolveTarget).not.toHaveBeenCalled();
-      expect(createAttachment).not.toHaveBeenCalled();
-      expect(storage.objects.size).toBe(0);
-    } finally {
-      areas.projects = true;
-    }
   });
 
   it("leaves a durable cleanup job when post-put deletion fails", async () => {
@@ -522,7 +458,7 @@ describe("upload handler static-raster normalization", () => {
     const png = syntheticPng();
     const { POST, createAttachment, storage } = rasterUpload();
 
-    const response = await POST(authenticatedUploadRequest(new File([png], "synthetic.jpeg", { type: mimeType }), undefined, undefined, scope));
+    const response = await POST(authenticatedUploadRequest(new File([png], "synthetic.jpeg", { type: mimeType }), undefined, scope));
 
     expect(response.status).toBe(200);
     expect((await response.json()).attachment).toMatchObject({ fileName: "synthetic.png", kind: "image", mimeType: "image/png" });

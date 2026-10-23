@@ -908,7 +908,6 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain(
       '"ChatMemoryCheckpointMessage" AS authority_checkpoint_message'
     );
-    expect(sql).toContain('source_chat."projectId" IS NULL');
     expect(sql).toContain('chunk."chunkingVersion" =');
     expect(sql).toContain('chunk."sourceProjectionVersion" =');
     expect(sql).toContain("'SENSITIVE'::\"MemoryDerivedSafetyClass\"");
@@ -1741,7 +1740,6 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('root_fact."state" = \'ACTIVE\'');
     expect(sql).toContain('root_fact."movedToFactId" IS NULL');
     expect(sql).toContain('root_fact."currentVersionId" = version."id"');
-    expect(sql).toContain('standing_chat."projectId" IS NULL');
     expect(sql).toContain('version."safetyClassificationState"');
     expect(sql).toContain('version."modality" <> \'PATTERN\'');
     expect(sql).toContain('CASE WHEN review."disposition" = \'KEEP\'');

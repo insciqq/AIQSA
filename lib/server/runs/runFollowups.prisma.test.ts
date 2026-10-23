@@ -6,14 +6,13 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createPrismaShareRepository } from "../shares/prismaRepository";
 import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { createPrismaRunFollowupOperations, messageFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectMessageFollowups } from "./runFollowups";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
-import type { CreateRunInput, CreatedRun, ProjectRunAdmission } from "./runRepositoryContract";
+import type { CreateRunInput, CreatedRun } from "./runRepositoryContract";
 
 const repository = createPrismaRunRepository(prisma);
 const followups = createPrismaRunFollowupOperations(prisma);
@@ -22,38 +21,21 @@ const cancelPayload = { code: "model_run_cancelled", message: "Model run cancell
 async function fixture<T>(execute: (fixture: {
   userId: string; otherId: string; chatId: string; input: CreateRunInput;
   create(): Promise<CreatedRun>;
-}) => Promise<T>, projectMode = false): Promise<T> {
+}) => Promise<T>): Promise<T> {
   const userId = `followup-owner-${randomUUID()}`, otherId = `followup-other-${randomUUID()}`;
-  let projectId: string | undefined;
   await prisma.user.createMany({ data: [userId, otherId].map(id => ({ id, displayName: "Synthetic author", status: "active" })) });
   try {
     await prisma.userSettings.create({ data: { userId, defaultControlValues: {},
       defaultProviderModelId: providerTemplateIds.fakeModel, defaultSearchStrategyId: "search-disabled" } });
     await prisma.accessGrant.create({ data: { userId, providerConnectionId: providerTemplateIds.fakeConnection } });
-    let project: ProjectRunAdmission | undefined;
-    if (projectMode) {
-      const result = await createPrismaProjectRepository(prisma).create({ userId, actorDisplayName: "Synthetic author", name: "Follow-up fixture", description: "" });
-      if (result.kind !== "ok") throw new Error("project_fixture_failed");
-      const value = result.value;
-      projectId = value.id;
-      await prisma.projectGrant.create({ data: { projectId, userId: otherId, role: "CONTRIBUTOR" } });
-      const current = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { accessRevision: true } });
-      project = { accessRevision: current.accessRevision, assistantBindings: [], defaults: value.defaults,
-        instructions: value.instructions, instructionsRevision: value.instructionsRevision, knowledgeBaseIds: [],
-        mcpServerIds: [], memoryEnabled: false, memoryItems: [], memoryRevision: value.memoryRevision,
-        modelIds: ["fake-qsa"], policy: value.policy, policyRevision: value.policyRevision, projectId,
-        role: "OWNER", searchOptionIds: [] };
-    }
-    const chat = await prisma.chat.create({ data: { userId: project ? null : userId, projectId,
-      ...(project ? { createdByUserId: userId, createdByDisplayName: "Synthetic author" } : {}),
+    const chat = await prisma.chat.create({ data: { userId,
       memoryMode: "EXCLUDED", title: "Follow-up fixture", defaultProviderModelId: providerTemplateIds.fakeModel } });
     const content = textMessageContent("Original question");
     const input: CreateRunInput = { chatId: chat.id, content, expectedActiveLeafId: null, userId,
-      modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, project,
+      modelId: "fake-qsa", provider: "fake", providerRequestPreview: {},
       defaults: { userId, controlDefaults: {}, modelId: providerTemplateIds.fakeModel,
         provider: providerTemplateIds.fakeConnection, searchPlan: { mode: "all_selected", optionIds: [] } },
       providerAdmissionPlan: await loadProviderAdmissionPlan(prisma, { userId,
-        ...(project ? { executionScope: "project" as const } : {}),
         providerConnectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel,
         searchPlan: { mode: "all_selected", optionIds: [] } }),
       followupAdmission: { budgetTokens: 4_096 },
@@ -64,10 +46,6 @@ async function fixture<T>(execute: (fixture: {
         followupContextReserveTokens: 4_096, searchPlan: { mode: "all_selected", options: [] } } };
     return await execute({ userId, otherId, chatId: chat.id, input, create: () => repository.createRun(input) });
   } finally {
-    if (projectId) {
-      await prisma.chat.deleteMany({ where: { projectId } });
-      await prisma.project.delete({ where: { id: projectId } });
-    }
     await prisma.user.deleteMany({ where: { id: { in: [userId, otherId] } } });
   }
 }
@@ -218,15 +196,6 @@ describe("durable in-run Follow-up", () => {
       kind: "settled", call: { state: "error", startedAt: null }
     });
   }));
-
-  it("orders two Project contributors and denies a member after role revocation", async () => fixture(async f => {
-    const run = await f.create();
-    const results = await Promise.all([followups.accept(submission(f, run)), followups.accept({ ...submission(f, run), userId: f.otherId })]);
-    expect(results.every(result => result.kind === "accepted")).toBe(true);
-    expect(results.flatMap(result => result.kind === "accepted" ? [result.entry.ordinal] : []).sort()).toEqual([1, 2]);
-    await prisma.projectGrant.updateMany({ where: { userId: f.otherId, projectId: f.input.project!.projectId }, data: { role: "VIEWER" } });
-    expect(await followups.accept({ ...submission(f, run), userId: f.otherId })).toEqual({ kind: "not_found" });
-  }, true));
 
   it("preserves branch history after source deletion and projects readable immutable shares", async () => fixture(async f => {
     const run = await f.create();

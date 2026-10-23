@@ -25,7 +25,7 @@ function uniqueBaseName(used: Set<string>, base: string): string {
 }
 
 /**
- * Every personal chat (active and archived; never Project or Temporary chats)
+ * Every personal chat (active and archived; never Temporary chats)
  * as the same `aiqsa.chat` JSON and Markdown documents the single-chat export
  * produces, one pair per chat, after a root `manifest.json` that lists them.
  * Archived chats live under `archived/`.
@@ -41,7 +41,6 @@ export async function* personalChatExportEntries(
     where: {
       memoryMode: { not: "TEMPORARY" },
       permanentDeletionAt: null,
-      projectId: null,
       userId
     }
   });

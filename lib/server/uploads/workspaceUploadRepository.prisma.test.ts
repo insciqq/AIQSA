@@ -13,7 +13,7 @@ import { WORKSPACE_UPLOAD_LEASE_MS } from "./workspaceUploadConfig";
 
 const repository = createWorkspaceUploadRepository(prisma);
 const checksum = createHash("sha256").update("abc").digest("hex");
-const input = (userId: string, projectId: string | null = null) => ({ userId, projectId,
+const input = (userId: string) => ({ userId,
   idempotencyKey: randomUUID(), byteSize: 3, fileName: "original.bin", mimeType: "application/octet-stream" });
 
 async function owner() {
@@ -70,31 +70,34 @@ describe("durable Workspace uploads", () => {
     } finally { await fixture.cleanup(); }
   });
 
-  it("rechecks Project membership at settlement and preserves deletion obligations after Project deletion", async () => {
+  it("never completes an upload a removed Project started and keeps its deletion obligations", async () => {
     const fixture = await owner();
-    const manager = await owner();
     const project = await prisma.project.create({ data: { name: "Upload test", createdByDisplayName: "Test",
-      grants: { create: [{ userId: manager.user.id, role: "OWNER" }, { userId: fixture.user.id, role: "CONTRIBUTOR" }] } } });
+      grants: { create: [{ userId: fixture.user.id, role: "OWNER" }] } } });
     let uploadId: string | null = null;
     try {
-      const row = await repository.create(input(fixture.user.id, project.id)); uploadId = row.id;
-      await readyPart(row.id, fixture.user.id);
-      await repository.complete(row.id, fixture.user.id);
-      const claim = await repository.claimSettlement(); expect(claim?.row.id).toBe(row.id);
-      await prisma.projectGrant.deleteMany({ where: { projectId: project.id, userId: fixture.user.id } });
+      // Written as Project uploads were before Projects were removed.
+      const now = new Date();
+      const row = await prisma.attachmentUpload.create({ data: {
+        userId: fixture.user.id, projectId: project.id, projectScoped: true, idempotencyKey: randomUUID(),
+        byteSize: 3, fileName: "original.bin", mimeType: "application/octet-stream",
+        expiresAt: new Date(now.getTime() + 60_000), deadlineAt: new Date(now.getTime() + 3_600_000),
+        objects: { create: { partNumber: 1, checksum, byteSize: 3, ready: true, storageKey: `uploads/stream/${randomUUID()}/parts/1` } }
+      } });
+      uploadId = row.id;
       await expect(repository.get(row.id, fixture.user.id)).rejects.toMatchObject({ code: "upload_not_found" });
-      expect(await repository.settle({ id: row.id, claimToken: claim!.row.claimToken!, storageKey: claim!.output.storageKey, checksum })).toBe(false);
-      expect(await prisma.attachment.count({ where: { projectId: project.id } })).toBe(0);
+      await expect(repository.complete(row.id, fixture.user.id)).rejects.toMatchObject({ code: "upload_not_found" });
       await prisma.project.delete({ where: { id: project.id } });
       const cleanup = await repository.claimCleanup();
-      expect(cleanup?.row.id).toBe(row.id); expect(cleanup?.row.projectScoped).toBe(true);
-      expect(cleanup?.objects).toHaveLength(2);
+      expect(cleanup?.row.id).toBe(row.id);
+      expect(cleanup?.row).toMatchObject({ projectScoped: true, state: "expired" });
+      expect(cleanup?.objects).toHaveLength(1);
       await repository.finishCleanup(row.id, cleanup!.row.claimToken!);
+      expect(await prisma.attachmentUploadObject.count({ where: { uploadId: row.id } })).toBe(0);
     } finally {
       await prisma.project.deleteMany({ where: { id: project.id } });
       if (uploadId) await prisma.attachmentUpload.deleteMany({ where: { id: uploadId } });
       await fixture.cleanup();
-      await manager.cleanup();
     }
   });
 
@@ -125,7 +128,7 @@ describe("durable Workspace uploads", () => {
     const pngChecksum = createHash("sha256").update(png).digest("hex");
     try {
       const created = await service.create({ byteSize: png.byteLength, fileName: "synthetic.jpeg", mimeType: "image/png",
-        projectId: null, idempotencyKey: randomUUID() }, fixture.user.id);
+        idempotencyKey: randomUUID() }, fixture.user.id);
       await service.part(new Request("http://localhost/part", { method: "PUT", body: png,
         headers: { "content-type": "application/octet-stream", "x-upload-sha256": pngChecksum } }), created.id, fixture.user.id, 1);
       await service.complete(created.id, fixture.user.id);

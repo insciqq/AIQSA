@@ -13,7 +13,7 @@ export function useChatTitleReconciliation(input: Readonly<{
   accountId: string;
   chats: readonly WorkspaceChatSummary[];
 }>): void {
-  const pendingIds = input.chats.filter((chat) => !chat.projectId && chat.titlePending)
+  const pendingIds = input.chats.filter((chat) => chat.titlePending)
     .map((chat) => chat.id).sort().join("\0");
   const pendingUsageIds = useThreadStore(state => Object.entries(state.threadsByChatId)
     .filter(([, thread]) => thread.usageStats?.titleUsagePending)
@@ -42,7 +42,7 @@ export function useChatTitleReconciliation(input: Readonly<{
           if (Date.now() >= deadline) continue;
           if (controller.signal.aborted || document.visibilityState !== "visible") break;
           const before = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
-          if (!before || before.projectId || !before.titlePending && !usagePending.has(chatId)) { pending.delete(chatId); usagePending.delete(chatId); continue; }
+          if (!before || !before.titlePending && !usagePending.has(chatId)) { pending.delete(chatId); usagePending.delete(chatId); continue; }
           try {
             request = new AbortController();
             const beforeThread = useThreadStore.getState().threadsByChatId[chatId];
@@ -60,7 +60,7 @@ export function useChatTitleReconciliation(input: Readonly<{
             // A rename wins, while unrelated changes to controls or messages
             // must not discard a completed title. Merge only title metadata.
             const currentChat = current.chats.find((chat) => chat.id === chatId);
-            if (!currentChat || currentChat.projectId) { pending.delete(chatId); usagePending.delete(chatId); continue; }
+            if (!currentChat) { pending.delete(chatId); usagePending.delete(chatId); continue; }
             const title = value.title;
             const titlePending = value.pending;
             // The title write advances the server chat revision; merging it

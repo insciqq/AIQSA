@@ -81,7 +81,7 @@ function run(name: string, files: readonly StoredOriginal[], hooks: Readonly<{ a
   const binding = (): WorkspaceExecutionBinding => ({
     assistantMessageId: `assistant_${name}`, chatId: `chat_${name}`, guestUsed: true, imageRef: workspace.imageRef,
     internetEnabled: workspace.internetEnabled, mcpVersion: workspace.mcpVersion, outputDirectory: workspace.outputDirectory,
-    operationOwner: operation.owner, operationGeneration: operation.generation, policyRevision: 1, projectId: null, runId,
+    operationOwner: operation.owner, operationGeneration: operation.generation, policyRevision: 1, runId,
     runtimeSandboxId, runtimeVersion: workspace.runtimeVersion, sandboxName: `aiqsa-ws-${name}`, sessionId: workspace.sessionId,
     sessionErrorCode: null, sessionState, toolCatalogHash: workspace.toolCatalogHash, toolDefinitions: tools, userId: "user_staging"
   });

@@ -35,8 +35,6 @@ import {
 import type {
   ThreadArtifactSummary,
   ThreadGeneratedArtifact,
-  ThreadKnowledgeAnswerState,
-  ThreadKnowledgeCitation,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
 import type { ThreadGeneratedFile, ThreadWorkspaceOutputStatus } from "@/lib/contracts/workspace";
@@ -47,7 +45,6 @@ import {
   isSafeMemorySourceActionHref,
   type MemoryAnswerSource
 } from "@/lib/contracts/memoryClient";
-import { KnowledgeCitationSourceTrigger } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   useEffect,
   useId,
@@ -97,57 +94,6 @@ function answerWebSources(artifact: ThreadArtifactSummary): readonly ThreadSearc
     url: citation.url
   }));
   return [...artifact.sources, ...citationSources];
-}
-
-function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerState }>) {
-  const insufficient = state.answer === "insufficient_evidence";
-  const partial = state.scope === "partial_sources_ready";
-  if (!insufficient && !partial) return null;
-  const text = insufficient && partial
-    ? "The ready documents did not contain enough evidence for a supported answer; some selected documents are still processing."
-    : insufficient
-      ? "The selected documents did not contain enough evidence for a supported answer."
-      : "Answered from the ready documents; some selected documents are still processing.";
-  return (
-    <p
-      className="v2-knowledge-answer-state"
-      data-answer={state.answer}
-      data-scope={state.scope}
-      role="status"
-    >
-      <UiV2Icon name="library" />
-      <span>{text}</span>
-    </p>
-  );
-}
-
-/* Knowledge rows carry the violet handle mark and a book glyph; the only
-   action is "Open document ›" because the citation projection exposes no
-   private base/document name (AGENTS.md, "Private by default"). */
-function KnowledgeSourceV2({
-  citation,
-  reference
-}: Readonly<{
-  citation: ThreadKnowledgeCitation;
-  reference?: Readonly<{ messageId: string; runId: string }>;
-}>) {
-  return (
-    <li data-kind="knowledge">
-      <span className="v2-answer-source-index" data-kind="knowledge">{citation.handle}</span>
-      <UiV2Icon className="v2-answer-source-glyph" name="book" />
-      <span className="v2-answer-source-main">
-        <strong>{citation.deleted ? "Deleted Knowledge document" : "Knowledge document"}</strong>
-        <small>
-          {citation.deleted
-            ? "citation evidence removed"
-            : "exact accepted evidence"}
-        </small>
-      </span>
-      {reference && !citation.deleted ? (
-        <KnowledgeCitationSourceTrigger citation={citation} reference={reference} />
-      ) : null}
-    </li>
-  );
 }
 
 function memorySourceTypeLabel(sourceType: MemoryAnswerSource["sourceType"]): string {
@@ -426,19 +372,17 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
 
 export function answerSourceCountV2(artifact: ThreadArtifactSummary | null): number {
   if (!artifact) return 0;
-  return answerWebSources(artifact).length + (artifact.knowledgeCitations?.length ?? 0);
+  return answerWebSources(artifact).length;
 }
 
 /**
  * Sources live in the actions row: a "Sources · N" chip (a button, so it can
  * sit inside the toolbar) and the list it expands in place directly under the
- * row. Inline [n] marks keep pointing at that list; the Knowledge citation
- * viewer is unchanged. Both nodes render from one open state, so the caller
- * places them in the toolbar and after it.
+ * row. Inline [n] marks keep pointing at that list. Both nodes render from
+ * one open state, so the caller places them in the toolbar and after it.
  */
-export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
+export function useAnswerSourcesV2({ artifact }: Readonly<{
   artifact: ThreadArtifactSummary | null;
-  knowledgeReference?: Readonly<{ messageId: string; runId: string }>;
 }>): Readonly<{ chip: ReactNode; list: ReactNode }> {
   const [open, setOpen] = useState(false);
   const listId = `answer-sources-${useId()}`;
@@ -451,8 +395,7 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
     // The list opens under the last answer, right above the composer dock.
     if (open) listRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [open]);
-  const knowledge = artifact?.knowledgeCitations ?? [];
-  const count = (presented?.sources.length ?? 0) + knowledge.length;
+  const count = presented?.sources.length ?? 0;
   if (!artifact || !presented || count === 0) return { chip: null, list: null };
 
   return {
@@ -500,17 +443,6 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
             })}
           </ol>
         ) : null}
-        {knowledge.length > 0 ? (
-          <ol className="v2-answer-knowledge-sources" aria-label="Knowledge documents">
-            {knowledge.map((citation, index) => (
-              <KnowledgeSourceV2
-                citation={citation}
-                key={`${citation.handle}:${index}`}
-                reference={knowledgeReference}
-              />
-            ))}
-          </ol>
-        ) : null}
         {artifact.citationsTruncated || artifact.sourcesTruncated ? (
           <p className="v2-answer-sources-note" data-testid="answer-sources-truncated">
             This answer has more sources than can be listed.
@@ -522,8 +454,8 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
 }
 
 /**
- * Quiet status lines between the answer body and its actions row: Knowledge
- * answer state, Gemini search suggestions. Memory limits and unavailability
+ * Quiet status lines between the answer body and its actions row: Gemini
+ * search suggestions. Memory limits and unavailability
  * stay with the model and administrators, never on the answer.
  * The process fold above the text and the Sources chip in the row own the
  * rest of the anatomy.
@@ -584,10 +516,6 @@ export function AnswerOutputsV2({
       </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
-  const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
-    artifact.knowledgeState.answer === "insufficient_evidence" ||
-    artifact.knowledgeState.scope === "partial_sources_ready"
-  ));
   const hasGeneratedImages = (artifact?.generatedImages?.length ?? 0) > 0;
   const hasGeneratedArtifacts = (artifact?.generatedArtifacts?.length ?? 0) > 0;
   const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
@@ -597,7 +525,7 @@ export function AnswerOutputsV2({
   );
 
   if ((!artifact || (
-    !hasSuggestions && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts &&
+    !hasSuggestions && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts &&
     scheduledTasks.length === 0 && skillSaves.length === 0 && resourceChanges.length === 0 && mcpApprovals.length === 0
   )) && !outputStatusCopy) {
     return null;
@@ -605,7 +533,6 @@ export function AnswerOutputsV2({
 
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
-      {artifact?.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
       {outputStatusCopy ? (
         <p
           className="v2-workspace-output-status"

@@ -10,8 +10,6 @@ import {
   emptyComposerSessionSnapshot,
   folderIdFromComposerSessionKey,
   pendingSendHasNewerInput,
-  projectComposerSessionKey,
-  projectIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore
@@ -315,32 +313,27 @@ describe("composer session store", () => {
     expect(session(missing)).toBe(session(composerSessionKey("also-missing")));
   });
 
-  it("keeps local Project blanks distinct from personal drafts and preserves their scope", () => {
-    const personal = composerSessionKey(null);
-    const projectRoot = projectComposerSessionKey("project/one");
-    const projectFolder = projectComposerSessionKey("project/one", "folder/two");
-    const otherProject = projectComposerSessionKey("project-two");
+  it("keeps folder blanks distinct from the root draft and preserves their scope", () => {
+    const root = composerSessionKey(null);
+    const folder = composerSessionKey(null, "folder/two");
     const store = useComposerSessionStore.getState();
 
-    expect(new Set([personal, projectRoot, projectFolder, otherProject]).size).toBe(4);
-    expect(chatIdFromComposerSessionKey(projectRoot)).toBeNull();
-    expect(projectIdFromComposerSessionKey(projectRoot)).toBe("project/one");
-    expect(projectIdFromComposerSessionKey(projectFolder)).toBe("project/one");
-    expect(projectIdFromComposerSessionKey(personal)).toBeNull();
-    expect(folderIdFromComposerSessionKey(projectRoot)).toBeNull();
-    expect(folderIdFromComposerSessionKey(projectFolder)).toBe("folder/two");
-    expect(composerSessionModeFromKey(projectRoot)).toBe("NORMAL");
+    expect(new Set([root, folder]).size).toBe(2);
+    expect(chatIdFromComposerSessionKey(folder)).toBeNull();
+    expect(folderIdFromComposerSessionKey(root)).toBeNull();
+    expect(folderIdFromComposerSessionKey(folder)).toBe("folder/two");
+    expect(composerSessionModeFromKey(folder)).toBe("NORMAL");
 
-    store.setDraft("Personal draft");
-    store.activateSession(projectRoot);
-    store.setDraft("Shared draft");
-    store.setAttachments([attachment("shared")]);
-    store.activateSession(personal);
+    store.setDraft("Root draft");
+    store.activateSession(folder);
+    store.setDraft("Folder draft");
+    store.setAttachments([attachment("folder")]);
+    store.activateSession(root);
 
-    expect(session(personal)).toMatchObject({ attachments: [], draft: "Personal draft" });
-    expect(session(projectRoot)).toMatchObject({
-      attachments: [attachment("shared")],
-      draft: "Shared draft"
+    expect(session(root)).toMatchObject({ attachments: [], draft: "Root draft" });
+    expect(session(folder)).toMatchObject({
+      attachments: [attachment("folder")],
+      draft: "Folder draft"
     });
   });
 
@@ -553,7 +546,7 @@ describe("composer session store", () => {
   });
 
   it("snapshots and transfers blank Workspace intent with the accepted send", () => {
-    const source = projectComposerSessionKey("project-one");
+    const source = composerSessionKey(null, "folder-one");
     const target = composerSessionKey("created-chat");
     const store = useComposerSessionStore.getState();
     store.activateSession(source);

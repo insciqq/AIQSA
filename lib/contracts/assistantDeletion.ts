@@ -7,10 +7,7 @@ export type AssistantDeletionConsequences = Readonly<{
   }>;
   /** Chats that stay open and report the deleted Assistant. */
   chatCount: number;
-  /** Projects that bind the Assistant but that the owner can no longer open. */
-  hiddenProjectCount: number;
   pendingListingRequest: boolean;
-  projects: readonly Readonly<{ isDefault: boolean; name: string }>[];
   /** The definition version these consequences were read at. */
   version: number;
 }>;
@@ -49,20 +46,11 @@ export function decodeAssistantDeletionConsequences(value: unknown): AssistantDe
     !Array.isArray(value.audiences.groupNames) ||
     !value.audiences.groupNames.every(nonEmptyString) ||
     !count(value.chatCount) ||
-    !count(value.hiddenProjectCount) ||
     typeof value.pendingListingRequest !== "boolean" ||
-    !Array.isArray(value.projects) ||
     !Number.isSafeInteger(value.version) ||
     Number(value.version) < 1
   ) {
     return null;
-  }
-  const projects: Array<{ isDefault: boolean; name: string }> = [];
-  for (const project of value.projects) {
-    if (!isRecord(project) || typeof project.isDefault !== "boolean" || !nonEmptyString(project.name)) {
-      return null;
-    }
-    projects.push({ isDefault: project.isDefault, name: project.name });
   }
   return {
     audiences: {
@@ -70,9 +58,7 @@ export function decodeAssistantDeletionConsequences(value: unknown): AssistantDe
       installation: value.audiences.installation
     },
     chatCount: value.chatCount,
-    hiddenProjectCount: value.hiddenProjectCount,
     pendingListingRequest: value.pendingListingRequest,
-    projects,
     version: Number(value.version)
   };
 }

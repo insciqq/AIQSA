@@ -25,7 +25,7 @@ import {
   type ResolvedAssistantRowValues
 } from "./rowResolution";
 
-type ResourceRowKey = "knowledge" | "model" | "search" | "tools";
+type ResourceRowKey = "model" | "search" | "tools";
 
 const SAVED_CONTROLS: Readonly<Record<string, AssistantRunControls>> = {
   "model-a": { reasoningEffort: "low" },
@@ -35,16 +35,12 @@ const SAVED_CONTROLS: Readonly<Record<string, AssistantRunControls>> = {
 
 const personalDefaults: AssistantRowContextDefaults = {
   controlsForModel: (modelId) => SAVED_CONTROLS[modelId] ?? {},
-  knowledge: { mode: "all_my_knowledge" },
   modelId: "model-default",
   search: { mode: "all_selected", optionIds: ["web-default"] },
   tools: { mode: "auto" }
 };
 
 const personalAvailable: AssistantRowAvailableResources = {
-  allMyKnowledge: true,
-  knowledgeBaseIds: new Set(["kb-1", "kb-2"]),
-  knowledgeSourceIds: new Set(["src-1"]),
   mcpServerIds: new Set(["mcp-1", "mcp-2"]),
   modelIds: new Set(["model-a", "model-b", "model-default"]),
   searchOptionIds: new Set(["web-1", "web-2", "web-default"]),
@@ -54,7 +50,6 @@ const personalAvailable: AssistantRowAvailableResources = {
 function rows(overrides: Partial<{ [Key in keyof AssistantRows]: Partial<AssistantRows[Key]> }> = {}): AssistantRows {
   const base: AssistantRows = {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "inherit" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -107,23 +102,6 @@ type RowFixture<Key extends ResourceRowKey> = {
 };
 
 const fixtures: { [Key in ResourceRowKey]: RowFixture<Key> } = {
-  knowledge: {
-    assistantEffective: { baseIds: ["kb-1"], mode: "explicit", sourceIds: ["src-1"] },
-    chat: { baseIds: ["kb-2"], mode: "explicit", sourceIds: [] },
-    chatEffective: { baseIds: ["kb-2"], mode: "explicit", sourceIds: [] },
-    chatUnavailable: { baseIds: ["kb-2", "kb-gone"], mode: "explicit", sourceIds: [] },
-    concrete: { baseIds: ["kb-1"], mode: "explicit", sourceIds: ["src-1"] },
-    defaultEffective: { mode: "all_my_knowledge" },
-    explicitOff: { assistant: { mode: "none" }, chat: { mode: "none" }, effective: { mode: "none" } },
-    partial: {
-      missing: ["src-gone"],
-      value: { baseIds: ["kb-1"], mode: "explicit", sourceIds: ["src-1", "src-gone"] }
-    },
-    unavailable: {
-      missing: ["kb-gone", "src-gone"],
-      value: { baseIds: ["kb-gone"], mode: "explicit", sourceIds: ["src-gone"] }
-    }
-  },
   model: {
     assistantEffective: { mode: "model", modelId: "model-a" },
     chat: { mode: "model", modelId: "model-b" },
@@ -230,7 +208,7 @@ function applicable(key: ResourceRowKey, scenario: Scenario): boolean {
   );
 }
 
-const table = (["model", "search", "tools", "knowledge"] as const).flatMap((key) =>
+const table = (["model", "search", "tools"] as const).flatMap((key) =>
   scenarios.filter((scenario) => applicable(key, scenario)).map((scenario) => [key, scenario.name, scenario] as const)
 );
 
@@ -240,7 +218,7 @@ function chatValue(fixture: RowFixture<ResourceRowKey>, choice: "chat" | "chatUn
 
 describe("resolveAssistantRows: resource rows by policy, provenance and availability (A-02)", () => {
   it("covers every resource row", () => {
-    expect(table.length).toBe(67);
+    expect(table.length).toBe(48);
   });
 
   it.each(table)("%s: %s", (key, _name, scenario) => {
@@ -547,18 +525,6 @@ describe("resolveAssistantRows: vocabulary bridge", () => {
     expect(result.rows.tools).toMatchObject({ provenance: "chat", value: { mode: "auto" } });
   });
 
-  it("a chat may choose All my knowledge only where it can run", () => {
-    const assistant = rows({ knowledge: { policy: "adjustable", value: { mode: "none" } } });
-    const personal = resolved(input({ assistant, requested: { knowledge: { mode: "all_my_knowledge" } } }));
-    expect(personal.rows.knowledge).toMatchObject({ provenance: "chat", value: { mode: "all_my_knowledge" } });
-    const restricted = { ...personalAvailable, allMyKnowledge: false };
-    expect(failed(input({ assistant, available: restricted, requested: { knowledge: { mode: "all_my_knowledge" } } })))
-      .toEqual({ code: "request_value_not_available", ok: false, row: "knowledge" });
-    const stored = resolved(input({ assistant, available: restricted, stored: { knowledge: { mode: "all_my_knowledge" } } }));
-    expect(stored.rows.knowledge).toMatchObject({ provenance: "assistant", value: { mode: "none" } });
-    expect(stored.overridesPatch).toEqual({ knowledge: null });
-  });
-
   it("a context search plan without sources reads as Off", () => {
     const result = resolved(input({ defaults: { ...personalDefaults, search: { mode: "all_selected", optionIds: [] } } }));
     expect(result.rows.search).toMatchObject({ provenance: "default", value: { mode: "off" } });
@@ -576,68 +542,26 @@ describe("resolveAssistantRows: vocabulary bridge", () => {
   });
 
   it("every effective value is a valid chat projection value", () => {
-    const result = resolved(input({ assistant: rows({ knowledge: { policy: "fixed", value: fixtures.knowledge.concrete } }) }));
+    const result = resolved(input({ assistant: rows({ tools: { policy: "fixed", value: fixtures.tools.concrete } }) }));
     const projected: { [Key in keyof ChatAssistantRowValues]: ChatAssistantRowValues[Key] } = {
       controls: result.rows.controls.value,
-      knowledge: result.rows.knowledge.value,
       model: result.rows.model.value,
       search: result.rows.search.value,
       skills: result.rows.skills.value,
       tools: result.rows.tools.value
     };
-    expect(projected.knowledge).toEqual(fixtures.knowledge.assistantEffective);
-  });
-});
-
-describe("resolveAssistantRows: Project context", () => {
-  const projectDefaults: AssistantRowContextDefaults = {
-    controlsForModel: () => ({ temperature: 0.4 }),
-    knowledge: { baseIds: ["kb-project"], mode: "explicit", sourceIds: [] },
-    modelId: "model-project",
-    search: { mode: "all_selected", optionIds: [] },
-    tools: { mode: "load_all" }
-  };
-  const projectAvailable: AssistantRowAvailableResources = {
-    allMyKnowledge: false,
-    knowledgeBaseIds: new Set(["kb-project"]),
-    knowledgeSourceIds: new Set(),
-    mcpServerIds: new Set(["mcp-shared"]),
-    modelIds: new Set(["model-project", "model-a"]),
-    searchOptionIds: new Set(["web-1"]),
-    skillIds: new Set(["skill-1"])
-  };
-  const assistant = rows({
-    knowledge: { policy: "adjustable", value: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [] } },
-    search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["web-1", "web-2"] } },
-    skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "auto" } },
-    tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["mcp-1"] } }
+    expect(projected.tools).toEqual(fixtures.tools.assistantEffective);
   });
 
-  it("resolves inherit and fallback against the Project's defaults and availability only", () => {
-    const result = resolved(input({ assistant, available: projectAvailable, defaults: projectDefaults }));
-    expect(assistantRunRowProvenance(result)).toEqual({
-      controls: "default",
-      knowledge: "fallback",
-      model: "default",
-      search: "fallback",
-      skills: "assistant",
-      tools: "fallback"
+  it("records the provenance of every row for the run", () => {
+    const assistant = rows({
+      search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["web-1", "web-2"] } },
+      skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "auto" } },
+      tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["mcp-1"] } }
     });
-    expect(Object.fromEntries(Object.entries(result.rows).map(([key, row]) => [key, row.value]))).toEqual({
-      controls: { temperature: 0.4 },
-      knowledge: { baseIds: ["kb-project"], mode: "explicit", sourceIds: [] },
-      model: { mode: "model", modelId: "model-project" },
-      search: { mode: "off" },
-      skills: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "auto" },
-      tools: { mode: "load_all" }
-    });
-  });
-
-  it("the same rows resolve against personal defaults in a personal chat", () => {
     const result = resolved(input({ assistant }));
     expect(assistantRunRowProvenance(result)).toEqual({
       controls: "default",
-      knowledge: "assistant",
       model: "default",
       search: "assistant",
       skills: "assistant",
@@ -645,27 +569,18 @@ describe("resolveAssistantRows: Project context", () => {
     });
     expect(result.rows.controls.value).toEqual({ maxOutputTokens: 2048 });
   });
-
-  it("a Project chat rejects a request value outside the Project's catalog", () => {
-    expect(failed(input({
-      assistant,
-      available: projectAvailable,
-      defaults: projectDefaults,
-      requested: { model: { mode: "model", modelId: "model-b" } }
-    }))).toEqual({ code: "request_value_not_available", ok: false, row: "model" });
-  });
 });
 
 describe("resolveAssistantRows: failures and persistence", () => {
   it("reports a request value for a fixed row before an unavailable resource and before a rejected value", () => {
     const assistant = rows({
-      knowledge: { policy: "fixed", value: { mode: "none" } },
-      search: { policy: "fixed", value: fixtures.search.unavailable.value }
+      search: { policy: "fixed", value: fixtures.search.unavailable.value },
+      tools: { policy: "fixed", value: { mode: "off" } }
     });
     expect(failed(input({
       assistant,
-      requested: { knowledge: { mode: "none" }, model: fixtures.model.chatUnavailable! }
-    }))).toEqual({ code: "assistant_overrides_not_allowed", ok: false, row: "knowledge" });
+      requested: { model: fixtures.model.chatUnavailable!, tools: { mode: "off" } }
+    }))).toEqual({ code: "assistant_overrides_not_allowed", ok: false, row: "tools" });
     expect(failed(input({ assistant, requested: { model: fixtures.model.chatUnavailable! } })))
       .toEqual({ code: "assistant_not_available", ok: false, row: "search" });
   });
@@ -680,10 +595,10 @@ describe("resolveAssistantRows: failures and persistence", () => {
       search: { mode: "all_selected", optionIds: ["web-1"] },
       tools: { mode: "off" }
     };
-    const result = resolved(input({ assistant, requested: { knowledge: { mode: "none" } }, stored }));
-    expect(result.overridesPatch).toEqual({ knowledge: { mode: "none" }, model: null, search: null });
+    const result = resolved(input({ assistant, requested: { skills: { mode: "off" } }, stored }));
+    expect(result.overridesPatch).toEqual({ model: null, search: null, skills: { mode: "off" } });
     expect(applyChatAssistantOverridesPatch(stored, result.overridesPatch)).toEqual({
-      knowledge: { mode: "none" },
+      skills: { mode: "off" },
       tools: { mode: "off" }
     });
   });

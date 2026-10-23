@@ -11,7 +11,6 @@ import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import type { AssistantDetail } from "@/lib/contracts/assistants";
 import { ASSISTANT_FEATURED_LIMIT } from "@/lib/contracts/assistantListing";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
-import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   assistantListingStatusCopy,
@@ -28,10 +27,6 @@ import "../assistants.css";
 import "./assistant-sharing.css";
 
 const DESCRIPTION = "Who can start chats with this Assistant. Changes apply to future chats.";
-
-function otherProjectsText(count: number, afterNamed: boolean): string {
-  return `${count}${afterNamed ? " other" : ""} ${count === 1 ? "Project" : "Projects"} you can't open`;
-}
 
 function Section({ children, title }: Readonly<{ children: ReactNode; title: string }>) {
   const id = useId();
@@ -184,7 +179,6 @@ function SharingForm({ detail, lastAction, view }: Readonly<{
   const access = assistantSharingAccessItems(detail, view.names);
   const path = formatAssistantEntryPath(detail.id);
   const link = typeof window === "undefined" ? path : new URL(path, window.location.origin).toString();
-  const projects = detail.projects ?? { otherProjectCount: 0, projects: [] };
 
   const toggleGroup = (groupId: string, checked: boolean) => view.onChange({
     groupIds: checked
@@ -356,21 +350,6 @@ function SharingForm({ detail, lastAction, view }: Readonly<{
         </p>
         <p className="v2-assistants-copy-status" role="status">{copyStatus}</p>
       </Section>
-
-      {/* Projects are disabled (`lib/domain/disabledAreas.ts`): no Project section. */}
-      {PROJECTS_ENABLED ? (
-        <Section title="Projects using this Assistant">
-          {projects.projects.length + projects.otherProjectCount > 0 ? (
-            <ul className="v2-assistant-sharing-projects">
-              {projects.projects.map((project) => <li key={project.id}>{project.name}</li>)}
-              {projects.otherProjectCount > 0 ? (
-                <li className="v2-assistant-sharing-projects-rest">{otherProjectsText(projects.otherProjectCount, projects.projects.length > 0)}</li>
-              ) : null}
-            </ul>
-          ) : <p className="v2-assistant-sharing-empty">No Projects use this Assistant.</p>}
-          <p className="v2-assistant-sharing-caption">Project managers refresh dependencies from the Project.</p>
-        </Section>
-      ) : null}
     </div>
   );
 }
@@ -407,7 +386,7 @@ function GroupOption({ checked, failures, group, onToggle }: Readonly<{
 /**
  * The Sharing sheet of an owned Assistant (PRD 10.4): who can use it, what
  * the people it is shared with need access to, the listing request, Featured
- * for administrators, the link and the Projects that use it. A wide side
+ * for administrators and the link. A wide side
  * sheet, full screen on phones in both orientations. Save applies the
  * draft as one action and keeps what could not be applied at its control;
  * closing with unsaved changes asks first. However it closes, focus returns

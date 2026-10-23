@@ -158,7 +158,6 @@ export async function loadChatTitleFirstTurn(
       archived: false,
       id: context.chatId,
       permanentDeletionAt: null,
-      projectId: null,
       userId: context.userId
     }
   });

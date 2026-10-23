@@ -425,13 +425,12 @@ describe("Assistant Sharing sheet", () => {
     setViewer(false);
     mocks.fetchAssistantDetail.mockReturnValueOnce(new Promise(() => undefined));
     const input = assistantControllerInput();
-    input.knowledgeBases = [{ available: true, id: "base-1", name: "Handbook" }];
     const actions = createAssistantLibraryActions(input);
     view(input, actions).gallery.onShare("assistant-1");
 
     const sharing = view(input, actions).sharing!;
     expect(sharing).toMatchObject({ name: "Code reviewer", state: "loading" });
-    expect(sharing.names.knowledgeBases).toEqual([{ available: true, id: "base-1", name: "Handbook" }]);
+    expect(sharing.names.models).toEqual([{ id: "model-1", label: "Model one" }]);
     mocks.writeClipboardText.mockResolvedValue(undefined);
     await expect(sharing.onCopyLink()).resolves.toBe(true);
     expect(mocks.writeClipboardText).toHaveBeenCalledWith(`${window.location.origin}/assistant/assistant-1`);

@@ -192,7 +192,7 @@ function KeyFormRow({
         </div>
       </form>
       {busy ? <div className="mt-3"><AdminProviderSetupProgress progress={{ phase: "validating", completed: 0, total: null }} /></div> : null}
-      <p className="mt-2 text-xs leading-5 text-ink-muted">Checks the key and supported models with small paid requests, then fills empty defaults and roles. OpenRouter also sets up embeddings, reranking and Knowledge. Assigned PDF readers receive page images and text.</p>
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Checks the key and supported models with small paid requests, then fills empty defaults and roles. OpenRouter also sets up embeddings and reranking. Assigned PDF readers receive page images and text.</p>
       {error ? (
         <p className="mt-2 text-xs text-critical" id={errorId} role="alert">{error}</p>
       ) : null}

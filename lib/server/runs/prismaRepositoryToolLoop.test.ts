@@ -520,7 +520,7 @@ describe("provider dispatch recovery request loading", () => {
       imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.png", origin: "upload" }] };
     const stored = JSON.parse(JSON.stringify(accepted)) as unknown;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: stored, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
@@ -543,7 +543,7 @@ describe("provider dispatch recovery request loading", () => {
     const accepted = { ...normalizedRequest, workspace: { ...workspace, guidanceVersion: 1 }, workspaceCheckpoints: true,
       workspaceCheckpointToolDescription: "Frozen description", ...patch };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
@@ -561,7 +561,7 @@ describe("provider dispatch recovery request loading", () => {
   const chatVision = { ...normalizedRequest, toolMode: "auto" as const, visionAnalysis: visionPlan,
     imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.webp", origin: "upload" as const }] };
   const loadStored = (stored: unknown) => createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-    chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+    chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
     normalizedRequest: JSON.parse(JSON.stringify(stored)) as unknown, provider: "provider-one"
   })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS).loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
 
@@ -614,7 +614,7 @@ describe("provider dispatch recovery request loading", () => {
   it("never loads a request accepted as a Codex Agent turn: recovery ends it before replay", async () => {
     let accepted: unknown;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -625,7 +625,7 @@ describe("provider dispatch recovery request loading", () => {
   it("keeps historical requests on the legacy path and accepts the explicit Off marker", async () => {
     let accepted: unknown = normalizedRequest;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
@@ -643,7 +643,7 @@ describe("provider dispatch recovery request loading", () => {
       callRefs: [`tcr1_${"a".repeat(32)}`], digest: "d".repeat(64), readerCalls: 2 }], omittedCalls: 3 };
     let accepted: unknown = { ...normalizedRequest, toolCallReader: true, toolHistory };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -663,7 +663,7 @@ describe("provider dispatch recovery request loading", () => {
   it("accepts standard and Assistant baseline evidence only", async () => {
     let accepted: unknown = normalizedRequest;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     for (const source of ["standard_chat", "assistant_chat"]) {
@@ -681,7 +681,7 @@ describe("provider dispatch recovery request loading", () => {
   it("restores the recorded turn guidance and rejects one that is not a short list of text", async () => {
     let accepted: unknown;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     accepted = { ...normalizedRequest, prompt: { ...normalizedRequest.prompt, system: "Stable.\n\nThis turn's output directory: /out.",
@@ -699,7 +699,7 @@ describe("provider dispatch recovery request loading", () => {
     const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], available: [reference], toolsSupported: true });
     let accepted: unknown;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     for (const skills of [[{ name: "legacy name", skillId: "skill", revisionId: "old" }], manifest]) {
@@ -715,7 +715,7 @@ describe("provider dispatch recovery request loading", () => {
     let accepted: unknown = { ...normalizedRequest, toolMode: "auto", artifactTool: true,
       artifactReferences: [artifactEdit], artifactEdit };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
@@ -735,7 +735,7 @@ describe("provider dispatch recovery request loading", () => {
       artifactReferences: [focus], artifactFocus: focus };
     let accepted: unknown = snapshot;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(snapshot);
@@ -782,7 +782,7 @@ describe("provider dispatch recovery request loading", () => {
       imageInputLimits: { imageBytes: 1048576, imageCount: 4, imagePixels: 4000000, payloadBytes: 5000000 } };
     let accepted: unknown = { ...normalizedRequest, modelCapabilities: capabilities };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
@@ -810,7 +810,7 @@ describe("provider dispatch recovery request loading", () => {
     };
     let accepted: unknown = { ...normalizedRequest, modelCapabilities: capabilities };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -906,7 +906,7 @@ describe("provider dispatch recovery request loading", () => {
     };
     const operations = createPrismaRunToolLoopOperations({
       modelRun: { findUnique: async () => ({
-        chat: { projectId: null, userId: "owner-one" },
+        chat: { userId: "owner-one" },
         chatId: "chat-one",
         modelId: "model-one",
         normalizedRequest: request,
@@ -926,7 +926,7 @@ describe("provider dispatch recovery request loading", () => {
       ...(tokens === undefined ? {} : { mcpAutoDiscoveryMaxOutputTokens: tokens })
     } };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: request, provider: "provider-one"
     }) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -937,7 +937,7 @@ describe("provider dispatch recovery request loading", () => {
 
   it("selects only the accepted request and ownership fields", async () => {
     const findUnique = vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" },
+      chat: { userId: "owner-one" },
       chatId: "chat-one",
       modelId: "model-one",
       normalizedRequest,
@@ -953,7 +953,7 @@ describe("provider dispatch recovery request loading", () => {
     })).resolves.toEqual(normalizedRequest);
     expect(findUnique).toHaveBeenCalledWith({
       select: {
-        chat: { select: { projectId: true, userId: true } },
+        chat: { select: { userId: true } },
         chatId: true,
         modelId: true,
         normalizedRequest: true,
@@ -984,7 +984,7 @@ describe("provider dispatch recovery request loading", () => {
       const operations = createPrismaRunToolLoopOperations({
         modelRun: {
           findUnique: vi.fn(async () => ({
-            chat: { projectId: null, userId: "owner-one" },
+            chat: { userId: "owner-one" },
             chatId: "chat-one",
             modelId: "model-one",
             normalizedRequest: request,
@@ -1007,7 +1007,7 @@ describe("provider dispatch recovery request loading", () => {
   it.each([undefined, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 12])("preserves only known accepted Knowledge workflow policies (%s)", async (version) => {
     const request = { ...normalizedRequest, ...(version === undefined ? {} : { knowledgeAnswerWorkflowVersion: version }) };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: request, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -1019,7 +1019,7 @@ describe("provider dispatch recovery request loading", () => {
     for (const version of [undefined, 2, 3, 0, 1, 4, "2", "3"]) {
       const request = { ...normalizedRequest, ...(version === undefined ? {} : { [field]: version }) };
       const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-        chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+        chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
         normalizedRequest: request, provider: "provider-one"
       })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
       const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -1033,7 +1033,7 @@ describe("provider dispatch recovery request loading", () => {
     const request = { ...normalizedRequest, ...(workflow === undefined ? {} : { knowledgeAnswerWorkflowVersion: workflow }),
       ...(feedback === undefined ? {} : { knowledgeReviewRepairFeedbackVersion: feedback }) };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
-      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      chat: { userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: request, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
@@ -1094,7 +1094,7 @@ describe("provider dispatch recovery request loading", () => {
     const operations = createPrismaRunToolLoopOperations({
       modelRun: {
         findUnique: vi.fn(async () => ({
-          chat: { projectId: null, userId: "owner-one" },
+          chat: { userId: "owner-one" },
           chatId: "chat-one",
           modelId: "model-one",
           normalizedRequest: fullContextRequest,
@@ -1138,7 +1138,7 @@ describe("provider dispatch recovery request loading", () => {
     const operations = createPrismaRunToolLoopOperations({
       modelRun: {
         findUnique: vi.fn(async () => ({
-          chat: { projectId: null, userId: "owner-one" },
+          chat: { userId: "owner-one" },
           chatId: "chat-one",
           modelId: "model-one",
           normalizedRequest: frozenRequest,
@@ -1160,7 +1160,7 @@ describe("provider dispatch recovery request loading", () => {
     const operations = createPrismaRunToolLoopOperations({
       modelRun: {
         findUnique: vi.fn(async () => ({
-          chat: { projectId: null, userId: "owner-one" },
+          chat: { userId: "owner-one" },
           chatId: "chat-one",
           modelId: "model-one",
           normalizedRequest: {
@@ -1208,7 +1208,7 @@ describe("provider dispatch recovery request loading", () => {
       const operations = createPrismaRunToolLoopOperations({
         modelRun: {
           findUnique: vi.fn(async () => ({
-            chat: { projectId: null, userId: "owner-one" },
+            chat: { userId: "owner-one" },
             chatId: "chat-one",
             modelId: "model-one",
             normalizedRequest: request,
@@ -1430,7 +1430,7 @@ describe("provider dispatch recovery request loading", () => {
     const accepted = { ...normalizedRequest,
       instructionPreset: { presetId: "preset", revision: 2, selectionVersion: 3 },
       prompt: { ...normalizedRequest.prompt, personalInstructions: "accepted style", responseReminder: "accepted reminder" } };
-    const findUnique = vi.fn(async () => ({ chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one",
+    const findUnique = vi.fn(async () => ({ chat: { userId: "owner-one" }, chatId: "chat-one",
       modelId: "model-one", normalizedRequest: accepted, provider: "provider-one" }));
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
@@ -1455,7 +1455,7 @@ describe("provider dispatch recovery request loading", () => {
     const operations = createPrismaRunToolLoopOperations({
       modelRun: {
         findUnique: vi.fn(async () => ({
-          chat: { projectId: null, userId: "owner-one" },
+          chat: { userId: "owner-one" },
           chatId: "chat-one",
           modelId: "model-one",
           normalizedRequest: acceptedRequest,
@@ -1486,7 +1486,7 @@ describe("provider dispatch recovery request loading", () => {
       const operations = createPrismaRunToolLoopOperations({
         modelRun: {
           findUnique: vi.fn(async () => ({
-            chat: { projectId: null, userId: "owner-one" },
+            chat: { userId: "owner-one" },
             chatId: "chat-one",
             modelId: "model-one",
             normalizedRequest: {
@@ -1516,7 +1516,7 @@ describe("provider dispatch recovery request loading", () => {
     const operations = createPrismaRunToolLoopOperations({
       modelRun: {
         findUnique: vi.fn(async () => ({
-          chat: { projectId: null, userId: "owner-one" },
+          chat: { userId: "owner-one" },
           chatId: "chat-one",
           modelId: "model-one",
           normalizedRequest: { ...normalizedRequest, unexpectedPrivateField: "must not pass" },
@@ -1535,7 +1535,7 @@ describe("provider dispatch recovery request loading", () => {
     const operations = createPrismaRunToolLoopOperations({
       modelRun: {
         findUnique: vi.fn(async () => ({
-          chat: { projectId: null, userId: "owner-one" },
+          chat: { userId: "owner-one" },
           chatId: "chat-one",
           modelId: "model-one",
           normalizedRequest: {

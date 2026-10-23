@@ -17,7 +17,6 @@ import { mcpObservationMaximumBytes, observationFailure, TOOL_OBSERVATION_LIMITS
 import { createToolObservationService } from "./service";
 import { createObservationAdmission } from "./admission";
 import { createObservationSourceOwners } from "./sourceOwners";
-import { knowledgeObservationOwner } from "../knowledge/observationOwner";
 import { captureMcpObservation, captureOwnedObservation, captureSearchObservation, wholeDeliveryAllowance } from "./sourceAdapters";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { namespacedMcpToolName } from "../mcp/runPlan";
@@ -29,13 +28,9 @@ import type { ToolExecutionResult } from "../tools/types";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const clean of cleanups.splice(0).reverse()) await clean(); });
 
-async function fixture(project = false) {
+async function fixture() {
   const user = await prisma.user.create({ data: { id: randomUUID(), displayName: "Synthetic observation owner", status: "active" } });
-  const projectRow = project ? await prisma.project.create({ data: { name: "Synthetic observation Project",
-    createdByUserId: user.id, createdByDisplayName: user.displayName, grants: { create: { userId: user.id, role: "OWNER" } } } }) : null;
-  const chat = await prisma.chat.create({ data: { title: "Synthetic observation chat",
-    ...(projectRow ? { projectId: projectRow.id, createdByUserId: user.id, createdByDisplayName: user.displayName,
-      memoryMode: "EXCLUDED" as const } : { userId: user.id }) } });
+  const chat = await prisma.chat.create({ data: { title: "Synthetic observation chat", userId: user.id } });
   cleanups.push(async () => {
     const observations = await prisma.toolObservation.findMany({ where: { modelRun: { chatId: chat.id } }, select: { storageKey: true } });
     await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
@@ -44,19 +39,15 @@ async function fixture(project = false) {
     await prisma.chat.deleteMany({ where: { id: chat.id } });
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: user.id, targetId: chat.id } });
     await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: observations.flatMap(row => row.storageKey ? [row.storageKey] : []) } } });
-    if (projectRow) await prisma.project.deleteMany({ where: { id: projectRow.id } });
     await prisma.user.deleteMany({ where: { id: user.id } });
   });
   const makeRun = async (parent: string | null = null, normalizedRequest: Prisma.InputJsonValue = {}) => {
     const question = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete", parentMessageId: parent,
-      content: textMessageContent("Read the exact accepted result"),
-      ...(projectRow ? { authorUserId: user.id, authorDisplayName: user.displayName, authorProjectRole: "OWNER" as const } : {}) } });
+      content: textMessageContent("Read the exact accepted result") } });
     const answer = await prisma.message.create({ data: { chatId: chat.id, role: "assistant", status: "streaming", parentMessageId: question.id,
       content: textMessageContent("") } });
     const run = await prisma.modelRun.create({ data: { chatId: chat.id, userId: user.id, userMessageId: question.id,
-      assistantMessageId: answer.id, provider: "fake", modelId: "fake-qsa", normalizedRequest, status: "in_progress",
-      ...(projectRow ? { projectRunBinding: { create: { projectId: projectRow.id, initiatorUserId: user.id, acceptedRole: "OWNER",
-        accessRevision: 1, policyRevision: 1, instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true } } } : {}) } });
+      assistantMessageId: answer.id, provider: "fake", modelId: "fake-qsa", normalizedRequest, status: "in_progress" } });
     return { ...run, actor: { runId: run.id, userId: user.id } };
   };
   const run = await makeRun();
@@ -78,7 +69,7 @@ async function fixture(project = false) {
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { state: "complete", result: { observation: result.observation } } });
     return { producer, result, id: result.observation.handle.slice(5) };
   };
-  return { user, project: projectRow, chat, run, call, makeRun, repository, service, storage, write, authorizeSource, loadSource };
+  return { user, chat, run, call, makeRun, repository, service, storage, write, authorizeSource, loadSource };
 }
 
 describe("durable tool observation ownership", () => {
@@ -163,7 +154,7 @@ describe("durable tool observation ownership", () => {
     const name = namespacedMcpToolName(server.namespace, "records");
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { toolName: name, mcpRunBindingId: binding.id } });
     const service = createToolObservationService({ repository: createToolObservationRepository({ prisma,
-      ...createObservationSourceOwners(knowledgeObservationOwner) }), storage: f.storage });
+      ...createObservationSourceOwners() }), storage: f.storage });
     const business = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["exact accepted MCP bytes"], unsupportedContentTypes: [] }));
     const result = await captureMcpObservation({ service, producer }, { id: "provider-call", name, arguments: {} },
       { version: 1, source: "mcp", serverId: server.id, originalName: "records", revisionId: revision.id, fingerprint: runtime.fingerprint }, business);
@@ -199,7 +190,7 @@ describe("durable tool observation ownership", () => {
     const producer = await f.call(run.actor);
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { toolName: "load_skill", arguments: { skill: "procedure" } } });
     const service = createToolObservationService({ repository: createToolObservationRepository({ prisma,
-      ...createObservationSourceOwners(knowledgeObservationOwner) }), storage: f.storage });
+      ...createObservationSourceOwners() }), storage: f.storage });
     const call = await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: producer.toolCallId } });
     const original: ToolExecutionResult = { callId: call.providerCallId, name: "load_skill", status: "complete",
       content: [{ type: "text", text: "Keep the original instructions." }] };
@@ -246,7 +237,7 @@ describe("durable tool observation ownership", () => {
     const run = await f.makeRun(f.run.assistantMessageId, { searchPlan: { options: sources } });
     const producer = await f.call(run.actor);
     const service = createToolObservationService({ repository: createToolObservationRepository({ prisma,
-      ...createObservationSourceOwners(knowledgeObservationOwner) }), storage: f.storage });
+      ...createObservationSourceOwners() }), storage: f.storage });
     const execution: SearchExecutionEvidence = { ...sources[0]!, displayName: "Synthetic search", invocationId: producer.toolCallId, provider: "fake",
       modelId: "synthetic-search", status: "complete", findings: "x".repeat(20000),
       sources: [{ title: "Synthetic source", url: "https://example.com/synthetic", rank: 1, snippet: "Accepted snippet" }],
@@ -382,15 +373,12 @@ describe("durable tool observation ownership", () => {
     await expect(f.repository.read(f.run.actor, saved.id)).rejects.toThrow("tool_observation_unavailable");
   });
 
-  it("fences Project archival and prevents cross-run relational ownership", async () => {
-    const f = await fixture(true);
+  it("prevents cross-run relational ownership", async () => {
+    const f = await fixture();
     const other = await fixture();
     const call = await other.call();
     await expect(prisma.toolObservation.create({ data: { id: randomUUID().replaceAll("-", ""), modelRunId: f.run.id,
       toolCallId: call.toolCallId, sourceKind: "mcp", reservedBytes: 100 } })).rejects.toThrow();
-    const saved = await f.write();
-    await prisma.project.update({ where: { id: f.project!.id }, data: { status: "ARCHIVED", archivedAt: new Date() } });
-    await expect(f.repository.read(f.run.actor, saved.id)).rejects.toThrow("tool_observation_unavailable");
   });
 
   it("publishes only verified objects, protects live references and leaves cleanup after row deletion", async () => {

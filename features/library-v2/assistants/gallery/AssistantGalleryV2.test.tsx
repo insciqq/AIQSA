@@ -184,7 +184,7 @@ describe("Assistants gallery", () => {
 describe("Assistant card", () => {
   it("shows owner, scope and model, the capability line, and opens the detail sheet from its heading or body", () => {
     const view = gallery([assistantSummary({
-      fingerprint: { knowledgeLabel: null, knowledgeResourceCount: 2, mcpServerCount: 1, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 },
+      fingerprint: { mcpServerCount: 1, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 },
       skillLinkCount: 3
     })]);
     renderGallery(view);
@@ -193,7 +193,7 @@ describe("Assistant card", () => {
     expect(card).toHaveTextContent("Yours · Only you · Your model");
     const capabilities = within(card).getByRole("list", { name: "Capabilities" });
     expect(within(capabilities).getAllByRole("listitem").map((item) => item.getAttribute("data-tooltip")))
-      .toEqual(["1 MCP server", "2 Knowledge bases or documents", "3 linked Skills"]);
+      .toEqual(["1 MCP server", "3 linked Skills"]);
 
     fireEvent.click(within(card).getByRole("button", { name: "Code reviewer" }));
     expect(view.onOpenDetail).toHaveBeenCalledWith("assistant-1");
@@ -205,7 +205,7 @@ describe("Assistant card", () => {
   });
 
   it("says Your model only for a usable Assistant without a model name, and never guesses one", () => {
-    const unnamed = { knowledgeLabel: null, knowledgeResourceCount: 0, mcpServerCount: 0, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 };
+    const unnamed = { mcpServerCount: 0, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 };
     renderGallery(gallery([
       assistantSummary({ fingerprint: unnamed, id: "ready", name: "Ready" }),
       assistantSummary({

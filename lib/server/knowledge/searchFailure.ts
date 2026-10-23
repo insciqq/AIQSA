@@ -1,8 +1,11 @@
 import { normalizeTokenUsage } from "../../domain/usage";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import type { KnowledgeBilledCall } from "./retrievalTypes";
+import {
+  KNOWLEDGE_SEARCH_MAPPING_VERSION,
+  KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION,
+  type KnowledgeBilledCall
+} from "./retrievalTypes";
 import { knowledgeEvidenceFromToolResult, knowledgeFailureBilledCalls } from "./toolResult";
-import { KNOWLEDGE_SEARCH_MAPPING_VERSION, KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION } from "../search/opensearch/contract";
 
 const messages = {
   // Retained older receipts did not distinguish pending and failed indexing.

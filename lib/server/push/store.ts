@@ -181,7 +181,6 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
           INNER JOIN "Chat" AS chat ON chat."id" = run."chatId" AND chat."userId" = run."userId"
           WHERE run."id" = ${runId}
             AND run."status" IN ('complete'::"ModelRunStatus", 'error'::"ModelRunStatus")
-            AND chat."projectId" IS NULL
             AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
             AND chat."permanentDeletionAt" IS NULL
             AND ${notScheduledRunSql()}
@@ -237,7 +236,6 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
         FROM "Chat" AS chat
         WHERE chat."id" = ${chatId}
           AND chat."userId" = ${userId}
-          AND chat."projectId" IS NULL
           AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
           AND chat."permanentDeletionAt" IS NULL
           AND ${ownerAcceptsSql(Prisma.sql`chat."userId"`, now)}

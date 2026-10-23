@@ -18,7 +18,7 @@ export async function register(): Promise<void> {
       // product path continue without it.
       reportSubsystemFailure({ error, subsystem: "telemetry", stage: "startup", code: "telemetry_startup_failed", action: "degrade" });
     }
-    announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
+    announceProcess({ attachments: "starting", memory: "unknown", mcp: "starting", workspace: "unknown", email: "unknown" });
     const { startNativeRoutingAdoption } = await import("./lib/server/bootstrap/nativeRoutingAdoption");
     startNativeRoutingAdoption();
     const { startDecisionModelAdoption } = await import("./lib/server/bootstrap/decisionModelAdoption");
@@ -106,17 +106,6 @@ export async function register(): Promise<void> {
     } catch (error) {
       // Deletion jobs stay durable in PostgreSQL; `npm run prune` still drains them.
       reportSubsystemFailure({ error, subsystem: "object_storage", stage: "startup", code: "object_deletion_startup_failed", action: "degrade" });
-    }
-    try {
-      const { getDefaultKnowledgeIngestionCoordinator } = await import(
-        "./lib/server/knowledge/defaultIngestion"
-      );
-      getDefaultKnowledgeIngestionCoordinator();
-      reportSubsystemHealthy("knowledge", "startup");
-    } catch (error) {
-      // Knowledge ingestion is feature-local. Durable per-document state remains
-      // inspectable and retryable when its parser/provider/storage boundary is unavailable.
-      reportSubsystemFailure({ error, subsystem: "knowledge", stage: "startup", code: "knowledge_ingestion_startup_failed", action: "degrade" });
     }
     try {
       const { getDefaultMcpActivationCoordinator } = await import(

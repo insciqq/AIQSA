@@ -1736,8 +1736,7 @@
  * A short screen (a phone held sideways): a compact section heading, so the
  * first row, the empty state or the error shows on the first screen. The
  * title stays beside its actions; the description (the crumb row and the
- * tab strip already name the section) and the extra spacing go. Knowledge
- * sub-view headings keep their meta line.
+ * tab strip already name the section) and the extra spacing go.
  */
 @media (max-height: 30rem) {
   .v2-library-panel {
@@ -1756,7 +1755,7 @@
     font-size: 1rem;
   }
 
-  .v2-resource-heading:not(.v2-knowledge-heading) > div > p {
+  .v2-resource-heading > div > p {
     display: none;
   }
 

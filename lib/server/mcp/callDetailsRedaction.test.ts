@@ -44,8 +44,8 @@ function fixture(rows: Rows = {}) {
   vi.stubEnv("AIQSA_ENCRYPTION_KEY", key.toString("base64"));
   return { tx, calls };
 }
-const read = (f: ReturnType<typeof fixture>, projectId: string | null = null, generationId: string | null = "generation") =>
-  mcpCallDisplayRedaction(f.tx, identity, generationId, "user", projectId);
+const read = (f: ReturnType<typeof fixture>, generationId: string | null = "generation") =>
+  mcpCallDisplayRedaction(f.tx, identity, generationId, "user");
 const shown = (argumentsValue: unknown, values: readonly string[]) => projectMcpCallDetails({
   id: "call", toolName: "mcp_fixture_read", providerCallId: "provider", state: "complete", arguments: argumentsValue,
   result: { callId: "provider", name: "mcp_fixture_read", status: "complete", content: [{ type: "text", text: "ok" }] },
@@ -126,31 +126,21 @@ describe("MCP display redaction by the secret values known now", () => {
     expect(keyless.calls.generation).not.toHaveBeenCalled();
   });
 
-  it("reads a Project call from shared values only, never personal values or OAuth", async () => {
-    const f = fixture({ server: sharedServer("current-shared") });
-    expect(await read(f, "project")).toEqual({ values: ["synthetic-secret", "current-shared"] });
-    expect(f.calls.generation).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ sharedServerId: "server" }) }));
-    expect(f.calls.personal).not.toHaveBeenCalled();
-    const oauth = fixture({ revision: { configuration: oauthConfiguration } });
-    expect(await read(oauth, "project")).toEqual({ values: [] });
-    expect(oauth.calls.connections).not.toHaveBeenCalled();
-  });
-
   it("does not look up secret context for a server without sensitive slots or OAuth", async () => {
     const f = fixture({ revision: { configuration: { ...configuration, auth: { mode: "none" }, slots: [] } } });
-    expect(await read(f, null, null)).toEqual({ values: [] });
+    expect(await read(f, null)).toEqual({ values: [] });
     expect(f.calls.generation).not.toHaveBeenCalled();
     expect(f.calls.personal).not.toHaveBeenCalled();
   });
 });
 
 describe("MCP redaction evidence for provider projections", () => {
-  const evidence = (f: ReturnType<typeof fixture>, projectId: string | null = null, generationId: string | null = "generation") =>
-    mcpCallRedactionEvidence(f.tx, identity, generationId, "user", projectId);
+  const evidence = (f: ReturnType<typeof fixture>, generationId: string | null = "generation") =>
+    mcpCallRedactionEvidence(f.tx, identity, generationId, "user");
 
   it("needs nothing for a server without sensitive slots or OAuth", async () => {
     const f = fixture({ revision: { configuration: { ...configuration, auth: { mode: "none" }, slots: [] } } });
-    expect(await evidence(f, null, null)).toEqual({ state: "none_needed", values: [] });
+    expect(await evidence(f, null)).toEqual({ state: "none_needed", values: [] });
   });
 
   it("is complete when a current source decrypted every sensitive slot", async () => {

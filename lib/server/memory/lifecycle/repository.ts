@@ -588,7 +588,7 @@ async function sourceEvidence(
       ON run."id" = affected_runs."modelRunId" AND run."userId" = ${userId}
     INNER JOIN "Chat" AS chat
       ON chat."id" = run."chatId" AND chat."userId" = run."userId"
-      AND chat."projectId" IS NULL AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND chat."permanentDeletionAt" IS NULL
     INNER JOIN "Message" AS message
       ON message."chatId" = chat."id"

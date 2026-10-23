@@ -36,7 +36,6 @@ const MODEL_CODES = new Set([
 ]);
 const CHAT_CODES = new Set(["chat_not_found", "chat_not_created", "personal_draft_invalid", "personal_draft_conflict"]);
 const ATTACHMENT_CODES = new Set(["unsupported_attachment_type", "image_attachment_not_supported"]);
-const KNOWLEDGE_CODES = new Set(["sources_processing", "no_retrieval_candidates"]);
 const CONTEXT_CODES = new Set([
   "context_too_large", "assistant_instructions_expansion_too_large", "instruction_preset_expansion_too_large"
 ]);
@@ -67,8 +66,7 @@ export function telegramRefusalReply(refusal: TelegramSendRefusal): TelegramRefu
   if (code.startsWith("mcp_")) return reply(COPY.toolsUnavailable, "open");
   if (code.startsWith("skill")) return reply(COPY.skillUnavailable, "open");
   if (code.startsWith("assistant_")) return reply(COPY.assistantUnavailable, "none");
-  if (code.startsWith("knowledge_") || KNOWLEDGE_CODES.has(code)) return reply(COPY.knowledgeUnavailable, "open");
-  if (CHAT_CODES.has(code) || code.startsWith("project_") || code.startsWith("memory_temporary_")) {
+  if (CHAT_CODES.has(code) || code.startsWith("memory_temporary_")) {
     return reply(COPY.chatUnavailable, "none", true);
   }
   if (code.startsWith("attachment_") || code.startsWith("pdf_") || code.startsWith("chat_pdf_") || ATTACHMENT_CODES.has(code)) {

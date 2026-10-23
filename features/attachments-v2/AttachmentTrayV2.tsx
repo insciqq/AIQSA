@@ -80,13 +80,11 @@ export function AttachmentTrayV2({
   items,
   onRemove,
   onRetry,
-  sharedProject = false,
   usage
 }: Readonly<{
   items: readonly ComposerAttachmentItemV2[];
   onRemove?(id: string): void;
   onRetry?(id: string): void;
-  sharedProject?: boolean;
   usage?: AttachmentLimitUsage | null;
 }>) {
   const listRef = useRef<HTMLUListElement>(null);
@@ -130,7 +128,7 @@ export function AttachmentTrayV2({
 
   if (items.length === 0) return null;
   const capacity = usage ? attachmentCapacityCopyV2(usage) : null;
-  const privacyNote = sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you.";
+  const privacyNote = "Files are private and visible only to you.";
   const listStyle = listLayout.maxHeightPx === null
     ? undefined
     : {
@@ -159,7 +157,7 @@ export function AttachmentTrayV2({
           title={privacyNote}
         >
           <UiV2Icon name="lock" />
-          <span aria-hidden="true">{sharedProject ? "Project members" : "Only you"}</span>
+          <span aria-hidden="true">Only you</span>
         </p>
       </div>
       <ul

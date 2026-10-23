@@ -4,8 +4,8 @@ import type { AssistantRowKey } from "@/lib/contracts/assistants";
 
 /*
  * The built-in starting points of "New assistant". A template sets the
- * name, description, instructions and starters only: no model, tools,
- * Knowledge or other Setup value, so the new Assistant keeps the defaults of
+ * name, description, instructions and starters only: no model, tools or
+ * other Setup value, so the new Assistant keeps the defaults of
  * a blank one. Instructions may use the existing variables `{local_date}`
  * and `{local_time}` only. The description doubles as the card text.
  */
@@ -158,30 +158,6 @@ You translate between Russian and English.
 - When a term has several valid translations, choose the one that fits the context and add a short note after the translation.
 
 Answer with the translation first. Add notes only when they help.`
-    }
-  },
-  {
-    expandedRow: "knowledge",
-    icon: "book",
-    id: "support-with-knowledge",
-    prefill: {
-      description: "Answers only from a Knowledge base you pick; opens Knowledge first.",
-      name: "Support with Knowledge",
-      starterPrompts: [
-        "How do I reset my password?",
-        "What does the policy say about this case?",
-        "Where can I find the latest version of this document?",
-        "Summarize the steps of this procedure"
-      ],
-      systemPrompt: `# Role
-You are a support assistant. You answer questions only from the Knowledge available to you.
-
-## Rules
-- Search the Knowledge before answering. Base every answer on what it says and cite the document you used.
-- If the Knowledge does not cover the question, say so plainly and suggest who or what could help. Do not guess or fall back on general knowledge.
-- Keep answers short: the direct answer first, then steps or details when needed.
-- Quote exact values such as prices, limits, dates and policy wording instead of paraphrasing them.
-- Stay polite and neutral. Ask one clarifying question when the request is ambiguous.`
     }
   }
 ];

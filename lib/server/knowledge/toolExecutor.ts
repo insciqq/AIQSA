@@ -8,7 +8,6 @@ import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory"
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
 import { logEvent } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
-import { OpenSearchTransportError } from "../search/opensearch/transport";
 import type {
   ModelToolCall,
   RunTool,
@@ -357,7 +356,7 @@ function classifiedSearchUnavailable(error: unknown): Readonly<{
       failureCode: "knowledge_search_projection_unavailable"
     };
   }
-  if (((error instanceof OpenSearchTransportError || error instanceof KnowledgeSearchFailure) &&
+  if ((error instanceof KnowledgeSearchFailure &&
       SEARCH_INFRASTRUCTURE_FAILURE_CODES.has(error.code)) ||
     (error instanceof Error && error.message === "knowledge_search_candidate_revalidation_failed")) {
     return {

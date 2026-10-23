@@ -6,7 +6,6 @@ import type {
   SkillRunMaterialization,
   SkillRunResolver
 } from "./runMaterialization";
-import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 import { ensureSkillShareRequest, skillRevisionSummary, skillShareRequestSummary } from "./shareRequests";
 import { createSkillCatalogRepository } from "./catalogRepository";
 import { decodeSkillImportSource, type SkillImportSource } from "../../contracts/skillSources";
@@ -29,7 +28,6 @@ export type SkillRevisionRow = {
 
 export type SkillAudienceEntry =
   | { id: string; kind: "installation" }
-  | { id: string; kind: "project" }
   | { id: string; kind: "workspace"; name: string; workspaceId: string };
 
 export type SkillListEntry = {
@@ -239,7 +237,6 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         sharedRevision: true,
         preferences: { where: { userId }, select: { enabled: true } },
         owner: { select: { displayName: true } },
-        projectBindings: { select: { id: true } },
         publications: {
           include: { group: { select: { name: true } } },
           where: accessiblePublicationWhere(userId)
@@ -304,7 +301,6 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         preferences: { where: { userId }, select: { enabled: true } },
         shareRequests: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1, include: { revision: { select: { revisionNumber: true } } } },
         owner: { select: { displayName: true } },
-        projectBindings: { select: { id: true } },
         publications: {
           include: {
             group: {
@@ -343,12 +339,6 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         workspaceId: publication.group.id
       }] : [];
     });
-    if (owned) {
-      audiences.push(...definition.projectBindings.map((binding) => ({
-        id: `project:${binding.id}`,
-        kind: "project" as const
-      })));
-    }
     audiences.sort((left, right) => {
       const leftName = left.kind === "workspace" ? left.name : left.kind;
       const rightName = right.kind === "workspace" ? right.name : right.kind;
@@ -477,9 +467,9 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         // Read after the definition lock: an audience committed while this
         // transaction waited must not silently replace the frozen request.
         const { _count: audienceCount } = await tx.skillDefinition.findUniqueOrThrow({
-          where: { id: input.skillId }, select: { _count: { select: { publications: true, projectBindings: true } } }
+          where: { id: input.skillId }, select: { _count: { select: { publications: true } } }
         });
-        const firstAudience = audienceCount.publications + audienceCount.projectBindings === 0;
+        const firstAudience = audienceCount.publications === 0;
         if (input.scope === "group") {
           if (!input.groupId) return { kind: "invalid" as const };
           const memberships = await tx.$queryRaw<Array<{ groupId: string }>>`
@@ -569,37 +559,6 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       return { ok: true as const, skills };
     },
 
-    async resolveForProject(projectId: string, skillIds: readonly string[]) {
-      const bindings = await client.projectSkillBinding.findMany({
-        include: { skill: { include: { sharedRevision: { include: { files: { select: { path: true, byteSize: true, kind: true, executable: true } } } } } } },
-        where: {
-          projectId,
-          skillId: { in: [...skillIds] },
-          skill: { archivedAt: null, sharedRevisionId: { not: null }, deletedAt: null }
-        }
-      });
-      const available = new Map(bindings.flatMap((binding) =>
-        binding.skill.sharedRevision
-          ? [[binding.skillId, binding.skill.sharedRevision] as const]
-          : []));
-      const skills: SkillRunMaterialization[] = [];
-      for (const skillId of skillIds) {
-        const revision = available.get(skillId);
-        if (!revision) return { code: "skill_not_available" as const, ok: false as const, status: 404 as const };
-        skills.push({
-          instructions: revision.instructions,
-          description: revision.description || revision.name,
-          fileCount: revision.fileCount,
-          hasExecutables: revision.hasExecutables,
-          files: revision.files.map((file) => ({ ...file, kind: file.kind === "text" ? "text" : "binary" })),
-          name: revision.name,
-          revisionId: revision.id,
-          skillId
-        });
-      }
-      return { ok: true as const, skills };
-    },
-
     async revise(
       userId: string,
       skillId: string,
@@ -668,16 +627,6 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       skillId: string;
       userId: string;
     }): Promise<SkillRevokePublicationResult> {
-      if (input.publicationId.startsWith("project:")) {
-        const bindingId = input.publicationId.slice("project:".length);
-        if (!bindingId) return "not_found";
-        return await revokeOwnedProjectResourcePublication(client, {
-          bindingId,
-          resourceId: input.skillId,
-          type: "skill",
-          userId: input.userId
-        }) ? "ok" : "not_found";
-      }
       return client.$transaction(async (tx) => {
         const [skill] = await tx.$queryRaw<Array<{
           deletedAt: Date | null;
@@ -745,8 +694,4 @@ export function createPrismaSkillRepository(client: PrismaClient) {
   return repository satisfies SkillRunResolver & typeof repository;
 }
 
-// Keep the Project resolver additive for callers/test doubles that only
-// implement the historical personal Skill repository contract.
-export type PrismaSkillRepository = Omit<ReturnType<typeof createPrismaSkillRepository>, "resolveForProject"> & {
-  resolveForProject?: SkillRunResolver["resolveForProject"];
-};
+export type PrismaSkillRepository = ReturnType<typeof createPrismaSkillRepository>;

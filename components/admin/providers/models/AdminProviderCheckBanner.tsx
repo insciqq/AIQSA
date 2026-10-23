@@ -49,7 +49,7 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, memoryA
 
   if (run?.state === "running") {
     const progress = run.total === 0 ? 0 : Math.round((run.done / run.total) * 100);
-    const title = run.setup?.state === "running" ? "Models checked. Setting up Search, roles and Knowledge…" : run.reason === "requested" || run.reason === "model"
+    const title = run.setup?.state === "running" ? "Models checked. Setting up Search and roles…" : run.reason === "requested" || run.reason === "model"
       ? `Checking what each model can do with key ${keyLabel(run.credentialId)} — ${run.done} of ${run.total} done.`
       : `Key ${keyLabel(run.credentialId)} saved. Checking what each model can do — ${run.done} of ${run.total} done.`;
     return (
@@ -65,7 +65,7 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, memoryA
             <p className="text-sm font-medium text-ink" data-testid="provider-check-progress">{title}</p>
             <p className="mt-0.5 text-xs leading-5 text-ink-muted">
               {run.setup?.state === "running"
-                ? "Uses small verification requests. Existing models, role assignments and Knowledge configurations are kept."
+                ? "Uses small verification requests. Existing models and role assignments are kept."
                 : "Checks supported capabilities, including tools, JSON, PDF, embeddings and reranking. You can leave this page."}
             </p>
             {run.capabilityProgress ? <p className="mt-1 break-words text-xs text-ink-secondary">

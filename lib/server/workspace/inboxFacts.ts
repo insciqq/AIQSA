@@ -1,10 +1,10 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { workspaceAncestorMessageIds, workspaceInboxAttachmentWhere } from "./inboxSelection";
 
 export type WorkspaceInboxFacts = Readonly<{ hasFiles: boolean; hasEarlierExports: boolean }>;
 export type WorkspaceInboxFactsInput = Readonly<{
-  chatId: string; userId: string; projectId?: string; leafMessageId: string | null; imageIds: readonly string[];
+  chatId: string; userId: string; leafMessageId: string | null; imageIds: readonly string[];
 }>;
 
 /** Metadata-only existence checks; never open storage or start a guest. */
@@ -15,9 +15,7 @@ export async function loadWorkspaceInboxFacts(client: PrismaClient, input: Works
       tx.user.findFirst({ where: { id: input.userId, status: "active" }, select: { id: true } })
     ]);
     if (!chat || !actor) return { hasFiles: false, hasEarlierExports: false };
-    const access = await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId,
-      minimumProjectRole: "CONTRIBUTOR", requireMutable: true });
-    if (!access || (access.kind === "project" ? access.project.projectId !== input.projectId : Boolean(input.projectId))) {
+    if (!await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId })) {
       return { hasFiles: false, hasEarlierExports: false };
     }
     const ancestorMessageIds = await workspaceAncestorMessageIds(tx, input.chatId, input.leafMessageId);

@@ -223,7 +223,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
   const bothLimits = kindAtLimit("text") && kindAtLimit("browser_session");
   const autosave = browserAutosave ? workspaceBrowserAutosaveMessage(browserAutosave) : null;
   return <section className="v2-studio-settings-page" aria-label="Secrets" data-testid="workspace-secrets-panel">
-    <SectionHeading description="Available to the model and programs inside your personal Workspace. Shared Projects never receive them."
+    <SectionHeading description="Available to the model and programs inside your personal Workspace."
       action={<><UiV2Button type="button" disabled={busy || loading} icon="regenerate" onClick={() => void refresh()}>Refresh</UiV2Button>
         <UiV2Button type="button" tone="primary" disabled={busy || loading || bothLimits} icon="plus" onClick={() => open(null)} ref={addButton}>Add secret</UiV2Button></>}>Secrets</SectionHeading>
     {bothLimits ? <p className="mt-3 text-xs text-ink-muted">{workspaceSecretErrorMessage("workspace_secret_limit")}</p> : null}

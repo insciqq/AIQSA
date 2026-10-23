@@ -97,7 +97,6 @@ async function requireAvailableTarget(
     FROM "Chat"
     WHERE "id" = ${selection.targetId}
       AND "userId" = ${userId}
-      AND "projectId" IS NULL
       AND "memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
     ${lock}
   `);

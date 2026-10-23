@@ -69,7 +69,7 @@ for (const viewport of [
     // also in the blank chat of a phone on its side.
     await expectWithinViewport(page, send);
     await expect(composer).toHaveValue("Summarize the attached PDF.");
-    expect(previewTargets[0]).toMatchObject({ projectId: null, providerConnectionId: "openai", providerModelId: "gpt-5.5" });
+    expect(previewTargets[0]).toEqual({ providerConnectionId: "openai", providerModelId: "gpt-5.5" });
     await expectNoHorizontalOverflow(page);
     await expectWithinViewport(page, chip);
     // The whole blocked card shows at once: the tray must not clip it, so its

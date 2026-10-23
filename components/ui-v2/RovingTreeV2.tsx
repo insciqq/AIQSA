@@ -29,7 +29,7 @@ function itemLevel(item: HTMLElement): number {
 }
 
 /**
- * Roving keyboard owner for personal and Project chat trees. Rows opt in with
+ * Roving keyboard owner for chat trees. Rows opt in with
  * `data-v2-tree-item="true"`; their adjacent ellipsis opts in with
  * `data-v2-row-menu-trigger="true"` for Shift+F10 / ContextMenu.
  */

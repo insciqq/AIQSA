@@ -1,5 +1,4 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { resolveProjectAccess } from "@/lib/server/projects/access";
 import type {
   AttachmentDownloadRecord,
   AttachmentDownloadRepository
@@ -17,23 +16,12 @@ export function createPrismaAttachmentDownloadRepository(
             fileName: true,
             id: true,
             mimeType: true,
-            projectId: true,
             storageKey: true,
             userId: true
           },
           where: { id: input.attachmentId, status: "ready" }
         });
-        if (!attachment) return null;
-        if (attachment.userId !== null) {
-          if (attachment.userId !== input.userId || attachment.projectId !== null) return null;
-        } else {
-          if (!attachment.projectId) return null;
-          const access = await resolveProjectAccess(tx, {
-            projectId: attachment.projectId,
-            userId: input.userId
-          });
-          if (!access) return null;
-        }
+        if (!attachment || attachment.userId !== input.userId) return null;
         return {
           byteSize: attachment.byteSize,
           fileName: attachment.fileName,

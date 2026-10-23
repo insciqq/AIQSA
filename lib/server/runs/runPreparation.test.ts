@@ -13,15 +13,12 @@ import { IMAGE_EDITING_GUIDANCE } from "../tools/imageGeneration";
 import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { EMPTY_KNOWLEDGE_SELECTION, type KnowledgeSelection } from "../../contracts/knowledge";
+import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { createInstructionPreviewHandlers } from "../instructions/previewHandlers";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
-import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
-import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
-import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -31,7 +28,7 @@ import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabil
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
-import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryContract";
+import type { RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, preparePdfRetry, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
@@ -58,16 +55,6 @@ vi.mock("../observability", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../observability")>();
   return { ...actual, logEvent: vi.fn(actual.logEvent) };
 });
-
-// The disabled areas stay tested as they worked; "while Knowledge is disabled" turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  },
-  PROJECTS_ENABLED: true
-}));
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -102,54 +89,6 @@ const storedUserMessage: ProviderConversationMessage = {
   id: "stored-user-message",
   role: "user"
 };
-
-function knowledgeSelection(baseIds: readonly string[] = []): KnowledgeSelection {
-  return baseIds.length > 0
-    ? { baseIds: [...baseIds], mode: "explicit", sourceIds: [], version: 1 }
-    : { baseIds: [], mode: "none", sourceIds: [], version: 1 };
-}
-
-type KnowledgeAdmissionInput = Parameters<
-  NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
->[0];
-
-function admittedKnowledge(
-  input: KnowledgeAdmissionInput,
-  fingerprintCharacter: string,
-  bindings?: KnowledgeRunAdmissionPlan["bindings"]
-) {
-  const admittedBindings = bindings ?? (input.knowledgePlan.mode === "none"
-    ? []
-    : [{
-        approxTokens: 1_200,
-        baseContentRevision: 1,
-        embeddingCredentialSource: "default" as const,
-        embeddingExecutionSnapshot: {} as never,
-        embeddingProviderModelId: "embedding-model-1",
-        includeWholeBase: true,
-        indexedContentRevision: 1,
-        indexGenerationId: "generation-1",
-        knowledgeBaseId: input.knowledgePlan.baseIds[0] ?? "knowledge-base-1",
-        ordinal: 0,
-        passageCount: 6,
-        readySourceCount: 1,
-        selectedSourceIds: [],
-        sourceCount: 1,
-        targetDimension: 1024 as const,
-        vectorSpaceFingerprint: "a".repeat(64)
-      }]);
-  return {
-    bindings: admittedBindings,
-    budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-    exclusions: [],
-    fingerprint: fingerprintCharacter.repeat(64),
-    knowledgePlan: input.knowledgePlan,
-    resolvedSourceCount: 0,
-    ...(input.executionScope ? { executionScope: input.executionScope } : {}),
-    ...(input.projectId ? { projectId: input.projectId } : {}),
-    userId: input.userId
-  };
-}
 
 function defaultEntitlements(): ResolvedEntitlements {
   return {
@@ -519,7 +458,6 @@ type HarnessOptions = Readonly<{
   capabilities?: ProviderModelCapabilities | null;
   defaultParams?: Readonly<Record<string, unknown>>;
   entitlements?: ResolvedEntitlements;
-  fullContextPassages?: readonly KnowledgeFullContextPassage[] | null;
   mcpPlan?: McpRunPlanResult;
   providerIds?: readonly string[];
   regenerateContext?: readonly ProviderConversationMessage[];
@@ -593,15 +531,7 @@ function createHarness(options: HarnessOptions = {}) {
       calls.push("context:regenerate");
       regenerateContextLoads.push({ chatId, leafMessageId, userId });
       return [...(options.regenerateContext ?? [priorMessage, storedUserMessage])];
-    },
-    ...(Object.hasOwn(options, "fullContextPassages")
-      ? {
-          async loadKnowledgeFullContextPassages() {
-            calls.push("knowledge:full-context");
-            return options.fullContextPassages ?? null;
-          }
-        }
-      : {})
+    }
   };
   const storage = options.storageObjects
     ? {
@@ -817,49 +747,6 @@ function sendInput(
     body,
     source,
     userId: "user-1"
-  };
-}
-
-function firstProjectSendInput(
-  body: Readonly<Record<string, unknown>> | null = successBody(),
-  chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}
-): RunPreparationInput {
-  const input = sendInput(body, chatOverrides);
-  if (input.source.kind !== "send") throw new Error("invalid send fixture");
-  return {
-    ...input,
-    source: { ...input.source, draftProjectChat: true }
-  };
-}
-
-function projectAdmission(
-  overrides: Partial<ProjectRunAdmission> = {}
-): ProjectRunAdmission {
-  return {
-    accessRevision: 2,
-    assistantBindings: [],
-    defaults: {
-      assistantId: null,
-      controlValues: {},
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      mcpMode: "off",
-      providerModelId: "fake-qsa",
-      searchPlan: { mode: "all_selected", optionIds: [] }
-    },
-    instructions: "Use the shared project context.",
-    instructionsRevision: 3,
-    knowledgeBaseIds: [],
-    mcpServerIds: [],
-    memoryEnabled: false,
-    memoryItems: [],
-    memoryRevision: 0,
-    modelIds: ["fake-qsa"],
-    policy: { externalToolsEnabled: true },
-    policyRevision: 4,
-    projectId: "project-1",
-    role: "CONTRIBUTOR",
-    searchOptionIds: [],
-    ...overrides
   };
 }
 
@@ -1083,15 +970,6 @@ describe("run preparation", () => {
       accepted.systemInstructions = "Changed after acceptance";
       expect(result.normalizedRequest.prompt.personalInstructions).toBe("SYNTHETIC_PERSONAL_STYLE");
     }
-  });
-
-  it("never resolves personal presets for shared Projects", async () => {
-    const h = createHarness(); const instructions = { resolveForRun: vi.fn() };
-    const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps, instructions },
-      sendInput(successBody(), { project: projectAdmission() }))));
-    expect(instructions.resolveForRun).not.toHaveBeenCalled();
-    expect(result.normalizedRequest.instructionPreset).toBeUndefined();
-    expect(result.normalizedRequest.prompt.responseReminder).toBe("");
   });
 
   it("replaces default answer rules and freezes rendered macros without disclosing them in previews", async () => {
@@ -1599,283 +1477,6 @@ describe("run preparation", () => {
   });
 
 
-  it("requires a configured default model for the first Project send", async () => {
-    const result = await prepareRun(
-      createHarness().deps,
-      firstProjectSendInput(successBody(), {
-        project: projectAdmission({
-          defaults: { ...projectAdmission().defaults, providerModelId: null }
-        })
-      })
-    );
-
-    expect(result).toMatchObject({
-      code: "project_setup_required",
-      ok: false,
-      status: 409
-    });
-  });
-
-  it("does not let an explicit alternate model bypass an unavailable Project default", async () => {
-    const result = await prepareRun(
-      createHarness().deps,
-      firstProjectSendInput(successBody({
-        modelId: "fake-qsa",
-        provider: "fake"
-      }), {
-        defaultModelId: "unavailable-default",
-        defaultProvider: "unavailable-provider",
-        project: projectAdmission({
-          defaults: {
-            ...projectAdmission().defaults,
-            providerModelId: "unavailable-default"
-          },
-          modelIds: ["unavailable-default", "fake-qsa"]
-        })
-      })
-    );
-
-    expect(result).toMatchObject({
-      code: "project_default_model_unavailable",
-      ok: false,
-      status: 409
-    });
-  });
-
-  it("fails closed when a Project model is not explicitly linked", async () => {
-    const harness = createHarness();
-    const result = await prepareRun(
-      harness.deps,
-      sendInput(successBody(), { project: projectAdmission({ modelIds: [] }) })
-    );
-
-    expect(result).toMatchObject({ code: "provider_not_available", ok: false, status: 403 });
-    expect(harness.calls).toEqual([]);
-  });
-
-  it("rejects personal Search preferences in Project runs before provider admission", async () => {
-    const harness = createHarness();
-    const result = await prepareRun(
-      harness.deps,
-      sendInput(successBody({
-        searchPreferencePlan: { mode: "all_selected", optionIds: [] },
-        searchPreferenceSource: "personal"
-      }), { project: projectAdmission() })
-    );
-
-    expect(result).toMatchObject({ code: "search_preference_invalid", ok: false, status: 400 });
-    expect(harness.calls).toEqual([]);
-  });
-
-  it("applies server-owned Project controls and instructions without Project Memory", async () => {
-    const harness = createHarness();
-    const result = await prepareRun(
-      harness.deps,
-      sendInput(successBody({ params: {} }), {
-        project: projectAdmission({
-          defaults: {
-            ...projectAdmission().defaults,
-            controlValues: { temperature: "0.25" }
-          },
-          memoryEnabled: true,
-          memoryItems: [{
-            factId: "fact-1",
-            factVersionId: "fact-version-1",
-            includedText: "The team deploys on Tuesdays.",
-            ordinal: 0
-          }]
-        })
-      })
-    );
-    const prepared = preparedFrom(result);
-
-    expect(prepared.normalizedRequest.params.temperature).toBe(0.25);
-    expect(prepared.normalizedRequest.prompt.system).toContain(
-      "Project Instructions:\nUse the shared project context."
-    );
-    expect(prepared.normalizedRequest.prompt.system).not.toContain("Project Memory (");
-    expect(prepared.normalizedRequest.prompt.system).not.toContain("The team deploys on Tuesdays.");
-    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toEqual(
-      MEMORY_ACTION_NO_COMMIT_RESULT
-    );
-    expect(prepared.project).toMatchObject({
-      memoryEnabled: false,
-      memoryItems: [],
-      projectId: "project-1"
-    });
-    expect(prepared.defaults).toBeNull();
-  });
-
-  it("appends Project instructions after the rendered Project Assistant prompt", async () => {
-    const harness = createHarness();
-    const instructions = { resolveForRun: vi.fn() };
-    const resolveForProject = vi.fn(async (): Promise<AssistantRunResolution> => ({ ok: true, assistant: {
-      answerRules: "Cite the ticket.", assistantId: "assistant-1", definitionVersion: 1,
-      identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
-        kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-      knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [], name: "Helper", provider: "fake",
-      providerModelId: "fake-qsa", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
-      rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
-        providerModelId: "fake-qsa", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
-      skillIds: [], systemPrompt: "Triage issues filed by {local_date}."
-    } }));
-    const project = projectAdmission({
-      assistantBindings: [{ assistantId: "assistant-1" }],
-      defaults: { ...projectAdmission().defaults, assistantId: "assistant-1" }
-    });
-    const projectContext = assistantRowContextLoader({ defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" } });
-    const prompt = preparedFrom(await prepareRun(
-      {
-        ...harness.deps,
-        assistants: { resolveForRun: vi.fn(), resolveForProject },
-        instructions,
-        repository: {
-          ...harness.deps.repository,
-          loadProjectAssistantRowContext: () => projectContext({ ids: { knowledgeBaseIds: [], knowledgeSourceIds: [], skillIds: [] }, userId: "user-1" })
-        }
-      },
-      sendInput({ content: textMessageContent("Next issue"), timeZone: "Europe/Berlin" }, { assistantId: "assistant-1", project })
-    )).normalizedRequest.prompt;
-
-    expect(resolveForProject).toHaveBeenCalledWith("project-1", "assistant-1");
-    expect(instructions.resolveForRun).not.toHaveBeenCalled();
-    expect(prompt.baseline).toEqual({ source: "assistant_chat", timeZone: "Europe/Berlin", timeZoneSource: "client" });
-    expect(prompt.system).toMatch(new RegExp(
-      "^Today is .+, local time is .+\\.\\n\\nTriage issues filed by [A-Z][a-z]+ \\d{1,2}, \\d{4}\\." +
-      "\\n\\nProject Instructions:\\nUse the shared project context\\.$", "u"
-    ));
-    expect(prompt.developer).toBe("Cite the ticket.");
-    expect(prompt.personalInstructions).toBeUndefined();
-  });
-
-  it("keeps Project Knowledge scope while requiring a client Search coexistence route", async () => {
-    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
-      "gemini_interactions_native"
-    );
-    const admissionLoad = vi.fn(async (input: {
-      executionScope?: "project";
-      requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? client : hosted);
-    const knowledgeLoad = vi.fn<
-      NonNullable<RunPreparationDeps["knowledgeAdmission"]>["load"]
-    >(async (input) => admittedKnowledge(input, "c"));
-    const result = await prepareRun(
-      {
-        ...createHarness().deps,
-        allowFakeProvider: false,
-        knowledgeAdmission: { load: knowledgeLoad },
-        providerAdmission: { load: admissionLoad }
-      },
-      sendInput(successBody({
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        modelId: hosted.selection.providerModelId,
-        params: {},
-        provider: hosted.selection.providerConnectionId,
-        searchPlan: { mode: "model_choice", optionIds: [optionId] }
-      }), {
-        project: projectAdmission({
-          defaults: {
-            ...projectAdmission().defaults,
-            knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-            providerModelId: hosted.selection.providerModelId,
-            searchPlan: { mode: "model_choice", optionIds: [optionId] }
-          },
-          knowledgeBaseIds: ["knowledge-base-1"],
-          modelIds: [hosted.selection.providerModelId],
-          searchOptionIds: [optionId]
-        })
-      })
-    );
-
-    expect(result.ok).toBe(true);
-    expect(admissionLoad).toHaveBeenCalledOnce();
-    expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
-      executionScope: "project"
-    }));
-    expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({
-      requiresClientToolCoexistence: true
-    });
-    expect(knowledgeLoad).toHaveBeenCalledWith(expect.objectContaining({
-      executionScope: "project",
-      projectId: "project-1"
-    }));
-  });
-
-  it("admits exact shared Project MCP bindings", async () => {
-    const harness = createHarness({
-      capabilities: { ...baseCapabilities, toolCalling: true },
-      mcpPlan: readyMcpPlan(["shared"])
-    });
-    const project = projectAdmission({
-      defaults: {
-        ...projectAdmission().defaults,
-        mcpMode: "load_all",
-        providerModelId: "openai-tool-model"
-      },
-      mcpServerIds: ["server-1"],
-      modelIds: ["openai-tool-model"]
-    });
-    const prepared = preparedFrom(await prepareRun(
-      harness.deps,
-      sendInput(successBody({
-        modelId: "openai-tool-model",
-        params: { background: false },
-        provider: "openai",
-        tools: "auto"
-      }), { project })
-    ));
-
-    expect(harness.mcpPrepareCalls).toEqual([{
-      allowedServerIds: ["server-1"],
-      userId: "user-1"
-    }]);
-    expect(prepared.mcpBindings).toEqual([{
-      fingerprint: "fingerprint-1",
-      runtimeGenerationId: "generation-1",
-      serverId: "server-1"
-    }]);
-  });
-
-  it("uses project_mcp_not_configured only when shared Project MCP integration is absent", async () => {
-    const result = await prepareRun(
-      createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } }).deps,
-      sendInput(successBody({ tools: "auto" }), {
-        project: projectAdmission({
-          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
-          mcpServerIds: ["server-1"]
-        })
-      })
-    );
-
-    expect(result).toMatchObject({
-      code: "project_mcp_not_configured",
-      ok: false,
-      status: 503
-    });
-  });
-
-  it("reports a configured but unrunnable Project MCP generation as mcp_not_ready", async () => {
-    const mcpPlan: McpRunPlanResult = {
-      code: "mcp_not_ready",
-      issues: [{ errorCode: "runtime_unavailable", name: "Team tools", readiness: "unavailable" }],
-      ok: false
-    };
-    const result = await prepareRun(
-      createHarness({
-        capabilities: { ...baseCapabilities, toolCalling: true },
-        mcpPlan
-      }).deps,
-      sendInput(successBody({ tools: "auto" }), {
-        project: projectAdmission({
-          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
-          mcpServerIds: ["server-1"]
-        })
-      })
-    );
-
-    expect(result).toMatchObject({ code: "mcp_not_ready", ok: false, status: 409 });
-  });
-
   it("points a Load all message to the personal value its MCP server rejected", async () => {
     const prepare = (issues: Extract<McpRunPlanResult, { ok: false }>["issues"]) => prepareRun(
       createHarness({
@@ -1894,75 +1495,6 @@ describe("run preparation", () => {
     });
     await expect(prepare([{ errorCode: "mcp_connect_failed", name: "Kaiten", readiness: "unavailable" }]))
       .resolves.toMatchObject({ code: "mcp_not_ready", message: "MCP tools are not ready: Kaiten.", status: 409 });
-  });
-
-  it("rejects personal or OAuth MCP credentials in Project chats", async () => {
-    const harness = createHarness({ mcpPlan: readyMcpPlan(["oauth"]) });
-    const result = await prepareRun(
-      harness.deps,
-      sendInput(successBody({ params: {} }), {
-        project: projectAdmission({
-          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
-          mcpServerIds: ["server-1"]
-        })
-      })
-    );
-
-    expect(result).toMatchObject({
-      code: "project_mcp_personal_credentials_forbidden",
-      ok: false,
-      status: 403
-    });
-  });
-
-  it("keeps an unavailable personal Project MCP generation distinct from readiness", async () => {
-    const result = await prepareRun(
-      createHarness({
-        capabilities: { ...baseCapabilities, toolCalling: true },
-        mcpPlan: {
-          code: "mcp_not_ready",
-          issues: [{
-            errorCode: "mcp_project_credentials_unavailable",
-            name: "Personal-only tools",
-            readiness: "unavailable"
-          }],
-          ok: false
-        }
-      }).deps,
-      sendInput(successBody({ tools: "auto" }), {
-        project: projectAdmission({
-          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
-          mcpServerIds: ["server-1"]
-        })
-      })
-    );
-
-    expect(result).toMatchObject({
-      code: "project_mcp_personal_credentials_forbidden",
-      ok: false,
-      status: 403
-    });
-  });
-
-  it("enforces the Project external-tools policy", async () => {
-    const harness = createHarness({ mcpPlan: readyMcpPlan(["shared"]) });
-    const result = await prepareRun(
-      harness.deps,
-      sendInput(successBody({ params: {} }), {
-        project: projectAdmission({
-          defaults: { ...projectAdmission().defaults, mcpMode: "load_all" },
-          mcpServerIds: ["server-1"],
-          policy: { externalToolsEnabled: false }
-        })
-      })
-    );
-
-    expect(result).toMatchObject({
-      code: "project_external_tools_disabled",
-      ok: false,
-      status: 403
-    });
-    expect(harness.mcpPrepareCalls).toEqual([]);
   });
 
   it("freezes the installation tool budgets, without retired router allowances, into the accepted request", async () => {
@@ -2226,20 +1758,6 @@ describe("run preparation", () => {
     expect(await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, {
       ...sendInput(successBody({ skillIds: ["p"] })), skillCatalogDecision: { operationKey: "changed-admission", authorizeScope }
     })).toMatchObject({ ok: false, code: "skill_not_available", status: 404 });
-  });
-
-  it("rejects an unavailable required Project Skill before optional relevance can hide it", async () => {
-    const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const relevance = vi.fn<NonNullable<RunPreparationDeps["skillCatalogRelevance"]>>(async () => []);
-    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [] })),
-      resolveForProject: vi.fn(async () => ({ ok: false as const, code: "skill_not_available" as const, status: 404 as const })) };
-    const result = await prepareRun({ ...h.deps, skills, skillCatalogRelevance: relevance }, {
-      ...sendInput(successBody(), { project: projectAdmission({ skillIds: ["required"] }) }),
-      skillCatalogDecision: { operationKey: "project-admission", authorizeScope: async () => undefined }
-    });
-    expect(result).toMatchObject({ ok: false, code: "skill_not_available" });
-    expect(relevance).not.toHaveBeenCalled();
-    expect(skills.resolveForRun).not.toHaveBeenCalled();
   });
 
   it("fails before snapshotting unsupported Buffer data without mutating it", async () => {
@@ -3001,22 +2519,13 @@ describe("run preparation", () => {
       }))));
       expect(other.normalizedRequest.prompt.system).not.toContain(hint);
     }
-    const project = projectAdmission({
-      defaults: { ...projectAdmission().defaults, mcpMode: "auto", providerModelId: "openai-tool-model" },
-      modelIds: ["openai-tool-model"]
-    });
-    const projectRun = preparedFrom(await prepareRun(deps, sendInput(successBody({
-      modelId: "openai-tool-model", params: { background: false }, provider: "openai", tools: "auto"
-    }), { project })));
-    expect(projectRun.normalizedRequest.prompt.system).not.toContain(hint);
     const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
       async resolveForRun() {
         return { ok: true as const, assistant: {
-          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
-          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+          assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -3316,824 +2825,6 @@ describe("run preparation", () => {
       userId: "user-1"
     }]);
   });
-
-  it("keeps the final coexistence answer binding for Knowledge plus Search", async () => {
-    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
-      "gemini_interactions_native"
-    );
-    const finalModelId = "gemini-3.6-flash-final-binding";
-    const finalCapabilities = {
-      ...client.answer.modelConfiguration.capabilities,
-      contextWindow: 65_536
-    };
-    const finalAnswer: ProviderAdmissionPlan["answer"] = {
-      ...client.answer,
-      modelConfiguration: {
-        ...client.answer.modelConfiguration,
-        capabilities: finalCapabilities
-      },
-      snapshot: {
-        ...client.answer.snapshot,
-        credentialVersionId: "credential-version-gemini-final",
-        model: {
-          ...client.answer.snapshot.model,
-          capabilities: finalCapabilities,
-          upstreamModelId: finalModelId
-        }
-      }
-    };
-    const finalClient: ProviderAdmissionPlan = {
-      ...client,
-      answer: finalAnswer,
-      fingerprint: "9".repeat(64),
-      searches: client.searches?.map((candidate) => ({
-        ...candidate,
-        ...(candidate.role ? { role: finalAnswer } : {})
-      }))
-    };
-    const admissionLoad = vi.fn(async (input: {
-      requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? finalClient : hosted);
-    const harness = createHarness();
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        allowFakeProvider: false,
-        knowledgeAdmission: {
-          async load(input) {
-            return admittedKnowledge(input, "8");
-          }
-        },
-        providerAdmission: { load: admissionLoad }
-      },
-      sendInput(successBody({
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        modelId: hosted.selection.providerModelId,
-        params: {},
-        provider: hosted.selection.providerConnectionId,
-        searchPlan: { mode: "model_choice", optionIds: [optionId] }
-      }))
-    );
-
-    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-    const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledOnce();
-    expect(prepared.providerAdmissionPlan).toEqual(finalClient);
-    expect(prepared.normalizedRequest).toMatchObject({
-      modelCapabilities: {
-        contextWindow: 65_536
-      },
-      modelId: finalModelId,
-      provider: "gemini"
-    });
-    expect(prepared.normalizedRequest.searchPlan.options).toEqual([
-      expect.objectContaining({ adapterKind: "provider_model_client", optionId })
-    ]);
-    expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-    expect(prepared.normalizedRequest.toolMode).toBe("auto");
-    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-      "search_knowledge",
-      "search_engine_1"
-    ]);
-    expect(result.toolBridge?.provider).toBe("gemini");
-  });
-
-  it.each([
-    {
-      adapterKind: "gemini_interactions_native" as const,
-      hostedPreviewMarker: '"google_search"',
-      provider: "gemini",
-      protocol: "gemini_google_search"
-    },
-    {
-      adapterKind: "anthropic_messages" as const,
-      hostedPreviewMarker: '"web_search_20250305"',
-      provider: "anthropic",
-      protocol: "anthropic_web_search"
-    }
-  ])(
-    "composes Knowledge with client-routed $provider Search",
-    async ({ adapterKind, hostedPreviewMarker }) => {
-      const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
-      const admissionLoad = vi.fn(async (input: {
-        requiresClientToolCoexistence?: boolean;
-      }) => input.requiresClientToolCoexistence ? client : hosted);
-      const knowledgeLoad = vi.fn(async (input: KnowledgeAdmissionInput) =>
-        admittedKnowledge(input, "c"));
-      const harness = createHarness();
-      const result = await prepareRun(
-        {
-          ...harness.deps,
-          allowFakeProvider: false,
-          knowledgeAdmission: { load: knowledgeLoad },
-          providerAdmission: { load: admissionLoad }
-        },
-        sendInput(successBody({
-          knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-          modelId: hosted.selection.providerModelId,
-          params: {},
-          provider: hosted.selection.providerConnectionId,
-          searchPlan: { mode: "model_choice", optionIds: [optionId] }
-        }))
-      );
-
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-      const prepared = materializePreparedRunData(result.prepared);
-      expect(admissionLoad).toHaveBeenCalledOnce();
-      expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({
-        requiresClientToolCoexistence: true
-      });
-      expect(knowledgeLoad).toHaveBeenCalledWith({
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        userId: "user-1"
-      });
-      expect(prepared.normalizedRequest.searchPlan).toMatchObject({
-        mode: "model_choice",
-        options: [expect.objectContaining({ adapterKind: "provider_model_client", optionId })]
-      });
-      expect(prepared.providerAdmissionPlan).toEqual(client);
-      expect(prepared.normalizedRequest).not.toHaveProperty("mcp");
-      expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
-      expect(prepared.normalizedRequest).not.toHaveProperty("memoryHistoryTool");
-      expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-      expect(prepared.normalizedRequest.toolMode).toBe("auto");
-      expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-        "search_knowledge",
-        "search_engine_1"
-      ]);
-      expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain(
-        hostedPreviewMarker
-      );
-      expect(prepared.defaults?.searchPlan).toEqual({
-        mode: "model_choice",
-        optionIds: [optionId]
-      });
-    }
-  );
-
-  it("fails selected Knowledge pre-provider when the answer model lacks tool calling", async () => {
-    const harness = createHarness({
-      capabilities: { ...baseCapabilities, contextWindow: 16_000, toolCalling: false }
-    });
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        knowledgeAdmission: {
-          async load(input) {
-            return admittedKnowledge(input, "b", [{
-                approxTokens: 1_200,
-                baseContentRevision: 1,
-                embeddingCredentialSource: "default" as const,
-                embeddingExecutionSnapshot: {} as never,
-                embeddingProviderModelId: "embedding-model-1",
-                includeWholeBase: true,
-                indexedContentRevision: 1,
-                indexGenerationId: "generation-1",
-                knowledgeBaseId: "knowledge-base-1",
-                ordinal: 0,
-                passageCount: 6,
-                readySourceCount: 1,
-                selectedSourceIds: [],
-                sourceCount: 1,
-                targetDimension: 1024,
-                vectorSpaceFingerprint: "a".repeat(64)
-              }]);
-          }
-        }
-      },
-      sendInput(successBody({
-        content: textMessageContent("Summarize this source"),
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"])
-      }))
-    );
-
-    expect(result).toMatchObject({
-      code: "knowledge_tool_calling_not_supported",
-      ok: false,
-      status: 400
-    });
-  });
-
-  it("uses the complete small corpus alongside MCP Auto without a Knowledge tool call", async () => {
-    const sourceId = "00000000-0000-4000-8000-000000000011";
-    const sourceVersionId = "00000000-0000-4000-8000-000000000012";
-    const sourceArtifactId = "00000000-0000-4000-8000-000000000013";
-    const harness = createHarness({
-      capabilities: { ...baseCapabilities, contextWindow: 16_000, toolCalling: true },
-      fullContextPassages: [{
-        baseName: "Health",
-        contentHash: "d".repeat(64),
-        documentContext: null,
-        headingPath: ["Lipid panel"],
-        page: 1,
-        pageEnd: 1,
-        passageId: "passage-1",
-        passageOrdinal: 0,
-        sectionId: "section-1",
-        sourceArtifactId,
-        sourceId,
-        sourceOrdinal: 0,
-        sourceVersionId,
-        sourceVersionNumber: 1,
-        text: "Total cholesterol 5.3 mmol/L",
-        tokenCount: 8
-      }]
-    });
-    const catalog = vi.fn(async () => ({
-      servers: [{
-        description: "Issue tracking",
-        namespace: "jira",
-        revisionId: "revision-jira",
-        serverId: "server-jira",
-        serverName: "Jira",
-        tools: [{
-          description: "Create an issue",
-          namespacedName: "mcp_jira_create_issue_1",
-          originalName: "create_issue"
-        }]
-      }],
-      version: 1 as const
-    }));
-    const prepareMcp = vi.fn(async () => readyMcpPlan());
-    const prepared = preparedFrom(await prepareRun(
-      {
-        ...harness.deps,
-        mcp: { filterTools: allowMcpTools, catalog, prepare: prepareMcp },
-        knowledgeAdmission: {
-          async load(input) {
-            return {
-              ...admittedKnowledge(input, "e"),
-              answerPolicy: {
-                fullContextThresholdBasisPoints: 7_000 as const,
-                maximumKnowledgeSearches: 12,
-                revision: 1,
-                version: 1 as const
-              },
-              profiles: [{
-                embeddingCredentialSource: "default" as const,
-                embeddingExecutionSnapshot: {} as never,
-                embeddingProviderModelId: "embedding-model-1",
-                ordinal: 0,
-                profileRevisionId: "profile-revision-1",
-                targetDimension: 1_024,
-                vectorSpaceFingerprint: "a".repeat(64)
-              }],
-              resolvedSourceCount: 1,
-              sources: [{
-                approxTokens: 8,
-                authority: {
-                  knowledgeBaseIds: ["knowledge-base-1"],
-                  owner: true,
-                  projectId: null
-                },
-                baseProvenance: [{
-                  indexGenerationId: "generation-1",
-                  knowledgeBaseId: "knowledge-base-1"
-                }],
-                directSelected: false,
-                ordinal: 0,
-                passageCount: 1,
-                privateLabels: { fileName: "lipids.pdf", sourceName: "Lipids" },
-                profileOrdinal: 0,
-                profileRevisionId: "profile-revision-1",
-                selectionProvenance: ["base" as const],
-                sourceAlias: "S1",
-                sourceArtifactId,
-                sourceId,
-                sourceVersionId,
-                sourceVersionNumber: 1
-              }]
-            };
-          }
-        }
-      },
-      sendInput(successBody({
-        content: textMessageContent("What is my cholesterol?"),
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        modelId: "openai-tool-model",
-        provider: "openai"
-      }))
-    ));
-
-    expect(harness.calls).toContain("knowledge:full-context");
-    expect(prepared.normalizedRequest.knowledgeAnswering).toMatchObject({
-      evidenceCount: 1,
-      route: "full_context_v1"
-    });
-    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual(["find_tools"]);
-    expect(catalog).toHaveBeenCalledWith("user-1");
-    expect(prepareMcp).not.toHaveBeenCalled();
-    expect(prepared.providerRequest.context?.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "knowledge-evidence:v2", purpose: "knowledge_evidence" })
-    ]));
-    expect(prepared.providerRequest.toolChoice).toBeUndefined();
-    expect(prepared.providerRequest).not.toHaveProperty("forcedToolName");
-    expect(prepared.knowledgeAdmissionPlan?.answeringPlan?.route).toBe("full_context_v1");
-  });
-
-  it("does not double-count one canonical Source selected through a Base and directly", async () => {
-    const sourceId = "00000000-0000-4000-8000-000000000001";
-    const selection: KnowledgeSelection = {
-      baseIds: ["knowledge-base-1"],
-      mode: "explicit",
-      sourceIds: [sourceId],
-      version: 1
-    };
-    const harness = createHarness({
-      capabilities: { ...baseCapabilities, toolCalling: true }
-    });
-    const prepared = preparedFrom(await prepareRun(
-      {
-        ...harness.deps,
-        knowledgeAdmission: {
-          async load(input) {
-            return {
-              ...admittedKnowledge(input, "9"),
-              profiles: [{
-                embeddingCredentialSource: "default" as const,
-                embeddingExecutionSnapshot: {} as never,
-                embeddingProviderModelId: "embedding-model-1",
-                ordinal: 0,
-                profileRevisionId: "profile-revision-1",
-                targetDimension: 1024,
-                vectorSpaceFingerprint: "a".repeat(64)
-              }],
-              resolvedSourceCount: 1,
-              sources: [{
-                approxTokens: 1_200,
-                authority: {
-                  knowledgeBaseIds: ["knowledge-base-1"],
-                  owner: true,
-                  projectId: null
-                },
-                baseProvenance: [{
-                  indexGenerationId: "generation-1",
-                  knowledgeBaseId: "knowledge-base-1"
-                }],
-                directSelected: true,
-                ordinal: 0,
-                passageCount: 6,
-                privateLabels: { fileName: "source-1.md", sourceName: "Source 1" },
-                profileOrdinal: 0,
-                profileRevisionId: "profile-revision-1",
-                selectionProvenance: ["base" as const, "explicit_source" as const],
-                sourceAlias: "S1",
-                sourceArtifactId: "artifact-1",
-                sourceId,
-                sourceVersionId: "source-version-1",
-                sourceVersionNumber: 1
-              }]
-            };
-          }
-        }
-      },
-      sendInput(successBody({
-        content: textMessageContent("Summarize this source"),
-        knowledgePlan: selection,
-        modelId: "openai-tool-model",
-        provider: "openai"
-      }))
-    ));
-
-    expect(prepared.normalizedRequest.knowledgePlan).toEqual(selection);
-    expect(prepared.normalizedRequest.knowledgeEvidencePackingVersion).toBe(5);
-    expect(prepared.providerRequest.knowledgeEvidencePackingVersion).toBe(5);
-    expect(prepared.normalizedRequest.knowledgeAnswerWorkflowVersion).toBe(11);
-    expect(prepared.providerRequest.knowledgeAnswerWorkflowVersion).toBe(11);
-    expect(prepared.normalizedRequest.knowledgeReviewRepairFeedbackVersion).toBe(1);
-    expect(prepared.providerRequest.knowledgeReviewRepairFeedbackVersion).toBe(1);
-    expect(prepared.normalizedRequest.knowledgeSearchInstructionVersion).toBe(3);
-    expect(prepared.providerRequest.knowledgeSearchInstructionVersion).toBe(3);
-    expect(prepared.normalizedRequest.knowledgeQueryAnchorVersion).toBe(2);
-    expect(prepared.providerRequest.knowledgeQueryAnchorVersion).toBe(2);
-    expect(prepared.knowledgeAdmissionPlan?.sources).toEqual([
-      expect.objectContaining({
-        directSelected: true,
-        selectionProvenance: ["base", "explicit_source"],
-        sourceId
-      })
-    ]);
-    expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toContain(
-      "search_knowledge"
-    );
-    expect(prepared.providerRequest.toolChoice).toBe("required");
-    expect(prepared.providerRequest.forcedToolName).toBe("search_knowledge");
-    expect(prepared.normalizedRequest).not.toHaveProperty("forcedToolName");
-  });
-
-  it("does not synthesize a hidden Knowledge query from conversation history", async () => {
-    const harness = createHarness({
-      capabilities: { ...baseCapabilities, toolCalling: true },
-      sendContext: [
-        {
-          content: textMessageContent("Older user question"),
-          id: "older-user-message",
-          role: "user"
-        },
-        {
-          content: textMessageContent("Assistant response"),
-          id: "assistant-message",
-          role: "assistant"
-        },
-        {
-          content: textMessageContent("Nearest user question"),
-          id: "nearest-user-message",
-          role: "user"
-        },
-        {
-          content: textMessageContent("Most recent assistant response"),
-          id: "recent-assistant-message",
-          role: "assistant"
-        }
-      ]
-    });
-    const prepared = preparedFrom(await prepareRun(
-      {
-        ...harness.deps,
-        knowledgeAdmission: {
-          async load(input) {
-            return admittedKnowledge(input, "c");
-          }
-        }
-      },
-      sendInput(successBody({
-        content: textMessageContent("What is the retention policy?"),
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        modelId: "openai-tool-model",
-        provider: "openai"
-      }))
-    ));
-
-    expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-    expect(prepared.normalizedRequest.context?.messages.map((message) => message.id)).toEqual([
-      "older-user-message",
-      "assistant-message",
-      "nearest-user-message",
-      "recent-assistant-message",
-      "current-user-message"
-    ]);
-  });
-
-  it("returns a terminal readiness state before provider preparation when no Source is ready", async () => {
-    const harness = createHarness();
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        knowledgeAdmission: {
-          async load(input) {
-            const admitted = admittedKnowledge(input, "7");
-            return {
-              ...admitted,
-              bindings: admitted.bindings.map((binding) => ({
-                ...binding,
-                approxTokens: null,
-                passageCount: null,
-                readySourceCount: 0,
-                sourceCount: 1
-              })),
-              exclusions: [{ count: 1, reason: "not_ready" as const, resourceType: "source" as const }],
-              profiles: [],
-              sources: []
-            };
-          }
-        }
-      },
-      sendInput(successBody({
-        content: textMessageContent("What is the retention policy?"),
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"])
-      }))
-    );
-
-    expect(result).toMatchObject({
-      code: "sources_processing",
-      message: "Selected Knowledge documents are still processing.",
-      ok: false,
-      status: 409
-    });
-    expect(harness.calls).not.toContain("entitlements");
-    expect(harness.calls).not.toContain("capabilities");
-    expect(harness.calls).not.toContain("context:send");
-  });
-
-  it("treats an empty All my knowledge scope as Knowledge Off", async () => {
-    const harness = createHarness();
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        knowledgeAdmission: {
-          async load(input) {
-            const admitted = admittedKnowledge(input, "empty");
-            return {
-              ...admitted,
-              bindings: [],
-              exclusions: [],
-              profiles: [],
-              resolvedSourceCount: 0,
-              sources: []
-            };
-          }
-        }
-      },
-      sendInput(successBody({
-        content: textMessageContent("What is new today?"),
-        knowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 }
-      }))
-    );
-
-    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-    const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
-    expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
-    expect(prepared.providerRequest.tools?.some((tool) => tool.name === "search_knowledge") ?? false).toBe(false);
-  });
-
-  describe("while Knowledge is disabled", () => {
-    it.each([
-      ["All my knowledge", { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 }],
-      ["an explicit base", { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 }]
-    ] as const)("refuses a request that selects %s, visibly and before any Knowledge read", async (_name, knowledgePlan) => {
-      areas.knowledge = false;
-      try {
-        const load = vi.fn();
-        const harness = createHarness();
-        const result = await prepareRun(
-          { ...harness.deps, knowledgeAdmission: { load } },
-          sendInput(successBody({ knowledgePlan }))
-        );
-
-        expect(result).toMatchObject({ code: "knowledge_disabled", ok: false, status: 409 });
-        expect(load).not.toHaveBeenCalled();
-      } finally {
-        areas.knowledge = true;
-      }
-    });
-
-    it("answers without a chat's or folder's saved Knowledge default, which stays stored", async () => {
-      areas.knowledge = false;
-      try {
-        const load = vi.fn();
-        const harness = createHarness();
-        const result = await prepareRun(
-          { ...harness.deps, knowledgeAdmission: { load } },
-          sendInput(successBody({ content: textMessageContent("What changed?") }), {
-            defaultKnowledgePlan: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 },
-            folderDefaultKnowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 }
-          })
-        );
-
-        if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-        const prepared = materializePreparedRunData(result.prepared);
-        expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
-        expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
-        expect(load).not.toHaveBeenCalled();
-      } finally {
-        areas.knowledge = true;
-      }
-    });
-  });
-
-  it("composes Knowledge, Search, and MCP without reintroducing Memory tools", async () => {
-    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
-      "gemini_interactions_native"
-    );
-    const admissionLoad = vi.fn(async (input: {
-      requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? client : hosted);
-    const harness = createHarness({ mcpPlan: readyMcpPlan() });
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        allowFakeProvider: false,
-        knowledgeAdmission: {
-          async load(input) {
-            return admittedKnowledge(input, "f");
-          }
-        },
-        providerAdmission: { load: admissionLoad }
-      },
-      sendInput(successBody({
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        mcp: { mode: "load_all" },
-        modelId: hosted.selection.providerModelId,
-        params: {},
-        provider: hosted.selection.providerConnectionId,
-        searchPlan: { mode: "model_choice", optionIds: [optionId] }
-      }))
-    );
-
-    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-    const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledOnce();
-    expect(prepared.normalizedRequest.searchPlan.options).toEqual([
-      expect.objectContaining({ adapterKind: "provider_model_client", optionId })
-    ]);
-    expect(prepared.normalizedRequest.mcp?.tools).toHaveLength(1);
-    expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
-    expect(prepared.normalizedRequest).not.toHaveProperty("memoryHistoryTool");
-    expect(prepared.normalizedRequest.toolMode).toBe("auto");
-    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-      "search_knowledge",
-      "search_engine_1",
-      "mcp_team_lookup_1"
-    ]);
-    expect(harness.mcpPrepareCalls).toEqual([{ allowedServerIds: undefined, userId: "user-1" }]);
-  });
-
-  it("validates Search and MCP selections even when Knowledge is selected", async () => {
-    const harness = createHarness({ mcpPlan: readyMcpPlan() });
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        knowledgeAdmission: {
-          async load(input) {
-            return admittedKnowledge(input, "d");
-          }
-        }
-      },
-      sendInput(successBody({
-        knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-        mcp: { mode: "retired-selection" } as never,
-        searchPlan: { mode: "retired-selection", optionIds: ["stale"] } as never
-      }))
-    );
-
-    expect(result).toMatchObject({ code: "search_plan_invalid", ok: false, status: 400 });
-    expect(harness.mcpPrepareCalls).toEqual([]);
-  });
-
-  it("composes Assistant-owned Knowledge with the Assistant Search plan", async () => {
-    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
-      "anthropic_messages"
-    );
-    const admissionLoad = vi.fn(async (input: {
-      requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? client : hosted);
-    const harness = createHarness();
-    const result = await prepareRun(
-      {
-        ...harness.deps,
-        allowFakeProvider: false,
-        assistants: {
-          async resolveForRun() {
-            return {
-              assistant: {
-                assistantId: "assistant-1",
-                knowledgeSelection: knowledgeSelection(["knowledge-base-1"]),
-                mcpServerIds: [],
-                name: "Knowledge Assistant",
-                provider: hosted.selection.providerConnectionId,
-                providerModelId: hosted.selection.providerModelId,
-                definitionVersion: 1,
-                identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-                rows: assistantRowsFromLegacyFields({
-                  knowledgeSelection: knowledgeSelection(["knowledge-base-1"]), mcpServerIds: [],
-                  providerModelId: hosted.selection.providerModelId, runControls: { maxOutputTokens: 512 },
-                  searchPlan: { mode: "model_choice", optionIds: [optionId] }, skillIds: []
-                }),
-                runControls: { maxOutputTokens: 512 },
-                searchPlan: { mode: "model_choice" as const, optionIds: [optionId] },
-                skillIds: [],
-                systemPrompt: "Answer from admitted evidence."
-              },
-              ok: true as const
-            };
-          }
-        },
-        repository: {
-          ...harness.deps.repository,
-          loadAssistantRowContext: assistantRowContextLoader({
-            defaultModelId: hosted.selection.providerModelId,
-            models: { [hosted.selection.providerModelId]: hosted.selection.providerConnectionId }
-          })
-        },
-        knowledgeAdmission: {
-          async load(input) {
-            return admittedKnowledge(input, "1");
-          }
-        },
-        providerAdmission: { load: admissionLoad }
-      },
-      sendInput({
-        assistantId: "assistant-1",
-        content: textMessageContent("Use my Knowledge"),
-        timeZone: "Europe/Berlin"
-      })
-    );
-
-    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-    const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledOnce();
-    expect(prepared.assistant).toEqual({
-      assistantId: "assistant-1",
-      definitionVersion: 1,
-      identity: { name: "Knowledge Assistant", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-      rows: { controls: "assistant", knowledge: "assistant", model: "assistant", search: "assistant", skills: "assistant", tools: "assistant" }
-    });
-    expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-    expect(prepared.normalizedRequest.searchPlan.options).toEqual([
-      expect.objectContaining({ adapterKind: "provider_model_client", optionId })
-    ]);
-    expect(prepared.normalizedRequest.toolMode).toBe("auto");
-    expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-      "search_knowledge",
-      "search_engine_1"
-    ]);
-  });
-
-  it.each([
-    "gemini_interactions_native" as const,
-    "anthropic_messages" as const
-  ])(
-    "fails $0 Knowledge plus Search when no coexistence route exists",
-    async (adapterKind) => {
-      const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
-      const admissionLoad = vi.fn(async (input: {
-        requiresClientToolCoexistence?: boolean;
-      }) => {
-        if (input.requiresClientToolCoexistence) {
-          throw new ProviderAdmissionError("search_strategy_not_available");
-        }
-        return hosted;
-      });
-      const harness = createHarness();
-      const result = await prepareRun(
-        {
-          ...harness.deps,
-          allowFakeProvider: false,
-          knowledgeAdmission: {
-            async load(input) {
-              return admittedKnowledge(input, "d");
-            }
-          },
-          providerAdmission: { load: admissionLoad }
-        },
-        sendInput(successBody({
-          knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-          modelId: hosted.selection.providerModelId,
-          params: {},
-          provider: hosted.selection.providerConnectionId,
-          searchPlan: { mode: "model_choice", optionIds: [optionId] }
-        }))
-      );
-
-      expect(admissionLoad).toHaveBeenCalledOnce();
-      expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({
-        requiresClientToolCoexistence: true
-      });
-      expect(result).toMatchObject({
-        code: "search_strategy_not_available",
-        ok: false
-      });
-    }
-  );
-
-  it.each([
-    "gemini_interactions_native" as const,
-    "anthropic_messages" as const
-  ])(
-    "keeps Knowledge and $0 Search active when ordinary tools are none",
-    async (adapterKind) => {
-      const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
-      const admissionLoad = vi.fn(async (input: {
-        requiresClientToolCoexistence?: boolean;
-      }) => input.requiresClientToolCoexistence ? client : hosted);
-      const harness = createHarness();
-      const result = await prepareRun(
-        {
-          ...harness.deps,
-          allowFakeProvider: false,
-          knowledgeAdmission: {
-            async load(input) {
-              return admittedKnowledge(input, "e");
-            }
-          },
-          providerAdmission: { load: admissionLoad }
-        },
-        sendInput(successBody({
-          knowledgePlan: knowledgeSelection(["knowledge-base-1"]),
-          modelId: hosted.selection.providerModelId,
-          params: {},
-          provider: hosted.selection.providerConnectionId,
-          searchPlan: { mode: "model_choice", optionIds: [optionId] },
-          tools: "none"
-        }))
-      );
-
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
-      const prepared = materializePreparedRunData(result.prepared);
-      expect(admissionLoad).toHaveBeenCalledTimes(1);
-      expect(prepared.normalizedRequest).not.toHaveProperty("knowledgeFocusedRequest");
-      expect(prepared.normalizedRequest.searchPlan.options).toEqual([
-        expect.objectContaining({ adapterKind: "provider_model_client", optionId })
-      ]);
-      expect(prepared.normalizedRequest.toolMode).toBe("auto");
-      expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-        "search_knowledge",
-        "search_engine_1"
-      ]);
-    }
-  );
 
   it.each([
     "gemini_interactions_native" as const,
@@ -5233,7 +3924,6 @@ describe("cross-turn compaction reuse", () => {
     capabilities?: ProviderModelCapabilities;
     checkpoints?: readonly BranchContextCheckpoint[];
     history: readonly ProviderConversationMessage[];
-    knowledge?: boolean;
     policy?: "off" | "v1";
     regenerate?: ProviderConversationMessage;
     text?: string;
@@ -5252,11 +3942,9 @@ describe("cross-turn compaction reuse", () => {
     }));
     const stream = vi.spyOn(harness.adapter, "stream");
     const deps: RunPreparationDeps = { ...harness.deps,
-      ...(input.knowledge ? { knowledgeAdmission: { load: async (admission: KnowledgeAdmissionInput) => admittedKnowledge(admission, "f") } } : {}),
       repository: { ...harness.deps.repository, loadBranchContextCheckpoints },
       runPolicy: { load: async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: input.policy ?? "v1" }) } };
-    const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai",
-      ...(input.knowledge ? { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) } : {}) });
+    const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai" });
     const result = await prepareRun(deps, input.regenerate
       ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id, scheduledTaskPrompt: false } })
       : sendInput(body, { activeLeafMessageId: input.history.length > 0 ? "prior-user-message" : null }));
@@ -5448,46 +4136,13 @@ describe("cross-turn compaction reuse", () => {
   const messageIds = (prepared: PreparedRun) =>
     materializePreparedRunData(prepared).normalizedRequest.context?.messages.map((message) => message.id);
 
-  it("admits a Knowledge run under the one policy: exact branch, carried notes, no trimming", async () => {
-    const { checkpoints, history } = await converse(10);
-    const knowledge = await admit({ checkpoints, history, knowledge: true });
-    const off = await admit({ checkpoints, history, knowledge: true, policy: "off" });
-    const accepted = materializePreparedRunData(knowledge.prepared);
-    expect(accepted.normalizedRequest.toolObservationVersion).toBe(1);
-    expect(accepted.providerRequest.tools?.map((tool) => tool.name)).toEqual(
-      expect.arrayContaining(["read_tool_result", "search_knowledge"]));
-    expect(knowledge.loadBranchContextCheckpoints).toHaveBeenCalled();
-    for (const admitted of [knowledge, off]) {
-      expect(admitted.prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid",
-        reuse: { runId: checkpoints[0]!.runId } });
-      expect(messageIds(admitted.prepared)).toHaveLength(history.length + 1);
-      expect(materializePreparedRunData(admitted.prepared).normalizedRequest.context?.summary).toBeUndefined();
-    }
-    // The answer consumer applies the carried notes instead of trimming or buying the branch again.
-    const notes = noteTaker();
-    const compacted = await compact(knowledge.prepared, notes);
-    expect(notes.inputs.length).toBeLessThanOrEqual(1);
-    expect(compacted.contextCompactionSummary).toBeDefined();
-    expect(compacted.context?.messages.some((message) => message.id === "u1")).toBe(false);
-  });
-
-  it("rejects irreducible Knowledge overflow exactly like the legacy request", async () => {
-    const history = [...exchange(1), ...exchange(2)];
-    const text = "q".repeat(121_000);
-    const knowledge = await admitResult({ history, knowledge: true, text });
-    const legacy = await admitResult({ history, knowledge: true, policy: "off", text });
-    expect(knowledge.result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
-    expect(legacy.result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
-    expect(knowledge.result.ok ? null : knowledge.result.message).toBe(legacy.result.ok ? null : legacy.result.message);
-  });
-
   it("never carries notes out of a run accepted without the hybrid policy", async () => {
     const { checkpoints, history } = await converse(10);
     const latest = checkpoints[0]!;
-    // A Knowledge run's accepted request has no policy; its checkpoint never supplies notes.
-    const fromKnowledge = await admit({ checkpoints: [{ ...latest, policy: null }], history });
-    expect(fromKnowledge.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
-    expect(fromKnowledge.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
+    // A run accepted without the policy left a checkpoint that never supplies notes.
+    const fromLegacy = await admit({ checkpoints: [{ ...latest, policy: null }], history });
+    expect(fromLegacy.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
+    expect(fromLegacy.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
     const fromHybrid = await admit({ checkpoints: [latest], history });
     expect(fromHybrid.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({ runId: latest.runId });
   });
@@ -5860,22 +4515,20 @@ describe("scheduled task creation admission", () => {
     });
   });
 
-  it("never offers it to scheduled, temporary, Project, Assistant or Knowledge runs or without usable tools", async () => {
+  it("never offers it to scheduled, temporary or Assistant runs or without usable tools", async () => {
     const scheduled = sendInput(toolBody);
     if (scheduled.source.kind !== "send") throw new Error("invalid send fixture");
     const occurrence: RunPreparationInput = { ...scheduled, source: { ...scheduled.source, scheduledOccurrence: {
       occurrenceId: "occurrence-1", previousResult: null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1",
       taskRevision: 1
     } } };
-    const project = projectAdmission({ modelIds: ["openai-tool-model"] });
     const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
       async resolveForRun() {
         return { ok: true as const, assistant: {
-          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
-          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+          assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -5885,12 +4538,9 @@ describe("scheduled task creation admission", () => {
     const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
       ["scheduled", deps, occurrence],
       ["temporary", deps, sendInput(toolBody, { memoryMode: "TEMPORARY", messageCount: 2 })],
-      ["project", deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }), { project })],
       ["assistant", { ...deps, assistants, repository: { ...deps.repository, loadAssistantRowContext: assistantRowContextLoader({
         defaultModelId: "openai-tool-model", models: { "openai-tool-model": "openai" }
       }) } }, sendInput({ assistantId: "assistant-1", content: textMessageContent("Remind me daily"), timeZone: "Europe/Berlin" })],
-      ["knowledge", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
-        sendInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })],
       ["tools none", deps, sendInput({ ...toolBody, tools: "none" })],
       ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)],
       ["no creator", tooling({ creator: false }), sendInput(toolBody)]
@@ -5939,7 +4589,7 @@ describe("Skill save admission", () => {
     expect(own.normalizedRequest.skillSaveTool).toBe(true);
   });
 
-  it("is absent, not refused later, without Workspace and in scheduled, temporary, Project, Assistant and Knowledge runs", async () => {
+  it("is absent, not refused later, without Workspace and in scheduled, temporary and Assistant runs", async () => {
     const scheduled = sendInput(toolBody);
     if (scheduled.source.kind !== "send") throw new Error("invalid send fixture");
     const occurrence: RunPreparationInput = { ...scheduled, source: { ...scheduled.source, scheduledOccurrence: {
@@ -5950,11 +4600,10 @@ describe("Skill save admission", () => {
     const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
       async resolveForRun() {
         return { ok: true as const, assistant: {
-          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
-          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+          assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -5971,10 +4620,6 @@ describe("Skill save admission", () => {
         userMessage: { content: textMessageContent("Save a Skill"), id: "stored-user-message", scheduledTaskPrompt: true }
       })],
       ["temporary", deps, sendInput(toolBody, { memoryMode: "TEMPORARY", messageCount: 2 })],
-      ["project", deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }),
-        { project: projectAdmission({ modelIds: ["openai-tool-model"] }) })],
-      ["knowledge", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
-        sendInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })],
       ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)],
       ["no saver", tooling({ saver: false }), sendInput(toolBody)]
     ];
@@ -6046,14 +4691,10 @@ describe("page reader admission", () => {
     expect(reader(prepared)).toBeDefined();
   });
 
-  it("is never offered without tool calling, with tools none or in a Project with external tools off", async () => {
-    const project = projectAdmission({ modelIds: ["openai-tool-model"] });
-    const closed = { ...project, policy: { ...project.policy, externalToolsEnabled: false } };
+  it("is never offered without tool calling or with tools none", async () => {
     const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
       ["tools none", tooling(), sendInput({ ...toolBody, tools: "none" })],
-      ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)],
-      ["closed project", tooling(), sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }),
-        { project: closed })]
+      ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)]
     ];
     for (const [label, deps, input] of cases) {
       const result = await prepareRun(deps, input);
@@ -6061,10 +4702,6 @@ describe("page reader admission", () => {
       expect(result.prepared.normalizedRequest.fetchUrl, label).toBeUndefined();
       expect(reader(result.prepared), label).toBeUndefined();
     }
-    // A Project run with external tools on reads pages like a personal one.
-    const open = preparedFrom(await prepareRun(tooling(), sendInput(successBody({ modelId: "openai-tool-model", provider: "openai",
-      tools: "auto" }), { project })));
-    expect(open.normalizedRequest.fetchUrl).toBeDefined();
   });
 });
 
@@ -6141,16 +4778,10 @@ describe("scheduled task management admission", () => {
     const regenerateTaskPrompt = regenerateInput(toolBody, {
       userMessage: { content: textMessageContent("Move it to 10:00"), id: "stored-user-message", scheduledTaskPrompt: true }
     });
-    const project = projectAdmission({ modelIds: ["openai-tool-model"] });
-    const knowledge = managing();
     const cases: Array<readonly [string, ReturnType<typeof managing>, RunPreparationDeps, RunPreparationInput]> = [
       ["scheduled", ...withDeps(managing()), occurrence],
       ["answer to a task prompt", ...withDeps(managing()), regenerateTaskPrompt],
       ["temporary", ...withDeps(managing()), sendInput(toolBody, { memoryMode: "TEMPORARY", messageCount: 2 })],
-      ["project", ...withDeps(managing()), sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }),
-        { project })],
-      ["knowledge", knowledge, { ...knowledge.deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
-        sendInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })],
       ["tools none", ...withDeps(managing()), sendInput({ ...toolBody, tools: "none" })],
       ["no tool calling", ...withDeps(managing({ toolCalling: false })), sendInput(toolBody)]
     ];
@@ -6268,79 +4899,6 @@ describe("chat System Vision admission", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("freezes a System Vision description of a Knowledge image for a model without vision, never the chat tool", async () => {
-    const h = createHarness({ attachments: [image], capabilities: textOnly });
-    const resolve = vi.fn(async () => availablePlan());
-    const deps = { ...h.deps, vision: { resolve }, images: imageModels(),
-      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } };
-    const knowledge = { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) };
-    const prepared = preparedFrom(await prepareRun(deps, send({ ...knowledge, content: imageContent(image.id) })));
-    expect(resolve).toHaveBeenCalledOnce();
-    expect(prepared.normalizedRequest.knowledgeImageObservation).toEqual({ version: 1, route: "system_vision",
-      imageIds: [image.id], vision: availablePlan() });
-    // The description is a pre-answer step: no chat analyze_image tool and no chat Vision plan.
-    expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
-    expect(tools(prepared)).not.toContain("analyze_image");
-    const text = preparedFrom(await prepareRun(deps, send(knowledge)));
-    expect(text.normalizedRequest.knowledgeImageObservation).toBeUndefined();
-    expect(resolve).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    { version: 1, available: false, code: "vision_model_absent" },
-    { version: 1, available: false, code: "vision_model_unavailable" }
-  ] as const)("refuses a Knowledge image visibly when no route can describe it ($code)", async (plan) => {
-    const h = createHarness({ attachments: [image], capabilities: textOnly });
-    const deps = { ...h.deps, vision: { resolve: async () => plan }, images: imageModels(),
-      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } };
-    await expect(prepareRun(deps, send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: imageContent(image.id) })))
-      .resolves.toMatchObject({ ok: false, code: "knowledge_image_not_supported", status: 400,
-        message: expect.stringContaining("no Vision Model is available to describe them") });
-  });
-
-  it("refuses more Knowledge images than one description reads", async () => {
-    const many = Array.from({ length: 9 }, (_, index) => runAttachment({ id: `knowledge-image-${index}`, kind: "image",
-      mimeType: "image/png", storageKey: `private/knowledge-image-${index}` }));
-    const h = createHarness({ attachments: many, capabilities: textOnly });
-    const resolve = vi.fn(async () => availablePlan());
-    await expect(prepareRun({ ...h.deps, vision: { resolve },
-      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } },
-    send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: { blocks: [{ type: "text", text: "Compare them" },
-      ...many.map((attachment) => ({ type: "image", attachmentId: attachment.id }))] } })))
-      .resolves.toMatchObject({ ok: false, code: "knowledge_image_limit_exceeded", status: 400 });
-    expect(resolve).not.toHaveBeenCalled();
-  });
-
-  it("has a vision-capable answer model describe its own Knowledge image without a Vision lookup", async () => {
-    const bytes = Buffer.from("synthetic knowledge image");
-    const visible = runAttachment({ id: "knowledge-image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
-      storageKey: "private/knowledge-image", checksum: sha256(bytes) });
-    const h = createHarness({ attachments: [visible], capabilities: { ...baseCapabilities, toolCalling: true, vision: true },
-      storageObjects: { [visible.storageKey]: { body: bytes, contentType: "image/png" } } });
-    const resolve = vi.fn(async () => availablePlan());
-    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve },
-      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "f") } },
-    send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: imageContent(visible.id) })));
-    expect(resolve).not.toHaveBeenCalled();
-    expect(prepared.normalizedRequest.knowledgeImageObservation).toEqual({ version: 1, route: "answer_model", imageIds: [visible.id] });
-    expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
-    expect(prepared.providerRequest.attachments[0]?.dataUrl).toContain("base64,");
-  });
-
-  it("admits chat System Vision in a Project chat like a personal one", async () => {
-    const h = createHarness({ attachments: [image], capabilities: textOnly });
-    const project = projectAdmission({ modelIds: ["gpt-fixture"], defaults: { ...projectAdmission().defaults, providerModelId: "gpt-fixture" } });
-    const loads: Array<{ projectId?: string }> = [];
-    const repository = { ...h.deps.repository, loadAttachments: async (userId: string, ids: string[], projectId?: string) => {
-      loads.push({ projectId }); return h.deps.repository.loadAttachments(userId, ids, projectId);
-    } };
-    const prepared = preparedFrom(await prepareRun({ ...h.deps, repository, vision: { resolve: async () => availablePlan() } },
-      send({ content: imageContent(image.id) }, { project })));
-    expect(prepared.project?.projectId).toBe("project-1");
-    expect(prepared.normalizedRequest.visionAnalysis).toEqual(availablePlan());
-    expect(tools(prepared)).toContain("analyze_image");
-    expect(loads.every((load) => load.projectId === "project-1")).toBe(true);
-  });
 });
 
 describe("image model admission by chat scope", () => {
@@ -6349,7 +4907,6 @@ describe("image model admission by chat scope", () => {
   const imageContent = (attachmentId: string) => ({ blocks: [{ type: "text", text: "Make the sky purple" }, { type: "image", attachmentId }] });
   const send = (overrides: Readonly<Record<string, unknown>> = {}, chat: Partial<SendRunPreparationSource["chat"]> = {}) =>
     sendInput(successBody({ provider: "openai", modelId: "gpt-fixture", ...overrides }), chat);
-  const project = () => projectAdmission({ modelIds: ["gpt-fixture"], defaults: { ...projectAdmission().defaults, providerModelId: "gpt-fixture" } });
   const tools = (prepared: PreparedRun) => prepared.providerRequest.tools?.map((tool) => tool.name) ?? [];
   const UNAVAILABLE = "Image generation and editing are unavailable for this message";
   /** One plan per published model, with its own capabilities and administrator parameters. */
@@ -6359,20 +4916,18 @@ describe("image model admission by chat scope", () => {
       snapshot: { ...base.snapshot, providerModelId, model: { ...base.snapshot.model,
         capabilities: { ...base.snapshot.model.capabilities, imageEditing } } } };
   }
-  /** The installation: an administrator default that edits, and the user's generation-only choice. */
-  const organizationDefault = publishedPlan("image-default", true);
+  /** The user's generation-only choice. */
   const personalChoice = publishedPlan("image-chosen", false, "high");
   function scopedImageModels(personal: ImageModelResolution = { ok: true, plan: personalChoice, providerModelId: "image-chosen", source: "personal" }) {
-    return { resolveFor: vi.fn(async (scope: ImageModelScope): Promise<ImageModelResolution> => scope.kind === "project"
-      ? { ok: true, plan: organizationDefault, providerModelId: "image-default", source: "organization" } : personal) };
+    return { resolveFor: vi.fn(async (_scope: ImageModelScope): Promise<ImageModelResolution> => personal) };
   }
   const assistant = (): AssistantRunResolution => ({ ok: true, assistant: {
     answerRules: null, assistantId: "assistant-1", definitionVersion: 1,
     identity: { name: "Shared illustrator", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
       kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-    knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [], name: "Shared illustrator", provider: "openai",
+    mcpServerIds: [], name: "Shared illustrator", provider: "openai",
     providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
-    rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+    rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
       providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
     skillIds: [], systemPrompt: "Illustrate what the user asks for."
   } });
@@ -6400,30 +4955,6 @@ describe("image model admission by chat scope", () => {
       [{ kind: "personal", userId: "user-1" }]]);
   });
 
-  it("admits Project chats, with or without a bound Assistant, only on the administrator default, also for a member with another choice", async () => {
-    const h = createHarness({ attachments: [image], capabilities: textOnly });
-    const images = scopedImageModels();
-    const text = preparedFrom(await prepareRun({ ...h.deps, images }, send({}, { project: project() })));
-    expect(text.normalizedRequest.imagePlan).toEqual(organizationDefault);
-    expect(tools(text)).toContain("generate_image");
-    // The member's own choice cannot edit, the administrator default can: the image is admitted on the default.
-    const edit = preparedFrom(await prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) }, { project: project() })));
-    expect(edit.normalizedRequest.imagePlan).toEqual(organizationDefault);
-    expect(edit.normalizedRequest.imageReferences?.map(({ attachmentId }) => attachmentId)).toEqual([image.id]);
-    const bound = projectAdmission({ ...project(), assistantBindings: [{ assistantId: "assistant-1" }],
-      defaults: { ...project().defaults, assistantId: "assistant-1" } });
-    const projectAssistant = preparedFrom(await prepareRun({ ...h.deps, images,
-      assistants: { resolveForRun: vi.fn(), resolveForProject: vi.fn(async () => assistant()) },
-      repository: { ...h.deps.repository, loadProjectAssistantRowContext: () => assistantRows({ ids: {
-        knowledgeBaseIds: [], knowledgeSourceIds: [], skillIds: [] }, userId: "user-1" }) } },
-    sendInput({ content: textMessageContent("Draw a fox"), timeZone: "Europe/Berlin" }, { assistantId: "assistant-1", project: bound })));
-    expect(projectAssistant.normalizedRequest.imagePlan).toEqual(organizationDefault);
-    expect(images.resolveFor.mock.calls).toEqual([[{ kind: "project" }], [{ kind: "project" }], [{ kind: "project" }]]);
-    // The same image in a personal chat meets the member's generation-only choice and no other route.
-    await expect(prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) })))
-      .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported", status: 400 });
-  });
-
   it("never substitutes an unusable effective model: no image tool, and the answer model is told why and how to recover", async () => {
     const h = createHarness({ attachments: [image], capabilities: textOnly });
     const images = scopedImageModels({ ok: false, reason: "credential_unavailable", providerModelId: "image-chosen", source: "personal" });
@@ -6440,13 +4971,6 @@ describe("image model admission by chat scope", () => {
       reason: "verification_required", providerModelId: "image-default", source: "organization" }) }, send()));
     expect(following.normalizedRequest.prompt.system).toContain("the image model needs a new successful check by an administrator");
     expect(following.normalizedRequest.prompt.system).toContain("choose another image model in Studio > Chat defaults > Image model, or ask an administrator");
-    const projectImages = { resolveFor: vi.fn(async (): Promise<ImageModelResolution> =>
-      ({ ok: false, reason: "parameters_invalid", providerModelId: "image-default", source: "organization" })) };
-    const shared = preparedFrom(await prepareRun({ ...h.deps, images: projectImages }, send({}, { project: project() })));
-    expect(tools(shared)).not.toContain("generate_image");
-    expect(shared.normalizedRequest.prompt.system).toContain("the image model's organization settings are no longer supported");
-    expect(shared.normalizedRequest.prompt.system).toContain("Projects always use the organization's default image model");
-    expect(shared.normalizedRequest.prompt.system).not.toContain("Studio");
   });
 
   it("stays silent where image generation is not set up and asks nothing with tools off", async () => {
@@ -6522,15 +5046,13 @@ describe("answer review step admission", () => {
     expect(toolNames(prepared)).not.toContain("submit_answer_review");
   });
 
-  it("refuses a step whose model cannot call tools, a removed Agent turn, an Assistant or Knowledge run before anything is accepted", async () => {
+  it("refuses a step whose model cannot call tools, a removed Agent turn or an Assistant run before anything is accepted", async () => {
     const { deps } = stepDeps();
     const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
       ["answer_review_model_unsupported", stepDeps({ toolCalling: false }).deps, stepInput()],
       ["answer_review_model_unsupported", deps, stepInput({ ...toolBody, tools: "none" })],
       ["agent_mode_removed", deps, stepInput({ ...toolBody, agentEnabled: true, workspace: { enabled: true } })],
-      ["answer_review_assistant_unsupported", deps, stepInput(toolBody, review, { assistantId: "assistant-1" })],
-      ["answer_review_knowledge_unsupported", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
-        stepInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })]
+      ["answer_review_assistant_unsupported", deps, stepInput(toolBody, review, { assistantId: "assistant-1" })]
     ];
     for (const [code, caseDeps, input] of cases) {
       await expect(prepareRun(caseDeps, input), code).resolves.toMatchObject({ code, ok: false, status: 409 });
@@ -6542,5 +5064,25 @@ describe("answer review step admission", () => {
     expect(prepared.normalizedRequest.answerReviewStep).toBeUndefined();
     expect(toolNames(prepared)).not.toContain("submit_answer_review");
     expect(toolNames(prepared)).not.toContain("record_review_decisions");
+  });
+});
+
+describe("a request that still names Knowledge", () => {
+  it("accepts a legacy explicit none, refuses every other selection and never admits Knowledge", async () => {
+    const none = { baseIds: [], mode: "none", sourceIds: [], version: 1 };
+    for (const input of [sendInput(successBody({ knowledgePlan: none })), regenerateInput(successBody({ knowledgePlan: none }))]) {
+      const prepared = preparedFrom(await prepareRun(createHarness().deps, input));
+      expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
+      expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
+    }
+    for (const knowledgePlan of [
+      { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 },
+      { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 },
+      "none",
+      null
+    ]) {
+      await expect(prepareRun(createHarness().deps, sendInput(successBody({ knowledgePlan })))).resolves
+        .toMatchObject({ code: "knowledge_plan_invalid", ok: false, status: 400 });
+    }
   });
 });

@@ -204,7 +204,7 @@ describe("chat PDF adaptive preparation", () => {
     const visionPlan = await visionCore.plan({ admission: visionReader, bytes, onPageCount: vi.fn() });
     expect((await visionCore.page({ admission: visionReader, bytes, ...visionPlan, page: 1 })).request.params.maxOutputTokens)
       .toBe(32_768);
-    // Knowledge parsing keeps its cap for the same reasoning deployment.
+    // Without the chat reader's raise, the shared request keeps its cap for the same reasoning deployment.
     expect(modelPdfProviderRequest({ batch: { kind: "pdf", bytes, pageStart: 1, pageEnd: 1 } as never,
       mode: "system_model_direct_pdf", prompt: "Transcribe.", snapshot: reasoning({ reasoning: { effort: "high" } }),
       supplement: null, visionDetail: "original" }).params.maxOutputTokens).toBe(16_384);

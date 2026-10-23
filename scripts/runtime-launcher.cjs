@@ -148,7 +148,7 @@ function launch(target = "runtime/server.js") {
 
 if (require.main === module) {
   installProcessFailureHooks();
-  announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
+  announceProcess({ attachments: "starting", memory: "unknown", mcp: "starting", workspace: "unknown", email: "unknown" });
   try {
     launch(process.argv[2]);
   } catch (error) {

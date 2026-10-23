@@ -73,7 +73,7 @@ describe("chat title metadata", () => {
     expect(await response.json()).toEqual({ pending: true, title: "Question", updatedAt: "2026-09-27T10:00:00.000Z" });
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: { archived: false, id: "chat", permanentDeletionAt: null, projectId: null, userId: "owner" }
+      where: { archived: false, id: "chat", permanentDeletionAt: null, userId: "owner" }
     }));
   });
 

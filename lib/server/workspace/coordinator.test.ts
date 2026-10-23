@@ -176,7 +176,6 @@ function fixture() {
     outputDirectory: workspace.outputDirectory,
     operationOwner, operationGeneration,
     policyRevision: 1,
-    projectId: null,
     runId,
     runtimeSandboxId,
     runtimeVersion: workspace.runtimeVersion,
@@ -668,13 +667,11 @@ describe("Workspace coordinator", () => {
     expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toEqual([]);
   });
 
-  it.each(["project", "off", "export", "recovery"] as const)("never reads or saves personal browser files during %s", async (mode) => {
+  it.each(["off", "export", "recovery"] as const)("never reads or saves personal browser files during %s", async (mode) => {
     const value = fixture(); value.setRuntimeSandboxId("runtime_1");
-    const binding = await value.repository.binding({ runId: value.runId, userId: "user_1" });
-    if (mode === "project") vi.spyOn(value.repository, "binding").mockResolvedValue({ ...binding!, projectId: "project_1" });
     if (mode === "off") vi.spyOn(value.repository, "binding").mockResolvedValue(null);
     const request = { runId: value.runId, userId: "user_1", workspace: value.workspace };
-    if (mode === "project" || mode === "off") await value.coordinator.settle({ ...request, outcome: "completed" });
+    if (mode === "off") await value.coordinator.settle({ ...request, outcome: "completed" });
     else await value.coordinator.finalize({ ...request, ...(mode === "recovery" ? { recovery: true } : {}) });
     expect(value.runtime.collectBrowserSessions).not.toHaveBeenCalled();
     expect(value.repository.saveBrowserSessions).not.toHaveBeenCalled();

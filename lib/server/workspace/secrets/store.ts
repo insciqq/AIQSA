@@ -61,9 +61,8 @@ export async function advanceWorkspaceBrowserSequence(tx: Prisma.TransactionClie
   return owner.workspaceBrowserSequence;
 }
 
-export async function acceptWorkspaceBrowserSequence(tx: Prisma.TransactionClient, userId: string, chatId: string): Promise<bigint | null> {
-  const chat = await tx.chat.findUniqueOrThrow({ where: { id: chatId }, select: { userId: true, projectId: true } });
-  if (chat.projectId) return null;
+export async function acceptWorkspaceBrowserSequence(tx: Prisma.TransactionClient, userId: string, chatId: string): Promise<bigint> {
+  const chat = await tx.chat.findUniqueOrThrow({ where: { id: chatId }, select: { userId: true } });
   if (chat.userId !== userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
   await lockWorkspaceSecretOwner(tx, userId);
   return advanceWorkspaceBrowserSequence(tx, userId);
@@ -94,9 +93,8 @@ export async function pruneWorkspaceSecretRevisions(tx: Prisma.TransactionClient
 
 /** Called inside canonical admission, never from normalized prompt/browser data. */
 export async function bindWorkspaceSecrets(tx: Prisma.TransactionClient, input: { runId: string; userId: string; chatId: string }): Promise<void> {
-  const chat = await tx.chat.findUnique({ select: { userId: true, projectId: true }, where: { id: input.chatId } });
+  const chat = await tx.chat.findUnique({ select: { userId: true }, where: { id: input.chatId } });
   if (!chat) throw new WorkspaceSecretError("workspace_secret_unavailable");
-  if (chat.projectId) return;
   if (chat.userId !== input.userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
   await lockWorkspaceSecretOwner(tx, input.userId);
   const secrets = await tx.workspaceSecret.findMany({
@@ -210,7 +208,7 @@ export function createWorkspaceSecretStore(prisma: PrismaClient, options: Readon
       const latest = await prisma.workspaceRunBinding.findFirst({
         select: { browserSessionSave: true },
         where: { browserSessionSave: { not: Prisma.DbNull }, browserSessionSequence: { not: null },
-          modelRun: { userId, chat: { userId, projectId: null } } },
+          modelRun: { userId, chat: { userId } } },
         orderBy: { browserSessionSequence: "desc" }
       });
       return latest ? decodeWorkspaceBrowserAutosaveReport(latest.browserSessionSave) : null;

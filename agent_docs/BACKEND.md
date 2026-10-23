@@ -8,7 +8,6 @@ paths:
   - "lib/server/skillsMcp/**"
   - "lib/server/shares/**"
   - "lib/server/chats/**"
-  - "lib/server/projects/**"
   - "lib/server/uploads/**"
 ---
 # Backend
@@ -29,9 +28,8 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 - Using an installation MCP server lets a member fill in its required personal values. Overriding a shared value replaces an installation credential and needs a direct per-user permission.
 - Inbound MCP clients act as the current active account and cannot choose another owner. Memory calls and Hub dispatch create no synthetic chat, run or history.
 
-## Projects and Assistants
+## Assistants
 
-- Projects are disabled (root `AGENTS.md`): nothing creates Projects or runs Project work, existing Project chats stay readable to their members, and Project code changes only to disable or remove it.
 - Publishing an Assistant grants live future use, not entitlement to its dependencies. Fixed rows and Skill links are dependencies; adjustable rows are starting values a chat may replace. Accepted runs keep the definition, effective rows and a snapshot of name and avatar. Ordinary chats use the server-owned baseline, which the browser cannot replace.
 - Publication requires that every linked Skill has an approved revision and is directly available to the Assistant's audience. Unlinking or unpublishing clears dependent defaults, plans and authorities in one transaction.
 - Non-administrators list an Assistant installation-wide only through an approved request, which covers the requested version only. Administrators read a private definition only through a pending request for its current version.
@@ -46,6 +44,6 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 
 - An upload becomes usable only after bounded type and content validation and server-side settlement of the stored object's integrity. Its status follows the exact ingestion artifact created for it, not another ready artifact.
 - Long-running work runs as durable claimed jobs, and deletion as idempotent obligations, never as best effort inside a request.
-- An opaque Workspace upload reaches execution only through an admitted run. File reads recheck current personal or Project access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds.
+- An opaque Workspace upload reaches execution only through an admitted run. File reads recheck the reader's current access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds.
 - Chat exports (`aiqsa.chat` and `aiqsa.chat-archive`, `lib/contracts/chatExport.ts`) are held by users outside the installation. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Exports contain export-local ids and readable text, never database ids, provider internals, usage or tool payloads.
-- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory, Knowledge and tool evidence, recovery state and private identifiers are dropped. A share is never live access to the chat.
+- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory and tool evidence, recovery state and private identifiers are dropped. A share is never live access to the chat.

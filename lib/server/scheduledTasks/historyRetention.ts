@@ -34,7 +34,7 @@ type Client = PrismaClient | Prisma.TransactionClient;
 function eligibleSql(now: Date): Prisma.Sql {
   return Prisma.sql`
     task."historyRetentionDays" IS NOT NULL
-    AND chat."projectId" IS NULL AND chat."permanentDeletionAt" IS NULL
+    AND chat."permanentDeletionAt" IS NULL
     AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
     AND chat."id" IS DISTINCT FROM task."chatId"
     AND NOT chat."pinned" AND chat."folderId" IS NULL AND chat."ownerKeptAt" IS NULL

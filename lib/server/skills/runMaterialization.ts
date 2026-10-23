@@ -24,9 +24,5 @@ export type SkillRunResolution =
 export type SkillRunResolver = Readonly<{
   listEnabledForRun?(userId: string): Promise<SkillRunCatalogEntry[]>;
   loadedBeforeForMessages?(userId: string, chatId: string, messageIds: readonly string[]): Promise<string[]>;
-  resolveForProject?(
-    projectId: string,
-    skillIds: readonly string[]
-  ): Promise<SkillRunResolution>;
   resolveForRun(userId: string, skillIds: readonly string[]): Promise<SkillRunResolution>;
 }>;
