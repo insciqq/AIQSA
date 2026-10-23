@@ -536,6 +536,7 @@ export function AnswerOutputsV2({
   onEditArtifact,
   onEditScheduledTask,
   onOpenArtifact,
+  onStartAssistantChat,
   onUseImageInArtifact,
   runId = null,
   workspaceOutputStatus = null
@@ -552,6 +553,8 @@ export function AnswerOutputsV2({
   /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
+  /** Starts a new chat with an Assistant an answer created, as `/assistant/<id>` does. */
+  onStartAssistantChat?(assistantId: string): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
   /** The answer's run: its approval cards decide through it. */
   runId?: string | null;
@@ -571,7 +574,7 @@ export function AnswerOutputsV2({
         {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
         <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
         <SkillSaveCardsV2 cards={skillSaves} live />
-        <ResourceChangeCardsV2 cards={resourceChanges} live />
+        <ResourceChangeCardsV2 cards={resourceChanges} live onStartAssistantChat={onStartAssistantChat} />
         <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
       </div> : null;
   }
@@ -612,7 +615,7 @@ export function AnswerOutputsV2({
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
       <SkillSaveCardsV2 cards={skillSaves} />
-      <ResourceChangeCardsV2 cards={resourceChanges} />
+      <ResourceChangeCardsV2 cards={resourceChanges} onStartAssistantChat={onStartAssistantChat} />
       <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
