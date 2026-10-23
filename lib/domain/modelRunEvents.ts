@@ -113,7 +113,7 @@ export type ModelRunSseEvent =
           | "tool_budget"
           | "tool_call"
           | "tool_result"
-          /** Live only: the run's work duration (`{ workDurationMs }`), as its settled summary reads it. */
+          /** Live only: the run's work duration (`{ workDurationMs }`) as its settled summary reads it; null announces it at the start. */
           | "work_duration"
           | "workspace_activity";
         payload: unknown;

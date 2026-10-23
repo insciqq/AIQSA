@@ -125,6 +125,17 @@ describe("run surface store", () => {
     expect(surface("chat-a").startedAt).toBe(startedAt);
   });
 
+  it("leaves a run that reports its own duration without a client figure", () => {
+    useRunSurfaceStore.getState().resetSurface("chat-a");
+    useRunSurfaceStore.getState().appendEvent("chat-a", { data: {}, type: "run_start" });
+    useRunSurfaceStore.getState().appendEvent("chat-a", {
+      data: { artifactType: "work_duration", payload: { workDurationMs: null } }, type: "artifact"
+    });
+    useRunSurfaceStore.getState().appendEvent("chat-a", { data: { delta: "Preamble" }, type: "token" });
+    expect(surface("chat-a").answerStartedAt).toEqual(expect.any(Number));
+    expect(liveWorkDurationMs(surface("chat-a"))).toBeNull();
+  });
+
   it("keeps submitted context controls through preparation events and clears them for a new unbound run", () => {
     useRunSurfaceStore.getState().resetSurface("chat-a", "submitted-controls", "optimistic-answer");
     useRunSurfaceStore.getState().bindContextMessage("chat-a", "optimistic-answer", "settled-answer-id");

@@ -1563,6 +1563,7 @@ export function createPrismaRunRepository(
                 select: {
                   ...runFollowupSelect,
                   answerCompletedAt: true,
+                  engine: true,
                   chatPdfPreparation: { select: { retryable: true, state: true } },
                   chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
                     completedPages: true, pageCount: true, retryable: true, route: true, state: true,
