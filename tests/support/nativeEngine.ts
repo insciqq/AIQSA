@@ -1,20 +1,22 @@
 import { vi } from "vitest";
 import type { NativeEngineHandlerDeps } from "@/lib/server/engine/handlerSupport";
-import { parseNativeEngineUsers } from "@/lib/server/engine/routing";
 import type { ToolCallBeginResult, ToolCallRow } from "@/lib/server/engine/toolCallStore";
 import type { TranscriptItem } from "@/lib/server/engine/transcript";
 
 /**
- * The native engine's stores in memory, for handler tests that admit runs
- * through the ordinary send handler: `listed` is the pilot allowlist
- * (`AIQSA_NATIVE_ENGINE_USERS` entries), `published` collects the answers it
+ * The agent engine's stores in memory, for handler tests that admit runs
+ * through the ordinary send handler: `published` collects the answers it
  * published, `transcript` the items it recorded and `calls` the tool calls it
  * recorded before sending them. `tools` gives the harness and self-service
  * tools' owners (no saved secrets; the self-service owners are never reached
  * by a run that does not call them).
  */
-export function nativeEngineFake(listed: readonly string[], options: Readonly<{ tools?: boolean }> = {}) {
-  const published: string[] = [];
+export function nativeEngineFake(options: Readonly<{
+  /** Where to collect the published answers, when the caller keeps them elsewhere. */
+  published?: string[];
+  tools?: boolean;
+}> = {}) {
+  const published: string[] = options.published ?? [];
   const transcript: TranscriptItem[] = [];
   const calls: ToolCallRow[] = [];
   const row = (input: Readonly<{ arguments: Record<string, unknown>; ordinal: number; providerCallId: string; roundIndex: number;
@@ -26,7 +28,6 @@ export function nativeEngineFake(listed: readonly string[], options: Readonly<{ 
     return recorded;
   };
   const deps: NativeEngineHandlerDeps = {
-    allowlist: () => parseNativeEngineUsers(listed.join(",")),
     engine: {
       approvedCall: vi.fn(async () => null),
       mcpBindingRows: async () => [],

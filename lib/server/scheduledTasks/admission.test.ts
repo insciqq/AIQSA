@@ -18,7 +18,6 @@ import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import { nativeEngineFake } from "@/tests/support/nativeEngine";
-import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import {
   createScheduledTaskSend,
   scheduledTaskOwnerAuth,
@@ -138,8 +137,10 @@ function fixture(options: Readonly<{
     state.requests.push(request);
     return fake.stream(request, streamOptions);
   } };
+  const native = nativeEngineFake();
   const sendDeps: Omit<RunHandlerDeps, "resolveAuth" | "scheduledOccurrence"> = {
     allowFakeProvider: true,
+    nativeEngine: native.deps,
     getConfig: () => config,
     providerAdmission: { load: async (input) => admissionPlan(input, capabilities) },
     providerRuntime: { resolve: async () => ({ adapter, responseTimeoutMs: 300_000 }) } as unknown as RunHandlerDeps["providerRuntime"],
@@ -148,7 +149,7 @@ function fixture(options: Readonly<{
     usageLimits: { loadUsageLimitStatus: async () => options.usage ?? NO_USAGE_LIMITS }
   };
   const loadOwner = vi.fn(async () => owner as AuthenticatedUser | null);
-  return { loadOwner, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
+  return { loadOwner, native, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
 }
 
 function body(target: ScheduledTaskSendTarget, toolCalling = true, tools: Readonly<{
@@ -230,7 +231,6 @@ async function sendIntoChat(path: readonly ProviderConversationMessage[], origin
 
 describe("scheduled task admission through the ordinary send handler", () => {
   it("admits the first run as a Memory-excluded personal first send bound to its occurrence", async () => {
-    resetBootOrphanSweepForTest();
     const f = fixture();
     const response = await f.send({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence, userId: owner.id });
     expect(response.status).toBe(200);
@@ -260,7 +260,7 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(request.workspace).toBeUndefined();
     expect(request.memoryStandingVersion).toBeUndefined();
     expect(f.state.failedCode).toBeNull();
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
+    expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture"]);
     expect(f.loadOwner).toHaveBeenCalledWith({ taskId: "task-1", userId: owner.id });
     // A new chat's run is a first send: its model sees the prompt alone.
     expect(f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
@@ -278,7 +278,7 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(f.state.requests.map(conversation)).toEqual([[
       ["user", "Summarize the synthetic fixture"], ["assistant", "Previous synthetic summary"], ["user", "Summarize the synthetic fixture"]
     ]]);
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture");
+    expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture"]);
     // The selection is frozen with the run, so recovery rebuilds the same context; branch notes are never carried.
     const frozen = f.state.created!.normalizedRequest;
     expect(frozen.context!.messages.map((message) => message.id)).toEqual(["previous-user", "previous-answer", "current-user-message"]);
@@ -339,16 +339,16 @@ describe("scheduled task admission through the ordinary send handler", () => {
     await response.text();
     expect(f.state.created).toMatchObject({ chatId: "chat-task", expectedActiveLeafId: "assistant-message-0", scheduledOccurrence: occurrence });
     expect(f.state.created!.personalChat).toBeUndefined();
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
+    expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture"]);
   });
 
-  it("asks a model without tool calling for no tools, as the composer does", async () => {
+  it("refuses a saved model without tool calling visibly, before any run", async () => {
     const f = fixture({ toolCalling: false });
     const response = await f.send({ body: body({ chatId: newChatId, kind: "new" }, false), chatId: newChatId, occurrence, userId: owner.id });
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(f.state.created!.normalizedRequest.toolMode).toBe("none");
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "model_tool_calling_required" });
+    expect(f.state.created).toBeNull();
+    expect(f.native.published).toEqual([]);
   });
 
   it("refuses without an active owner before any run", async () => {
@@ -447,7 +447,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
   });
 
   it("applies budgets to a scheduled send but never the owner's message limits", async () => {
-    resetBootOrphanSweepForTest();
     const messagesUsedUp: UsageLimitStatus = {
       ...NO_USAGE_LIMITS,
       effective: { ...NO_USAGE_LIMITS.effective, messagesPerDay: { source: { kind: "installation" }, value: 1 } },
@@ -498,17 +497,16 @@ describe("scheduled task admission through the ordinary send handler", () => {
   });
 });
 
-describe("scheduled task admission on the native engine", () => {
+describe("scheduled task admission on the agent engine", () => {
   const nativeSend = (f: ReturnType<typeof fixture>, native: ReturnType<typeof nativeEngineFake>) =>
     createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, nativeEngine: native.deps } });
 
-  it("runs a listed owner's same-chat occurrence natively, from the flat context alone", async () => {
-    resetBootOrphanSweepForTest();
+  it("runs a same-chat occurrence, from the flat context alone", async () => {
     const path = [...ownerTurns("before", 3), say("previous-user", "user", "Summarize the synthetic fixture"),
       say("previous-answer", "assistant", "Previous synthetic summary"), ...ownerTurns("after", 3)];
     const chat: RunOwnedChatRecord = { ...taskChat, activeLeafMessageId: path.at(-1)!.id };
     const f = fixture({ chat, path });
-    const native = nativeEngineFake([owner.email!]);
+    const native = nativeEngineFake();
     const response = await nativeSend(f, native)({
       body: body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" }), chatId: chat.id,
       occurrence: { ...occurrence, previousResult }, userId: owner.id
@@ -528,10 +526,9 @@ describe("scheduled task admission on the native engine", () => {
     expect(f.state.failedCode).toBeNull();
   });
 
-  it("offers a listed owner's monitoring check its verdict tool and saved secrets, never a self-service tool", async () => {
-    resetBootOrphanSweepForTest();
+  it("offers a monitoring check its verdict tool and saved secrets, never a self-service tool", async () => {
     const f = fixture();
-    const native = nativeEngineFake([owner.id], { tools: true });
+    const native = nativeEngineFake({ tools: true });
     const response = await nativeSend(f, native)({
       body: body({ chatId: newChatId, kind: "new" }, true, { toolsEnabled: true, workspaceEnabled: false }), chatId: newChatId,
       occurrence: { ...occurrence, monitoring: true }, userId: owner.id
@@ -546,18 +543,6 @@ describe("scheduled task admission on the native engine", () => {
     expect(tools).toEqual(expect.arrayContaining(["report_monitoring_result", "read_secret"]));
     expect(tools.some((name) => name.startsWith("manage_") || name === "create_scheduled_task")).toBe(false);
     expect(f.state.requests[0]!.prompt.system).toContain("scheduled monitoring check");
-  });
-
-  it("keeps an unlisted owner's occurrence on the old core", async () => {
-    resetBootOrphanSweepForTest();
-    const f = fixture();
-    const native = nativeEngineFake(["someone-else@example.test"]);
-    const response = await nativeSend(f, native)({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence,
-      userId: owner.id });
-    await response.text();
-    expect(f.state.created?.engine).toBeUndefined();
-    expect(native.published).toEqual([]);
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
   });
 });
 

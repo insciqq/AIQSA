@@ -35,7 +35,10 @@ import type { SkillBudgetFacts } from "../../contracts/skills";
 /** Room for extracted attachment text when the model's window is unknown. */
 export const UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS = 5_000;
 
-const CONTEXT_TOO_LARGE_MESSAGE = "Prompt, pinned context, current message, tools, and selected attachments exceed the model context budget.";
+function contextTooLargeMessage(budgetTokens: number): string {
+  return "Prompt, pinned context, current message, tools, and selected attachments exceed the model context budget " +
+    `(${budgetTokens} estimated tokens available).`;
+}
 
 export type ProviderRequestContextBudgetResult =
   | Readonly<{
@@ -282,7 +285,7 @@ export function applyProviderRequestContextBudget(input: Readonly<{
         pinnedTokens: skills.pinned.reduce((sum, message) => sum + estimate(message.content), 0) }
     } };
   }
-  return { error: { code: "context_too_large", message: CONTEXT_TOO_LARGE_MESSAGE }, ok: false, status: 400 };
+  return { error: { code: "context_too_large", message: contextTooLargeMessage(fit.budgetTokens) }, ok: false, status: 400 };
 }
 
 /**
