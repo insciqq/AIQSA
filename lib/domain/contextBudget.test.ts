@@ -233,6 +233,13 @@ describe("provider-aware context token estimate", () => {
     expect(family("gemini", "gemini-3.6-flash")).toBe("gemini");
     expect(family("deepseek", "deepseek-flash")).toBe("deepseek");
     expect(family("openrouter", "openai/gpt-5")).toBe("unknown");
+    // OpenRouter routes take the calibrated family their vendor prefix names.
+    expect(family("openrouter", "google/gemini-3.8-flash")).toBe("gemini");
+    expect(family("openrouter", " Google/Gemini-3-Pro ")).toBe("gemini");
+    expect(family("openrouter", "deepseek/deepseek-v4.1-flash")).toBe("deepseek");
+    for (const modelId of ["anthropic/claude-sonnet-5", "qwen/qwen3-max", "gemini-3.8-flash", "constructor/x", undefined]) {
+      expect(family("openrouter", modelId)).toBe("unknown");
+    }
     expect(family("custom")).toBe("unknown");
     expect(family("fake", "gpt-5.5")).toBeNull();
   });

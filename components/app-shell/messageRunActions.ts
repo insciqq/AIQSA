@@ -86,6 +86,7 @@ import {
 } from "@/components/app-shell/composerAssistantState";
 import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assistants";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
+import { CONTINUE_TURN_TEXT } from "@/lib/contracts/runs";
 import {
   MCP_APPROVAL_CONTINUATION_KIND,
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
@@ -264,11 +265,21 @@ const ASSISTANT_CHANGED_SEND_COPY =
 const ASSISTANT_CHANGED_RUN_COPY =
   "The chat's Assistant changed before this could start. Check the Assistant and try again.";
 
-/** Why the continuation after an MCP approval started no run; the card's Continue retries it. */
-function mcpApprovalContinuationRetryCopy(reason: string): string {
+/** Why a continuation started no run, and which control retries it. */
+function continuationRetryCopy(reason: string, control: string): string {
   const sentence = reason.trim();
   return `${/[.!?)]$/u.test(sentence) ? sentence : `${sentence}.`} The answer did not continue. ` +
-    "Use Continue on the approval card to try again.";
+    `Use ${control} to try again.`;
+}
+
+/** Why the continuation after an MCP approval started no run; the card's Continue retries it. */
+function mcpApprovalContinuationRetryCopy(reason: string): string {
+  return continuationRetryCopy(reason, "Continue on the approval card");
+}
+
+/** Why Continue on an interrupted answer started no run; Continue retries it. */
+function continueTurnRetryCopy(reason: string): string {
+  return continuationRetryCopy(reason, "Continue");
 }
 const MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY =
   "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval.";
@@ -1644,18 +1655,26 @@ export function useMessageRunActions({
   }
 
   /**
-   * The continuation turn after the initiator allowed a refused MCP call: an
-   * ordinary send of the open chat with its current controls, as Regenerate
-   * uses them, whose text the server writes from the approval. The composer
-   * draft stays untouched; the turn shows as a compact chip. An attempt that
-   * starts no run says why; Continue on the card retries it.
+   * A turn started from a control on the chat's latest answer rather than
+   * from the composer: the continuation after an MCP approval, or Continue on
+   * an interrupted answer. It is an ordinary send of the open chat with its
+   * current controls, as Regenerate uses them, and the composer draft stays
+   * untouched. An attempt that starts no run says why (`retryCopy`); the
+   * control that started it retries it.
    */
-  async function sendMcpApprovalContinuation(
-    card: Readonly<{ approvalId: string; serverName: string; toolName: string }>
-  ): Promise<McpApprovalContinuationOutcome> {
+  async function sendAnswerContinuation(turn: Readonly<{
+    /** The turn's own request fields: its content, or the server-written turn it names. */
+    body: Readonly<Record<string, unknown>>;
+    /** The optimistic user turn's text until the server's copy replaces it. */
+    content: string;
+    retryCopy(reason: string): string;
+    systemTurnKind?: typeof MCP_APPROVAL_CONTINUATION_KIND;
+    /** A refusal that retrying cannot help, and what the chat says instead. */
+    unavailable?: Readonly<{ code: string; copy: string }>;
+  }>): Promise<McpApprovalContinuationOutcome> {
     const chatId = useWorkspaceStore.getState().activeChatId;
     const notStarted = (reason: string): McpApprovalContinuationOutcome => {
-      setNotice({ ...(chatId ? { chatId } : {}), kind: "error", text: mcpApprovalContinuationRetryCopy(reason) });
+      setNotice({ ...(chatId ? { chatId } : {}), kind: "error", text: turn.retryCopy(reason) });
       return "not_started";
     };
     if (!chatId || chatId !== activeChatIdRef.current) return notStarted("The chat changed before the answer could continue.");
@@ -1685,14 +1704,14 @@ export function useMessageRunActions({
     }
     clearNoticeForChat?.(chatId);
     const userMessage: ThreadMessage = {
-      content: mcpApprovalContinuationText(card),
+      content: turn.content,
       id: `user-${Date.now()}`,
       modelId: runControlSnapshot.modelId,
       parentMessageId: parentLeafForSend,
       provider: runControlSnapshot.provider,
       role: "user",
       status: "complete",
-      systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND
+      ...(turn.systemTurnKind ? { systemTurnKind: turn.systemTurnKind } : {})
     };
     const assistantId = `assistant-${Date.now()}`;
     const assistantMessage: ThreadMessage = {
@@ -1741,7 +1760,7 @@ export function useMessageRunActions({
           body: JSON.stringify({
             admissionId,
             expectedActiveLeafId: parentLeafForSend,
-            systemTurn: { approvalId: card.approvalId, kind: MCP_APPROVAL_CONTINUATION_KIND },
+            ...turn.body,
             ...controls
           }),
           headers: { "content-type": "application/json" },
@@ -1763,19 +1782,49 @@ export function useMessageRunActions({
     });
     await reconcileBranchConflict(chatId, result.failureCode);
     refreshWorkspaceAfterRefusal(result.failureCode);
-    if (result.failureCode === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) {
+    if (turn.unavailable && result.failureCode === turn.unavailable.code) {
       // Expired or already used by a run: retrying cannot help.
-      if (activeChatIdRef.current === chatId) setNotice({ chatId, kind: "error", text: MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY });
+      if (activeChatIdRef.current === chatId) setNotice({ chatId, kind: "error", text: turn.unavailable.copy });
       return "unavailable";
     }
     if (result.failed && !result.cancelled && result.rejectionMessage !== undefined) {
       // The server refused the turn before any run existed (another answer
       // running, a usage limit, a moved branch): Continue retries it.
-      noticeRejectedRun(chatId, result, mcpApprovalContinuationRetryCopy);
+      noticeRejectedRun(chatId, result, turn.retryCopy);
       return "not_started";
     }
     noticeRejectedRun(chatId, result);
     return "started";
+  }
+
+  /**
+   * The continuation turn after the initiator allowed a refused MCP call,
+   * whose text the server writes from the approval; the turn shows as a
+   * compact chip, and Continue on the card retries it.
+   */
+  function sendMcpApprovalContinuation(
+    card: Readonly<{ approvalId: string; serverName: string; toolName: string }>
+  ): Promise<McpApprovalContinuationOutcome> {
+    return sendAnswerContinuation({
+      body: { systemTurn: { approvalId: card.approvalId, kind: MCP_APPROVAL_CONTINUATION_KIND } },
+      content: mcpApprovalContinuationText(card),
+      retryCopy: mcpApprovalContinuationRetryCopy,
+      systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND,
+      unavailable: { code: MCP_APPROVAL_CONTINUATION_UNAVAILABLE, copy: MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY }
+    });
+  }
+
+  /**
+   * Continue on an interrupted answer: an ordinary next turn that says
+   * `CONTINUE_TURN_TEXT`; the stopped turn's kept work is its context.
+   */
+  async function sendContinueTurn(): Promise<"not_started" | "started"> {
+    const outcome = await sendAnswerContinuation({
+      body: { content: { blocks: [{ text: CONTINUE_TURN_TEXT, type: "text" }] } },
+      content: CONTINUE_TURN_TEXT,
+      retryCopy: continueTurnRetryCopy
+    });
+    return outcome === "started" ? "started" : "not_started";
   }
 
   /** The answer review group of `sessionId` on the chat's active path, as the transcript shows it. */
@@ -2141,6 +2190,7 @@ export function useMessageRunActions({
     submitFollowup: submitRunFollowup,
     refreshInterruptedRun,
     regenerateMessage,
+    sendContinueTurn,
     sendMcpApprovalContinuation,
     startAnswerReview,
     sendStarterPrompt,

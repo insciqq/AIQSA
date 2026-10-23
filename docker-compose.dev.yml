@@ -19,6 +19,9 @@ services:
       AIQSA_ARTIFACT_EXTERNAL_RESOURCES: ${AIQSA_ARTIFACT_EXTERNAL_RESOURCES-on}
       AIQSA_ARTIFACT_LIBRARY_HOSTS: ${AIQSA_ARTIFACT_LIBRARY_HOSTS-cdnjs.cloudflare.com,fonts.googleapis.com,fonts.gstatic.com}
       AIQSA_ARTIFACT_IMAGE_HOSTS: ${AIQSA_ARTIFACT_IMAGE_HOSTS-}
+      AIQSA_NATIVE_ENGINE_USERS: ${AIQSA_NATIVE_ENGINE_USERS:-}
+      # Stand-only injected failures of native runs (test mode only; lib/server/engine/faults.ts).
+      AIQSA_NATIVE_ENGINE_TEST_FAULTS: ${AIQSA_NATIVE_ENGINE_TEST_FAULTS:-}
       AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:-aiqsa-development-session-secret-000000000000000000000000}
       AIQSA_BIND_ADDRESS: 127.0.0.1
       # Published application and data-service ports: personal MCP never

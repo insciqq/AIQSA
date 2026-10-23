@@ -92,10 +92,21 @@ const PROFILES: Readonly<Record<TokenEstimateFamily, TokenEstimateProfile>> = {
 /** OpenAI model identifiers (GPT, o-series, Codex): o200k tokenization. */
 const OPENAI_MODEL_ID = /^(?:gpt-|chatgpt-|codex-|o[1-9](?:$|[-.]))/iu;
 
+/** OpenRouter model ids whose vendor prefix names a calibrated tokenizer
+ * family that shares the conservative image policy (spike 1, 2026-10-23:
+ * `google/*` counted like native Gemini, far below the unknown profile).
+ * Other vendors keep the unknown profile: `openai/` and `anthropic/` would
+ * also switch the image estimate, which shares this family key. */
+const OPENROUTER_MODEL_FAMILIES: Readonly<Record<string, TokenEstimateFamily>> = {
+  deepseek: "deepseek",
+  google: "gemini"
+};
+
 /**
  * The profile for an admitted provider family. OpenAI-compatible routes are
- * OpenAI only for OpenAI model identifiers (codex-lb); other compatible
- * endpoints, OpenRouter and unrecognized families take the unknown profile.
+ * OpenAI only for OpenAI model identifiers (codex-lb); OpenRouter routes take
+ * the family their model's vendor prefix names, where calibrated; other
+ * compatible endpoints and unrecognized families take the unknown profile.
  * The verification-only fake provider has no tokenizer and keeps the
  * character weights (null).
  */
@@ -113,6 +124,12 @@ export function tokenEstimateProfileFor(input: Readonly<{
       return PROFILES[input.provider];
     case "openai_compatible":
       return OPENAI_MODEL_ID.test(input.modelId?.trim() ?? "") ? PROFILES.openai : PROFILES.unknown;
+    case "openrouter": {
+      const vendor = /^([a-z0-9-]+)\//u.exec(input.modelId?.trim().toLowerCase() ?? "")?.[1];
+      const family = vendor !== undefined && Object.hasOwn(OPENROUTER_MODEL_FAMILIES, vendor)
+        ? OPENROUTER_MODEL_FAMILIES[vendor] : undefined;
+      return PROFILES[family ?? "unknown"];
+    }
     default:
       return PROFILES.unknown;
   }
