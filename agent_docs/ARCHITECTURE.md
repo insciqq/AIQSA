@@ -31,7 +31,7 @@ Process and deployment shape, dependency direction, and every place data leaves 
 
 ## Data stores
 
-PostgreSQL is canonical. Object storage is private, never a public file host. OpenSearch is a rebuildable candidate index: PostgreSQL reauthorizes every hit. Browsers receive explicit allowlisted projections, never storage objects or upstream formats. See `agent_docs/PERSISTENCE.md`.
+PostgreSQL is canonical and the only search store: the separate search index service was removed (operator decision 2026-10-23). Object storage is private, never a public file host. Browsers receive explicit allowlisted projections, never storage objects or upstream formats. See `agent_docs/PERSISTENCE.md`.
 
 ## Where data leaves the installation
 

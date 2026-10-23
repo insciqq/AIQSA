@@ -70,7 +70,7 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 | MCP and OAuth | Deterministic protocol and security tests, then the relevant disposable runtime. Hosted consent and upstream OAuth need their own authority. |
 | Workspace and KVM | Policy, protocol and output tests, disposable database race checks, image builds, isolated browser flows, then opt-in real KVM evidence covering execution loss, Stop, runner restart, export and recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
 | Upload parsers | Deterministic routing, bounds and decoders, then the disposable parser smoke; a stopped parser must degrade locally without breaking readiness. |
-| Memory, Knowledge, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence and concurrency, and an isolated OpenSearch for retrieval or index changes. Integrity and rebuild output stays content-free. |
+| Memory, Knowledge, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence, concurrency and retrieval. Integrity and rebuild output stays content-free. |
 | Publishing (push, PR) | `npm run release:privacy:check` and the root final review; reuse existing verification. Publishing still needs an explicit request. |
 
 ## Images and releases
