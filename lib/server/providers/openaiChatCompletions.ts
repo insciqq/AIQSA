@@ -23,8 +23,15 @@ import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 import { providerResponseFailure } from "./responseFailure";
 import { markProviderErrorDetail } from "./providerErrorCode";
+import { chatHistoryFromMessage } from "./history";
 
 export type OpenAIChatCompletionsRecord = Readonly<Record<string, unknown>>;
+
+/** The message as neutral history, omitted when it holds none. */
+function chatResultHistory(message: unknown): Pick<ProviderRunResult, "history"> {
+  const history = chatHistoryFromMessage(message);
+  return history.length > 0 ? { history } : {};
+}
 
 type OpenAIChatCompletionsContext = Readonly<{
   modelId: string;
@@ -347,6 +354,7 @@ export async function* streamOpenAIChatJsonResponse<
       rawFinalText
     ),
     finalText,
+    ...chatResultHistory(firstOpenAIChatMessage(response)),
     providerToolCallMessage: firstOpenAIChatMessage(response) ?? undefined,
     providerResponseId,
     toolCalls,
@@ -649,6 +657,7 @@ export async function* streamOpenAIChatSseResponse<
       rawText
     ),
     finalText,
+    ...chatResultHistory({ ...message, ...extensionResult?.continuationFields }),
     providerToolCallMessage: { ...message, ...extensionResult?.continuationFields },
     providerResponseId: responseId,
     toolCalls,
