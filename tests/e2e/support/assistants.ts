@@ -209,6 +209,7 @@ export function createAssistantFixture(
       requestIds.clear();
       if (chats.length + assistants.length + publications.length + requests.length === 0) return;
       await prisma.$transaction(async (tx) => {
+        await deleteChatWorkspaces(tx, { id: { in: chats } });
         await tx.chat.deleteMany({ where: { id: { in: chats } } });
         await tx.assistantListingRequest.deleteMany({ where: { id: { in: requests } } });
         await tx.assistantPublication.deleteMany({ where: { id: { in: publications } } });
@@ -354,4 +355,15 @@ export function createAssistantFixture(
       assistantIds.add(assistantId);
     }
   };
+}
+
+/**
+ * The Workspace rows of the given chats, which restrict deleting a chat: a
+ * run binds its chat's Workspace session whenever the installation offers
+ * Workspace, even when no command ran.
+ */
+export async function deleteChatWorkspaces(tx: Prisma.TransactionClient, chat: Prisma.ChatWhereInput): Promise<void> {
+  await tx.workspaceCleanupJob.deleteMany({ where: { workspaceSession: { chat } } });
+  await tx.workspaceRunBinding.deleteMany({ where: { workspaceSession: { chat } } });
+  await tx.workspaceSession.deleteMany({ where: { chat } });
 }

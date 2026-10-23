@@ -7,7 +7,7 @@ import {
   MEMORY_TEMPORARY_DELETION_GENERATION,
   MEMORY_TEMPORARY_DELETION_TARGET_TYPE
 } from "../../../lib/server/memory/temporaryRetention";
-import { deleteAssistantRows } from "./assistants";
+import { deleteAssistantRows, deleteChatWorkspaces } from "./assistants";
 import { loginWithPassword } from "./workspace";
 
 /**
@@ -217,6 +217,7 @@ async function deleteUserChats(tx: Prisma.TransactionClient, userIds: readonly s
       userId: { in: users }
     }
   });
+  await deleteChatWorkspaces(tx, { userId: { in: users } });
   await tx.chat.deleteMany({ where: { userId: { in: users } } });
   await tx.memoryDeletionOutbox.deleteMany({ where: { userId: { in: users } } });
 }
