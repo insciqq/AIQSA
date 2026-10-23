@@ -51,7 +51,7 @@ const OBSERVED_CODES = Object.freeze({ busy: "tool_observation_busy", budget_deg
 /** Content-free store/budget/queue counters. Skills are source-owned and never
  * reach object storage or the branch budget. */
 function observe(source: string, event: keyof typeof OBSERVED_CODES): void {
-  if (source !== "mcp" && source !== "workspace" && source !== "search" && source !== "knowledge") return;
+  if (source !== "mcp" && source !== "workspace" && source !== "search") return;
   const code = OBSERVED_CODES[event];
   if (event === "store_failed") {
     logEvent("tool_execution", { tool_kind: source, stage: "result", outcome: "failed", code, reason: "unknown", action: "degrade" });
