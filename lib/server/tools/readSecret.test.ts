@@ -89,8 +89,7 @@ describe("read_secret", () => {
   });
 
   it("turns a store failure into a content-free refusal and propagates cancellation", async () => {
-    const failing = source();
-    failing.list = vi.fn(async () => { throw new WorkspaceSecretError("workspace_secret_unavailable"); });
+    const failing = { ...source(), list: vi.fn(async () => { throw new WorkspaceSecretError("workspace_secret_unavailable"); }) };
     const result = await executeReadSecret(failing, call("Notes"), context);
     expect(value(result)).toEqual({ code: "read_secret_unavailable", message: "Saved secrets could not be read right now. Try again once; if it fails again, tell the user." });
     const controller = new AbortController();
