@@ -52,6 +52,7 @@ export function nativeEngineFake(options: Readonly<{
         approvalContinuationTurns: async () => new Set(),
         loadRuns: async () => new Map(),
         nativeRunsForAnswers: async () => new Map(),
+        retiredRunEffects: async () => [],
         nextSequence: async () => transcript.length,
         runLive: async () => true
       }

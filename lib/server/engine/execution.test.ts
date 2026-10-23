@@ -54,6 +54,7 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
     loadRuns: vi.fn(async () => new Map()),
     nativeRunsForAnswers: vi.fn(async () => new Map()),
+    retiredRunEffects: vi.fn(async () => []),
     nextSequence: vi.fn(async () => transcriptRows.length),
     runLive: vi.fn(async () => true)
   } satisfies TranscriptRepository;

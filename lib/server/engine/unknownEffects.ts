@@ -40,6 +40,42 @@ function parsedArguments(value: string): Record<string, unknown> | null {
   }
 }
 
+/** A branch message as `withRetiredEffects` places by it. */
+type BranchMessage = Readonly<{ contextTurnId?: string; id: string; purpose?: unknown; role: string }>;
+
+/**
+ * The conversation's items with the effect records of the old core's runs on
+ * the branch (`TranscriptRepository.retiredRunEffects`) in their place, for
+ * `unknownEffectsOf` only: each run's records follow its turn and come before
+ * the branch's next user message, so the user's later words and a later
+ * equivalent call that completed count after them. A run whose question is
+ * not on the branch any more comes first. The model never sees these items;
+ * old answers stay text.
+ */
+export function withRetiredEffects(items: readonly TranscriptItem[], messages: readonly BranchMessage[],
+  retired: readonly Readonly<{ items: readonly TranscriptItem[]; userMessageId: string }>[]): TranscriptItem[] {
+  if (retired.length === 0) return [...items];
+  const itemIndex = new Map(items.map((item, index) => [item.id, index]));
+  const turns = messages.filter((message) => message.role === "user" && message.purpose === undefined &&
+    message.contextTurnId === undefined);
+  const before = new Map<number, TranscriptItem[]>();
+  for (const run of retired) {
+    const turn = turns.findIndex((message) => message.id === run.userMessageId);
+    let at = turn < 0 ? 0 : items.length;
+    if (turn >= 0) {
+      for (const next of turns.slice(turn + 1)) {
+        const index = itemIndex.get(`msg-${next.id}`);
+        if (index !== undefined) {
+          at = index;
+          break;
+        }
+      }
+    }
+    before.set(at, [...(before.get(at) ?? []), ...run.items]);
+  }
+  return [...items.flatMap((item, index) => [...(before.get(index) ?? []), item]), ...(before.get(items.length) ?? [])];
+}
+
 export function createUnknownEffects(): UnknownEffects {
   // Per effect: the user had spoken since it became unknown.
   const unknown = new Map<string, { userSpokeSince: boolean }>();

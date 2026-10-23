@@ -53,7 +53,7 @@ import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
 import { modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptTarget, type TranscriptUserItem } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
-import { unknownEffectsOf } from "./unknownEffects";
+import { unknownEffectsOf, withRetiredEffects } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 
 /**
@@ -341,15 +341,21 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // a turn the server wrote: an approval continuation, an answer review step or a scheduled task's prompt.
         const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true ||
           normalizedRequest.answerReviewStep !== undefined;
+        // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
+        const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
+          userId: input.userId, userMessageIds: [...new Set([input.created.userMessageId, ...contextMessages
+            .filter((message) => message.role === "user" && message.purpose === undefined && message.contextTurnId === undefined)
+            .map((message) => message.id)])] });
+        const effectItems = withRetiredEffects(conversation.items, contextMessages, retiredEffects);
         // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
-        const firstCall = conversation.items.findIndex((item) => item.kind === "tool_call");
-        const laterItems = new Set(firstCall < 0 ? [] : conversation.items.slice(firstCall).map((item) => item.id));
+        const firstCall = effectItems.findIndex((item) => item.kind === "tool_call");
+        const laterItems = new Set(firstCall < 0 ? [] : effectItems.slice(firstCall).map((item) => item.id));
         const laterTurns = contextMessages.slice(0, -1)
           .filter((message) => message.role === "user" && laterItems.has(`msg-${message.id}`)).map((message) => message.id);
         const serverWritten = await serverWrittenTurns(input.repository, { chatId: scope.chatId, messageIds: laterTurns,
           userId: input.userId });
         const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
-        const unknownEffects = unknownEffectsOf(conversation.items, (item) => item.followup === true ||
+        const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true ||
           (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
 
         let base = input.prepared.providerRequest;
