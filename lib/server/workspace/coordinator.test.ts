@@ -789,7 +789,7 @@ describe("Workspace coordinator", () => {
       expect(value.runtime.callBoundTool).toHaveBeenCalledTimes(2);
     });
 
-  it("masks delivered secret values before the result is persisted, sent to a provider or shown", async () => {
+  it("delivers saved secret values in output unmasked to the persisted row, provider projection and activity", async () => {
     const value = fixture();
     const token = "synthetic-token-0123456789";
     vi.mocked(value.repository.personalSecrets).mockResolvedValue([{ id: "10000000-0000-4000-8000-000000000001",
@@ -808,13 +808,13 @@ describe("Workspace coordinator", () => {
     const provider = JSON.stringify([openAIResponsesToolBridge.appendToolResult({}, result),
       anthropicMessagesToolBridge.appendToolResult({}, result)]);
     for (const surface of [persisted, provider, JSON.stringify(result)]) {
-      expect(surface).toContain("[secret:MY_TOKEN]");
-      expect(surface).not.toContain(token);
+      expect(surface).toContain(token);
+      expect(surface).not.toContain("[secret:MY_TOKEN]");
     }
-    expect(result.rawPreview).toMatchObject({ secretMasked: true });
+    expect(result.rawPreview).not.toHaveProperty("secretMasked");
     const settled = (result.artifacts ?? []).map((event) => (event.data as { payload: ThreadWorkspaceActivityEntry }).payload);
-    expect(settled.at(-1)?.command).toMatchObject({ secretMasked: true, stdoutPreview: "[secret:MY_TOKEN]\n" });
-    expect(JSON.stringify([activity, settled])).not.toContain(token);
+    expect(settled.at(-1)?.command).toMatchObject({ preview: "echo $MY_TOKEN", stdoutPreview: `${token}\n` });
+    expect(settled.at(-1)?.command).not.toHaveProperty("secretMasked");
   });
 
   it("does not adopt a later operation generation during an old finalizer's settlement", async () => {

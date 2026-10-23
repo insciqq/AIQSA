@@ -45,7 +45,7 @@ export const WORKSPACE_SKILLS_GUIDANCE = [
   "",
   "## Secrets",
   "- Read credentials only from environment variables (`os.environ[\"GITLAB_TOKEN\"]`); /workspace/SECRETS.md lists the names. If one is missing, exit with a message naming the variable.",
-  "- Never write a value into any file: save_skill refuses a folder that contains one. Never print or log values, auth headers or URLs with tokens; output masking is a safety net, not permission.",
+  "- Never write a value into any file: save_skill refuses a folder that contains one. Never print or log values, auth headers or URLs with tokens: command output is not masked and reaches the chat.",
   "",
   "## MCP tools from code",
   "```",
