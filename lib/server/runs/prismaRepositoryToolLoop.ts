@@ -206,6 +206,20 @@ export async function appendRunOutputEvents(
       }
       updates.set(key, event);
     }
+    // A resource change card is kept once: the call's settlement appends it
+    // (`lib/server/tools/selfServiceCallStore.ts`) and the native engine then
+    // publishes the call's result, card included. Equal cards are one change:
+    // a change names the version it left, a proposal its own identity.
+    if (event.type === "artifact" && event.data.artifactType === "resource_change") {
+      const key = `resource_change:${canonicalJson(event.data.payload as unknown as ToolLoopJsonValue)}`;
+      if (updates.has(key) || await tx.modelRunEvent.findFirst({ select: { sequence: true }, where: {
+        eventType: "artifact", modelRunId: runId, payload: { equals: json(event.data) }
+      } })) {
+        published.push(event);
+        continue;
+      }
+      updates.set(key, event);
+    }
     if (event.type === "grounding_display") {
       if (lastGrounding && canonicalJson(lastGrounding as ToolLoopJsonValue) ===
         canonicalJson(event.data)) {
