@@ -133,6 +133,12 @@ enum ModelRunStatus {
   error
 }
 
+/// The engine that executes a run: `v1` is the old run core, `native` the agent engine.
+enum ModelRunEngine {
+  v1
+  native
+}
+
 enum WorkspaceFollowupState {
   waiting
   preparing
@@ -3974,6 +3980,9 @@ model ModelRun {
   provider                     String
   modelId                      String
   status                       ModelRunStatus
+  /// Fixed at admission. Each engine's recovery and background claims touch only
+  /// its own runs; previous writers omit the column and create `v1` runs.
+  engine                       ModelRunEngine                      @default(v1)
   normalizedRequest            Json?
   providerResponseId           String?
   inputTokens                  Int?
