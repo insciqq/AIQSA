@@ -25,6 +25,10 @@ export const RETIRED_AGENT_FAILURE = {
   message: "Agent mode was removed, so this answer stopped. Nothing it started was replayed. Send the message again to continue."
 } as const;
 
+/** The failure codes this sweep writes on the old core's runs (`engine = v1`):
+ * an upgrade ended them, nothing in AIQSA failed (admin attention leaves them out). */
+export const RETIRED_ENGINE_FAILURE_CODES: readonly string[] = [RETIRED_AGENT_FAILURE.code, RUN_INTERRUPTED_FAILURE.code];
+
 const RETIRED_RUN_BATCH = 100;
 
 export type RetiredEngineRun = Readonly<{ assistantMessageId: string | null; id: string; normalizedRequest: unknown; userId: string }>;
