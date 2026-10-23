@@ -202,39 +202,31 @@ describe("scheduled task end to end", () => {
     }
   });
 
-  it("runs an allowlisted owner's occurrences on the native engine, continuing one chat from the flat context", async () => {
+  it("runs an owner's occurrences on the agent engine, continuing one chat from the flat context", async () => {
     const { task, userId } = await ownerWithTask("SAME");
-    const listed = process.env.AIQSA_NATIVE_ENGINE_USERS;
-    // The allowlist is read for every admission, so this owner alone runs natively.
-    process.env.AIQSA_NATIVE_ENGINE_USERS = userId;
-    try {
-      const scheduler = runner();
-      await scheduler.tick();
-      await scheduler.idle();
-      const chatId = (await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).chatId!;
-      await ownerMessage(userId, task.id, chatId, "Synthetic owner question");
-      await due(task.id);
-      await scheduler.tick();
-      await scheduler.idle();
+    const scheduler = runner();
+    await scheduler.tick();
+    await scheduler.idle();
+    const chatId = (await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).chatId!;
+    await ownerMessage(userId, task.id, chatId, "Synthetic owner question");
+    await due(task.id);
+    await scheduler.tick();
+    await scheduler.idle();
 
-      const occurrences = await prisma.scheduledTaskOccurrence.findMany({ orderBy: { scheduledFor: "asc" }, where: { taskId: task.id } });
-      expect(occurrences.map((row) => [row.state, row.reasonCode])).toEqual([["COMPLETED", null], ["COMPLETED", null]]);
-      const runs = await prisma.modelRun.findMany({ orderBy: { createdAt: "asc" }, where: { userId } });
-      // Both occurrences and the owner's own message ran natively and kept their answers in the transcript.
-      expect(runs.map((run) => [run.engine, run.status])).toEqual([["native", "complete"], ["native", "complete"], ["native", "complete"]]);
-      for (const run of runs) expect(await prisma.runTranscriptItem.count({ where: { modelRunId: run.id } })).toBeGreaterThan(0);
-      const second = runs.find((run) => run.id === occurrences[1]!.runId)!;
-      expect(second).toMatchObject({ chatId, scheduledOccurrenceId: occurrences[1]!.id, scheduledTaskId: task.id });
-      // Its model saw only the previous result and the prompt, never the owner's turn in between.
-      const answer = text((await prisma.message.findUniqueOrThrow({ where: { id: second.assistantMessageId! } })).content);
-      expect(answer).toContain("Context memory: Summarize the synthetic fixture");
-      expect(answer).not.toContain("Synthetic owner question");
-      expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
-        .toMatchObject({ baselineRunId: second.id, consecutiveFailures: 0, status: "ACTIVE" });
-    } finally {
-      if (listed === undefined) delete process.env.AIQSA_NATIVE_ENGINE_USERS;
-      else process.env.AIQSA_NATIVE_ENGINE_USERS = listed;
-    }
+    const occurrences = await prisma.scheduledTaskOccurrence.findMany({ orderBy: { scheduledFor: "asc" }, where: { taskId: task.id } });
+    expect(occurrences.map((row) => [row.state, row.reasonCode])).toEqual([["COMPLETED", null], ["COMPLETED", null]]);
+    const runs = await prisma.modelRun.findMany({ orderBy: { createdAt: "asc" }, where: { userId } });
+    // Both occurrences and the owner's own message ran natively and kept their answers in the transcript.
+    expect(runs.map((run) => [run.engine, run.status])).toEqual([["native", "complete"], ["native", "complete"], ["native", "complete"]]);
+    for (const run of runs) expect(await prisma.runTranscriptItem.count({ where: { modelRunId: run.id } })).toBeGreaterThan(0);
+    const second = runs.find((run) => run.id === occurrences[1]!.runId)!;
+    expect(second).toMatchObject({ chatId, scheduledOccurrenceId: occurrences[1]!.id, scheduledTaskId: task.id });
+    // Its model saw only the previous result and the prompt, never the owner's turn in between.
+    const answer = text((await prisma.message.findUniqueOrThrow({ where: { id: second.assistantMessageId! } })).content);
+    expect(answer).toContain("Context memory: Summarize the synthetic fixture");
+    expect(answer).not.toContain("Synthetic owner question");
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
+      .toMatchObject({ baselineRunId: second.id, consecutiveFailures: 0, status: "ACTIVE" });
   });
 
   it("never starts a run its owner paused while the admission was in flight", async () => {

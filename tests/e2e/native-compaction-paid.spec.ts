@@ -5,9 +5,7 @@
  * AIQSA_FEATURES_PAID_E2E=DISPOSABLE plus CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL (the Codex root ending in `/backend-api/codex`);
  * AIQSA_FEATURES_CODEX_MODEL picks the codex-lb model (default as
- * `setupCodexLbAnswerModel`). The stand's app must put the test user on the
- * native engine (AIQSA_NATIVE_ENGINE_USERS='*' or the operator's id or email),
- * as in `native-engine-paid.spec.ts`; every run asserts `ModelRun.engine`.
+ * `setupCodexLbAnswerModel`). Every run asserts `ModelRun.engine`.
  *
  * The model gets a small context window (AIQSA_FEATURES_COMPACTION_WINDOW,
  * default 60,000 tokens, 4,096 of them reserved for output) so a cheap chat
@@ -26,7 +24,7 @@
  * facts, the correction in force. Every route compacts with a summary by
  * default (`COMPACTION_LIFECYCLE.native`), so the item is a summary.
  *
- *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE AIQSA_NATIVE_ENGINE_USERS='*'   # plus the CODEX_LB_* pair
+ *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE   # plus the CODEX_LB_* pair
  *   npx playwright test --project=chromium tests/e2e/native-compaction-paid.spec.ts
  *
  * Inside the disposable Compose stand, pass the same variables with `-e` to
@@ -218,7 +216,7 @@ async function settledRun(runId: string): Promise<ModelRun> {
     return ACTIVE_RUN_STATUSES.includes(current.status) ? null : current;
   }, "native_run_timeout");
   const code = (run.errorPayload as { code?: unknown } | null)?.code;
-  expect(run.engine, "the run ran on the native engine (the stand's app needs AIQSA_NATIVE_ENGINE_USERS)").toBe("native");
+  expect(run.engine, "the run ran on the agent engine").toBe("native");
   expect(run.status, `the run completes (${typeof code === "string" ? code : run.status})`).toBe("complete");
   return run;
 }

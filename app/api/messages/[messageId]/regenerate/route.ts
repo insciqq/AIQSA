@@ -30,7 +30,6 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunH
   getConfig: () => getAuthConfig(),
   ...defaultRunServices(storage),
   chatPdf: getDefaultChatPdf(),
-  // The native engine takes the pilot's runs (`AIQSA_NATIVE_ENGINE_USERS`).
   nativeEngine: defaultNativeEngineHandlerDeps(storage),
   providers: {},
   repository,
