@@ -10,8 +10,6 @@ import type { createAdminSearchService } from "../search/service";
 import type { createAdminModelPolicyService } from "./modelPolicyService";
 import type { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
-import type { createAdminKnowledgeProfileService } from "../knowledge/profileService";
-import { embeddingPresetsForFamily } from "../../../domain/embeddingModels";
 import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 import { DEFAULT_DECISION_FEATURES, JEV_MODEL_ID } from "../../../domain/decisionModels";
 
@@ -22,13 +20,12 @@ const searchProtocols = {
 } as const satisfies Record<AdminSearchProviderModelOption["searchKind"], AdminSearchDraft["protocol"]>;
 
 /** Finish setup through the ordinary, version-fenced owners. Existing
- * destinations stay operator-owned; an empty Knowledge profile adopts vision. */
+ * destinations stay operator-owned. */
 export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
   roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory" | "adoptChatTitle" | "adoptDecisionModel">;
   search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
-  knowledge: Pick<ReturnType<typeof createAdminKnowledgeProfileService>, "list" | "activate">;
 }) {
   return async function complete(value: {
     connectionId: string; credentialId: string; signal: AbortSignal; userId: string;
@@ -152,27 +149,6 @@ export function createAdminProviderBootstrap(input: {
             result.defaults.push(`Chat titles: ${target.displayName}`);
           }
         }
-      }
-    } catch {
-      value.signal.throwIfAborted();
-      result.state = "partial";
-    }
-    try {
-      value.signal.throwIfAborted();
-      const knowledge = await input.knowledge.list();
-      if (!knowledge.activeRevision) {
-        const preferredEmbedding = embeddingPresetsForFamily(connection.family).find((preset) => preset.default)?.upstreamModelId;
-        const embeddingId = connection.models.find((model) => model.activeConfig?.upstreamModelId === preferredEmbedding)?.id;
-        const embeddings = knowledge.availableDestinations.filter((model) => eligible.has(model.deploymentId));
-        const embedding = embeddings.find((model) => model.deploymentId === embeddingId) ?? embeddings[0];
-        const document = knowledge.availablePdfDestinations.find((model) => model.vision && eligible.has(model.deploymentId));
-        if (embedding && document) {
-          value.signal.throwIfAborted();
-          await input.knowledge.activate({ deploymentId: embedding.deploymentId,
-            documentDeploymentId: document.deploymentId, pdfProcessingMode: "system_model_vision",
-            expectedVersion: knowledge.version, signal: value.signal, userId: value.userId });
-          result.defaults.push(`Knowledge: ${embedding.modelDisplayName} · ${document.modelDisplayName}`);
-        } else if (connection.family === "openrouter") result.state = "partial";
       }
     } catch {
       value.signal.throwIfAborted();

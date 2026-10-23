@@ -16,10 +16,10 @@ const row = {
 };
 const entryValue = { byteSize: 10, description: "Work", envNames: ["GITLAB_TOKEN"], id: VALUE_ID, kind: "env", name: "GitLab" };
 
-function prisma(input: { active?: boolean; bound?: boolean; chatUserId?: string; projectId?: string | null; run?: boolean } = {}) {
+function prisma(input: { active?: boolean; bound?: boolean; chatUserId?: string | null; run?: boolean } = {}) {
   return {
     modelRun: { findFirst: vi.fn(async () => input.run === false ? null : {
-      chat: { projectId: input.projectId ?? null, userId: input.chatUserId ?? USER },
+      chat: { userId: input.chatUserId === undefined ? USER : input.chatUserId },
       workspaceRunBinding: input.bound ? { modelRunId: "run_1" } : null
     }) },
     user: { findFirst: vi.fn(async () => input.active === false ? null : { id: USER }) },
@@ -52,14 +52,12 @@ describe("run secret source", () => {
     expect(db.modelRun.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "run_1", userId: USER } }));
   });
 
-  it("gives Project runs no personal secrets", async () => {
-    await expect(createRunSecretSource(prisma({ projectId: "project_1" }) as never, () => KEY).list(scope)).resolves.toEqual([]);
-  });
-
   it.each([
     [{ active: false }],
     [{ run: false }],
-    [{ chatUserId: "user_2" }]
+    [{ chatUserId: "user_2" }],
+    // A chat left from a removed Project has no owner.
+    [{ chatUserId: null }]
   ])("refuses another owner's or an inactive user's run (%j)", async (input) => {
     await expect(createRunSecretSource(prisma(input) as never, () => KEY).list(scope)).rejects.toMatchObject({ code: "workspace_secret_unavailable" });
   });

@@ -62,7 +62,7 @@ describe("runtime launcher", () => {
     expect(result.status).toBe(0);
     const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
     expect(records.filter(record => record.event === "process.started")).toEqual([
-      expect.objectContaining({ attachments: "starting", knowledge: "starting", mcp: "starting", memory: "unknown" })
+      expect.objectContaining({ attachments: "starting", mcp: "starting", memory: "unknown" })
     ]);
   });
 

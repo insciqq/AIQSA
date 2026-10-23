@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { composerSessionKey, projectComposerSessionKey } from "./composerSessionStore";
+import { composerSessionKey } from "./composerSessionStore";
 import { MAX_PENDING_COMMENTS } from "./composerComments";
 import { clearComposerDrafts, COMPOSER_DRAFT_INITIAL_EPOCH, COMPOSER_DRAFT_MAX_AGE_MS, COMPOSER_DRAFT_MAX_ENTRY_SIZE, COMPOSER_DRAFT_MAX_RECORD_SIZE,
   composerDraftEpochKey, composerDraftStorageKey, composerDraftTooLargeToStore, composerInputFitsStoredRecord, createInitialComposerDraftEpoch,
@@ -60,9 +60,9 @@ describe("account-scoped browser drafts", () => {
     unsubscribe();
   });
 
-  it("keeps root, folder, excluded, Project and saved-chat records separate across accounts", () => {
+  it("keeps root, folder, excluded and saved-chat records separate across accounts", () => {
     const keys = [key, composerSessionKey(null), composerSessionKey(null, "folder"),
-      composerSessionKey(null, null, "EXCLUDED"), projectComposerSessionKey("project"), projectComposerSessionKey("project", "folder")];
+      composerSessionKey(null, null, "EXCLUDED"), composerSessionKey(null, "folder", "EXCLUDED")];
     writeComposerDrafts("a", new Map(keys.map((sessionKey, index) => [sessionKey, `text ${index}`])));
     writeComposerDrafts("b", new Map([[key, "other account"]]));
     expect(readComposerDrafts("a").map(record => record.draft)).toEqual(keys.map((_, i) => `text ${i}`));
@@ -76,10 +76,11 @@ describe("account-scoped browser drafts", () => {
       { sessionKey: "chat:future", draft: "future", savedAt: now + 1 },
       { sessionKey: "chat:%", draft: "invalid key", savedAt: now },
       { sessionKey: "blank:temporary:root", draft: "temporary", savedAt: now },
+      { sessionKey: "blank:project:project-1:root", draft: "removed Project", savedAt: now },
       { sessionKey: "chat:valid", draft: "kept", savedAt: now, attachments: [{ id: "never restore" }], workspaceEnabled: true }
     ] }));
     expect(readComposerDrafts("a", now)).toEqual([{ sessionKey: "chat:valid", draft: "kept", savedAt: now }]);
-    expect(localStorage.getItem(composerDraftStorageKey("a"))).not.toMatch(/expired|future|attachments|workspaceEnabled|temporary/u);
+    expect(localStorage.getItem(composerDraftStorageKey("a"))).not.toMatch(/expired|future|attachments|workspaceEnabled|temporary|Project/u);
     localStorage.setItem(composerDraftStorageKey("a"), "{broken");
     expect(readComposerDrafts("a", now)).toEqual([]);
     expect(localStorage.getItem(composerDraftStorageKey("a"))).toBeNull();

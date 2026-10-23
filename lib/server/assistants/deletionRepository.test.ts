@@ -18,20 +18,18 @@ function knownPostgres(code: string): Prisma.PrismaClientKnownRequestError {
   });
 }
 
-/** Fails the first transactions, then commits a deletion that touched one Project. */
+/** Fails the first transactions, then commits a deletion. */
 function clientWithFailures(...failures: unknown[]) {
   const queued = [...failures];
   const transaction = vi.fn(async () => {
     const failure = queued.shift();
     if (failure) throw failure;
-    return { kind: "deleted" as const, projectIds: ["project-1"] };
+    return { kind: "deleted" as const };
   });
-  const notifyProjectEvent = vi.fn();
   const repository = createPrismaAssistantDeletionRepository(
-    { $transaction: transaction } as unknown as PrismaClient,
-    { notifyProjectEvent }
+    { $transaction: transaction } as unknown as PrismaClient
   );
-  return { notifyProjectEvent, repository, transaction };
+  return { repository, transaction };
 }
 
 describe("Prisma Assistant deletion retries", () => {
@@ -64,17 +62,15 @@ describe("Prisma Assistant deletion retries", () => {
       clientVersion: "6.19.3",
       code: "P2034"
     })]
-  ])("retries %s and notifies only after the committed attempt", async (_label, failure) => {
-    const { notifyProjectEvent, repository, transaction } = clientWithFailures(failure);
+  ])("retries %s until an attempt commits", async (_label, failure) => {
+    const { repository, transaction } = clientWithFailures(failure);
 
     await expect(repository.delete("owner", "assistant", 3)).resolves.toEqual({ kind: "deleted" });
     expect(transaction).toHaveBeenCalledTimes(2);
-    expect(notifyProjectEvent).toHaveBeenCalledTimes(1);
-    expect(notifyProjectEvent).toHaveBeenCalledWith("project-1");
   });
 
   it("answers a version conflict after three conflicting attempts", async () => {
-    const { notifyProjectEvent, repository, transaction } = clientWithFailures(
+    const { repository, transaction } = clientWithFailures(
       unknownPostgres("40P01"),
       unknownPostgres("40001"),
       knownPostgres("40P01")
@@ -82,7 +78,6 @@ describe("Prisma Assistant deletion retries", () => {
 
     await expect(repository.delete("owner", "assistant", 3)).resolves.toEqual({ kind: "version_conflict" });
     expect(transaction).toHaveBeenCalledTimes(3);
-    expect(notifyProjectEvent).not.toHaveBeenCalled();
   });
 
   it("does not retry an unrelated database failure", async () => {

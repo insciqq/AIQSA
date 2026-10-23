@@ -1,6 +1,5 @@
 import {
   composerSessionKey,
-  projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
@@ -52,14 +51,10 @@ export type ChatRouteResolution = symbol;
 
 /** A local draft is still its blank chat until its first send is under way. */
 export function chatRouteForChat(
-  chat: Pick<WorkspaceChatSummary, "id" | "pendingPersonalDraft" | "pendingProjectDraft" | "projectId">,
+  chat: Pick<WorkspaceChatSummary, "id" | "pendingPersonalDraft">,
   sending: boolean
 ): ChatRoute {
-  const unsentDraft = Boolean(chat.pendingPersonalDraft || chat.pendingProjectDraft) && !sending;
-  return {
-    chatId: unsentDraft ? null : chat.id,
-    projectId: chat.projectId ?? chat.pendingProjectDraft?.projectId ?? null
-  };
+  return { chatId: chat.pendingPersonalDraft && !sending ? null : chat.id };
 }
 
 /**
@@ -78,12 +73,7 @@ export function chatRouteForState(): ChatRoute {
   const { activeChatId, chats } = useWorkspaceStore.getState();
   const chat = activeChatId ? chats.find((candidate) => candidate.id === activeChatId) : undefined;
   if (chat) return chatRouteForChat(chat, chatSendUnderWay(chat.id));
-  return activeChatId
-    ? { chatId: activeChatId, projectId: null }
-    : {
-        chatId: null,
-        projectId: projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey)
-      };
+  return activeChatId ? { chatId: activeChatId } : BLANK_CHAT_ROUTE;
 }
 
 /** The route the address names; null outside the chat pages, for a malformed id and for an entry address. */
@@ -205,23 +195,18 @@ export function cancelChatRouteResolution(resolution: ChatRouteResolution | null
   if (resolution !== null && pendingResolution === resolution) pendingResolution = null;
 }
 
-export type ChatRouteUnavailable = "assistant" | "chat" | "project" | "projectChat";
+export type ChatRouteUnavailable = "assistant" | "chat";
 
 export type ChatRouteTargets = Readonly<{
-  /** Opens a personal chat; a chat readable only inside its Project reports that Project. */
-  openChat(chatId: string): Promise<"failed" | "missing" | "opened" | Readonly<{ projectId: string }>>;
-  /** Opens a Project and then its chat; `project` means only the Project opened. */
-  openProject(
-    projectId: string,
-    chatId: string | null
-  ): Promise<"opened" | "project" | "superseded" | "unavailable">;
+  /** Opens a personal chat. */
+  openChat(chatId: string): Promise<"failed" | "missing" | "opened">;
   /**
    * Starts the open personal new chat with an Assistant (null for a malformed
    * id). `unavailable` leaves it without an Assistant; `opened` also covers a
    * new chat the user moved on from before the Assistant resolved.
    */
   openAssistant(assistantId: string | null): Promise<"opened" | "unavailable">;
-  /** Shows the personal new chat, leaving any Project. */
+  /** Shows the personal new chat. */
   openBlank(): void;
   showUnavailable(target: ChatRouteUnavailable): void;
   /** The route of the state the shell now shows. */
@@ -242,17 +227,6 @@ export async function resolveChatRoute(
   targets: ChatRouteTargets
 ): Promise<ChatRoute | null> {
   const current = () => isCurrentChatRouteResolution(resolution);
-  const openProject = async (target: Readonly<{ chatId: string | null; projectId: string }>) => {
-    const outcome = await targets.openProject(target.projectId, target.chatId);
-    if (!current() || outcome === "superseded") return false;
-    if (outcome === "unavailable") {
-      targets.openBlank();
-      targets.showUnavailable(target.chatId ? "projectChat" : "project");
-    } else if (outcome === "project" && target.chatId) {
-      targets.showUnavailable("projectChat");
-    }
-    return true;
-  };
   let settled: ChatRoute | null = null;
   try {
     if (!current()) return null;
@@ -264,17 +238,12 @@ export async function resolveChatRoute(
       const outcome = await targets.openAssistant(route.assistantId);
       if (!current()) return null;
       if (outcome === "unavailable") targets.showUnavailable("assistant");
-    } else if (route.projectId) {
-      if (!await openProject({ chatId: route.chatId, projectId: route.projectId })) return null;
     } else if (route.chatId) {
       const outcome = await targets.openChat(route.chatId);
       if (!current() || outcome === "failed") return null;
       if (outcome === "missing") {
         targets.openBlank();
         targets.showUnavailable("chat");
-      } else if (outcome !== "opened" &&
-        !await openProject({ chatId: route.chatId, projectId: outcome.projectId })) {
-        return null;
       }
     } else {
       targets.openBlank();

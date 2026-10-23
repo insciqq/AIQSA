@@ -6,7 +6,6 @@ import { useState } from "react";
 import { AssistantGalleryV2 } from "@/features/library-v2/assistants/gallery/AssistantGalleryV2";
 import {
   FilesPanelV2,
-  KnowledgePanelV2,
   LibraryV2,
   SectionHeading,
   MemoryPanelV2
@@ -24,40 +23,12 @@ export type LibraryGalleryStateV2 =
   | "assistants"
   | "dirty"
   | "files"
-  | "knowledge"
   | "memory"
   | "memory-disabled"
   | "skills";
 
 const assistants = ASSISTANT_FIXTURE_SUMMARIES.filter((assistant) =>
   ["research-analyst", "translator", "sales-brief"].includes(assistant.id));
-
-const bases = [
-  {
-    description: "Утверждённые продуктовые решения и критерии готовности.",
-    sourceCount: 18,
-    id: "product",
-    name: "Product decisions",
-    owned: true,
-    status: "ready" as const
-  },
-  {
-    description: "Материалы квартального исследования, индекс строится.",
-    sourceCount: 9,
-    id: "research",
-    name: "Research 2026",
-    owned: true,
-    status: "processing" as const
-  },
-  {
-    description: "Общая база команды поддержки.",
-    sourceCount: 42,
-    id: "support",
-    name: "Support handbook",
-    owned: false,
-    status: "ready" as const
-  }
-] as const;
 
 const files = [
   {
@@ -181,13 +152,11 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
   const disabled = state === "memory-disabled";
   const sectionLabel = initialTab === "assistants"
     ? "Assistants"
-    : initialTab === "knowledge"
-      ? "Knowledge"
-      : initialTab === "files"
-        ? "Files"
-        : initialTab === "memory"
-          ? "Memory"
-          : "Skills";
+    : initialTab === "files"
+      ? "Files"
+      : initialTab === "memory"
+        ? "Memory"
+        : "Skills";
 
   if (closed) {
     return (
@@ -237,7 +206,6 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
             id: "assistants",
             label: "Assistants"
           },
-          { content: <KnowledgePanelV2 bases={bases} />, id: "knowledge", label: "Knowledge" },
           {
             content: <FilesPanelV2 files={files} onOpen={() => setClosed(true)} onUse={() => setClosed(true)} />,
             id: "files",

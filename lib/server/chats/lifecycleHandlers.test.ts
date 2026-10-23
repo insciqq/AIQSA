@@ -26,7 +26,6 @@ const archivedSummary = {
   activeLeafMessageId: "message-1",
   archived: true as const,
   createdAt: updatedAt,
-  defaultKnowledgePlan: null,
   defaultModelId: null,
   defaultProvider: null,
   folderId: null,

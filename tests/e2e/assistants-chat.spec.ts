@@ -511,12 +511,12 @@ test("changing an adjustable model keeps the Assistant and reads changed for thi
   });
 });
 
-test("fixed Search, MCP, Knowledge and Skills keep their chips with one dot, and each menu opens with Fixed by the Assistant over disabled options · A-13", async ({ browser }, testInfo) => {
+test("fixed Search, MCP and Skills keep their chips with one dot, and each menu opens with Fixed by the Assistant over disabled options · A-13", async ({ browser }, testInfo) => {
   test.setTimeout(300_000);
   await withFixtures(async ({ assistants, people }) => {
     const user = await chatUser(people, "Fixed rows user");
     const page = await signIn(people, browser, user);
-    // The helper's defaults fix the model, Search Off, MCP Off, Knowledge None and Skills Auto.
+    // The helper's defaults fix the model, Search Off, MCP Off and Skills Auto.
     const assistant = await assistants.create(page.request, { name: "Locked researcher" });
     await pickInHeader(page, assistant);
     const fixedBy = `Fixed by ${assistant.name}`;
@@ -529,7 +529,6 @@ test("fixed Search, MCP, Knowledge and Skills keep their chips with one dot, and
     await expect(modelPickerDialog(page)).toHaveCount(0);
 
     const chips = {
-      knowledge: { chip: page.getByRole("button", { name: "Choose Knowledge" }), description: `Knowledge: Off · ${fixedBy}` },
       mcp: { chip: page.getByRole("button", { name: "Change MCP mode" }), description: mcpChipDescription(`MCP: Off · ${fixedBy}`) },
       search: { chip: page.getByRole("button", { name: /^Choose web search/u }), description: `Search: Off · ${fixedBy}` },
       skills: { chip: page.getByRole("button", { name: "Change Skills mode" }), description: `Skills: Auto · ${fixedBy}` }
@@ -562,13 +561,6 @@ test("fixed Search, MCP, Knowledge and Skills keep their chips with one dot, and
     await page.keyboard.press("Escape");
     await expect(skillsMenu).toHaveCount(0);
 
-    const knowledgeMenu = page.getByRole("menu", { name: "Knowledge" });
-    await chips.knowledge.chip.click();
-    await expect(knowledgeMenu.getByTestId("assistant-row-provenance")).toHaveText(fixedBy);
-    await expect(knowledgeMenu.getByRole("menuitemradio", { name: /^Off/u })).toBeDisabled();
-    await page.keyboard.press("Escape");
-    await expect(knowledgeMenu).toHaveCount(0);
-
     const searchDialog = page.getByRole("dialog", { name: "Web search" });
     await chips.search.chip.click();
     await expect(searchDialog.getByTestId("assistant-row-provenance")).toHaveText(fixedBy);
@@ -580,7 +572,6 @@ test("fixed Search, MCP, Knowledge and Skills keep their chips with one dot, and
     for (const [name, overlay, chip] of [
       ["chat-chip-mcp-fixed", mcpMenu, chips.mcp.chip],
       ["chat-chip-skills-fixed", skillsMenu, chips.skills.chip],
-      ["chat-chip-knowledge-fixed", knowledgeMenu, chips.knowledge.chip],
       ["chat-chip-search-fixed", searchDialog, chips.search.chip]
     ] as const) {
       await captureOpen(page, testInfo, name, overlay, () => chip.click(), {
@@ -977,7 +968,7 @@ test("a default Assistant starts every new personal chat with its intro; Remove 
 
     await runAccountMenuAction(page, "Chat defaults");
     const row = page.getByTestId("settings-default-assistant");
-    await expect(row).toContainText("Starts every new personal chat. Projects use their own.");
+    await expect(row).toContainText("Starts every new personal chat.");
     const trigger = row.getByRole("button", { name: "Default Assistant" });
     await expect(trigger).toBeEnabled();
     const saved = page.waitForResponse((response) =>
@@ -1343,7 +1334,7 @@ test("at 390×844 the strip takes one row without page scroll, the picker is a b
     await expect(selector(page)).toHaveAccessibleName(`Assistant: ${shown[0]}`);
     const chipRow = page.locator('[aria-label="Active capabilities"]');
     const chips = chipRow.getByRole("button");
-    for (const name of ["Choose Knowledge", "Change MCP mode", "Change Skills mode"]) {
+    for (const name of ["Change MCP mode", "Change Skills mode"]) {
       await expect(chipRow.getByRole("button", { name })).toBeVisible();
     }
     await expect(chipRow.getByRole("button", { name: /^Choose web search/u })).toBeVisible();
@@ -1351,7 +1342,7 @@ test("at 390×844 the strip takes one row without page scroll, the picker is a b
       .map((element) => element.getBoundingClientRect())
       .filter((rect) => rect.width > 0)
       .map((rect) => ({ bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top })));
-    expect(boxes.length).toBeGreaterThanOrEqual(4);
+    expect(boxes.length).toBeGreaterThanOrEqual(3);
     for (const [index, rect] of boxes.entries()) {
       expect(rect.left, `chip ${index + 1} left`).toBeGreaterThanOrEqual(0);
       expect(rect.right, `chip ${index + 1} right`).toBeLessThanOrEqual(390);

@@ -219,7 +219,7 @@ describe("artifact authorized projections", () => {
     expect(findChats).toHaveBeenCalledOnce();
     expect(findChats).toHaveBeenCalledWith({ where: {
       id: { in: ["visible", "archived", "foreign", "deleted", "visible"] },
-      userId: "owner", projectId: null, archived: false, permanentDeletionAt: null
+      userId: "owner", archived: false, permanentDeletionAt: null
     }, select: { id: true } });
   });
 
@@ -230,7 +230,7 @@ describe("artifact authorized projections", () => {
     ], new Map([["k-html", page]]));
     await expect(run([{ path: "index.html", mimeType: "text/html", asset_ref: "html" }, { path: "copy.html", mimeType: "text/html", asset_ref: "html" }]))
       .rejects.toThrow("stop_before_persistence");
-    expect(findMany).toHaveBeenCalledWith({ where: { id: { in: ["html"] }, userId: "owner", projectId: null, chatId: "chat",
+    expect(findMany).toHaveBeenCalledWith({ where: { id: { in: ["html"] }, userId: "owner", chatId: "chat",
       OR: [{ id: { in: ["html", "image"] } }, { producerModelRunId: "run" }] },
     select: { id: true, mimeType: true, storageKey: true, byteSize: true, checksum: true, status: true } });
     expect(getObject).toHaveBeenCalledTimes(1);
@@ -304,7 +304,7 @@ describe("artifact authorized projections", () => {
     await expect(service.validateEditTarget(input)).resolves.toEqual({ ok: true, artifactId: "artifact", versionId: "version" });
     expect(binding).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
       artifactId: "artifact", chatId: "chat", artifact: { ownerUserId: "owner", archivedAt: null },
-      chat: { userId: "owner", projectId: null, memoryMode: { not: "TEMPORARY" }, archived: false, permanentDeletionAt: null }
+      chat: { userId: "owner", memoryMode: { not: "TEMPORARY" }, archived: false, permanentDeletionAt: null }
     }) }));
     artifact.mockResolvedValueOnce(null);
     await expect(service.validateEditTarget(input)).resolves.toEqual({ ok: false, code: "artifact_edit_unavailable" });
@@ -579,8 +579,8 @@ describe("owner route file references", () => {
     expect(created.status).toBe(400);
     await expect(created.json()).resolves.toEqual({ error: "artifact_asset_unavailable" });
     expect(findMany).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ where: {
-      id: { in: ["temporary-chat-file"] }, userId: "owner", projectId: null,
-      OR: [{ chat: { userId: "owner", projectId: null, memoryMode: { not: "TEMPORARY" }, permanentDeletionAt: null } },
+      id: { in: ["temporary-chat-file"] }, userId: "owner",
+      OR: [{ chat: { userId: "owner", memoryMode: { not: "TEMPORARY" }, permanentDeletionAt: null } },
         { chatId: null, messageId: null, savedAt: null }]
     } }));
     expect(getObject).not.toHaveBeenCalled();

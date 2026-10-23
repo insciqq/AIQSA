@@ -31,10 +31,10 @@ async function authorizedSequence(tx: Prisma.TransactionClient, input: Workspace
   if (!session || session.state === "DELETING" || session.runtimeSandboxId !== input.runtimeSandboxId ||
     session.version !== input.operation.generation || session.operationOwner !== input.operation.owner) return null;
   const binding = await tx.workspaceRunBinding.findUnique({ where: { modelRunId: input.runId }, include: {
-    modelRun: { select: { userId: true, chatId: true, status: true, chat: { select: { userId: true, projectId: true } } } }
+    modelRun: { select: { userId: true, chatId: true, status: true, chat: { select: { userId: true } } } }
   } });
   if (!binding?.browserSessionSequence || binding.workspaceSessionId !== session.id || binding.modelRun.chatId !== session.chatId ||
-    binding.modelRun.userId !== input.userId || binding.modelRun.chat.userId !== input.userId || binding.modelRun.chat.projectId !== null) return null;
+    binding.modelRun.userId !== input.userId || binding.modelRun.chat.userId !== input.userId) return null;
   const runOwner = input.operation.owner === workspaceRunOperationOwner(input.runId);
   const handoffOwner = input.handoffToken && input.operation.owner === `export:${input.runId}:${input.handoffToken}` &&
     binding.exportLeaseToken === input.handoffToken && binding.exportLeaseExpiresAt && binding.exportLeaseExpiresAt > new Date() &&

@@ -14,12 +14,6 @@ import { adoptedChatSetupRows, createPrismaAdoptChatSetup } from "./adoptChatSet
 import type { AssistantRowAvailableResources, AssistantRowContextDefaults } from "./rowResolution";
 import { storedColumnsFromAssistantRows } from "./storedContent";
 
-// Adopting Knowledge rows stays tested as it worked; `rowContext.test.ts` covers Knowledge disabled.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
-
 const parameterControls: ModelParameterControls = {
   background: { defaultValue: false, supported: true },
   maxOutputTokens: { defaultValue: 4096, maxValue: 128_000 },
@@ -30,16 +24,12 @@ const parameterControls: ModelParameterControls = {
 
 const defaults: AssistantRowContextDefaults = {
   controlsForModel: () => ({}),
-  knowledge: { mode: "none" },
   modelId: "model-default",
   search: { mode: "off" },
   tools: { mode: "auto" }
 };
 
 const available: AssistantRowAvailableResources = {
-  allMyKnowledge: true,
-  knowledgeBaseIds: new Set(["kb-1"]),
-  knowledgeSourceIds: new Set(),
   mcpServerIds: new Set(["mcp-1"]),
   modelIds: new Set(["model-a", "model-b", "model-default"]),
   searchOptionIds: new Set(["web-1"]),
@@ -62,7 +52,6 @@ type RowOverrides = Partial<{ [Key in AssistantRowKey]: Partial<AssistantRows[Ke
 function rows(overrides: RowOverrides = {}): AssistantRows {
   const base: AssistantRows = {
     controls: { policy: "adjustable", value: { reasoningEffort: "high" } },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "model", modelId: "model-a" } },
     search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["web-1"] } },
     skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "auto" } },
@@ -81,18 +70,16 @@ describe("adopted chat setup rows", () => {
   it("writes only the chat's rows and keeps every policy", () => {
     const assistant = rows();
     const { adopted, result } = adopt(assistant, {
-      knowledge: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [] },
       search: { mode: "off" },
       skills: { mode: "off" },
       // Fixed: ignored, never adopted.
       tools: { mode: "off" }
     });
-    expect(adopted).toEqual(["search", "knowledge", "skills"]);
+    expect(adopted).toEqual(["search", "skills"]);
     expect(result).toEqual({
       ok: true,
       rows: {
         ...assistant,
-        knowledge: { policy: "adjustable", value: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [] } },
         search: { policy: "adjustable", value: { mode: "off" } },
         skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "off" } }
       }
@@ -119,9 +106,7 @@ describe("adopted chat setup rows", () => {
     ["tools", { tools: { policy: "adjustable" as const } }, { tools: { mode: "auto" as const } }, { tools: { mode: "auto" as const } },
       { mode: "inherit" }],
     ["tools", { tools: { policy: "adjustable" as const } }, { tools: { mode: "off" as const } }, { tools: { mode: "auto" as const } },
-      { mode: "off" }],
-    ["knowledge", {}, { knowledge: { mode: "all_my_knowledge" as const } }, { knowledge: { mode: "all_my_knowledge" as const } },
-      { mode: "inherit" }]
+      { mode: "off" }]
   ] as const)("adopts a %s mode over the user's own resources as inherit when inherit means it", (key, overrides, stored, chatDefaults, value) => {
     const chain = context(chatDefaults as Partial<AssistantRowContextDefaults>);
     expect(adopt(rows(overrides as RowOverrides), stored as ChatAssistantOverrides, chain).result)
@@ -129,8 +114,7 @@ describe("adopted chat setup rows", () => {
   });
 
   it.each([
-    ["tools", { tools: { policy: "adjustable" as const } }, { tools: { mode: "load_all" as const } }, "assistant_mcp_servers_invalid"],
-    ["knowledge", {}, { knowledge: { mode: "all_my_knowledge" as const } }, "assistant_knowledge_bases_invalid"]
+    ["tools", { tools: { policy: "adjustable" as const } }, { tools: { mode: "load_all" as const } }, "assistant_mcp_servers_invalid"]
   ] as const)("refuses a %s value the definition cannot express", (key, overrides, stored, code) => {
     expect(adopt(rows(overrides as RowOverrides), stored as ChatAssistantOverrides).result)
       .toEqual({ code, ok: false, row: key });
@@ -261,7 +245,7 @@ describe("adopting a chat setup", () => {
 
   it.each([
     ["an Assistant the caller does not own", { definition: null }, "not_found"],
-    ["another user's or a Project chat", { chat: null }, "not_found"],
+    ["another user's chat", { chat: null }, "not_found"],
     ["an archived chat", { chat: { archived: true, assistantId: "assistant-1", assistantOverrides: null } }, "not_found"],
     ["a chat bound to another Assistant", { chat: { archived: false, assistantId: "assistant-2", assistantOverrides: null } }, "not_found"],
     ["a stale version", { definition: { archivedAt: null, version: 2 } }, "version_conflict"],
@@ -284,10 +268,10 @@ describe("adopting a chat setup", () => {
     await expect(adopt(input(() => "assistant_model_not_available")))
       .resolves.toEqual({ invalid: "assistant_model_not_available", kind: "invalid" });
     const unexpressible = fakeClient({
-      chat: { archived: false, assistantId: "assistant-1", assistantOverrides: { knowledge: { mode: "all_my_knowledge" } } }
-    });
+      chat: { archived: false, assistantId: "assistant-1", assistantOverrides: { tools: { mode: "load_all" } } }
+    }, rows({ controls: { value: {} }, tools: { policy: "adjustable" } }));
     await expect(createPrismaAdoptChatSetup(unexpressible.client, { loadCatalogData: async () => catalogData() })(input()))
-      .resolves.toEqual({ error: { code: "assistant_knowledge_bases_invalid", ok: false, row: "knowledge" }, kind: "rows_invalid" });
+      .resolves.toEqual({ error: { code: "assistant_mcp_servers_invalid", ok: false, row: "tools" }, kind: "rows_invalid" });
     for (const client of [fake, unexpressible]) {
       expect(client.definitionUpdate).not.toHaveBeenCalled();
       expect(client.chatUpdate).not.toHaveBeenCalled();

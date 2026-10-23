@@ -45,13 +45,7 @@ describe("composer image routes", () => {
     expect(await resolveImageRouteFacts(db, { kind: "personal", userId: "user-1" })).toEqual({ systemVision: true, imageEditing: false });
   });
 
-  it("keeps Project composers on the administrator default without a personal lookup", async () => {
-    runtime.resolveFor.mockResolvedValueOnce(resolved(true, "organization"));
-    expect(await resolveImageRouteFacts(db, { kind: "project" })).toEqual({ systemVision: false, imageEditing: true });
-    expect(runtime.resolveFor).toHaveBeenCalledExactlyOnceWith({ kind: "project" });
-  });
-
-  it("applies one rule to the facts of either scope: routes need tool calling, System Vision a model without image input", () => {
+  it("applies one rule to the facts: routes need tool calling, System Vision a model without image input", () => {
     const model = (toolCalling: boolean, imageInput: boolean) =>
       ({ capabilities: { toolCalling, imageInput } }) as unknown as CatalogWireModel;
     const facts = { systemVision: true, imageEditing: false };

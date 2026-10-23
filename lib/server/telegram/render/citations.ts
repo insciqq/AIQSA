@@ -1,8 +1,8 @@
-import type { ThreadArtifactSummary, ThreadKnowledgeCitation } from "@/lib/contracts/chats";
+import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
 import { safeExternalHref } from "@/lib/domain/links";
 import type { TelegramInputRichBlock, TelegramRichText } from "../botApi";
 
-/** Search sources pass through directly; Knowledge sources can supply a handle and no URL. */
+/** Search sources pass through directly; a source named by handle may have no URL. */
 export type TelegramAnswerSource = Readonly<{
   title: string;
   url?: string | null;
@@ -11,17 +11,17 @@ export type TelegramAnswerSource = Readonly<{
 }>;
 
 /**
- * Accepts artifactSummary.citations and/or artifactSummary.knowledgeCitations.
- * Knowledge handles have no title/URL in that summary: the caller may attach
- * already-authorized metadata here or in sources with the same handle. This
- * renderer never fetches evidence or turns an internal reference into a URL.
+ * Accepts artifactSummary.citations, or citations an answer names by handle
+ * (`[K1]`) with already-authorized metadata here or in sources with the same
+ * handle. This renderer never fetches evidence or turns an internal reference
+ * into a URL.
  */
 export type TelegramAnswerCitation = ThreadArtifactSummary["citations"][number] |
-  (ThreadKnowledgeCitation & Readonly<{ title?: string; url?: string | null }>);
+  Readonly<{ deleted?: true; handle: string; title?: string; url?: string | null }>;
 
 export type TelegramAnswerOptions = Readonly<{
   citations?: readonly TelegramAnswerCitation[];
-  /** Accepts artifactSummary.sources, plus optionally resolved Knowledge sources. */
+  /** Accepts artifactSummary.sources, plus optionally sources named by handle. */
   sources?: readonly TelegramAnswerSource[];
   streaming?: boolean;
 }>;
@@ -61,7 +61,7 @@ export function citationRenderer(options: TelegramAnswerOptions) {
   };
   return {
     reference,
-    // Search citations are numeric text in the existing parser, unlike Knowledge
+    // Search citations are numeric text in the existing parser, unlike handle
     // nodes. Resolve only indices actually present in server-provided metadata.
     text: (value: string) => value.replace(/\[([1-9]\d*)\]/gu, (source, index: string) => reference(index) ?? source),
     footer: (): TelegramInputRichBlock[] => {

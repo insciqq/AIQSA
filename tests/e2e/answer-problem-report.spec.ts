@@ -12,8 +12,7 @@ import { activeChatId, disableMemoryRecall, lastAnswer, sendAndExpect, startNewC
  * reports a problem on their own answer, updates it, and finds it in Control
  * Center Health with its model, run reference and comment. The phone cases
  * check the dialog's containment and touch targets. Refusals (invisible
- * answers, former Project members, limits) are proven by the route and
- * repository suites.
+ * answers, limits) are proven by the route and repository suites.
  */
 
 test.describe.configure({ mode: "serial" });

@@ -10,7 +10,6 @@ import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/thr
 import type { Notice } from "@/components/app-shell/types";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
-  ANSWER_REVIEW_AUTO_DEFAULT,
   answerReviewRefusalCopy,
   decodeAnswerReviewStartResponse,
   type AnswerReviewAutoConfig
@@ -34,7 +33,7 @@ type RefreshActiveChat = (
 
 /** A saved chat (not a blank one waiting for its first send) keeps its review on the server. */
 function savedChat(chat: WorkspaceChatSummary | null): WorkspaceChatSummary | null {
-  return chat && !chat.pendingPersonalDraft && !chat.pendingProjectDraft ? chat : null;
+  return chat && !chat.pendingPersonalDraft ? chat : null;
 }
 
 /**
@@ -48,13 +47,10 @@ export function useAnswerReviewAutoV2(input: Readonly<{
   activeChat: WorkspaceChatSummary | null;
   assistantChat: boolean;
   authorModel: AnswerReviewCatalogModelV2 | undefined;
-  /** Personal Settings default; a Project chat starts off with no reviewers. */
+  /** Personal Settings default. */
   defaults: AnswerReviewAutoConfig;
   draftConfig: AnswerReviewAutoConfig | null | undefined;
-  knowledgeEnabled: boolean;
   models: readonly AnswerReviewCatalogModelV2[];
-  projectContext: boolean;
-  refreshProjectWorkspace?(): Promise<unknown>;
   sessionKey: ComposerSessionKey;
 }>): Readonly<{
   forSend(): AnswerReviewAutoConfig | null;
@@ -63,7 +59,7 @@ export function useAnswerReviewAutoV2(input: Readonly<{
   state: AnswerReviewAutoStateV2;
 }> {
   const chat = savedChat(input.activeChat);
-  const defaults = input.projectContext ? ANSWER_REVIEW_AUTO_DEFAULT : input.defaults;
+  const defaults = input.defaults;
   const config = chat
     ? chat.answerReview ?? { ...defaults, enabled: false }
     : input.draftConfig ?? defaults;
@@ -87,7 +83,6 @@ export function useAnswerReviewAutoV2(input: Readonly<{
       const saved = decodeChatSummaryResponse(await response.json().catch(() => null));
       if (!saved || saved.id !== chat.id) return "The review setting could not be saved. Try again.";
       useWorkspaceStore.getState().upsertChat(chatSummaryFromApi(saved));
-      if (chat.projectId) void input.refreshProjectWorkspace?.();
       return null;
     } catch {
       return "The review setting could not be saved. Check your connection and try again.";

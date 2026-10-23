@@ -74,7 +74,6 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
     version: 1
   };
   return {
-    knowledge: null,
     modelPolicy: {
       candidates: [],
       policy: {
@@ -209,7 +208,7 @@ describe("deriveModelUsage and successors", () => {
     expect(modelSuccessor("model-voyage", sources())).toBe("Cohere Rerank 4 Pro");
     expect(modelSuccessor("model-cohere", sources())).toBeNull();
     expect(modelSuccessor("model-luna", sources())).toBeNull();
-    expect(deriveModelUsage({ knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
+    expect(deriveModelUsage({ modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
   });
 
   it("names the installation roles pinned to a model, as the server checks routing", () => {
@@ -236,7 +235,7 @@ describe("deriveModelUsage and successors", () => {
     const withSuccessor = turnOffConsequence({ model: { displayName: "Voyage Rerank 2.5" }, successor: "Cohere Rerank 4 Pro", tags: ["Reranker · primary"] });
     expect(withSuccessor?.title).toBe("Turn off Voyage Rerank 2.5?");
     expect(withSuccessor?.body).toBe(
-      "It is the primary reranker for Memory and Knowledge. Cohere Rerank 4 Pro takes over automatically, and chats in progress keep using the current model until they finish.\n\nNothing is deleted. You can turn it back on at any time."
+      "It is the primary reranker for Memory. Cohere Rerank 4 Pro takes over automatically, and chats in progress keep using the current model until they finish.\n\nNothing is deleted. You can turn it back on at any time."
     );
     const withoutSuccessor = turnOffConsequence({ model: { displayName: "GPT-5.6 Luna" }, successor: null, tags: ["Default chat", "Perplexity Search"] });
     expect(withoutSuccessor?.body).toContain("It is the default chat model for new chats and the model behind “Perplexity Search” Search.");

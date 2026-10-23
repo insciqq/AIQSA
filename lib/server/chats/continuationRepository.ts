@@ -6,10 +6,7 @@ import { textMessageContent } from "../../domain/content";
 import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { formatChatRoutePath } from "../../domain/chatRoute";
-import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
-import { resolveChatAccess } from "../projects/access";
-import { ProjectsDisabledError } from "../projects/disabled";
-import { notifyProjectEvent } from "../projects/events";
+import { resolveChatAccess } from "./access";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
@@ -25,29 +22,25 @@ import type { WorkspaceRuntime } from "../workspace/runtime";
 import { captureWorkspaceProjectSeed } from "../workspace/projectSeedCapture";
 import { WORKSPACE_OPERATION_LEASE_MS } from "../workspace/sessionOperation";
 import { loadExposedChatModelId } from "./chatCreationDefaults";
-import { loadProjectChatDefaultAuthority } from "../projects/chatDefaults";
 
 const sourceSelect = {
   activeLeafMessageId: true, archived: true, assistantId: true, assistantOverrides: true,
-  defaultProviderModelId: true, defaultKnowledgePlan: true, defaultSearchPlan: true, folderId: true,
+  defaultProviderModelId: true, defaultSearchPlan: true, folderId: true,
   id: true, importSource: true, importSourceModel: true, memoryMode: true, permanentDeletionAt: true,
-  projectFolderId: true, projectId: true, title: true, updatedAt: true, userId: true, workspaceEnabled: true
+  title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
 
 async function lockedSource(tx: Prisma.TransactionClient, input: {
   chatId: string; userId: string; leafMessageId: string; updatedAt?: Date; lockAssistant?: boolean;
 }) {
-  const boundary = await tx.chat.findUnique({ select: { assistantId: true, projectId: true }, where: { id: input.chatId } });
-  // A copied binding holds its definition before the Project and chat rows,
-  // in the order Assistant deletion takes them.
+  const boundary = await tx.chat.findUnique({ select: { assistantId: true }, where: { id: input.chatId } });
+  // A copied binding holds its definition before the chat row, in the order
+  // Assistant deletion takes them.
   const assistantId = input.lockAssistant ? boundary?.assistantId ?? null : null;
   if (assistantId) await tx.$queryRaw`SELECT "id" FROM "AssistantDefinition" WHERE "id" = ${assistantId} FOR KEY SHARE`;
-  if (boundary?.projectId) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${boundary.projectId} FOR SHARE`;
   await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${input.chatId} FOR UPDATE`;
-  const access = await resolveChatAccess(tx, {
-    chatId: input.chatId, userId: input.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR"
-  });
-  const actor = await tx.user.findFirst({ select: { displayName: true }, where: { id: input.userId, status: "active" } });
+  const access = await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId });
+  const actor = await tx.user.findFirst({ select: { id: true }, where: { id: input.userId, status: "active" } });
   const chat = access ? await tx.chat.findUnique({ select: sourceSelect, where: { id: input.chatId } }) : null;
   if (!chat || !actor || chat.archived || chat.permanentDeletionAt) throw new ChatContinuationError("chat_not_found", 404);
   if (chat.activeLeafMessageId !== input.leafMessageId ||
@@ -57,7 +50,7 @@ async function lockedSource(tx: Prisma.TransactionClient, input: {
     chatId: chat.id, status: { in: ["queued", "preparing", "streaming", "in_progress"] }
   } });
   if (active) throw new ChatContinuationError("chat_busy");
-  return { actor, chat, projectRole: access?.project?.effectiveRole ?? null };
+  return { chat };
 }
 
 /** The new chat keeps the Assistant and the rows changed for it; a deleted Assistant's marker stays behind. */
@@ -79,12 +72,8 @@ export async function continuationSourceHref(client: PrismaClient, chatId: strin
   if (!await resolveChatAccess(client, { chatId, userId })) return null;
   const operation = await client.chatContinuation.findUnique({ where: { newChatId: chatId }, select: { sourceChatId: true } });
   if (!operation) return null;
-  const source = await resolveChatAccess(client, { chatId: operation.sourceChatId, userId });
-  if (!source) return null;
-  return formatChatRoutePath({
-    chatId: operation.sourceChatId,
-    projectId: source.project?.projectId ?? null
-  });
+  if (!await resolveChatAccess(client, { chatId: operation.sourceChatId, userId })) return null;
+  return formatChatRoutePath({ chatId: operation.sourceChatId });
 }
 
 type ContinuationReservation = Readonly<{ id: string; version: number; runtimeSandboxId: string | null }>;
@@ -126,7 +115,7 @@ async function claimLocked(tx: Prisma.TransactionClient, source: ContinuationSou
   if (existing?.status === "complete") {
     const access = existing.newChatId ? await resolveChatAccess(tx, { chatId: existing.newChatId, userId: source.userId }) : null;
     if (!access || !existing.newChatId) throw new ChatContinuationError("chat_not_found", 404);
-    return { kind: "result", result: { status: "complete", chatId: existing.newChatId, projectId: access.project?.projectId ?? null } };
+    return { kind: "result", result: { status: "complete", chatId: existing.newChatId } };
   }
   if (existing?.status === "running") {
     if (existing.leaseExpiresAt ? existing.leaseExpiresAt.getTime() > Date.now() : Date.now() - existing.updatedAt.getTime() <= 180_000) {
@@ -155,17 +144,9 @@ async function claimLocked(tx: Prisma.TransactionClient, source: ContinuationSou
   if (existing?.attemptId === requestId) throw terminalAttemptError(existing.errorCode);
   // Freeze only a server-exposed selection. Polls and duplicate claims
   // return above, so later composer changes cannot retarget this claim.
-  let requestedProviderModelId: string | null = null;
-  if (modelSelection) {
-    if (source.projectId) {
-      const authority = await loadProjectChatDefaultAuthority(tx, source.projectId);
-      if (authority.modelProviders.get(modelSelection.modelId) === modelSelection.provider) {
-        requestedProviderModelId = modelSelection.modelId;
-      }
-    } else {
-      requestedProviderModelId = await loadExposedChatModelId(tx, source.userId, modelSelection);
-    }
-  }
+  const requestedProviderModelId = modelSelection
+    ? await loadExposedChatModelId(tx, source.userId, modelSelection)
+    : null;
   const operation = existing
     ? await tx.chatContinuation.update({ where: { id: existing.id }, data: {
         actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
@@ -236,8 +217,6 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
   return {
     loadSource: (input) => client.$transaction(async (tx) => {
       const { chat } = await lockedSource(tx, { chatId: input.chatId, userId: input.userId, leafMessageId: input.expectedLeafMessageId });
-      // Projects are disabled: no new chat continues a Project chat.
-      if (chat.projectId && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
       // First load only bounded graph metadata. Sibling contents, tools, files and Workspace are never read.
       const path = await tx.$queryRaw<Array<{ id: string; parentMessageId: string | null; bytes: number; role: string; status: string; depth: number }>>(Prisma.sql`
         WITH RECURSIVE branch AS (
@@ -266,7 +245,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           ? [`${row.role.toUpperCase()}${row.status === "complete" ? "" : " (unfinished)"}:\n${text}`] : [];
       }).join("\n\n");
       if (!transcript) throw new ChatContinuationError("chat_changed");
-      return { chatId: chat.id, leafMessageId: input.expectedLeafMessageId, projectId: chat.projectId, updatedAt: chat.updatedAt, userId: input.userId, transcript,
+      return { chatId: chat.id, leafMessageId: input.expectedLeafMessageId, updatedAt: chat.updatedAt, userId: input.userId, transcript,
         workspaceEnabled: chat.workspaceEnabled };
     }),
 
@@ -353,8 +332,8 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
     },
 
     complete: async (source, claim, summary) => {
-      const result = await client.$transaction(async (tx) => {
-        const { actor, chat, projectRole } = await lockedSource(tx, { ...currentInput(source), lockAssistant: true });
+      return client.$transaction(async (tx) => {
+        const { chat } = await lockedSource(tx, { ...currentInput(source), lockAssistant: true });
         const operation = await tx.chatContinuation.findFirst({ where: {
           id: claim.id, attemptId: claim.attemptId, actorUserId: source.userId, status: "running", cancelRequestedAt: null,
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }]
@@ -373,62 +352,44 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
           // The import marker (never its key) keeps a continued imported chat out of Memory.
           ...(chat.importSource ? { importSource: chat.importSource, importSourceModel: chat.importSourceModel } : {}),
-          defaultKnowledgePlan: chat.defaultKnowledgePlan ?? Prisma.DbNull,
           defaultSearchPlan: chat.defaultSearchPlan ?? Prisma.DbNull,
           ...continuedAssistantBinding(chat),
           workspaceEnabled: chat.workspaceEnabled,
-          ...(chat.projectId ? {
-            userId: null, projectId: chat.projectId, projectFolderId: chat.projectFolderId,
-            createdByUserId: source.userId, createdByDisplayName: actor.displayName
-          } : { userId: source.userId, folderId: chat.folderId }),
+          userId: source.userId,
+          folderId: chat.folderId,
           ...(deadline ? { temporaryRetentionDeadline: deadline, temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } : {})
         } });
-        if (!chat.projectId) {
-          await tx.$executeRaw`INSERT INTO "ArtifactChatBinding" ("artifactId", "chatId", "versionId", "createdAt", "updatedAt")
-            SELECT binding."artifactId", ${newChatId}, binding."versionId", NOW(), binding."updatedAt"
-            FROM "ArtifactChatBinding" binding
-            JOIN "Artifact" artifact ON artifact."id" = binding."artifactId"
-            JOIN "ArtifactVersion" version ON version."artifactId" = binding."artifactId" AND version."id" = binding."versionId"
-            WHERE binding."chatId" = ${chat.id} AND artifact."ownerUserId" = ${source.userId}
-              AND artifact."archivedAt" IS NULL AND version."status" = 'READY'`;
-        }
+        await tx.$executeRaw`INSERT INTO "ArtifactChatBinding" ("artifactId", "chatId", "versionId", "createdAt", "updatedAt")
+          SELECT binding."artifactId", ${newChatId}, binding."versionId", NOW(), binding."updatedAt"
+          FROM "ArtifactChatBinding" binding
+          JOIN "Artifact" artifact ON artifact."id" = binding."artifactId"
+          JOIN "ArtifactVersion" version ON version."artifactId" = binding."artifactId" AND version."id" = binding."versionId"
+          WHERE binding."chatId" = ${chat.id} AND artifact."ownerUserId" = ${source.userId}
+            AND artifact."archivedAt" IS NULL AND version."status" = 'READY'`;
         await tx.chatContinuationWorkspaceSeed.updateMany({ where: { continuationId: claim.id, status: "READY" },
           data: { newChatId, status: "TRANSFERRED" } });
         await tx.chatContinuationWorkspaceSeed.updateMany({ where: { continuationId: claim.id, status: { in: ["NO_SOURCE_DISK", "FAILED"] } },
           data: { newChatId } });
         await tx.message.create({ data: {
           id: requestMessageId, chatId: newChatId, role: "user", status: "complete",
-          content: textMessageContent("Continue from the conversation summary below."),
-          ...(chat.projectId ? { authorUserId: source.userId, authorDisplayName: actor.displayName,
-            authorProjectRole: projectRole } : {})
+          content: textMessageContent("Continue from the conversation summary below.")
         } });
         await tx.message.create({ data: {
           id: messageId, parentMessageId: requestMessageId, chatId: newChatId, role: "assistant", status: "complete",
           content: textMessageContent(`Conversation summary\n\n${summary}`)
         } });
-        if (chat.projectId) {
-          await tx.chat.update({ where: { id: newChatId }, data: { activeLeafMessageId: messageId } });
-          await tx.projectAuditEvent.create({ data: {
-            projectId: chat.projectId, actorUserId: source.userId, actorDisplayName: actor.displayName,
-            eventType: "project_chat_created", metadata: { chatId: newChatId }
-          } });
-        }
-        else {
-          const newChat = await lockMemorySourceChat(tx, { chatId: newChatId, lock: "UPDATE", userId: source.userId });
-          if (!newChat) throw new ChatContinuationError("chat_summary_failed", 502);
-          await applyMemorySourceMutations(tx, {
-            chat: newChat, hooks: defaultMemorySourceMutationHooks, mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: messageId }
-          });
-        }
+        const newChat = await lockMemorySourceChat(tx, { chatId: newChatId, lock: "UPDATE", userId: source.userId });
+        if (!newChat) throw new ChatContinuationError("chat_summary_failed", 502);
+        await applyMemorySourceMutations(tx, {
+          chat: newChat, hooks: defaultMemorySourceMutationHooks, mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: messageId }
+        });
         if (deadline) await scheduleTemporaryChatDeletion(tx, { chatId: newChatId, deadline, now: new Date(), userId: source.userId });
         const settled = await tx.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId, status: "running", cancelRequestedAt: null,
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }] }, data: { status: "complete", newChatId, errorCode: null } });
         if (settled.count !== 1) throw new ChatContinuationError("chat_changed");
         await tx.chatContinuationStep.deleteMany({ where: { continuationId: claim.id } });
-        return { status: "complete" as const, chatId: newChatId, projectId: chat.projectId };
+        return { status: "complete" as const, chatId: newChatId };
       });
-      if (result.projectId) notifyProjectEvent(result.projectId);
-      return result;
     },
 
     async fail(claim, code) {
@@ -447,7 +408,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         ...modelTokenPricingSelect
       } });
       const data = {
-        userId: source.userId, chatId: source.chatId, projectId: source.projectId, provider, modelId,
+        userId: source.userId, chatId: source.chatId, provider, modelId,
         purpose: "chat_summary" as const,
         ...storedTokenUsage(usage),
         estimatedCostMicros: pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
@@ -459,13 +420,12 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
   };
 }
 
-/** Cancel only the authenticated actor's exact attempt; never another member's work. */
+/** Cancel only the authenticated owner's exact attempt. */
 export async function cancelChatContinuation(client: PrismaClient, input: {
   chatId: string; userId: string; requestId: string;
 }): Promise<void> {
   await client.$transaction(async tx => {
-    const access = await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId, requireMutable: true,
-      minimumProjectRole: "CONTRIBUTOR" });
+    const access = await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId });
     if (!access) throw new ChatContinuationError("chat_not_found", 404);
     await tx.chatContinuation.updateMany({ where: { sourceChatId: input.chatId, actorUserId: input.userId,
       attemptId: input.requestId, status: "running" }, data: { cancelRequestedAt: new Date() } });

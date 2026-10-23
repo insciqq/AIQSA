@@ -1,4 +1,3 @@
-import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
 import { getPdfExtractionConfig } from "./pdfConfig";
 import { DocumentParserError } from "../parsing/errors";
@@ -26,19 +25,10 @@ export type CreatedAttachment = {
   updatedAt?: Date | string;
 };
 
-export class UploadTargetUnavailableError extends Error {
-  constructor() {
-    super("upload_target_unavailable");
-    this.name = "UploadTargetUnavailableError";
-  }
-}
-
 export type UploadHandlerDeps = {
   createAttachment(
     input: Omit<CreatedAttachment, "id" | "updatedAt"> & {
-      projectId?: string | null;
       processingOwnerUserId?: string;
-      uploaderDisplayName?: string | null;
       userId: string;
     }
   ): Promise<CreatedAttachment>;
@@ -49,18 +39,6 @@ export type UploadHandlerDeps = {
   getBodyConfig?: (uploadMaxBytes: number) => Pick<RequestBodyConfig, "uploadMaxConcurrency" | "uploadMultipartMaxBytes">;
   getMaxBytes?: () => number;
   kickProcessing?: () => void;
-  /**
-   * Resolve the optional project target carried by the multipart form.  Keeping
-   * this check in the route composition means the generic upload pipeline never
-   * turns a client supplied project id into an authorization decision.
-   */
-  resolveTarget?: (input: Readonly<{
-    projectId: string | null;
-    userId: string;
-  }>) => Promise<Readonly<{
-    projectId: string | null;
-    uploaderDisplayName?: string | null;
-  }> | null>;
   resolveAuth: RequestAuthResolver;
   storage?: StorageAdapter;
   uploadPermitGate?: UploadPermitGate;
@@ -127,31 +105,11 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         return Response.json({ error: "file_required" }, { status: 400 });
       }
 
-      const requestedProjectId = form.get("projectId");
       const requestedScope = form.get("scope");
       const scope = requestedScope === "workspace" ? "workspace" as const : "attachment" as const;
       if (requestedScope !== null && requestedScope !== "" && requestedScope !== "workspace") {
         return Response.json({ error: "unsupported_type" }, { status: 400 });
       }
-      const projectId = typeof requestedProjectId === "string" && requestedProjectId.trim().length > 0
-        ? requestedProjectId.trim()
-        : null;
-      if (projectId !== null && projectId.length > 128) {
-        return Response.json({ error: "project_not_found" }, { status: 404 });
-      }
-      // Projects are disabled: nothing is uploaded into a Project.
-      if (projectId !== null && !PROJECTS_ENABLED) {
-        return Response.json({ error: PROJECTS_DISABLED_CODE }, { status: 409 });
-      }
-      const target = deps.resolveTarget
-        ? await deps.resolveTarget({ projectId, userId: auth.userId })
-        : projectId === null
-          ? { projectId: null }
-          : null;
-      if (!target) {
-        return Response.json({ error: "project_not_found" }, { status: 404 });
-      }
-
       const initialValidation = validateUpload({
         byteSize: file.size,
         fileName: file.name,
@@ -218,7 +176,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       }
 
       const digest = checksum(buffer);
-      const storageKey = `${target.projectId ? `projects/${target.projectId}` : auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(fileName)}`;
+      const storageKey = `${auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(fileName)}`;
       const storage = deps.storage ?? createS3StorageAdapter();
       await storage.putObject({
         body: buffer,
@@ -240,8 +198,6 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           processingErrorCode: null,
           status,
           storageKey,
-          ...(target.projectId ? { projectId: target.projectId } : {}),
-          ...(target.uploaderDisplayName ? { uploaderDisplayName: target.uploaderDisplayName } : {}),
           processingOwnerUserId: auth.userId,
           userId: auth.userId
         });
@@ -263,9 +219,6 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           // A staged job is retryable; if staging failed, preserve the original DB error.
         }
 
-        if (error instanceof UploadTargetUnavailableError) {
-          return Response.json({ error: "project_not_found" }, { status: 404 });
-        }
         throw error;
       }
 

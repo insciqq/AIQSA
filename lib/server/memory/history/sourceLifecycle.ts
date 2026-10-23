@@ -45,14 +45,8 @@ function parentMutationAdvancedMemoryRevision(
     memoryCounterEffectFor(mutation).memoryRevision);
 }
 
-function isProjectSource(event: MemoryRetainedSourceMutationEvent): boolean {
-  return (event.snapshot.projectId !== null && event.snapshot.projectId !== undefined) ||
-    (event.previous.projectId !== null && event.previous.projectId !== undefined);
-}
-
 function shouldIndex(event: MemoryRetainedSourceMutationEvent): boolean {
   if (
-    isProjectSource(event) ||
     event.snapshot.memoryMode !== "NORMAL" ||
     event.snapshot.activeLeafMessageId === null
   ) {
@@ -539,7 +533,6 @@ export async function inheritMemoryHistoryBranchResumeCutoff(
   const activeLeafMessageId = event.snapshot.activeLeafMessageId;
   if (
     !event.branchSourceChatId ||
-    isProjectSource(event) ||
     event.snapshot.memoryMode !== "NORMAL" ||
     activeLeafMessageId === null
   ) return;
@@ -583,11 +576,6 @@ export async function applyMemoryHistorySourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
-  // Project chats are a separate shared-memory boundary.  Do not invalidate,
-  // checkpoint, purge, or enqueue personal history artifacts for them.
-  if (isProjectSource(event)) {
-    return;
-  }
   const changed = sourceIdentityChanged(event);
   const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null = null;

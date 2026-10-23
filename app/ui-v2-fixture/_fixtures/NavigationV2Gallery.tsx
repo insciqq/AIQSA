@@ -107,7 +107,6 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
       onSearch={setSearch}
       onSelectChat={(chat) => setSelected(chat.id)}
       onSettings={state === "destinations" ? () => undefined : undefined}
-      onProjects={state === "destinations" ? () => undefined : undefined}
       connectEntryVisible={state === "destinations"}
       drawerDestinations={state === "destinations"}
       ready={state !== "loading" && state !== "error"}

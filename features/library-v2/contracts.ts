@@ -1,7 +1,7 @@
 import type { AttachmentPreviewKind } from "@/lib/contracts/uploads";
 import type { ReactNode } from "react";
 
-export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "knowledge" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "scheduled" | "defaults";
+export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "scheduled" | "defaults";
 
 export type StudioNavigationV2 = Readonly<{
   tab: LibraryTabIdV2;
@@ -34,8 +34,8 @@ export type LibraryTabV2 = Readonly<{
 }>;
 
 /**
- * A resource sub-view open inside the selected section (a Knowledge base,
- * the Sources catalog). The Library shows it in the crumb and replaces
+ * A resource sub-view open inside the selected section (an Assistant's
+ * editor, an artifact). The Library shows it in the crumb and replaces
  * "Back to chat" with the sub-view's own Back control; a `key` change moves
  * focus to that control unless the resource owns its editor/row focus.
  */
@@ -48,32 +48,6 @@ export type LibrarySubviewV2 = Readonly<{
   onBack(): void;
   /** Optional ancestors between the selected section and this resource. */
   trail?: readonly string[];
-}>;
-
-export type KnowledgeSummaryV2 = Readonly<{
-  archived?: boolean;
-  description: string;
-  sourceCount: number;
-  id: string;
-  name: string;
-  owned: boolean;
-  purgeScheduledAt?: string | null;
-  /** Exact usability-first status sentence ("Ready · 1 processing"); the status label otherwise. */
-  readinessLabel?: string;
-  /** Formatted last-update time, when known. */
-  updatedLabel?: string;
-  status:
-    | "archived"
-    | "empty"
-    | "needs_attention"
-    | "processing"
-    | "ready"
-    | "trashed"
-    | "unavailable";
-  /** Display name only; never an account or resource identifier. */
-  sharedBy?: string;
-  trashed?: boolean;
-  trashedAt?: string | null;
 }>;
 
 export type FileSummaryV2 = Readonly<{

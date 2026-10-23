@@ -173,7 +173,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
       const auth = (await repository.resolveAccessToken({ ...issued, tokenHash: issued.accessTokenHash }))!;
       expect(auth).not.toBeNull();
 
-      // SCIM keeps a sole Project Owner active while it waits for an ownership transfer.
+      // SCIM leaves the last administrator active but deactivated; such an account holds no access.
       await prisma.user.update({ data: { scimDeactivatedAt: now }, where: { id: userId } });
       const late = pair(["skills:read"]);
       expect(await repository.approveAuthorization({ ...late, clientRecordId: client.id,

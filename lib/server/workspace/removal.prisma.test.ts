@@ -4,7 +4,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
 import { workspaceSandboxName } from "@/lib/domain/workspace";
 import { prisma } from "@/lib/server/prisma";
-import { createPrismaProjectRepository } from "@/lib/server/projects/prismaRepository";
 import { createPrismaPermanentChatDeletionHandler } from "@/lib/server/chats/permanentDeletion/cleanup";
 import { createPrismaPermanentChatDeletionRepository } from "@/lib/server/chats/permanentDeletion/repository";
 import { createPermanentChatDeletionService } from "@/lib/server/chats/permanentDeletion/service";
@@ -76,27 +75,19 @@ describe("Workspace aggregate deletion protocol", () => {
     }
   });
 
-  it.each(["personal", "project", "temporary"] as const)("removes the exact fenced Workspace during %s deletion", async (kind) => {
+  it.each(["personal", "temporary"] as const)("removes the exact fenced Workspace during %s deletion", async (kind) => {
     const userId = `workspace-removal-test-${randomUUID()}`;
     const local = new DeterministicWorkspaceRuntime(config);
     const runtime = fenceDeterministicWorkspaceRuntime(local);
     const sessionId = `ws_${randomBytes(20).toString("hex")}`;
     const sandboxName = workspaceSandboxName(sessionId);
     let chatId: string | null = null;
-    let projectId: string | null = null;
     let runtimeSandboxId: string | null = null;
     try {
       await prisma.user.create({ data: { id: userId, displayName: "Workspace Deletion Fixture", status: "active" } });
-      const projectRepository = createPrismaProjectRepository(prisma, { workspaceRuntime: runtime });
-      if (kind === "project") {
-        const created = await projectRepository.create({ actorDisplayName: "Workspace Deletion Fixture", description: "", name: "Disposable Workspace", userId });
-        expect(created.kind).toBe("ok");
-        if (created.kind !== "ok") throw new Error("workspace_fixture_project_unavailable");
-        projectId = created.value.id;
-      }
       const chat = await prisma.$transaction(async (tx) => {
         const created = await tx.chat.create({ data: {
-        ...(projectId ? { projectId, createdByUserId: userId, createdByDisplayName: "Workspace Deletion Fixture", memoryMode: "EXCLUDED" as const } : { userId }),
+        userId,
         ...(kind === "temporary" ? { memoryMode: "TEMPORARY" as const, temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
           createdAt: new Date(Date.now() - 60_000),
           temporaryRetentionDeadline: new Date(Date.now() - 1_000) } : {}),
@@ -112,9 +103,7 @@ describe("Workspace aggregate deletion protocol", () => {
         internetEnabled: false, memoryMiB: 1024, runtimeSandboxId: null, sandboxName, sessionId })).runtimeSandboxId;
       await prisma.workspaceSession.create({ data: { id: sessionId, chatId, expiresAt: new Date(Date.now() + 3_600_000),
         imageRef: config.imageRef, internetEnabled: false, policyRevision: 1, runtimeSandboxId, sandboxName, state: "READY" } });
-      if (projectId) {
-        await expect(projectRepository.delete({ actorDisplayName: "Workspace Deletion Fixture", projectId, userId })).resolves.toMatchObject({ kind: "ok" });
-      } else if (kind === "temporary") {
+      if (kind === "temporary") {
         const registry = new MemoryCoordinatorRegistry();
         registry.registerDeletion(createPrismaTemporaryChatDeletionHandler(createMemoryStorageAdapter(), prisma, runtime));
         const coordinator = new MemoryCoordinator({ registry, repository: createPrismaMemoryCoordinatorRepository(prisma) });
@@ -157,7 +146,6 @@ describe("Workspace aggregate deletion protocol", () => {
         if (chatId) await tx.chat.deleteMany({ where: { id: chatId } });
         await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
       });
-      if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
       await prisma.user.deleteMany({ where: { id: userId } });
     }
   });

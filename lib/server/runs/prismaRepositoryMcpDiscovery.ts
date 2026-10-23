@@ -67,13 +67,10 @@ export function createPrismaMcpDiscoveryOperations(
     appendMcpDiscoveryEpoch: async (input) => client.$transaction(async (tx) => {
       const [run] = await tx.$queryRaw<Array<{
         normalizedRequest: Prisma.JsonValue | null;
-        projectId: string | null;
         status: string;
       }>>`
-        SELECT run."normalizedRequest", run."status", project_binding."projectId"
+        SELECT run."normalizedRequest", run."status"
         FROM "ModelRun" AS run
-        LEFT JOIN "ProjectRunBinding" AS project_binding
-          ON project_binding."modelRunId" = run."id"
         WHERE run."id" = ${input.runId}
           AND run."userId" = ${input.userId}
         FOR UPDATE OF run
@@ -153,7 +150,6 @@ export function createPrismaMcpDiscoveryOperations(
       await insertAcceptedMcpRunBindings(tx, {
         bindings: newBindings,
         tools: merged.tools.filter((tool) => input.toolIds.includes(tool.namespacedName)),
-        ...(run.projectId ? { projectId: run.projectId } : {}),
         runId: input.runId,
         userId: input.userId
       });

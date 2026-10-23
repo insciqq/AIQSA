@@ -15,7 +15,6 @@ import {
 } from "../../contracts/chats";
 import {
   loadPersonalAssistantRowContext,
-  projectAssistantRowDefaults,
   type AssistantRowContextClient
 } from "../assistants/rowContext";
 import {
@@ -27,14 +26,12 @@ import {
 import type { AssistantRunMaterialization } from "../assistants/runMaterialization";
 import { storedColumnsFromAssistantRows } from "../assistants/storedContent";
 import type { CatalogData } from "../catalog/currentUserCatalog";
-import { admitChatAssistant, type ChatAssistantScope } from "../runs/assistantRunAdmission";
+import { admitChatAssistant } from "../runs/assistantRunAdmission";
 import {
   buildChatAssistantProjection,
   loadChatAssistantProjection,
-  loadProjectChatAssistant,
   type ChatAssistantChainContext,
-  type ChatAssistantDefinition,
-  type ProjectChatAssistantLoader
+  type ChatAssistantDefinition
 } from "./assistantProjection";
 import { serializeChatDetail } from "./handlers";
 
@@ -70,16 +67,12 @@ const SAVED: Readonly<Record<string, AssistantRunControls>> = {
 
 const defaults: AssistantRowContextDefaults = {
   controlsForModel: (modelId) => ({ ...SAVED[modelId] }),
-  knowledge: { mode: "all_my_knowledge" },
   modelId: "model-default",
   search: { mode: "all_selected", optionIds: ["web-default"] },
   tools: { mode: "auto" }
 };
 
 const available: AssistantRowAvailableResources = {
-  allMyKnowledge: true,
-  knowledgeBaseIds: new Set(["kb-1", "kb-2"]),
-  knowledgeSourceIds: new Set(["src-1"]),
   mcpServerIds: new Set(["mcp-1", "mcp-2"]),
   modelIds: new Set(["model-a", "model-b", "model-default"]),
   searchOptionIds: new Set(["web-1", "web-2", "web-default"]),
@@ -103,45 +96,11 @@ function context(overrides: Partial<ChatAssistantChainContext> = {}): ChatAssist
   };
 }
 
-/**
- * A Project chat's context: the Project's defaults and only the resources it
- * provides. model-b, web-2, mcp-2, kb-2, src-1 and "All my knowledge" are the
- * member's own and absent here.
- */
-const projectAvailable: AssistantRowAvailableResources = {
-  allMyKnowledge: false,
-  knowledgeBaseIds: new Set(["kb-1"]),
-  knowledgeSourceIds: new Set(),
-  mcpServerIds: new Set(["mcp-1"]),
-  modelIds: new Set(["model-a", "model-default"]),
-  searchOptionIds: new Set(["web-1", "web-default"]),
-  skillIds: new Set(["skill-1"])
-};
-
-function projectContext(): ChatAssistantChainContext {
-  return context({
-    available: projectAvailable,
-    defaults: projectAssistantRowDefaults({
-      assistantId: null,
-      controlValues: { maxOutputTokens: "1024" },
-      knowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
-      mcpMode: "load_all",
-      providerModelId: "model-default",
-      searchPlan: { mode: "all_selected", optionIds: ["web-default"] }
-    }),
-    modelConnections: new Map([...projectAvailable.modelIds].map((id) => [id, "shared-connection"])),
-    modelParameters: (modelId) => projectAvailable.modelIds.has(modelId)
-      ? { baseParams: {}, controls: parameterControls, displayName: `Project ${modelId}`, parameterProvider: "openai" }
-      : null
-  });
-}
-
 type RowOverrides = Partial<{ [Key in AssistantRowKey]: Partial<AssistantRows[Key]> }>;
 
 function rows(overrides: RowOverrides = {}): AssistantRows {
   const base: AssistantRows = {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "inherit" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -206,11 +165,6 @@ describe("chat Assistant projection", () => {
     expect(projection.rows.controls).toMatchObject({ provenance: "assistant", value: { reasoningEffort: "high" } });
     expect(projection.rows.search).toMatchObject({ provenance: "assistant", value: { mode: "off" } });
     expect(projection.rows.tools).toMatchObject({ provenance: "assistant", value: { mode: "exact", serverIds: ["mcp-1"] } });
-    expect(projection.rows.knowledge).toMatchObject({
-      assistantValue: { mode: "inherit" },
-      provenance: "default",
-      value: { mode: "all_my_knowledge" }
-    });
     expect(projection.rows.skills).toMatchObject({
       provenance: "assistant",
       value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "off" }
@@ -221,14 +175,13 @@ describe("chat Assistant projection", () => {
     const projection = project({
       rows: rows({ model: { value: { mode: "model", modelId: "model-a" } } })
     }, {
-      knowledge: { baseIds: ["kb-2"], mode: "explicit", sourceIds: [] },
       model: { mode: "model", modelId: "model-b" },
       search: { mode: "off" },
       skills: { mode: "off" },
       tools: { mode: "load_all" }
     });
 
-    for (const key of ["knowledge", "model", "search", "skills", "tools"] as const) {
+    for (const key of ["model", "search", "skills", "tools"] as const) {
       expect(projection.rows[key].provenance).toBe("chat");
     }
     expect(projection.rows.model).toMatchObject({
@@ -236,7 +189,6 @@ describe("chat Assistant projection", () => {
       value: { mode: "model", modelId: "model-b" }
     });
     expect(projection.rows.tools.value).toEqual({ mode: "load_all" });
-    expect(projection.rows.knowledge.value).toEqual({ baseIds: ["kb-2"], mode: "explicit", sourceIds: [] });
     // Another model: the Assistant's controls do not apply, the user's saved ones (none) do.
     expect(projection.rows.controls).toMatchObject({ provenance: "default", value: {} });
   });
@@ -313,8 +265,6 @@ describe("chat Assistant projection", () => {
       "search_access", [{ kind: "search", name: "Web search" }]],
     ["tools", { tools: { policy: "fixed" as const, value: { mode: "exact" as const, serverIds: ["mcp-gone"] } } }, "tools_access",
       [{ kind: "mcp", name: "Required MCP tools" }]],
-    ["knowledge", { knowledge: { policy: "fixed" as const, value: { baseIds: ["kb-gone"], mode: "explicit" as const, sourceIds: [] } } },
-      "knowledge_access", undefined],
     ["skills", { skills: { value: { links: [{ delivery: "on_demand" as const, skillId: "skill-gone" }], mode: "auto" as const } } },
       "skills_access", undefined]
   ] as const)("reports an unusable fixed %s row as an unavailable Assistant", (key, overrides, reason, dependencies) => {
@@ -400,7 +350,6 @@ describe("chat Assistant projection and run admission", () => {
       assistantId: "assistant-1",
       definitionVersion: 1,
       identity: { avatar, name: "HR Helper" },
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       name: "HR Helper",
       provider: null,
@@ -413,28 +362,13 @@ describe("chat Assistant projection and run admission", () => {
     };
   }
 
-  async function admitted(
-    assistantRows: AssistantRows,
-    stored: ChatAssistantOverrides,
-    scope: ChatAssistantScope = { kind: "personal" }
-  ) {
-    const chain = scope.kind === "project" ? projectContext() : context();
-    const resolved = async () => ({ assistant: materialization(assistantRows), ok: true as const });
+  async function admitted(assistantRows: AssistantRows, stored: ChatAssistantOverrides) {
+    const chain = context();
     const admission = await admitChatAssistant({
-      assistants: scope.kind === "project"
-        ? {
-            resolveForProject: resolved,
-            resolveForRun: async () => {
-              throw new Error("a Project chat never resolves through the viewer's own access");
-            }
-          }
-        : { resolveForRun: resolved },
-      repository: scope.kind === "project"
-        ? { loadProjectAssistantRowContext: async () => chain }
-        : { loadAssistantRowContext: async () => chain }
+      assistants: { resolveForRun: async () => ({ assistant: materialization(assistantRows), ok: true as const }) },
+      repository: { loadAssistantRowContext: async () => chain }
     }, {
       body: {},
-      scope,
       source: { assistantId: "assistant-1", bind: false, ok: true },
       storedOverrides: stored,
       userId: "user-1"
@@ -450,13 +384,9 @@ describe("chat Assistant projection and run admission", () => {
   }
 
   /** The projection equals what admission freezes, or both refuse the Assistant. */
-  async function expectAgreement(
-    assistantRows: AssistantRows,
-    stored: ChatAssistantOverrides,
-    scope: ChatAssistantScope = { kind: "personal" }
-  ) {
-    const admission = await admitted(assistantRows, stored, scope);
-    const projection = project({ rows: assistantRows }, stored, scope.kind === "project" ? projectContext() : context());
+  async function expectAgreement(assistantRows: AssistantRows, stored: ChatAssistantOverrides) {
+    const admission = await admitted(assistantRows, stored);
+    const projection = project({ rows: assistantRows }, stored);
     if ("refused" in admission) {
       expect(admission.refused).toMatch(/^assistant_(not_available|configuration_unavailable)$/u);
       expect(projection.availability.ok).toBe(false);
@@ -507,11 +437,6 @@ describe("chat Assistant projection and run admission", () => {
     ["tools exact", { tools: { value: { mode: "exact", serverIds: ["mcp-2"] } } }, { tools: { mode: "off" } }],
     ["tools fixed", { tools: { policy: "fixed", value: { mode: "off" } } }, { tools: { mode: "load_all" } }],
     ["tools unusable", { tools: { value: { mode: "exact", serverIds: ["mcp-gone"] } } }, {}],
-    ["knowledge explicit", { knowledge: { value: { baseIds: ["kb-1"], mode: "explicit", sourceIds: ["src-1"] } } },
-      { knowledge: { mode: "none" } }],
-    ["knowledge chat unusable", { knowledge: { value: { mode: "none" } } },
-      { knowledge: { baseIds: ["kb-gone"], mode: "explicit", sourceIds: [] } }],
-    ["knowledge fixed unusable", { knowledge: { policy: "fixed", value: { baseIds: ["kb-gone"], mode: "explicit", sourceIds: [] } } }, {}],
     ["skills", { skills: { value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "auto" } } }, { skills: { mode: "off" } }],
     ["skills fixed with chat mode", { skills: { policy: "fixed", value: { links: [], mode: "off" } } }, { skills: { mode: "auto" } }],
     ["skills unusable", { skills: { value: { links: [{ delivery: "always", skillId: "skill-gone" }], mode: "auto" } } }, {}],
@@ -534,17 +459,15 @@ describe("chat Assistant projection and run admission", () => {
     await expectAgreement(rows(overrides), stored);
   });
 
-  /** Records the Knowledge and Skill ids the shared loader checks; every check finds nothing. */
+  /** Records the Skill ids the shared loader checks; every check finds nothing. */
   function idRecordingClient(definition: Record<string, unknown> | null = null) {
-    const read: Record<"bases" | "skills" | "sources", string[]> = { bases: [], skills: [], sources: [] };
+    const read: Record<"skills", string[]> = { skills: [] };
     const record = (key: keyof typeof read) => async (args: { where: { id: { in: string[] } } }) => {
       read[key].push(...args.where.id.in);
       return [];
     };
     const client: Record<string, unknown> = {
       assistantDefinition: { findUnique: async () => definition },
-      knowledgeBase: { findMany: record("bases") },
-      knowledgeSource: { findMany: record("sources") },
       mcpGrant: { findMany: async () => [] },
       skillDefinition: { findMany: record("skills") },
       userGroup: { findMany: async () => [] }
@@ -576,13 +499,9 @@ describe("chat Assistant projection and run admission", () => {
 
   const idVariants: ReadonlyArray<[string, RowOverrides, ChatAssistantOverrides]> = [
     ...resourceRows,
-    ["knowledge explicit with a stored selection", {
-      knowledge: { value: { baseIds: ["kb-1", "kb-2"], mode: "explicit", sourceIds: ["src-1"] } },
+    ["skills with several links and a stored mode", {
       skills: { value: { links: [{ delivery: "always", skillId: "skill-1" }, { delivery: "on_demand", skillId: "skill-2" }], mode: "auto" } }
-    }, { knowledge: { baseIds: ["kb-2", "kb-3"], mode: "explicit", sourceIds: ["src-2"] } }],
-    ["knowledge fixed with a stored selection", {
-      knowledge: { policy: "fixed", value: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [] } }
-    }, { knowledge: { baseIds: ["kb-3"], mode: "explicit", sourceIds: [] } }]
+    }, { skills: { mode: "off" } }]
   ];
 
   it.each(idVariants)("checks the same resource ids as admission for %s", async (_name, overrides, stored) => {
@@ -596,36 +515,31 @@ describe("chat Assistant projection and run admission", () => {
       }
     }, {
       body: {},
-      scope: { kind: "personal" },
       source: { assistantId: "assistant-1", bind: false, ok: true },
       storedOverrides: stored,
       userId: "user-1"
     });
     const projection = idRecordingClient(ownedDefinitionColumns(assistantRows));
     await expect(loadChatAssistantProjection(projection.client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: stored, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: stored },
       userId: "user-1"
     }, { loadCatalogData: async () => emptyCatalog })).resolves.toMatchObject({ state: "bound" });
     expect(projection.sorted()).toEqual(admission.sorted());
   });
 
-  it("checks each Knowledge id the rows and stored overrides name once, and every Skill link", async () => {
-    const [, overrides, stored] = idVariants.find(([name]) => name === "knowledge explicit with a stored selection")!;
+  it("checks every Skill link once", async () => {
+    const [, overrides, stored] = idVariants.find(([name]) => name === "skills with several links and a stored mode")!;
     const assistantRows = rows(overrides);
     const projection = idRecordingClient(ownedDefinitionColumns(assistantRows));
     await loadChatAssistantProjection(projection.client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: stored, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: stored },
       userId: "user-1"
     }, { loadCatalogData: async () => emptyCatalog });
-    expect(projection.sorted()).toEqual({
-      bases: ["kb-1", "kb-2", "kb-3"],
-      skills: ["skill-1", "skill-2"],
-      sources: ["src-1", "src-2"]
-    });
+    expect(projection.sorted()).toEqual({ skills: ["skill-1", "skill-2"] });
   });
 
-  it("holds at most four reads in flight: the catalog, MCP, Knowledge and Skills, each one at a time", async () => {
-    const [, overrides, stored] = idVariants.find(([name]) => name === "knowledge explicit with a stored selection")!;
+  it("holds at most three reads in flight: the catalog, MCP and Skills, each one at a time", async () => {
+    const [, overrides, stored] = idVariants.find(([name]) => name === "skills with several links and a stored mode")!;
     let inFlight = 0;
     let peak = 0;
     const reads: string[] = [];
@@ -640,8 +554,6 @@ describe("chat Assistant projection and run admission", () => {
     const client = {
       accessGrant: { findMany: read("grants", []) },
       assistantDefinition: { findUnique: read("definition", ownedDefinitionColumns(rows(overrides))) },
-      knowledgeBase: { findMany: read("bases", []) },
-      knowledgeSource: { findMany: read("sources", []) },
       mcpGrant: { findMany: read("mcpGrants", []) },
       modelPolicy: { findUnique: read("modelPolicy", null) },
       providerModel: { findMany: read("models", []) },
@@ -658,126 +570,17 @@ describe("chat Assistant projection and run admission", () => {
       }) }
     } as unknown as AssistantRowContextClient;
     await expect(loadChatAssistantProjection(client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: stored, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: stored },
       userId: "user-1"
     })).resolves.toMatchObject({ state: "bound" });
-    expect(peak).toBe(4);
+    expect(peak).toBe(3);
     // The groups once, before the parallel reads; no user row and no default-Assistant check.
     expect(reads.filter((name) => name === "groups")).toHaveLength(1);
     expect(reads.slice(0, 2)).toEqual(["definition", "groups"]);
     expect(new Set(reads)).toEqual(new Set([
-      "bases", "definition", "grants", "groups", "mcpGrants", "modelPolicy", "models",
-      "searchOptions", "searchPolicy", "settings", "skills", "sources"
+      "definition", "grants", "groups", "mcpGrants", "modelPolicy", "models",
+      "searchOptions", "searchPolicy", "settings", "skills"
     ]));
-  });
-
-  const projectVariants: ReadonlyArray<[string, RowOverrides, ChatAssistantOverrides]> = [
-    ...variants,
-    ["stored All my knowledge", {}, { knowledge: { mode: "all_my_knowledge" } }],
-    ["stored personal Knowledge base", {}, { knowledge: { baseIds: ["kb-2"], mode: "explicit", sourceIds: [] } }],
-    ["stored personal Search source", {}, { search: { mode: "all_selected", optionIds: ["web-2"] } }],
-    ["adjustable personal MCP server", { tools: { value: { mode: "exact", serverIds: ["mcp-2"] } } }, {}],
-    ["fixed personal Knowledge base", { knowledge: { policy: "fixed", value: { baseIds: ["kb-2"], mode: "explicit", sourceIds: [] } } }, {}]
-  ];
-
-  it("covers both admitted and refused Assistants in a Project chat", async () => {
-    const outcomes = await Promise.all(projectVariants.map(([, overrides, stored]) =>
-      admitted(rows(overrides), stored, { kind: "project", projectId: "project-1" })));
-    const refused = outcomes.filter((outcome) => "refused" in outcome);
-    expect(refused.length).toBeGreaterThan(0);
-    expect(outcomes.length - refused.length).toBeGreaterThan(20);
-  });
-
-  it.each(projectVariants)("agrees in a Project chat for %s", async (_name, overrides, stored) => {
-    await expectAgreement(rows(overrides), stored, { kind: "project", projectId: "project-1" });
-  });
-
-  describe("Project chat Assistant projection", () => {
-    const scope = { kind: "project", projectId: "project-1" } as const;
-
-    it("projects a usable Assistant with the Project's defaults for inherit rows", async () => {
-      const { projection } = await expectAgreement(rows({
-        model: { policy: "fixed", value: { mode: "model", modelId: "model-a" } },
-        tools: { policy: "fixed", value: { mode: "exact", serverIds: ["mcp-1"] } }
-      }), {}, scope);
-      expect(projection.availability).toEqual({ ok: true });
-      expect(projection.rows.tools).toMatchObject({ provenance: "assistant", value: { mode: "exact", serverIds: ["mcp-1"] } });
-      // Inherit means the Project's defaults, never the member's.
-      expect(projection.rows.knowledge).toMatchObject({
-        provenance: "default",
-        value: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [] }
-      });
-      expect(projection.rows.search).toMatchObject({ provenance: "default", value: { mode: "all_selected", optionIds: ["web-default"] } });
-      expect(projection.rows.controls).toMatchObject({ provenance: "default", value: { maxOutputTokens: 1024 } });
-    });
-
-    it("runs an adjustable row the Project lacks with the Project's default", async () => {
-      const { projection } = await expectAgreement(rows({
-        model: { value: { mode: "model", modelId: "model-b" } },
-        search: { value: { mode: "all_selected", optionIds: ["web-2"] } }
-      }), {}, scope);
-      expect(projection.availability).toEqual({ ok: true });
-      expect(projection.rows.model).toEqual({
-        assistantValue: { mode: "model", modelId: null },
-        deviation: { reason: "model_access" },
-        policy: "adjustable",
-        provenance: "fallback",
-        value: { mode: "model", modelId: "model-default" }
-      });
-      expect(projection.rows.search).toMatchObject({
-        assistantValue: { hiddenCount: 1, mode: "all_selected", optionIds: [] },
-        deviation: { reason: "search_access" },
-        provenance: "fallback",
-        value: { mode: "all_selected", optionIds: ["web-default"] }
-      });
-      // The member's own resources are never identified in a Project chat.
-      expect(JSON.stringify(projection)).not.toMatch(/model-b|web-2/u);
-    });
-
-    it("reports a fixed dependency the Project does not provide as an unavailable Assistant", async () => {
-      const { projection, refused } = await expectAgreement(rows({
-        tools: { policy: "fixed", value: { mode: "exact", serverIds: ["mcp-2"] } }
-      }), {}, scope);
-      expect(refused).toBe("assistant_not_available");
-      expect(projection.availability).toEqual({ ok: false, reason: "tools_access" });
-      expect(JSON.stringify(projection)).not.toContain("mcp-2");
-    });
-
-    /** A client that answers the Project read and fails on any other statement. */
-    function projectClient() {
-      const findUnique = vi.fn(async () => null);
-      const client = new Proxy({ project: { findUnique } }, {
-        get: (target, property) => {
-          if (property in target) return target[property as keyof typeof target];
-          throw new Error(`unexpected database access: ${String(property)}`);
-        }
-      }) as unknown as AssistantRowContextClient;
-      return { client, findUnique };
-    }
-
-    it("projects the Assistant of a Project it cannot read as unavailable, reading only the Project", async () => {
-      // The Project read carries the bound definitions; the binding is never read on its own.
-      const { client, findUnique } = projectClient();
-      await expect(loadChatAssistantProjection(client, {
-        chat: { assistantId: "assistant-1", assistantOverrides: { tools: { mode: "off" } }, projectId: "project-1" },
-        userId: "member-1"
-      }, { loadProjectChatAssistant })).resolves.toEqual({ state: "unavailable" });
-      expect(findUnique).toHaveBeenCalledTimes(1);
-      expect(findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "project-1" } }));
-    });
-
-    it("adds no statement for an unbound Project chat or the deletion marker", async () => {
-      const { client, findUnique } = projectClient();
-      await expect(loadChatAssistantProjection(client, {
-        chat: { assistantId: null, assistantOverrides: null, projectId: "project-1" },
-        userId: "member-1"
-      }, { loadProjectChatAssistant })).resolves.toBeNull();
-      await expect(loadChatAssistantProjection(client, {
-        chat: { assistantId: null, assistantOverrides: { assistantDeleted: true }, projectId: "project-1" },
-        userId: "member-1"
-      }, { loadProjectChatAssistant })).resolves.toEqual({ state: "deleted" });
-      expect(findUnique).not.toHaveBeenCalled();
-    });
   });
 });
 
@@ -789,49 +592,15 @@ describe("chat Assistant projection loading", () => {
     }
   }) as AssistantRowContextClient;
 
-  it("adds no statement for a chat without a binding, the deletion marker or a Project chat", async () => {
+  it("adds no statement for a chat without a binding or the deletion marker", async () => {
     await expect(loadChatAssistantProjection(noStatements, {
-      chat: { assistantId: null, assistantOverrides: null, projectId: null },
+      chat: { assistantId: null, assistantOverrides: null },
       userId: "user-1"
     })).resolves.toBeNull();
     await expect(loadChatAssistantProjection(noStatements, {
-      chat: { assistantId: null, assistantOverrides: { assistantDeleted: true }, projectId: null },
+      chat: { assistantId: null, assistantOverrides: { assistantDeleted: true } },
       userId: "user-1"
     })).resolves.toEqual({ state: "deleted" });
-    await expect(loadChatAssistantProjection(noStatements, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: "project-1" },
-      userId: "user-1"
-    })).resolves.toBeNull();
-  });
-
-  it("resolves a Project chat only through the Project loader", async () => {
-    const loadProjectChatAssistant = vi.fn<ProjectChatAssistantLoader>(async () => ({
-      context: context(),
-      definition: definition()
-    }));
-    const projection = await loadChatAssistantProjection(noStatements, {
-      chat: { assistantId: "assistant-1", assistantOverrides: { tools: { mode: "off" } }, projectId: "project-1" },
-      userId: "user-1"
-    }, { loadProjectChatAssistant });
-    expect(loadProjectChatAssistant.mock.calls[0]?.[0]).toBe(noStatements);
-    expect(loadProjectChatAssistant.mock.calls[0]?.[1]).toEqual({
-      assistantId: "assistant-1",
-      projectId: "project-1",
-      stored: { tools: { mode: "off" } },
-      userId: "user-1"
-    });
-    expect(projection).toMatchObject({ rows: { tools: { provenance: "chat" } }, state: "bound" });
-    loadProjectChatAssistant.mockResolvedValueOnce(null);
-    await expect(loadChatAssistantProjection(noStatements, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: "project-1" },
-      userId: "user-1"
-    }, { loadProjectChatAssistant })).resolves.toEqual({ state: "unavailable" });
-    // Members see an archived Project Assistant as archived, and nothing else about it.
-    loadProjectChatAssistant.mockResolvedValueOnce({ context: context(), definition: definition({ archived: true }) });
-    await expect(loadChatAssistantProjection(noStatements, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: "project-1" },
-      userId: "user-1"
-    }, { loadProjectChatAssistant })).resolves.toEqual({ reason: "archived", state: "unavailable" });
   });
 
   const catalog: CatalogData = {
@@ -853,8 +622,6 @@ describe("chat Assistant projection loading", () => {
       avatar,
       controlsPolicy: "adjustable",
       id: "assistant-1",
-      knowledgePolicy: "adjustable",
-      knowledgeSelection: { mode: "inherit" },
       mcpMode: "off",
       mcpServerIds: [],
       modelPolicy: "adjustable",
@@ -893,16 +660,16 @@ describe("chat Assistant projection loading", () => {
     const consumer = fakeClient({ available: true, definition: storedDefinition() });
     const loadCatalogData = vi.fn(async () => catalog);
     await expect(loadChatAssistantProjection(consumer.client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: null },
       userId: "user-1"
     }, { loadCatalogData })).resolves.toMatchObject({ availability: { ok: true }, owned: false, state: "bound" });
-    // The groups are read once, for MCP and Knowledge alike.
+    // The groups are read once, for the catalog and MCP alike.
     expect(consumer.calls).toEqual(["definition", "availability", "groups", "mcpGrants"]);
     expect(loadCatalogData).toHaveBeenCalledTimes(1);
 
     const owner = fakeClient({ available: false, definition: storedDefinition({ archivedAt: new Date(), ownerUserId: "user-1" }) });
     await expect(loadChatAssistantProjection(owner.client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: null },
       userId: "user-1"
     }, { loadCatalogData })).resolves.toMatchObject({ availability: { ok: false, reason: "archived" }, owned: true });
     // The owner needs no publication check.
@@ -913,7 +680,7 @@ describe("chat Assistant projection loading", () => {
     const consumer = fakeClient({ available: true, definition: storedDefinition({ archivedAt: new Date() }) });
     const loadCatalogData = vi.fn(async () => catalog);
     await expect(loadChatAssistantProjection(consumer.client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: null },
       userId: "user-1"
     }, { loadCatalogData })).resolves.toEqual({ reason: "archived", state: "unavailable" });
     // No chain context is read for it.
@@ -928,7 +695,7 @@ describe("chat Assistant projection loading", () => {
   ] as const)("reports an Assistant the viewer cannot resolve (%s) without identity", async (_name, stored, isAvailable) => {
     const { client } = fakeClient({ available: isAvailable, definition: stored });
     await expect(loadChatAssistantProjection(client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: { tools: { mode: "off" } }, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: { tools: { mode: "off" } } },
       userId: "user-1"
     }, { loadCatalogData: async () => catalog })).resolves.toEqual({ state: "unavailable" });
   });
@@ -936,7 +703,7 @@ describe("chat Assistant projection loading", () => {
   it("reports a user without a settings row as unable to resolve the Assistant", async () => {
     const { client } = fakeClient({ available: true, definition: storedDefinition() });
     await expect(loadChatAssistantProjection(client, {
-      chat: { assistantId: "assistant-1", assistantOverrides: null, projectId: null },
+      chat: { assistantId: "assistant-1", assistantOverrides: null },
       userId: "user-1"
     }, { loadCatalogData: async () => null })).resolves.toEqual({ state: "unavailable" });
   });

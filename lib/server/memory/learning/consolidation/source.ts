@@ -299,7 +299,6 @@ async function sourceAndSettingsAreCurrent(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: row.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: row.userId
   });
   return Boolean(
@@ -754,7 +753,6 @@ export async function probeMemoryFactConsolidation(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: candidate.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: job.userId
   });
   return source && source.memoryMode === "NORMAL" &&
@@ -842,7 +840,6 @@ export async function probeMemoryFactVerification(
   const source = await loadMemorySourceSnapshot(tx, {
     chatId: candidate.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: job.userId
   });
   return source && source.memoryMode === "NORMAL" &&

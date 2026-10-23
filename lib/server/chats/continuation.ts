@@ -25,7 +25,6 @@ export class ChatContinuationError extends Error {
 export type ContinuationSource = Readonly<{
   chatId: string;
   leafMessageId: string;
-  projectId: string | null;
   updatedAt: Date;
   userId: string;
   transcript: string;

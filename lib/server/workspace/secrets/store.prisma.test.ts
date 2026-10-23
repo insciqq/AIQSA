@@ -378,7 +378,7 @@ describe("persisted personal Workspace secrets", () => {
     expect(await prisma.workspaceSecret.count({ where: { userId } })).toBe(32);
   });
 
-  it("keeps secrets out of Workspace Off admissions and Project bindings", async () => {
+  it("keeps secrets out of Workspace Off admissions and another owner's chat", async () => {
     const userId = await owner();
     await store().mutate(userId, { action: "create", name: "Personal", description: "", value: { kind: "text", text: "personal synthetic token" } });
     const input = await plan(userId);
@@ -386,16 +386,10 @@ describe("persisted personal Workspace secrets", () => {
       normalizedRequest: { ...input.normalizedRequest, workspace: undefined } });
     expect(await prisma.workspaceRunBinding.findUnique({ where: { modelRunId: off.runId } })).toBeNull();
     expect(await prisma.workspaceRunSecret.count({ where: { modelRunId: off.runId } })).toBe(0);
-    const project = await prisma.project.create({ data: { name: "Synthetic secret boundary", createdByUserId: userId, createdByDisplayName: "Synthetic",
-      grants: { create: { role: "OWNER", userId } } } });
-    try {
-      const chat = await prisma.chat.create({ data: { title: "Project boundary", userId: null, projectId: project.id, memoryMode: "EXCLUDED",
-        createdByUserId: userId, createdByDisplayName: "Synthetic" } });
-      try {
-        await prisma.$transaction((tx) => bindWorkspaceSecrets(tx, { chatId: chat.id, userId, runId: randomUUID() }));
-        expect(await prisma.workspaceRunSecret.count({ where: { value: { userId } } })).toBe(0);
-      } finally { await prisma.chat.delete({ where: { id: chat.id } }); }
-    } finally { await prisma.project.delete({ where: { id: project.id } }); }
+    const chat = await prisma.chat.create({ data: { title: "Another owner", userId: await owner() } });
+    await expect(prisma.$transaction((tx) => bindWorkspaceSecrets(tx, { chatId: chat.id, userId, runId: randomUUID() })))
+      .rejects.toMatchObject({ code: "workspace_secret_unavailable" });
+    expect(await prisma.workspaceRunSecret.count({ where: { value: { userId } } })).toBe(0);
   });
 
   it("freezes private revisions through actual admission, replacement and deletion; new requests receive the current set", async () => {

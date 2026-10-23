@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import {
   boundComposerAssistantFixture,
@@ -9,14 +9,7 @@ import {
   useComposerControlStore,
   type ComposerBoundAssistant
 } from "@/components/app-shell/composerControlStore";
-import { inheritedKnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { AssistantRowKey, AssistantRowPolicy } from "@/lib/contracts/assistants";
-
-// The Knowledge row stays tested as it worked; `composerControlStore.test.ts` covers Knowledge disabled.
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
 
 const assistantControls = {
   backgroundMode: false,
@@ -55,7 +48,6 @@ function applyAssistant(
     }),
     controls: {
       ...assistantControls,
-      knowledgePlanSource: "off",
       mcpSelection: { mode: "exact", serverIds: ["server-1"] },
       searchPlanMode: "all_selected",
       selectedModelId: "assistant-model",
@@ -79,7 +71,6 @@ function origins(): Record<AssistantRowKey, string> {
 
 const changes: Record<AssistantRowKey, () => void> = {
   controls: () => useComposerControlStore.getState().setTemperature("0.9"),
-  knowledge: () => useComposerControlStore.getState().setSelectedKnowledgePlan(["base-2"]),
   model: () => useComposerControlStore.getState().applyModelSelection({
     controlDefaults: savedOtherModelControls,
     modelId: "other-model",
@@ -236,18 +227,12 @@ describe("composer Assistant rows", () => {
     expect(origins()).toMatchObject({ model: "assistant", search: "assistant" });
   });
 
-  it("returns values only an Assistant can express to ordinary values on removal", () => {
+  it("returns to the given ordinary values on removal", () => {
     applyAssistant();
-    useComposerControlStore.setState({
-      knowledgePlanSource: "assistant",
-      knowledgeSelection: inheritedKnowledgeSelection("assistant")
-    });
     useComposerControlStore.getState().clearAssistant({ mcpSelection: { mode: "load_all" }, skillsMode: "off" });
 
     expect(useComposerControlStore.getState()).toMatchObject({
       assistant: null,
-      knowledgePlanSource: "off",
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [] },
       mcpSelection: { mode: "load_all" },
       skillsMode: "off"
     });

@@ -35,26 +35,12 @@ export function assistantUnavailabilityCopy(
     };
   }
 
-  if (assistant.availability.reason === "knowledge_not_ready") {
-    return {
-      explanation: "Required Knowledge has no ready documents yet. Try again when the documents are ready.",
-      headline: "Knowledge is not ready yet."
-    };
-  }
-  if (assistant.availability.reason === "knowledge_unavailable") {
-    return {
-      explanation: "Required Knowledge could not be checked. Try again later or ask an administrator to check its configuration.",
-      headline: "Knowledge is temporarily unavailable."
-    };
-  }
-
-  if (assistant.availability.reason === "skills_access" || assistant.availability.reason === "knowledge_access") {
-    const resource = assistant.availability.reason === "skills_access" ? "Skills" : "Knowledge";
+  if (assistant.availability.reason === "skills_access") {
     return {
       ...(assistant.owned ? { action: { kind: "open-editor" as const, label: "Edit setup" } } : {}),
-      explanation: assistant.owned ? `Remove or replace unavailable ${resource} in this Assistant's setup.`
-        : `Required ${resource} ${resource === "Skills" ? "are" : "is"} not available to you.`,
-      headline: `This Assistant needs available ${resource}.`
+      explanation: assistant.owned ? "Remove or replace unavailable Skills in this Assistant's setup."
+        : "Required Skills are not available to you.",
+      headline: "This Assistant needs available Skills."
     };
   }
 
@@ -138,9 +124,6 @@ export function assistantUnavailabilityCopy(
 
 /** What is missing, for an owner, when the availability names no dependency. */
 const unnamedAttention: Readonly<Record<Exclude<AssistantAvailabilityReason, "archived">, string>> = {
-  knowledge_access: "its Knowledge isn't available",
-  knowledge_not_ready: "its Knowledge isn't ready yet",
-  knowledge_unavailable: "its Knowledge can't be checked right now",
   model_access: "its model isn't available",
   search_access: "a Search source isn't available",
   skills_access: "a linked Skill isn't available",
@@ -184,9 +167,6 @@ export function assistantBlockedRow(availability: AssistantAvailability): Assist
     case "search_access": return "search";
     case "tools_access": return "tools";
     case "skills_access": return "skills";
-    case "knowledge_access":
-    case "knowledge_not_ready":
-    case "knowledge_unavailable": return "knowledge";
   }
 }
 
@@ -208,8 +188,6 @@ export function assistantRowDeviationCopy(input: Readonly<{
 }>): string | null {
   const { availability, owned, row } = input;
   if (assistantBlockedRow(availability) === row && !availability.ok) {
-    if (availability.reason === "knowledge_not_ready") return "Not ready yet";
-    if (availability.reason === "knowledge_unavailable") return "Can't be checked right now";
     const names = owned ? dependencyNames(availability.dependencies) : [];
     return names.length > 0
       ? `Not available to you: ${names.join(", ")}`

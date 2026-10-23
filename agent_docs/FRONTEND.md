@@ -31,8 +31,8 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 ## Conversation
 
 - Chat and composer stay primary at every width. The header selects models and Assistants; the composer holds tools. Assistants are opt-in.
-- URLs: `/c/<chatId>` and `/p/<projectId>/c/<chatId>` address chats; `/` and `/assistant/<assistantId>` open new ones. An unavailable target falls back to `/` without revealing anything.
-- The composer never substitutes the chosen model, Assistant, tools or controls. Assistant-governed controls show where a value comes from: fixed rows are locked (a fixed model still opens its parameters), an unavailable adjustable value visibly falls back to the user's or Project's default, and an unavailable fixed row makes the Assistant unavailable instead of falling back (`lib/server/assistants/rowResolution.ts`). Changing a chat's controls never changes personal defaults.
+- URLs: `/c/<chatId>` addresses a chat; `/` and `/assistant/<assistantId>` open new ones, and a link from the removed Projects (`/p/...`) redirects to `/`. An unavailable target falls back to `/` without revealing anything.
+- The composer never substitutes the chosen model, Assistant, tools or controls. Assistant-governed controls show where a value comes from: fixed rows are locked (a fixed model still opens its parameters), an unavailable adjustable value visibly falls back to the user's default, and an unavailable fixed row makes the Assistant unavailable instead of falling back (`lib/server/assistants/rowResolution.ts`). Changing a chat's controls never changes personal defaults.
 - Skills and MCP modes (Auto, Load all, Off) are independent of pins. An Assistant's Skill links stay read-only in chat and the user pins on top of them. Enabling a Skill or an MCP server is a Settings or Studio action; the composer only discloses what the modes act on.
 - Editing a sent message creates a visible branch and keeps the composer draft.
 - Upload integrity gates Send; PDF preparation does not. Chosen files show in the tray at once, before any request (an image as a thumbnail of the local file that never leaves the tab), and more can be added while they upload. An admitted message appears at once and its draft clears. Server-confirmed final text releases Send even while Workspace cleanup continues, and late events stay with their own answer.
@@ -40,11 +40,10 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Workspace is ambient in interactive chats: a send uses it whenever the installation offers it and the model calls tools, with no composer or chat toggle and no saved default (operator decision 2026-10-20). Controls wrap whole; no More menu or horizontal scroll hides a capability. Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
 - Every chat is one agent with no mode to pick (`agent_docs/RUN_CONTRACTS.md`). Answers of the removed Codex Agent keep rendering their steps and files like any other.
 - Artifact previews open only by user action. Historical answers keep pointing at their own artifact versions and files (`sandbox:` links), and thumbnails never run scripts.
-- Projects and Knowledge offer no surfaces while disabled (root `AGENTS.md`). An existing Project chat opens readable, with a notice in place of the composer, and never enters personal history or Memory.
 
 ## Management surfaces
 
-- Studio holds Assistants, Instructions, Skills, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Knowledge & Memory holds health and limits.
+- Studio holds Assistants, Instructions, Skills, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Memory holds health and limits.
 - Destructive actions name the target and the consequences. Secret fields explain keep or replace and never echo the value.
 - Memory consent for connected apps covers facts, not chat history. Viewing MCP servers never wakes an idle one, and nothing re-enables a server the user deliberately disabled except completing its setup.
 

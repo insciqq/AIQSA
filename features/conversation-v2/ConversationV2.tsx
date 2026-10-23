@@ -2,8 +2,7 @@
 
 import {
   MarkdownMessage,
-  type MarkdownHrefResolver,
-  type MarkdownCitationRenderer
+  type MarkdownHrefResolver
 } from "@/components/chat/MarkdownMessage";
 import {
   type UiV2IconName,
@@ -38,7 +37,6 @@ export type ConversationMessageV2 = Readonly<{
   id: string;
   optimistic?: boolean;
   role: "assistant" | "user";
-  renderCitation?: MarkdownCitationRenderer;
   streaming?: boolean;
 }>;
 
@@ -72,7 +70,6 @@ export type ConversationMessagePresentationV2 = Readonly<{
   afterContent?: ReactNode;
   beforeContent?: ReactNode;
   edit?: ConversationInlineEditV2Props;
-  renderCitation?: MarkdownCitationRenderer;
   /** Always-visible controls at the start of the actions row (pager, Sources chip). */
   toolbarLeading?: ReactNode;
 }>;
@@ -102,7 +99,6 @@ type ConversationTurnV2Props = Readonly<{
   expandForReadingAnchor?: boolean;
   hideEmptyContent?: boolean;
   role: "assistant" | "user";
-  renderCitation?: MarkdownCitationRenderer;
   resolveHref?: MarkdownHrefResolver;
   quoteEligible?: boolean;
   streaming?: boolean;
@@ -244,7 +240,6 @@ export function ConversationTurnV2({
   hideEmptyContent = false,
   role,
   quoteEligible = true,
-  renderCitation,
   resolveHref,
   streaming = false,
   toolbarLeading = null
@@ -413,7 +408,6 @@ export function ConversationTurnV2({
               {content.trim() ? (
                 <MarkdownMessage
                   content={content}
-                  renderCitation={role === "assistant" && !streaming ? renderCitation : undefined}
                   resolveHref={role === "assistant" ? resolveHref : undefined}
                   streaming={streaming}
                 />
@@ -830,7 +824,6 @@ export function ConversationV2({
                       beforeContent={getMessagePresentation?.(message)?.beforeContent}
                       content={message.content}
                       edit={getMessagePresentation?.(message)?.edit}
-                      renderCitation={getMessagePresentation?.(message)?.renderCitation}
                       toolbarLeading={getMessagePresentation?.(message)?.toolbarLeading}
                       role={message.role}
                       quoteEligible={!message.optimistic}

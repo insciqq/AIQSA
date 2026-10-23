@@ -122,7 +122,7 @@ export function UsageSystemPanel({ usage }: Readonly<{ usage: AdminUsageAnalytic
   return (
     <section aria-label="System" className="min-w-0" data-testid="admin-usage-system">
       <UsageBlockHeading
-        detail="Work done by system models rather than the models people chose: chat titles and summaries, image and PDF reading, Skill selection, Memory, Knowledge and model checks."
+        detail="Work done by system models rather than the models people chose: chat titles and summaries, image and PDF reading, Skill selection, Memory and model checks."
         title="System"
       />
       {whole.recordCount === 0 ? (

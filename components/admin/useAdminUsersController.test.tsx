@@ -123,7 +123,7 @@ describe("useAdminUsersController", () => {
     });
     expect(grant?.prompt).toContain("Make pat@example.com an administrator?");
     expect(grant?.prompt).toContain("manage users, providers, models, MCP and installation settings");
-    expect(grant?.prompt).toContain("does not give access to other users' private chats, Assistants or Knowledge");
+    expect(grant?.prompt).toContain("does not give access to other users' private chats or Assistants");
     expect(revoke).toMatchObject({
       body: { action: "set_user_role", role: "user", userId: "pat" },
       confirmLabel: "Remove administrator rights",
@@ -135,32 +135,17 @@ describe("useAdminUsersController", () => {
     expect(revoke?.prompt).toContain("Remove administrator rights from pat@example.com?");
   });
 
-  it("offers session revocation separately when disable needs a Project ownership transfer", () => {
+  it("asks once before disabling a user, with no follow-up after a refusal", () => {
     const { confirmations, view } = harness();
     act(() => view.result.current.actions.requestDisable(target));
-    const disable = confirmations[0]!;
 
-    act(() => disable.onFailure?.({ error: "last_admin_forbidden" }));
     expect(confirmations).toHaveLength(1);
-
-    act(() => disable.onFailure?.({
-      error: "project_owner_required",
-      projectCount: 3,
-      projects: [{ name: "Launch", status: "ACTIVE" }, { name: "Archive", status: "ARCHIVED" }]
-    }));
-    expect(confirmations).toHaveLength(2);
-    const revoke = confirmations[1]!;
-    expect(revoke.testId).toBe("admin-confirm-revoke-sessions-after-owner-conflict");
-    expect(revoke.body).toEqual({ action: "revoke_user_sessions", userId: "pat" });
-    expect(revoke.prompt).toContain("pat@example.com was not disabled");
-    expect(revoke.prompt).toContain("3 Projects: “Launch”, “Archive” (archived) and 1 more");
-    // Projects are disabled (`lib/domain/disabledAreas.ts`), so the prompt cannot ask for an ownership transfer.
-    expect(revoke.prompt).toContain("Projects are turned off, so ownership cannot move.");
-    expect(revoke.prompt).not.toContain("make another member an Owner");
-    expect(revoke.message).toBe("User sessions and connected apps revoked. The account stays active while it is a Project's only Owner.");
-    expect(revoke.onFailure).toBeUndefined();
-
-    act(() => disable.onFailure?.({ error: "project_owner_required" }));
-    expect(confirmations[2]?.prompt).toContain("the only active Owner of one or more Projects.");
+    expect(confirmations[0]).toMatchObject({
+      body: { action: "disable_user", userId: "pat" },
+      confirmLabel: "Disable user",
+      message: "User disabled.",
+      testId: "admin-confirm-disable-user"
+    });
+    expect(confirmations[0]?.onFailure).toBeUndefined();
   });
 });

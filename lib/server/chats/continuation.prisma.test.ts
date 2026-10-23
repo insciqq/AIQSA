@@ -3,7 +3,6 @@ import { Prisma } from "@prisma/client";
 import { afterAll, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import type { ProviderRunRequest } from "../providers/types";
 import { ChatContinuationError, createChatContinuationService } from "./continuation";
@@ -25,14 +24,6 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createArtifactService } from "../artifacts/service";
 import type { ArtifactOperation } from "../../contracts/artifacts";
 import { CHAT_ASSISTANT_DELETED_MARKER } from "../../contracts/chats";
-
-// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
-// it keeps the switch on to test the code that still exists.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  PROJECTS_ENABLED: true,
-  KNOWLEDGE_ENABLED: true
-}));
 
 afterAll(() => prisma.$disconnect());
 
@@ -66,48 +57,38 @@ it.each([
 });
 
 async function fixture(
-  run: (data: { userId: string; chatId: string; leafId: string; projectId: string | null }) => Promise<void>,
-  mode: "NORMAL" | "TEMPORARY" | "PROJECT" = "NORMAL",
+  run: (data: { userId: string; chatId: string; leafId: string }) => Promise<void>,
+  mode: "NORMAL" | "TEMPORARY" = "NORMAL",
   // A test that asserts the seed cleanup its owner's deletion enqueues removes it itself.
   options: Readonly<{ retainSeedCleanup?: boolean }> = {}
 ) {
   const userId = randomUUID();
   const leafId = randomUUID();
-  let projectId: string | null = null;
   await prisma.user.create({ data: { id: userId, displayName: "Summary test", status: "active" } });
   try {
-    if (mode === "PROJECT") {
-      const result = await createPrismaProjectRepository(prisma).create({ userId, actorDisplayName: "Summary test", name: "Summary project", description: "" });
-      if (result.kind !== "ok") throw new Error(result.kind);
-      projectId = result.value.id;
-    }
     const deadline = mode === "TEMPORARY" ? temporaryRetentionDeadline(new Date()) : null;
     const chat = await prisma.$transaction(async (tx) => {
-      const created = await tx.chat.create({ data: { title: "Summary source",
-      ...(projectId ? { projectId, userId: null, memoryMode: "EXCLUDED", createdByUserId: userId, createdByDisplayName: "Summary test" }
-        : { userId, memoryMode: mode === "TEMPORARY" ? "TEMPORARY" : "NORMAL" }),
+      const created = await tx.chat.create({ data: { title: "Summary source", userId,
+      memoryMode: mode === "TEMPORARY" ? "TEMPORARY" : "NORMAL",
       ...(deadline ? { temporaryRetentionDeadline: deadline, temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } : {})
       } });
       if (deadline) await scheduleTemporaryChatDeletion(tx, { chatId: created.id, deadline, now: new Date(), userId });
       return created;
     });
-    const first = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete", content: textMessageContent("Our goal: release a small feature."),
-      ...(projectId ? { authorUserId: userId, authorDisplayName: "Summary test", authorProjectRole: "OWNER" } : {})
-    } });
+    const first = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
+      content: textMessageContent("Our goal: release a small feature.") } });
     await prisma.message.create({ data: { id: leafId, chatId: chat.id, parentMessageId: first.id, role: "assistant", status: "complete", content: textMessageContent("Decision: keep find_tools unchanged.") } });
     await prisma.message.create({ data: { chatId: chat.id, parentMessageId: first.id, role: "assistant", status: "complete", content: textMessageContent("SIBLING_PRIVATE_TEXT") } });
     await prisma.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: leafId } });
-    await run({ userId, chatId: chat.id, leafId, projectId });
+    await run({ userId, chatId: chat.id, leafId });
   } finally {
     // Seeds outlive a deleted source chat and their archives are keyed by seed,
     // not by user, so the cleanup jobs they leave are removed by exact key.
-    const ownedChats = [{ userId }, ...(projectId ? [{ projectId }] : [])];
     const seeds = await prisma.chatContinuationWorkspaceSeed.findMany({ select: { id: true, storageKey: true }, where: {
-      OR: [{ sourceChat: { OR: ownedChats } }, { newChat: { OR: ownedChats } }]
+      OR: [{ sourceChat: { userId } }, { newChat: { userId } }]
     } });
-    await prisma.workspaceSession.deleteMany({ where: { chat: { OR: ownedChats } } });
+    await prisma.workspaceSession.deleteMany({ where: { chat: { userId } } });
     if (mode === "NORMAL") await prisma.chat.deleteMany({ where: { userId } });
-    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     // Disposable fixtures obey the temporary deletion authority used by its normal lifecycle lane.
     if (mode === "TEMPORARY") {
       await prisma.$transaction(async (tx) => {
@@ -146,10 +127,7 @@ function service(deps: Parameters<typeof createChatContinuationRepository>[1] = 
   }) };
 }
 
-it.each([
-  ["NORMAL", "exposed"], ["NORMAL", "unexposed"], ["NORMAL", "absent"],
-  ["PROJECT", "exposed"], ["PROJECT", "unexposed"], ["PROJECT", "absent"]
-] as const)("preserves model and Knowledge defaults for %s continuation with %s selection", async (mode, selectionState) => {
+it.each(["exposed", "unexposed", "absent"] as const)("preserves the model default for a continuation with %s selection, never a retired Knowledge default", async (selectionState) => {
   const template = await prisma.providerModel.findUniqueOrThrow({ where: { id: providerTemplateIds.fakeModel } });
   const modelIds = [randomUUID()];
   try {
@@ -162,19 +140,12 @@ it.each([
     } });
     const original = modelIds[0]!;
     const selected = template.id;
-    await fixture(async ({ userId, chatId, leafId, projectId }) => {
+    await fixture(async ({ userId, chatId, leafId }) => {
+      // A Knowledge default stored before Knowledge was removed stays behind with its source.
       const knowledge = { version: 1, mode: "explicit", baseIds: [randomUUID()], sourceIds: [] };
       await prisma.chat.update({ where: { id: chatId }, data: { defaultProviderModelId: original, defaultKnowledgePlan: knowledge } });
-      if (projectId) {
-        await prisma.projectModelBinding.deleteMany({ where: { projectId } });
-        await prisma.projectModelBinding.create({ data: { projectId, providerModelId: original } });
-      }
-      // A personal grant must never grant access to an unbound Project model.
-      if (mode === "PROJECT" || selectionState === "exposed") {
+      if (selectionState === "exposed") {
         await prisma.accessGrant.create({ data: { userId, providerModelId: selected } });
-      }
-      if (projectId && selectionState === "exposed") {
-        await prisma.projectModelBinding.create({ data: { projectId, providerModelId: selected } });
       }
       const f = service();
       const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID(),
@@ -190,15 +161,14 @@ it.each([
       if (result.status !== "complete") throw new Error("summary missing");
       expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({
         defaultProviderModelId: selectionState === "exposed" ? selected : original,
-        defaultKnowledgePlan: knowledge, workspaceEnabled: false, projectId,
-        memoryMode: mode === "PROJECT" ? "EXCLUDED" : "NORMAL"
+        defaultKnowledgePlan: null, workspaceEnabled: false, userId, memoryMode: "NORMAL"
       });
       expect(await prisma.workspaceSession.count({ where: { chatId: result.chatId } })).toBe(0);
       const reopened = await createPrismaChatRepository(prisma).getChat({ chatId: result.chatId, userId });
       expect(reopened?.defaultModelId).toBe(selectionState === "exposed" ? selected : original);
       expect(await f.continueChat({ ...input, modelSelection: { provider: "changed", modelId: original } })).toEqual(result);
       expect(f.execute).not.toHaveBeenCalled();
-    }, mode);
+    });
   } finally {
     await prisma.providerModel.deleteMany({ where: { id: { in: modelIds } } });
   }
@@ -333,16 +303,16 @@ it("captures once, transfers ownership, and preserves the seed when its source i
   await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey! } });
 }));
 
-it.each(["PROJECT", "TEMPORARY"] as const)("cleans a transferred seed with its %s owner", async (mode) => {
+it("cleans a transferred seed with its temporary owner", async () => {
   let captured: { id: string; storageKey: string | null } | null = null;
-  await fixture(async ({ chatId, userId, leafId, projectId }) => {
+  await fixture(async ({ chatId, userId, leafId }) => {
     const result = await service(await workspaceSource(chatId)).continueChat({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
     if (result.status !== "complete") throw new Error("summary missing");
     expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({
-      projectId, workspaceEnabled: true, memoryMode: mode === "TEMPORARY" ? "TEMPORARY" : "EXCLUDED"
+      userId, workspaceEnabled: true, memoryMode: "TEMPORARY"
     });
     captured = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { newChatId: result.chatId }, select: { id: true, storageKey: true } });
-  }, mode, { retainSeedCleanup: true });
+  }, "TEMPORARY", { retainSeedCleanup: true });
   expect(captured).not.toBeNull();
   const seed = captured as unknown as { id: string; storageKey: string };
   expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toBeNull();
@@ -408,7 +378,7 @@ it("serves one visible summary from the active branch, preserving source, scope,
   expect(detail?.messages[1]?.content).toEqual(textMessageContent("Conversation summary\n\n## Goal\nRelease a small feature.\n## Decisions\nKeep find_tools unchanged."));
   expect(detail?.hasContinuationSource).toBe(true);
   const child = await prisma.chat.findUniqueOrThrow({ where: { id: result.chatId } });
-  expect(child).toMatchObject({ userId, projectId: null, memoryMode: "NORMAL", workspaceEnabled: false });
+  expect(child).toMatchObject({ userId, memoryMode: "NORMAL", workspaceEnabled: false });
   expect(await prisma.chat.findUnique({ where: { id: chatId } })).toEqual(before);
   expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/c/${chatId}`);
   expect(await continuationSourceHref(prisma, result.chatId, randomUUID())).toBeNull();
@@ -540,9 +510,9 @@ async function lapseLease(continuationId: string) {
 }
 
 it.each([
-  ["NORMAL", "none", true], ["PROJECT", "none", false],
-  ["NORMAL", "no_source_disk", false], ["PROJECT", "no_source_disk", true]
-] as const)("settles a cancelled %s attempt (Workspace seed: %s) after its worker dies; old poll first: %s", (mode, seedMode, pollFirst) => fixture(async ({ userId, chatId, leafId }) => {
+  ["none", true], ["none", false],
+  ["no_source_disk", false], ["no_source_disk", true]
+] as const)("settles a cancelled attempt (Workspace seed: %s) after its worker dies; old poll first: %s", (seedMode, pollFirst) => fixture(async ({ userId, chatId, leafId }) => {
   if (seedMode === "no_source_disk") await prisma.chat.update({ where: { id: chatId }, data: { workspaceEnabled: true } });
   const f = service();
   const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
@@ -582,10 +552,10 @@ it.each([
   await f.repository.fail(first.claim, "chat_summary_failed");
   expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: next.claim.id } }))
     .toMatchObject({ status: "running", attemptId: next.claim.attemptId, newChatId: null });
-  expect(await prisma.chat.count({ where: mode === "PROJECT" ? { createdByUserId: userId } : { userId } })).toBe(1);
+  expect(await prisma.chat.count({ where: { userId } })).toBe(1);
   expect(f.execute).not.toHaveBeenCalled();
   await f.repository.fail(next.claim, "chat_summary_cancelled");
-}, mode));
+}));
 
 it("abandons a dead cancelled attempt's capture seed and retires its Workspace reservation before a fresh attempt", () => fixture(async ({ chatId, userId, leafId }) => {
   const w = await workspaceSource(chatId);
@@ -652,29 +622,6 @@ it.each(["CAPTURING", "READY"] as const)("keeps cancellation when Workspace main
     await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey } });
   }
 }));
-
-it("keeps Project ownership and rejects membership loss before commit", () => fixture(async ({ userId, chatId, leafId, projectId }) => {
-  const f = service();
-  const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
-  const result = await f.continueChat(input);
-  if (result.status !== "complete") throw new Error("summary missing");
-  expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({ projectId, userId: null, memoryMode: "EXCLUDED", workspaceEnabled: false });
-  expect(await prisma.projectAuditEvent.count({ where: { projectId: projectId!, eventType: "project_chat_created", metadata: { path: ["chatId"], equals: result.chatId } } })).toBe(1);
-  expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/p/${projectId}/c/${chatId}`);
-  const memberId = randomUUID();
-  await prisma.user.create({ data: { id: memberId, displayName: "Contributor", status: "active" } });
-  try {
-    const grant = await prisma.projectGrant.create({ data: { projectId: projectId!, userId: memberId, role: "CONTRIBUTOR" } });
-    await prisma.chat.update({ where: { id: chatId }, data: { title: "Next snapshot" } });
-    const source = await f.repository.loadSource({ ...input, userId: memberId });
-    const claim = await f.repository.claim(source, randomUUID());
-    if (claim.kind !== "claimed") throw new Error("claim missing");
-    await prisma.projectGrant.delete({ where: { id: grant.id } });
-    await expect(f.repository.complete(source, claim.claim, "summary")).rejects.toBeInstanceOf(ChatContinuationError);
-    expect(await continuationSourceHref(prisma, result.chatId, memberId)).toBeNull();
-    await f.repository.fail(claim.claim, "chat_not_found");
-  } finally { await prisma.user.delete({ where: { id: memberId } }); }
-}, "PROJECT"));
 
 it("keeps temporary continuations temporary with a deletion deadline and no Workspace", () => fixture(async ({ userId, chatId, leafId }) => {
   const result = await service().continueChat({ userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() });

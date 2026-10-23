@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
@@ -32,10 +32,10 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
   async function access(tx: Prisma.TransactionClient, context: CheckpointContext, active: boolean) {
     const run = await tx.modelRun.findFirst({ where: { id: context.runId, userId: context.userId }, select: {
       id: true, chatId: true, userId: true, status: true, assistantMessageId: true,
-      workspaceRunBinding: { select: { workspaceSessionId: true } }, chat: { select: { projectId: true } }
+      workspaceRunBinding: { select: { workspaceSessionId: true } }
     } });
     if (!run?.workspaceRunBinding || !run.assistantMessageId || !await tx.user.findFirst({ where: { id: context.userId, status: "active" } }) ||
-      !await resolveChatAccess(tx, { chatId: run.chatId, userId: context.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })) throw unavailable();
+      !await resolveChatAccess(tx, { chatId: run.chatId, userId: context.userId })) throw unavailable();
     if (active) {
       if (!["streaming", "in_progress"].includes(run.status)) throw unavailable();
       const session = await tx.workspaceSession.findUnique({ where: { id: run.workspaceRunBinding.workspaceSessionId } });
@@ -122,16 +122,13 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
       if (jobs.some(job => job.claimToken !== null)) throw unavailable();
       await checkByteReservation(tx, run.id, checkpoint.id, captured);
       const view = { id: checkpoint.id, description: checkpoint.description, createdAt: checkpoint.createdAt.toISOString() };
-      const user = run.chat.projectId ? await tx.user.findUnique({ where: { id: context.userId }, select: { displayName: true } }) : null;
       const files: WorkspaceCheckpointFileView[] = [];
       for (const file of captured) {
         const fileName = file.relativePath.split("/").at(-1)!;
         const attachment = await tx.attachment.create({ data: { id: randomUUID(), byteSize: file.byteSize, checksum: file.checksum,
           chatId: run.chatId, messageId: run.assistantMessageId, producerModelRunId: run.id, fileName, mimeType: file.mimeType,
           kind: uploadFormatForExtension(fileName, "workspace")?.kind ?? "file", origin: "WORKSPACE_OUTPUT", status: "ready",
-          metadata: {}, storageKey: file.storageKey,
-          ...(run.chat.projectId ? { projectId: run.chat.projectId, uploaderUserId: context.userId, uploaderDisplayName: user?.displayName }
-            : { userId: context.userId }) } });
+          metadata: {}, storageKey: file.storageKey, userId: context.userId } });
         await tx.workspaceCheckpointFile.create({ data: { checkpointId: checkpoint.id, captureId: checkpoint.captureId,
           relativePath: file.relativePath, attachmentId: attachment.id } });
         files.push({ attachmentId: attachment.id, byteSize: file.byteSize, fileName, mimeType: file.mimeType, relativePath: file.relativePath, checkpoint: view });

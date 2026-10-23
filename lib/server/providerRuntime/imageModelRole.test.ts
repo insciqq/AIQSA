@@ -63,10 +63,10 @@ describe("Gemini image output admission", () => {
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async () => ({ configuration: model,
       authority, snapshot: plan.snapshot } as Role));
     const resolver = createImageModelRoleResolver(asDb(db), loadRole);
-    expect(await resolver.resolveFor({ kind: "project" })).toEqual({ ok: false, reason: "parameters_invalid",
+    expect(await resolver.resolveFor({ kind: "personal", userId: "user" })).toEqual({ ok: false, reason: "parameters_invalid",
       providerModelId: "model", source: "organization" });
     paramsJson.mime_type = "image/jpeg";
-    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: true, plan: { parameters: { mime_type: "image/jpeg" } } });
+    expect(await resolver.resolveFor({ kind: "personal", userId: "user" })).toMatchObject({ ok: true, plan: { parameters: { mime_type: "image/jpeg" } } });
   });
 
   it.each(["arguments", "accepted plan"])("rejects PNG in %s before a paid dispatch or storage mutation", async (from) => {
@@ -89,11 +89,12 @@ describe("published image model resolution", () => {
   it("resolves the administrator default with its parameters over the model defaults as a version 1 plan", async () => {
     const db = database({ policy: { version: 4, imagePublication: published("default", { quality: "low" }) } });
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async (_db, input) => roleFor(input.providerModelId));
-    const resolved = await createImageModelRoleResolver(asDb(db), loadRole).resolveFor({ kind: "project" });
+    // A user without a personal choice follows the default.
+    const resolved = await createImageModelRoleResolver(asDb(db), loadRole).resolveFor({ kind: "personal", userId: "user" });
     if (!resolved.ok) throw new Error("fixture_plan_unavailable");
+    expect(resolved.source).toBe("organization");
     expect(resolved.plan).toMatchObject({ version: 1, policyVersion: 4, authority: { providerModelId: "default" },
       parameters: { quality: "low", size: "1024x1024" } });
-    expect(db.userSettings.findUnique).not.toHaveBeenCalled();
     // Plans accepted before per-user choices have the same shape and still decode.
     expect(decodeAcceptedImageGenerationPlan(structuredClone(resolved.plan))).toEqual(resolved.plan);
   });
@@ -110,16 +111,6 @@ describe("published image model resolution", () => {
     const following = database({ policy: { version: 2, imagePublication: published("default") }, settings: { imagePublication: null } });
     expect(await createImageModelRoleResolver(asDb(following), loadRole).resolveFor({ kind: "personal", userId: "user" }))
       .toMatchObject({ ok: true, providerModelId: "default", source: "organization" });
-  });
-
-  it("resolves Project runs on the administrator default without reading personal preferences", async () => {
-    const db = database({ policy: { version: 2, imagePublication: published("default") },
-      settings: { imagePublication: published("chosen") } });
-    const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async (_db, input) => roleFor(input.providerModelId));
-    expect(await createImageModelRoleResolver(asDb(db), loadRole).resolveFor({ kind: "project" }))
-      .toMatchObject({ ok: true, providerModelId: "default", source: "organization" });
-    expect(db.userSettings.findUnique).not.toHaveBeenCalled();
-    expect(loadRole).toHaveBeenCalledExactlyOnceWith(expect.anything(), { providerModelId: "default" });
   });
 
   it.each([
@@ -148,7 +139,7 @@ describe("published image model resolution", () => {
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>();
     for (const policy of [null, { version: 1, imagePublication: null }]) {
       const resolver = createImageModelRoleResolver(asDb(database({ policy })), loadRole);
-      for (const scope of [{ kind: "personal", userId: "user" }, { kind: "project" }] as const) {
+      for (const scope of [{ kind: "personal", userId: "user" }] as const) {
         expect(await resolver.resolveFor(scope)).toEqual({ ok: false, reason: "not_configured", providerModelId: null, source: "organization" });
       }
     }
@@ -161,7 +152,7 @@ describe("published image model resolution", () => {
     const db = database({ policy: { version: 5, imagePublication: null }, settings: { imagePublication: published("chosen", { quality: "high" }) } });
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async (_db, input) => roleFor(input.providerModelId));
     const resolver = createImageModelRoleResolver(asDb(db), loadRole);
-    for (const scope of [{ kind: "personal", userId: "user" }, { kind: "project" }] as const) {
+    for (const scope of [{ kind: "personal", userId: "user" }] as const) {
       expect(await resolver.resolveFor(scope)).toEqual({ ok: false, reason: "not_configured", providerModelId: null, source: "organization" });
     }
     expect(loadRole).not.toHaveBeenCalled();

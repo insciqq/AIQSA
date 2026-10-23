@@ -124,7 +124,7 @@ export async function executeReadSecret(source: RunSecretSource, call: ModelTool
     signal?.throwIfAborted();
     const entries = await source.list(scope);
     if (!entries.length) {
-      return harnessToolError(call, "read_secret_unknown", "The user has no saved secrets available in this chat. They can add one in Studio → Secrets; Project chats never receive personal secrets.", { available: [] });
+      return harnessToolError(call, "read_secret_unknown", "The user has no saved secrets available in this chat. They can add one in Studio → Secrets.", { available: [] });
     }
     let found = matches(entries, name.trim());
     if (!found.length) {

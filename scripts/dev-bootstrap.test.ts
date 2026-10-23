@@ -12,7 +12,7 @@ describe("development HTTP preload", () => {
       const { getContext, announceProcess } = require('./lib/server/observability/runtime.cjs');
       const { installDevBootstrap } = require('./scripts/dev-bootstrap.cjs');
       installDevBootstrap();
-      announceProcess({ attachments: 'starting', knowledge: 'starting', mcp: 'starting' });
+      announceProcess({ attachments: 'starting', mcp: 'starting' });
       const servers = [0, 1].map(() => http.createServer((req, res) => {
         res.end(JSON.stringify({ trace: getContext()?.trace_id, peer: req.headers['x-aiqsa-runtime-peer'], forwarded: req.headers['x-forwarded-for'], secretInstalled: !!globalThis[Symbol.for('aiqsa.runtime-peer-secret.v1')] }));
       }));
@@ -51,7 +51,7 @@ describe("development HTTP preload", () => {
       expect(item.body.secretInstalled).toBe(false);
     }
     expect(records.filter((record) => record.event === "process.started")).toEqual([
-      expect.objectContaining({ attachments: "starting", knowledge: "starting", mcp: "starting", memory: "unknown" })
+      expect.objectContaining({ attachments: "starting", mcp: "starting", memory: "unknown" })
     ]);
     const logs = records.filter((record) => record.event === "http.request_completed");
     expect(logs).toHaveLength(2);

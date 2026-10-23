@@ -7,7 +7,7 @@ const input = { callId: "call_row_1", runId: "run_1", toolName: "manage_secret",
 const done = { action: "created" as const, previous: null, valueReplaced: false, secret: { description: "", envNames: [],
   id: "10000000-0000-4000-8000-000000000001", kind: "text" as const, name: "GitLab", versionId: "20000000-0000-4000-8000-000000000001" } };
 const result = secretChangedResult({ id: "provider_call_1", name: "manage_secret" }, done);
-const allowedRun = { projectId: null, scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", userStatus: "active" };
+const allowedRun = { scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", userStatus: "active" };
 
 function transaction(options: Readonly<{ run?: unknown; call?: unknown; settled?: number }> = {}) {
   const queries: string[] = [];
@@ -15,8 +15,8 @@ function transaction(options: Readonly<{ run?: unknown; call?: unknown; settled?
     $queryRaw: vi.fn(async (strings: TemplateStringsArray | { strings?: readonly string[] }) => {
       const text = Array.isArray(strings) ? strings.join("?") : (strings as { strings: readonly string[] }).strings.join("?");
       queries.push(text);
-      if (text.includes("SELECT r.\"chatId\"")) return [{ chatId: "chat_1", projectId: null, userId: "user_1" }];
-      if (text.includes("r.\"scheduledTaskId\", c.\"projectId\"")) return options.run === undefined ? [allowedRun] : options.run;
+      if (text.includes("SELECT r.\"chatId\"")) return [{ chatId: "chat_1", userId: "user_1" }];
+      if (text.includes("r.\"scheduledTaskId\", m.\"scheduledTaskPrompt\"")) return options.run === undefined ? [allowedRun] : options.run;
       return [];
     }),
     modelRun: {},

@@ -353,8 +353,7 @@ export function laterRevision(current: string, incoming: string): string {
 
 export function workspaceNavigationChats(chats: readonly WorkspaceChatSummary[]): WorkspaceChatSummary[] {
   return chats.filter(
-    (chat) => !chat.projectId &&
-      chat.memoryMode !== "TEMPORARY" &&
+    (chat) => chat.memoryMode !== "TEMPORARY" &&
       chat.pendingInitialMemoryMode !== "TEMPORARY"
   );
 }

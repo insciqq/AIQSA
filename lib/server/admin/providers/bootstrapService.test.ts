@@ -4,7 +4,6 @@ import type { AdminModelPolicyCatalog } from "../../../contracts/adminModelPolic
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import { adminSearchExecutionDefaults, type AdminSearchCatalog, type AdminSearchDraft } from "../../../contracts/adminSearch";
 import { createAdminProviderBootstrap } from "./bootstrapService";
-import { adminKnowledgeProfileFixture } from "@/tests/support/knowledgeProfile";
 import { providerSetupModels } from "./setupModels";
 import { adminProviderModelConfiguration } from "./adminConfiguration";
 import { jevModelConfiguration } from "../../../domain/decisionModels";
@@ -48,14 +47,11 @@ function fixture() {
   const adoptDecisionModel = vi.fn(async () => true);
   const searchCreate = vi.fn(async () => ({ created: true, id: "search" }));
   const searchSave = vi.fn(async () => {});
-  const knowledge = adminKnowledgeProfileFixture({ activeRevision: null, availableDestinations: [], availablePdfDestinations: [] });
-  const knowledgeActivate = vi.fn(async () => {});
   const complete = createAdminProviderBootstrap({ providers: { listConnections: async () => [connection] },
     chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, updateMemory: memoryUpdate, adoptChatTitle, adoptDecisionModel },
-    search: { list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave },
-    knowledge: { list: async () => knowledge, activate: knowledgeActivate } });
+    search: { list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave } });
   const run = (signal = new AbortController().signal) => complete({ connectionId: connection.id, credentialId: "cred-primary", userId: "operator", signal });
-  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchCreate, searchSave, knowledge, knowledgeActivate };
+  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchCreate, searchSave };
 }
 
 describe("provider automatic setup", () => {
@@ -176,7 +172,7 @@ describe("provider automatic setup", () => {
       draft: expect.objectContaining({ protocol: "anthropic_web_search" }) }));
     expect(value.chatUpdate).toHaveBeenCalledOnce();
   });
-  it("assigns verified OpenRouter helpers and initializes Knowledge with image reading only once", async () => {
+  it("assigns a verified OpenRouter reranker only once", async () => {
     const value = fixture();
     value.connection.family = "openrouter";
     const helpers = providerSetupModels("openrouter").filter((model) => model.configuration.modelClass !== "answer");
@@ -190,28 +186,14 @@ describe("provider automatic setup", () => {
         id: helper.modelId, connectionId: value.connection.id, connectionDisplayName: value.connection.displayName, displayName: helper.displayName
       });
     }
-    const embedding = helpers.find((model) => model.configuration.modelClass === "embedding")!;
     const reranker = helpers.find((model) => model.configuration.modelClass === "reranker")!;
-    const destination = { deploymentId: embedding.modelId, modelDisplayName: embedding.displayName,
-      connectionDisplayName: value.connection.displayName, provider: "openrouter", targetDimension: 1536 };
-    Object.assign(value.knowledge, { availableDestinations: [destination], availablePdfDestinations: [{
-      deploymentId: value.roles.documentCandidates[0]!.id, modelDisplayName: "Page reader",
-      defaultReasoningEffort: null, reasoningEfforts: [],
-      connectionDisplayName: value.connection.displayName, provider: "openrouter", upstreamModelId: "page-reader", directPdf: false, vision: true
-    }] });
     expect(await value.run()).toMatchObject({ state: "completed", defaults: expect.arrayContaining([
-      "Reranking: Voyage Rerank 2.5", "Knowledge: Qwen3 Embedding 8B · Page reader"
+      "Reranking: Voyage Rerank 2.5"
     ]) });
     expect(value.rolesUpdate).toHaveBeenCalledWith(expect.objectContaining({ rerankerProviderModelId: reranker.modelId }));
-    expect(value.knowledgeActivate).toHaveBeenCalledWith(expect.objectContaining({
-      deploymentId: embedding.modelId, documentDeploymentId: "model-terra", pdfProcessingMode: "system_model_vision",
-      expectedVersion: value.knowledge.version, userId: "operator"
-    }));
-    Object.assign(value.knowledge, { activeRevision: adminKnowledgeProfileFixture().activeRevision });
     value.roles.policy.rerankerModel = { ...value.roles.rerankerCandidates[0]!, available: true };
     value.rolesUpdate.mockClear();
     await value.run();
-    expect(value.knowledgeActivate).toHaveBeenCalledOnce();
     expect(value.rolesUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ rerankerProviderModelId: expect.anything() }));
   });
 

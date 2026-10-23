@@ -1,6 +1,4 @@
 import {
-  chatIdFromComposerSessionKey,
-  projectIdFromComposerSessionKey,
   type ComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
@@ -184,8 +182,6 @@ async function uploadFailureMessage(
       return IMAGE_UPLOAD_FAILURE_MESSAGES[decoded.error];
     case "unsupported_type":
       return `This file type isn't supported, or its extension doesn't match its contents. Supported: ${ATTACHMENT_UPLOAD_FORMAT_LABELS.join(", ")}. Check that the extension matches the file.`;
-    case "project_not_found":
-      return "This project is no longer available. Refresh the page or upload the file in another chat.";
     case "unauthorized":
       return "Your session ended. Sign in again to continue.";
     case undefined:
@@ -208,7 +204,6 @@ type RunLifecycleActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
   activeStreamAbortRef: MutableRef<Map<string, AbortController>>;
   notifyAnswerReady(): Promise<void>;
-  projectIdForChat?(chatId: string | null): string | null;
   /** Re-reads installation availability after an upload was refused for Workspace. */
   refreshWorkspaceAvailability?(): void;
   refreshActiveChat(
@@ -230,17 +225,12 @@ export function useRunLifecycleActions({
   activeChatIdRef,
   activeStreamAbortRef,
   notifyAnswerReady,
-  projectIdForChat = () => null,
   refreshWorkspaceAvailability,
   refreshActiveChat,
   setNotice
 }: RunLifecycleActionsInput) {
-  function attachmentPath(sourceKey: ComposerSessionKey, attachmentId: string): string {
-    const projectId = projectIdFromComposerSessionKey(sourceKey) ??
-      projectIdForChat(chatIdFromComposerSessionKey(sourceKey));
-    return projectId
-      ? `/api/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachmentId)}`
-      : `/api/uploads/${encodeURIComponent(attachmentId)}`;
+  function attachmentPath(attachmentId: string): string {
+    return `/api/uploads/${encodeURIComponent(attachmentId)}`;
   }
 
   function startAttachmentPoll(sourceKey: ComposerSessionKey, attachmentId: string): void {
@@ -258,7 +248,7 @@ export function useRunLifecycleActions({
         await wait(delayMs);
         let response: Response;
         try {
-          response = await shellFetch(attachmentPath(sourceKey, attachmentId));
+          response = await shellFetch(attachmentPath(attachmentId));
         } catch {
           delayMs = Math.min(Math.round(delayMs * 1.5), 3_000);
           continue;
@@ -350,11 +340,9 @@ export function useRunLifecycleActions({
           if (!useComposerSessionStore.getState().sessionsByKey[sourceSessionKey]?.pendingUploadGenerations.includes(generation)) break;
           // The user removed this row while earlier files were uploading.
           if (upload.signal.aborted) continue;
-          const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
-            projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
           if (limits && (file.size > limits.ordinaryMaxBytes || !uploadAdmissionFormatFor(file.name, file.type, "attachment"))) {
             if (file.size > limits.maxBytes) throw new Error(`File exceeds the ${Number((limits.maxBytes / 1024 / 1024).toFixed(1))} MiB upload limit.`);
-            const attachment = await uploadWorkspaceFile({ file, generation, id: upload.id, projectId, sourceKey: sourceSessionKey });
+            const attachment = await uploadWorkspaceFile({ file, generation, id: upload.id, sourceKey: sourceSessionKey });
             if (attachment) {
               moveUploadPreview(upload.id, attachment.id);
               useComposerSessionStore.getState().appendUploadedAttachment(sourceSessionKey, generation, attachment);
@@ -364,7 +352,6 @@ export function useRunLifecycleActions({
           const formData = new FormData();
           formData.append("file", file);
           if (workspaceEnabled) formData.append("scope", "workspace");
-          if (projectId) formData.append("projectId", projectId);
           const response = await shellFetch("/api/uploads", {
             body: formData,
             method: "POST",
@@ -420,7 +407,6 @@ export function useRunLifecycleActions({
   ): Promise<boolean> {
     const store = useComposerSessionStore.getState();
     const sourceKey = store.activeSessionKey;
-    if (projectIdFromComposerSessionKey(sourceKey) || projectIdForChat(chatIdFromComposerSessionKey(sourceKey))) return false;
     const generation = store.beginUpload(sourceKey);
     if (generation === null) return false;
     let failure: string | null = null;
@@ -468,7 +454,7 @@ export function useRunLifecycleActions({
       return;
     }
     try {
-      const response = await shellFetch(attachmentPath(sourceSessionKey, attachmentId), {
+      const response = await shellFetch(attachmentPath(attachmentId), {
         method: "POST"
       });
       if (!response.ok) throw new Error(`attachment_retry_failed_${response.status}`);

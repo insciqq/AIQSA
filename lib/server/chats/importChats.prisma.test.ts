@@ -69,7 +69,7 @@ describe("chat import against PostgreSQL", () => {
     const chat = await importedChat(userId);
     expect(chat).toMatchObject({
       archived: false, defaultProviderModelId: null, folderId: null, importSource: "AIQSA", importSourceModel: "fixture-model",
-      memoryMode: "EXCLUDED", pinned: true, projectId: null, title: "Imported fixture"
+      memoryMode: "EXCLUDED", pinned: true, title: "Imported fixture", userId
     });
     expect(chat.importSourceKey).toMatch(/^[0-9a-f]{64}$/u);
     expect(chat.createdAt.toISOString()).toBe("2026-09-01T09:59:00.000Z");

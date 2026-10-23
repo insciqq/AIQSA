@@ -65,7 +65,7 @@ describe("Prisma model-check usage writer", () => {
     const rows = await prisma.usageEvent.findMany({ where: { userId: f.userId } });
     expect(rows).toHaveLength(6);
     for (const row of rows) {
-      expect(row).toMatchObject({ purpose: "model_check", chatId: null, modelRunId: null, projectId: null, provider: "openai_compatible" });
+      expect(row).toMatchObject({ purpose: "model_check", chatId: null, modelRunId: null, provider: "openai_compatible" });
     }
     const byModel = (modelId: string) => rows.filter((row) => row.modelId === modelId);
     expect(byModel("fixture/answer")).toHaveLength(2);

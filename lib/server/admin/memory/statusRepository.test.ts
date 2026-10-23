@@ -127,7 +127,7 @@ describe("Prisma administrator Memory status repository", () => {
     }).mock.calls;
     const pendingClassificationSql = rawQueries[2]?.[0].strings.join("?") ?? "";
     expect(pendingClassificationSql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
-    expect(pendingClassificationSql).toContain('evidence_chat."projectId" IS NULL');
+    expect(pendingClassificationSql).toContain('evidence_chat."userId" = support."userId"');
     const staleProjectionQuery = rawQueries[3]?.[0];
     const staleProjectionSql = staleProjectionQuery?.strings.join("?") ?? "";
     expect(staleProjectionSql).toContain('chunk."chunkingVersion" <>');

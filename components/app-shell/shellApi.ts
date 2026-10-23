@@ -241,7 +241,6 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ? {
         ...message.artifactSummary,
         citations: message.artifactSummary.citations ?? [],
-        knowledgeCitations: message.artifactSummary.knowledgeCitations ?? [],
         sources: message.artifactSummary.sources ?? []
       }
     : null;
@@ -289,7 +288,6 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     answerReview: chat.answerReview,
     ...(chat.assistantId !== undefined ? { assistantId: chat.assistantId } : {}),
     createdAt: chat.createdAt,
-    defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
     defaultModelId: chat.defaultModelId ?? "",
     defaultProvider: chat.defaultProvider ?? "",
@@ -297,7 +295,6 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     id: chat.id,
     messageCount: chat.messageCount,
     pinned: chat.pinned,
-    projectId: chat.projectId ?? null,
     title: chat.title,
     updatedAt: chat.updatedAt,
     workspace: chat.workspace

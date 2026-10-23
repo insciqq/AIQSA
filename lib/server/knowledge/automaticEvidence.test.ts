@@ -3,13 +3,8 @@ import { modelPdfPagesToDocument } from "../parsing/modelPdfOutput";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import { chunkKnowledgeDocument } from "./chunking";
 import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "./tokenizer/knowledgeTokenCounter";
-import { tableOccurrenceFixture } from "./tableOccurrence.testFixtures";
 import { knowledgeSearchFailureToolResult } from "./searchFailure";
-import { knowledgeCoverageEvidenceAtomIndexV3, knowledgeCoverageEvidenceFromManifestV4 } from "./coverageScopeV4";
-import { knowledgeCoverageScopePromptV6, decodeKnowledgeCoverageScopePromptV6 } from "./coverageScopeV6";
-import { knowledgeFullContextDispatchPresentation, packKnowledgeFullContextDispatchManifest } from "./fullContext";
 import { KNOWLEDGE_ANSWER_DRAFT_CONTRACT_V8 } from "./answerGroundingV5";
-import { summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ToolExecutionResult } from "../tools/types";
 import {
@@ -489,18 +484,7 @@ describe("focused Knowledge evidence", () => {
       answer: `AIQSA_KB_STATUS=ANSWERED\n${answer}`,
       evidence: evidencePackageFromManifest(query, draft)
     });
-    const projection = summarizeMessageRunArtifacts({
-      events: [],
-      knowledgeRetrievalSession: {
-        degradedFlags: [],
-        evidenceItems: draft.items.map(({ handle }) => ({ handle, state: "available" })),
-        groundingResult: { outcome: settled.outcome }
-      },
-      searchRuns: []
-    }, { blocks: [{ text: settled.finalText, type: "text" }] });
-
     expect(settled.finalText).toBe(answer);
-    expect(projection?.knowledgeCitations).toEqual([{ handle: "K1" }]);
   });
 
   it("treats prompt-injection text inside a Source as data and keeps the answer route tool-free", () => {
@@ -599,51 +583,6 @@ describe("focused Knowledge evidence", () => {
       result: result({ ...updated, providerText: knowledgeToolResultText(updated) }) });
     expect(draft.items[0]).toMatchObject({ ambiguity: "table_cell_associations_ambiguous", exactExcerpt: "Age\t30" });
     expect(draft.message).not.toContain("Alice");
-  });
-
-  it.each([3, 4, 5] as const)("preserves parsed table rows, headers, dates and locators through RAG and full-context Scope (%s)", (knowledgeEvidencePackingVersion) => {
-    const { data, header, rows } = tableOccurrenceFixture();
-    expect(data.map(({ text }) => text)).toEqual(rows.map((row) => `${header}\n${row}`));
-    const base = evidence();
-    const updated: KnowledgeRetrievalEvidence = { ...base, providerText: "pending",
-      candidateCount: data.length,
-      bases: base.bases.map((binding) => ({ ...binding, candidateCount: data.length,
-        vectorSearch: { ...binding.vectorSearch!, candidateCount: data.length, eligibleRows: data.length } })),
-      lexicalBackend: knowledgeLexicalBackendEvidenceFixture({ candidateCount: data.length }),
-      results: data.map((chunk, index) => ({ ...base.results[0]!, chunkId: `row-${index + 1}`,
-        handle: `K${index + 1}`, documentContext: chunk.documentContext, includedText: chunk.text,
-        includedTextBytes: Buffer.byteLength(chunk.text), layoutKind: chunk.layoutKind,
-        sourceTextBytes: Buffer.byteLength(chunk.text), documentVersionNumber: 3 })) };
-    const rag = toolLoopKnowledgeEvidenceDispatchDraft({ request: { ...request(), knowledgeEvidencePackingVersion },
-      results: [{ ...result({ ...updated, providerText: knowledgeToolResultText(updated) }), name: KNOWLEDGE_SEARCH_TOOL_NAME }] })!;
-    const presentation = knowledgeFullContextDispatchPresentation(data.map((chunk, index) => ({
-      documentContext: chunk.documentContext, exactExcerpt: chunk.text, handle: `K${index + 1}`,
-      headingPath: [], page: 1, sourceAlias: "S1" })));
-    const full = packKnowledgeFullContextDispatchManifest({ candidates: rag.items.map((item, index) => ({
-      ambiguity: item.ambiguity, evidenceId: item.evidenceId, exactExcerpt: item.exactExcerpt,
-      fileName: item.fileName, handle: item.handle, locator: presentation.locators[index]!,
-      operationOrdinal: 0, resultOrdinal: index + 1, sourceAlias: item.sourceAlias, sourceLabel: item.sourceLabel,
-      sourceTruncated: false, sourceVersionNumber: item.sourceVersionNumber, state: "available",
-      ...(presentation.expandedContexts[index] ? { expandedContext: presentation.expandedContexts[index] } : {})
-    })), excludedResources: 0, maximumTokens: 8_192, profileId: "synthetic:answer" });
-    for (const manifest of [rag, full]) {
-      const projected = knowledgeCoverageEvidenceFromManifestV4(manifest);
-      const exact = knowledgeCoverageEvidenceAtomIndexV3(projected).items.filter(({ contextRole }) => contextRole === "exact_excerpt");
-      expect(exact.map(({ text }) => text)).toEqual([header, rows[0], header, rows[1]]);
-      expect(new Set(exact.map(({ occurrence }) => occurrence.unitId)).size).toBe(4);
-      expect(manifest.items.map(({ locator }) => locator)).toEqual([
-        expect.stringContaining("table=T1; row-index=1; row-kind=data"),
-        expect.stringContaining("table=T1; row-index=2; row-kind=data")
-      ]);
-      expect(projected.every(({ sourceVersionNumber }) => sourceVersionNumber === 3)).toBe(true);
-      const input = { atomIndexVersion: 3 as const, evidence: projected, evidenceManifest: manifest.message, request: "Compare A and B." };
-      const prompt = knowledgeCoverageScopePromptV6({ ...input, scopePass: "initial" });
-      expect(decodeKnowledgeCoverageScopePromptV6({ ...input, ...prompt })).toEqual({ repairReason: null, scopePass: "initial" });
-      expect(JSON.parse(prompt.userPrompt)).toMatchObject({ atomProjection: "source_ordered_occurrences_v3", evidenceUnitIndex: { version: 3 } });
-      expect(prompt.systemPrompt).toContain("Never inherit a document issue date");
-      expect(manifest.message).not.toContain("Issued 2041-02-03");
-    }
-    expect(rag.items.every(({ locator }) => !locator.includes("source-passage="))).toBe(true);
   });
 
   it("does not mislabel lexical value-normalization uncertainty as an ambiguous association", () => {

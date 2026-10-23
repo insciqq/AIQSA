@@ -4,7 +4,7 @@ import { shellFetch } from "./shellApi";
 import { latestChatPdfRouteAvailability, useChatPdfRoutePreview } from "./useChatPdfRoutePreview";
 
 vi.mock("./shellApi", () => ({ shellFetch: vi.fn() }));
-const target = { projectId: null, providerConnectionId: "connection", providerModelId: "A" };
+const target = { providerConnectionId: "connection", providerModelId: "A" };
 
 afterEach(() => { vi.useRealTimers(); vi.mocked(shellFetch).mockReset(); });
 
@@ -70,7 +70,6 @@ describe("server-owned PDF route preview", () => {
     await act(async () => {});
     expect(latestChatPdfRouteAvailability({ ...target })).toEqual({ available: true, route: "system_pdf" });
     expect(latestChatPdfRouteAvailability({ ...target, providerModelId: "B" })).toBeNull();
-    expect(latestChatPdfRouteAvailability({ ...target, projectId: "project" })).toBeNull();
     hook.rerender({ enabled: false });
     expect(latestChatPdfRouteAvailability(target)).toBeNull();
     hook.unmount();

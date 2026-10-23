@@ -19,7 +19,7 @@ function openView(): AssistantSharingSheetView {
     isAdministrator: false,
     listing: null,
     name: "Code reviewer",
-    names: { knowledgeBases: [], knowledgeSources: [], mcpServers: [], models: [], searchOptions: [] },
+    names: { mcpServers: [], models: [], searchOptions: [] },
     onChange: noop,
     onClose: noop,
     onCopyLink: async () => true,

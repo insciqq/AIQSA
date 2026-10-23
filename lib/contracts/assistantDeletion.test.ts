@@ -7,25 +7,21 @@ import {
 const consequences = {
   audiences: { groupNames: ["Design", "Research"], installation: false },
   chatCount: 0,
-  hiddenProjectCount: 2,
   pendingListingRequest: false,
-  projects: [{ isDefault: false, name: "Launch" }],
   version: 3
 };
 
 describe("Assistant deletion contract", () => {
   it("decodes consequences and drops unknown fields", () => {
     expect(decodeAssistantDeletionConsequencesResponse({
-      consequences: { ...consequences, ownerUserId: "private", projects: [{ id: "p-1", isDefault: false, name: "Launch" }] }
+      consequences: { ...consequences, hiddenProjectCount: 2, ownerUserId: "private", projects: [{ id: "p-1", name: "Launch" }] }
     })).toEqual({ consequences });
   });
 
   it.each([
     ["a negative chat count", { chatCount: -1 }],
-    ["a fractional hidden count", { hiddenProjectCount: 0.5 }],
     ["an empty group name", { audiences: { groupNames: [""], installation: false } }],
     ["a missing installation flag", { audiences: { groupNames: [] } }],
-    ["an unnamed project", { projects: [{ isDefault: true, name: "" }] }],
     ["a zero version", { version: 0 }]
   ])("rejects %s", (_label, override) => {
     expect(decodeAssistantDeletionConsequencesResponse({ consequences: { ...consequences, ...override } })).toBeNull();

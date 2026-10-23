@@ -35,7 +35,6 @@ describe("background queue repository over PostgreSQL", () => {
     });
     const storageKey = `queues/stuck-${randomUUID()}`;
     const claimedKey = `queues/claimed-${randomUUID()}`;
-    const deletionTarget = randomUUID();
     const recent = new Date(Date.now() - 60_000);
     try {
       const [stuck, claimed] = await Promise.all([storageKey, claimedKey].map((key) => prisma.attachment.create({
@@ -51,12 +50,6 @@ describe("background queue repository over PostgreSQL", () => {
         modelId: "queue-test-model", nextRunAt: dueAt, prompt: "Queue test", provider: "queue-test", scheduleKind: "DAILY",
         timeOfDayMinutes: 0, timeZone: "UTC", title: "Queue test", userId: user.id
       } });
-      await prisma.knowledgeDeletionJob.create({ data: {
-        attemptCount: 1, createdAt: dueAt, lastAttemptAt: recent, lastErrorCode: "knowledge_purge_failed",
-        ownerUserId: user.id, state: "RUNNING", targetId: deletionTarget, targetType: "SOURCE",
-        // A RUNNING job always carries its claim; this one's lease expired with its worker.
-        claimToken: randomUUID(), claimedAt: dueAt, leaseExpiresAt: dueAt
-      } });
 
       const snapshot = await service.read();
       const row = (queue: string) => snapshot.queues.find((item) => item.queue === queue)!;
@@ -71,20 +64,13 @@ describe("background queue repository over PostgreSQL", () => {
       expect(row("scheduled_tasks")).toMatchObject({ state: "stalled" });
       expect(row("scheduled_tasks").waiting).toBeGreaterThanOrEqual(1);
       expect(row("scheduled_tasks").oldestSeconds).toBeGreaterThan(age - DAY_SECONDS);
-      // A running deletion still ages its queue, and its failed last attempt counts.
-      expect(row("knowledge_deletion")).toMatchObject({ state: "stalled" });
-      expect(row("knowledge_deletion").running).toBeGreaterThanOrEqual(1);
-      expect(row("knowledge_deletion").failed24h).toBeGreaterThanOrEqual(1);
 
       const findings = await service.stalled();
       expect(findings.map((finding) => finding.queue)).toEqual(expect.arrayContaining(["attachment_processing", "scheduled_tasks"]));
-      // Knowledge deletion has its own Knowledge alert and raises nothing here.
-      expect(findings.map((finding) => finding.queue)).not.toContain("knowledge_deletion");
       const items = queueAttentionItems(findings).filter((item) => item.id === "queue_stalled:attachment_processing");
       expect(items).toHaveLength(1);
       expect(items[0]!.detail).toMatch(/^Chat file processing · /u);
     } finally {
-      await prisma.knowledgeDeletionJob.deleteMany({ where: { targetId: deletionTarget } });
       await prisma.scheduledTask.deleteMany({ where: { userId: user.id } });
       await prisma.attachmentProcessingJob.deleteMany({ where: { ownerUserId: user.id } });
       await prisma.user.deleteMany({ where: { id: user.id } });

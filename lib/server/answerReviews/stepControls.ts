@@ -2,11 +2,11 @@ import { decodeSearchPlan, type SearchPlan } from "../../contracts/search";
 
 /** The control keys a step takes from the chat; everything else in a send body is the server's. */
 const STEP_CONTROL_KEYS = [
-  "knowledgePlan", "mcp", "searchPlan", "searchPreferencePlan", "searchPreferenceSource", "skillIds",
+  "mcp", "searchPlan", "searchPreferencePlan", "searchPreferenceSource", "skillIds",
   "skills", "timeZone", "tools", "workspace"
 ] as const;
 
-/** The chat's controls a step's send carries: Search, MCP, Workspace, Knowledge, Skills and the time zone. */
+/** The chat's controls a step's send carries: Search, MCP, Workspace, Skills and the time zone. */
 export function answerReviewStepControls(controls: Readonly<Record<string, unknown>>): Record<string, unknown> {
   return Object.fromEntries(STEP_CONTROL_KEYS.flatMap((key) => Object.hasOwn(controls, key) ? [[key, controls[key]]] : []));
 }

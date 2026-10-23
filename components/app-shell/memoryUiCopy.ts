@@ -150,7 +150,7 @@ const EN = {
   "library.savedDescription": "Review, add, correct, or forget the personal details AIQSA has saved.",
   "library.longFactDescription": "A saved fact can hold up to 2 000 characters. Long ones are folded to three lines in the list and open in full when edited.",
   "library.pausedManagementDescription": "You can still read, edit and forget every fact while Memory is off. Turning it back on uses the same list \u2014 nothing is re-learned from scratch.",
-  "library.temporaryDescription": "Temporary chats never read or write Memory, and project chats use no personal memory at all.",
+  "library.temporaryDescription": "Temporary chats never read or write Memory.",
   "common.on": "On",
   "common.off": "Off"
 } as const;

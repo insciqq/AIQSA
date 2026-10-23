@@ -29,8 +29,6 @@ export type ScimUserWriteResult =
   | { kind: "last_admin" }
   | { kind: "not_found" }
   | { kind: "ok"; userId: string }
-  /** Committed: access is revoked and the deactivation recorded, the status stays active. */
-  | { kind: "owner_transfer_required"; projectCount: number }
   | { kind: "uniqueness" };
 
 export type ScimGroupWriteResult =
@@ -49,8 +47,7 @@ export type ScimListQuery<Attribute extends string> = {
 /**
  * What the SCIM endpoints read and write. Every user and group a SCIM write touches becomes
  * SCIM-managed: `scimExternalId` holds the client's externalId, or the resource's own id when the
- * client sent none. Writes that a refusal ends change nothing, except the committed
- * `owner_transfer_required` deactivation.
+ * client sent none. Writes that a refusal ends change nothing.
  */
 export type ScimRepository = {
   createGroup(input: ScimGroupInput): Promise<ScimGroupWriteResult>;
@@ -245,8 +242,6 @@ async function applyActiveChange(
     case "last_admin":
     case "not_found":
       throw new ScimRefusal<ScimUserWriteResult>({ kind: deactivated.kind });
-    case "owner_transfer_required":
-      return deactivated;
     default:
       return { kind: "ok", userId: input.userId };
   }

@@ -115,7 +115,6 @@ describe("export all personal chats", () => {
     expect(db.filters[0]).toEqual({
       memoryMode: { not: "TEMPORARY" },
       permanentDeletionAt: null,
-      projectId: null,
       userId: "user-1"
     });
 

@@ -23,7 +23,7 @@ export type McpApprovalState = "allowed_once" | "allowed_server" | "denied" | "p
 /**
  * One refused call as its run initiator's card shows it. Display names are
  * bounded catalog snapshots. `canDecide` is set only for the run's initiator
- * (other Project members see the card read-only); `details` names the
+ * (anyone else sees the card read-only); `details` names the
  * refused tool-loop call whose redacted request the initiator may expand.
  * `canContinue` marks an Allow whose continuation may still start: the one
  * the decision starts can fail before any run exists (another answer

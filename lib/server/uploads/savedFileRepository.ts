@@ -12,7 +12,7 @@ export function createSavedFileRepository(client: PrismaClient = prisma): SavedF
       return client.$transaction(async (tx) => {
         const identity = await tx.attachment.findFirst({
           select: { chatId: true, storageKey: true },
-          where: { id: attachmentId, projectId: null, userId }
+          where: { id: attachmentId, userId }
         });
         if (!identity) return null;
 
@@ -22,7 +22,7 @@ export function createSavedFileRepository(client: PrismaClient = prisma): SavedF
           const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
             SELECT "id" FROM "Chat"
             WHERE "id" = ${identity.chatId} AND "userId" = ${userId}
-              AND "projectId" IS NULL AND "permanentDeletionAt" IS NULL
+              AND "permanentDeletionAt" IS NULL
               AND "memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
             FOR SHARE
           `);
@@ -35,7 +35,7 @@ export function createSavedFileRepository(client: PrismaClient = prisma): SavedF
         `);
         const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "Attachment"
-          WHERE "id" = ${attachmentId} AND "userId" = ${userId} AND "projectId" IS NULL
+          WHERE "id" = ${attachmentId} AND "userId" = ${userId}
           FOR UPDATE
         `);
         if (locked.length !== 1) return null;
@@ -47,7 +47,7 @@ export function createSavedFileRepository(client: PrismaClient = prisma): SavedF
         if (save && source.savedAt) return source;
         if (save) {
           const saved = await tx.attachment.findFirst({
-            where: { projectId: null, savedAt: { not: null }, storageKey: source.storageKey, userId }
+            where: { savedAt: { not: null }, storageKey: source.storageKey, userId }
           });
           if (saved) return saved;
         }
@@ -78,7 +78,7 @@ export function createSavedFileRepository(client: PrismaClient = prisma): SavedF
       return client.$transaction(async (tx) => {
         const file = await tx.attachment.findFirst({
           select: { storageKey: true },
-          where: { id: attachmentId, projectId: null, savedAt: { not: null }, userId }
+          where: { id: attachmentId, savedAt: { not: null }, userId }
         });
         if (!file) return false;
         await tx.$queryRaw(Prisma.sql`
@@ -86,7 +86,7 @@ export function createSavedFileRepository(client: PrismaClient = prisma): SavedF
         `);
         const result = await tx.attachment.updateMany({
           data: { savedAt: null },
-          where: { id: attachmentId, projectId: null, savedAt: { not: null }, userId }
+          where: { id: attachmentId, savedAt: { not: null }, userId }
         });
         return result.count === 1;
       });

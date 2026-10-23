@@ -142,8 +142,8 @@ export function cleanTelegramFileName(fileName: string, mimeType: string): strin
 
 /**
  * Reads a file's bytes through the download route's authority: a ready file
- * of the user's own, or of a Project they may open now. A file whose stored
- * size differs from its record, or that storage cannot return, is unavailable.
+ * of the user's own. A file whose stored size differs from its record, or that
+ * storage cannot return, is unavailable.
  */
 export function createPrismaTelegramFileReader(deps: Readonly<{
   prisma: PrismaClient;

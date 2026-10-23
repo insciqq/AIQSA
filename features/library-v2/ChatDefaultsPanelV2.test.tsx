@@ -17,7 +17,7 @@ function assistantSummary(id: string, name: string, overrides: Partial<Assistant
     description: "",
     featured: false,
     featuredOrder: null,
-    fingerprint: { knowledgeLabel: null, knowledgeResourceCount: 0, mcpServerCount: 0, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 },
+    fingerprint: { mcpServerCount: 0, modelLabel: null, reasoningEffort: null, searchOptionCount: 0 },
     id,
     name,
     owned: true,
@@ -44,16 +44,16 @@ function renderDefaults(assistant: Partial<DefaultAssistantView>) {
     ...assistant
   };
   render(<ChatDefaultsPanelV2 onNavigate={vi.fn()} composer={{
-    catalog: composerGalleryConfig.catalog, knowledge: { bases: [] },
-    chatDefaults: { assistant: view, knowledgePlan: null, mcpMode: "auto", skillsMode: "auto",
-      searchPlan: { mode: "all_selected", optionIds: [] }, setKnowledgePlan: vi.fn(), setSearchPlan: vi.fn(), setMcpMode: vi.fn() }
+    catalog: composerGalleryConfig.catalog,
+    chatDefaults: { assistant: view, mcpMode: "auto", skillsMode: "auto",
+      searchPlan: { mode: "all_selected", optionIds: [] }, setSearchPlan: vi.fn(), setMcpMode: vi.fn() }
   }} />);
   return view;
 }
 
 describe("Studio Chat defaults", () => {
   it("keeps the model row and explains unavailable defaults while the catalog is absent", () => {
-    render(<ChatDefaultsPanelV2 composer={{ catalog: null, knowledge: { bases: [] } }} onNavigate={vi.fn()} />);
+    render(<ChatDefaultsPanelV2 composer={{ catalog: null }} onNavigate={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Default model" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("Defaults are unavailable until the model catalog loads.");
     expect(screen.queryByRole("button", { name: "Active instructions" })).toBeNull();
@@ -67,7 +67,7 @@ describe("Studio Chat defaults", () => {
     catalog.defaults.personalModelDefault = { provider: "missing-provider", modelId: "missing-model" };
     const makeModelDefault = vi.fn();
     const useOrganizationModelDefault = vi.fn();
-    render(<ChatDefaultsPanelV2 composer={{ catalog, knowledge: { bases: [] }, makeModelDefault, useOrganizationModelDefault }} onNavigate={vi.fn()} />);
+    render(<ChatDefaultsPanelV2 composer={{ catalog, makeModelDefault, useOrganizationModelDefault }} onNavigate={vi.fn()} />);
     const picker = screen.getByRole("button", { name: "Default model" });
     expect(picker).toHaveTextContent("Unavailable model");
     expect(makeModelDefault).not.toHaveBeenCalled();
@@ -83,9 +83,9 @@ describe("Studio Chat defaults", () => {
     const setMcpMode = vi.fn();
     const setSkillsMode = vi.fn();
     render(<ChatDefaultsPanelV2 onNavigate={onNavigate} composer={{
-      catalog: composerGalleryConfig.catalog, knowledge: { bases: [] },
-      chatDefaults: { knowledgePlan: null, mcpMode: "auto", skillsMode: "auto", searchPlan: { mode: "all_selected", optionIds: [] },
-        setKnowledgePlan: vi.fn(), setSearchPlan: vi.fn(), setMcpMode, setSkillsMode }
+      catalog: composerGalleryConfig.catalog,
+      chatDefaults: { mcpMode: "auto", skillsMode: "auto", searchPlan: { mode: "all_selected", optionIds: [] },
+        setSearchPlan: vi.fn(), setMcpMode, setSkillsMode }
     }} />);
     fireEvent.click(screen.getByRole("button", { name: "MCP servers" }));
     fireEvent.click(screen.getByRole("button", { name: "Skills" }));
@@ -104,7 +104,7 @@ describe("Studio Chat defaults", () => {
     ] });
     const row = screen.getByTestId("settings-default-assistant");
     expect(row).toHaveTextContent("Assistant");
-    expect(row).toHaveTextContent("Starts every new personal chat. Projects use their own.");
+    expect(row).toHaveTextContent("Starts every new personal chat.");
     const select = screen.getByRole("button", { name: "Default Assistant" });
     expect(select).toHaveTextContent("None");
     fireEvent.click(select);
@@ -156,9 +156,9 @@ function renderImageModel(patch: Partial<ImageModelView>) {
   const view: ImageModelView = { settings: imageSettings, loadState: "ready", saving: false, loadError: null, saveError: null,
     load: vi.fn(), select: vi.fn(), ...patch };
   render(<ChatDefaultsPanelV2 onNavigate={vi.fn()} composer={{
-    catalog: composerGalleryConfig.catalog, knowledge: { bases: [] },
-    chatDefaults: { imageModel: view, knowledgePlan: null, mcpMode: "auto", skillsMode: "auto",
-      searchPlan: { mode: "all_selected", optionIds: [] }, setKnowledgePlan: vi.fn(), setSearchPlan: vi.fn(), setMcpMode: vi.fn() }
+    catalog: composerGalleryConfig.catalog,
+    chatDefaults: { imageModel: view, mcpMode: "auto", skillsMode: "auto",
+      searchPlan: { mode: "all_selected", optionIds: [] }, setSearchPlan: vi.fn(), setMcpMode: vi.fn() }
   }} />);
   return { view, row: screen.getByTestId("settings-default-image-model") };
 }
@@ -166,7 +166,7 @@ function renderImageModel(patch: Partial<ImageModelView>) {
 describe("Studio Chat defaults image model", () => {
   it("follows the organization default, lists every published model and saves only an explicit choice", () => {
     const { view, row } = renderImageModel({});
-    expect(row).toHaveTextContent("Projects use the organization default.");
+    expect(row).toHaveTextContent("Creates and edits images in your chats.");
     expect(view.load).toHaveBeenCalledOnce();
     const select = within(row).getByRole("button", { name: "Image model" });
     expect(select).toHaveTextContent("Organization default · GPT Image 2");

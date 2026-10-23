@@ -24,19 +24,17 @@ const POPOVER_WIDTH_PX = 384;
 
 export type AssistantPickerSectionV2 = Readonly<{
   items: readonly AssistantSummary[];
-  /** Null for the flat list of a Project chat. */
-  label: "Featured" | "Pinned" | "Recent" | "Shared" | "Yours" | null;
+  label: "Featured" | "Pinned" | "Recent" | "Shared" | "Yours";
 }>;
 
 /**
  * Picker sections in order Pinned, Recent, Featured, Yours, Shared; each
  * Assistant appears once, in the first section it qualifies for, and empty
  * sections are left out. Recent keeps the list response's newest-first order.
- * A Project chat lists the Project's Assistants without sections.
  */
 export function assistantPickerSectionsV2(
   assistants: readonly AssistantSummary[],
-  input: Readonly<{ projectScoped: boolean; query: string; recentIds: readonly string[] }>
+  input: Readonly<{ query: string; recentIds: readonly string[] }>
 ): AssistantPickerSectionV2[] {
   const query = input.query.trim().toLocaleLowerCase();
   const visible = assistants.filter((assistant) => (
@@ -46,7 +44,6 @@ export function assistantPickerSectionsV2(
       assistant.description.toLocaleLowerCase().includes(query) ||
       assistant.ownerDisplayName.toLocaleLowerCase().includes(query))
   ));
-  if (input.projectScoped) return visible.length > 0 ? [{ items: visible, label: null }] : [];
   const seen = new Set<string>();
   const take = (candidates: readonly AssistantSummary[]) => candidates.filter((assistant) => {
     if (seen.has(assistant.id)) return false;
@@ -68,21 +65,11 @@ export function assistantPickerSectionsV2(
   return sections.filter((section) => section.items.length > 0);
 }
 
-/**
- * Who an Assistant is by, wherever it is named: "by you", "by {owner}", or a
- * Project's Assistant's `Project “{name}”` (`Project` while its name is
- * unknown), never "by Project". `projectName` is present only for a
- * Project's Assistant.
- */
+/** Who an Assistant is by, wherever it is named: "by you" or "by {owner}". */
 export function assistantBylineV2(input: Readonly<{
   owned: boolean;
   ownerDisplayName: string;
-  projectName?: string | null;
 }>): string {
-  if (input.projectName !== undefined) {
-    const name = input.projectName?.trim();
-    return name ? `Project “${name}”` : "Project";
-  }
   return `by ${input.owned ? "you" : input.ownerDisplayName}`;
 }
 
@@ -107,7 +94,6 @@ export function AssistantPickerV2({
   onBrowse,
   onClose,
   onSelect,
-  projectScoped,
   recentIds
 }: Readonly<{
   /** The header selector: the desktop anchor and the fallback focus target. */
@@ -115,11 +101,10 @@ export function AssistantPickerV2({
   assistants: readonly AssistantSummary[];
   currentAssistantId: string | null;
   loading: boolean;
-  /** "Browse all in Studio", or the Project's settings inside a Project. */
+  /** "Browse all in Studio". */
   onBrowse(): void;
   onClose(): void;
   onSelect(assistantId: string): void;
-  projectScoped: boolean;
   recentIds: readonly string[];
 }>) {
   const [query, setQuery] = useState("");
@@ -177,8 +162,8 @@ export function AssistantPickerV2({
   }, [anchorRef]);
 
   const sections = useMemo(
-    () => assistantPickerSectionsV2(assistants, { projectScoped, query, recentIds }),
-    [assistants, projectScoped, query, recentIds]
+    () => assistantPickerSectionsV2(assistants, { query, recentIds }),
+    [assistants, query, recentIds]
   );
 
   const moveBetweenRows = (event: KeyboardEvent<HTMLElement>) => {
@@ -255,15 +240,15 @@ export function AssistantPickerV2({
             <p className="v2-assistant-popover-empty" data-testid="assistant-picker-empty">
               {query.trim()
                 ? "No Assistants match this search."
-                : projectScoped ? "This Project has no Assistants yet." : "No Assistants yet."}
+                : "No Assistants yet."}
             </p>
           ) : sections.map((section) => (
             <section
-              aria-label={section.label ?? "Project Assistants"}
+              aria-label={section.label}
               className="v2-assistant-popover-section"
-              key={section.label ?? "project"}
+              key={section.label}
             >
-              {section.label ? <h3>{section.label}</h3> : null}
+              <h3>{section.label}</h3>
               <ul>
                 {section.items.map((assistant) => {
                   const current = assistant.id === currentAssistantId;
@@ -285,8 +270,7 @@ export function AssistantPickerV2({
                           <small>
                             {assistantBylineV2({
                               owned: assistant.owned,
-                              ownerDisplayName: assistant.ownerDisplayName,
-                              projectName: assistant.scope.kind === "project" ? assistant.scope.projectName : undefined
+                              ownerDisplayName: assistant.ownerDisplayName
                             })}
                           </small>
                         </span>
@@ -309,7 +293,7 @@ export function AssistantPickerV2({
 
         <footer className="v2-assistant-popover-footer" data-testid="assistant-picker-actions">
           <button className="v2-focusable" type="button" onClick={onBrowse}>
-            {projectScoped ? "Manage in Project settings" : "Browse all in Studio"}
+            Browse all in Studio
             <UiV2Icon name="chevron-right" />
           </button>
         </footer>

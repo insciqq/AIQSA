@@ -9,6 +9,12 @@ import {
   KNOWLEDGE_RESULT_LIMIT,
   KNOWLEDGE_RESULT_VERSION,
   KNOWLEDGE_RESULT_VERSIONS,
+  KNOWLEDGE_SEARCH_ANALYZER_PROFILE,
+  KNOWLEDGE_SEARCH_BACKEND_KIND,
+  KNOWLEDGE_SEARCH_MAPPING_VERSION,
+  KNOWLEDGE_SEARCH_MAX_MERGED_HITS,
+  KNOWLEDGE_SEARCH_OPENSEARCH_VERSION,
+  KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION,
   KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES,
   KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
@@ -18,6 +24,7 @@ import {
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactMatchEvidence,
   type KnowledgeExactRetrievalEvidence,
+  type KnowledgeLexicalBackendEvidenceV1,
   type KnowledgeOmittedPassageEvidence,
   type KnowledgeReadResolvedSource,
   type KnowledgeReadReceipt,
@@ -68,15 +75,6 @@ import {
   decodeKnowledgeExpandedContextOrderV1,
   decodeKnowledgeParentExpansionEvidence
 } from "./parentContextExpansion";
-import {
-  AIQSA_OPENSEARCH_VERSION,
-  KNOWLEDGE_SEARCH_ANALYZER_PROFILE,
-  KNOWLEDGE_SEARCH_BACKEND_KIND,
-  KNOWLEDGE_SEARCH_MAPPING_VERSION,
-  KNOWLEDGE_SEARCH_MAX_MERGED_HITS,
-  KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION
-} from "../search/opensearch/contract";
-import type { KnowledgeLexicalBackendEvidenceV1 } from "./searchRetrieval";
 
 function persistedContentMarker(version: KnowledgeResultVersion) {
   return Object.freeze({
@@ -114,7 +112,7 @@ function decodeKnowledgeLexicalBackendEvidence(
     "timedOut",
     "version"
   ]) || value.version !== 1 || value.backendKind !== KNOWLEDGE_SEARCH_BACKEND_KIND ||
-    value.openSearchVersion !== AIQSA_OPENSEARCH_VERSION ||
+    value.openSearchVersion !== KNOWLEDGE_SEARCH_OPENSEARCH_VERSION ||
     value.physicalIndexVersion !== KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION ||
     value.mappingVersion !== KNOWLEDGE_SEARCH_MAPPING_VERSION ||
     value.analyzerProfile !== KNOWLEDGE_SEARCH_ANALYZER_PROFILE ||

@@ -7,24 +7,17 @@ import { createPrismaRunRepository } from "../runs/prismaRepository";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-async function fixture(project = false) {
-  const userIds = Array.from({ length: 3 }, () => randomUUID());
-  const [ownerId, memberId, outsiderId] = userIds as [string, string, string];
+async function fixture() {
+  const userIds = Array.from({ length: 2 }, () => randomUUID());
+  const [ownerId, outsiderId] = userIds as [string, string];
   const chatId = randomUUID();
-  const projectId = project ? randomUUID() : null;
   cleanups.push(async () => {
     await prisma.chat.deleteMany({ where: { id: chatId } });
-    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
   await prisma.user.createMany({ data: userIds.map(id => ({ id, displayName: "Accounting fixture member", status: "active" })) });
-  if (projectId) await prisma.project.create({ data: { id: projectId, name: "Accounting fixture Project",
-    createdByUserId: ownerId, createdByDisplayName: "Accounting fixture member", grants: { create: [
-      { role: "OWNER", userId: ownerId }, { role: "CONTRIBUTOR", userId: memberId }
-    ] } } });
-  await prisma.chat.create({ data: { id: chatId, title: "Accounting fixture", memoryMode: "EXCLUDED",
-    ...(projectId ? { projectId, createdByUserId: ownerId, createdByDisplayName: "Accounting fixture member" } : { userId: ownerId }) } });
-  return { chatId, ownerId, memberId, outsiderId, projectId, repository: createPrismaChatRepository(prisma) };
+  await prisma.chat.create({ data: { id: chatId, title: "Accounting fixture", memoryMode: "EXCLUDED", userId: ownerId } });
+  return { chatId, ownerId, outsiderId, repository: createPrismaChatRepository(prisma) };
 }
 
 describe("authorized all-history chat usage", () => {
@@ -90,19 +83,6 @@ describe("authorized all-history chat usage", () => {
       purpose: "chat_answer", inputTokens: 0, outputTokens: 0, totalTokens: 0, usageCompleteness: "COMPLETE", estimatedCostMicros: 0 } });
     expect(await read()).toEqual({ hasCompletedAnswer: false, recordCount: 2, knownCostRecordCount: 1, incompleteRecordCount: 1,
       totalTokens: 0, estimatedCostMicros: 0 });
-  });
-
-  it("shares the whole Project total with current readers across different initiators", async () => {
-    const f = await fixture(true);
-    await prisma.usageEvent.createMany({ data: [f.ownerId, f.memberId].map((userId, index) => ({
-      userId, chatId: f.chatId, projectId: f.projectId, provider: "fake", modelId: "shared-accounting", purpose: "chat_answer" as const,
-      inputTokens: 10, outputTokens: 10, totalTokens: 20, usageCompleteness: "COMPLETE", estimatedCostMicros: (index + 1) * 1000
-    })) });
-    for (const userId of [f.ownerId, f.memberId]) expect((await f.repository.getChat({ chatId: f.chatId, userId }))!.usageStats)
-      .toEqual({ hasCompletedAnswer: false, recordCount: 2, knownCostRecordCount: 2, incompleteRecordCount: 0, totalTokens: 40, estimatedCostMicros: 3000 });
-    expect(await f.repository.getChat({ chatId: f.chatId, userId: f.outsiderId })).toBeNull();
-    await prisma.projectGrant.delete({ where: { projectId_userId: { projectId: f.projectId!, userId: f.memberId } } });
-    expect(await f.repository.getChat({ chatId: f.chatId, userId: f.memberId })).toBeNull();
   });
 
   it("requires a completed answer or an answer attempt across history while retaining pre-answer receipts", async () => {

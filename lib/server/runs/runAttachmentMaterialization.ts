@@ -504,7 +504,6 @@ export async function loadProviderAttachments(
     resolvePdfRoute?: () => Promise<ChatPdfRouteAdmission>;
     onPdfAdmissions?: (admissions: ChatPdfAttachmentAdmission[]) => void;
     limits: RunAttachmentLimits;
-    projectId?: string;
     runId?: string;
     signal?: AbortSignal;
     workspaceEnabled?: boolean;
@@ -527,7 +526,6 @@ export async function loadProviderAttachments(
   const loadedRecords = await deps.repository.loadAttachments(
     userId,
     [...attachmentIds],
-    options.projectId,
     ...(options.runId ? [options.runId] : [])
   );
   if (options.signal?.aborted) throw abortReason(options.signal);

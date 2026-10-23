@@ -77,19 +77,19 @@ describe("Control Center entries", () => {
     render(<RailV2 accountLabel="admin@example.test" active="chats" adminEntryVisible onChats={vi.fn()} onNewChat={vi.fn()} />);
     const rail = screen.getByTestId("workspace-rail");
     expect(within(rail).getByRole("link", { name: "Control Center" })).toHaveAttribute("href", "/admin?return=%2Fc%2Fchat-1");
-    act(() => writeChatRoute({ chatId: "chat-2", projectId: "project-1" }));
+    act(() => writeChatRoute({ chatId: "chat-2" }));
     expect(within(rail).getByRole("link", { name: "Control Center" }))
-      .toHaveAttribute("href", "/admin?return=%2Fp%2Fproject-1%2Fc%2Fchat-2");
-    act(() => writeChatRoute({ chatId: null, projectId: null }));
+      .toHaveAttribute("href", "/admin?return=%2Fc%2Fchat-2");
+    act(() => writeChatRoute({ chatId: null }));
     expect(within(rail).getByRole("link", { name: "Control Center" })).toHaveAttribute("href", "/admin");
   });
 
   it("remember the chat in the account menu", () => {
-    window.history.replaceState(null, "", "/p/project-1");
+    window.history.replaceState(null, "", "/c/chat-3");
     render(<AccountMenuV2 accountId="admin-1" accountLabel="admin@example.test" adminEntryVisible />);
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     expect(screen.getByRole("link", { name: "Control Center" }))
-      .toHaveAttribute("href", "/admin?return=%2Fp%2Fproject-1");
+      .toHaveAttribute("href", "/admin?return=%2Fc%2Fchat-3");
   });
 });
 

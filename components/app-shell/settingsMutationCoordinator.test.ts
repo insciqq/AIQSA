@@ -13,7 +13,6 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
     answerSoundId: "rise",
     browserNotificationsEnabled: true,
     defaultControlValues: {},
-    defaultKnowledgePlan: null,
     defaultMcpMode: "auto",
     defaultSearchPlan: { mode: "all_selected", optionIds: [] },
     hasPersonalModelDefault: true,
@@ -386,16 +385,12 @@ describe("settings mutation coordinator", () => {
       personalModelDefault: { modelId: "model-b", provider: "openrouter" }
     });
     await sendSettingsDefaultsPatch({ personalModelDefault: null });
-    await sendSettingsDefaultsPatch({ knowledgePlan: null, mcpMode: "off", sendWithEnter: false });
-    await sendSettingsDefaultsPatch({
-      knowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 }
-    });
+    await sendSettingsDefaultsPatch({ mcpMode: "off", sendWithEnter: false });
 
     expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
       { defaultProviderModelId: "model-b" },
       { defaultProviderModelId: null },
-      { defaultKnowledgePlan: null, defaultMcpMode: "off", sendWithEnter: false },
-      { defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 } }
+      { defaultMcpMode: "off", sendWithEnter: false }
     ]);
   });
 

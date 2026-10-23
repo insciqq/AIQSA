@@ -83,7 +83,7 @@ The MCP tools are \`list_skills\`, \`get_skill\`, \`download_skill\`, \`create_s
 
 Skills are complete local packages: SKILL.md, scripts, references, templates, binary files, relative paths, and executable flags. Download and install the full package at a selected version. Native use after installation does not fetch instructions from AIQSA. The Skill's own dependencies may still require tools, packages, or credentials; explain missing dependencies without rewriting the package or running scripts just to install it.
 
-The store uses OAuth read permission (\`skills:read\`) and optional write permission (\`skills:write\`). Write covers creating, updating, and deleting your own packages, without publishing them to others or changing AIQSA sharing, chat enablement, or Assistant/Project links. Existing Hub or Memory access grants no Skill access.
+The store uses OAuth read permission (\`skills:read\`) and optional write permission (\`skills:write\`). Write covers creating, updating, and deleting your own packages, without publishing them to others or changing AIQSA sharing, chat enablement, or Assistant links. Existing Hub or Memory access grants no Skill access.
 
 ## Transfer and install complete packages
 

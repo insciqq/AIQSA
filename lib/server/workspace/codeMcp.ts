@@ -17,7 +17,7 @@ export const WORKSPACE_CODE_INVOCATION_ENV = "AIQSA_INVOCATION_ID";
 export const WORKSPACE_CODE_INVOCATION_HEADER = "x-aiqsa-invocation-id";
 
 export const WORKSPACE_CODE_UNAVAILABLE_REASONS = Object.freeze([
-  "internet_off", "gateway_unavailable", "mcp_off", "project_unsupported"
+  "internet_off", "gateway_unavailable", "mcp_off"
 ] as const);
 export type WorkspaceCodeUnavailableReason = (typeof WORKSPACE_CODE_UNAVAILABLE_REASONS)[number];
 
@@ -60,8 +60,6 @@ export function isNormalizedWorkspaceCodeMcp(value: unknown): value is Normalize
 export type WorkspaceCodeMcpRequest = Readonly<{
   mcp?: Readonly<{ tools?: readonly unknown[] }> | null;
   mcpDiscovery?: Readonly<{ catalog?: Readonly<{ servers?: readonly Readonly<{ tools?: readonly unknown[] }>[] }> }> | null;
-  /** The run's chat belongs to a Project. */
-  project?: boolean;
   workspace?: Readonly<{ codeMcp?: unknown; internetEnabled?: unknown }> | null;
 }>;
 
@@ -70,13 +68,10 @@ export type WorkspaceCodeMcpEligibility =
   | Readonly<{ kind: "eligible"; budgets: NormalizedWorkspaceCodeMcp }>;
 
 /**
- * Project runs get no bearer: members share a Project chat's Workspace, so
- * code one member left there would run with another member's authority.
- * Otherwise the run needs Internet On, a reachable relay recorded at
- * admission, and MCP authority: an Auto catalog or a frozen plan with tools.
+ * The run needs Internet On, a reachable relay recorded at admission, and MCP
+ * authority: an Auto catalog or a frozen plan with tools.
  */
 export function workspaceCodeMcpEligibility(request: WorkspaceCodeMcpRequest): WorkspaceCodeMcpEligibility {
-  if (request.project === true) return { kind: "unavailable", reason: "project_unsupported" };
   if (request.workspace?.internetEnabled !== true) return { kind: "unavailable", reason: "internet_off" };
   const budgets = request.workspace.codeMcp;
   if (!isNormalizedWorkspaceCodeMcp(budgets)) return { kind: "unavailable", reason: "gateway_unavailable" };

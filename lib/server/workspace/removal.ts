@@ -4,7 +4,7 @@ import { acknowledgeWorkspaceCommandsStopped } from "./executionRegistry";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession } from "./sessionOperation";
 
-/** Caller has authorized deletion of the owning chat/Project and fenced new admission. */
+/** Caller has authorized deletion of the owning chat and fenced new admission. */
 export async function removeWorkspaceForDeletion(input: Readonly<{
   now: Date;
   prisma: PrismaClient;

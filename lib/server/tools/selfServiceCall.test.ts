@@ -45,7 +45,7 @@ describe("committing a self-service change with its call", () => {
 
 describe("the run fence of a self-service change", () => {
   const scope = { runId: "run_1", userId: "user_1" };
-  const allowed = { projectId: null, scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", userStatus: "active" };
+  const allowed = { scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", userStatus: "active" };
 
   it("admits the active user's own interactive personal run and locks it", async () => {
     const tx = { $queryRaw: vi.fn(async () => [allowed]) };
@@ -60,11 +60,10 @@ describe("the run fence of a self-service change", () => {
     [[{ ...allowed, status: "complete" }]],
     [[{ ...allowed, status: "cancelled" }]],
     [[{ ...allowed, userStatus: "disabled" }]],
-    [[{ ...allowed, projectId: "project_1" }]],
     [[{ ...allowed, scheduledTaskId: "task_1" }]],
     [[{ ...allowed, scheduledTaskPrompt: true }]],
     [[{ ...allowed, scheduledTaskPrompt: null }]]
-  ])("refuses %j: another user's or a finished run, an inactive user, a Project chat or scheduled work", async (rows) => {
+  ])("refuses %j: another user's run or chat, a finished run, an inactive user or scheduled work", async (rows) => {
     const tx = { $queryRaw: vi.fn(async () => rows) };
     expect(await selfServiceRunAllowedInTransaction(tx as never, scope)).toBe(false);
   });

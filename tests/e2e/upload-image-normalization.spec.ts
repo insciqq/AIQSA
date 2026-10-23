@@ -117,7 +117,7 @@ test("multipart sessions settle a PNG declared as .jpeg under the decoded name",
   await loginWithPassword(page, LOCAL_MCP_MEMBER);
   const headers = { origin: new URL(baseURL!).origin };
   const created = await page.request.post("/api/uploads/sessions", { headers, data: {
-    byteSize: png.byteLength, fileName: "synthetic.jpeg", mimeType: "image/jpeg", projectId: null, idempotencyKey: randomUUID()
+    byteSize: png.byteLength, fileName: "synthetic.jpeg", mimeType: "image/jpeg", idempotencyKey: randomUUID()
   } });
   expect(created.status()).toBe(201);
   const session = await created.json() as { id: string };

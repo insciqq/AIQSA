@@ -72,7 +72,7 @@ export async function startNewChat(page: Page): Promise<void> {
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
 }
 
-/** The chat the address names: `/c/<id>` or `/p/<project>/c/<id>`, once a first send is under way. */
+/** The chat the address names (`/c/<id>`), once a first send is under way. */
 export async function activeChatId(page: Page): Promise<string> {
   let value: string | null = null;
   await expect.poll(async () => {

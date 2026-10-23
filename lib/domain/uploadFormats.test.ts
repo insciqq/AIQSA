@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   ATTACHMENT_UPLOAD_FORMAT_LABELS,
-  KNOWLEDGE_UPLOAD_ACCEPT,
   UPLOAD_FORMAT_REGISTRY,
   normalizedUploadFileExtension,
   isSafeUploadFileName,
@@ -12,27 +11,13 @@ import {
 } from "./uploadFormats";
 
 describe("canonical upload format registry", () => {
-  it("keeps every Knowledge-admitted format connected to a parser route", () => {
-    const knowledgeFormats = UPLOAD_FORMAT_REGISTRY.filter((format) =>
-      format.scopes.includes("knowledge")
-    );
-
-    expect(knowledgeFormats.length).toBeGreaterThan(20);
-    expect(knowledgeFormats.every((format) => format.parser !== null)).toBe(true);
-    expect(knowledgeFormats.some((format) => format.id === "gif")).toBe(false);
+  it("admits every format in Workspace and keeps chat attachments a subset of it", () => {
+    expect(UPLOAD_FORMAT_REGISTRY.every((format) => format.scopes.includes("workspace"))).toBe(true);
     expect(UPLOAD_FORMAT_REGISTRY.find((format) => format.id === "gif")?.scopes)
       .toEqual(["attachment", "workspace"]);
   });
 
-  it("derives browser filters from the same extensions and canonical MIME types", () => {
-    const expected = UPLOAD_FORMAT_REGISTRY
-      .filter((format) => format.scopes.includes("knowledge"))
-      .flatMap((format) => [...format.extensions, format.canonicalMimeType]);
-
-    for (const token of expected) {
-      expect(KNOWLEDGE_UPLOAD_ACCEPT.split(",")).toContain(token);
-    }
-    expect(KNOWLEDGE_UPLOAD_ACCEPT).not.toContain(".gif");
+  it("derives browser filters from the registry", () => {
     expect(uploadAcceptFor({ kinds: [], scope: "attachment" })).toBe("");
     expect(uploadAcceptFor({ scope: "workspace" })).toBe("");
   });
@@ -48,12 +33,11 @@ describe("canonical upload format registry", () => {
   });
 
   it("uses extension plus bounded MIME evidence and treats empty/octet-stream MIME as hints", () => {
-    expect(uploadFormatFor("scan.PDF", "", "knowledge")?.id).toBe("pdf");
-    expect(uploadFormatFor("scan.pdf", "application/octet-stream", "knowledge")?.id).toBe("pdf");
-    expect(uploadFormatFor("notes.md", "text/plain; charset=utf-8", "knowledge")?.id)
+    expect(uploadFormatFor("scan.PDF", "", "attachment")?.id).toBe("pdf");
+    expect(uploadFormatFor("scan.pdf", "application/octet-stream", "attachment")?.id).toBe("pdf");
+    expect(uploadFormatFor("notes.md", "text/plain; charset=utf-8", "attachment")?.id)
       .toBe("markdown");
-    expect(uploadFormatFor("scan.pdf", "text/plain", "knowledge")).toBeUndefined();
-    expect(uploadFormatFor("animation.gif", "image/gif", "knowledge")).toBeUndefined();
+    expect(uploadFormatFor("scan.pdf", "text/plain", "attachment")).toBeUndefined();
     expect(uploadFormatFor("animation.gif", "image/gif", "attachment")?.id).toBe("gif");
     expect(uploadFormatFor("book.epub", "application/epub+zip", "workspace")?.id).toBe("epub");
   });
@@ -82,9 +66,6 @@ describe("canonical upload format registry", () => {
       expect(uploadAdmissionFormatFor("notes.pdf", "image/png", scope)).toBeUndefined();
       expect(uploadAdmissionFormatFor("animation.gif", "image/gif", scope)?.id).toBe("gif");
     }
-    expect(uploadAdmissionFormatFor("synthetic.jpeg", "image/png", "knowledge")).toBeUndefined();
-    expect(uploadAdmissionFormatFor("scan.tif", "image/png", "knowledge")).toBeUndefined();
-    expect(uploadAdmissionFormatFor("synthetic.jpeg", "image/jpeg", "knowledge")?.id).toBe("jpeg");
   });
 
   it("renames only the last extension of a verified raster and keeps names that already fit", () => {

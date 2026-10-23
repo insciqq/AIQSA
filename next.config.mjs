@@ -62,7 +62,12 @@ const nextConfig = {
     return [{ source: "/AGENTS.md", destination: "/agents/guide" }];
   },
   async redirects() {
+    // Addresses of removed Project chats (operator decision 2026-10-23) open a new chat.
     return [{ source: "/AGENTS", destination: "/AGENTS.md", permanent: true }, {
+      source: "/p/:path*",
+      destination: "/",
+      permanent: false
+    }, {
       source: "/:path((?!s(?:/|$)|a(?:/|$)|api/(?:public-shares|artifact-public)(?:/|$)).+)/",
       destination: "/:path",
       permanent: true

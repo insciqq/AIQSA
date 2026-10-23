@@ -5,7 +5,6 @@ import { composerDraftPersistenceAllowed, startComposerDraftPersistence } from "
 import {
   chatIdFromComposerSessionKey,
   folderIdFromComposerSessionKey,
-  projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
@@ -40,10 +39,8 @@ export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapsh
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
     mcpSelection: state.mcpSelection,
-    knowledgePlanSource: state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
-    selectedKnowledgeBaseIds: state.selectedKnowledgeBaseIds,
     selectedModelId: state.selectedModelId,
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: state.selectedSearchOptionIds,
@@ -257,13 +254,8 @@ export function useWorkspaceBootstrapController({
         clearSessionExpiredDraft();
         return;
       }
-      // A personal blank draft keeps its folder while the address is the new chat.
-      if (
-        !recoveredChatId &&
-        !projectIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey) &&
-        settledRoute?.chatId === null &&
-        settledRoute.projectId === null
-      ) {
+      // A blank draft keeps its folder while the address is the new chat.
+      if (!recoveredChatId && settledRoute?.chatId === null) {
         activateBlankWorkspaceEvent(recoveredFolderId);
       }
 

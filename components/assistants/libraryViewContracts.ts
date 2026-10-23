@@ -26,7 +26,6 @@ import {
 import type { AssistantDeletionConsequences } from "@/lib/contracts/assistantDeletion";
 import type { AssistantListingStatus } from "@/lib/contracts/assistantListing";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
-import { KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES } from "@/lib/contracts/knowledge";
 import type { McpReadiness } from "@/lib/contracts/mcp";
 import { SKILL_ASSISTANT_MAX_AVAILABLE, SKILL_MAX_PINNED } from "@/lib/contracts/skills";
 import { MAX_SEARCH_PLAN_OPTIONS, type SearchPlanMode } from "@/lib/domain/search";
@@ -99,13 +98,11 @@ export const EMPTY_ASSISTANT_CONTROLS_DRAFT: Readonly<AssistantControlsDraft> = 
 
 /**
  * PRD 5.3 defaults of a new Assistant: a persona over the user's own setup.
- * Every row is adjustable; Knowledge starts as None and Skills as Auto
- * without links.
+ * Every row is adjustable; Skills start as Auto without links.
  */
 export function defaultAssistantDraftRows(): AssistantDraftRows {
   return {
     controls: { policy: "adjustable", value: { ...EMPTY_ASSISTANT_CONTROLS_DRAFT } },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -262,7 +259,7 @@ export function assistantDraftPolicyErrors(
   rows: AssistantDraftRows
 ): Partial<Record<AssistantRowKey, string>> {
   const errors: Partial<Record<AssistantRowKey, string>> = {};
-  for (const key of ["model", "search", "tools", "knowledge"] as const) {
+  for (const key of ["model", "search", "tools"] as const) {
     if (rows[key].policy === "fixed" && rows[key].value.mode === "inherit") {
       errors[key] = "Choose a value to fix, or make this row Adjustable.";
     }
@@ -454,16 +451,6 @@ export function assistantDraftFromEditor(
     }
   }
 
-  const knowledge = rows.knowledge.value;
-  if (knowledge.mode === "explicit") {
-    const count = knowledge.baseIds.length + knowledge.sourceIds.length;
-    if (count === 0) {
-      errors.rows.knowledge ??= "Choose at least one base or document, or choose None.";
-    } else if (count > KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES) {
-      errors.rows.knowledge ??= `Choose up to ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} bases and documents.`;
-    }
-  }
-
   const links = rows.skills.value.links;
   if (
     links.filter((link) => link.delivery === "always").length > SKILL_MAX_PINNED ||
@@ -484,7 +471,6 @@ export function assistantDraftFromEditor(
       responseReminder: state.responseReminder,
       rows: {
         controls: { policy: rows.controls.policy, value: controls },
-        knowledge: { policy: rows.knowledge.policy, value: structuredClone(knowledge) },
         model: { policy: rows.model.policy, value: structuredClone(model) },
         search: { policy: rows.search.policy, value: structuredClone(search) },
         skills: {
@@ -502,9 +488,6 @@ export function assistantDraftFromEditor(
 /** Composer values "From current chat" carries, in composer vocabulary. */
 export type AssistantChatSetup = {
   backgroundMode: boolean;
-  knowledge:
-    | { baseIds: readonly string[]; mode: "explicit"; sourceIds: readonly string[] }
-    | { mode: "all" | "inherit" | "none" };
   maxOutputTokens: string;
   mcp:
     | { mode: "auto" | "off" }
@@ -520,10 +503,10 @@ export type AssistantChatSetup = {
 };
 
 /**
- * "From current chat" carries the chat's model, parameters, search,
- * Tools, Knowledge (bases and documents) and Skills as adjustable rows.
- * Values rows cannot express become inherit: MCP Auto, all Knowledge, and
- * Load all when the user's servers are not known or exceed the row limit.
+ * "From current chat" carries the chat's model, parameters, search, Tools
+ * and Skills as adjustable rows. Values rows cannot express become inherit:
+ * MCP Auto, and Load all when the user's servers are not known or exceed the
+ * row limit.
  */
 export function draftRowsFromChatSetup(setup: AssistantChatSetup): AssistantDraftRows {
   const rows = defaultAssistantDraftRows();
@@ -547,12 +530,6 @@ export function draftRowsFromChatSetup(setup: AssistantChatSetup): AssistantDraf
     : serverIds && serverIds.length > 0 && serverIds.length <= ASSISTANT_MAX_MCP_SERVERS
       ? { mode: "exact", serverIds: [...serverIds] }
       : { mode: "inherit" };
-  const knowledge = setup.knowledge;
-  rows.knowledge.value = knowledge.mode === "explicit" &&
-    knowledge.baseIds.length + knowledge.sourceIds.length > 0 &&
-    knowledge.baseIds.length + knowledge.sourceIds.length <= KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES
-    ? { baseIds: [...knowledge.baseIds], mode: "explicit", sourceIds: [...knowledge.sourceIds] }
-    : knowledge.mode === "none" ? { mode: "none" } : { mode: "inherit" };
   rows.skills.value = { links: setup.skills.links.map((link) => ({ ...link })), mode: setup.skills.mode };
   return rows;
 }
@@ -573,13 +550,8 @@ export type AssistantEditorModelOption = {
 };
 
 export type AssistantEditorOptions = {
-  knowledgeBases: { available: boolean; id: string; name: string }[];
-  knowledgeSources: { available: boolean; id: string; name: string }[];
-  knowledgeDataError: string | null;
-  knowledgeDataState: "error" | "loading" | "ready";
   mcpServers: { enabled: boolean; id: string; name: string; readiness: McpReadiness }[];
   models: AssistantEditorModelOption[];
-  onRetryKnowledge(): void;
   searchOptions: { id: string; label: string }[];
   /** Names of the linked Skills, in link order, including off-page and unavailable ones. */
   selectedSkills: { id: string; name: string; available?: boolean }[];
@@ -604,7 +576,7 @@ export type AssistantEditorView = {
   /** Stable error code and copy of the failed save, if any. */
   error: { code: string; text: string } | null;
   errors: AssistantEditorErrors | null;
-  /** A row the editor opens expanded, such as Knowledge for a template that needs it. */
+  /** A row the editor opens expanded, such as Tools for a template that needs it. */
   initialExpandedRow: AssistantRowKey | null;
   /** True only immediately after an atomic create, for the created banner. */
   justCreated: boolean;
@@ -643,7 +615,6 @@ export type AssistantCardState =
 
 /** Counts for the capability line. */
 export type AssistantCardCapabilities = {
-  knowledge: number;
   search: number;
   skills: number;
   tools: number;
@@ -669,7 +640,6 @@ export function assistantCardView(assistant: AssistantSummary): AssistantCardVie
   return {
     assistant,
     capabilities: {
-      knowledge: assistant.fingerprint.knowledgeResourceCount,
       search: assistant.fingerprint.searchOptionCount,
       skills: assistant.skillLinkCount,
       tools: assistant.fingerprint.mcpServerCount
@@ -781,8 +751,6 @@ export type AssistantGalleryView = {
  * counted, never named.
  */
 export type AssistantResourceNames = {
-  knowledgeBases: readonly { id: string; name: string }[];
-  knowledgeSources: readonly { id: string; name: string }[];
   mcpServers: readonly { id: string; name: string }[];
   models: readonly { id: string; label: string }[];
   searchOptions: readonly { id: string; label: string }[];
@@ -847,7 +815,7 @@ export type AssistantSharingFailure = {
 
 export type AssistantSharingSheetView = {
   assistantId: string;
-  /** Owner detail: publications, listing request, Featured position, Projects, rows. */
+  /** Owner detail: publications, listing request, Featured position, rows. */
   detail: AssistantDetail | null;
   dirty: boolean;
   draft: AssistantSharingDraft;

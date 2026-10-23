@@ -12,7 +12,6 @@ import {
 import { hashShareToken } from "./tokens";
 import { buildPublicShareSnapshot } from "../../domain/shareSnapshot";
 import { PUBLIC_SHARE_CACHE_CONTROL, PUBLIC_SHARE_ROBOTS_POLICY } from "./privacy";
-import { ProjectsDisabledError } from "../projects/disabled";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -173,22 +172,6 @@ describe("share route handlers", () => {
     await expect(response.json()).resolves.toEqual({
       error: "chat_not_found_or_empty_branch"
     });
-  });
-
-  it("answers a new share of a Project chat with projects_disabled", async () => {
-    const { repository } = createMemoryRepository();
-    const POST = createShareChatHandler({
-      repository: { ...repository, createChatShare: async () => { throw new ProjectsDisabledError(); } },
-      resolveAuth: auth.resolveAuth
-    });
-    const response = await POST(new Request("http://app.local/api/chats/chat-project/share", {
-      body: JSON.stringify({ activeLeafMessageId: "message-1" }),
-      headers: { cookie: authCookie() },
-      method: "POST"
-    }), { params: { chatId: "chat-project" } });
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
   });
 
   it("creates a share for a retained grounded branch", async () => {

@@ -59,7 +59,7 @@ const compose = (...args) => docker("compose", "--project-name", project, ...arg
 const inApp = (script) => command("docker", ["compose", "--project-name", project, "exec", "-T", "app", "node", "--input-type=module", "-"], script);
 
 async function assertWorkersRunning() {
-  for (const service of ["memory-worker", "knowledge-search-worker"]) {
+  for (const service of ["memory-worker"]) {
     const id = await compose("ps", "--all", "--quiet", service);
     assert.ok(id, `${service} must exist`);
     const [container] = JSON.parse(await docker("inspect", id));

@@ -8,7 +8,6 @@ import {
   type ChatExportSource
 } from "../../domain/chatExportDocument";
 import type { RequestAuthResolver } from "../auth/requestAuth";
-import { resolveChatAccess } from "../projects/access";
 import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
@@ -95,9 +94,8 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
 }
 
 /**
- * The export source of a chat the user may open: an active chat under the
- * personal or Project read rule, an archived chat only for its personal
- * owner (never a temporary chat). Anything else is indistinguishable from a
+ * The export source of a chat the user owns: an active chat, or an archived
+ * one that is not temporary. Anything else is indistinguishable from a
  * missing chat.
  */
 export async function loadAuthorizedChatExportSource(
@@ -111,21 +109,18 @@ export async function loadAuthorizedChatExportSource(
 }
 
 /**
- * The chat row under the read rule of the chat page: an active chat under
- * the personal or Project rule, an archived chat only for its personal
- * owner and never a temporary one; null for anything else.
+ * The chat row under the read rule of the chat page: the owner's active
+ * chat, or an archived one that is not temporary; null for anything else.
  */
 export async function findReadableExportChat(
   tx: Prisma.TransactionClient,
   input: Readonly<{ chatId: string; userId: string }>
 ): Promise<ChatExportChatRow | null> {
-  const access = await resolveChatAccess(tx, input);
-  if (!access) return null;
   const chat = await tx.chat.findFirst({
     select: { ...chatExportChatSelect, memoryMode: true },
-    where: { id: input.chatId, permanentDeletionAt: null }
+    where: { id: input.chatId, permanentDeletionAt: null, userId: input.userId }
   });
-  if (!chat || chat.archived && (access.kind !== "personal" || chat.memoryMode === "TEMPORARY")) return null;
+  if (!chat || chat.archived && chat.memoryMode === "TEMPORARY") return null;
   return chat;
 }
 

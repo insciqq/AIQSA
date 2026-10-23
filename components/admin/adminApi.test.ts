@@ -4,7 +4,6 @@ import type { AdminActionRequest, AdminActionResponse, AdminDashboard } from "@/
 import {
   adminActionErrorMessage,
   adminDashboardErrorMessage,
-  adminSoleOwnedProjects,
   readAdminActionResult,
   requestAdminAction,
   requestAdminDashboard
@@ -204,33 +203,13 @@ describe("admin API client", () => {
     ).resolves.toEqual({ error: "network_error" });
   });
 
-  it("keeps only a well-formed sole-Owner Project projection on a disable conflict", async () => {
-    const projects = [{ name: "Launch", status: "ACTIVE" }, { name: "Archive", status: "ARCHIVED" }];
-    const conflict = await readAdminActionResult(Response.json({
-      error: "project_owner_required",
-      extra: "dropped",
-      projectCount: 3,
-      projects: projects.map((project) => ({ ...project, id: "dropped" }))
-    }, { status: 409 }));
-    expect(conflict).toEqual({ error: "project_owner_required", projectCount: 3, projects });
-    expect(adminSoleOwnedProjects(conflict)).toEqual({ projectCount: 3, projects });
-
-    for (const body of [
-      { error: "project_owner_required" },
-      { error: "project_owner_required", projectCount: 1, projects: [{ name: "Gone", status: "DELETING" }] },
-      { error: "project_owner_required", projectCount: 0, projects: [{ name: "Launch", status: "ACTIVE" }] }
-    ]) {
-      const result = await readAdminActionResult(Response.json(body, { status: 409 }));
-      expect(result).toEqual({ error: "project_owner_required" });
-      expect(adminSoleOwnedProjects(result)).toBeNull();
-    }
+  it("keeps only the error code of a refused action", async () => {
     await expect(readAdminActionResult(Response.json({
       error: "last_admin_forbidden",
-      projectCount: 1,
-      projects: [{ name: "Launch", status: "ACTIVE" }]
+      extra: "dropped"
     }, { status: 409 }))).resolves.toEqual({ error: "last_admin_forbidden" });
-    // Projects are disabled (`lib/domain/disabledAreas.ts`): ownership cannot move, only sessions can be revoked.
-    expect(adminActionErrorMessage("project_owner_required")).toContain("Projects are turned off, so ownership cannot move.");
+    await expect(readAdminActionResult(new Response("broken", { status: 500 })))
+      .resolves.toEqual({ error: "admin_action_failed" });
   });
 
   it("keeps stable readable error mappings and their historical unknown fallbacks", () => {

@@ -119,7 +119,7 @@ export function putWorkspaceUploadPart(input: {
 }
 
 export async function uploadWorkspaceFile(input: {
-  file: File; projectId: string | null; sourceKey: ComposerSessionKey; generation: number;
+  file: File; sourceKey: ComposerSessionKey; generation: number;
   /** The tray row already shown for this file, which this upload takes over. */
   id?: string;
 }) {
@@ -148,7 +148,7 @@ export async function uploadWorkspaceFile(input: {
         }
         if (!current) current = await session("/api/uploads/sessions", { method: "POST",
           headers: { "content-type": "application/json" }, body: JSON.stringify({ byteSize: input.file.size,
-            fileName: input.file.name, mimeType: input.file.type, projectId: input.projectId, idempotencyKey: key })
+            fileName: input.file.name, mimeType: input.file.type, idempotencyKey: key })
         }, controller.signal);
         if (current.state === "uploading") {
           const completed = new Set(current.completedParts);

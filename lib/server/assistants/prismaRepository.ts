@@ -8,11 +8,9 @@ import {
   type AssistantDraft,
   type AssistantDuplicateReport,
   type AssistantOwnerAudience,
-  type AssistantProjectUsage,
   type AssistantPublishableGroup,
   type AssistantRows
 } from "../../contracts/assistants";
-import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
 import type { AssistantSkillMode, SkillsSelection } from "../../contracts/skills";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
@@ -27,8 +25,6 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { prisma } from "../prisma";
-import { resolveProjectAccess } from "../projects/access";
-import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 import {
   assistantRowsForCopier,
   emptyAssistantCatalogView,
@@ -55,8 +51,6 @@ export type AssistantContentRow = {
   description: string;
   responseReminder?: string;
   id: string;
-  /** None or explicit; an inherited Knowledge row reads as None here. */
-  knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   /** The stored model's name, for the owner's missing-dependency copy only. */
   modelDisplayName?: string | null;
@@ -79,7 +73,7 @@ export type AssistantPublicationRow = {
   groupId: string | null;
   groupName: string | null;
   id: string;
-  scope: "group" | "installation" | "project";
+  scope: "group" | "installation";
   updatedAt: Date;
 };
 
@@ -96,13 +90,10 @@ export type AssistantAccessEntry = {
   owned: boolean;
   ownerDisplayName: string;
   pinned: boolean;
-  /** Set only when a Project member reads it through that Project. */
-  projectName?: string;
   published: boolean;
   /** One complete live definition for future admission. */
   content: AssistantContentRow;
   dependencyAvailability?: Readonly<{
-    knowledge: "ready" | "not_ready" | "access_denied" | "unavailable";
     skills: boolean;
   }>;
   updatedAt: Date;
@@ -112,16 +103,9 @@ export type AssistantAccessEntry = {
 export type AssistantDetailData = AssistantAccessEntry & {
   /** Owner only: the latest listing request and whether one can be made. */
   listingRequest?: AssistantListingStatus | null;
-  /** Owner only. */
-  projects?: AssistantProjectUsage;
   publications: AssistantPublicationRow[] | null;
   /** Owner only. */
   recentChatCount?: number;
-  /**
-   * Non-owners only: the Knowledge resources of the Assistant the viewer can
-   * open; the others are counted, never identified.
-   */
-  visibleKnowledge?: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>;
 };
 
 export type AssistantWriteResult =
@@ -168,8 +152,6 @@ const contentSelect = {
   skillsMode: true,
   skillsPolicy: true,
   id: true,
-  knowledgePolicy: true,
-  knowledgeSelection: true,
   mcpMode: true,
   mcpServerIds: true,
   modelPolicy: true,
@@ -245,7 +227,6 @@ function rowColumnsData(rows: AssistantRows) {
   const { skillLinks: _skillLinks, ...columns } = storedColumnsFromAssistantRows(rows);
   return {
     ...columns,
-    knowledgeSelection: columns.knowledgeSelection as unknown as Prisma.InputJsonValue,
     runControls: columns.runControls as Prisma.InputJsonValue,
     searchPlan: columns.searchPlan as Prisma.InputJsonValue
   };
@@ -461,9 +442,8 @@ async function lockActiveMemberGroupRows(
   tx: Prisma.TransactionClient,
   userId: string
 ): Promise<void> {
-  // Knowledge publish takes its base before the authorizing group rows. Keep
-  // duplication on that same order and use shared locks: writers serialize,
-  // while independent readers and run admission remain compatible.
+  // Shared locks: writers serialize, while independent readers and run
+  // admission remain compatible.
   await tx.$queryRaw<Array<{ groupId: string }>>`
     SELECT membership."groupId"
     FROM "UserGroup" AS membership
@@ -598,163 +578,6 @@ export async function unreachedPublicationSkillNames(
   return names.length > 0 ? names : ["Unavailable Skill"];
 }
 
-function distinctKnowledgeBaseIds(knowledgeBaseIds: readonly string[]): string[] {
-  return [...new Set(knowledgeBaseIds)].sort((left, right) => left.localeCompare(right));
-}
-
-function distinctKnowledgeSourceIds(sourceIds: readonly string[]): string[] {
-  return [...new Set(sourceIds)].sort((left, right) => left.localeCompare(right));
-}
-
-async function lockKnowledgeSourceRowsForDuplicate(
-  tx: Prisma.TransactionClient,
-  sourceIds: readonly string[]
-): Promise<boolean> {
-  if (sourceIds.length === 0) return true;
-  const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT source."id"
-    FROM "KnowledgeSource" AS source
-    WHERE source."id" IN (${Prisma.join(sourceIds)})
-    ORDER BY source."id"
-    FOR SHARE OF source
-  `);
-  return locked.length === sourceIds.length;
-}
-
-async function lockKnowledgeBaseRowsForDuplicate(
-  tx: Prisma.TransactionClient,
-  knowledgeBaseIds: readonly string[]
-): Promise<boolean> {
-  if (knowledgeBaseIds.length === 0) return true;
-
-  const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT base."id"
-    FROM "KnowledgeBase" AS base
-    WHERE base."id" IN (${Prisma.join(knowledgeBaseIds)})
-    ORDER BY base."id"
-    FOR SHARE OF base
-  `);
-  return locked.length === knowledgeBaseIds.length;
-}
-
-async function lockKnowledgePublicationRowsForDuplicate(
-  tx: Prisma.TransactionClient,
-  knowledgeBaseIds: readonly string[]
-): Promise<void> {
-  if (knowledgeBaseIds.length === 0) return;
-
-  // A revoke deletes only the child after locking its base. Locking the child
-  // after bases and groups makes a revoke that won against this repeatable-read
-  // snapshot surface as a serialization retry instead of stale authorization.
-  await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT publication."id"
-    FROM "KnowledgeBasePublication" AS publication
-    WHERE publication."knowledgeBaseId" IN (${Prisma.join(knowledgeBaseIds)})
-    ORDER BY publication."knowledgeBaseId", publication."id"
-    FOR SHARE OF publication
-  `);
-}
-
-type KnowledgeAccessClient = Pick<PrismaClient, "knowledgeBase" | "knowledgeSource" | "userGroup">;
-
-/** Knowledge bases the user may open: their own, or published to everyone or to one of their groups. */
-function accessibleKnowledgeBaseWhere(
-  userId: string,
-  groupIds: readonly string[]
-): Prisma.KnowledgeBaseWhereInput {
-  return {
-    archivedAt: null,
-    deletionRequestedAt: null,
-    trashedAt: null,
-    OR: [
-      { ownerUserId: userId },
-      {
-        publications: {
-          some: {
-            OR: [
-              { scope: "installation" },
-              ...(groupIds.length > 0
-                ? [{
-                    group: { archivedAt: null },
-                    groupId: { in: [...groupIds] },
-                    scope: "group" as const
-                  }]
-                : [])
-            ]
-          }
-        }
-      }
-    ]
-  };
-}
-
-/**
- * The selected Knowledge resources the user may open themselves, with their
- * names: a base they can access, and a Source they own or that belongs to a
- * base they can access. Administrator status grants nothing here. Only the
- * selected ids are read. `activeGroupIds`: the user's memberships of groups
- * that are not archived, when already read.
- */
-export async function openableKnowledgeResources(
-  client: KnowledgeAccessClient,
-  userId: string,
-  selection: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>,
-  options: Readonly<{ activeGroupIds?: readonly string[] }> = {}
-): Promise<{ bases: Map<string, string>; sources: Map<string, string> }> {
-  if (selection.baseIds.length + selection.sourceIds.length === 0) return { bases: new Map(), sources: new Map() };
-  const groupIds = options.activeGroupIds ?? await activeMemberGroupIds(client, userId);
-  const accessibleBase = accessibleKnowledgeBaseWhere(userId, groupIds);
-  // One read after the other: a caller's parallel reads each hold one connection.
-  const bases = selection.baseIds.length > 0
-    ? await client.knowledgeBase.findMany({
-        select: { id: true, name: true },
-        where: { ...accessibleBase, id: { in: [...selection.baseIds] } }
-      })
-    : [];
-  const sources = selection.sourceIds.length > 0
-    ? await client.knowledgeSource.findMany({
-        select: { id: true, name: true },
-        where: {
-          deletionRequestedAt: null,
-          id: { in: [...selection.sourceIds] },
-          OR: [
-            { ownerUserId: userId },
-            { baseMemberships: { some: { knowledgeBase: accessibleBase, removedAt: null } } }
-          ],
-          trashedAt: null
-        }
-      })
-    : [];
-  return {
-    bases: new Map(bases.map(({ id, name }) => [id, name])),
-    sources: new Map(sources.map(({ id, name }) => [id, name]))
-  };
-}
-
-/** The ids of `openableKnowledgeResources`, in selection order. */
-export async function accessibleKnowledgeResources(
-  client: KnowledgeAccessClient,
-  userId: string,
-  selection: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>,
-  options: Readonly<{ activeGroupIds?: readonly string[] }> = {}
-): Promise<{ baseIds: string[]; sourceIds: string[] }> {
-  const { bases, sources } = await openableKnowledgeResources(client, userId, selection, options);
-  return {
-    baseIds: selection.baseIds.filter((id) => bases.has(id)),
-    sourceIds: selection.sourceIds.filter((id) => sources.has(id))
-  };
-}
-
-async function allKnowledgeDependenciesAvailable(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  selection: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>
-): Promise<boolean> {
-  const accessible = await accessibleKnowledgeResources(tx, userId, selection);
-  return accessible.baseIds.length === selection.baseIds.length &&
-    accessible.sourceIds.length === selection.sourceIds.length;
-}
-
 /** Skills among `skillIds` the user can link: their own, or shared with them. */
 export async function usableSkillIds(
   tx: Pick<Prisma.TransactionClient, "skillDefinition">,
@@ -808,8 +631,7 @@ export function createPrismaAssistantRepository(
     skillLinks: contentSelect.skillLinks,
     owner: { select: { displayName: true } },
     providerModel: contentSelect.providerModel,
-    publications: { include: { group: { select: { archivedAt: true, name: true } } } },
-    projectBindings: { select: { id: true } }
+    publications: { include: { group: { select: { archivedAt: true, name: true } } } }
   } satisfies Prisma.AssistantDefinitionInclude;
 
   async function loadAccessEntryWith(
@@ -833,51 +655,11 @@ export function createPrismaAssistantRepository(
     return projectAccessEntry(definition, userId, memberGroupIds, Boolean(pin));
   }
 
-  /**
-   * Read access through a Project the user belongs to. It serves the detail
-   * read only: Project membership never adds the Assistant to personal lists,
-   * pins, copies or runs.
-   */
-  async function loadProjectMemberEntry(
-    userId: string,
-    assistantId: string
-  ): Promise<AssistantAccessEntry | null> {
-    const memberGroupIds = await activeMemberGroupIds(client, userId);
-    // With several such Projects, the first by name names the scope.
-    const binding = await client.projectAssistantBinding.findFirst({
-      orderBy: [{ project: { name: "asc" } }, { projectId: "asc" }],
-      select: { project: { select: { name: true } } },
-      where: {
-        assistant: { archivedAt: null },
-        assistantId,
-        project: {
-          grants: { some: { OR: [
-            { userId },
-            ...(memberGroupIds.length > 0 ? [{ groupId: { in: memberGroupIds } }] : [])
-          ] } },
-          status: { not: "DELETING" }
-        }
-      }
-    });
-    if (!binding) return null;
-    const [definition, pin] = await Promise.all([
-      client.assistantDefinition.findUnique({ include: accessInclude, where: { id: assistantId } }),
-      client.assistantPin.findUnique({
-        select: { userId: true },
-        where: { userId_assistantId: { assistantId, userId } }
-      })
-    ]);
-    return definition
-      ? projectAccessEntry(definition, userId, memberGroupIds, Boolean(pin), { projectName: binding.project.name })
-      : null;
-  }
-
   function projectAccessEntry(
     definition: Prisma.AssistantDefinitionGetPayload<{ include: typeof accessInclude }>,
     userId: string,
     memberGroupIds: readonly string[],
-    pinned: boolean,
-    options: { projectName?: string } = {}
+    pinned: boolean
   ): AssistantAccessEntry | null {
     const owned = definition.ownerUserId === userId;
     const memberGroups = new Set(memberGroupIds);
@@ -889,7 +671,7 @@ export function createPrismaAssistantRepository(
           publication.group?.archivedAt === null)
     );
 
-    if (!owned && (definition.archivedAt || (accessiblePublications.length === 0 && options.projectName === undefined))) {
+    if (!owned && (definition.archivedAt || accessiblePublications.length === 0)) {
       return null;
     }
 
@@ -927,8 +709,7 @@ export function createPrismaAssistantRepository(
       owned,
       ownerDisplayName: definition.owner.displayName,
       pinned,
-      ...(!owned && options.projectName !== undefined ? { projectName: options.projectName } : {}),
-      published: definition.publications.length > 0 || (owned && definition.projectBindings.length > 0),
+      published: definition.publications.length > 0,
       content: contentRow(definition, userId),
       updatedAt: definition.updatedAt,
       version: definition.version
@@ -967,24 +748,16 @@ export function createPrismaAssistantRepository(
               WHERE "id" = ${assistantId}
               FOR UPDATE
             `;
-            // Keep every shared dependency reader on the same global order as
-            // Knowledge publication: source, bases, membership/groups, then
-            // Knowledge publications. The provisional source read discovers
-            // the exact dependency ids; the locked re-read below is authority.
+            // The provisional source read discovers the exact dependency ids;
+            // the locked re-read below is authority.
             await lockAssistantPublicationRowsForDuplicate(tx, assistantId);
             const provisionalSource = await loadAccessEntryWith(tx, userId, assistantId);
             if (!provisionalSource) return { kind: "not_found" as const };
-            const knowledge = provisionalSource.content.rows.knowledge.value;
-            const knowledgeBaseIds = knowledge.mode === "explicit" ? distinctKnowledgeBaseIds(knowledge.baseIds) : [];
-            const knowledgeSourceIds = knowledge.mode === "explicit" ? distinctKnowledgeSourceIds(knowledge.sourceIds) : [];
             const skillIds = distinctSortedSkillIds(provisionalSource.content.skillIds);
-            // A missing resource is one the copier cannot use: its row is
-            // downgraded below instead of failing the copy.
-            const knowledgeRowsExist = await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds) &&
-              await lockKnowledgeSourceRowsForDuplicate(tx, knowledgeSourceIds);
+            // A missing Skill is one the copier cannot use: its link is
+            // dropped below instead of failing the copy.
             await lockSkillDefinitionRows(tx, skillIds);
             await lockActiveMemberGroupRows(tx, userId);
-            await lockKnowledgePublicationRowsForDuplicate(tx, knowledgeBaseIds);
             const source = await loadAccessEntryWith(tx, userId, assistantId);
             if (!source || source.version !== provisionalSource.version) {
               return { kind: "not_found" as const };
@@ -993,10 +766,6 @@ export function createPrismaAssistantRepository(
             // copy keeps inherit values and downgrades every concrete one.
             const copied = assistantRowsForCopier(source.content.rows,
               catalogView ?? emptyAssistantCatalogView(options.now?.() ?? new Date()), {
-              knowledge: knowledgeRowsExist && await allKnowledgeDependenciesAvailable(tx, userId, {
-                baseIds: knowledgeBaseIds,
-                sourceIds: knowledgeSourceIds
-              }),
               skillIds: await usableSkillIds(tx, userId, skillIds)
             });
 
@@ -1041,8 +810,7 @@ export function createPrismaAssistantRepository(
       assistantId: string,
       options: { isAdmin?: boolean } = {}
     ): Promise<AssistantDetailData | null> {
-      const loaded = await loadAccessEntry(userId, assistantId) ??
-        await loadProjectMemberEntry(userId, assistantId);
+      const loaded = await loadAccessEntry(userId, assistantId);
       if (!loaded) return null;
       const [[available], featuredOrders] = await Promise.all([
         withAssistantDependencyAvailability(client, userId, [loaded]),
@@ -1050,17 +818,8 @@ export function createPrismaAssistantRepository(
       ]);
       if (!available) return null;
       const entry = withFeaturedOrder(available, featuredOrders);
-      if (!entry.owned) {
-        const knowledge = entry.content.rows.knowledge.value;
-        return {
-          ...entry,
-          publications: null,
-          ...(knowledge.mode === "explicit"
-            ? { visibleKnowledge: await accessibleKnowledgeResources(client, userId, knowledge) }
-            : {})
-        };
-      }
-      const [publications, projectBindings, listingRequest, chatCounts] = await Promise.all([
+      if (!entry.owned) return { ...entry, publications: null };
+      const [publications, listingRequest, chatCounts] = await Promise.all([
         client.assistantPublication.findMany({
           include: {
             group: { select: { name: true } }
@@ -1068,38 +827,13 @@ export function createPrismaAssistantRepository(
           orderBy: { createdAt: "asc" },
           where: { assistantId }
         }),
-        client.projectAssistantBinding.findMany({
-          include: { project: { select: { name: true } } },
-          orderBy: { createdAt: "asc" },
-          where: { assistantId }
-        }),
         loadAssistantListingStatus(client, { assistantId, isAdmin: options.isAdmin === true, userId }),
         loadAssistantRecentChatCounts(client, [assistantId])
       ]);
-      // Projects the owner can still open are named; the rest are counted.
-      const projects: AssistantProjectUsage = { otherProjectCount: 0, projects: [] };
-      for (const binding of projectBindings) {
-        if (await resolveProjectAccess(client, { projectId: binding.projectId, userId })) {
-          projects.projects.push({ id: binding.projectId, name: binding.project.name });
-        } else {
-          projects.otherProjectCount += 1;
-        }
-      }
-      projects.projects.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
       return {
         ...entry,
         listingRequest,
-        projects,
-        publications: [
-          ...publications.map(publicationRow),
-          ...projectBindings.map((binding) => ({
-            groupId: null,
-            groupName: null,
-            id: `project:${binding.id}`,
-            scope: "project" as const,
-            updatedAt: binding.createdAt
-          }))
-        ],
+        publications: publications.map(publicationRow),
         recentChatCount: chatCounts.get(assistantId) ?? 0
       };
     },
@@ -1144,7 +878,6 @@ export function createPrismaAssistantRepository(
         SELECT chat."assistantId"
         FROM "Chat" AS chat
         WHERE chat."userId" = ${userId}
-          AND chat."projectId" IS NULL
           AND chat."assistantId" IN (${Prisma.join(ids)})
           AND chat."archived" = false
           AND chat."permanentDeletionAt" IS NULL
@@ -1326,16 +1059,6 @@ export function createPrismaAssistantRepository(
       publicationId: string;
       userId: string;
     }, transaction?: Prisma.TransactionClient): Promise<"not_found" | "revoked"> {
-      if (input.publicationId.startsWith("project:")) {
-        const bindingId = input.publicationId.slice("project:".length);
-        if (!bindingId) return "not_found";
-        return await revokeOwnedProjectResourcePublication(client, {
-          bindingId,
-          resourceId: input.assistantId,
-          type: "assistant",
-          userId: input.userId
-        }) ? "revoked" : "not_found";
-      }
       // A caller's transaction (administrator unlist) keeps its own recheck.
       const revoke = async (tx: Prisma.TransactionClient) => {
         const publication = await tx.assistantPublication.findFirst({
@@ -1452,29 +1175,6 @@ export function createPrismaAssistantRepository(
   }
 
   const runResolver: AssistantRunResolver = {
-    async resolveForProject(projectId, assistantId): Promise<AssistantRunResolution> {
-      return resolveConsistentDefinition(async (tx) => {
-        await tx.$queryRaw`SELECT "id" FROM "AssistantDefinition"
-          WHERE "id" = ${assistantId} FOR SHARE`;
-        const binding = await tx.projectAssistantBinding.findUnique({
-          include: { assistant: { include: {
-            providerModel: { select: { connectionId: true, id: true, modelClass: true } },
-            skillLinks: contentSelect.skillLinks
-          } } },
-          where: { projectId_assistantId: { assistantId, projectId } }
-        });
-        if (!binding || binding.assistant.archivedAt) {
-          return { code: "assistant_not_available", ok: false, status: 404 };
-        }
-        // The binding is the Project's authority. Admission resolves every
-        // row through the chain against the Project's own resources, so
-        // inherit, a model, Search, Tools or Knowledge value the Project lacks
-        // and each Skill link are decided there, not here.
-        const model = binding.assistant.providerModel;
-        return materialize(contentRow({ ...binding.assistant, providerModel: null }), binding.assistant.version,
-          model?.modelClass === "answer" ? model.connectionId : null);
-      });
-    },
     async resolveForRun(userId, assistantId): Promise<AssistantRunResolution> {
       return resolveConsistentDefinition(async (tx) => {
         await tx.$queryRaw`SELECT "id" FROM "AssistantDefinition"
@@ -1484,9 +1184,9 @@ export function createPrismaAssistantRepository(
           return { code: "assistant_not_available", ok: false, status: 404 };
         }
         // Admission resolves every row through the chain against the
-        // runner's catalog: inherit, an unusable model, Search, Tools or
-        // Knowledge value and each Skill link are decided there, so a
-        // dependency failure is the neutral conflict, not "not found".
+        // runner's catalog: inherit, an unusable model, Search or Tools value
+        // and each Skill link are decided there, so a dependency failure is
+        // the neutral conflict, not "not found".
         const model = entry.content.providerModelId === null
           ? null
           : await tx.providerModel.findUnique({
@@ -1512,7 +1212,6 @@ export function createPrismaAssistantRepository(
       identity: { avatar, name: content.name },
       responseReminder: content.responseReminder ?? "",
       answerRules: content.answerRules ?? null,
-      knowledgeSelection: content.knowledgeSelection,
       mcpServerIds: [...content.mcpServerIds],
       name: content.name,
       provider,

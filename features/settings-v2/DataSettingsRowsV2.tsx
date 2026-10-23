@@ -81,7 +81,7 @@ export function DataSettingsRowsV2({
       <SettingsRowV2
         description={state.kind === "done"
           ? deleteAllSummary(state.result)
-          : "Moves every personal chat to the archive and schedules permanent deletion. Project chats are not affected."}
+          : "Moves every personal chat to the archive and schedules permanent deletion."}
         testId="settings-delete-all"
         title="Delete all personal chats"
         tone="danger"
@@ -107,7 +107,7 @@ export function DataSettingsRowsV2({
           <h2>Delete all personal chats?</h2>
           <p>
             Every personal chat moves to the archive and is scheduled for permanent deletion,
-            including its messages and attachments. Chats inside Projects stay untouched.
+            including its messages and attachments.
             This cannot be undone once the deletion runs.
           </p>
           <div>

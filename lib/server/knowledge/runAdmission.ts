@@ -712,7 +712,8 @@ export async function loadKnowledgeRunAdmissionPlan(
   });
   if (!user) throw new KnowledgeRunAdmissionError();
   const projectScope = input.executionScope === "project";
-  if (projectScope && !input.projectId) throw new KnowledgeRunAdmissionError();
+  // Projects were removed (operator decision 2026-10-23): nothing admits Project Knowledge.
+  if (projectScope) throw new KnowledgeRunAdmissionError();
   const groups = await client.userGroup.findMany({
     select: { groupId: true },
     where: { group: { archivedAt: null }, userId: input.userId }
@@ -742,18 +743,14 @@ export async function loadKnowledgeRunAdmissionPlan(
       revision.profileConfiguration,
       answerPolicy.maximumKnowledgeSearches
     );
-    const embedding = projectScope
-      ? await embeddingRuntime.resolveForProject({
+    const embedding = revision.executionAuthority === "installation"
+      ? await embeddingRuntime.resolveForInstallation({
           providerModelId: revision.embeddingProviderModelId
         })
-      : revision.executionAuthority === "installation"
-        ? await embeddingRuntime.resolveForInstallation({
-            providerModelId: revision.embeddingProviderModelId
-          })
-        : await embeddingRuntime.resolveForUser({
-            providerModelId: revision.embeddingProviderModelId,
-            userId: input.userId
-          });
+      : await embeddingRuntime.resolveForUser({
+          providerModelId: revision.embeddingProviderModelId,
+          userId: input.userId
+        });
     const currentPin = createKnowledgeVectorSpacePin({
       configuration: embedding.configuration,
       deploymentId: revision.embeddingProviderModelId

@@ -70,12 +70,6 @@ export type AdminUserRecord = {
   id: string;
   lastSessionAt: string | null;
   role: AdminUserRole;
-  /**
-   * Present while a SCIM deactivation waits for a Project ownership transfer: sessions and
-   * connected apps are revoked, and `projectCount` Projects still have this user as their only
-   * active Owner.
-   */
-  scimDeactivationPending?: { projectCount: number };
   status: "active" | "denied" | "disabled" | "pending";
   /** Whether the user confirmed TOTP two-factor sign-in. */
   twoFactorEnabled?: boolean;
@@ -296,7 +290,6 @@ type AdminActionDomainErrorCode =
   | "invite_required"
   | "json_required"
   | "last_admin_forbidden"
-  | "project_owner_required"
   | "self_disable_forbidden"
   | "self_delete_forbidden"
   | "self_role_change_forbidden"
@@ -326,23 +319,9 @@ export type AdminActionSuccessResponse =
   | { rule: AdminAccessRuleRecord }
   | { emailDelivery: AdminInviteEmailDelivery; invite: AdminInviteRecord; inviteUrl: string };
 
-/**
- * A non-deleting Project whose only active direct Owner is the user an administrator tried to
- * disable. Only the name and lifecycle state are disclosed: enough to direct the in-Project
- * ownership transfer, without membership, content or identifiers.
- */
-export type AdminSoleOwnedProject = {
-  name: string;
-  status: "ACTIVE" | "ARCHIVED";
-};
-
 export type AdminActionErrorResponse = ErrorResponse<AdminActionServerErrorCode> & {
   /** `set_group_grants`: index of the first change that could not be applied; nothing was changed. */
   change?: number;
-  /** `disable_user` `project_owner_required`: total sole-owned Projects; `projects` may list fewer. */
-  projectCount?: number;
-  /** `disable_user` `project_owner_required`: a bounded, name-ordered list; nothing was changed. */
-  projects?: AdminSoleOwnedProject[];
 };
 
 export type AdminActionResponse = AdminActionSuccessResponse | AdminActionErrorResponse;

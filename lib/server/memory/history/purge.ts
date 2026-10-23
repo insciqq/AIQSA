@@ -310,7 +310,6 @@ async function targetIds(
         AND (
           tool_event."state" <> 'ACTIVE'::"MemoryHistoryItemState"
           OR chat."id" IS NULL
-          OR chat."projectId" IS NOT NULL
           OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
           OR chat."permanentDeletionAt" IS NOT NULL
           OR chat."memoryBranchGeneration" <> tool_event."branchGeneration"

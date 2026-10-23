@@ -8,7 +8,6 @@ import {
   liveInboundMcpFamilyCount
 } from "@/tests/support/inboundMcpOAuth";
 import { prisma } from "../../prisma";
-import { createPrismaProjectRepository } from "../../projects/prismaRepository";
 import { createPrismaAdminRepository } from "../adminRepository";
 import { deactivateUserAsSystem } from "../adminUserSessionCommands";
 import { externalIdentityPolicy, settleExternalIdentity, type ExternalIdentityInput } from "../externalIdentity";
@@ -22,7 +21,6 @@ import { parseScimGroupBody, parseScimGroupPatch, parseScimUserBody, parseScimUs
 const now = new Date("2026-10-08T12:00:00.000Z");
 const scim = createPrismaScimRepository(prisma);
 const admins = createPrismaAdminRepository(prisma);
-const projects = createPrismaProjectRepository(prisma);
 
 type Fixture = {
   adminId: string;
@@ -35,8 +33,6 @@ type Fixture = {
   mcpServer(label: string, grantedGroupId: string): Promise<{ revisionId: string; serverId: string }>;
   /** The user's enabled preference for a server, with a desired runtime generation. */
   mcpPreference(server: { revisionId: string; serverId: string }, userId: string): Promise<void>;
-  /** A Project the user creates and so owns alone. */
-  ownedProject(ownerId: string, label: string): Promise<string>;
   user(localPart: string, input?: { role?: "admin" | "user"; scimExternalId?: string | null; status?: "active" | "disabled" | "pending" }): Promise<string>;
 };
 
@@ -44,7 +40,6 @@ async function withScimData<T>(run: (fixture: Fixture) => Promise<T>): Promise<T
   const id = randomUUID();
   const domain = `scim-${id}.example.com`;
   const groupIds: string[] = [];
-  const projectIds: string[] = [];
   const serverIds: string[] = [];
   const email = (localPart: string) => `${localPart}@${domain}`;
   const admin = await prisma.user.create({
@@ -89,17 +84,6 @@ async function withScimData<T>(run: (fixture: Fixture) => Promise<T>): Promise<T
         await prisma.mcpGrant.create({ data: { canUse: true, groupId: grantedGroupId, serverId: server.id } });
         return { revisionId: revision.id, serverId: server.id };
       },
-      async ownedProject(ownerId, label) {
-        const created = await projects.create({
-          actorDisplayName: "SCIM Project Owner",
-          description: "SCIM deactivation fixture",
-          name: `${label} ${id}`,
-          userId: ownerId
-        });
-        if (created.kind !== "ok") throw new Error(`project_fixture_${created.kind}`);
-        projectIds.push(created.value.id);
-        return created.value.id;
-      },
       async user(localPart, input = {}) {
         const user = await prisma.user.create({
           data: {
@@ -114,7 +98,6 @@ async function withScimData<T>(run: (fixture: Fixture) => Promise<T>): Promise<T
       }
     });
   } finally {
-    await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
     await prisma.mcpRuntimeGeneration.deleteMany({ where: { revision: { serverId: { in: serverIds } } } });
     await prisma.mcpRevision.deleteMany({ where: { serverId: { in: serverIds } } });
     await prisma.mcpServer.deleteMany({ where: { id: { in: serverIds } } });
@@ -185,17 +168,9 @@ async function members(groupIdValue: string): Promise<string[]> {
     .sort();
 }
 
-async function setProjectOwner(projectId: string, actorId: string, targetId: string) {
-  const project = await prisma.project.findUniqueOrThrow({ select: { accessRevision: true }, where: { id: projectId } });
-  const granted = await projects.addGrant({
-    actorDisplayName: "SCIM Project Owner",
-    expectedAccessRevision: project.accessRevision,
-    projectId,
-    role: "OWNER",
-    targetUserId: targetId,
-    userId: actorId
-  });
-  if (granted.kind !== "ok") throw new Error(`project_grant_${granted.kind}`);
+/** A deactivation SCIM recorded before Projects were removed, which then waited for an ownership transfer. */
+async function recordLegacyPendingDeactivation(id: string): Promise<void> {
+  await prisma.user.update({ data: { scimDeactivatedAt: now }, where: { id } });
 }
 
 describe("SCIM repository", () => {
@@ -375,18 +350,14 @@ describe("SCIM repository", () => {
     });
   });
 
-  it("keeps a sole Project Owner active with access revoked until ownership moves, then disables on retry", async () => {
+  it("refuses sign-in for a deactivation recorded before Projects were removed, and completes it on retry", async () => {
     await withScimData(async (fixture) => {
       const owner = userId(await scim.createUser(parseScimUserBody({ externalId: fixture.externalId("owner"), userName: fixture.email("owner") }), now));
-      const successor = await fixture.user("successor");
-      const projectId = await fixture.ownedProject(owner, "Sole owner");
+      await recordLegacyPendingDeactivation(owner);
       const tokenHash = await session(owner);
       const signInSession = { expiresAt: new Date("2099-01-01T00:00:00.000Z"), tokenHash: hashToken(randomUUID()) };
 
-      await expect(scim.deactivateUser(owner, now)).resolves.toEqual({ kind: "owner_transfer_required", projectCount: 1 });
       await expect(account(owner)).resolves.toMatchObject({ scimDeactivatedAt: now, status: "active" });
-      await expect(prisma.authSession.findUniqueOrThrow({ select: { revokedReason: true }, where: { tokenHash } }))
-        .resolves.toEqual({ revokedReason: "scim_deactivated" });
       // Every sign-in but the break-glass bootstrap token is refused while the deactivation waits.
       await expect(rolledBack((tx) => issueSignInSession(tx, { session: signInSession, signInMethod: "password", userId: owner })))
         .resolves.toEqual({ kind: "refused" });
@@ -405,18 +376,11 @@ describe("SCIM repository", () => {
         source: "https://idp.example.test/realms/scim",
         subject: `owner-${randomUUID()}`
       }))).resolves.toEqual({ status: "not_allowed" });
-      const dashboard = await admins.listDashboard(fixture.adminId);
-      expect(dashboard.users.find((entry) => entry.id === owner)?.scimDeactivationPending).toEqual({ projectCount: 1 });
-
-      await setProjectOwner(projectId, owner, successor);
-      const dashboardAfterTransfer = await admins.listDashboard(fixture.adminId);
-      expect(dashboardAfterTransfer.users.find((entry) => entry.id === owner)?.scimDeactivationPending).toEqual({ projectCount: 0 });
 
       await expect(scim.deactivateUser(owner, new Date(now.getTime() + 60_000))).resolves.toEqual({ kind: "ok", userId: owner });
       await expect(account(owner)).resolves.toMatchObject({ scimDeactivatedAt: now, status: "disabled" });
-      await expect(prisma.projectGrant.count({
-        where: { groupId: null, projectId, role: "OWNER", user: { status: "active" } }
-      })).resolves.toBe(1);
+      await expect(prisma.authSession.findUniqueOrThrow({ select: { revokedReason: true }, where: { tokenHash } }))
+        .resolves.toEqual({ revokedReason: "scim_deactivated" });
     });
   });
 
@@ -461,17 +425,14 @@ describe("SCIM repository", () => {
       }), now)).resolves.toEqual({ kind: "admin_disabled" });
       await expect(account(adminDisabled)).resolves.toMatchObject({ displayName: "SCIM admin-disabled", status: "disabled" });
 
-      // An administrator's disable that completes a waiting SCIM deactivation is still the
-      // administrator's: SCIM cannot undo it.
+      // A waiting deactivation is withdrawn by reactivation, and an administrator's disable that
+      // completes one is still the administrator's: SCIM cannot undo it.
       const owner = userId(await scim.createUser(parseScimUserBody({ externalId: fixture.externalId("pending"), userName: fixture.email("pending") }), now));
-      const successor = await fixture.user("pending-successor");
-      const projectId = await fixture.ownedProject(owner, "Pending owner");
-      await expect(scim.deactivateUser(owner, now)).resolves.toMatchObject({ kind: "owner_transfer_required" });
+      await recordLegacyPendingDeactivation(owner);
       await expect(scim.patchUser(owner, parseScimUserPatch({ Operations: [{ op: "replace", path: "active", value: "True" }] }), now))
         .resolves.toMatchObject({ kind: "ok" });
       await expect(account(owner)).resolves.toMatchObject({ scimDeactivatedAt: null, status: "active" });
-      await expect(scim.deactivateUser(owner, now)).resolves.toMatchObject({ kind: "owner_transfer_required" });
-      await setProjectOwner(projectId, owner, successor);
+      await recordLegacyPendingDeactivation(owner);
       await expect(admins.disableUser({ revokedByUserId: fixture.adminId, userId: owner })).resolves.toBe("disabled");
       await expect(account(owner)).resolves.toMatchObject({ scimDeactivatedAt: null, status: "disabled" });
       await expect(scim.patchUser(owner, parseScimUserPatch(entra.updateUserLegacyNoPath), now)).resolves.toEqual({ kind: "admin_disabled" });

@@ -1,14 +1,13 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AnswerProblemReason } from "../../contracts/answerProblemReports";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 
 /**
  * Answer problem reports: one per user and persisted answer, holding a reason
  * and an optional comment, never the question or the answer. Visibility is
- * the chat's: the owner of a personal chat, or a current member of the
- * Project a Project chat belongs to (any role). Administrators read reports
- * only through `listAnswerProblemReports`, which never returns the chat.
+ * the chat's: only its owner. Administrators read reports only through
+ * `listAnswerProblemReports`, which never returns the chat.
  */
 
 export const ANSWER_PROBLEM_REPORT_RETENTION_MS = 90 * 24 * 3_600_000;
@@ -19,7 +18,7 @@ const NAME_MAX = 300;
 
 export type AnswerProblemReportDatabase = Pick<
   PrismaClient,
-  "answerProblemReport" | "chat" | "message" | "modelRun" | "project" | "providerConnection" | "user"
+  "answerProblemReport" | "chat" | "message" | "modelRun" | "providerConnection"
 >;
 
 /** A persisted, settled answer the user may report, and its run when it has one. */
@@ -51,9 +50,7 @@ export function createPrismaAnswerProblemReportRepository(db: AnswerProblemRepor
   return Object.freeze({
     async resolveAnswer({ chatId, messageId, now, userId }) {
       try {
-        // Personal: the owner only. Project: a current member of any role;
-        // a deleting Project, a former member and an administrator who is
-        // not a member get nothing.
+        // The owner only; an administrator who does not own the chat gets nothing.
         const access = await resolveChatAccess(db, { chatId, userId });
         if (!access) return null;
         const chat = await db.chat.findUnique({ select: { memoryMode: true, temporaryRetentionDeadline: true }, where: { id: chatId } });

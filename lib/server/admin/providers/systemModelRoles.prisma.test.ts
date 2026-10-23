@@ -4,7 +4,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
-import { createAdminKnowledgeProfileService } from "../knowledge/profileService";
 import { loadInstallationAnswerProviderRole } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
@@ -356,8 +355,8 @@ describe("persisted independent System Model roles", () => {
     });
   });
 
-  it("saves roles independently and pins a separate document model in an immutable Knowledge profile", async () => {
-    await fixture(async ({ db, adminId, memory, vision, embedding, reranker }) => {
+  it("saves roles independently and keeps the document model when the System Model is cleared", async () => {
+    await fixture(async ({ db, adminId, memory, vision, reranker }) => {
       const service = createAdminSystemModelPolicyService(db);
       const version = async () => (await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
       await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
@@ -375,27 +374,8 @@ describe("persisted independent System Model roles", () => {
       await expect(service.update({ expectedVersion: await version(), providerModelId: vision, reasoningEffort: null, userId: adminId }))
         .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
       expect(await loadInstallationAnswerProviderRole(db, { providerModelId: vision })).toMatchObject({ verifiedVisionInput: true });
-      const profile = createAdminKnowledgeProfileService(db, { probeVision: async () => true });
-      const before = await profile.list();
-      expect(before.availableDestinations.map((item) => item.deploymentId)).toContain(embedding);
-      await profile.activate({ deploymentId: embedding, documentDeploymentId: vision,
-        expectedVersion: before.version, pdfProcessingMode: "system_model_vision", userId: adminId });
-      const accepted = await db.knowledgeIndexProfile.findUniqueOrThrow({ where: { id: "installation" }, include: { activeRevision: true } });
-      expect(accepted.activeRevision?.pdfSystemModelSnapshot).toMatchObject({ providerModelId: vision });
-      expect(accepted.activeRevision?.embeddingProviderModelId).toBe(embedding);
       await service.update({ expectedVersion: await version(), providerModelId: null, reasoningEffort: null, userId: adminId });
-      expect(await db.knowledgeIndexProfileRevision.findUnique({ where: { id: accepted.activeRevisionId! } })).toEqual(accepted.activeRevision);
       expect(await createChatPdfModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: vision });
-      const racingActivation = createAdminKnowledgeProfileService(db, { probeVision: async () => {
-        const target = await db.providerModel.findUniqueOrThrow({ where: { id: vision } });
-        await db.providerConnection.update({ where: { id: target.connectionId }, data: { activeVersion: 2 } });
-        return true;
-      } });
-      await expect(racingActivation.activate({ deploymentId: embedding, documentDeploymentId: vision,
-        expectedVersion: before.version + 1, pdfProcessingMode: "system_model_vision", userId: adminId }))
-        .rejects.toMatchObject({ code: "knowledge_pdf_processing_mode_unavailable" });
-      expect((await db.knowledgeIndexProfile.findUniqueOrThrow({ where: { id: "installation" } })).activeRevisionId)
-        .toBe(accepted.activeRevisionId);
     });
   });
 

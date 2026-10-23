@@ -141,7 +141,7 @@ describe("answer artifact reload round trip", () => {
     expect(reloaded?.sources[0]).toMatchObject({ rank: 1, title: "round-0.example.com" });
     expect(reloaded?.sources.some((source) => source.url.length > 2_048)).toBe(false);
     expect(decoded).toEqual(reloaded);
-    expect(live).toEqual({ ...reloaded, groundingDisplay: null, knowledgeCitations: undefined });
+    expect(live).toEqual({ ...reloaded, groundingDisplay: null });
     expect(JSON.stringify(decoded)).not.toMatch(/private-call|url_citation/u);
   });
 
@@ -231,14 +231,13 @@ describe("summarizeMessageRunArtifacts", () => {
     const reloaded = summarizeMessageRunArtifacts({
       events: [{ eventType: event.type, payload: event.data }], searchRuns: []
     });
-    expect(reloaded).toEqual({ ...live, knowledgeCitations: [] });
+    expect(reloaded).toEqual(live);
     expect(JSON.stringify(reloaded)).not.toMatch(/startIndex|endIndex|runSearch/);
   });
 
   it("projects only the friendly Memory availability state", () => {
     const summary = summarizeMessageRunArtifacts(
       { events: [], searchRuns: [] },
-      undefined,
       null,
       [],
       "UNAVAILABLE"
@@ -246,7 +245,6 @@ describe("summarizeMessageRunArtifacts", () => {
 
     expect(summary).toEqual({
       citations: [],
-      knowledgeCitations: [],
       memoryStatus: "UNAVAILABLE",
       reasoningText: [],
       sources: []
@@ -258,7 +256,6 @@ describe("summarizeMessageRunArtifacts", () => {
   it("projects limited Memory use without exposing its internal degradation reason", () => {
     const summary = summarizeMessageRunArtifacts(
       { events: [], searchRuns: [] },
-      undefined,
       null,
       [],
       "LIMITED"
@@ -336,7 +333,6 @@ describe("summarizeMessageRunArtifacts", () => {
         title: "Citation",
         url: "https://example.com/citation"
       }],
-      knowledgeCitations: [],
       reasoningText: ["Compared the direct sources."],
       sources: [
         {
@@ -382,167 +378,19 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(JSON.stringify(summary?.sources)).not.toContain("citation");
   });
 
-  it("projects only cited legacy Knowledge handles without stale source labels", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [],
-      knowledgeRuns: [{
-        invocationOrdinal: 12,
-        results: [
-          {
-            baseName: "Policies",
-            documentVersionNumber: 3,
-            fileName: "handbook.pdf",
-            handle: "K12.1",
-            includedText: "private-passage-sentinel",
-            knowledgeBaseId: "private-base-id",
-            locator: "private-source-locator-sentinel",
-            page: 12,
-            provenance: [{
-              source: {
-                artifactId: "private-source-artifact-id-sentinel",
-                bindings: [
-                  { baseName: "Policies", bindingOrdinal: 0, knowledgeBaseId: "private-base-id" },
-                  {
-                    baseName: "Mirror",
-                    bindingOrdinal: 1,
-                    knowledgeBaseId: "private-secondary-base-id-sentinel"
-                  }
-                ],
-                primaryBindingOrdinal: 0,
-                sourceId: "private-source-id-sentinel",
-                sourceVersionId: "private-source-version-id-sentinel"
-              }
-            }],
-            sourceArtifactId: "private-source-artifact-id-sentinel",
-            sourceId: "private-source-id-sentinel",
-            sourceVersionId: "private-source-version-id-sentinel"
-          },
-          {
-            baseName: "Policies",
-            fileName: "unused.pdf",
-            handle: "K12.2",
-            includedText: "unused-private-passage",
-            knowledgeBaseId: "private-base-id",
-            page: 4
-          }
-        ]
-      }],
-      searchRuns: []
-    }, {
-      blocks: [{ text: "The policy applies [K12.1].", type: "text" }]
-    });
-
-    expect(summary).toEqual({
-      citations: [],
-      knowledgeCitations: [{
-        handle: "K12.1"
-      }],
-      reasoningText: [],
-      sources: []
-    });
-    expect(JSON.stringify(summary)).not.toMatch(
-      /private-passage-sentinel|handbook\.pdf|unused\.pdf|Policies|private-base-id|documentVersionNumber|private-source-locator-sentinel|private-secondary-base-id-sentinel|private-source-artifact-id-sentinel|private-source-id-sentinel|private-source-version-id-sentinel/
-    );
-  });
-
-  it("prefers v2 receipt handles and preserves only deletion state", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [],
-      knowledgeRetrievalSession: {
-        evidenceItems: [
-          Object.assign({ handle: "K1", state: "available" }, {
-            provenance: [{
-              source: {
-                artifactId: "private-v2-source-artifact-id-sentinel",
-                bindings: [
-                  { baseName: "Primary", bindingOrdinal: 0, knowledgeBaseId: "private-primary" },
-                  {
-                    baseName: "Mirror",
-                    bindingOrdinal: 1,
-                    knowledgeBaseId: "private-v2-secondary-base-id-sentinel"
-                  }
-                ],
-                primaryBindingOrdinal: 0,
-                sourceId: "private-v2-source-id-sentinel",
-                sourceVersionId: "private-v2-source-version-id-sentinel"
-              }
-            }],
-            sourceArtifactId: "private-v2-source-artifact-id-sentinel",
-            sourceId: "private-v2-source-id-sentinel",
-            sourceVersionId: "private-v2-source-version-id-sentinel"
-          }),
-          { handle: "K2", state: "deleted" },
-          { handle: "K3", state: "available" }
-        ]
-      },
-      knowledgeRuns: [Object.assign({
-        invocationOrdinal: 1,
-        results: [{ handle: "K1.1", fileName: "legacy-must-not-project.pdf" }]
-      }, {
-        readReceipt: {
-          locator: "private-v2-read-locator-sentinel",
-          resolvedSource: {
-            sourceArtifactId: "private-v2-source-artifact-id-sentinel",
-            sourceId: "private-v2-source-id-sentinel",
-            sourceVersionId: "private-v2-source-version-id-sentinel"
-          }
-        }
-      })],
-      searchRuns: []
-    }, {
-      blocks: [{ text: "Supported [K1], removed [K2], but not unused K3.", type: "text" }]
-    });
-
-    expect(summary?.knowledgeCitations).toEqual([
-      { handle: "K1" },
-      { deleted: true, handle: "K2" }
-    ]);
-    expect(JSON.stringify(summary)).not.toMatch(
-      /legacy-must-not-project\.pdf|private-v2-secondary-base-id-sentinel|private-v2-source-artifact-id-sentinel|private-v2-source-id-sentinel|private-v2-source-version-id-sentinel|private-v2-read-locator-sentinel/
-    );
-  });
-
-  it("projects only the completed Knowledge answer and readiness state", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [],
-      knowledgeRetrievalSession: {
-        degradedFlags: ["partial_readiness", "private-internal-diagnostic"],
-        evidenceItems: [],
-        groundingResult: { outcome: "no_answer" }
-      },
-      knowledgeRuns: [],
-      searchRuns: []
-    });
-
-    expect(summary).toEqual({
-      citations: [],
-      knowledgeCitations: [],
-      knowledgeState: {
-        answer: "insufficient_evidence",
-        scope: "partial_sources_ready"
-      },
-      reasoningText: [],
-      sources: []
-    });
-    expect(JSON.stringify(summary)).not.toContain("private-internal-diagnostic");
-  });
-
   it("keeps only a committed Memory action", () => {
     const action = { operation: "UPDATE" as const, status: "COMMITTED" as const };
     const withAction = summarizeMessageRunArtifacts(
       { events: [], searchRuns: [] },
-      undefined,
       action
     );
     const withoutAction = summarizeMessageRunArtifacts(
       { events: [], searchRuns: [] },
-      undefined,
       null
     );
 
     expect(withAction).toEqual({
       citations: [],
-      knowledgeCitations: [],
       memoryAction: action,
       reasoningText: [],
       sources: []
@@ -692,7 +540,7 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(activity?.calls[0]).toEqual({ mcpUnavailable: [{ name: "Gitlab Main", reason: "mcp_reauthorization_required" }],
       origin: "discovery", round: 1, serverName: "Auto tools", status: "complete", toolName: "find_tools" });
     expect(JSON.stringify(activity)).not.toMatch(/private|persisted-find-tools/u);
-    // Other viewers (Project members, administrators) and anonymous readers see nothing new.
+    // Other viewers (administrators) and anonymous readers see nothing new.
     for (const viewer of [undefined, "other-member", "administrator"]) {
       expect(summarizeMessageRunToolActivity(run, viewer)?.calls[0]).not.toHaveProperty("mcpUnavailable");
     }
@@ -727,7 +575,7 @@ describe("summarizeMessageRunToolActivity", () => {
       { ...referenceCall, toolName: "mcp_prefix_only" },
       { ...referenceCall, ordinal: -1 },
       { ...referenceCall, roundIndex: 0 },
-      ...["search", "find_tools", "memory_search", "load_skill", "search_knowledge", "generate_image",
+      ...["search", "find_tools", "memory_search", "load_skill", "generate_image",
         "create_artifact", "session", namespacedWorkspaceToolName("sandbox_fs_read")]
         .map(toolName => ({ ...referenceCall, toolName }))
     ]) {
@@ -770,7 +618,7 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(JSON.stringify(activity)).not.toMatch(/search_selected_engines|invocationId|strategyId|optionId/iu);
   });
 
-  it("projects automatic Knowledge preflight as the first user-facing round", () => {
+  it("keeps a historical Knowledge preflight readable as a plain step of the first round", () => {
     expect(summarizeMessageRunToolActivity({
       errorPayload: null,
       normalizedRequest: {},
@@ -786,11 +634,10 @@ describe("summarizeMessageRunToolActivity", () => {
     })).toEqual({
       calls: [{
         durationMs: 120,
-        origin: "knowledge",
+        origin: "tool",
         round: 1,
-        serverName: "Knowledge",
         status: "complete",
-        toolName: "search_knowledge"
+        toolName: "retrieve_knowledge"
       }]
     });
   });
@@ -874,12 +721,12 @@ describe("summarizeMessageRunToolActivity", () => {
     })?.warning).toEqual({ kind: "rounds", limit: 8 });
   });
 
-  it("excludes automatic Knowledge preflight from provider tool call and round limits", () => {
+  it("excludes a preflight call before the first provider round from tool call and round limits", () => {
     expect(summarizeMessageRunToolActivity({
       errorPayload: null,
       normalizedRequest: { toolBudgets: { maxToolCalls: 2, maxToolRounds: 2 } }, status: "streaming",
       toolCalls: [0, 1].map((roundIndex) => ({ completedAt: null, startedAt: null, ordinal: 0,
-        roundIndex, state: "complete", toolName: roundIndex === 0 ? "search_knowledge" : "search" }))
+        roundIndex, state: "complete", toolName: roundIndex === 0 ? "retrieve_knowledge" : "search" }))
     })?.warning).toBeUndefined();
   });
 
@@ -1123,9 +970,9 @@ describe("scheduled task cards", () => {
   it("reads the owner's current task over the created card, and a gone task as deleted", () => {
     const run = { events: [{ eventType: "artifact", payload: created.data }], searchRuns: [] };
     const edited = new Map([["task-1", { ...task, title: "Inbox", status: "paused" as const, nextRunAt: null, workspaceEnabled: true }]]);
-    expect(summarizeMessageRunArtifacts(run, undefined, null, [], undefined, edited)?.scheduledTasks)
+    expect(summarizeMessageRunArtifacts(run, null, [], undefined, edited)?.scheduledTasks)
       .toEqual([{ ...card, title: "Inbox", status: "paused", nextRunAt: null, workspaceEnabled: true }]);
-    expect(summarizeMessageRunArtifacts(run, undefined, null, [], undefined, new Map())?.scheduledTasks)
+    expect(summarizeMessageRunArtifacts(run, null, [], undefined, new Map())?.scheduledTasks)
       .toEqual([{ ...card, deleted: true }]);
     // A run's own chat update has no current read: the task shows as created.
     expect(summarizeMessageRunArtifacts(run)?.scheduledTasks).toEqual([card]);

@@ -227,9 +227,8 @@ function admittedContent(
   if (!admission.mimeDisagrees && matches(format)) {
     return { kind: format.kind, mimeType: format.canonicalMimeType, ok: true };
   }
-  const scope = input.scope ?? "attachment";
-  const detected = isNormalizableRasterUploadFormat(format, scope)
-    ? UPLOAD_FORMAT_REGISTRY.find((candidate) => isNormalizableRasterUploadFormat(candidate, scope) && matches(candidate))
+  const detected = isNormalizableRasterUploadFormat(format)
+    ? UPLOAD_FORMAT_REGISTRY.find((candidate) => isNormalizableRasterUploadFormat(candidate) && matches(candidate))
     : undefined;
   if (!detected) return { code: "unsupported_type", ok: false };
   if (input.byteSize > IMAGE_MAX_BYTES) return { code: "image_limit_exceeded", ok: false };

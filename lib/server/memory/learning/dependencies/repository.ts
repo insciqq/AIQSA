@@ -32,7 +32,6 @@ async function validateMessageDependency(
       chat: {
         memoryMode: "NORMAL",
         permanentDeletionAt: null,
-        projectId: null,
         userId
       },
       id: dependency.source.messageId,

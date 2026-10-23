@@ -35,9 +35,6 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       throw new WorkspaceFollowupError("workspace_followup_invalid");
     }
     let prepared = snapshot.prepared;
-    if (prepared.project && !await deps.repository.isProjectRunAccessCurrent?.({ ...prepared.project, userId: claim.userId })) {
-      throw new WorkspaceFollowupError("workspace_followup_unavailable");
-    }
     // A successor the old core admitted has no engine left to run it; it ends at startup (`retiredEngineRuns.ts`).
     if (loaded.modelRun.engine !== "native") throw new WorkspaceFollowupError("workspace_followup_unavailable");
     const admission = (): PreparingRunAdmissionInput => ({
@@ -59,8 +56,7 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     const runtime = await deps.providerRuntime.resolve(claim.runId, "answer");
     const attachments = await loadProviderAttachments({ repository: deps.repository, storage: deps.storage },
       claim.userId, prepared.normalizedRequest.attachmentIds, { capabilities: prepared.normalizedRequest.modelCapabilities,
-        limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled,
-        ...(prepared.project ? { projectId: prepared.project.projectId } : {}) });
+        limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled });
     // The engine measures and compacts its own context: the run keeps its admitted branch, with its attachments.
     prepared = { ...prepared, providerRequest: { ...prepared.providerRequest, attachments } };
     let created: CreatedRun = { assistantMessageId: admitted.assistantMessageId, runId: claim.runId, userMessageId: admitted.userMessageId };

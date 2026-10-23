@@ -21,10 +21,8 @@ const definition = { version: 3, name: "Writing editor", description: "Edits dra
   answerRules: "", responseReminder: "Cite sources.", starterPrompts: ["Tighten this paragraph"],
   rows: { model: { policy: "fixed", value: { mode: "model", modelId: "gemini-flash" } }, controls: { policy: "adjustable", value: {} },
     search: { policy: "fixed", value: { mode: "off" } }, tools: { policy: "adjustable", value: { mode: "off" } },
-    knowledge: { policy: "adjustable", value: { mode: "explicit", baseIds: ["kb-shared"], sourceIds: [], hiddenCount: 1 } },
     skills: { policy: "adjustable", value: { mode: "auto", links: [] } } },
-  names: { models: [{ id: "gemini-flash", name: "Gemini Flash" }], knowledgeBases: [{ id: "kb-shared", name: "Company handbook" }],
-    knowledgeSources: [], mcpServers: [], searchOptions: [], skills: [] } };
+  names: { models: [{ id: "gemini-flash", name: "Gemini Flash" }], mcpServers: [], searchOptions: [], skills: [] } };
 
 type Call = { body: unknown; method: string; url: string };
 let calls: Call[];
@@ -252,8 +250,7 @@ describe("AdminAssistantsSection", () => {
     expect(within(sheet).getByText("Tighten this paragraph")).toBeVisible();
     for (const [label, text] of [
       ["Model", "Gemini FlashFixed"], ["Reasoning & parameters", "Not setAdjustable"], ["Web search", "OffFixed"],
-      ["Tools", "OffAdjustable"], ["Knowledge", "Company handbook, 1 base or source you can't accessAdjustable"],
-      ["Skills", "Auto · No Skills selectedAdjustable"]
+      ["Tools", "OffAdjustable"], ["Skills", "Auto · No Skills selectedAdjustable"]
     ] as const) expect(within(sheet).getByTestId(`admin-assistant-setup-${label}`)).toHaveTextContent(text);
     expect(within(sheet).getByTestId("admin-assistant-review-instructions").textContent).toBe("Be concise.\nKeep the author's voice.");
     expect(within(sheet).getByText("Standard AIQSA answer rules.")).toBeVisible();

@@ -13,8 +13,8 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
   const tx = {
     $queryRaw: vi.fn(async (query: { sql: string } | TemplateStringsArray) => {
       const sql = "sql" in query ? query.sql : query.join("");
-      if (sql.includes('JOIN "Chat"')) return [{ chatId, userId, projectId: "project-one" }];
-      if (/FROM "(?:Project|User|Chat)"/.test(sql)) return [{ id: "locked-scope" }];
+      if (sql.includes('SELECT r."chatId", r."userId" FROM "ModelRun" r')) return [{ chatId, userId }];
+      if (/FROM "(?:User|Chat)"/.test(sql)) return [{ id: "locked-scope" }];
       if (sql.includes('FROM "ModelRun"')) {
         return mode === "cancel"
           ? [{
@@ -35,7 +35,8 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
       return pendingCallIds.map((id) => ({ id }));
     }),
     chat: {
-      findUnique: vi.fn(async () => ({ projectId: "project-one", userId: null }))
+      // A legacy Project chat: no personal owner, so no Memory source settlement.
+      findUnique: vi.fn(async () => ({ userId: null }))
     },
     knowledgeBudgetReservation: {
       updateMany: vi.fn(async () => ({ count: 1 }))
