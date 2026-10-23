@@ -1,5 +1,6 @@
 import { contextItemTokens, type ContextMeasureCalibration, type ReasoningWeight } from "../contextMeasure";
 import { selectTranscript, type TranscriptItem, type TranscriptTarget } from "../transcript";
+import { itemRules, type CompactionItemRules } from "./items";
 import { estimateRetainedTokens } from "./retained";
 
 /**
@@ -14,9 +15,10 @@ import { estimateRetainedTokens } from "./retained";
  * rejection compacts in the foreground and the request is retried once.
  *
  * The cut keeps the most recent `recentTokens` verbatim and lands only where
- * a user message or a model response begins, with every earlier tool call
- * already answered: a call and its result are never split, and a call still
- * waiting for approval or its result stays in the kept tail.
+ * a user message or a model response begins, at an item later runs keep the
+ * id of, with every earlier tool call already answered: a call and its
+ * result are never split, and a call still waiting for its result or the
+ * user's approval stays in the kept tail.
  */
 
 export const COMPACTION_THRESHOLDS = Object.freeze({
@@ -94,6 +96,8 @@ export type CompactionWeights = Readonly<{
   /** Local token estimate for the target's tokenizer family. */
   estimate: (value: unknown) => number;
   reasoning?: ReasoningWeight;
+  /** The engine's item conventions (`engineItemRules`). */
+  rules?: Partial<CompactionItemRules>;
 }>;
 
 const MODEL_ITEM_KINDS: ReadonlySet<TranscriptItem["kind"]> = new Set(["assistant_text", "reasoning", "tool_call"]);
@@ -107,18 +111,20 @@ function beginsTurnOrResponse(window: readonly TranscriptItem[], position: numbe
   return previous === undefined || !MODEL_ITEM_KINDS.has(previous.kind);
 }
 
-/** Window positions a compaction may cut at, ascending. */
-function cutPositions(window: readonly TranscriptItem[], first: number): number[] {
+/** Window positions a compaction may cut at, ascending. A call stays open
+ * until a result that is not an approval placeholder. */
+function cutPositions(window: readonly TranscriptItem[], first: number, rules: CompactionItemRules): number[] {
   const positions: number[] = [];
   const open = new Set<string>();
   const seen = new Set<string>();
   window.forEach((item, position) => {
-    if (position > first && open.size === 0 && beginsTurnOrResponse(window, position)) positions.push(position);
+    if (position > first && open.size === 0 && beginsTurnOrResponse(window, position) && rules.stableId(item)) positions.push(position);
     if (item.kind === "tool_call" && !seen.has(item.callId)) {
       seen.add(item.callId);
       open.add(item.callId);
     } else if (item.kind === "tool_result") {
-      open.delete(item.callId);
+      if (rules.awaitingApproval(item)) open.add(item.callId);
+      else open.delete(item.callId);
     }
   });
   return positions;
@@ -164,7 +170,7 @@ export type CompactionCutInput = CompactionWeights & Readonly<{
  */
 export function findCompactionCut(input: CompactionCutInput): CompactionCut | null {
   const { baseId, first, suffix, window } = windowWeights(input.items, input.target, input);
-  const positions = cutPositions(window, first);
+  const positions = cutPositions(window, first, itemRules(input.rules));
   if (positions.length === 0) return null;
   let chosen = positions[positions.length - 1]!;
   for (const position of positions) {
@@ -187,11 +193,12 @@ export function findCompactionCut(input: CompactionCutInput): CompactionCut | nu
 
 /** A prepared compaction still applies: replay starts where it started and its kept tail is still in the window. */
 export function compactionCutCurrent(cut: Pick<CompactionCut, "baseId" | "keepFromId">, items: readonly TranscriptItem[],
-  target: TranscriptTarget): boolean {
+  target: TranscriptTarget, rules?: Partial<CompactionItemRules>): boolean {
   const selection = selectTranscript(items, target);
   if ((selection.base?.id ?? null) !== cut.baseId) return false;
   const position = selection.window.findIndex((item) => item.id === cut.keepFromId);
-  return position > (selection.base ? 1 : 0) && cutPositions(selection.window, selection.base ? 1 : 0).includes(position);
+  const first = selection.base ? 1 : 0;
+  return position > first && cutPositions(selection.window, first, itemRules(rules)).includes(position);
 }
 
 export type BackgroundCompactionState = "failed" | "idle" | "ready" | "running";
@@ -257,7 +264,7 @@ export function planCompaction(input: CompactionPlanInput): CompactionPlan {
     const cut = findCompactionCut({ ...input, maxKeptTokens: Math.floor(usable * COMPACTION_RETENTION.maxKeptShare), recentTokens });
     if (!cut) break;
     const expectedTokens = tokens - cut.compactedTokens + retention.summaryTokens +
-      estimateRetainedTokens(input.items, cut.keepFromId, input.estimate, retention);
+      estimateRetainedTokens(input.items, cut.keepFromId, input.estimate, retention, input.rules);
     if (expectedTokens <= goal) {
       return urgent ? { ...figures, cut, expectedTokens, kind: "foreground", reason } : { ...figures, cut, expectedTokens, kind: "background" };
     }

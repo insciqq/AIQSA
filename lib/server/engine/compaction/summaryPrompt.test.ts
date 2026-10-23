@@ -57,6 +57,19 @@ describe("serialized span", () => {
     expect(parts.join("\n")).not.toMatch(/ENC-|rs_i/u);
   });
 
+  it("leaves run context out and keeps more of a result nothing can read again", () => {
+    const chat = transcriptBuilder();
+    chat.items.push({ id: "ctx-0", kind: "user", text: "Skills index" });
+    chat.user("Pull the tables");
+    chat.tool("run_sql", { query: "SELECT 1" }, "u".repeat(700));
+    chat.tool("run_sql", { query: "SELECT 2" }, `${"h".repeat(700)} ${handleFor("saved")}`);
+    const parts = serializeEntries(selectTranscript(chat.items, CODEX).entries, { ...OPTIONS, unhandledResultChars: 1_000 });
+    expect(parts[0]).toBe("[User]\nPull the tables");
+    expect(parts[2]).toBe(`[Tool result #1 run_sql]\n${"u".repeat(700)}`);
+    expect(parts[4]).toMatch(new RegExp(`^\\[Tool result #2 run_sql, 738 characters, full result: read_tool_result handle ${handleFor("saved")}\\]`, "u"));
+    expect(parts[4]).toContain("characters omitted");
+  });
+
   it("groups parts into chunks within a budget, a part larger than it alone", () => {
     expect(chunkParts(["aaaa", "bbbb", "cccc", "d".repeat(50), "e"], 12, charTokens))
       .toEqual([["aaaa", "bbbb"], ["cccc"], ["d".repeat(50)], ["e"]]);

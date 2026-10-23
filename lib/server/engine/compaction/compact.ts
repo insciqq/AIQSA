@@ -8,6 +8,7 @@ import {
   type TranscriptItem,
   type TranscriptTarget
 } from "../transcript";
+import { itemRules, type CompactionItemRules } from "./items";
 import { nativeCompactionFrom } from "./native";
 import { compactionCutCurrent, compactionRetention, type CompactionCut, type CompactionRetention } from "./policy";
 import {
@@ -90,6 +91,8 @@ export const COMPACTION_DEFAULTS = Object.freeze({
   /** The retry after a failed summary call. */
   retryArgumentChars: 800,
   retryResultChars: 800,
+  /** Results nothing can read again after the compaction, while the span fits one call. */
+  unhandledResultChars: 6_000,
   /** Share of the usable window one summary call's input may take. */
   summaryInputShare: 0.6,
   summaryOutputTokens: Object.freeze({ background: 8_192, foreground: 4_096 }),
@@ -109,6 +112,7 @@ export type CompactOptions = Readonly<{
   summaryInputShare: number;
   summaryOutputTokens: number;
   summaryReasoningEffort: string | null;
+  unhandledResultChars: number;
   userChars: number;
 }>;
 
@@ -164,6 +168,8 @@ export type CompactInput = Readonly<{
   reasoning?: ReasoningWeight;
   resultHandle?: CompactionResultHandle;
   retention?: Partial<CompactionRetention>;
+  /** The engine's item conventions for this run (`engineItemRules(currentInputId)`). */
+  rules?: Partial<CompactionItemRules>;
   signal?: AbortSignal;
   target: TranscriptTarget;
   /** Tokens one request to the target may carry (`usableContextTokens`). */
@@ -184,6 +190,7 @@ function resolvedOptions(input: CompactInput, path: CompactionPath): CompactOpti
     summaryInputShare: defaults.summaryInputShare,
     summaryOutputTokens: defaults.summaryOutputTokens[input.mode],
     summaryReasoningEffort: defaults.summaryReasoningEffort,
+    unhandledResultChars: defaults.unhandledResultChars,
     userChars: defaults.userChars,
     ...input.options
   };
@@ -252,16 +259,25 @@ function weigh(entries: readonly SelectedTranscriptItem[], input: CompactInput):
 
 type SummaryRun = Readonly<{ chunks: number; summary: string }> | null;
 
-/** The summary of `span` folded over chunks; one retry with tighter excerpts from the failed chunk on. */
+/**
+ * The summary of `span` folded over chunks. Results nothing can read again
+ * keep longer excerpts while the span fits one call; one retry with tighter
+ * excerpts from the failed chunk on.
+ */
 async function summarize(input: CompactInput, options: CompactOptions, usage: Usage, span: readonly SelectedTranscriptItem[],
   previous: string | null): Promise<SummaryRun> {
+  const rules = itemRules(input.rules);
   // Exactly the entries that serialize, so parts and entries share indexes.
-  const entries = span.filter((entry) => entry.item.kind !== "compaction" && entry.item.kind !== "reasoning");
-  const serialize = (from: number, tight: boolean): string[] => serializeEntries(entries.slice(from), {
-    argumentChars: tight ? options.retryArgumentChars : options.argumentChars,
+  const entries = span.filter((entry) => entry.item.kind !== "compaction" && entry.item.kind !== "reasoning" &&
+    !rules.runContext(entry.item));
+  const serialize = (from: number, excerpts: "lean" | "rich" | "tight"): string[] => serializeEntries(entries.slice(from), {
+    argumentChars: excerpts === "tight" ? options.retryArgumentChars : options.argumentChars,
     assistantChars: options.assistantChars,
-    resultChars: tight ? options.retryResultChars : options.resultChars,
+    resultChars: excerpts === "tight" ? options.retryResultChars : options.resultChars,
     resultHandle: input.resultHandle,
+    rules,
+    unhandledResultChars: excerpts === "rich" ? options.unhandledResultChars
+      : excerpts === "tight" ? options.retryResultChars : options.resultChars,
     userChars: options.userChars
   } satisfies SerializeOptions);
   const words = summaryWordTarget(options.summaryOutputTokens);
@@ -272,7 +288,8 @@ async function summarize(input: CompactInput, options: CompactOptions, usage: Us
 
   let summary = previous;
   let tight = false;
-  let parts = serialize(0, false);
+  let parts = serialize(0, "rich");
+  if (parts.reduce((total, part) => total + input.estimate(part) + 2, 0) > budget(summary)) parts = serialize(0, "lean");
   let done = 0;
   let chunks = 0;
   if (parts.length === 0) return previous ? { chunks: 0, summary: previous } : null;
@@ -297,7 +314,7 @@ async function summarize(input: CompactInput, options: CompactOptions, usage: Us
     if (tight) return null;
     // The one retry: tighter excerpts and a shorter target, from this chunk on.
     tight = true;
-    parts = [...parts.slice(0, done), ...serialize(done, true)];
+    parts = [...parts.slice(0, done), ...serialize(done, "tight")];
   }
   return summary ? { chunks, summary } : null;
 }
@@ -308,7 +325,7 @@ export async function compact(input: CompactInput): Promise<CompactionOutcome> {
   const requested: CompactionPath = input.path ?? (input.target.nativeCompaction === true ? "native" : "summary");
   const usage: Usage = { calls: 0, inputTokens: null, outputTokens: null };
   const retention = compactionRetention(input.usable, input.retention);
-  const located = compactionCutCurrent(input.cut, input.items, input.target)
+  const located = compactionCutCurrent(input.cut, input.items, input.target, input.rules)
     ? spanOf(input.items, input.target, input.cut.keepFromId) : null;
   const keptTokens = located ? weigh(located.kept, input) : 0;
   const tokensBefore = located ? weigh(located.span, input) + keptTokens : 0;
@@ -318,6 +335,7 @@ export async function compact(input: CompactInput): Promise<CompactionOutcome> {
     items: input.items,
     keepFromId: input.cut.keepFromId,
     resultHandle: input.resultHandle ?? defaultResultHandle,
+    ...(input.rules ? { rules: input.rules } : {}),
     skillTokens: retention.skillTokens,
     userMessageTokens: retention.userMessageTokens
   }) : "";

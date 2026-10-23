@@ -1,4 +1,5 @@
 import type { SelectedTranscriptItem } from "../transcript";
+import { itemRules, type CompactionItemRules } from "./items";
 import { defaultResultHandle, type CompactionResultHandle } from "./retained";
 
 /**
@@ -119,20 +120,27 @@ export function excerptText(text: string, maxChars: number): string {
 export type SerializeOptions = Readonly<{
   argumentChars: number;
   assistantChars: number;
+  /** Results a handle still reads in full. */
   resultChars: number;
   resultHandle?: CompactionResultHandle;
+  rules?: Partial<CompactionItemRules>;
+  /** Results nothing can read again after the compaction (default `resultChars`). */
+  unhandledResultChars?: number;
   userChars: number;
 }>;
 
 /** One serialized line per selected item the summary sees, in replay order:
- * no reasoning and no compaction items (a base summary goes in separately). */
+ * no reasoning, no compaction items (a base summary goes in separately) and
+ * no run context the server adds again on every run. */
 export function serializeEntries(entries: readonly SelectedTranscriptItem[], options: SerializeOptions): string[] {
   const numbers = new Map<string, number>();
   const handleOf = options.resultHandle ?? defaultResultHandle;
+  const runContext = itemRules(options.rules).runContext;
   const parts: string[] = [];
   for (const { item } of entries) {
     switch (item.kind) {
       case "user":
+        if (runContext(item)) break;
         parts.push(`[User${item.followup ? ", follow-up during the work" : ""}]\n${excerptText(item.text, options.userChars)}`);
         break;
       case "assistant_text":
@@ -147,14 +155,15 @@ export function serializeEntries(entries: readonly SelectedTranscriptItem[], opt
       case "tool_result": {
         const number = numbers.get(item.callId);
         const handle = handleOf(item);
-        const trimmed = item.output.length > options.resultChars;
+        const limit = handle ? options.resultChars : options.unhandledResultChars ?? options.resultChars;
+        const trimmed = item.output.length > limit;
         const labels = [
           `Tool result${number !== undefined ? ` #${number}` : ""} ${item.name}`,
           ...(item.outcome !== "complete" ? [item.outcome === "unknown" ? "outcome unknown" : "error"] : []),
           ...(trimmed ? [`${item.output.length.toLocaleString("en-US")} characters`] : []),
           ...(trimmed && handle ? [`full result: read_tool_result handle ${handle}`] : [])
         ];
-        parts.push(`[${labels.join(", ")}]\n${excerptText(item.output, options.resultChars)}`);
+        parts.push(`[${labels.join(", ")}]\n${excerptText(item.output, limit)}`);
         break;
       }
       case "reasoning":

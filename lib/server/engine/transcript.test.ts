@@ -334,10 +334,12 @@ describe("transcript projection", () => {
     // Another target cannot read it: replay starts at c1 again, with c2 skipped where it stands.
     expect(projectTranscript(chat.items, gemini)).toEqual([summary, ...tail]);
 
-    // A kept tail that is not before the compaction is never replayed twice.
+    // A compaction whose kept tail is gone is not used: replay never drops the tail it promised.
     const misplaced = [...chat.items.filter((item) => item.id !== "c1" && item.id !== "c2"),
       { id: "c3", keepFromId: "missing", kind: "compaction" as const, origin: codex, summary: "S" }];
-    expect(projectTranscript(misplaced, gemini)).toEqual([{ text: "Summary of the earlier conversation:\n\nS", type: "user" }]);
+    expect(projectTranscript(misplaced, gemini).map((item) => item.type))
+      .toEqual(["user", "assistant_text", "user", "tool_call", "tool_result", "user"]);
+    expect(selectTranscript(misplaced, gemini).base).toBeNull();
   });
 
   it("keeps only the current turn's reasoning for a current-turn target, across follow-ups", () => {

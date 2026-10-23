@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { measureContext } from "../contextMeasure";
 import { selectTranscript, type TranscriptItem } from "../transcript";
 import { CODEX, charTokens, transcriptBuilder } from "./compaction.testFixtures";
+import { APPROVAL_PENDING_TEXT, engineItemRules } from "./items";
 import {
   COMPACTION_THRESHOLDS,
   compactionCutCurrent,
@@ -91,6 +92,37 @@ describe("compaction cut", () => {
     const window = selectTranscript(chat.items, CODEX).window;
     expect(windowPosition(chat.items, cut.keepFromId)).toBeLessThanOrEqual(window.findIndex((item) => item.kind === "tool_call" &&
       item.callId === pending));
+  });
+
+  it("keeps a call waiting for approval open until its real result replaces the placeholder", () => {
+    const chat = longChat(4, 2_000);
+    chat.user("Create the refund ticket.");
+    const name = "mcp_crm_create_ticket_0123456789";
+    const callId = chat.call(name, { title: "Refund" });
+    chat.result(callId, name, APPROVAL_PENDING_TEXT, "error");
+    chat.user("Meanwhile, summarize the margins.");
+    chat.answer("Margins look fine.");
+    const callPosition = () => windowPosition(chat.items, chat.items.find((item) => item.kind === "tool_call" && item.callId === callId)!.id);
+    const waiting = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target: CODEX })!;
+    expect(windowPosition(chat.items, waiting.keepFromId)).toBeLessThanOrEqual(callPosition());
+    // The approval ran: its result replaces the placeholder and the call no longer holds the tail back.
+    chat.result(callId, name, "{\"id\":\"T-1001\"}");
+    chat.answer("Ticket T-1001 created.");
+    const settled = findCompactionCut({ estimate: charTokens, items: chat.items, recentTokens: 1, target: CODEX })!;
+    expect(windowPosition(chat.items, settled.keepFromId)).toBeGreaterThan(callPosition());
+  });
+
+  it("never starts the kept tail at run context or at the run's own input, whose ids later runs change", () => {
+    const chat = longChat(4, 2_000);
+    const items: TranscriptItem[] = [...chat.items, { id: "ctx-0", kind: "user", text: "Skills index" },
+      { id: "m-9", kind: "user", text: "Current question" }, { id: "a-9", kind: "assistant_text", text: "Current answer" }];
+    const rules = engineItemRules("m-9");
+    const cut = findCompactionCut({ estimate: charTokens, items, recentTokens: 1, rules, target: CODEX })!;
+    expect(cut.keepFromId).toBe("a-9");
+    expect(findCompactionCut({ estimate: charTokens, items, recentTokens: 1, target: CODEX })!.keepFromId).toBe("a-9");
+    expect(findCompactionCut({ estimate: charTokens, items: items.slice(0, -1), recentTokens: 1, rules, target: CODEX })!.keepFromId)
+      .not.toMatch(/^(?:ctx-0|m-9)$/u);
+    expect(compactionCutCurrent({ baseId: null, keepFromId: "m-9" }, items, CODEX, rules)).toBe(false);
   });
 
   it("cuts inside the base compaction's kept tail and counts the base as compacted", () => {
