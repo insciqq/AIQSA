@@ -179,9 +179,6 @@ describe("native run compaction", () => {
     const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
       prepared: prepared(windowFor(0.78)), repository: runRepository as unknown as RunRepository, services: {}, userId: "user" }));
     expect(memory.published()).toBe("Done with the next step.");
-    // The marker is on record too, so a reload shows the Context section the live answer showed.
-    expect(runRepository.appendRunOutputEvent).toHaveBeenCalledWith("run-1", { data: { artifactType: "context_compaction",
-      payload: expect.objectContaining({ outcome: "summary_applied", state: "complete" }) }, type: "artifact" });
     // The answer request went out as it was, without a summary in it.
     expect(scripted.answers).toHaveLength(1);
     expect(firstText(scripted.answers[0]!)).not.toContain(COMPACTION_SUMMARY_HEADING);
@@ -223,9 +220,13 @@ describe("native run compaction", () => {
     const rejection = Object.assign(new Error("prompt is too long"), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED });
     const scripted = scriptedAdapter([{ fail: rejection }, { text: "Answered after compaction." }]);
     const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const runRepository = repository();
     const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
-      prepared: prepared(windowFor(0.6)), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      prepared: prepared(windowFor(0.6)), repository: runRepository as unknown as RunRepository, services: {}, userId: "user" }));
     expect(memory.published()).toBe("Answered after compaction.");
+    // A compaction inside the run is on record too, so a reload shows the Context section the live answer showed.
+    expect(runRepository.appendRunOutputEvent).toHaveBeenCalledWith("run-1", { data: { artifactType: "context_compaction",
+      payload: expect.objectContaining({ state: "complete" }) }, type: "artifact" });
     expect(scripted.answers).toHaveLength(2);
     expect(firstText(scripted.answers[1]!).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
     expect(scripted.order.indexOf("summary")).toBeGreaterThan(0);
