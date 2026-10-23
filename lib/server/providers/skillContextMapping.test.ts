@@ -61,7 +61,6 @@ function request(
       ],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,

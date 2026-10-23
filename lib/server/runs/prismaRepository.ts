@@ -13,7 +13,6 @@ import {
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
-import { normalizeTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
   summarizeMessageRunArtifacts,
@@ -73,11 +72,9 @@ import {
   isRecord,
   json,
   lockRunSettlementScope,
-  runControlRecord,
-  unique
+  runControlRecord
 } from "./prismaRepositoryShared";
 import {
-  appendRunOutputEvents,
   cancelPendingToolLoopCallsInTransaction,
   closeRunningToolLoopCallsInTransaction,
   createPrismaRunToolLoopOperations,
@@ -92,7 +89,10 @@ import { createPrismaScheduledTaskPinnedSkillLoader } from "../scheduledTasks/pi
 import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
 import { saveSkillForToolCall } from "./prismaRepositorySkillSaveCall";
 import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
-import { loadScheduledTaskManagementAdmission, manageScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskManagement";
+import {
+  loadScheduledTaskManagementAdmission,
+  manageScheduledTaskForToolCall
+} from "./prismaRepositoryScheduledTaskManagement";
 import { resolveChatAccess } from "../chats/access";
 import {
   loadMcpApprovalContinuation,
@@ -100,21 +100,12 @@ import {
   loadRunMcpApprovalCards,
   mcpApprovalCardSelect
 } from "../mcp/writeApprovalRepository";
-import {
-  groundKnowledgeRunAnswer,
-  groundKnowledgeRunAnswerV5,
-  groundKnowledgeRunAnswerV21,
-  groundKnowledgeEvidenceRunAnswerV1,
-  loadKnowledgeFullContextDispatchRecovery,
-  settleKnowledgeGrounding
-} from "../knowledge/evidenceRepository";
 import type { WorkspaceAvailabilityService } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { measureTransaction } from "../observability/transactionTiming";
-import { runAttributionUsageWhere, storedRunAttributionPurpose } from "./prismaRepositoryUsage";
-import { createPrismaRunFollowupOperations, runFollowupSelect, runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
+import { createPrismaRunFollowupOperations, runFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectRunFollowups } from "./runFollowups";
 import { decodeRunFollowupState } from "../../contracts/runFollowups";
 
@@ -415,12 +406,6 @@ export function createPrismaRunRepository(
 
   return {
     followups: createPrismaRunFollowupOperations(prismaClient),
-    groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input).catch(retainRunPrismaCode),
-    groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input).catch(retainRunPrismaCode),
-    groundKnowledgeAnswerV21: (input) => groundKnowledgeRunAnswerV21(prismaClient, input).catch(retainRunPrismaCode),
-    groundKnowledgeEvidenceAnswer: (input) => groundKnowledgeEvidenceRunAnswerV1(prismaClient, input).catch(retainRunPrismaCode),
-    loadKnowledgeFullContextDispatchRecovery: (input) =>
-      loadKnowledgeFullContextDispatchRecovery(prismaClient, input).catch(retainRunPrismaCode),
     admitPreparingRun: (input) =>
       admitPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     beginPreparingRunAttempt: (input) =>

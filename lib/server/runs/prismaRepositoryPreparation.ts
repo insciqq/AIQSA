@@ -1,4 +1,3 @@
-import { knowledgeImageObservationVision } from "../knowledge/imageObservation";
 import { assertInstructionPresetSelection } from "../instructions/store";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
@@ -110,12 +109,6 @@ import {
 } from "./preparingFailOpen";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
-  KnowledgeRunAdmissionError,
-  loadKnowledgeRunAdmissionPlan,
-  sameKnowledgeRunAdmissionPlan,
-  type KnowledgeRunAdmissionPlan
-} from "../knowledge/runAdmission";
-import {
   MEMORY_PREPARING_ATTEMPT_TTL_MS,
   MEMORY_PREPARING_QUERY_PLANNER_VERSION,
   MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION,
@@ -142,7 +135,6 @@ import {
 import {
   ActiveLeafConflictError,
   AttachmentLinkConflictError,
-  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   SkillRunConflictError,
@@ -173,11 +165,9 @@ import {
   applyAcceptedChatAssistant,
   assertAssistantRunProvenance,
   assertCurrentSkillRunBindings,
-  insertAcceptedKnowledgeRunBindings,
   insertAcceptedMcpRunBindings,
   insertAcceptedProviderRunBindings,
   insertAcceptedSkillRunBindings,
-  lockKnowledgeRunAdmissionSources,
   persistAcceptedRunDefaults,
   repeatableReadTransaction,
   RunTransactionDeadlineError
@@ -759,7 +749,7 @@ type UnavailablePreparingRunAdmissionInput = Readonly<{
  * admit the ordinary run with a durable, content-free FAILED_SAFE receipt.
  * This path deliberately avoids UserMemorySettings and index reads while the
  * surrounding admission transaction still proves the ordinary run, DAG,
- * attachment, provider, Knowledge, MCP, and Skill authorities.
+ * attachment, provider, MCP, and Skill authorities.
  */
 export async function finalizeUnavailablePreparingRunAdmission(
   tx: Prisma.TransactionClient,
@@ -1387,11 +1377,6 @@ export async function admitPreparingRunWithClient(
         userMessageId
       }, Boolean(workspaceFollowup));
 
-      await insertAcceptedKnowledgeRunBindings(tx, {
-        plan: input.knowledgeAdmissionPlan,
-        runId: run.id,
-        userId: input.userId
-      });
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
         tools: input.normalizedRequest.mcp?.tools ?? [],
@@ -1405,7 +1390,7 @@ export async function admitPreparingRunWithClient(
       });
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
-        visionAnalysis: input.normalizedRequest.visionAnalysis ?? knowledgeImageObservationVision(input.normalizedRequest),
+        visionAnalysis: input.normalizedRequest.visionAnalysis,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,
@@ -2317,37 +2302,6 @@ async function assertCurrentProviderAdmission(
   }
 }
 
-async function assertCurrentKnowledgeAdmission(
-  tx: Prisma.TransactionClient,
-  input: Readonly<{
-    plan: KnowledgeRunAdmissionPlan | undefined;
-    userId: string;
-  }>
-): Promise<void> {
-  if (!input.plan) return;
-  await lockKnowledgeRunAdmissionSources(tx, {
-    plan: input.plan,
-    userId: input.userId
-  });
-  let current: KnowledgeRunAdmissionPlan;
-  try {
-    current = await loadKnowledgeRunAdmissionPlan(tx, {
-      ...(input.plan.executionScope ? { executionScope: input.plan.executionScope } : {}),
-      knowledgePlan: input.plan.knowledgePlan,
-      ...(input.plan.projectId ? { projectId: input.plan.projectId } : {}),
-      userId: input.userId
-    });
-  } catch (error) {
-    if (error instanceof KnowledgeRunAdmissionError || error instanceof ProviderAdmissionError) {
-      throw new KnowledgeRunPlanConflictError();
-    }
-    throw error;
-  }
-  if (!sameKnowledgeRunAdmissionPlan(input.plan, current)) {
-    throw new KnowledgeRunPlanConflictError();
-  }
-}
-
 /** Rechecks an accepted run's MCP bindings at finalization; exported for its SQL-fence tests. */
 export async function assertCurrentMcpAdmission(
   tx: Prisma.TransactionClient,
@@ -3078,10 +3032,6 @@ export async function finalizePreparingRunWithClient(
     }
     await assertCurrentProviderAdmission(tx, {
       plan: input.providerAdmissionPlan,
-      userId: input.userId
-    });
-    await assertCurrentKnowledgeAdmission(tx, {
-      plan: input.knowledgeAdmissionPlan,
       userId: input.userId
     });
     await assertCurrentMcpAdmission(tx, {
@@ -3857,9 +3807,6 @@ async function continuePreparingRunWithClient(
         ...(degradationCode === "memory_admission_deadline_exceeded"
           ? { deadlineFallbackBudget: budgetSnapshot }
           : { failedSafeFallback: { budgetSnapshot, degradationCode } }),
-        ...(admission.knowledgeAdmissionPlan
-          ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
-          : {}),
         ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
         normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
         providerAdmissionPlan: admission.providerAdmissionPlan,
@@ -4049,9 +3996,6 @@ async function continuePreparingRunWithClient(
         const finalization: PreparingRunFinalizationInput & Readonly<{ deadlineAtMs: number }> = {
           ...(admission.assistant ? { assistant: admission.assistant } : {}),
           attemptId: currentAttemptId,
-          ...(admission.knowledgeAdmissionPlan
-            ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
-            : {}),
           ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
           ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
           deadlineAtMs: memoryAdmissionDeadlineAtMs -

@@ -16,13 +16,11 @@ import {
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
 import { NEUTRAL_FAMILY_PROMPT } from "../engine/prompts/neutral";
 import { nativeEngineFake } from "@/tests/support/nativeEngine";
-import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
   ProviderModelCapabilities,
-  ProviderRunRequest,
-  ProviderRunRefreshResult
+  ProviderRunRequest
 } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
@@ -42,7 +40,6 @@ import {
   AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
-  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   type DurableRunControlRecord,
   type RunRepository
@@ -697,13 +694,6 @@ function activeRunRecord(input: Partial<{
   };
 }
 
-function staleRunRecord(input: Parameters<typeof activeRunRecord>[0] = {}) {
-  return {
-    ...activeRunRecord(input),
-    updatedAt: new Date(0)
-  };
-}
-
 function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
   return {
     chatId: "chat-1",
@@ -721,7 +711,6 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
       attachmentIds: [],
       chatId: "chat-1",
       content: { blocks: [] },
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
@@ -3839,7 +3828,6 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
-        knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
         toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
@@ -4245,54 +4233,6 @@ describe("model run route handlers", () => {
     await expect(regenerateResponse.json()).resolves.toEqual({ error: "mcp_not_ready" });
   });
 
-  it("maps send and regeneration Knowledge acceptance races to privacy-neutral conflicts", async () => {
-    const memory = createMemoryRepository();
-    const repository: RunRepository = {
-      ...memory.repository,
-      createRegenerationRun: async () => {
-        throw new KnowledgeRunPlanConflictError();
-      },
-      createRun: async () => {
-        throw new KnowledgeRunPlanConflictError();
-      }
-    };
-    const deps = {
-      ...authDeps,
-      providers: { fake: createFakeProviderAdapter() },
-      repository
-    };
-    const send = createSendMessageHandler(deps);
-    const regenerate = createRegenerateModelRunHandler(deps);
-
-    const sendResponse = await send(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          searchPlan: { mode: "all_selected", optionIds: [] },
-          text: "Race"
-        }),
-        headers: { cookie: authCookie() },
-        method: "POST"
-      }),
-      { params: { chatId: "chat-1" } }
-    );
-    const regenerateResponse = await regenerate(
-      new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-        body: JSON.stringify({ searchPlan: { mode: "all_selected", optionIds: [] } }),
-        headers: { cookie: authCookie() },
-        method: "POST"
-      }),
-      { params: { messageId: "assistant-message-1" } }
-    );
-
-    expect(sendResponse.status).toBe(409);
-    await expect(sendResponse.json()).resolves.toEqual({
-      error: "knowledge_base_not_available"
-    });
-    expect(regenerateResponse.status).toBe(409);
-    await expect(regenerateResponse.json()).resolves.toEqual({
-      error: "knowledge_base_not_available"
-    });
-  });
 });
 
 describe("Stop diagnostics", () => {

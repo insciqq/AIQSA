@@ -88,7 +88,6 @@ function compatibleRequest(): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "hello", type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -112,7 +111,6 @@ function geminiRequest(): ProviderRunRequest {
     attachments: [],
     chatId: "chat-1",
     content: { blocks: [{ text: "hello", type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

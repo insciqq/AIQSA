@@ -68,7 +68,6 @@ describe("fetch_url tool contract", () => {
       { content: text("assistant https://assistant.example/"), id: "m2", role: "assistant" },
       { content: text("prompt https://prompt.example/"), id: "m3", role: "user" },
       { content: text("skill https://skill.example/"), id: "m4", purpose: "skill_context", role: "user" },
-      { content: text("history https://history.example/"), historyClass: "tool_history", id: "m5", role: "user" },
       { content: text("Follow-up:\nalso https://followup.example/"), id: "f1", role: "user" },
       { content: text("now https://current.example/"), id: "current", role: "user" }
     ], new Set(["m3"]));

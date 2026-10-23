@@ -102,7 +102,6 @@ function oversizedRequest(provider: string, modelId: string, params: Record<stri
     attachments: [],
     chatId: "context-rejection-smoke",
     content: { blocks: [{ text: `Reply with OK.${FILLER.repeat(tokens)}`, type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, streaming: true, vision: false },
     modelId,
     params,

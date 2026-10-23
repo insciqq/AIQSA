@@ -25,7 +25,6 @@ function request(attachments: ProviderAttachment[], provider = "openai"): Provid
     attachments,
     chatId: "chat-1",
     content: { blocks: [{ type: "text", text: "What is on the latest screenshot?" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { vision: true, pdf: true, nativePdfInput: false, nativeSearch: false, reasoning: false },
     modelId: "vision-model",
     params: {},

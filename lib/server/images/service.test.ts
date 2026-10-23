@@ -62,7 +62,6 @@ function request(attachments: ProviderAttachment[], history: Array<{ id: string;
       ...attachments.filter((attachment) => attachment.kind === "image").map((attachment) => ({
         attachmentId: attachment.id, messageId: "current-user-message", fileName: attachment.fileName, origin: "upload" as const }))
     ],
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { vision: true, pdf: true, nativePdfInput: false, nativeSearch: false, reasoning: false },
     modelId: "vision-model",
     params: {},

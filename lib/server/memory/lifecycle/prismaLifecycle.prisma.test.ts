@@ -266,7 +266,6 @@ function normalizedRequest(
     attachmentIds: [],
     chatId,
     content: textMessageContent(content),
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

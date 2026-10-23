@@ -981,7 +981,7 @@ describe("scheduled task runner with the owner's tools", () => {
     const plain = h.addTask({ userId: "owner-2" });
     await h.tick();
     const [toolSend, plainSend] = [tooling, plain].map((task) => h.sent.find((send) => send.occurrence.taskId === task.id)!);
-    expect(toolSend.body).toMatchObject({ knowledgePlan: { mode: "none" }, mcp: { mode: "auto" }, skills: { mode: "auto" },
+    expect(toolSend.body).toMatchObject({ mcp: { mode: "auto" }, skills: { mode: "auto" },
       workspace: { enabled: true } });
     // Never Load all, which fails a whole unattended run when one server is not ready, and never Agent.
     expect(toolSend.body).not.toHaveProperty("tools");

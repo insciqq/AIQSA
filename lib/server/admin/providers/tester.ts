@@ -1,7 +1,6 @@
 import { capabilityFailureAttempt, retryCapabilityAttempt } from "./capabilityProbeFailure";
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import { testImageCapabilities } from "./imageCapabilityProbe";
-import { randomUUID } from "node:crypto";
 import { normalizeAnthropicMessagesParams } from "../../../domain/providerParams";
 import { shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { validateSearchToolArguments } from "../../search/query";
@@ -32,7 +31,6 @@ import {
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
 import { ProviderSearchExecutionError, type ProviderRunRequest, type ProviderRunResult } from "../../providers/types";
-import { extractOpenAIUsage } from "../../providers/openaiResponsesResponse";
 import { normalizeTokenUsage, type TokenUsage } from "../../../domain/usage";
 import {
   createModelCheckUsageRecorder,
@@ -155,7 +153,6 @@ function generationRequest(
     chatId: "provider-admin-test",
     content: { blocks: [{ text: "Reply with exactly OK.", type: "text" }] },
     forceNonStreaming: !streaming,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       ...input.model.capabilities,

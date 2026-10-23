@@ -48,7 +48,6 @@ function fixture(workspace = false) {
     ...(workspace ? { workspace: { enabled: true } } : {}),
     context: { messages: [{ id: "user", role: "user", content }], mode: "branch_path" },
     contextCompactionPolicy: { mode: "hybrid", source: { digest: "a".repeat(64), leafMessageId: "user", messageCount: 1 }, version: 1 },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: true, vision: false, reasoning: false, contextWindow: 32000 },
     modelId: "frozen-answer", params: {}, prompt: { developer: null, system: null }, provider: "fake",
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "none" };

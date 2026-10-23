@@ -1,7 +1,7 @@
 import {
-  KNOWLEDGE_PROCESSING_WARNING_CODES,
-  type KnowledgeProcessingWarningCode
-} from "../contracts/knowledge";
+  DOCUMENT_PROCESSING_WARNING_CODES as KNOWLEDGE_PROCESSING_WARNING_CODES,
+  type DocumentProcessingWarningCode as KnowledgeProcessingWarningCode
+} from "../contracts/uploads";
 
 export { KNOWLEDGE_PROCESSING_WARNING_CODES };
 export type { KnowledgeProcessingWarningCode };

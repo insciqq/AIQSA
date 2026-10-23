@@ -33,7 +33,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       ],
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

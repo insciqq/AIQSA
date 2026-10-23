@@ -13,7 +13,6 @@ import { prepareWorkspaceImages, WORKSPACE_IMAGE_LIMITS, WorkspaceImageError, ty
 import { workspaceImageInput, workspaceImageInputForRun } from "../workspace/imageInputs";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import { ConversationImageError, conversationImageInput, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
-import { createKnowledgeImageObservation, type KnowledgeImageObservationStore } from "./knowledgeObservation";
 import { authorizeVisionPlan, createVisionAnalysisStore, VisionAnalysisError, visionFailure, type VisionExecutionHooks } from "./store";
 import { observeVisionAttempt } from "./attemptObservation";
 
@@ -95,7 +94,6 @@ export function visionProviderRequest(plan: Pick<AvailableVisionAnalysisPlan, "s
   const maxOutputTokens = options.maxOutputTokens ?? LIMITS.maxOutputTokens;
   return { attachmentIds: attachments.map(image => image.id), attachments, chatId,
     content: { blocks: [{ type: "text", text: question }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: model.capabilities, modelId: model.upstreamModelId,
     params: { ...model.defaultParams, background: false, store: false, stream: false,
       maxOutputTokens, maxTokens: maxOutputTokens, max_output_tokens: maxOutputTokens },
@@ -157,7 +155,6 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
   conversationImages?: ConversationImageSource;
   authorize?: (plan: AvailableVisionAnalysisPlan) => Promise<boolean>;
   resolve?: () => Promise<AcceptedVisionAnalysisPlan>;
-  knowledgeObservationStore?: KnowledgeImageObservationStore;
 } = {}) {
   const store = options.store ?? createVisionAnalysisStore(prisma);
   // The attempt owns its one dispatch: no transport replay, and only a
@@ -169,9 +166,6 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
     await (options.authorize ? options.authorize(plan) : authorizeVisionPlan(prisma, plan)).catch(() => false);
   return {
     resolve: options.resolve ?? createVisionAnalysisPlanResolver(prisma), authorize,
-    /** The one description a Knowledge run reads of its current message's images. */
-    observeKnowledgeImages: createKnowledgeImageObservation(prisma, { store: options.knowledgeObservationStore, execute: provider,
-      conversationImages: options.conversationImages, boundedRequest: boundedVisionRequest, providerRequest: visionProviderRequest }),
     async restore(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult | null> {
       if (call.name !== ANALYZE_IMAGE_TOOL_NAME || !context.request.visionAnalysis || !context.runId || !context.userId || !context.persistedToolCallId)
         throw new VisionAnalysisError("vision_analysis_access_denied");

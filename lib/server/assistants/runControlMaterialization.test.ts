@@ -28,7 +28,6 @@ function openRouterWire(params: Record<string, unknown>) {
     attachments: [],
     chatId: "chat-1",
     content: { blocks: [{ text: "Hello", type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
     modelId: "vendor/model",
     params,

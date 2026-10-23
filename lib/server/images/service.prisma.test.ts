@@ -80,7 +80,7 @@ async function fixture(runTest: (fixture: {
     await db.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: assistant.id } });
     const request: ProviderRunRequest = { attachmentIds: [], attachments: [], chatId: chat.id, content: { blocks: [] }, imagePlan: plan, imageReferences: [],
       modelId: "chat", provider: "fake", modelCapabilities: { vision: false, pdf: false, nativePdfInput: false, nativeSearch: false, reasoning: false },
-      knowledgePlan: { mode: "none", baseIds: [], sourceIds: [], version: 1 }, searchPlan: { options: [], mode: "all_selected" }, params: {}, prompt: { system: null, developer: null }, toolMode: "auto" };
+      searchPlan: { options: [], mode: "all_selected" }, params: {}, prompt: { system: null, developer: null }, toolMode: "auto" };
     const run = await db.modelRun.create({ data: { chatId: chat.id, userId: user.id, userMessageId: message.id, assistantMessageId: assistant.id,
       modelId: "chat", provider: "fake", status: "streaming", normalizedRequest: json(request) } });
     await db.providerRunBinding.create({ data: { modelRunId: run.id, bindingKey: "image", role: "image", connectionId: connection.id, providerModelId: model.id,

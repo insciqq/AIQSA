@@ -197,7 +197,7 @@ export async function createForegroundRun(repository: RunRepository, userId: str
       searchPlan: { mode: "all_selected", optionIds: [] }, userId },
     expectedActiveLeafId: null, modelId: "fake-qsa",
     normalizedRequest: { attachmentIds: [], chatId: chat.id, content,
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }, toolMode: "auto",
+      toolMode: "auto",
       modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
       modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
       searchPlan: { mode: "all_selected", options: [] } },

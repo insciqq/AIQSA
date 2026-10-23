@@ -17,7 +17,6 @@ const runRequest: ProviderRunRequest = {
   chatId: "chat",
   content: { blocks: [{ text: "Hi", type: "text" }] },
   history: [{ currentInput: true, text: "Hi", type: "user" }],
-  knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
   modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, reasoningEfforts: ["low", "high"],
     streaming: true, toolCalling: true, vision: true },
   modelId: "gpt-6.1-sol",

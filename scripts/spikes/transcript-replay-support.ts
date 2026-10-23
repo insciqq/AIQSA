@@ -464,7 +464,6 @@ function spikeRequest(runtime: TargetRuntime, history: readonly ProviderHistoryI
     // The conversation is `history`; `content` is unused on that path.
     content: { blocks: [] },
     history,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: runtime.config.provider === "gemini"
       ? { ...BASE_CAPABILITIES, reasoningEfforts: ["minimal", "low", "medium", "high"] }
       : BASE_CAPABILITIES,

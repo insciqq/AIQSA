@@ -13,7 +13,6 @@ import { IMAGE_EDITING_GUIDANCE } from "../tools/imageGeneration";
 import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { createInstructionPreviewHandlers } from "../instructions/previewHandlers";
@@ -42,9 +41,6 @@ import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalys
 import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
 import { admittedRunGuidance, splitTurnGuidance } from "../engine/systemPrompt";
 import { logEvent } from "../observability";
-import { estimateApproxTokens } from "../../domain/contextBudget";
-import { openAIResponsesToolBridge } from "../tools/bridges";
-import { followupTokenCost } from "./runFollowups";
 import { fetchUrlDigest } from "../webFetch/urls";
 
 // Passthrough spy: content-free degradation events are asserted directly.
@@ -4737,12 +4733,13 @@ describe("a request that still names Knowledge", () => {
     const none = { baseIds: [], mode: "none", sourceIds: [], version: 1 };
     for (const input of [sendInput(successBody({ knowledgePlan: none })), regenerateInput(successBody({ knowledgePlan: none }))]) {
       const prepared = preparedFrom(await prepareRun(createHarness().deps, input));
-      expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
-      expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
+      expect(prepared.normalizedRequest).not.toHaveProperty("knowledgePlan");
+      expect(prepared).not.toHaveProperty("knowledgeAdmissionPlan");
     }
     for (const knowledgePlan of [
       { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 },
       { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 },
+      { baseIds: [], mode: "none", sourceIds: [], version: 1, extra: true },
       "none",
       null
     ]) {

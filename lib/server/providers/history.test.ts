@@ -42,7 +42,6 @@ function request(history: readonly ProviderHistoryItem[], overrides: Partial<Pro
     chatId: "chat-history",
     content: { blocks: [{ text: "ignored", type: "text" }] },
     history,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, streaming: true, toolCalling: true, vision: true },
     modelId: "gpt-6-astra",
     params: { background: false, maxOutputTokens: 128, reasoning: { effort: "low" }, store: false, stream: true },

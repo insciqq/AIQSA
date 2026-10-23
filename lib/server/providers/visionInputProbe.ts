@@ -51,7 +51,6 @@ function request(snapshot: ProviderExecutionSnapshot, image: Buffer, requestedTo
     chatId: "provider-vision-input-probe",
     content: { blocks: [{ text: VISION_INPUT_PROBE_PROMPT, type: "text" }] },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { ...snapshot.model.capabilities, vision: true },
     modelId: snapshot.model.upstreamModelId,
     params: {

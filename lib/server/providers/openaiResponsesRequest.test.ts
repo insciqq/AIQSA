@@ -22,7 +22,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Find one concise fact.", type: "text" }]
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

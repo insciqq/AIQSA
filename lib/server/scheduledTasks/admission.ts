@@ -1,5 +1,4 @@
 import type { PrismaClient } from "@prisma/client";
-import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import type { SearchPlan } from "../../contracts/search";
 import { reconcileModelSearchPlan } from "../../domain/catalogMatrix";
 import type { AuthenticatedUser, RequestAuthResolver } from "../auth/requestAuth";
@@ -69,7 +68,6 @@ export function scheduledTaskSendBody(input: Readonly<{
     admissionId: input.admissionId,
     content: { blocks: [{ text: input.prompt.trim(), type: "text" }] },
     expectedActiveLeafId: input.target.kind === "existing" ? input.target.activeLeafMessageId : null,
-    knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
     mcp: { mode: tools },
     modelId: input.modelId,
     ...(input.target.kind === "new" ? { personalDraft: { folderId: null, memoryMode: "EXCLUDED" } } : {}),

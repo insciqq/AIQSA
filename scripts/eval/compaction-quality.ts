@@ -276,7 +276,6 @@ function request(run: Run, history: readonly ProviderHistoryItem[], input: Reado
     chatId: `eval-${run.scenario.id}`,
     content: { blocks: [] },
     history,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: run.options.provider === "gemini"
       ? { ...CAPABILITIES, reasoningEfforts: ["minimal", "low", "medium", "high"] } : CAPABILITIES,
     modelId: run.target.model,

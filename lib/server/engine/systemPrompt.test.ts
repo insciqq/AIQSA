@@ -18,7 +18,6 @@ const mcpIndex = "MCP servers you can search with find_tools:\n- Jira";
 function request(system: string | null, extra: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
     attachmentIds: [], attachments: [], chatId: "chat-1", content: { blocks: [] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
     modelId: "codex-lb:gpt-6-sol", params: {},
     prompt: { baseline: { source: "standard_chat", timeZone: zone, timeZoneSource: "client" }, developer: VISIBLE_ANSWER_CONTRACT,
