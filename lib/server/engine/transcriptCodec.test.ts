@@ -12,6 +12,10 @@ const items: TranscriptItem[] = [
   { id: "a2", kind: "assistant_text", text: "Imported answer" },
   { id: "r1", kind: "reasoning", native: { fields: { encrypted_content: "ENC", id: "rs_1", type: "reasoning" }, format: "openai_responses" },
     origin, outputTokens: 40 },
+  // An Anthropic thinking block, whole, with what it was produced after.
+  { id: "r2", kind: "reasoning", native: { fields: { binding: { prefix: "DIGEST", previous: null },
+    block: { signature: "SIG", thinking: "", type: "thinking" } }, format: "anthropic_messages" }, origin: { model: "claude-haiku-5-5",
+    provider: "connection-2" } },
   { arguments: "{\"order_id\":\"A-17\"}", callId: "call_1", id: "c1", kind: "tool_call", name: "lookup_order",
     native: { fields: { id: "fc_1" }, format: "openai_responses" }, origin },
   { callId: "call_1", handle: "tor1_0123456789abcdef0123456789abcdef", id: "t1", kind: "tool_result", name: "lookup_order",

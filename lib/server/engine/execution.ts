@@ -136,6 +136,17 @@ export function nativeCompactionRoute(snapshot: Readonly<{ connection?: Paramete
   return kind === "openai_responses_native" || kind === "openai_responses_compatible" && codexLbConnection(snapshot.connection);
 }
 
+/**
+ * Anthropic thinking replays within the current turn only (`TranscriptTarget.reasoningScope`): earlier turns' blocks
+ * were produced under an earlier run's system prompt, which carries its date and time, so the renderer would drop
+ * them anyway (`anthropicMessagesHistory.ts`), and on the models that keep them each would be billed as input on every
+ * request.
+ */
+function reasoningReplayScope(snapshot: Readonly<{ model: Readonly<{ adapterKind: string }> }>):
+  TranscriptTarget["reasoningScope"] {
+  return snapshot.model.adapterKind === "anthropic_messages" ? "current_turn" : undefined;
+}
+
 /** A response's items for adapters that report none. */
 function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
   return [
@@ -430,8 +441,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           if (batch.approvals.length > 0) await emitApprovalCards();
         }
 
+        const reasoningScope = reasoningReplayScope(snapshot);
         const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId,
-          ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}) };
+          ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}), ...(reasoningScope ? { reasoningScope } : {}) };
         const params = nativeRequestParams(snapshot.model.adapterKind, base.params);
         const timeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
           snapshot.model.adapterKind === "fake" ? null : snapshot.model);

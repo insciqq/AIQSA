@@ -36,7 +36,7 @@ export class TranscriptItemInvalidError extends Error {
 }
 
 const KINDS: readonly TranscriptItemKind[] = ["user", "assistant_text", "reasoning", "tool_call", "tool_result", "compaction"];
-const FORMATS: readonly ProviderHistoryFormat[] = ["chat_completions", "gemini_interactions", "openai_responses"];
+const FORMATS: readonly ProviderHistoryFormat[] = ["anthropic_messages", "chat_completions", "gemini_interactions", "openai_responses"];
 const OUTCOMES = ["complete", "error", "unknown"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

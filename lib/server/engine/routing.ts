@@ -53,6 +53,7 @@ export function logNativeEngineAllowlist(env: Readonly<Record<string, string | u
 
 /** Answer adapters that render the neutral history (`lib/server/providers/history.ts`). */
 export const NATIVE_ENGINE_ADAPTER_KINDS: ReadonlySet<string> = new Set([
+  "anthropic_messages",
   "deepseek_responses_native",
   "fake",
   "gemini_interactions_native",
