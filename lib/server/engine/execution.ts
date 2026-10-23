@@ -32,6 +32,7 @@ import { createAnswerStream } from "./answerStream";
 import { engineItemRules } from "./compaction";
 import { compactionModelCall } from "./compactionCalls";
 import { buildRunConversation } from "./conversation";
+import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { runAgentLoop, type LoopToolChoice } from "./loop";
@@ -368,6 +369,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           append,
           compactionCall: (latest) => compactionModelCall({ adapter: input.adapter, deadlineAt: startedAt + turnMs, now,
             onUsage: recordModelUsage, timeoutMs }, latest),
+          // One still running after the answer finishes detached; the run records its item and usage then.
+          detached: { chatId: scope.chatId, live: () => engine.transcripts.runLive(scope),
+            onStatus: async (status) => { await engine.runs.appendCompactionStatus(scope, status); }, registry: detachedCompactions,
+            settleUsage: async () => { await usage.settle(); }, userId: input.userId },
+          insert: (added) => { items.push(...added); },
           items,
           now,
           onStatus: (status) => sink.publish({ data: { artifactType: "context_compaction", payload: status }, type: "artifact" }),
@@ -492,8 +498,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         answerPublished = true;
         sink.send({ data: { assistantMessageId: scope.assistantMessageId, runId }, type: "answer_complete" });
-        // A compaction still running is awaited (bounded) so the next turn starts compacted; an approval stop does not wait.
-        await context.afterAnswer({ wait: outcome.kind !== "approval" });
+        // Answer first: a finished compaction is kept now, a running one goes on detached and never holds the run.
+        await context.afterAnswer();
         // The transcript is on record (or given up) before the run completes and the next turn can read it.
         await writer.flush();
         if (input.chatTitleGenerator && answer.text) {

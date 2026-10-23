@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -75,7 +76,8 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
     loadRuns: vi.fn(async () => new Map([["run-0", [...earlier]]])),
     nativeRunsForAnswers: vi.fn(async () => new Map([["answer-0", "run-0"]])),
-    nextSequence: vi.fn(async () => transcriptRows.length)
+    nextSequence: vi.fn(async () => transcriptRows.length),
+    runLive: vi.fn(async () => true)
   } satisfies TranscriptRepository;
   const toolCalls = {
     begin: vi.fn(async (input): Promise<ToolCallBeginResult> => {
@@ -90,6 +92,7 @@ function memoryEngine(earlier: readonly TranscriptItem[]) {
   } satisfies ToolCallStore;
   let published: string | null = null;
   const runs = {
+    appendCompactionStatus: vi.fn(async () => true),
     applyUsageTotals: vi.fn(async () => undefined),
     complete: vi.fn(async () => true),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { published = input.text; return true; }),
@@ -120,10 +123,11 @@ function repository() {
   };
 }
 
-function prepared(contextWindow: number): MaterializedPreparedRunData {
+/** Each test its own chat: compactions that outlive their run are listed per chat, process-wide. */
+function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`): MaterializedPreparedRunData {
   const text = (value: string) => ({ blocks: [{ text: value, type: "text" }] });
   const request = {
-    attachmentIds: [], attachments: [], chatId: "chat", content: text("Next step, please."),
+    attachmentIds: [], attachments: [], chatId, content: text("Next step, please."),
     context: { messages: [
       { content: text("Run the reconciliation round by round."), id: "user-0", role: "user" as const },
       { content: { blocks: [] }, id: "answer-0", role: "assistant" as const },
@@ -168,8 +172,8 @@ const firstText = (request: ProviderRunRequest) => {
 };
 
 describe("native run compaction", () => {
-  it("answers without waiting when the turn crosses the background threshold, then keeps the compaction for the next turn", async () => {
-    const scripted = scriptedAdapter([{ text: "Done with the next step." }], 30);
+  it("completes the turn that crosses the background threshold without waiting; its run records the compaction when it finishes", async () => {
+    const scripted = scriptedAdapter([{ text: "Done with the next step." }], 300);
     const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
     const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
       prepared: prepared(windowFor(0.78)), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
@@ -178,14 +182,19 @@ describe("native run compaction", () => {
     expect(scripted.answers).toHaveLength(1);
     expect(firstText(scripted.answers[0]!)).not.toContain(COMPACTION_SUMMARY_HEADING);
     expect(scripted.summaries.length).toBeGreaterThanOrEqual(1);
-    // The answer came first; the marker follows it and was never shown as running.
-    const types = result.map((event) => event.type === "artifact" ? `artifact:${event.data.artifactType}` : event.type);
-    expect(types.indexOf("answer_complete")).toBeLessThan(types.indexOf("artifact:context_compaction"));
-    expect(compactionStatuses(result)).toEqual([expect.objectContaining({ outcome: "summary_applied", state: "complete" })]);
+    // The run completed while the compaction was still running: nothing of it in the stream or the transcript yet.
     expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
-    // The compaction item is on record after the answer's items, so the next turn starts from it.
-    expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text", "compaction"]);
+    expect(memory.runs.complete).toHaveBeenCalledTimes(1);
+    expect(compactionStatuses(result)).toEqual([]);
+    expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text"]);
+    const usageWrites = memory.runs.writeUsageRows.mock.calls.length;
+    // Detached, it finishes later: its run records the item after the answer's, the marker and the late usage.
+    await vi.waitFor(() => expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text", "compaction"]),
+      { timeout: 5_000 });
     expect(memory.transcriptRows[1]).toMatchObject({ summary: SUMMARY });
+    await vi.waitFor(() => expect(memory.runs.appendCompactionStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }),
+      expect.objectContaining({ outcome: "summary_applied", state: "complete" })));
+    await vi.waitFor(() => expect(memory.runs.writeUsageRows.mock.calls.length).toBeGreaterThan(usageWrites));
   });
 
   it("swaps a background compaction in at the next request boundary of the same turn", async () => {
