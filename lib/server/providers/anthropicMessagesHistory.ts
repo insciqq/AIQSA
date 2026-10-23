@@ -34,10 +34,11 @@ import type { ProviderHistoryItem, ProviderHistoryRenderOptions, ProviderNativeD
  * with its thinking, so there blocks replay as stored.
  *
  * Prompt caching (`anthropicPromptCache`): a request that declares tools is a
- * round of a tool loop, so it marks its stable prefix and the ends of its two
- * latest user turns, and each round reads the rounds before it from the cache
- * instead of paying for them again. Cache markers are no part of the prefix a
- * thinking block is bound to, so the digest leaves them out.
+ * round of a tool loop, so it marks its stable prefix, where the previous and
+ * the current turn begin, and the ends of its latest user turns: each round
+ * reads the rounds before it, and each run the turns before the previous one,
+ * from the cache instead of paying for them again. Cache markers are no part
+ * of the prefix a thinking block is bound to, so the digest leaves them out.
  */
 
 export type AnthropicHistoryMessage = { content: Record<string, unknown>[]; role: "assistant" | "user" };
@@ -289,13 +290,26 @@ function markedAtEnd(message: AnthropicHistoryMessage): AnthropicHistoryMessage 
 
 /**
  * Prompt cache breakpoints for one round of a tool loop, at most four, the
- * API's limit: the last tool (a chat's tools stay the same across its turns),
- * the system prompt (the same for every request of a run), the end of the
- * user turn before the latest assistant turn (where the previous request put
- * its last breakpoint, so its cache is read even when one assistant turn adds
- * more blocks than the API looks back over) and the end of the latest
- * message (written for the next round). A request without tools does not
- * cache: it is a single call (a compaction summary) whose write is never read.
+ * API's limit. Each marks an exact position an earlier request marked or a
+ * later one will, so no read depends on the API's 20-block lookback, which a
+ * long tool loop outruns.
+ *
+ * - The system prompt, with the tools before it: the same across a chat's
+ *   turns and the user's chats (without a system prompt, the last tool).
+ * - A user turn starts with a message that does not open with tool results;
+ *   the latest one holds the run's context and input. Those are never sent
+ *   again (a later run sends the input without its context or attachments),
+ *   so the longest prefix the next run repeats ends just before them: marked
+ *   in every round, so the next run finds it.
+ * - The first round reads the end of what came before the previous turn,
+ *   which the previous run marked so, and writes the end of the latest
+ *   message for the next round.
+ * - A later round reads the end of the user turn before the latest assistant
+ *   turn, where the previous round put its last breakpoint, and writes the
+ *   end of the latest message.
+ *
+ * A request without tools does not cache: it is a single call (a compaction
+ * summary) whose write is never read.
  */
 export function anthropicPromptCache(input: Readonly<{
   messages: readonly AnthropicHistoryMessage[];
@@ -305,14 +319,18 @@ export function anthropicPromptCache(input: Readonly<{
   if (input.tools.length === 0) return { messages: [...input.messages], system: input.system && [...input.system], tools: [] };
   const messages = [...input.messages];
   const latest = messages.length - 1;
-  let assistant = latest - 1;
-  while (assistant >= 0 && messages[assistant]!.role !== "assistant") assistant -= 1;
-  for (const index of [latest, assistant - 1]) {
+  const turns = messages.flatMap((message, index) => message.role === "user" && message.content[0]?.type !== "tool_result" ? [index] : []);
+  const current = turns.at(-1) ?? 0;
+  let assistant = latest;
+  while (assistant > current && messages[assistant]!.role !== "assistant") assistant -= 1;
+  const marks = assistant > current ? [current - 1, assistant - 1, latest] : [(turns.at(-2) ?? 0) - 1, current - 1, latest];
+  for (const index of new Set(marks)) {
     if (index >= 0 && index <= latest) messages[index] = markedAtEnd(messages[index]!);
   }
-  const system = input.system === undefined ? undefined
-    : input.system.map((block, index) => index === input.system!.length - 1 ? marked(block) : block);
-  return { messages, system, tools: input.tools.map((tool, index) => index === input.tools.length - 1 ? marked(tool) : tool) };
+  const system = input.system?.length ? input.system.map((block, index) => index === input.system!.length - 1 ? marked(block) : block)
+    : input.system && [...input.system];
+  const tools = system?.length ? [...input.tools] : input.tools.map((tool, index) => index === input.tools.length - 1 ? marked(tool) : tool);
+  return { messages, system, tools };
 }
 
 /**
