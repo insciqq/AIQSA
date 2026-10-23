@@ -86,6 +86,6 @@ describe("detached compactions", () => {
   it("are one registry for the whole process, whichever route bundle loads it", async () => {
     const again = await import("./detachedCompactions");
     expect(again.detachedCompactions).toBe(detachedCompactions);
-    expect((globalThis as { __aiqsaDetachedCompactions?: unknown }).__aiqsaDetachedCompactions).toBe(detachedCompactions);
+    expect((globalThis as unknown as { __aiqsaDetachedCompactions?: unknown }).__aiqsaDetachedCompactions).toBe(detachedCompactions);
   });
 });
