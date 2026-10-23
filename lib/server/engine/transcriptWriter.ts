@@ -14,6 +14,8 @@ export const TRANSCRIPT_WRITE_RETRY = Object.freeze({ attempts: 3, baseDelayMs: 
 export type TranscriptWriter = Readonly<{
   /** Queues the items' record; it resolves once written and rejects when its last attempt failed. */
   record(items: readonly TranscriptItem[]): Promise<void>;
+  /** Takes the next `count` sequences for items written elsewhere (a compaction recorded after its run), so no record takes them. */
+  reserve(count: number): number;
   /** Waits for every queued record; never rejects. */
   flush(): Promise<void>;
 }>;
@@ -58,6 +60,11 @@ export function createTranscriptWriter(input: Readonly<{
       const written = queue.then(() => write(from, items));
       queue = written.catch(() => undefined);
       return written;
+    },
+    reserve(count) {
+      const from = sequence;
+      sequence += count;
+      return from;
     },
     async flush() {
       await queue;
