@@ -27,6 +27,8 @@ import { createPrismaTemporaryChatDeletionHandler } from
   "../lib/server/memory/temporaryDeletion";
 import { resetMemoryLexicalProjection } from
   "../lib/server/memory/searchProjection/repository";
+import { createMemorySavedSecretScrubDeletionHandler } from
+  "../lib/server/memory/savedSecretScrub";
 import { prisma } from "../lib/server/prisma";
 import { reconcileWorkspaceAfterRestore } from
   "../lib/server/workspace/cleanup";
@@ -122,7 +124,8 @@ async function main(): Promise<void> {
   registry.registerDeletion(memoryHistoryClearDeletionHandler);
   registry.registerDeletion(createSourcePurgeDeletionHandler({
     history: memoryHistorySourceDeletionHandler,
-    permanentChat
+    permanentChat,
+    savedSecretScrub: createMemorySavedSecretScrubDeletionHandler(prisma)
   }));
   registry.registerDeletion(createPrismaAccountMemoryDeletionHandler(prisma));
 

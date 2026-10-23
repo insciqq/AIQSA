@@ -7,6 +7,7 @@ import {
   type WorkspaceBrowserAutosaveReport, type WorkspaceSecretMutation, type WorkspaceSecretSummary, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { decryptSecretEnvelope, encryptSecretEnvelope, getSecretEncryptionKey } from "../../secrets/envelope";
+import { requestMemorySavedSecretScrub } from "../../memory/savedSecretScrubRequest";
 import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue, WorkspaceSecretError } from "./validation";
 import { validateWorkspaceSshKey } from "./sshKey";
 import { workspaceBrowserSessionChecksum } from "./browserSession";
@@ -168,6 +169,10 @@ export async function mutateWorkspaceSecretInTransaction(tx: Prisma.TransactionC
     const id = current?.id ?? randomUUID();
     const versionId = await createWorkspaceSecretRevision(tx, { userId, secretId: id, value, key: encryptionKey(),
       name: mutation.name.trim(), description: mutation.description, autoSaved: !replacement && current?.value.autoSaved });
+    // A newly saved value leaves what Memory already holds (`memory/savedSecretScrub.ts`).
+    if (replacement && value.kind !== "browser_session") {
+      await requestMemorySavedSecretScrub(tx, { name: mutation.name.trim(), revisionId: versionId, userId, value });
+    }
     const browser = { browserFileName: value.kind === "browser_session" ? value.originalName : null, browserWriterSequence: browserSequence };
     if (current) await tx.workspaceSecret.update({ data: { valueId: versionId, ...browser }, where: { id } });
     else await tx.workspaceSecret.create({ data: { id, userId, valueId: versionId, ...browser } });
