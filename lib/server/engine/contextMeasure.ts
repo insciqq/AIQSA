@@ -1,6 +1,8 @@
+import type { TokenEstimateProfile } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import {
-  COMPACTION_SUMMARY_HEADING,
+  compactionSummaryText,
+  replaysNativeCompaction,
   sameTranscriptOrigin,
   selectTranscript,
   type SelectedTranscriptItem,
@@ -43,6 +45,45 @@ export const CONTEXT_ITEM_FRAMING_TOKENS = Object.freeze({
   user: 4
 });
 
+/** How one provider family weighs replayed items beyond their text. */
+export type ContextMeasureCalibration = Readonly<{
+  /** Role and delimiter tokens around each replayed item. */
+  framing: Readonly<Record<keyof typeof CONTEXT_ITEM_FRAMING_TOKENS, number>>;
+  /** A call replayed to the route and model that produced it weighs its share
+   * of that response's reported output tokens, or its local estimate where
+   * the provider counts a replayed call well below its output. */
+  replayedCalls: "estimate" | "reported_output";
+}>;
+
+/**
+ * Responses providers and DeepSeek: the anchored estimate was within ~2 % of
+ * reported input on spike 1 (2026-10-23), so their weights stay as measured.
+ * Gemini (native Interactions and OpenRouter `google/*`): spike 1 measured a
+ * replayed call with its result at 28–29 input tokens natively and 46–48 via
+ * OpenRouter, where the default weights estimated 84 and 103, and replayed
+ * text at about its own tokens plus 1–2. Gemini therefore takes 3 framing
+ * tokens per item and weighs a replayed call by its text, not by the ~21
+ * output tokens it cost. Content keeps the family multipliers, calibrated as
+ * an upper bound of Gemini's own counter (`tokenEstimate.ts`): tool-result
+ * JSON, which Gemini counted at about half its text tokens, is not discounted
+ * without evidence from large results. On spike 1's calls the anchored error
+ * falls from 19 % mean (36 % max) to 15 % (28 %) natively and from 22 % (37 %)
+ * to 9 % (16 %) on OpenRouter, never below the reported count
+ * (`contextMeasure.test.ts`).
+ */
+export const CONTEXT_MEASURE_CALIBRATION = Object.freeze({
+  default: Object.freeze({ framing: CONTEXT_ITEM_FRAMING_TOKENS, replayedCalls: "reported_output" as const }),
+  gemini: Object.freeze({
+    framing: Object.freeze({ assistant_text: 3, compaction: 3, tool_call: 3, tool_result: 3, user: 3 }),
+    replayedCalls: "estimate" as const
+  })
+}) satisfies Readonly<Record<string, ContextMeasureCalibration>>;
+
+/** The calibration for a token estimate profile (`tokenEstimateProfileFor`). */
+export function contextMeasureCalibration(profile: TokenEstimateProfile | null | undefined): ContextMeasureCalibration {
+  return profile?.family === "gemini" ? CONTEXT_MEASURE_CALIBRATION.gemini : CONTEXT_MEASURE_CALIBRATION.default;
+}
+
 export type ContextMeasure = Readonly<{
   addedItems: number;
   addedTokens: number;
@@ -70,26 +111,29 @@ export function contextItemTokens(
   item: TranscriptItem,
   target: TranscriptTarget,
   estimate: (value: unknown) => number,
-  reasoning: ReasoningWeight
+  reasoning: ReasoningWeight,
+  calibration: ContextMeasureCalibration = CONTEXT_MEASURE_CALIBRATION.default
 ): number {
+  const framing = calibration.framing;
   switch (item.kind) {
     case "user":
-      return estimate(item.text) + CONTEXT_ITEM_FRAMING_TOKENS.user;
+      return estimate(item.text) + framing.user;
     case "assistant_text":
       return (sameTranscriptOrigin(item.origin, target) && item.outputTokens !== undefined
-        ? item.outputTokens : estimate(item.text)) + CONTEXT_ITEM_FRAMING_TOKENS.assistant_text;
+        ? item.outputTokens : estimate(item.text)) + framing.assistant_text;
     case "reasoning":
       return reasoning === "reported" ? item.outputTokens ?? 0 : 0;
     case "tool_call":
-      return (sameTranscriptOrigin(item.origin, target) && item.outputTokens !== undefined
-        ? item.outputTokens : estimate(item.name) + estimate(item.arguments)) + CONTEXT_ITEM_FRAMING_TOKENS.tool_call;
+      return (calibration.replayedCalls === "reported_output" && sameTranscriptOrigin(item.origin, target) &&
+        item.outputTokens !== undefined ? item.outputTokens : estimate(item.name) + estimate(item.arguments)) + framing.tool_call;
     case "tool_result":
-      return estimate(item.name) + estimate(item.output) + CONTEXT_ITEM_FRAMING_TOKENS.tool_result;
+      return estimate(item.name) + estimate(item.output) + framing.tool_result;
     case "compaction":
-      // A native compaction item is opaque: only the provider's next report counts it.
-      return item.native && target.nativeCompaction === true && sameTranscriptOrigin(item.origin, target)
-        ? 0
-        : estimate(`${COMPACTION_SUMMARY_HEADING}\n\n${item.summary ?? ""}`) + CONTEXT_ITEM_FRAMING_TOKENS.compaction;
+      // A native compaction item is opaque: it weighs the output tokens its
+      // call reported, if any, until the provider's next report counts it.
+      return replaysNativeCompaction(item, target)
+        ? (item.outputTokens ?? 0) + (item.retained ? estimate(item.retained) + framing.user : 0)
+        : estimate(compactionSummaryText(item)) + framing.compaction;
   }
 }
 
@@ -101,6 +145,8 @@ function usableAnchor(anchor: ContextAnchor | null | undefined, target: Transcri
 
 export function measureContext(input: Readonly<{
   anchor?: ContextAnchor | null;
+  /** Item weights of the target's provider family (`contextMeasureCalibration`). */
+  calibration?: ContextMeasureCalibration;
   /** Local token estimate for the target's tokenizer family. */
   estimate: (value: unknown) => number;
   /** Instructions and tool declarations; counted only without a usable anchor. */
@@ -111,7 +157,7 @@ export function measureContext(input: Readonly<{
 }>): ContextMeasure {
   const reasoning = input.reasoning ?? "opaque";
   const weigh = (entries: readonly SelectedTranscriptItem[]) => entries.reduce((total, entry) =>
-    total + contextItemTokens(entry.item, input.target, input.estimate, reasoning), 0);
+    total + contextItemTokens(entry.item, input.target, input.estimate, reasoning, input.calibration), 0);
   const current = selectTranscript(input.items, input.target);
   const anchor = usableAnchor(input.anchor, input.target, input.items.length);
   if (anchor) {
