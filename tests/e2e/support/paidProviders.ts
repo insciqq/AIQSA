@@ -3,7 +3,9 @@ import type { ModelRun, PrismaClient } from "@prisma/client";
 import { expect, type APIRequestContext } from "@playwright/test";
 import { adminSearchExecutionDefaults, type AdminSearchCatalog, type AdminSearchIntegration } from "../../../lib/contracts/adminSearch";
 import { decodeCatalogResponse, type CatalogModel } from "../../../lib/contracts/catalog";
-import { codexLbSetupBody, journeyRunParams, modelInConnection, readConnections } from "../../../scripts/context-compaction-journey-support";
+import {
+  JOURNEY_LIMITS, codexLbSetupBody, discoveredContextWindow, journeyRunParams, modelInConnection, readConnections
+} from "../../../scripts/context-compaction-journey-support";
 
 /**
  * Real-provider setup and bounded turns for the opt-in paid usage specs on a
@@ -71,7 +73,10 @@ export async function waitForCatalogModel(
  * prices apply). `nativeSearch` also creates the connection's hosted web
  * search source; `vision` declares image input. `preferredModel`, else
  * AIQSA_BUDGETS_CODEX_MODEL, picks the model (default gpt-5.6-luna, else
- * gpt-5.5 when the endpoint does not list it).
+ * gpt-5.5 when the endpoint does not list it). The model gets the window its
+ * discovery listing publishes, else 400k (`JOURNEY_LIMITS.defaultContextWindow`):
+ * paid checks run at real windows (operator decision 2026-10-23). An explicit
+ * `contextWindow` wins.
  */
 export async function setupCodexLbAnswerModel(
   request: APIRequestContext,
@@ -89,7 +94,8 @@ export async function setupCodexLbAnswerModel(
   const catalogProof = typeof discovery?.catalogProof === "string" && listed.has(upstream) ? discovery.catalogProof : undefined;
   const tag = randomUUID().slice(0, 8);
   const displayName = `${options.label} model ${tag}`;
-  const body = codexLbSetupBody({ apiRoot, ...(catalogProof ? { catalogProof } : {}), contextWindow: options.contextWindow ?? 65_536,
+  const contextWindow = options.contextWindow ?? discoveredContextWindow(discovery, upstream) ?? JOURNEY_LIMITS.defaultContextWindow;
+  const body = codexLbSetupBody({ apiRoot, ...(catalogProof ? { catalogProof } : {}), contextWindow,
     model: upstream, secret, connectionDisplayName: `${options.label} ${tag}` });
   const setup = await request.post("/api/admin/providers/custom-setup", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
     ...body,
