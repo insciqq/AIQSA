@@ -219,6 +219,32 @@ describe("a native run's context", () => {
     expect(run.calls).toHaveLength(calls);
   });
 
+  it("keeps a smaller window a rejection states for the rest of the run, and sends each rejected request once more at most", async () => {
+    const chat = transcriptBuilder();
+    chat.user("Read the export.");
+    const callId = chat.call("lookup", { file: "export.csv" });
+    chat.items.push({ callId, handle: handleFor("export"), id: chat.nextId(), kind: "tool_result", name: "lookup", outcome: "complete",
+      output: `row ${"e".repeat(12_000)}` });
+    chat.answer("The export has 40 rows.");
+    const tokens = measured(chat.items);
+    // Compaction fails here, so only the lossless fallback can make room.
+    const run = harness(chat.items, { call: async () => ({ text: "not a summary" }), window: windowAt(chat.items, 0.5) });
+    const elided = (sent: ProviderRunRequest) => sent.history?.some((item) => item.type === "tool_result" &&
+      item.output.includes(`read_tool_result {"handle":"${handleFor("export")}"}`)) ?? false;
+    const first = await run.context.prepare(request(chat.items));
+    expect(elided(first)).toBe(false);
+    const rejection = Object.assign(new Error("too long"), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED,
+      reportedMaximumTokens: Math.floor(tokens * 0.9) + 1_000 });
+    const retry = await run.context.overflow(first, rejection);
+    expect(retry && elided(retry)).toBe(true);
+    expect(await run.context.overflow(retry!, rejection)).toBeNull();
+    // The next request fits the stated window by handle, without another rejection.
+    const next = await run.context.prepare(request(chat.items));
+    expect(elided(next)).toBe(true);
+    // A later request the provider rejects again is handled once in its own right.
+    expect(await run.context.overflow(next, rejection)).not.toBeNull();
+  });
+
   it("after the answer waits for a running compaction and keeps its item, so the next turn starts compacted", async () => {
     const chat = workChat(8, 2_000);
     const reply = deferred<CompactionModelResult>();

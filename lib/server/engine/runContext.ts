@@ -127,7 +127,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   const now = deps.now ?? Date.now;
   const target = deps.target;
   const window = deps.window && deps.window.contextWindow > 0 ? deps.window : null;
-  const usable = window ? usableContextTokens(window) : 0;
+  /** Tokens a request may carry; a size rejection that states a smaller window lowers it for the rest of the run. */
+  let usable = window ? usableContextTokens(window) : 0;
   let weights: Readonly<{ calibration: ContextMeasureCalibration; estimate: (value: unknown) => number }> | null = null;
   let anchor: ContextAnchor | null = null;
   let requestItems = deps.items.length;
@@ -136,7 +137,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   let background: Job | null = null;
   let backgroundFailed = false;
   let foregroundFailed = false;
-  let overflowRetried = false;
+  /** Requests already sent once more after a size rejection: none is sent a third time. */
+  const retried = new WeakSet<ProviderRunRequest>();
   let cycle = 0;
 
   /** The estimate and item weights of the run's tokenizer family (fixed for the run). */
@@ -161,8 +163,9 @@ export function createRunContext(deps: RunContextDeps): RunContext {
 
   function plan(request: ProviderRunRequest, tokens: number, overflow?: Readonly<{ reportedMaximumTokens?: number }>) {
     const { calibration, estimate } = measuring(request);
+    const reserved = window!.maxOutputTokens;
     return planCompaction({ background: state(), calibration, estimate, items: deps.items, ...(overflow ? { overflow } : {}),
-      rules: deps.rules, target, tokens, window: window! });
+      rules: deps.rules, target, tokens, window: { contextWindow: usable + reserved, maxOutputTokens: reserved } });
   }
 
   /** The marker is a display: it never fails the run. */
@@ -282,16 +285,18 @@ export function createRunContext(deps: RunContextDeps): RunContext {
 
   /** The request to send: re-projected after a compaction, fitted within `limit` by handle when it is still too large. */
   function finish(request: ProviderRunRequest, changed: boolean, limit: number): ProviderRunRequest {
-    let next = changed ? { ...request, history: projectTranscript(deps.items, target, deps.projection) } : request;
+    const whole = () => projectTranscript(deps.items, target, deps.projection);
+    let next = changed ? { ...request, history: whole() } : request;
     fitted = false;
     if (limit > 0) {
       const tokens = measure(next);
       if (tokens > limit) {
-        // Only a result saved with its handle may leave the request; a run-scoped one never does.
+        // Only a result saved with its handle may leave the request; a run-scoped one never does. The fit starts
+        // from the whole history the measure counts, even when this request was fitted before.
         const handles = new Map<string, string>();
         for (const item of deps.items) if (item.kind === "tool_result" && item.handle) handles.set(item.callId, item.handle);
         const fit = fitToolResults({ estimate: measuring(request).estimate, handleOf: (result) => handles.get(result.callId) ?? null,
-          history: next.history ?? [], limit, tokens });
+          history: whole(), limit, tokens });
         if (!fit.ok) throw deps.tooLarge();
         fitted = true;
         next = { ...next, history: fit.history };
@@ -337,34 +342,38 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     },
 
     async overflow(request, error) {
-      if (overflowRetried || !window || observedFailure(error).code !== PROVIDER_CONTEXT_LENGTH_EXCEEDED) return null;
-      overflowRetried = true;
+      if (retried.has(request) || !window || observedFailure(error).code !== PROVIDER_CONTEXT_LENGTH_EXCEEDED) return null;
       latest = request;
       // The provider's count beat the measure: nothing anchors on it any more.
       anchor = null;
       const facts = providerContextLengthFacts(error);
       const sent = measure(request);
-      // What fits, in the measure's own units: the window the provider stated (or the model's), scaled by how far
-      // its count of this request exceeded the measure, and in any case well below what was just rejected.
+      // A window the provider states smaller than the configured one holds for the rest of the run.
+      const maximum = facts?.reportedMaximumTokens;
+      if (maximum !== undefined) {
+        usable = Math.max(0, Math.min(usable, usableContextTokens({ contextWindow: maximum, maxOutputTokens: window.maxOutputTokens })));
+      }
+      // What fits, in the measure's own units: that window scaled by how far the provider's count of this
+      // request exceeded the measure, and in any case well below what was just rejected.
       const reported = facts?.reportedPromptTokens;
       const scale = reported !== undefined && reported > sent ? sent / reported : 1;
-      const maximum = facts?.reportedMaximumTokens;
-      const usableThere = maximum !== undefined
-        ? Math.min(usable, usableContextTokens({ contextWindow: maximum, maxOutputTokens: window.maxOutputTokens })) : usable;
-      const fits = Math.max(1, Math.floor(Math.min(usableThere * scale, sent * COMPACTION_LIFECYCLE.overflowFitShare)));
+      const fits = Math.max(1, Math.floor(Math.min(usable * scale, sent * COMPACTION_LIFECYCLE.overflowFitShare)));
       let changed = await takeBackground();
       if (!changed && background) changed = await awaitBackground(COMPACTION_LIFECYCLE.urgentWaitMs, "compaction_wait_timeout");
       if (!changed && !foregroundFailed) {
         const planned = plan(request, sent, { reportedMaximumTokens: fits + window.maxOutputTokens });
         if (planned.kind === "foreground") changed = await foreground(planned.cut, sent, "overflow");
       }
+      let next: ProviderRunRequest | null;
       try {
-        const next = finish(request, changed, fits);
-        return changed || fitted ? next : null;
+        const candidate = finish(request, changed, fits);
+        next = changed || fitted ? candidate : null;
       } catch {
         // A compacted request goes as it is and the provider decides; otherwise the rejection stands.
-        return changed ? finish(request, true, 0) : null;
+        next = changed ? finish(request, true, 0) : null;
       }
+      if (next) retried.add(next);
+      return next;
     },
 
     async afterAnswer(options = {}) {
