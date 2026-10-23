@@ -5,7 +5,8 @@ import {
   IMAGE_GENERATION_TAG,
   imageGenerationTag
 } from "@/components/admin/providers/providerListView";
-import { modelChipsFromEvidence, modelUsageMissing, type ModelChip } from "@/components/admin/providers/models/modelChips";
+import { CAPABILITY_LABELS, capabilityAttemptDescription } from "@/components/admin/providers/add/AdminProviderSetupResults";
+import { matchingEvidence, modelChipsFromEvidence, modelUsageMissing, type ModelChip } from "@/components/admin/providers/models/modelChips";
 import type {
   AdminProviderActiveCheck,
   AdminProviderConnection,
@@ -332,6 +333,11 @@ export type ModelCheckSummary = Readonly<{
   usageMissing: boolean;
 }>;
 
+/** How the summary sentence names a capability the check did not verify; others use their chip label. */
+const missingCapabilityNames: Partial<Record<ModelChip["key"], string>> = {
+  hostedSearch: "hosted Search", images: "image input", json: "JSON output", pdf: "PDF input", stream: "streaming", tools: "tools"
+};
+
 function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderModelClass): string {
   if (chips.some((entry) => entry.key === "unavailable")) {
     return "the provider reports this model as not available with this key.";
@@ -351,7 +357,7 @@ function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderMod
       ? "tools, JSON and the other checked capabilities work."
       : "everything checked works.";
   }
-  const labels = missing.map((entry) => entry.key === "pdf" ? "PDF input" : entry.key === "images" ? "image input" : entry.key === "stream" ? "streaming" : entry.key === "json" ? "JSON output" : "tools");
+  const labels = missing.map((entry) => missingCapabilityNames[entry.key] ?? entry.label);
   return `works without ${joinNames(labels)}${tools && json ? "; tools and JSON output are fine." : "."}`;
 }
 
@@ -375,6 +381,19 @@ export function modelCheckSummaries(
   }];
 }
 
+/** Probes of a saved check that ended without a settled result, each with why. */
+function unconfirmedCapabilities(check: AdminProviderActiveCheck,
+  configuration: Parameters<typeof matchingEvidence>[1]): string[] {
+  const setup = matchingEvidence(check, configuration)?.capabilitySetup;
+  if (!setup) return [];
+  return Object.entries(setup.checks).flatMap(([capability, result]) => {
+    if (result === undefined || result === "verified" || result === "unsupported") return [];
+    const key = capability as keyof typeof CAPABILITY_LABELS;
+    const reason = capabilityAttemptDescription(setup.attempts?.[key]).split(" · ")[0];
+    return [`${CAPABILITY_LABELS[key] ?? capability}${reason ? ` (${reason})` : ""}`];
+  });
+}
+
 /** Current diagnostics are independent of the frozen version/draft being edited. */
 export function modelEditorCheck(
   connection: AdminProviderConnection,
@@ -392,14 +411,21 @@ export function modelEditorCheck(
     ? `Checked ${formatCheckedAt(check.checkedAt, now)} with key ${credential.label} · ${check.status === "unavailable" ? "the model is unavailable." : "model access checked; capability checks are incomplete."}`
     : null);
   const retained = check !== null;
+  // A run counts a check whose result was saved but left a probe unconfirmed as failed;
+  // that result is an incomplete check naming the probe, not a check that could not finish.
+  const unconfirmed = model && check && !check.latestRefreshError && run && run.failed.includes(model.id) &&
+    Date.parse(check.checkedAt) >= Date.parse(run.startedAt) ? unconfirmedCapabilities(check, liveConfiguration(model)) : [];
   const status = !model ? "Model removed"
     : run?.state === "running" && run.inFlight.includes(model.id) ? "Checking"
+      : unconfirmed.length > 0 ? "Check incomplete"
       : check?.latestRefreshError || run?.failed.includes(model.id) ? "Check failed"
         : !check ? "Not checked"
           : check.status === "unavailable" ? "Model unavailable"
             : summaries[0]?.chips.length === (modelClassOf(model) === "answer" ? 5 : 1) ? "Check complete" : "Check incomplete";
   const message = !model ? "This model is no longer in the provider. Your unsaved changes are kept."
     : status === "Checking" ? `Checking with key ${credential?.label}…`
+      : unconfirmed.length > 0 ? `The last check with key ${credential?.label} could not confirm ${joinNames(unconfirmed)}. ` +
+        "Everything else it checked was saved."
       : status === "Check failed" ? `The last check with key ${credential?.label}${check?.refreshFailedAt ? ` ${formatCheckedAt(check.refreshFailedAt, now)}` : ""} could not finish. ${retained ? "Earlier results were kept." : "No earlier result is available."}`
         : check ? null
           : !credentialId ? "Choose a diagnostic key in the model list to see its checks."
