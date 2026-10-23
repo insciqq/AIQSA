@@ -72,12 +72,12 @@ describe("validated record observer", () => {
 
   it("delivers a bounded backlog of startup records to the first observer only", () => {
     const { observed, runtime, collect } = isolatedRuntime();
-    runtime.setProcessRole("memory_search");
+    runtime.setProcessRole("memory_coordinator");
     runtime.announceProcess();
     for (let index = 0; index < 40; index += 1) runtime.logEvent("run_execution", failure);
     runtime.setRecordObserver(collect);
     expect(observed).toHaveLength(32);
-    expect(observed[0]).toMatchObject({ event: "process.started", role: "memory_search", level: "info" });
+    expect(observed[0]).toMatchObject({ event: "process.started", role: "memory_coordinator", level: "info" });
     runtime.logEvent("run_execution", failure);
     expect(observed).toHaveLength(33);
 

@@ -6,7 +6,7 @@ import {
   type ToolObservationSource
 } from "../toolObservations/contract";
 import { readObservationOriginal } from "../toolObservations/searchOriginal";
-import type { ToolObservationService } from "../toolObservations/sourceAdapters";
+import type { ToolObservationService } from "../toolObservations/service";
 import type { ModelToolCall, RunTool, ToolExecutionContent, ToolExecutionResult } from "../tools/types";
 import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
 

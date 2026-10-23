@@ -28,7 +28,7 @@ const totals = [
   group({ group: { event: "http.request_failed", level: "error", role: "app" }, count: 1 }),
   group({ group: { event: "http.request_completed", level: "info", role: "app" }, count: 400 }),
   group({ group: { event: "process.started", level: "info", role: "app" }, count: 3 }),
-  group({ group: { event: "process.started", level: "info", role: "memory_search" }, count: 1 }),
+  group({ group: { event: "process.started", level: "info", role: "workspace_runner" }, count: 1 }),
   group({ group: { event: "process.failure", level: "fatal", role: "app" }, count: 1 }),
   group({ group: { event: "logging.dropped_records", level: "warn", role: "app" }, count: 2, valueSum: 57 }),
   group({ group: { event: "client.error", level: "warn", role: "app" }, count: 4 })
@@ -113,7 +113,7 @@ describe("admin health service", () => {
       from: "2026-10-06T13:00:00.000Z", to: "2026-10-07T13:00:00.000Z", generatedAt: NOW.toISOString() });
     expect(health.summary).toEqual({
       errors: 7, previousErrors: 2, providerOperations: 106, providerFailures: 6, providerFailureRate: 6 / 106,
-      http5xx: 3, restarts: 2, roleStarts: [{ role: "app", starts: 3, restarts: 2 }, { role: "memory_search", starts: 1, restarts: 0 }],
+      http5xx: 3, restarts: 2, roleStarts: [{ role: "app", starts: 3, restarts: 2 }, { role: "workspace_runner", starts: 1, restarts: 0 }],
       droppedLogRecords: 57, clientErrors: 4
     });
 

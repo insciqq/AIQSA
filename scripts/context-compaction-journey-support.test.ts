@@ -6,6 +6,10 @@ import type { SessionContextStatus } from "../lib/contracts/sessionStatus";
 import { encodeSseEvent, RUN_STREAM_KEEPALIVE } from "../lib/domain/modelRunEvents";
 import { contextCompactionArtifact } from "../lib/server/runs/contextCompactionEvents";
 import {
+  awaitsSummary,
+  compactionMarker,
+  engineContextTokens,
+  summaryShown,
   JOURNEY_CORRECTIONS,
   JOURNEY_LIMITS,
   JOURNEY_RATIO_BANDS,
@@ -127,7 +131,8 @@ describe("journey text", () => {
     // The engine's background compaction starts at 72% of the window; fillers aim at 78%.
     expect(nextFillerTokens({ approximateInputTokens: 19_000, budgetTokens: 28_000 })).toBe(2_840);
     expect(nextFillerTokens({ approximateInputTokens: 20_159, budgetTokens: 28_000 })).toBe(1_681);
-    expect(nextFillerTokens({ approximateInputTokens: 20_160, budgetTokens: 28_000 })).toBeNull();
+    // Past the trigger without a summary, a minimal filler gives the engine one more request boundary.
+    expect(nextFillerTokens({ approximateInputTokens: 20_160, budgetTokens: 28_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
     // A tiny budget still sends a meaningful filler rather than an empty one.
     expect(nextFillerTokens({ approximateInputTokens: 700, budgetTokens: 1_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
   });
@@ -417,6 +422,23 @@ describe("chat projection", () => {
     expect(settledTurn(detail, "a1")).toBeNull();
     expect(messageText(messages[1]!)).toBe("ответ");
   });
+
+  it("reads each answer's compaction marker as it stands now", () => {
+    const marker = { afterTokens: 9_000, beforeTokens: 23_000, cycle: 1, outcome: "summary_applied", reducedTokens: 14_000,
+      stage: "settled", state: "complete", version: 1 } as const;
+    const answer = (id: string, contextCompaction?: ContextCompactionStatus) => message({ id, role: "assistant",
+      ...(contextCompaction ? { artifactSummary: { contextCompaction } as ChatMessageWire["artifactSummary"] } : {}) });
+    const before = { messages: [answer("a1"), answer("a2")] };
+    expect(compactionMarker(before, "a1")).toBeNull();
+    expect(summaryShown(before, ["a1", "a2"])).toBe(false);
+    // A background summary lands on the answer whose request started it, after that answer.
+    const landed = { messages: [answer("a1", marker), answer("a2")] };
+    expect(compactionMarker(landed, "a1")).toEqual(marker);
+    expect(summaryShown(landed, ["a1", "a2"])).toBe(true);
+    expect(summaryShown(landed, ["a2"])).toBe(false);
+    expect(summaryShown({ messages: [answer("a1", { ...marker, outcome: "summary_failed", state: "failed" })] }, ["a1"]))
+      .toBe(false);
+  });
 });
 
 const session = (approximateInputTokens: number, phase: SessionContextStatus["phase"] = "after_answer"): SessionContextStatus => ({
@@ -430,27 +452,32 @@ const summary = (beforeTokens: number): ContextCompactionStatus => ({
 
 describe("round evidence and verdict", () => {
   it("measures the dispatched request and compares every single-request turn", () => {
-    // Budget: 32768 - 2048 - 3276 = 27444.
+    // The engine's window: 32768 - 2048 = 30720 (the composer's budget also keeps 3276 as a safety margin).
+    expect(engineContextTokens(session(0))).toBe(30_720);
+    expect(engineContextTokens({ contextWindow: null, maxOutputTokens: 2_048 })).toBeNull();
     const reported = (inputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) =>
       ({ cacheWriteInputTokens, cachedInputTokens, inputTokens });
     expect(journeyRound({ answerTokens: 400, compaction: null, kind: "filler", reported: reported(11_000, 9_000, 500),
       session: session(10_400), summaryBought: false, toolCalls: 0, turn: 5 })).toEqual({
-      budgetShare: 0.364, compactionOutcome: null, estimatedInputTokens: 10_000, kind: "filler", ratio: 1.1,
+      budgetShare: 0.326, compactionOutcome: null, estimatedInputTokens: 10_000, kind: "filler", ratio: 1.1,
       reportedAccounting: "inclusive", reportedCacheWriteInputTokens: 500, reportedCachedInputTokens: 9_000,
       reportedInputTokens: 11_000, reportedLedgerInputTokens: 11_000, summaryAtBudgetShare: null, summaryBought: false, turn: 5 });
     expect(journeyRound({ answerTokens: 400, compaction: null, kind: "correction", reported: reported(4_000, 6_000),
       session: session(10_400), summaryBought: false, toolCalls: 0, turn: 2 })).toMatchObject({ ratio: 1,
       reportedAccounting: "exclusive_detected", reportedInputTokens: 10_000, reportedLedgerInputTokens: 4_000 });
-    // A bought summary adds its calls to the turn's ledger: no ratio, only the share it was bought at.
-    const summarized = journeyRound({ answerTokens: 400, compaction: summary(23_328), kind: "filler",
+    // A summary the request waited for adds its call to the turn's ledger: no ratio, only the share it started at.
+    const summarized = journeyRound({ answerTokens: 400, compaction: summary(26_112), kind: "filler",
       reported: reported(40_000), session: session(9_400), summaryBought: true, toolCalls: 0, turn: 8 });
     expect(summarized).toMatchObject({ compactionOutcome: "summary_applied", ratio: null, summaryAtBudgetShare: 0.85, summaryBought: true });
-    // Notes carried from an earlier answer cost no call: the turn is still one request.
-    expect(journeyRound({ answerTokens: 400, compaction: summary(24_000), kind: "probe", reported: reported(8_820),
-      session: session(9_400), summaryBought: false, toolCalls: 0, turn: 9 })).toMatchObject({ ratio: 0.98, summaryAtBudgetShare: 0.875 });
-    // Without the run stream a compaction turn cannot be told apart, so it gets no ratio.
-    expect(journeyRound({ answerTokens: 400, compaction: summary(24_000), kind: "probe", reported: reported(8_820),
-      session: session(9_400), summaryBought: null, toolCalls: 0, turn: 9 })).toMatchObject({ ratio: null, summaryBought: null });
+    // So does a background summary, which shows no running status in the stream, and one the stream could not tell.
+    for (const summaryBought of [false, null]) {
+      expect(journeyRound({ answerTokens: 400, compaction: summary(23_040), kind: "filler", reported: reported(30_000),
+        session: session(23_440), summaryBought, toolCalls: 0, turn: 7 })).toMatchObject({ budgetShare: 0.75, ratio: null,
+        summaryAtBudgetShare: 0.75, summaryBought });
+    }
+    // An earlier turn's summary that landed during this turn put its call's usage into this turn's ledger growth.
+    expect(journeyRound({ answerTokens: 400, compaction: null, compactionSettled: true, kind: "filler", reported: reported(30_000),
+      session: session(10_400), summaryBought: false, toolCalls: 0, turn: 8 })).toMatchObject({ ratio: null, summaryAtBudgetShare: null });
     expect(journeyRound({ answerTokens: 400, compaction: null, kind: "filler", reported: reported(9_800),
       session: session(10_400), summaryBought: null, toolCalls: 0, turn: 6 })).toMatchObject({ ratio: 0.98 });
     expect(journeyRound({ answerTokens: 0, compaction: null, kind: "rule", reported: null, session: null, summaryBought: false,
@@ -461,8 +488,8 @@ describe("round evidence and verdict", () => {
       .toMatchObject({ estimatedInputTokens: 1_000, ratio: null });
   });
 
-  it("tells a bought summary from carried notes in the run's own event stream", () => {
-    // Encoded exactly as the run stream sends them: a bought cycle opens with a running status.
+  it("tells a summary the request waited for from a background one in the run's own event stream", () => {
+    // Encoded exactly as the run stream sends them: a cycle the request waits for opens with a running status.
     const status = (state: "complete" | "running") => encodeSseEvent(contextCompactionArtifact(makeContextCompactionStatus(
       state === "running" ? { beforeTokens: 23_000, outcome: "pending", state }
         : { afterTokens: 9_000, beforeTokens: 23_000, outcome: "summary_applied", state })));
@@ -478,7 +505,7 @@ describe("round evidence and verdict", () => {
     // Any split of the stream, and CRLF line ends, read the same one cycle.
     for (const size of [1, 7, 64, bought.length]) expect(scan(bought, size)).toBe(1);
     expect(scan(bought.replaceAll("\n", "\r\n"), 13)).toBe(1);
-    // Carried notes settle without a running status; answer text naming one is not an event.
+    // A background summary settles without a running status; answer text naming one is not an event.
     expect(scan(`${status("complete")}${token("\"state\":\"running\"")}`, 5)).toBe(0);
     // An overlong line is skipped whole and the next event still counts.
     expect(scan(`event: artifact\ndata: ${"x".repeat(10_000)}\n\n${status("running")}`, 512)).toBe(1);
@@ -489,24 +516,45 @@ describe("round evidence and verdict", () => {
     reportedCachedInputTokens: 0, reportedInputTokens: 1, reportedLedgerInputTokens: 1, summaryAtBudgetShare: null,
     summaryBought: false, turn: 1, ...overrides });
 
-  it("passes only the first summary at the first turn past the trigger, with ratios in the route's band", () => {
+  it("waits for a background summary only past the trigger and only until one shows", () => {
+    expect(awaitsSummary([], 0.7)).toBe(false);
+    expect(awaitsSummary([], 0.73)).toBe(true);
+    // The previous turn crossed it: the engine started its summary by this turn's request at the latest.
+    expect(awaitsSummary([round({ budgetShare: 0.74 })], 0.3)).toBe(true);
+    expect(awaitsSummary([round({ budgetShare: 0.74 })], null)).toBe(true);
+    expect(awaitsSummary([round({ budgetShare: 0.74, summaryAtBudgetShare: 0.74 })], 0.8)).toBe(false);
+    expect(awaitsSummary([round({ budgetShare: 0.6 })], null)).toBe(false);
+  });
+
+  it("passes only the first summary at the first turn past the trigger or the next, with ratios in the route's band", () => {
     const band = JOURNEY_RATIO_BANDS["codex-lb"]!;
     expect(band).toEqual({ max: 1, min: 0.85 });
     expect(JOURNEY_RATIO_BANDS.anthropic).toBeUndefined();
+    // A background summary starts at the turn past the trigger, whose own request still carries the whole context.
     const journey = (ratio = 0.97) => [round({ budgetShare: 0.55, ratio: 0.98 }), round({ budgetShare: 0.7, ratio, turn: 2 }),
-      round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.76, summaryBought: true, turn: 3 }),
-      round({ budgetShare: 0.41, compactionOutcome: "summary_applied", ratio: 0.99, summaryAtBudgetShare: 0.78, turn: 4 })];
-    // The request that bought the summary never reached the provider: its reported share uses the latest ratio before it.
+      round({ budgetShare: 0.75, compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.76, turn: 3 }),
+      round({ budgetShare: 0.41, kind: "probe", ratio: 0.99, turn: 4 })];
+    // The summary's turn also paid for its call: its reported share uses the latest ratio before it.
     expect(journeyVerdict(journey(), true, band)).toEqual({ code: null, compactionTriggered: true, firstSummaryAtBudgetShare: 0.76,
       firstSummaryAtReportedBudgetShare: 0.737, passed: true });
     expect(journeyVerdict(journey(), false, band).code).toBe("probe_answer_missing_corrections");
     expect(journeyVerdict([round({})], true).code).toBe("compaction_not_triggered");
     expect(journeyVerdict([round({ compactionOutcome: "summary_failed", summaryBought: true })], true).code).toBe("summary_not_bought");
-    // Bought at or below the trigger, or after an earlier turn already crossed it.
+    // Started at or below the trigger.
     expect(journeyVerdict([round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.72 })], true).code)
       .toBe("summary_before_trigger");
-    expect(journeyVerdict([round({ budgetShare: 0.73 }), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.9,
-      turn: 2 })], true).code).toBe("trigger_crossed_without_summary");
+    // The engine's own measure can trail the reported one by a turn, never by two.
+    const late = (turns: number) => [...Array.from({ length: turns }, (_, index) => round({ budgetShare: 0.73 + index / 100,
+      turn: index + 1 })), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.8, turn: turns + 1 }),
+    round({ kind: "probe", turn: turns + 2 })];
+    expect(journeyVerdict(late(1), true).code).toBeNull();
+    expect(journeyVerdict(late(2), true).code).toBe("trigger_crossed_without_summary");
+    // A background summary the probe started came after its answer; one the probe waited for was in its context.
+    const atProbe = (summaryBought: boolean | null) => [round({ budgetShare: 0.73 }), round({ compactionOutcome: "summary_applied",
+      kind: "probe", summaryAtBudgetShare: 0.86, summaryBought, turn: 2 })];
+    expect(journeyVerdict(atProbe(false), true).code).toBe("summary_after_probe");
+    expect(journeyVerdict(atProbe(null), true).code).toBe("summary_after_probe");
+    expect(journeyVerdict(atProbe(true), true).code).toBeNull();
     // A ratio outside the band fails a route that has one, and a route without a band only reports it.
     for (const ratio of [0.6, 1.08]) {
       expect(journeyVerdict(journey(ratio), true, band).code).toBe("ratio_out_of_range");

@@ -39,7 +39,9 @@ export async function readDefaultHealthFindings(): Promise<HealthFinding[]> {
       to: new Date(now.getTime() + 1),
       // The item needs only the totals, which count every code.
       perCode: 1,
-      groupLimit: 1
+      groupLimit: 1,
+      // An answer the upgrade interrupted is not a failure to investigate.
+      withoutRetiredEngineEnds: true
     }))),
     readHealthFindings(telemetry, now),
     readOptionalFindings(async () => memoryRebuildFindings(await readMemoryRebuildLoad(prisma, {
