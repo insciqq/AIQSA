@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
+import { fetchUrlTool } from "../tools/fetchUrlPlan";
 import { mcpFindToolsTool } from "../mcp/discovery";
 import { analyzeImageTool } from "../tools/analyzeImage";
 import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
@@ -105,33 +105,33 @@ describe("Gemini Interactions request builder", () => {
     })).generation_config.tool_choice).toBe("any");
   });
 
-  it("narrows only a forced Knowledge round over the ordinary first-party tool set", () => {
-    const knowledge = knowledgeRetrievalToolsForRequest({ knowledgeSearchInstructionVersion: 3 });
+  it("narrows only a forced round over the ordinary first-party tool set", () => {
+    const forcedTools = [fetchUrlTool];
     const firstParty = [loadSkillTool, readSkillFileTool, sessionStatusTool, readToolResultTool, checkpointOutputsTool,
       analyzeImageTool(), viewWorkspaceImageTool, artifactTool(describeArtifactTool()), readArtifactTool(), mcpFindToolsTool];
     const forced = buildGeminiInteractionsRequest(request({
-      forcedToolName: "search_knowledge",
+      forcedToolName: fetchUrlTool.name,
       toolChoice: "required",
-      tools: [...knowledge, ...firstParty]
+      tools: [...forcedTools, ...firstParty]
     }));
     expect(forced.generation_config.tool_choice).toEqual({
-      allowed_tools: { mode: "any", tools: ["search_knowledge"] }
+      allowed_tools: { mode: "any", tools: [fetchUrlTool.name] }
     });
     // Narrowing restricts the choice, never the advertised declarations.
     expect(forced.tools?.map((declaration) => declaration.name)).toEqual(
-      [...knowledge, ...firstParty].map((declaration) => declaration.name));
+      [...forcedTools, ...firstParty].map((declaration) => declaration.name));
 
-    // A forced round without the named Knowledge tool keeps Gemini's `any`.
+    // A forced round without the named tool keeps Gemini's `any`.
     expect(buildGeminiInteractionsRequest(request({
-      forcedToolName: "search_knowledge", toolChoice: "required", tools: firstParty
+      forcedToolName: fetchUrlTool.name, toolChoice: "required", tools: firstParty
     })).generation_config.tool_choice).toBe("any");
     expect(buildGeminiInteractionsRequest(request({
-      toolChoice: "required", tools: [...knowledge, ...firstParty]
+      toolChoice: "required", tools: [...forcedTools, ...firstParty]
     })).generation_config.tool_choice).toBe("any");
     // Non-forced rounds ignore a stray name and keep `auto`/`none`.
     for (const toolChoice of ["auto", "none", undefined] as const) {
       expect(buildGeminiInteractionsRequest(request({
-        forcedToolName: "search_knowledge", ...(toolChoice ? { toolChoice } : {}), tools: [...knowledge, ...firstParty]
+        forcedToolName: fetchUrlTool.name, ...(toolChoice ? { toolChoice } : {}), tools: [...forcedTools, ...firstParty]
       })).generation_config.tool_choice).toBe(toolChoice ?? "auto");
     }
   });

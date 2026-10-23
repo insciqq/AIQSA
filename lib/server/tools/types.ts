@@ -1,4 +1,3 @@
-import type { ThreadToolActivityOrigin } from "@/lib/contracts/chats";
 import type { ModelRunSseEvent, ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import type { ProviderRunRequest } from "@/lib/server/providers/types";
 
@@ -13,12 +12,7 @@ export function hasInvalidProviderToolArguments(value: unknown): boolean {
     (value as Record<string, unknown>)[invalidProviderToolArgumentsKey] === true;
 }
 
-export type RunToolCapability = "artifact" | "image" | "knowledge" | "mcp" | "memory" | "session" | "skill" | "vision" | "web_fetch" | "web_search" | "workspace";
-
-/** How a tool capability shows in the answer's activity; removed Knowledge has no origin of its own. */
-export function toolActivityOrigin(capability: RunToolCapability): ThreadToolActivityOrigin | undefined {
-  return capability === "knowledge" ? undefined : capability;
-}
+export type RunToolCapability = "artifact" | "image" | "mcp" | "memory" | "session" | "skill" | "vision" | "web_fetch" | "web_search" | "workspace";
 
 export type RunTool = {
   capability: RunToolCapability;

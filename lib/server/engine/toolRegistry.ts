@@ -56,7 +56,7 @@ import {
 } from "../tools/selfServiceTools";
 import { acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
 import { SAVE_SKILL_TOOL_NAME, executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
-import { toolActivityOrigin, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
+import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/updatePlan";
 import type { ToolObservationSource } from "../toolObservations/contract";
 import type { VisionAnalysisService } from "../vision/service";
@@ -264,7 +264,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   };
   const named = (definition: RunTool, serverName: string | undefined, extra?: (call: ModelToolCall) => Partial<EngineToolActivity>) =>
     (call: ModelToolCall): EngineToolActivity => ({
-      origin: toolActivityOrigin(definition.capability),
+      origin: definition.capability,
       ...(serverName ? { serverName } : {}),
       ...(extra ? extra(call) : {})
     });
@@ -463,7 +463,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const workspaceTools = await coordinator.tools({ runId: input.runId, userId: input.userId, workspace });
     for (const definition of workspaceTools) {
       if (!coordinator.accepts({ name: definition.name, workspace })) continue;
-      add({ activity: () => ({ origin: toolActivityOrigin(definition.capability), serverName: "Workspace",
+      add({ activity: () => ({ origin: definition.capability, serverName: "Workspace",
         toolName: workspaceToolNameFromNamespaced(definition.name) ?? definition.name }),
         definition, effects: "external", links: () => ({ workspaceRunBindingId: input.runId }), observationSource: "workspace",
         execute: (execution) => coordinator.execute({ call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
