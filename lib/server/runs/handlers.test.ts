@@ -7060,6 +7060,34 @@ describe("native engine routing of interactive sends", () => {
     expect(state.completed).toBeNull();
   });
 
+  it("admits a listed user's quick send behind a settling answer as a native Workspace follow-up, which nothing runs before", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [{
+      id: "previous-answer", role: "assistant", content: { blocks: [{ type: "text", text: "File saved." }] }
+    }], null, toolCallingModel);
+    // The previous answer is published and still hands its Workspace off.
+    repository.findRecentActiveRunForChat = async () => ({ ...activeRunRecord({
+      id: "previous-run", chatId: "chat-1", assistantMessageId: "previous-answer"
+    }), answerComplete: true });
+    const create = repository.createRun;
+    repository.createRun = vi.fn(async (input) => ({ ...await create(input), deferredWorkspace: true as const }));
+    repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", workspacePreparation: true });
+    const native = nativeEngineFake([config.bootstrapUserId]);
+    const provider = recordingProvider();
+    const kick = vi.fn();
+    const response = await createSendMessageHandler({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter },
+      repository, workspaceFollowup: { kick, findAdmission: async () => null } })(new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ admissionId: "next-invocation",
+        expectedActiveLeafId: "previous-answer", provider: "fake", modelId: "fake-qsa", text: "Update that file." })
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(202);
+    // The native engine takes it once the follow-up starts it, after the predecessor's hand-off.
+    expect(state.created).toMatchObject({ engine: "native", workspaceFollowup: { predecessorRunId: "previous-run",
+      snapshot: { native: {}, version: 1 } } });
+    expect(provider.requests).toEqual([]);
+    expect(native.published).toEqual([]);
+    expect(kick).toHaveBeenCalled();
+  });
+
   it("keeps an unlisted user, and a model without verified tool calling, on the old core", async () => {
     for (const [listed, capabilities] of [[["someone-else"], toolCallingModel], [[config.bootstrapUserId],
       { ...toolCallingModel, toolCalling: false }]] as const) {
