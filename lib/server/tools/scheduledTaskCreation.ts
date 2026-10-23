@@ -141,7 +141,9 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
       "kind: \"monitoring\" when the user wants to hear when something happens or changes (silent without news, ends",
       "once it happened); \"standard\" for reminders and reports.",
       "prompt: a standalone instruction that works without this conversation, in the user's language; for monitoring",
-      `say what counts as news. Times are 24-hour HH:MM in the user's time zone ${timeZone}; set unused schedule`,
+      "say what counts as news. When the task depends on particular sites or pages, write their exact URLs into prompt,",
+      "since a run reads only the links in its saved prompt besides its own search results, and tell the user which",
+      `sources it will use. Times are 24-hour HH:MM in the user's time zone ${timeZone}; set unused schedule`,
       "fields to null. chatMode: null unless the user asks. When the task runs one of this chat's skills, pin it in",
       "skills so every run loads it. Confirm briefly what was created; if it fails, explain why and do not retry the",
       "same arguments."
@@ -287,6 +289,12 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       // Results also go to the user's Telegram (a task created from a Telegram message).
       telegram: task.telegramNotify,
       skills: scheduledTaskModelSkills(task),
+      ...(task.promptLinksPending ? {
+        // A link the model wrote that the user's own text did not give (`promptUrls.ts`).
+        linksPending: true,
+        linksNote: "Runs cannot read the links in this prompt that the user did not write in this chat until the user " +
+          "opens the task with Edit and saves its instructions once. Tell the user which links these are and to do that."
+      } : {}),
       note: "The answer shows this task with Edit and Delete; the user manages tasks in Studio > Scheduled."
     } }],
     name: call.name,
