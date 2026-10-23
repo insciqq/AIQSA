@@ -64,7 +64,7 @@ describe("journey configuration", () => {
   it("skips routes without keys and defaults the stand, window and turn bound", () => {
     const config = journeyConfig({});
     expect(config.baseUrl.origin).toBe("http://127.0.0.1:3000");
-    expect(config).toMatchObject({ cleanupProviders: false, contextWindow: 32_768, debug: false, explicitRoutes: false, maxTurns: 12 });
+    expect(config).toMatchObject({ cleanupProviders: false, contextWindow: 65_536, debug: false, explicitRoutes: false, maxTurns: 12 });
     expect(config.routes).toEqual([
       { route: "anthropic", skipped: "api_key_missing" },
       { route: "codex-lb", skipped: "api_key_missing" }
@@ -75,13 +75,13 @@ describe("journey configuration", () => {
     const config = journeyConfig({
       AIQSA_JOURNEY_ANTHROPIC_MODEL: "claude-test",
       AIQSA_JOURNEY_CLEANUP_PROVIDERS: "1",
-      AIQSA_JOURNEY_CONTEXT_WINDOW: "16384",
+      AIQSA_JOURNEY_CONTEXT_WINDOW: "57344",
       AIQSA_JOURNEY_MAX_TURNS: "8",
       AIQSA_JOURNEY_ROUTES: "codex-lb, anthropic",
       ANTHROPIC_API_KEY: "a-key",
       CODEX_LB_API_KEY: "c-key"
     }, () => "https://lb.example.test/v1/");
-    expect(config).toMatchObject({ cleanupProviders: true, contextWindow: 16_384, explicitRoutes: true, maxTurns: 8 });
+    expect(config).toMatchObject({ cleanupProviders: true, contextWindow: 57_344, explicitRoutes: true, maxTurns: 8 });
     expect(config.routes).toEqual([
       { apiKey: "c-key", apiRoot: "https://lb.example.test/v1", model: "gpt-5.5", route: "codex-lb" },
       { apiKey: "a-key", model: "claude-test", route: "anthropic" }
@@ -101,6 +101,8 @@ describe("journey configuration", () => {
       .toBe("https://stand.example.test/");
     expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_ROUTES: "openai" }))).toBe("routes_invalid");
     expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_CONTEXT_WINDOW: "200000" })))
+      .toBe("aiqsa_journey_context_window_invalid");
+    expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_CONTEXT_WINDOW: "32768" })))
       .toBe("aiqsa_journey_context_window_invalid");
     expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_MAX_TURNS: "13" }))).toBe("aiqsa_journey_max_turns_invalid");
   });
