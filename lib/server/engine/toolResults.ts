@@ -13,17 +13,22 @@ import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
 /**
  * Tool results as the native engine's model sees them. A result is one text
  * (`toolResultOutputText`, the same text the provider bridges send). A text
- * longer than `inlineChars` is saved whole once, as the observation of its
- * call, and the model receives its head and tail with a handle;
- * `read_tool_result` reads any part of it by handle, with the call's tool and
- * arguments, from any later turn of the same user's chat (compaction
- * included), and never runs the tool again. Nothing is cut silently: an
- * excerpt always says what it left out and whether it was saved.
+ * longer than `saveChars` is saved whole once, as the observation of its
+ * call, with a handle on its transcript item, so a compaction can leave it
+ * out of the context and name where it lives (operator decision 2026-10-23).
+ * The model receives a text up to `inlineChars` whole, and a longer one as
+ * its head and tail with the handle; `read_tool_result` reads any part of a
+ * saved result by handle, with the call's tool and arguments, from any later
+ * turn of the same user's chat (compaction included), and never runs the
+ * tool again. Nothing is cut silently: an excerpt always says what it left
+ * out and whether it was saved.
  */
 export const TOOL_RESULT_LIMITS = Object.freeze({
   headChars: 12_000,
   inlineChars: 24_000,
   readChars: 24_000,
+  /** Results longer than this are saved with a handle. */
+  saveChars: 2_000,
   tailChars: 4_000
 });
 
@@ -42,14 +47,14 @@ export function toolResultOutputText(result: Pick<ToolExecutionResult, "content"
 
 export type ToolOutputExcerpt = Readonly<{ handle: string | null; output: string; truncated: boolean }>;
 
-/** The model-facing output of a result text: whole, or head and tail with what was left out. */
+/** The model-facing output of a result text: whole, or head and tail with what was left out; with the saved result's handle. */
 export function toolOutputExcerpt(text: string, saved: Readonly<{ handle: string } | { unsavedReason: string }> | null): ToolOutputExcerpt {
-  if (text.length <= TOOL_RESULT_LIMITS.inlineChars) return { handle: null, output: text, truncated: false };
+  const handle = saved && "handle" in saved ? saved.handle : null;
+  if (text.length <= TOOL_RESULT_LIMITS.inlineChars) return { handle, output: text, truncated: false };
   const head = text.slice(0, TOOL_RESULT_LIMITS.headChars);
   const tailStart = text.length - TOOL_RESULT_LIMITS.tailChars;
   const tail = text.slice(tailStart);
   const omitted = tailStart - TOOL_RESULT_LIMITS.headChars;
-  const handle = saved && "handle" in saved ? saved.handle : null;
   const note = handle
     ? `[${omitted} of ${text.length} characters omitted here (characters ${TOOL_RESULT_LIMITS.headChars}-${tailStart}). ` +
       `The whole result is saved: call ${READ_TOOL_RESULT_NAME} with handle "${handle}" and offset ${TOOL_RESULT_LIMITS.headChars} ` +
