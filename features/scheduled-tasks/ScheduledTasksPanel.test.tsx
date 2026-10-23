@@ -14,7 +14,7 @@ import {
   updateScheduledTask
 } from "./scheduledTasksApi";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
-import { requestScheduledTaskEdit, useScheduledTasksStore } from "./scheduledTasksStore";
+import { applyScheduledTask, requestScheduledTaskEdit, useScheduledTasksStore } from "./scheduledTasksStore";
 
 vi.mock("./scheduledTasksApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./scheduledTasksApi")>();
@@ -431,6 +431,46 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(within(confirm).getByRole("button", { name: "Delete task" }));
     expect(await screen.findByTestId("scheduled-tasks-empty")).toBeInTheDocument();
     expect(remove).toHaveBeenCalledWith(task.id);
+  });
+
+  it("opens a task's chat without reporting itself busy, so Studio can close over it", async () => {
+    const task = scheduledTaskFixture({ chatId: "chat-1" });
+    list.mockResolvedValue(listed([task]));
+    let finish!: () => void;
+    const onOpenChat = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onBusyChange = vi.fn();
+    account += 1;
+    render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onBusyChange={onBusyChange} onOpenChat={onOpenChat} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat for Weekday news brief" }));
+    expect(onOpenChat).toHaveBeenCalledExactlyOnceWith("chat-1");
+    // A second click while the chat opens is not a second navigation.
+    fireEvent.click(screen.getByRole("button", { name: "Open chat for Weekday news brief" }));
+    await act(async () => { await Promise.resolve(); });
+    // Studio refuses to close while the panel reports busy; the chat open must not.
+    expect(onBusyChange).not.toHaveBeenCalledWith(true);
+    await act(async () => { finish(); await Promise.resolve(); });
+    expect(onOpenChat).toHaveBeenCalledOnce();
+  });
+
+  it("reports a chat that could not open on its row", async () => {
+    list.mockResolvedValue(listed([scheduledTaskFixture({ chatId: "chat-1" })]));
+    renderPanel(vi.fn(async () => { throw new Error("This chat is no longer available."); }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat for Weekday news brief" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This chat is no longer available.");
+  });
+
+  it("drops the running notice once that run settles", async () => {
+    const task = scheduledTaskFixture({ chatId: "chat-1", chatMode: "new" });
+    list.mockResolvedValue(listed([task]));
+    run.mockResolvedValueOnce({ ...task, running: true, revision: 2 });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Run now" }));
+    expect(await screen.findByText("“Weekday news brief” is running now. The answer will appear in a new chat.")).toBeInTheDocument();
+    // The background list refresh reports the run answered.
+    act(() => applyScheduledTask({ ...task, running: false, revision: 3, chatId: "chat-2",
+      lastRun: { scheduledFor: "2026-10-04T10:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T10:01:00.000Z", unseen: true } }));
+    await waitFor(() => expect(screen.queryByText(/is running now/u)).toBeNull());
   });
 
   it("offers a monitoring type that continues in one chat and needs a model that can call tools", async () => {

@@ -61,6 +61,14 @@ describe("SkillSaveCardsV2", () => {
     expect(within(item).getByRole("button", { name: "Undo saving gitlab-digest" })).toBeVisible();
   });
 
+  it("opens the Skills library through the shell from an answer", () => {
+    respond({ [`GET ${UNDO}`]: { state: "available" } });
+    const onOpenLibrary = vi.fn();
+    render(<AnswerOutputsV2 artifact={{ citations: [], reasoningText: [], skillSaves: [card], sources: [] }} live onOpenLibrary={onOpenLibrary} />);
+    expect(fireEvent.click(screen.getByRole("link", { name: "Open library" }))).toBe(false);
+    expect(onOpenLibrary).toHaveBeenCalledExactlyOnceWith("/?library=skills");
+  });
+
   it("undoes once and reports the restored version", async () => {
     const fetchMock = respond({ [`GET ${UNDO}`]: { state: "available" },
       [`POST ${UNDO}`]: { state: "undone", outcome: "restored", revision: 5 } });
