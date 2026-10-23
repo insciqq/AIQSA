@@ -213,8 +213,11 @@ export type EventFields = {
   /** One compaction of a native run (`lib/server/engine/runContext.ts`): its path, mode, trigger, sizes and outcome; never content. */
   context_compaction: Readonly<{
     run_id: string; kind: "native" | "summary"; mode: "background" | "foreground"; reason: "threshold" | "overflow";
-    /** `compacted`: its item entered the transcript; `discarded`: it finished but no longer applied. */
-    outcome: "compacted" | "discarded" | "failed" | "cancelled";
+    /** `compacted`: its item entered the transcript; `adopted`: a later run swapped in a compaction it joined;
+     * `discarded`: it finished but no longer applied. */
+    outcome: "adopted" | "compacted" | "discarded" | "failed" | "cancelled";
+    /** It finished after its run had completed. */
+    detached?: boolean;
     code?: string; duration_ms?: number; calls?: number; chunks?: number; fallback?: boolean;
     tokens_before?: number; tokens_after?: number; input_tokens?: number; output_tokens?: number;
     compacted_items?: number; kept_items?: number;

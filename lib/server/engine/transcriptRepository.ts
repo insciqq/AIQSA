@@ -95,6 +95,18 @@ export function createTranscriptRepository(client: TranscriptClient) {
       return new Map(runs.flatMap((run) => run.assistantMessageId ? [[run.assistantMessageId, run.id] as const] : []));
     },
 
+    /**
+     * The run is still on record and its chat is not being deleted: what a
+     * compaction finishing after its run checks before it records anything.
+     */
+    async runLive(scope: TranscriptRunScope): Promise<boolean> {
+      const run = await client.modelRun.findFirst({
+        select: { id: true },
+        where: { chat: { permanentDeletionAt: null }, chatId: scope.chatId, id: scope.runId, userId: scope.userId }
+      });
+      return run !== null;
+    },
+
     /** Which of these user messages of the chat are approval continuation turns the server wrote. */
     async approvalContinuationTurns(input: Readonly<{ chatId: string; messageIds: readonly string[] }>): Promise<Set<string>> {
       const ids = [...new Set(input.messageIds)];

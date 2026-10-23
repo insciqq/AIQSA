@@ -20,9 +20,11 @@ import {
   type CompactionMetadata,
   type CompactionMode,
   type CompactionModelCall,
-  type CompactionOutcome
+  type CompactionOutcome,
+  type CompactionPath
 } from "./compaction";
 import { contextAnchor, contextMeasureCalibration, measureContext, type ContextAnchor, type ContextMeasureCalibration } from "./contextMeasure";
+import { DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions, type DetachedStopCode } from "./detachedCompactions";
 import { projectTranscript, type TranscriptItem, type TranscriptProjectionOptions, type TranscriptTarget } from "./transcript";
 
 /**
@@ -38,8 +40,11 @@ import { projectTranscript, type TranscriptItem, type TranscriptProjectionOption
  *   compaction, or compacts in the foreground when none runs.
  * - A provider context-length rejection compacts in the foreground and the
  *   request is sent once more.
- * - Once the answer is published the run waits (bounded) for a running
- *   compaction and keeps its item, so the next turn starts compacted.
+ * - The run never waits for a compaction once its answer is published: one
+ *   still running goes on detached (`detachedCompactions.ts`) and the run
+ *   records its item when it finishes. The chat's next run joins it when it
+ *   covers that run's span, swaps its item in like its own (in memory: its
+ *   own run records it) and never compacts the same span twice.
  * - A request that still does not fit leaves the oldest results a handle
  *   reads out of that one request (`fitToolResults`, lossless); it fails with
  *   `context_too_large` only when nothing fits.
@@ -51,8 +56,15 @@ import { projectTranscript, type TranscriptItem, type TranscriptProjectionOption
  * outcome is one content-free `context_compaction` log line.
  */
 export const COMPACTION_LIFECYCLE = Object.freeze({
-  /** After the answer a running compaction is awaited this long, so the next turn starts compacted. */
-  afterAnswerWaitMs: 60_000,
+  /**
+   * Native compaction on the routes that take their own compaction items back
+   * (OpenAI, Codex LB). Off (orchestrator decision 2026-10-23): on the quality
+   * evaluation (Codex LB, `gpt-6.1-sol`) the summary recalled 21 of 23 facts
+   * against 17 and named the next step in 4 of 5 continuations against 2, and
+   * its longer calls (p50 78 s, max 116 s) run in the background. The native
+   * path stays implemented for a better evaluation to turn it back on.
+   */
+  native: false,
   /** A request past the swap threshold waits this long for the running compaction before compacting itself. */
   urgentWaitMs: 180_000,
   /** After a size rejection the request sent again must fit within this share of what it measured. */
@@ -64,8 +76,24 @@ export type RunContextDeps = Readonly<{
   append(items: readonly TranscriptItem[]): Promise<void>;
   /** The model call of one compaction, extending the run's latest request. */
   compactionCall(request: () => ProviderRunRequest): CompactionModelCall;
+  /** Where a compaction still running after the answer goes on; without it, one stops with its run. */
+  detached?: Readonly<{
+    chatId: string;
+    /** The run is still on record and its chat not being deleted. */
+    live(): Promise<boolean>;
+    /** Records the marker of a compaction that finished after the run (its stream is closed by then). */
+    onStatus(status: ContextCompactionStatus): Promise<void>;
+    registry: DetachedCompactions;
+    /** Records the usage a compaction reported after the run settled its own. */
+    settleUsage(): Promise<void>;
+    userId: string;
+  }>;
+  /** Adds items already on record (a joined compaction its own run records): in memory only. */
+  insert(items: readonly TranscriptItem[]): void;
   /** The run's transcript as the loop holds it; `append` adds to it. */
   items: readonly TranscriptItem[];
+  /** Compacts natively where the route allows it (default `COMPACTION_LIFECYCLE.native`). */
+  native?: boolean;
   now?: () => number;
   /** Publishes a compaction status to the answer's process disclosure (a `context_compaction` artifact). */
   onStatus(status: ContextCompactionStatus): Promise<void>;
@@ -89,9 +117,9 @@ export type RunContext = Readonly<{
   observe(usage: Pick<TokenUsage, "inputTokens">): void;
   /** The request was rejected for its size: the request to send once more, or null. */
   overflow(request: ProviderRunRequest, error: unknown): Promise<ProviderRunRequest | null>;
-  /** The answer is published: wait (bounded; not at all with `wait: false`) for a running compaction and keep its item. */
-  afterAnswer(options?: Readonly<{ wait?: boolean }>): Promise<void>;
-  /** The run ends without an answer: a running compaction stops. */
+  /** The answer is published: a finished compaction is kept now, a running one goes on detached. Never waits. */
+  afterAnswer(): Promise<void>;
+  /** The run ends without an answer: a compaction it runs stops. */
   close(): Promise<void>;
 }>;
 
@@ -103,29 +131,40 @@ type Job = {
   /** The status cycle this compaction publishes under, once it publishes. */
   cycle: number | null;
   readonly mode: CompactionMode;
+  /** The run context that started it and records its item; another one only joins it. */
+  readonly owner: symbol;
   readonly promise: Promise<JobResult>;
   readonly reason: Reason;
   result: JobResult | null;
   readonly startedAt: number;
+  /** Why it was stopped, once it was. */
+  stopCode: DetachedStopCode | "compaction_wait_timeout" | null;
   /** The measured request it was planned for. */
   readonly tokens: number;
 };
 
-/** Whether `promise` settles within `ms`. */
-function settledWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+/** Whether `promise` settles within `ms`; false at once when `signal` aborts. */
+function settledWithin(promise: Promise<unknown>, ms: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), ms);
-    timer.unref?.();
-    void promise.finally(() => {
+    const done = (settled: boolean) => {
       clearTimeout(timer);
-      resolve(true);
-    });
+      signal?.removeEventListener("abort", aborted);
+      resolve(settled);
+    };
+    const aborted = () => done(false);
+    const timer = setTimeout(() => done(false), ms);
+    timer.unref?.();
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) done(false);
+    void promise.finally(() => done(true));
   });
 }
 
 export function createRunContext(deps: RunContextDeps): RunContext {
   const now = deps.now ?? Date.now;
   const target = deps.target;
+  /** Every compaction of the run takes this path: native only where switched on and the route takes its items back. */
+  const path: CompactionPath = (deps.native ?? COMPACTION_LIFECYCLE.native) && target.nativeCompaction === true ? "native" : "summary";
   const window = deps.window && deps.window.contextWindow > 0 ? deps.window : null;
   /** Tokens a request may carry; a size rejection that states a smaller window lowers it for the rest of the run. */
   let usable = window ? usableContextTokens(window) : 0;
@@ -140,6 +179,9 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   /** Requests already sent once more after a size rejection: none is sent a third time. */
   const retried = new WeakSet<ProviderRunRequest>();
   let cycle = 0;
+  /** This run's own compactions carry it; a joined one carries the run that started it. */
+  const self = Symbol("run context");
+  let joinChecked = false;
 
   /** The estimate and item weights of the run's tokenizer family (fixed for the run). */
   function measuring(request: ProviderRunRequest) {
@@ -169,25 +211,27 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   }
 
   /** The marker is a display: it never fails the run. */
-  async function status(next: Parameters<typeof makeContextCompactionStatus>[0]): Promise<void> {
+  async function status(next: Parameters<typeof makeContextCompactionStatus>[0],
+    publish: (status: ContextCompactionStatus) => Promise<void> = deps.onStatus): Promise<void> {
     try {
-      await deps.onStatus(makeContextCompactionStatus(next));
+      await publish(makeContextCompactionStatus(next));
     } catch {
       // Not shown; the compaction itself stands.
     }
   }
 
-  function log(job: Job, metadata: CompactionMetadata | null, outcome: "cancelled" | "compacted" | "discarded" | "failed",
-    extra: Readonly<{ code?: string; tokensAfter?: number }> = {}): void {
+  function log(job: Job, metadata: CompactionMetadata | null, outcome: "adopted" | "cancelled" | "compacted" | "discarded" | "failed",
+    extra: Readonly<{ code?: string; detached?: true; tokensAfter?: number }> = {}): void {
     logEvent("context_compaction", {
       duration_ms: metadata?.durationMs ?? Math.max(0, now() - job.startedAt),
-      kind: metadata?.kind ?? (target.nativeCompaction ? "native" : "summary"),
+      kind: metadata?.kind ?? path,
       mode: job.mode,
       outcome,
       reason: job.reason,
       run_id: deps.runId,
       tokens_before: job.tokens,
       ...(extra.code ? { code: extra.code } : {}),
+      ...(extra.detached ? { detached: true } : {}),
       ...(extra.tokensAfter !== undefined ? { tokens_after: extra.tokensAfter } : {}),
       ...(metadata ? {
         calls: metadata.calls, chunks: metadata.chunks, compacted_items: metadata.compactedItems, fallback: metadata.fallback,
@@ -206,27 +250,33 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       call: deps.compactionCall(() => latest!), calibration, cut, estimate, items: deps.items.map(deps.record), mode, nextId: randomUUID,
       now, options: { summaryOutputTokens: Math.min(COMPACTION_DEFAULTS.summaryOutputTokens[mode],
         Math.max(1_024, Math.floor(usable * COMPACTION_RETENTION.maxShare))) },
-      rules: deps.rules, signal: AbortSignal.any([deps.signal, controller.signal]), target, usable
+      path, rules: deps.rules, signal: AbortSignal.any([deps.signal, controller.signal]), target, usable
     }).then((outcome) => ({ outcome }), (error: unknown) => ({ error }));
-    const job: Job = { controller, cut, cycle: null, mode, promise, reason, result: null, startedAt, tokens };
+    const job: Job = { controller, cut, cycle: null, mode, owner: self, promise, reason, result: null, startedAt, stopCode: null, tokens };
     void promise.then((result) => { job.result = result; });
     return job;
   }
 
   /**
-   * Keeps a finished compaction's item when its cut still applies: appended
-   * to the transcript, shown as compacted and logged. A failure or a cut that
-   * no longer applies changes nothing but the log (and settles a shown
-   * foreground status).
+   * Keeps a finished compaction's item when its cut still applies. The run
+   * that started it appends it to its transcript (on record), shows it as
+   * compacted and logs it; a run that joined it swaps it in memory only, once,
+   * and leaves the rest to that run. A failure or a cut that no longer applies
+   * changes nothing but the log (and settles a shown foreground status).
    */
-  async function keep(job: Job, result: JobResult, abortCode = "compaction_aborted"): Promise<boolean> {
+  async function keep(job: Job, result: JobResult, detached = false): Promise<boolean> {
+    const owned = job.owner === self;
+    const extra = detached ? { detached: true as const } : {};
+    // After its run the marker can only be recorded, never streamed.
+    const publish = detached && deps.detached ? deps.detached.onStatus : deps.onStatus;
     const failed = async (metadata: CompactionMetadata | null, code: string) => {
       if (job.mode === "foreground") foregroundFailed = true;
       else backgroundFailed = true;
+      if (!owned) return false;
       if (job.cycle !== null) {
-        await status({ beforeTokens: job.tokens, cycle: job.cycle, outcome: "summary_failed", state: "failed" });
+        await status({ beforeTokens: job.tokens, cycle: job.cycle, outcome: "summary_failed", state: "failed" }, publish);
       }
-      log(job, metadata, "failed", { code });
+      log(job, metadata, "failed", { ...extra, code });
       return false;
     };
     if ("error" in result) return failed(null, "compaction_failed");
@@ -234,22 +284,29 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     if (!outcome.ok) {
       // A stopped run, or a compaction that no longer had time: nothing to show.
       if (outcome.code === "compaction_aborted") {
-        log(job, outcome.metadata, "cancelled", { code: abortCode });
+        if (owned) log(job, outcome.metadata, "cancelled", { ...extra, code: job.stopCode ?? outcome.code });
         return false;
       }
       return failed(outcome.metadata, outcome.code);
     }
     if (!compactionCutCurrent(job.cut, deps.items, target, deps.rules)) {
-      if (job.cycle !== null) return failed(outcome.metadata, "compaction_cut_stale");
-      log(job, outcome.metadata, "discarded", { code: "compaction_cut_stale" });
+      if (owned && job.cycle !== null) return failed(outcome.metadata, "compaction_cut_stale");
+      log(job, outcome.metadata, "discarded", { ...extra, code: "compaction_cut_stale" });
       return false;
+    }
+    if (!owned) {
+      // The run that started it records it; it may be on record (and loaded) already.
+      if (deps.items.some((item) => item.id === outcome.item.id)) return false;
+      deps.insert([outcome.item]);
+      log(job, outcome.metadata, "adopted");
+      return true;
     }
     await deps.append([outcome.item]);
     const after = latest ? measure(latest) : undefined;
     job.cycle ??= ++cycle;
     await status({ afterTokens: after ?? null, beforeTokens: job.tokens, cycle: job.cycle,
-      outcome: "summary_applied", state: "complete" });
-    log(job, outcome.metadata, "compacted", after !== undefined ? { tokensAfter: after } : {});
+      outcome: "summary_applied", state: "complete" }, publish);
+    log(job, outcome.metadata, "compacted", { ...extra, ...(after !== undefined ? { tokensAfter: after } : {}) });
     return true;
   }
 
@@ -262,15 +319,74 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   }
 
   /** Waits up to `ms` for the running background compaction; one that is not done by then stops. */
-  async function awaitBackground(ms: number, timeoutCode: string): Promise<boolean> {
+  async function awaitBackground(ms: number): Promise<boolean> {
     const job = background;
     if (!job) return false;
-    const timedOut = !job.result && !(ms > 0 && await settledWithin(job.promise, ms));
-    if (timedOut) job.controller.abort();
+    const settled = job.result !== null || await settledWithin(job.promise, ms, deps.signal);
+    // A run that stops while it waits leaves an own compaction to stop with it and a joined one to its run.
+    deps.signal.throwIfAborted();
+    if (!settled) {
+      job.stopCode ??= "compaction_wait_timeout";
+      job.controller.abort();
+      backgroundFailed = true;
+    }
     const result = await job.promise;
     background = null;
-    if (timedOut) backgroundFailed = true;
-    return keep(job, result, timedOut ? timeoutCode : undefined);
+    return keep(job, result);
+  }
+
+  /**
+   * The chat's compaction from an earlier run, still running or finished
+   * after this run read the transcript, joined when its cut applies to this
+   * run's transcript (the same span; once its item is read with the
+   * transcript, it no longer does): this run swaps its item in and does not
+   * compact that span again. One that stopped or failed is left alone.
+   */
+  function join(): void {
+    const detached = deps.detached;
+    if (!detached || background) return;
+    const entry = detached.registry.find({ chatId: detached.chatId, targetKey: transcriptTargetKey(target), userId: detached.userId });
+    const job = entry?.job as Job | undefined;
+    if (!job || job.controller.signal.aborted || job.result && !("outcome" in job.result && job.result.outcome.ok)) return;
+    if (compactionCutCurrent(job.cut, deps.items, target, deps.rules)) background = job;
+  }
+
+  /**
+   * Lets a compaction still running when the answer is published go on
+   * without the run: under its own deadline, stopped when its chat goes away,
+   * and recorded by this run when it finishes, as at a request boundary; the
+   * usage it reported is recorded then too.
+   */
+  function detach(job: Job, detached: NonNullable<RunContextDeps["detached"]>): void {
+    const stop = (code: DetachedStopCode) => {
+      job.stopCode ??= code;
+      job.controller.abort();
+    };
+    detached.registry.add({ chatId: detached.chatId, job, stop, targetKey: transcriptTargetKey(target), userId: detached.userId });
+    const deadline = setTimeout(() => stop("compaction_deadline"), Math.max(0, job.startedAt + DETACHED_COMPACTION.deadlineMs - now()));
+    deadline.unref?.();
+    const checks = setInterval(() => {
+      void detached.live().then((live) => { if (!live) stop("compaction_chat_gone"); }, () => undefined);
+    }, DETACHED_COMPACTION.liveCheckMs);
+    checks.unref?.();
+    void job.promise.then(async (result) => {
+      clearTimeout(deadline);
+      clearInterval(checks);
+      let kept = false;
+      try {
+        // A chat deleted meanwhile keeps nothing.
+        if (await detached.live().catch(() => false)) {
+          kept = await keep(job, result, true);
+        } else {
+          job.stopCode ??= "compaction_chat_gone";
+          log(job, "outcome" in result ? result.outcome.metadata : null, "cancelled", { code: job.stopCode, detached: true });
+        }
+        await detached.settleUsage().catch(() => undefined);
+      } finally {
+        if (kept) detached.registry.finish(detached.chatId, job);
+        else detached.registry.remove(detached.chatId, job);
+      }
+    }).catch(() => undefined);
   }
 
   /** Compacts while the request waits, its running status shown. */
@@ -314,6 +430,10 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       if (window) {
         // A window the reserved output fills leaves no room for any request.
         if (usable <= 0) throw deps.tooLarge();
+        if (!joinChecked) {
+          joinChecked = true;
+          join();
+        }
         changed = await takeBackground();
         for (let step = 0; step < 4; step += 1) {
           deps.signal.throwIfAborted();
@@ -324,7 +444,7 @@ export function createRunContext(deps: RunContextDeps): RunContext {
             continue;
           }
           if (planned.kind === "wait") {
-            changed = await awaitBackground(COMPACTION_LIFECYCLE.urgentWaitMs, "compaction_wait_timeout") || changed;
+            changed = await awaitBackground(COMPACTION_LIFECYCLE.urgentWaitMs) || changed;
             continue;
           }
           if (planned.kind === "background") background = startJob("background", "threshold", planned.cut, tokens);
@@ -359,7 +479,7 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       const scale = reported !== undefined && reported > sent ? sent / reported : 1;
       const fits = Math.max(1, Math.floor(Math.min(usable * scale, sent * COMPACTION_LIFECYCLE.overflowFitShare)));
       let changed = await takeBackground();
-      if (!changed && background) changed = await awaitBackground(COMPACTION_LIFECYCLE.urgentWaitMs, "compaction_wait_timeout");
+      if (!changed && background) changed = await awaitBackground(COMPACTION_LIFECYCLE.urgentWaitMs);
       if (!changed && !foregroundFailed) {
         const planned = plan(request, sent, { reportedMaximumTokens: fits + window.maxOutputTokens });
         if (planned.kind === "foreground") changed = await foreground(planned.cut, sent, "overflow");
@@ -376,15 +496,28 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       return next;
     },
 
-    async afterAnswer(options = {}) {
-      if (!background) return;
-      await awaitBackground(options.wait === false ? 0 : COMPACTION_LIFECYCLE.afterAnswerWaitMs, "compaction_after_answer_timeout");
+    async afterAnswer() {
+      const job = background;
+      background = null;
+      // A joined compaction belongs to the run that started it.
+      if (!job || job.owner !== self) return;
+      if (job.result) {
+        await keep(job, job.result);
+        return;
+      }
+      if (deps.detached) {
+        detach(job, deps.detached);
+        return;
+      }
+      job.controller.abort();
+      await keep(job, await job.promise);
     },
 
     async close() {
       const job = background;
       background = null;
-      if (!job) return;
+      // A joined compaction goes on for the run that started it.
+      if (!job || job.owner !== self) return;
       job.controller.abort();
       const result = await job.promise;
       if ("outcome" in result && result.outcome.ok) log(job, result.outcome.metadata, "discarded", { code: "compaction_aborted" });
