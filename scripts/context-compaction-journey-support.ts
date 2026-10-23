@@ -9,7 +9,7 @@ import type { AdminProviderModelConfiguration } from "../lib/contracts/adminProv
 import type { CatalogModel } from "../lib/contracts/catalog";
 import type { ChatDetailWire, ChatMessageWire } from "../lib/contracts/chats";
 import type { ContextCompactionStatus } from "../lib/contracts/contextCompaction";
-import { sessionContextCapacity, type SessionContextStatus } from "../lib/contracts/sessionStatus";
+import type { SessionContextStatus } from "../lib/contracts/sessionStatus";
 import { textFromContentBlocks } from "../lib/domain/modelRunEvents";
 import { COMPACTION_THRESHOLDS } from "../lib/server/engine/compaction/policy";
 
@@ -36,6 +36,13 @@ export const JOURNEY_LIMITS = Object.freeze({
   fillerMinTokens: 256,
   /** The first compaction belongs to the first turn whose context passes this share of the usable window. */
   triggerShare: COMPACTION_THRESHOLDS.background,
+  /**
+   * How long a turn past the trigger waits for its background summary before
+   * the next turn: about twice the slowest compaction call measured
+   * (`runContext.ts`, 116 s). One still running then is joined by the next
+   * turn, and its marker is read when it lands on the turn that started it.
+   */
+  summaryWaitMs: 240_000,
   maxMessageBytes: 160 * 1024,
   maxRouteRequestBytes: 1024 * 1024
 });
@@ -316,10 +323,23 @@ export const JOURNEY_RULE = "Новое постоянное правило: в�
 export const JOURNEY_PROBE = "Каков итоговый срок реализации проекта «Лазурный маяк» в неделях и каков его итоговый " +
   "бюджет в тысячах евро? Учти все исправления и постоянное правило ответа.";
 
-/** Estimated tokens of the next filler, or null once the request would cross the trigger. */
-export function nextFillerTokens(input: Readonly<{ approximateInputTokens: number; budgetTokens: number }>): number | null {
+/**
+ * The window the engine's compaction thresholds measure against
+ * (`runContext.ts`: the context window less the output reserve the session
+ * status reports), not the composer's budget, which also keeps a safety margin.
+ */
+export function engineContextTokens(status: Pick<SessionContextStatus, "contextWindow" | "maxOutputTokens">): number | null {
+  return status.contextWindow === null ? null : Math.max(0, status.contextWindow - status.maxOutputTokens);
+}
+
+/**
+ * Estimated tokens of the next filler. Past the trigger without a summary a
+ * minimal filler gives the engine one more request boundary: its background
+ * compaction starts from its own measure, which can trail the reported one.
+ */
+export function nextFillerTokens(input: Readonly<{ approximateInputTokens: number; budgetTokens: number }>): number {
   const { approximateInputTokens, budgetTokens } = input;
-  if (approximateInputTokens >= budgetTokens * JOURNEY_LIMITS.triggerShare) return null;
+  if (approximateInputTokens >= budgetTokens * JOURNEY_LIMITS.triggerShare) return JOURNEY_LIMITS.fillerMinTokens;
   const step = Math.floor(budgetTokens * JOURNEY_LIMITS.fillerMaxBudgetShare);
   const toTarget = Math.ceil(budgetTokens * JOURNEY_LIMITS.fillerTargetShare - approximateInputTokens);
   return Math.max(JOURNEY_LIMITS.fillerMinTokens, Math.min(step, toTarget));
@@ -795,6 +815,16 @@ export function messageText(message: Pick<ChatMessageWire, "content">): string {
   return record(message.content) ? textFromContentBlocks(message.content as { blocks?: unknown[] }) : "";
 }
 
+/** The compaction marker the chat projection shows on one answer, as it stands now. */
+export function compactionMarker(detail: Pick<ChatDetailWire, "messages">, messageId: string): ContextCompactionStatus | null {
+  return detail.messages.find((message) => message.id === messageId)?.artifactSummary?.contextCompaction ?? null;
+}
+
+/** Whether any of these answers shows an applied summary. */
+export function summaryShown(detail: Pick<ChatDetailWire, "messages">, messageIds: readonly string[]): boolean {
+  return messageIds.some((id) => compactionMarker(detail, id)?.outcome === "summary_applied");
+}
+
 // Run stream --------------------------------------------------------------------------
 
 /** A compaction status line is a few hundred bytes; any longer line is skipped whole. */
@@ -802,10 +832,11 @@ const STREAM_LINE_MAX_CHARS = 4_096;
 
 /**
  * Reads a run's own event stream for the one fact the chat projection cannot
- * give: whether the turn bought notes. A bought summary publishes a running
- * compaction status before its first call, while notes carried from an
- * earlier answer settle without one. Text arrives in arbitrary pieces and
- * nothing beyond the current bounded line is kept.
+ * give: whether the turn waited for a summary. A summary the request waits
+ * for publishes a running compaction status before its call; a background
+ * summary, which the user does not wait for, publishes only its settled
+ * marker. Text arrives in arbitrary pieces and nothing beyond the current
+ * bounded line is kept.
  */
 export function createRunStreamScanner(): Readonly<{ push(text: string): void; summaryCycles(): number }> {
   let event = "";
@@ -855,7 +886,7 @@ export function createRunStreamScanner(): Readonly<{ push(text: string): void; s
 export type JourneyTurnKind = "brief" | "correction" | "filler" | "probe" | "rule";
 
 export type JourneyRound = Readonly<{
-  /** The turn's dispatched estimate as a share of the budget. */
+  /** The turn's dispatched estimate as a share of the engine's window (`engineContextTokens`). */
   budgetShare: number | null;
   /** How the full prompt was derived from the ledger components. */
   reportedAccounting: "exclusive_detected" | "inclusive" | null;
@@ -868,10 +899,24 @@ export type JourneyRound = Readonly<{
   kind: JourneyTurnKind;
   ratio: number | null;
   reportedInputTokens: number | null;
-  /** The planner's dispatched estimate of the request that bought or applied notes, as a share of the budget. */
+  /** The engine's measure of the request that started this turn's summary, as a share of its window. */
   summaryAtBudgetShare: number | null;
-  /** The run stream showed a summary cycle (true), none (false), or could not be read (null). */
+  /** The request waited for a summary (true), did not (false), or the run stream could not be read (null). */
   summaryBought: boolean | null;
+  turn: number;
+}>;
+
+export type JourneyRoundInput = Readonly<{
+  answerTokens: number;
+  /** The turn's own compaction marker: the engine records it on the run whose request started the summary. */
+  compaction: ContextCompactionStatus | null;
+  /** An earlier turn's summary finished during this turn, so its call's usage may be in this turn's ledger growth. */
+  compactionSettled?: boolean;
+  kind: JourneyTurnKind;
+  reported: LedgerUsage | null;
+  session: SessionContextStatus | null;
+  summaryBought: boolean | null;
+  toolCalls: number;
   turn: number;
 }>;
 
@@ -881,32 +926,24 @@ const rounded = (value: number) => Math.round(value * 1_000) / 1_000;
  * One turn's content-free evidence. The estimate is the stand's own session
  * measurement of the final request as dispatched (its after-answer phase minus
  * the answer's estimate; room a run reserves for follow-ups is never part of
- * it). `reportedInputTokens` is the turn's full provider prompt from the usage
+ * it), as a share of the window the engine's thresholds use.
+ * `reportedInputTokens` is the turn's full provider prompt from the usage
  * ledger (`fullPromptTokens`), with its cache components alongside. The ratio
  * (full prompt / estimate) is given for every turn that sent one provider
- * request: no tool rounds and no bought summary (notes carried from an earlier
- * answer cost no call), since those add input the final request estimate does
- * not describe.
+ * request: no tool rounds, no summary of its own (a background summary is a
+ * call beside the answer) and no earlier summary settling during it, since
+ * those add input the final request estimate does not describe.
  */
-export function journeyRound(input: Readonly<{
-  answerTokens: number;
-  compaction: ContextCompactionStatus | null;
-  kind: JourneyTurnKind;
-  reported: LedgerUsage | null;
-  session: SessionContextStatus | null;
-  summaryBought: boolean | null;
-  toolCalls: number;
-  turn: number;
-}>): JourneyRound {
+export function journeyRound(input: JourneyRoundInput): JourneyRound {
   const { session } = input;
   const estimated = session
     ? Math.max(0, session.approximateInputTokens - (session.phase === "after_answer" ? input.answerTokens : 0))
     : null;
-  const budget = session ? sessionContextCapacity(session).budgetTokens : null;
+  const budget = session ? engineContextTokens(session) : null;
   const share = (tokens: number | null) => tokens !== null && budget ? rounded(tokens / budget) : null;
   const full = input.reported ? fullPromptTokens(input.reported) : null;
   const reported = full?.tokens ?? null;
-  const singleRequest = input.toolCalls === 0 && (input.compaction === null || input.summaryBought === false);
+  const singleRequest = input.toolCalls === 0 && input.compaction === null && input.compactionSettled !== true;
   return {
     budgetShare: share(estimated),
     reportedAccounting: full?.accounting ?? null,
@@ -924,24 +961,39 @@ export function journeyRound(input: Readonly<{
   };
 }
 
+/**
+ * Whether the turn just answered waits for a background summary before the
+ * next one: no turn shows a summary yet, and this turn's or the previous
+ * turn's context passed the trigger, so the engine has started one by this
+ * turn's request unless its own measure still trails.
+ */
+export function awaitsSummary(previous: readonly JourneyRound[], share: number | null): boolean {
+  if (previous.some((round) => round.summaryAtBudgetShare !== null)) return false;
+  const last = previous.at(-1)?.budgetShare ?? null;
+  return [share, last].some((value) => value !== null && value > JOURNEY_LIMITS.triggerShare);
+}
+
 export type JourneyVerdict = Readonly<{
   code: string | null;
   compactionTriggered: boolean;
   firstSummaryAtBudgetShare: number | null;
   /**
-   * The first summary's share of the budget in provider-reported tokens: the
-   * request that bought it never reached the provider, so its dispatched
-   * estimate is scaled by the ratio of the latest single-request turn before it.
+   * The first summary's share of the window in provider-reported tokens: its
+   * turn's ledger also holds the summary call, so the engine's measure is
+   * scaled by the ratio of the latest single-request turn before it.
    */
   firstSummaryAtReportedBudgetShare: number | null;
   passed: boolean;
 }>;
 
 /**
- * Passes when the first summary was bought at the first turn whose dispatched
- * estimate exceeded the trigger (no earlier turn above it), every
- * single-request ratio lies in the route's band (when it has one) and the
- * probe answer carried both corrections.
+ * Passes when the first summary started past the trigger, at the first turn
+ * whose dispatched estimate exceeded it or at the next one (the engine starts
+ * it from its own measure before the request, which can trail the reported
+ * estimate by a turn), was in context before the probe answered (an earlier
+ * turn's, or one the probe waited for), every single-request ratio lies in
+ * the route's band (when it has one) and the probe answer carried both
+ * corrections.
  */
 export function journeyVerdict(
   rounds: readonly JourneyRound[],
@@ -952,15 +1004,16 @@ export function journeyVerdict(
   const first = rounds.findIndex((round) => round.summaryAtBudgetShare !== null);
   const firstSummaryAtBudgetShare = first >= 0 ? rounds[first]!.summaryAtBudgetShare : null;
   const earlier = first >= 0 ? rounds.slice(0, first) : rounds;
+  const crossed = rounds.findIndex((round) => round.budgetShare !== null && round.budgetShare > JOURNEY_LIMITS.triggerShare);
   const ratioBefore = [...earlier].reverse().find((round) => round.ratio !== null)?.ratio ?? null;
   const ratios = rounds.flatMap((round) => round.ratio === null ? [] : [round.ratio]);
   const code = (() => {
     if (!compactionTriggered) return "compaction_not_triggered";
     if (firstSummaryAtBudgetShare === null) return "summary_not_bought";
     if (firstSummaryAtBudgetShare <= JOURNEY_LIMITS.triggerShare) return "summary_before_trigger";
-    if (earlier.some((round) => round.budgetShare !== null && round.budgetShare > JOURNEY_LIMITS.triggerShare)) {
-      return "trigger_crossed_without_summary";
-    }
+    if (crossed >= 0 && crossed < first - 1) return "trigger_crossed_without_summary";
+    const summarized = rounds[first]!;
+    if (summarized.kind === "probe" && summarized.summaryBought !== true) return "summary_after_probe";
     if (ratioBand && ratios.length === 0) return "ratio_missing";
     if (ratioBand && ratios.some((ratio) => ratio < ratioBand.min || ratio > ratioBand.max)) return "ratio_out_of_range";
     return probeAnswerCarriesCorrections ? null : "probe_answer_missing_corrections";
