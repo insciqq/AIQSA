@@ -20,6 +20,9 @@ export type RetiredRunEffects = Readonly<{
   userMessageId: string;
 }>;
 
+/** A native run whose stopped answer the branch's next turn follows (`nativeRunsBeforeTurns`). */
+export type NativeRunBeforeTurn = Readonly<{ assistantMessageId: string; nextUserMessageId: string; runId: string }>;
+
 /** Old-core calls one branch read takes of each kind: more unknown outcomes than this are beyond any chat. */
 const RETIRED_EFFECT_CALL_LIMIT = 2_000;
 
@@ -116,6 +119,39 @@ export function createTranscriptRepository(client: TranscriptClient) {
       });
       // An answer has one run; the newest wins should a message ever carry more.
       return new Map(runs.flatMap((run) => run.assistantMessageId ? [[run.assistantMessageId, run.id] as const] : []));
+    },
+
+    /**
+     * Native runs whose answer stopped (error or cancelled) and is the parent
+     * of one of these user messages of the branch, with that message. The
+     * context leaves an answer that stopped without text out, but the next
+     * turn still follows it, so this is how its tool steps and results (and
+     * their unknown effects) stay on the branch. A sibling answer, or one
+     * whose next turn left the branch, is the parent of none of them. Every
+     * query names the owner and chat.
+     */
+    async nativeRunsBeforeTurns(input: Readonly<{ chatId: string; userId: string; userMessageIds: readonly string[] }>):
+      Promise<NativeRunBeforeTurn[]> {
+      const ids = [...new Set(input.userMessageIds)];
+      if (ids.length === 0) return [];
+      if (ids.length > TRANSCRIPT_LOAD_RUN_LIMIT) throw new Error("transcript_load_too_large");
+      const children = { chatId: input.chatId, id: { in: ids } };
+      const runs = await client.modelRun.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { assistantMessage: { select: { children: { select: { id: true }, take: 1, where: children } } },
+          assistantMessageId: true, id: true },
+        where: { chatId: input.chatId, engine: "native", userId: input.userId, assistantMessage: {
+          chatId: input.chatId, children: { some: children }, status: { in: ["cancelled", "error"] } } }
+      });
+      // An answer has one run; the newest wins should a message ever carry more.
+      const byAnswer = new Map<string, NativeRunBeforeTurn>();
+      for (const run of runs) {
+        const next = run.assistantMessage?.children[0]?.id;
+        if (run.assistantMessageId && next) {
+          byAnswer.set(run.assistantMessageId, { assistantMessageId: run.assistantMessageId, nextUserMessageId: next, runId: run.id });
+        }
+      }
+      return [...byAnswer.values()];
     },
 
     /**

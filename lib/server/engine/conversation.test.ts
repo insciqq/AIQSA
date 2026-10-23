@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { textMessageContent } from "../../domain/content";
 import type { ProviderConversationMessage } from "../providers/types";
-import { buildRunConversation } from "./conversation";
+import { conversationMessagesFromPathRows } from "../runs/prismaRepository";
+import { buildRunConversation, withStoppedNativeAnswers } from "./conversation";
 import type { TranscriptItem } from "./transcript";
 
 function message(id: string, role: "assistant" | "user", text: string, extra: Partial<ProviderConversationMessage> = {}): ProviderConversationMessage {
@@ -94,6 +96,35 @@ describe("native run conversation", () => {
       { id: "msg-answer-1", kind: "assistant_text", text: "Partial answer before the restart" },
       { id: "msg-user-2", kind: "user", text: "Continue" }
     ]);
+  });
+
+  // Regression: a native run interrupted after its tool calls but before any text left an answer the context drops, so
+  // Continue lost the run's own steps and results.
+  it("puts a native answer that stopped without text back before the turn that follows it", () => {
+    const row = (messageId: string, messageRole: "assistant" | "user", text: string, messageStatus = "complete") =>
+      ({ chatId: "chat", messageContent: textMessageContent(text), messageId, messageRole, messageStatus });
+    const branch = conversationMessagesFromPathRows([
+      row("user-1", "user", "Create the issue"), row("answer-1", "assistant", "", "error"),
+      row("user-2", "user", "Continue"), row("answer-2", "assistant", "", "cancelled"),
+      row("current-user-message", "user", "And now?")
+    ]);
+    // The real context path leaves both stopped answers out.
+    expect(branch.map((entry) => entry.id)).toEqual(["user-1", "user-2", "current-user-message"]);
+    const withSkills = [...branch.slice(0, -1), message("skills", "user", "Skills index", { purpose: "skill_catalog" }), branch.at(-1)!];
+    const messages = withStoppedNativeAnswers(withSkills, [
+      { assistantMessageId: "answer-1", nextUserMessageId: "user-2" },
+      { assistantMessageId: "answer-2", nextUserMessageId: "current-user-message" },
+      // A sibling answer or one whose next turn left the branch has no place on it.
+      { assistantMessageId: "sibling", nextUserMessageId: "elsewhere" },
+      // One the branch carries already stays where it is.
+      { assistantMessageId: "user-1", nextUserMessageId: "user-2" }
+    ]);
+    expect(messages.map((entry) => entry.id)).toEqual(["user-1", "answer-1", "user-2", "answer-2", "skills", "current-user-message"]);
+    const conversation = buildRunConversation({ continuationTurns: new Set(), current: { messageId: "user-3", mode: "input" }, messages,
+      nativeAnswers: new Map([["answer-1", nativeTurn], ["answer-2", []]]) });
+    // A stopped run with nothing recorded adds nothing.
+    expect(conversation.items.map((item) => item.id)).toEqual(["msg-user-1", "n1", "n2", "msg-user-2", "ctx-4", "msg-user-3"]);
+    expect(withStoppedNativeAnswers(branch, [])).toEqual(branch);
   });
 
   it("requires the run's own user message last", () => {
