@@ -12,6 +12,7 @@ import { observedFailure, providerHttpFailureMessage } from "../providers/provid
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllers, runSettlements } from "../runs/activeRunControllerRegistry";
+import { contextCompactionArtifact } from "../runs/contextCompactionEvents";
 import { liveRunPhaseStatus } from "../runs/liveToolStatus";
 import { serializeChatUpdate } from "../runs/runExecution";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
@@ -370,7 +371,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             onUsage: recordModelUsage, timeoutMs }, latest),
           items,
           now,
-          onStatus: (status) => sink.publish({ data: { artifactType: "context_compaction", payload: status }, type: "artifact" }),
+          // Server-minted, so recorded as it is: the provider projection never keeps capacity statuses.
+          onStatus: (status) => sink.record(contextCompactionArtifact(status)),
           projection: conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {},
           record: (item) => transcriptRecord(registry, item),
           rules: engineItemRules(input.approvalContinuation ? conversation.currentInputId : null),

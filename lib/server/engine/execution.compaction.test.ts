@@ -171,9 +171,13 @@ describe("native run compaction", () => {
   it("answers without waiting when the turn crosses the background threshold, then keeps the compaction for the next turn", async () => {
     const scripted = scriptedAdapter([{ text: "Done with the next step." }], 30);
     const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const runRepository = repository();
     const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
-      prepared: prepared(windowFor(0.78)), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      prepared: prepared(windowFor(0.78)), repository: runRepository as unknown as RunRepository, services: {}, userId: "user" }));
     expect(memory.published()).toBe("Done with the next step.");
+    // The marker is on record too, so a reload shows the Context section the live answer showed.
+    expect(runRepository.appendRunOutputEvent).toHaveBeenCalledWith("run-1", { data: { artifactType: "context_compaction",
+      payload: expect.objectContaining({ outcome: "summary_applied", state: "complete" }) }, type: "artifact" });
     // The answer request went out as it was, without a summary in it.
     expect(scripted.answers).toHaveLength(1);
     expect(firstText(scripted.answers[0]!)).not.toContain(COMPACTION_SUMMARY_HEADING);
