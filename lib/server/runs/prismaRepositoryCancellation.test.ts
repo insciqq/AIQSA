@@ -38,9 +38,6 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
       // A legacy Project chat: no personal owner, so no Memory source settlement.
       findUnique: vi.fn(async () => ({ userId: null }))
     },
-    knowledgeBudgetReservation: {
-      updateMany: vi.fn(async () => ({ count: 1 }))
-    },
     message: {
       updateMany: vi.fn(async () => ({ count: 1 }))
     },
@@ -82,41 +79,10 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
   };
 }
 
-function expectBudgetCancellationWrites(
+function expectPendingCallCancellation(
   tx: ReturnType<typeof repositoryCancellationHarness>["tx"],
   runId: string
 ): void {
-  expect(tx.knowledgeBudgetReservation.updateMany).toHaveBeenCalledTimes(4);
-  expect(tx.knowledgeBudgetReservation.updateMany).toHaveBeenNthCalledWith(1, {
-    data: {
-      failureCode: "operation_cancelled",
-      leaseExpiresAt: null,
-      leaseToken: null,
-      releasedAt: expect.any(Date),
-      state: "released"
-    },
-    where: {
-      modelRunId: runId,
-      modelRunToolCallId: { in: ["reserved-call", "dispatched-call"] },
-      purgedAt: null,
-      state: "reserved"
-    }
-  });
-  expect(tx.knowledgeBudgetReservation.updateMany).toHaveBeenNthCalledWith(3, {
-    data: {
-      ambiguousAt: expect.any(Date),
-      failureCode: "operation_cancelled_after_dispatch",
-      leaseExpiresAt: null,
-      leaseToken: null,
-      state: "ambiguous"
-    },
-    where: {
-      modelRunId: runId,
-      modelRunToolCallId: { in: ["reserved-call", "dispatched-call"] },
-      purgedAt: null,
-      state: "dispatched"
-    }
-  });
   expect(tx.modelRunToolCall.updateMany).toHaveBeenCalledWith({
     data: {
       completedAt: expect.any(Date),
@@ -131,7 +97,7 @@ function expectBudgetCancellationWrites(
 }
 
 describe("Prisma run terminal cancellation integration", () => {
-  it("settles pending Knowledge reservations inside cancelRun's transaction", async () => {
+  it("cancels a run's pending calls inside cancelRun's transaction", async () => {
     const harness = repositoryCancellationHarness("cancel");
 
     await expect(harness.repository.cancelRun({
@@ -140,11 +106,11 @@ describe("Prisma run terminal cancellation integration", () => {
       userId: harness.userId
     })).resolves.toMatchObject({ kind: "cancelled" });
 
-    expectBudgetCancellationWrites(harness.tx, harness.runId);
+    expectPendingCallCancellation(harness.tx, harness.runId);
     expect(harness.transaction).toHaveBeenCalledTimes(1);
   });
 
-  it("settles pending Knowledge reservations inside failRun's transaction", async () => {
+  it("cancels a run's pending calls inside failRun's transaction", async () => {
     const harness = repositoryCancellationHarness("fail");
 
     await expect(harness.repository.failRun(
@@ -153,7 +119,7 @@ describe("Prisma run terminal cancellation integration", () => {
       { code: "run_failed", message: "Run failed" }
     )).resolves.toBe(true);
 
-    expectBudgetCancellationWrites(harness.tx, harness.runId);
+    expectPendingCallCancellation(harness.tx, harness.runId);
     expect(harness.transaction).toHaveBeenCalledTimes(1);
   });
 
