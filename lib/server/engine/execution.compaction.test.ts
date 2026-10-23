@@ -298,4 +298,47 @@ describe("native run compaction", () => {
     expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "context_too_large" }),
       { recoveryTerminal: true });
   });
+
+  it("sends a chat's loop rounds one gateway routing key across its runs, and its compactions their own", async () => {
+    vi.stubEnv("AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", Buffer.alloc(32, 5).toString("base64"));
+    try {
+      const keyed = (adapter: ProviderAdapter) => {
+        const keys: { key: string | undefined; summary: boolean }[] = [];
+        const wrapped: ProviderAdapter = { ...adapter, stream: (request, options) => {
+          keys.push({ key: options?.routingKey, summary: isSummary(request) });
+          return adapter.stream(request, options);
+        } };
+        return { adapter: wrapped, keys };
+      };
+      const chatId = `chat-${randomUUID()}`;
+      const first = keyed(scriptedAdapter([
+        { calls: [{ arguments: { handle: `tor1_${"a".repeat(32)}` }, id: "call-read", name: "read_tool_result" }] },
+        { text: "Read it; continuing." }
+      ]).adapter);
+      const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+      await events(createNativeRunExecutionResponse({ adapter: first.adapter, created, engine: memory.engine,
+        prepared: prepared(windowFor(0.78), chatId), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      const rounds = first.keys.filter((entry) => !entry.summary).map((entry) => entry.key);
+      const compactions = first.keys.filter((entry) => entry.summary).map((entry) => entry.key);
+      expect(rounds).toHaveLength(2);
+      expect(rounds[0]).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(rounds[1]).toBe(rounds[0]);
+      expect(compactions.length).toBeGreaterThanOrEqual(1);
+      expect(compactions[0]).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(new Set(compactions).size).toBe(1);
+      expect(compactions[0]).not.toBe(rounds[0]);
+      expect(JSON.stringify(first.keys)).not.toContain(chatId);
+      // The chat's next run goes on with the same key; another chat has its own.
+      for (const [chat, same] of [[chatId, true], [`chat-${randomUUID()}`, false]] as const) {
+        const next = keyed(scriptedAdapter([{ text: "Next." }]).adapter);
+        await events(createNativeRunExecutionResponse({ adapter: next.adapter,
+          created: { assistantMessageId: "answer-2", runId: "run-2", userMessageId: "question-2" }, engine: memoryEngine([]).engine,
+          prepared: prepared(200_000, chat), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+        expect(next.keys).toHaveLength(1);
+        expect(next.keys[0]!.key === rounds[0]).toBe(same);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

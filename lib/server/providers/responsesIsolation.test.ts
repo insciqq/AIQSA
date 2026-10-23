@@ -172,6 +172,45 @@ describe("compatible Responses request isolation", () => {
     expect(new Set(gateway.calls.map(({ body }) => body.prompt_cache_key)).size).toBe(8);
   });
 
+  it("carries a native run's lane key through the compatible adapter, while other calls keep fresh keys", async () => {
+    const lane = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    const seed: Seed = { kind: "json", name: "synthetic_lane", nonce: "synthetic_lane_nonce" };
+    for (const mode of ["on", "off"] as const) {
+      const bodies: Record<string, unknown>[] = [];
+      const fetchFn: typeof fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        const response = terminal(seed);
+        if (body.stream !== true) return Response.json(response);
+        const events = [
+          { type: "response.created", response: { id: response.id, status: "in_progress" } },
+          { type: "response.output_text.delta", response_id: response.id,
+            delta: JSON.stringify({ functionName: seed.name, nonce: seed.nonce }) },
+          { type: "response.completed", response }
+        ];
+        return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+          { headers: { "content-type": "text/event-stream" } });
+      };
+      const runtime = bind(snapshot({ responsesRequestIsolation: mode }), fetchFn);
+      for (const streaming of [true, false]) {
+        const stream = runtime.adapter.stream({ ...request(seed, "openai_compatible", streaming), toolChoice: "none", toolMode: "none",
+          tools: [] }, { routingKey: lane });
+        let next = await stream.next();
+        while (!next.done) next = await stream.next();
+      }
+      await runtime.structuredOutputAdapter!.execute({ name: seed.name, schema, systemPrompt: "Return the synthetic marker.",
+        userPrompt: JSON.stringify(seed) });
+      const keys = bodies.map((body) => body.prompt_cache_key);
+      if (mode === "off") {
+        expect(keys).toEqual([undefined, undefined, undefined]);
+        continue;
+      }
+      expect(keys.slice(0, 2)).toEqual([lane, lane]);
+      expect(typeof keys[2]).toBe("string");
+      expect(keys[2]).not.toBe(lane);
+    }
+  });
+
   it.each(["openai_responses_native", "openai_chat_completions_compatible"] as const)(
     "leaves %s requests unchanged when compatible isolation is enabled", async (adapterKind) => {
       const bodies: Record<string, unknown>[] = [];

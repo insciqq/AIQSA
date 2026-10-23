@@ -2,6 +2,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import { logEvent } from "../observability";
 import { isProviderDeadlineExceededError } from "../providers/network";
+import type { GatewayRoutingLane } from "../providers/gatewayRouting";
 import { observedFailure } from "../providers/providerObservability";
 import {
   isRetryableProviderHttpStatus,
@@ -68,6 +69,12 @@ export type ModelCallPorts = Readonly<{
   /** One physical request's provider-reported usage and cost. */
   onUsage(usage: ModelRunUsage, costUsd: number | undefined): void;
   random?: () => number;
+  /**
+   * The gateway routing lane of the request (`gatewayRouting.ts`): each attempt
+   * carries the lane's key, and a failed one moves the lane, so the attempt
+   * sent again never shares a key with one that may still run upstream.
+   */
+  routing?: GatewayRoutingLane;
   signal: AbortSignal;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /** What the request is for, in its retry logs: an answer round (default) or a compaction. */
@@ -95,7 +102,9 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
     let stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResult> | null = null;
     try {
       if (faults.take("model_502_once")) throw syntheticProviderBadGateway();
-      const opened = ports.adapter.stream(request, { signal: ports.signal, ...(ports.timeoutMs ? { timeoutMs: ports.timeoutMs } : {}) });
+      const routingKey = ports.routing?.key();
+      const opened = ports.adapter.stream(request, { ...(routingKey ? { routingKey } : {}), signal: ports.signal,
+        ...(ports.timeoutMs ? { timeoutMs: ports.timeoutMs } : {}) });
       stream = faults.take("stream_drop_once") ? faulted(opened, true) : opened;
       let next = await stream.next();
       while (!next.done) {
@@ -108,6 +117,8 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
       ports.onUsage(reported, next.value.costUsd);
       return { ...next.value, usage: reported };
     } catch (error) {
+      // Whatever the failed attempt left upstream keeps its key; the lane's next request takes another.
+      ports.routing?.failed();
       // A request that reported usage before it failed may be billed: keep it.
       if (usage) ports.onUsage(normalizeTokenUsage({ ...usage, completeness: "partial" }), undefined);
       const decision = modelCallRetryDecision(error, ports.signal);

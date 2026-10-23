@@ -120,6 +120,14 @@ function exactBase64Key(value: string | undefined): KeyObject {
   return createSecretKey(decoded);
 }
 
+/**
+ * The installation's routing key (`AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY`), read as strictly as the index reads it. Its
+ * other user derives a key of its own under a label (`lib/server/providers/gatewayRouting.ts`).
+ */
+export function installationRoutingKeyFromEnv(env: Readonly<Record<string, string | undefined>> = process.env): KeyObject {
+  return exactBase64Key(env.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY);
+}
+
 export function memoryOpenSearchConfigurationFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env
 ): MemoryOpenSearchConfiguration {
@@ -169,7 +177,7 @@ export function memoryOpenSearchConfigurationFromEnv(
       64 * 1024,
       MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES
     ),
-    routingKey: exactBase64Key(env.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY),
+    routingKey: installationRoutingKeyFromEnv(env),
     routingKeyId,
     searchTimeoutMs: integerFromEnvironment(
       env.AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS,
