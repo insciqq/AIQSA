@@ -385,7 +385,7 @@ function markers(value: Body): string[] {
 }
 
 describe("Anthropic prompt caching", () => {
-  it("marks the last tool, the system prompt and the ends of the two latest user turns, so each round reads the one before", async () => {
+  it("marks the system prompt and the ends of the two latest user turns, so each round reads the one before", async () => {
     const first = request([input("Look up A-17 and B-2")]);
     const round1 = await respond(first, [thinking("Look up A-17.", "SIG-1"), call("toolu_1", "A-17")], "tool_use");
     const second = request([...first.history!, ...round1.result.history!, result("toolu_1", "A-17: shipped")]);
@@ -394,9 +394,10 @@ describe("Anthropic prompt caching", () => {
     const round3 = await respond(third, [thinking("Both known.", "SIG-3"), { text: "A-17 shipped, B-2 is open.", type: "text" }],
       "end_turn");
 
-    expect(markers(round1.body)).toEqual(["tools[0]", "system[0]", "messages[0].content[0]"]);
-    expect(markers(round2.body)).toEqual(["tools[0]", "system[0]", "messages[0].content[0]", "messages[2].content[0]"]);
-    expect(markers(round3.body)).toEqual(["tools[0]", "system[0]", "messages[2].content[0]", "messages[4].content[0]"]);
+    // The system prompt's marker covers the tools rendered before it.
+    expect(markers(round1.body)).toEqual(["system[0]", "messages[0].content[0]"]);
+    expect(markers(round2.body)).toEqual(["system[0]", "messages[0].content[0]", "messages[2].content[0]"]);
+    expect(markers(round3.body)).toEqual(["system[0]", "messages[2].content[0]", "messages[4].content[0]"]);
     expect(round3.body.system).toEqual([{ cache_control: { type: "ephemeral" }, text: "You are Claude in AIQSA.", type: "text" }]);
     for (const sent of [round1.body, round2.body, round3.body]) {
       // The API's limit, and never a thinking block.
@@ -410,6 +411,30 @@ describe("Anthropic prompt caching", () => {
     expect(thinkingIn(round3.body).map((block) => block.signature)).toEqual(["SIG-1", "SIG-2"]);
   });
 
+  it("marks the end of what came before the run's own turn, where the next run reads, however long the turn was", () => {
+    const context = (time: string): ProviderHistoryItem => ({ text: `<turn_context>\nCurrent local time: ${time}.\n</turn_context>`,
+      type: "user" });
+    // Twelve sequential rounds: more positions than the API looks back over from a later marker.
+    const rounds = Array.from({ length: 12 }, (_, index): ProviderHistoryItem[] => [
+      { arguments: JSON.stringify({ order_id: `A-${index}` }), callId: `toolu_${index}`, name: "lookup_order", type: "tool_call" },
+      result(`toolu_${index}`, `A-${index}: shipped`)
+    ]).flat();
+    const turn1: ProviderHistoryItem[] = [{ text: "Look up every order", type: "user" }, ...rounds,
+      { text: "All shipped.", type: "assistant_text" }];
+    const turn2: ProviderHistoryItem[] = [{ text: "And B-2?", type: "user" }, { text: "B-2 is open.", type: "assistant_text" }];
+    // Each run sends its turn context and input as its latest user turn; later runs send the input alone.
+    const second = body(request([...turn1, context("10:00 AM"), input("And B-2?")]));
+    const third = body(request([...turn1, ...turn2, context("10:03 AM"), input("Thanks")]));
+
+    // Turn 1 fills messages 0-25. The second run marks the end of turn 1 for the next run, and its own end for its next round.
+    expect(markers(second)).toEqual(["system[0]", "messages[25].content[0]", "messages[26].content[1]"]);
+    // The third run reads exactly there, then marks the end of turn 2 and its own end.
+    expect(markers(third)).toEqual(["system[0]", "messages[25].content[0]", "messages[27].content[0]", "messages[28].content[1]"]);
+    expect(unmarked(third.messages.slice(0, 26))).toEqual(unmarked(second.messages.slice(0, 26)));
+    expect(third.system).toEqual(second.system);
+    expect(third.tools).toEqual(second.tools);
+  });
+
   it("puts a marker on the nearest block that can carry one, never on thinking or empty text", () => {
     const question = { content: [{ text: "Question", type: "text" }, { text: " ", type: "text" }], role: "user" as const };
     const answer = { content: [{ text: "Answer", type: "text" }, { signature: "SIG", thinking: "", type: "thinking" },
@@ -419,12 +444,15 @@ describe("Anthropic prompt caching", () => {
     const flags = (content: readonly Record<string, unknown>[]) => content.map((block) => "cache_control" in block);
 
     const cached = anthropicPromptCache({ messages: [question, answer, next], system: undefined, tools });
-    expect(cached.messages.map((message) => flags(message.content))).toEqual([[true, false], [false, false, false], [true, false]]);
+    expect(cached.messages.map((message) => flags(message.content))).toEqual([[false, false], [true, false, false], [true, false]]);
+    // Without a system prompt the last tool carries the stable prefix's marker.
     expect(cached.system).toBeUndefined();
     expect(cached.tools).toEqual([{ cache_control: { type: "ephemeral" }, input_schema: { type: "object" }, name: "lookup_order" }]);
-    // A latest message that ends in thinking is marked on the block before it.
     const answered = anthropicPromptCache({ messages: [question, answer], system: undefined, tools });
-    expect(answered.messages.map((message) => flags(message.content))).toEqual([[false, false], [true, false, false]]);
+    expect(answered.messages.map((message) => flags(message.content))).toEqual([[true, false], [true, false, false]]);
+    const system = anthropicPromptCache({ messages: [question], system: [{ text: "System", type: "text" }], tools });
+    expect(system.system).toEqual([{ cache_control: { type: "ephemeral" }, text: "System", type: "text" }]);
+    expect(system.tools).toEqual(tools);
   });
 
   it("leaves requests without tools and the old core's requests uncached", () => {
