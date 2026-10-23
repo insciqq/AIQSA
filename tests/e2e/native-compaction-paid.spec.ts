@@ -7,12 +7,15 @@
  * AIQSA_FEATURES_CODEX_MODEL picks the codex-lb model (default as
  * `setupCodexLbAnswerModel`). Every run asserts `ModelRun.engine`.
  *
- * The model gets a small context window (AIQSA_FEATURES_COMPACTION_WINDOW,
- * default 60,000 tokens, 4,096 of them reserved for output) so a cheap chat
- * crosses the background threshold (72 % of the usable window): three turns
- * plant facts (a constraint, a correction, an error code inside a pasted
- * log), then turns paste about 3,000 tokens of synthetic CI log each until
- * the chat holds a compaction item. No turn waits after its answer: every
+ * The model gets a real-size context window (AIQSA_FEATURES_COMPACTION_WINDOW,
+ * default 400,000 tokens, 4,096 of them reserved for output; operator decision
+ * 2026-10-23: checks below 400k prove nothing about the models in use, and at
+ * small windows the fixed prompt and tools leave no background cut): three
+ * turns plant facts (a constraint, a correction, an error code inside a pasted
+ * log), then turns paste about 25,000 tokens of synthetic CI log each (about
+ * 6 % of the usable window, well inside the 72-85 % band, so no turn jumps
+ * straight to a foreground compaction) until the chat holds a compaction item.
+ * No turn waits after its answer: every
  * run ends right after its answer is published, while a compaction still
  * running goes on detached and the run that started it records its item when
  * it finishes. Turns sent meanwhile join that compaction rather than
@@ -31,9 +34,9 @@
  * `docker compose -f docker-compose.dev.yml run --rm -T app npx playwright test ...`.
  *
  * Expected paid calls (Codex LB only): custom setup (discovery plus its model
- * checks); 3 planting turns and about 6–14 filler turns of one request each
- * (more when the stand's instructions and tools are small); one compaction of
- * one to three summary calls; one recall turn of one request.
+ * checks); 3 planting turns and about 10–12 filler turns of one request each
+ * (up to ~310k input tokens per request); one compaction of one to three
+ * summary calls; one recall turn of one request.
  *
  * Oracles are the browser's own run streams (event kinds and compaction
  * states recorded by a content-free probe), the persisted runs, transcript
@@ -67,18 +70,18 @@ const TURN_TIMEOUT_MS = 600_000;
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
 const DESKTOP = { height: 900, width: 1440 };
 const PHONE = { height: 844, width: 390 };
-const CONTEXT_WINDOW = Number(paidEnv("AIQSA_FEATURES_COMPACTION_WINDOW") ?? 60_000);
+const CONTEXT_WINDOW = Number(paidEnv("AIQSA_FEATURES_COMPACTION_WINDOW") ?? 400_000);
 /** `codexLbSetupBody` declares 4,096 default output tokens: the reserve every request keeps. */
 const OUTPUT_RESERVE = 4_096;
 const USABLE = CONTEXT_WINDOW - OUTPUT_RESERVE;
 /** Filler turns before the test gives up waiting for a compaction. */
-const MAX_FILLER_TURNS = 24;
+const MAX_FILLER_TURNS = 40;
 /** The background threshold's share of the usable window (`COMPACTION_THRESHOLDS.background`). */
 const BACKGROUND_SHARE = 0.72;
 /** A run ends this soon after its answer: bookkeeping only, never a compaction (whose calls take a minute or more). */
 const ANSWER_TO_DONE_MS = 20_000;
 /** How long a detached compaction may take to be recorded (its summary calls took up to two minutes on the evaluation). */
-const COMPACTION_TIMEOUT_MS = 240_000;
+const COMPACTION_TIMEOUT_MS = 900_000;
 /** How long a compaction's quiet marker and usage may take to be recorded once its item is. */
 const MARKER_TIMEOUT_MS = 60_000;
 
@@ -337,10 +340,10 @@ async function phoneShot(browser: Browser, baseURL: string, chatId: string, assi
 
 const codeWord = (prefix: string) => `${prefix}${randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
 
-/** About 3,000 tokens of synthetic CI log lines; nothing in them is asked about later. */
+/** About 25,000 tokens of synthetic CI log lines; nothing in them is asked about later. */
 function fillerLog(batch: number): string {
   const lines: string[] = [];
-  for (let line = 0; line < 120; line += 1) {
+  for (let line = 0; line < 640; line += 1) {
     const step = (batch * 131 + line * 17) % 997;
     lines.push(`2026-04-${String(1 + (line % 28)).padStart(2, "0")}T${String(line % 24).padStart(2, "0")}:${String(step % 60)
       .padStart(2, "0")}:07Z INFO job=ci-${batch}-${line} stage=${["lint", "test", "build", "package"][line % 4]} ` +
@@ -354,7 +357,7 @@ function fillerLog(batch: number): string {
 test("a long chat compacts in the background without the user waiting, and later answers recall what came before", async ({
   page, browser, baseURL
 }, testInfo) => {
-  test.setTimeout(60 * 60_000);
+  test.setTimeout(150 * 60_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   await page.setViewportSize(DESKTOP);
   await page.addInitScript(installRunStreamProbe);
@@ -412,6 +415,7 @@ test("a long chat compacts in the background without the user waiting, and later
       compactions = await chatCompactions(chatId);
       fillers.push({ answerToDoneMs: stream.answerToDoneMs, batch, compactionStates: stream.compactionStates, compactions: compactions.length,
         inputTokens });
+      console.log(`native_compaction_paid_filler ${JSON.stringify(fillers.at(-1))}`);
       // No turn of this chat waits for a compaction: a running status shows only for a foreground one, and the run ends
       // right after its answer.
       expect(stream.compactionStates, `batch ${batch} never waited for a compaction`).not.toContain("running");
