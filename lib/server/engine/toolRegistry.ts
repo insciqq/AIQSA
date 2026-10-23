@@ -2,7 +2,7 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadWorkspaceActivityEntry, WorkspaceActivityKind } from "../../contracts/workspace";
 import type { ArtifactService } from "../artifacts/service";
 import type { ImageGenerationService } from "../images/service";
-import { mcpFindToolsTool } from "../mcp/discovery";
+import { MCP_FIND_TOOLS_NAME, mcpFindToolsTool } from "../mcp/discovery";
 import { executeDurableMcpDiscovery } from "../mcp/durableDiscovery";
 import type { McpRunPlanBinding, McpRunPlanResult, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
@@ -135,6 +135,13 @@ export type ToolRegistry = Readonly<{
    * earlier turn), what to call instead: the refusal the model reads.
    */
   replacement?(name: string): string | undefined;
+  /**
+   * The `find_tools` call, with provider call `id`, that loads the MCP tool
+   * `name` from the run's frozen Auto catalog: how the server loads an
+   * approved call's tool into a run that admitted none. Undefined without a
+   * catalog or when the catalog lacks the tool.
+   */
+  mcpLoadCall?(name: string, id: string): ModelToolCall | undefined;
   resolve(name: string): EngineTool | undefined;
 }>;
 
@@ -448,7 +455,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       } });
   }
 
-  if (clientTools) addMcpTools(input, add, tools);
+  const mcpLoadCall = clientTools ? addMcpTools(input, add, tools) : undefined;
 
   if (clientTools && request.workspace && input.services.workspace) {
     const workspace = request.workspace;
@@ -471,6 +478,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   return {
     definitions: () => [...tools.values()].map((tool) => tool.definition),
+    ...(mcpLoadCall ? { mcpLoadCall } : {}),
     replacement: (name) => {
       const superseded = SUPERSEDED_TOOLS.get(name);
       return superseded && tools.has(superseded.by) && !tools.has(name)
@@ -524,8 +532,13 @@ function applyPatchEngineTool(input: ToolRegistryInput, coordinator: WorkspaceCo
   };
 }
 
-/** MCP tools of the admitted snapshot, and `find_tools` adding more under Auto. */
-function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, tools: Map<string, EngineTool>): void {
+/**
+ * MCP tools of the admitted snapshot, and `find_tools` adding more under Auto;
+ * under Auto, also the server's own `find_tools` call for one catalog tool
+ * (`ToolRegistry.mcpLoadCall`).
+ */
+function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
+  tools: Map<string, EngineTool>): ToolRegistry["mcpLoadCall"] {
   const request = input.request;
   let snapshot: McpRunPlanSnapshot | undefined = request.mcp;
   let discovery = request.mcpDiscovery;
@@ -591,7 +604,7 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
 
   const materialize = input.services.mcp?.materialize;
   const appendEpoch = input.services.repository.appendMcpDiscoveryEpoch;
-  if (!discovery || !materialize || !appendEpoch || !input.services.mcp) return;
+  if (!discovery || !materialize || !appendEpoch || !input.services.mcp) return undefined;
   const filterTools = input.services.mcp.filterTools;
   const budgets = toolRunBudgetsForRequest(request);
   let queue: Promise<unknown> = Promise.resolve();
@@ -634,6 +647,9 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
       return next;
     }
   });
+  // Exactly that tool, by its name in the frozen catalog the model's `find_tools` searches; nothing outside it.
+  return (name, id) => discovery?.catalog.servers.some((server) => server.tools.some((tool) => tool.namespacedName === name))
+    ? { arguments: { query: `select:${name}` }, id, name: MCP_FIND_TOOLS_NAME } : undefined;
 }
 
 /**

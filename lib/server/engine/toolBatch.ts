@@ -78,6 +78,13 @@ export const UNKNOWN_OUTCOME_APPROVAL_OUTPUT =
   "if you can and tell the user what you found; the user decides in the approval card whether to send it again. Do not call it " +
   "again meanwhile.";
 
+/** The stable reason of an approved call the continuing run could not load (`ApprovedToolCall.unavailable`). */
+export const APPROVED_TOOL_UNAVAILABLE = "mcp_approved_tool_unavailable";
+
+export const APPROVED_TOOL_UNAVAILABLE_OUTPUT =
+  "Not sent: the user approved this call, but its tool is no longer available in this chat (its server was removed, turned " +
+  "off or could not start). Tell the user that it did not run.";
+
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
@@ -107,8 +114,11 @@ export type ToolBatchDeps = Readonly<{
   userId: string;
 }>;
 
-/** The call an approval continuation sends, with the user's Allow that names it. */
-export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string }>;
+/**
+ * The call an approval continuation sends, with the user's Allow that names it. `unavailable`: the continuing run
+ * could not load its tool, so it is refused with `APPROVED_TOOL_UNAVAILABLE` and never sent.
+ */
+export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string; unavailable?: true }>;
 
 /** What the run has spent on tools so far; `reservedCalled`: the reserved report's first call ran. */
 export type ToolBatchState = { calls: number; reservedCalled?: boolean };
@@ -166,6 +176,11 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
    */
   function beforeToolCall(call: ModelToolCall, round: number, batch: readonly ModelToolCall[],
     approved?: ApprovedToolCall): BeforeToolCall {
+    // An approved call whose tool the run could not load is refused visibly, never dropped or left to the model.
+    if (approved?.unavailable && approved.callId === call.id) {
+      return { kind: "refuse", output: APPROVED_TOOL_UNAVAILABLE_OUTPUT, toolName: call.name,
+        result: jsonError(call, { error: APPROVED_TOOL_UNAVAILABLE, message: APPROVED_TOOL_UNAVAILABLE_OUTPUT }) };
+    }
     const tool = deps.registry.resolve(call.name);
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
@@ -286,9 +301,13 @@ async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, executi
   }
 }
 
-/** Runs one batch; results follow the calls' order. */
-export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
-  input: Readonly<{ approved?: ApprovedToolCall; calls: readonly ModelToolCall[]; round: number }>): Promise<ToolBatchOutcome> {
+/**
+ * Runs one batch; results follow the calls' order. `firstOrdinal`: the first call's ordinal in its round, after calls
+ * the server already recorded there (the approved tool's load).
+ */
+export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, input: Readonly<{
+  approved?: ApprovedToolCall; calls: readonly ModelToolCall[]; firstOrdinal?: number; round: number;
+}>): Promise<ToolBatchOutcome> {
   const hooks = createToolHooks(deps, state);
   const approvals: string[] = [];
   let budgetExhausted = false;
@@ -364,7 +383,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
     while (next < input.calls.length) {
       const index = next;
       next += 1;
-      results[index] = await runCall(input.calls[index]!, index);
+      results[index] = await runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index);
     }
   };
   await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));

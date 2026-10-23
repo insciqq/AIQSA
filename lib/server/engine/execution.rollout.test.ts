@@ -8,6 +8,7 @@ import { resolveAssistantChatBaseline } from "../../domain/promptTemplates";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { mergeMcpRunPlanSnapshots } from "../mcp/discovery";
 import type { McpCapabilityCatalog, McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
+import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderRunRequest } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
@@ -19,7 +20,7 @@ import { createNativeRunExecutionResponse } from "./execution";
 import { nativeRunResponse, type NativeEngineHandlerDeps } from "./handlerSupport";
 import { NEUTRAL_FAMILY_PROMPT } from "./prompts/neutral";
 import { parseNativeEngineUsers } from "./routing";
-import { UNKNOWN_OUTCOME_REPEAT_OUTPUT } from "./toolBatch";
+import { APPROVED_TOOL_UNAVAILABLE, APPROVED_TOOL_UNAVAILABLE_OUTPUT, UNKNOWN_OUTCOME_REPEAT_OUTPUT } from "./toolBatch";
 import type { TranscriptItem } from "./transcript";
 
 /**
@@ -202,71 +203,137 @@ describe("an unknown effect on the native engine", () => {
 });
 
 describe("an Auto MCP run on the native engine", () => {
-  const catalog: McpCapabilityCatalog = {
+  const catalogOf = (...tools: ReadonlyArray<"create_issue" | "get_issue">): McpCapabilityCatalog => ({
     servers: [{ description: "Synthetic tracker", namespace: "jira", revisionId: "rev-1", serverId: "jira", serverName: "Jira",
-      tools: [{ arguments: [], description: "Read", namespacedName: "mcp_jira_get_issue", originalName: "get_issue" }] }],
+      tools: tools.map((tool) => ({ arguments: [], description: tool === "get_issue" ? "Read" : "Create",
+        namespacedName: `mcp_jira_${tool}`, originalName: tool })) }],
     version: 1
-  };
-  const loaded: McpRunPlanSnapshot = { servers: [...NATIVE_MCP_SNAPSHOT.servers], tools: [NATIVE_MCP_SNAPSHOT.tools[0]!], version: 1 };
+  });
+  const loadedOf = (tool: "create_issue" | "get_issue"): McpRunPlanSnapshot => ({ servers: [...NATIVE_MCP_SNAPSHOT.servers],
+    tools: NATIVE_MCP_SNAPSHOT.tools.filter((candidate) => candidate.originalName === tool), version: 1 });
   const autoBudgets = { maxMcpToolsPerDiscovery: 5, maxToolCalls: 8, maxToolRounds: 8 };
+  const bound = { fingerprint: "fp-1", runtimeGenerationId: "gen-1", serverId: "jira" };
 
-  it("binds a server find_tools loaded mid-run and sends its tool", async () => {
+  /**
+   * A run's discovery as the repository keeps it: every epoch merges its servers into the run's snapshot and writes the
+   * binding rows of the servers it loaded, which the engine reads back (`mcpBindingRows`).
+   */
+  function autoDiscovery(catalog: McpCapabilityCatalog) {
     let snapshot: McpRunPlanSnapshot = { servers: [], tools: [], version: 1 };
     let discovery: McpDiscoveryState = { catalog, epochs: [], version: 2 };
     const rows: Array<Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>> = [];
-    const repo = { ...nativeRunRepository(), appendMcpDiscoveryEpoch: vi.fn(async (input: Readonly<{ goal: string; modelRunToolCallId: string;
-      roundIndex: number; snapshot: McpRunPlanSnapshot; toolIds: readonly string[] }>) => {
+    const repo = { ...nativeRunRepository(), appendMcpDiscoveryEpoch: vi.fn(async (input: Readonly<{
+      bindings: readonly Readonly<{ fingerprint: string; runtimeGenerationId: string; serverId: string }>[]; goal: string;
+      modelRunToolCallId: string; roundIndex: number; snapshot: McpRunPlanSnapshot; toolIds: readonly string[];
+    }>) => {
       snapshot = mergeMcpRunPlanSnapshots(snapshot, input.snapshot);
       discovery = { ...discovery, epochs: [...discovery.epochs, { epoch: discovery.epochs.length + 1, goal: input.goal,
         modelRunToolCallId: input.modelRunToolCallId, roundIndex: input.roundIndex, toolIds: [...input.toolIds] }] };
-      // The epoch writes the loaded server's binding row with the run.
-      rows.push({ id: "binding-jira", runtimeGenerationFingerprint: "fp-1", runtimeGenerationId: "gen-1" });
+      for (const binding of input.bindings) {
+        rows.push({ id: `binding-${binding.serverId}`, runtimeGenerationFingerprint: binding.fingerprint,
+          runtimeGenerationId: binding.runtimeGenerationId });
+      }
       return { discovery, snapshot };
     }) };
-    const memory = memoryNativeEngine();
+    const memory = memoryNativeEngine({ allowed: true });
     vi.mocked(memory.engine.mcpBindingRows).mockImplementation(async () => [...rows]);
-    const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Done: A-2"], unsupportedContentTypes: [] }));
+    return { callTool, discovery: () => discovery, memory, repo };
+  }
+
+  it("binds a server find_tools loaded mid-run and sends its tool", async () => {
+    const auto = autoDiscovery(catalogOf("get_issue"));
     const { adapter } = scriptedNativeAdapter([
       { calls: [{ arguments: { query: "select:get_issue" }, id: "f1", name: "find_tools" }] },
       { calls: [{ arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }] },
       { text: "A-1 is open." }
     ]);
-    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
-      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
-      prepared: nativePrepared({ mcpDiscovery: discovery, toolBudgets: autoBudgets }, { mcpBindings: [] }),
-      repository: asRepository(repo as unknown as ReturnType<typeof nativeRunRepository>),
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: auto.memory.engine,
+      mcpRuntime: () => ({ callTool: auto.callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: nativePrepared({ mcpDiscovery: auto.discovery(), toolBudgets: autoBudgets }, { mcpBindings: [] }),
+      repository: asRepository(auto.repo as unknown as ReturnType<typeof nativeRunRepository>),
       services: { mcp: { filterTools: async (_userId, tools) => [...tools], materialize: vi.fn(async () => ({
-        bindings: [{ fingerprint: "fp-1", runtimeGenerationId: "gen-1", serverId: "jira" }], ok: true as const, snapshot: loaded })) } },
+        bindings: [bound], ok: true as const, snapshot: loadedOf("get_issue") })) } },
       userId: "owner" }));
-    expect(repo.appendMcpDiscoveryEpoch).toHaveBeenCalledTimes(1);
-    expect(callTool).toHaveBeenCalledTimes(1);
-    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: "gen-1", name: "get_issue" }));
-    expect(memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ mcpRunBindingId: "binding-jira",
+    expect(auto.repo.appendMcpDiscoveryEpoch).toHaveBeenCalledTimes(1);
+    expect(auto.callTool).toHaveBeenCalledTimes(1);
+    expect(auto.callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: "gen-1", name: "get_issue" }));
+    expect(auto.memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ mcpRunBindingId: "binding-jira",
       toolName: "mcp_jira_get_issue" }));
-    expect(memory.published()).toBe("A-1 is open.");
+    expect(auto.memory.published()).toBe("A-1 is open.");
   });
 
-  it("continues an approval from the server's turn when its tool is not loaded yet, so the model loads and calls it again", async () => {
+  describe("after the user's Allow", () => {
     const stopped: TranscriptItem[] = [
       { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "n1", kind: "tool_call", name: "mcp_jira_create_issue",
         origin: NATIVE_RUN_ORIGIN },
       { callId: "call-1", id: "n2", kind: "tool_result", name: "mcp_jira_create_issue", outcome: "error", output: "Waiting for approval." }
     ];
-    const { adapter, requests } = scriptedNativeAdapter([{ text: "I will load the tool and create it." }]);
-    const memory = memoryNativeEngine({ allowed: true });
-    vi.mocked(memory.engine.approvedCall).mockResolvedValue({ providerCallId: "call-1", toolName: "mcp_jira_create_issue" });
-    memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"]]));
-    memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", stopped]]));
-    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
-      engine: memory.engine, prepared: nativePrepared({ context: { messages: [nativeSay("user-1", "user", "Create the issue"),
-        nativeSay("answer-0", "assistant", ""), nativeSay("current-user-message", "user",
-          "The user approved `Create` on `Jira`. Continue the task.")], mode: "branch_path" }, mcpDiscovery: { catalog, epochs: [],
-        version: 2 }, toolBudgets: autoBudgets }, { mcpBindings: [] }), repository: asRepository(nativeRunRepository()), services: {},
-      userId: "owner" }));
-    // Nothing was sent before the model asked: the approved call waits for its tool to load, and the Allow covers it then.
-    expect(memory.toolCalls.begin).not.toHaveBeenCalled();
-    expect(requests[0]!.history!.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "user"]);
-    expect(requests[0]!.history!.at(-1)).toMatchObject({ currentInput: true, type: "user" });
+
+    /** The continuation of the turn the approval stopped, in a run that admitted the catalog and no MCP tool. */
+    async function continueAllowed(catalog: McpCapabilityCatalog, materialize: () => Promise<unknown>) {
+      const auto = autoDiscovery(catalog);
+      const { adapter, requests } = scriptedNativeAdapter([{ text: "Created A-2." }]);
+      vi.mocked(auto.memory.engine.approvedCall).mockResolvedValue({ providerCallId: "call-1", toolName: "mcp_jira_create_issue" });
+      auto.memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"]]));
+      auto.memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", stopped]]));
+      await nativeSseEvents(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
+        engine: auto.memory.engine, mcpRuntime: () => ({ callTool: auto.callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: nativePrepared({ context: { messages: [nativeSay("user-1", "user", "Create the issue"),
+          nativeSay("answer-0", "assistant", ""), nativeSay("current-user-message", "user",
+            "The user approved `Create` on `Jira`. Continue the task.")], mode: "branch_path" },
+        mcpApproval: mcpApprovalAdmission([]), mcpDiscovery: auto.discovery(), toolBudgets: autoBudgets }, { mcpBindings: [] }),
+        repository: asRepository(auto.repo as unknown as ReturnType<typeof nativeRunRepository>),
+        services: { mcp: { filterTools: async (_userId, tools) => [...tools], materialize: vi.fn(materialize) as never } },
+        userId: "owner" }));
+      const history = requests[0]!.history!;
+      const last = history.at(-1);
+      return { ...auto, history, output: last?.type === "tool_result" ? last.output : null, request: requests[0]! };
+    }
+
+    it("loads the approved tool from the run's catalog through a discovery epoch and sends exactly the approved call", async () => {
+      const run = await continueAllowed(catalogOf("get_issue", "create_issue"),
+        async () => ({ bindings: [bound], ok: true, snapshot: loadedOf("create_issue") }));
+      // The server's own find_tools, for exactly that tool, takes the epoch path a model's call takes.
+      expect(run.repo.appendMcpDiscoveryEpoch).toHaveBeenCalledTimes(1);
+      expect(run.repo.appendMcpDiscoveryEpoch).toHaveBeenCalledWith(expect.objectContaining({ goal: "select:mcp_jira_create_issue",
+        modelRunToolCallId: "row-0", roundIndex: 0, toolIds: ["mcp_jira_create_issue"] }));
+      expect(vi.mocked(run.memory.toolCalls.begin).mock.calls.map(([call]) => [call.toolName, call.roundIndex, call.ordinal,
+        call.providerCallId])).toEqual([["find_tools", 0, 0, "aiqsa_approved_load_approval-1"],
+        ["mcp_jira_create_issue", 0, 1, "call-1"]]);
+      expect(run.memory.toolCalls.begin).toHaveBeenLastCalledWith(expect.objectContaining({ approval: expect.anything(),
+        arguments: { summary: "x" }, mcpRunBindingId: "binding-jira" }));
+      expect(run.callTool).toHaveBeenCalledTimes(1);
+      expect(run.callTool).toHaveBeenCalledWith(expect.objectContaining({ arguments: { summary: "x" }, generationId: "gen-1",
+        name: "create_issue" }));
+      // The turn continues from the call's result, as with Load all; the server's load is no part of the conversation.
+      expect(run.history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result"]);
+      expect(run.output).toContain("Done: A-2");
+      expect(toolNames(run.request)).toContain("mcp_jira_create_issue");
+      expect(run.memory.published()).toBe("Created A-2.");
+    });
+
+    it("refuses an approved call whose tool left the run's catalog, visibly and without sending anything", async () => {
+      const run = await continueAllowed(catalogOf("get_issue"), async () => { throw new Error("not expected"); });
+      expect(run.repo.appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
+      expect(run.memory.toolCalls.begin).not.toHaveBeenCalled();
+      expect(run.memory.toolCalls.refuse).toHaveBeenCalledWith(expect.objectContaining({ ordinal: 0, providerCallId: "call-1",
+        result: expect.objectContaining({ content: [{ type: "json", value: expect.objectContaining({ error: APPROVED_TOOL_UNAVAILABLE }) }] }),
+        roundIndex: 0 }));
+      expect(run.callTool).not.toHaveBeenCalled();
+      expect(run.output).toBe(APPROVED_TOOL_UNAVAILABLE_OUTPUT);
+      expect(run.memory.published()).toBe("Created A-2.");
+    });
+
+    it("refuses it when the approved tool's server cannot load, after the server's own find_tools", async () => {
+      const run = await continueAllowed(catalogOf("create_issue"), async () => ({ code: "mcp_not_ready",
+        issues: [{ errorCode: "mcp_runtime_unavailable", name: "Jira", readiness: "unavailable" }], ok: false }));
+      expect(vi.mocked(run.memory.toolCalls.begin).mock.calls.map(([call]) => call.toolName)).toEqual(["find_tools"]);
+      expect(run.memory.toolCalls.refuse).toHaveBeenCalledWith(expect.objectContaining({ ordinal: 1, providerCallId: "call-1",
+        roundIndex: 0 }));
+      expect(run.callTool).not.toHaveBeenCalled();
+      expect(run.output).toBe(APPROVED_TOOL_UNAVAILABLE_OUTPUT);
+    });
   });
 });
 
