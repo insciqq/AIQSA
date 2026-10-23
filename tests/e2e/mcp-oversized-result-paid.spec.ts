@@ -11,7 +11,7 @@
  *
  * The stand's app must run with AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES
  * lowered (32768 recommended, at most 65536 so the cut result stays small
- * beside the 64K-token codex-lb setup). Set it in the Playwright process
+ * beside the codex-lb model's context window). Set it in the Playwright process
  * environment: Playwright's webServer passes that environment to `next dev`;
  * a reused server (PLAYWRIGHT_REUSE_SERVER=1) must already run with the same
  * value. That one value is the delivered result limit, and the client's

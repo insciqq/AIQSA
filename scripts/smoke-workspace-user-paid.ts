@@ -12,6 +12,7 @@ import {
 } from "./workspace-user-paid-support";
 import { runOfficeUserScenarios, type OfficeInput } from "./workspace-user-paid-office";
 import { parseChatRoutePath } from "../lib/domain/chatRoute";
+import { JOURNEY_LIMITS, discoveredContextWindow } from "./context-compaction-journey-support";
 
 // Explicit opt-in, never a default Playwright/Vitest lane. Requires a fresh
 // task-owned Compose JSON, seeded DB, running dev app/runner/maintenance and
@@ -164,6 +165,13 @@ async function main() {
     // Reuse this stand's already tested exact tuple after a diagnosed harness
     // failure; UI retries must not repeat paid compatibility probes.
     stage = "provider_setup";
+    // A real window (operator decision 2026-10-23): the one the endpoint's free
+    // model listing publishes for the model, else the paid-check default.
+    const discovered = await page.request.post("/api/admin/providers/custom-setup/discover", { timeout: 900_000, data: {
+      allowPrivateNetwork: true, apiRoot: route.apiRoot, authenticationMode: "bearer", responseTimeoutSeconds: 180, secret
+    } });
+    const contextWindow = discoveredContextWindow(discovered.ok() ? await discovered.json() : null, route.model) ??
+      JOURNEY_LIMITS.defaultContextWindow;
     const catalog = await json(await page.request.get("/api/me/catalog"));
     const existing = catalog.catalog.models.filter((model: { displayName: string; upstreamModelId: string }) =>
       model.displayName === "Workspace real model" && model.upstreamModelId === route.model);
@@ -179,7 +187,7 @@ async function main() {
       requireValue(connection.family === "openai_compatible" &&
         (connection.activeConfig as { apiRoot?: string } | null)?.apiRoot === route.apiRoot &&
         configuration?.adapterKind === "openai_responses_compatible" &&
-        configuration.capabilities?.contextWindow === 65_536 && configuration.capabilities.defaultMaxOutputTokens === 4096 &&
+        configuration.capabilities?.contextWindow === contextWindow && configuration.capabilities.defaultMaxOutputTokens === 4096 &&
         connection.credentials.length === 1 && credential?.activeVersionId, "provider_reuse_mismatch");
       requireValue(await db.providerModelCredentialCheck.count({ where: {
         connectionId: connection.id, providerModelId: model.id, connectionVersion: connection.activeVersion,
@@ -194,7 +202,7 @@ async function main() {
         protocol: "responses", confirmPaidRequest: true, modelId: route.model,
         connectionDisplayName: "Workspace codex-lb qualification", modelDisplayName: "Workspace real model",
         responseTimeoutSeconds: 180,
-        capabilities: { contextWindow: 65_536, defaultMaxOutputTokens: 4096, streaming: true, toolCalling: true,
+        capabilities: { contextWindow, defaultMaxOutputTokens: 4096, streaming: true, toolCalling: true,
           parallelToolCalls: false, reasoning: true, reasoningEfforts: ["low"], defaultReasoningEffort: "low",
           nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: true, vision: false }
       } }));

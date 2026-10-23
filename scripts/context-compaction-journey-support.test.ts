@@ -3,11 +3,14 @@ import type { CatalogModel } from "../lib/contracts/catalog";
 import type { ChatDetailWire, ChatMessageWire } from "../lib/contracts/chats";
 import { makeContextCompactionStatus, type ContextCompactionStatus } from "../lib/contracts/contextCompaction";
 import type { SessionContextStatus } from "../lib/contracts/sessionStatus";
+import { calculateContextBudgetLimits } from "../lib/domain/contextBudget";
 import { encodeSseEvent, RUN_STREAM_KEEPALIVE } from "../lib/domain/modelRunEvents";
 import { contextCompactionArtifact } from "../lib/server/runs/contextCompactionEvents";
 import {
   awaitsSummary,
+  boundedMessage,
   compactionMarker,
+  discoveredContextWindow,
   engineContextTokens,
   summaryShown,
   JOURNEY_CORRECTIONS,
@@ -64,7 +67,7 @@ describe("journey configuration", () => {
   it("skips routes without keys and defaults the stand, window and turn bound", () => {
     const config = journeyConfig({});
     expect(config.baseUrl.origin).toBe("http://127.0.0.1:3000");
-    expect(config).toMatchObject({ cleanupProviders: false, contextWindow: 65_536, debug: false, explicitRoutes: false, maxTurns: 12 });
+    expect(config).toMatchObject({ cleanupProviders: false, contextWindow: 400_000, debug: false, explicitRoutes: false, maxTurns: 20 });
     expect(config.routes).toEqual([
       { route: "anthropic", skipped: "api_key_missing" },
       { route: "codex-lb", skipped: "api_key_missing" }
@@ -75,15 +78,15 @@ describe("journey configuration", () => {
     const config = journeyConfig({
       AIQSA_JOURNEY_ANTHROPIC_MODEL: "claude-test",
       AIQSA_JOURNEY_CLEANUP_PROVIDERS: "1",
-      AIQSA_JOURNEY_CONTEXT_WINDOW: "57344",
+      AIQSA_JOURNEY_CONTEXT_WINDOW: "262144",
       AIQSA_JOURNEY_MAX_TURNS: "8",
       AIQSA_JOURNEY_ROUTES: "codex-lb, anthropic",
       ANTHROPIC_API_KEY: "a-key",
       CODEX_LB_API_KEY: "c-key"
     }, () => "https://lb.example.test/v1/");
-    expect(config).toMatchObject({ cleanupProviders: true, contextWindow: 57_344, explicitRoutes: true, maxTurns: 8 });
+    expect(config).toMatchObject({ cleanupProviders: true, contextWindow: 262_144, explicitRoutes: true, maxTurns: 8 });
     expect(config.routes).toEqual([
-      { apiKey: "c-key", apiRoot: "https://lb.example.test/v1", model: "gpt-5.5", route: "codex-lb" },
+      { apiKey: "c-key", apiRoot: "https://lb.example.test/v1", model: "gpt-6.1-sol", route: "codex-lb" },
       { apiKey: "a-key", model: "claude-test", route: "anthropic" }
     ]);
     expect(journeyConfig({ AIQSA_JOURNEY_ROUTES: "codex-lb", CODEX_LB_API_KEY: "c-key" }).routes)
@@ -100,11 +103,13 @@ describe("journey configuration", () => {
     expect(journeyConfig({ AIQSA_JOURNEY_BASE_URL: "https://stand.example.test/app" }).baseUrl.href)
       .toBe("https://stand.example.test/");
     expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_ROUTES: "openai" }))).toBe("routes_invalid");
-    expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_CONTEXT_WINDOW: "200000" })))
-      .toBe("aiqsa_journey_context_window_invalid");
-    expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_CONTEXT_WINDOW: "32768" })))
-      .toBe("aiqsa_journey_context_window_invalid");
-    expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_MAX_TURNS: "13" }))).toBe("aiqsa_journey_max_turns_invalid");
+    // Windows below a real one are rejected (operator decision 2026-10-23).
+    for (const window of ["65536", "200000", "262143", "1000001"]) {
+      expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_CONTEXT_WINDOW: window })))
+        .toBe("aiqsa_journey_context_window_invalid");
+    }
+    expect(journeyConfig({ AIQSA_JOURNEY_CONTEXT_WINDOW: "1000000" }).contextWindow).toBe(1_000_000);
+    expect(failureCode(() => journeyConfig({ AIQSA_JOURNEY_MAX_TURNS: "25" }))).toBe("aiqsa_journey_max_turns_invalid");
   });
 });
 
@@ -128,15 +133,49 @@ describe("journey text", () => {
     expect(JOURNEY_CORRECTIONS.join(" ")).toMatch(/5 недель.*175 тысяч/u);
   });
 
-  it("steps fillers toward the trigger without jumping past the pass window", () => {
-    expect(nextFillerTokens({ approximateInputTokens: 5_000, budgetTokens: 28_000 })).toBe(3_360);
-    // The engine's background compaction starts at 72% of the window; fillers aim at 78%.
-    expect(nextFillerTokens({ approximateInputTokens: 19_000, budgetTokens: 28_000 })).toBe(2_840);
-    expect(nextFillerTokens({ approximateInputTokens: 20_159, budgetTokens: 28_000 })).toBe(1_681);
+  it("steps fillers toward the trigger without jumping past the background band", () => {
+    // 6 % of the engine's window, so the crossing turn lands below 78 %, far from the 85 % wait.
+    expect(nextFillerTokens({ approximateInputTokens: 100_000, budgetTokens: 396_000 })).toBe(23_760);
+    expect(nextFillerTokens({ approximateInputTokens: 285_119, budgetTokens: 396_000 })).toBe(23_760);
     // Past the trigger without a summary, a minimal filler gives the engine one more request boundary.
-    expect(nextFillerTokens({ approximateInputTokens: 20_160, budgetTokens: 28_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
+    expect(nextFillerTokens({ approximateInputTokens: 285_120, budgetTokens: 396_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
     // A tiny budget still sends a meaningful filler rather than an empty one.
-    expect(nextFillerTokens({ approximateInputTokens: 700, budgetTokens: 1_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
+    expect(nextFillerTokens({ approximateInputTokens: 100, budgetTokens: 1_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
+  });
+
+  it("crosses the trigger with room for the summary turns and the probe at every admitted window", () => {
+    // About the engine's fixed prompt and tools, and one short answer per turn.
+    const fixed = 8_000;
+    const answer = 200;
+    for (const contextWindow of [JOURNEY_LIMITS.minContextWindow, 400_000, 500_000, JOURNEY_LIMITS.maxContextWindow]) {
+      const engineWindow = contextWindow - 4_096;
+      const brief = Math.floor(calculateContextBudgetLimits({ contextWindow, maxOutputTokens: JOURNEY_LIMITS.answerMaxOutputTokens })
+        .budgetTokens * JOURNEY_LIMITS.briefBudgetShare);
+      // Brief, two corrections and the rule.
+      let context = fixed + brief + 4 * answer + 300;
+      let turns = 4;
+      while (context < engineWindow * JOURNEY_LIMITS.triggerShare) {
+        const filler = nextFillerTokens({ approximateInputTokens: context, budgetTokens: engineWindow });
+        expect(filler / engineWindow).toBeLessThanOrEqual(0.06);
+        context += filler + answer;
+        turns += 1;
+      }
+      expect(context / engineWindow).toBeLessThan(0.78);
+      // Two minimal fillers while the summary lands, then the probe.
+      expect(turns + 3).toBeLessThanOrEqual(JOURNEY_LIMITS.defaultMaxTurns);
+    }
+  });
+
+  it("keeps every message below the app's JSON body limit", () => {
+    // Two bytes per estimated token: a request for the whole bound is made about half as large.
+    const build = (tokens: number) => "я".repeat(Math.max(0, tokens));
+    const text = boundedMessage(build, JOURNEY_LIMITS.maxMessageBytes);
+    const bytes = new TextEncoder().encode(text).byteLength;
+    expect(bytes).toBeLessThanOrEqual(JOURNEY_LIMITS.maxMessageBytes);
+    expect(bytes).toBeGreaterThan(JOURNEY_LIMITS.maxMessageBytes * 0.9);
+    expect(JOURNEY_LIMITS.maxMessageBytes).toBeLessThan(1_048_576);
+    expect(boundedMessage(build, 1_000)).toBe(build(1_000));
+    expect(failureCode(() => boundedMessage(() => "я".repeat(JOURNEY_LIMITS.maxMessageBytes), 10))).toBe("request_bytes_bound");
   });
 });
 
@@ -332,6 +371,16 @@ describe("admin provider projection", () => {
     expect(manual).toMatchObject({ modelId: "gpt-5.5" });
     expect(manual).not.toHaveProperty("catalogProof");
     expect(manual).not.toHaveProperty("modelIds");
+  });
+
+  it("reads the window a discovery response lists for the model", () => {
+    const discovery = { catalogProof: "p", models: [{ capabilities: { contextWindow: 272_000 }, id: "gpt-5.5" },
+      { capabilities: { contextWindow: 500_000 }, id: "gpt-6.1-sol" }, { capabilities: {}, id: "bare" }] };
+    expect(discoveredContextWindow(discovery, "gpt-6.1-sol")).toBe(500_000);
+    expect(discoveredContextWindow(discovery, "bare")).toBeNull();
+    expect(discoveredContextWindow(discovery, "missing")).toBeNull();
+    expect(discoveredContextWindow({ models: [{ capabilities: { contextWindow: "500000" }, id: "x" }] }, "x")).toBeNull();
+    expect(discoveredContextWindow(null, "x")).toBeNull();
   });
 });
 

@@ -15,14 +15,18 @@
  *    connection from its models catalog or, when the catalog cannot be read,
  *    from the explicit model id that setup proves with a tiny generation. It
  *    then publishes the journey window as the model's administrator-set
- *    `capabilities.contextWindow` so the engine's 72 % background compaction
- *    trigger is cheap;
+ *    `capabilities.contextWindow`, a real window (operator decision
+ *    2026-10-23: compaction below 400k tokens is not worth checking). A
+ *    codex-lb window above the one its listing publishes for the model fails
+ *    before any paid call;
  * 2. signs in with the stand's test bootstrap token (as
  *    tests/e2e/support/localAuth.ts does);
  * 3. creates a personal chat excluded from Memory (kept in Memory, so Memory
  *    search is admitted, with AIQSA_JOURNEY_MEMORY=1) and sends a bounded
- *    journey: a long Cyrillic brief, two corrections, a standing three-item
- *    list rule, fillers until a summary is in context, then one probe that
+ *    journey: a long Cyrillic brief (about 16 % of the window), two corrections, a
+ *    standing three-item list rule, fillers of at most 6 % of the window each
+ *    (so no turn skips the 72-85 % background band) until a summary is in
+ *    context, then one probe that
  *    needs the corrections and rule. The engine summarizes in the background
  *    and records the summary on the turn that started it once its call ends,
  *    possibly after that turn's answer, so a turn past the trigger waits for
@@ -48,14 +52,24 @@
  * is reported unchecked), and got a probe answer carrying both corrections as
  * a three-item list, and no explicitly requested route was skipped.
  *
+ * Expected paid calls per route at the default 400k window: brief, two
+ * corrections and the rule (4), about nine fillers to cross 72 %, at most two
+ * minimal fillers while the summary lands, the probe, plus one or two summary
+ * calls: about 16-18 calls, most of them reading 100k-300k input tokens
+ * (largely cached). Every message stays below the app's 1 MiB JSON body
+ * limit; a brief or filler that would not is made smaller and later fillers
+ * carry the rest.
+ *
  * Environment (read from the process only; no .env loading):
  * - AIQSA_JOURNEY_BASE_URL (default http://127.0.0.1:3000; plain HTTP only on loopback)
  * - AIQSA_JOURNEY_ROUTES (default anthropic,codex-lb)
  * - ANTHROPIC_API_KEY, AIQSA_JOURNEY_ANTHROPIC_MODEL (default claude-sonnet-5)
  * - CODEX_LB_API_KEY, CODEX_LB_BASE_URL (compatible endpoint root; falls back
- *   to the codex-lb route of ~/.codex/config.toml), AIQSA_JOURNEY_CODEX_MODEL (default gpt-5.5)
- * - AIQSA_JOURNEY_CONTEXT_WINDOW (default 65536, 57344..65536)
- * - AIQSA_JOURNEY_MAX_TURNS (default 12, 6..12)
+ *   to the codex-lb route of ~/.codex/config.toml), AIQSA_JOURNEY_CODEX_MODEL (default gpt-6.1-sol,
+ *   whose listing publishes a 500k window)
+ * - AIQSA_JOURNEY_CONTEXT_WINDOW (default 400000, 262144..1000000 and at most
+ *   the codex-lb listing's window for the model)
+ * - AIQSA_JOURNEY_MAX_TURNS (default 20, 6..24)
  * - AIQSA_JOURNEY_CLEANUP_PROVIDERS=1
  * - AIQSA_JOURNEY_MEMORY=1: the journey chat stays in Memory (not EXCLUDED), so
  *   Memory search is admitted for its runs; default unchanged
@@ -90,6 +104,7 @@ import {
   JOURNEY_TEST_AUTH_TOKEN,
   JourneyFailure,
   awaitsSummary,
+  boundedMessage,
   catalogReadiness,
   codexLbSetupBody,
   compactionMarker,
@@ -97,6 +112,7 @@ import {
   createDebugEmitter,
   createRunStreamScanner,
   debugHttpLine,
+  discoveredContextWindow,
   engineContextTokens,
   exceptionDiagnostics,
   journeyBrief,
@@ -386,10 +402,8 @@ async function ensureCodexLb(
   contextWindow: number
 ): Promise<ProviderTarget> {
   const before = await connections(api);
-  const decision = journeyReuseDecision(before, { apiRoot: route.apiRoot, family: "openai_compatible", upstreamModelId: route.model });
-  debugReuse(api, route.route, decision);
-  if (decision.match) return { connectionId: decision.match.connection.id, created: false, providerModelId: decision.match.model.id };
   let catalogProof: string | undefined;
+  // Discovery (a free model listing) runs before any reuse, so the journey window is checked against the listed one.
   try {
     // The discover body is exactly the handler's allowed set; it lists `<root>/models`.
     const discovery = await json(api, "provider_setup", "/api/admin/providers/custom-setup/discover", {
@@ -403,6 +417,8 @@ async function ensureCodexLb(
       fail("provider_setup", "codex_model_not_discovered");
     }
     if (typeof discovery.catalogProof === "string") catalogProof = discovery.catalogProof;
+    const listed = discoveredContextWindow(discovery, route.model);
+    if (listed !== null && contextWindow > listed) fail("config", "aiqsa_journey_context_window_above_listed");
   } catch (error) {
     // The handler's manual fallback: an explicit model id without a catalog
     // receipt, which custom setup proves with a real tiny generation.
@@ -410,6 +426,9 @@ async function ensureCodexLb(
       (error.code !== "provider_custom_setup_discovery_failed" && error.code !== "codex_model_not_discovered")) throw error;
     debugLog(api, { debug: "discovery_fallback", route: route.route, code: error.code, setup: "manual_model_id" });
   }
+  const decision = journeyReuseDecision(before, { apiRoot: route.apiRoot, family: "openai_compatible", upstreamModelId: route.model });
+  debugReuse(api, route.route, decision);
+  if (decision.match) return { connectionId: decision.match.connection.id, created: false, providerModelId: decision.match.model.id };
   const result = await json(api, "provider_setup", "/api/admin/providers/custom-setup", {
     body: codexLbSetupBody({
       apiRoot: route.apiRoot,
@@ -611,7 +630,8 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
     return { answer, session };
   };
 
-  let last = await turn("brief", journeyBrief(Math.floor(initialBudget * JOURNEY_LIMITS.briefBudgetShare), estimate));
+  let last = await turn("brief", boundedMessage((tokens) => journeyBrief(tokens, estimate),
+    Math.floor(initialBudget * JOURNEY_LIMITS.briefBudgetShare)));
   for (const correction of JOURNEY_CORRECTIONS) last = await turn("correction", correction);
   last = await turn("rule", JOURNEY_RULE);
   // Fillers until a summary is in context, so the probe reads the chat as compacted.
@@ -619,7 +639,7 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
     if (state.rounds.some((round) => round.summaryAtBudgetShare !== null)) break;
     const budgetTokens = engineContextTokens(last.session) ?? initialBudget;
     const tokens = nextFillerTokens({ approximateInputTokens: last.session.approximateInputTokens, budgetTokens });
-    last = await turn("filler", journeyFiller(filler, tokens, estimate));
+    last = await turn("filler", boundedMessage((size) => journeyFiller(filler, size, estimate), tokens));
   }
   const probe = await turn("probe", JOURNEY_PROBE);
   // Checked in memory only; the answer text never leaves this function.
