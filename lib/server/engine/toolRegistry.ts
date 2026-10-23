@@ -30,6 +30,7 @@ import {
   workspaceApplyPatchFiles,
   type WorkspaceToolCaller
 } from "../tools/applyPatch";
+import { answerReviewToolsForRequest, executeAnswerReviewCall } from "../tools/answerReview";
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { createFetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
@@ -37,6 +38,7 @@ import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, is
 import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
 import type { HarnessToolEffects } from "../tools/harnessTool";
 import { imageGenerationTool } from "../tools/imageGeneration";
+import { executeMonitoringVerdict, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { executeReadSecret, readSecretTool } from "../tools/readSecret";
 import type { liveToolCallStatus } from "../runs/liveToolStatus";
 import { executeCreateScheduledTask, isScheduledTaskCreateCall, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
@@ -77,7 +79,9 @@ import { executeReadToolResult, readToolResultTool, type SavedToolResultReader }
  * tools to the registry for the run's later requests. The harness tools
  * (`HARNESS_TOOLS`) ride on every request that offers tools, and the
  * self-service tools (`SELF_SERVICE_TOOLS`) on those of interactive personal
- * and temporary chats, whose handler gives their owners.
+ * and temporary chats, whose handler gives their owners. A monitoring
+ * check's verdict and an answer review step's report are the run's reserved
+ * report (`toolBatch.ts`, `loop.ts`).
  */
 export type EngineToolEffects = HarnessToolEffects;
 
@@ -162,7 +166,7 @@ export type ToolRegistryServices = Readonly<{
   mcpRuntime?: () => Readonly<{ callTool: McpToolRuntimeCall; ensureAcceptedGeneration(generationId: string): Promise<boolean> }>;
   memorySearch?: Pick<MemorySearchService, "execute">;
   repository: Pick<RunRepository, "appendMcpDiscoveryEpoch" | "createScheduledTaskForCall" | "createSearchRun" |
-    "loadRunFetchUrlCalls" | "loadRunSearchSourceUrls" | "manageScheduledTaskForCall" | "saveSkillForCall">;
+    "loadRunFetchUrlCalls" | "loadRunSearchSourceUrls" | "manageScheduledTaskForCall" | "recordMonitoringVerdict" | "saveSkillForCall">;
   savedResults: SavedToolResultReader;
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   /** The saved secrets `read_secret` reads (`createRunSecretSource`), with or without a Workspace. */
@@ -353,6 +357,25 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
             userId: input.userId })
         }) ?? unavailable(execution.call, "tool_unavailable") });
     }
+  }
+
+  // The run's one reserved report, frozen from its server-only admission and never from a request
+  // field (`reservedToolCallForRequest`): a monitoring check's verdict, which only its own running
+  // occurrence takes, or an answer review step's review or decisions, whose card is the record.
+  if (request.monitoringVerdictTool === true) {
+    const record = input.services.repository.recordMonitoringVerdict?.bind(input.services.repository);
+    add({ activity: named(monitoringVerdictTool, "Monitoring"), definition: monitoringVerdictTool, effects: "local",
+      observationSource: "workspace", execute: (execution) => executeMonitoringVerdict(execution.call, owner, record) });
+  }
+  // A step reports once: the first call that settles its card wins, a later one is refused.
+  let reviewReported = false;
+  for (const definition of answerReviewToolsForRequest(request)) {
+    add({ activity: named(definition, "Answer review"), definition, effects: "local", observationSource: "workspace",
+      execute: async (execution) => {
+        const result = executeAnswerReviewCall(execution.call, request, { submitted: reviewReported });
+        if (result.status === "complete") reviewReported = true;
+        return result;
+      } });
   }
 
   const scheduledServer = "Scheduled tasks";

@@ -210,6 +210,32 @@ describe("native tool batch", () => {
     expect(outcome.results.map((item) => item.outcome)).toEqual(["complete", "error"]);
   });
 
+  it("runs the reserved report's first call outside the call budget, and counts a repeated one", async () => {
+    const report = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const { store } = fakeStore();
+    const batch = deps({ lookup: tool("lookup", "none", lookup), report_monitoring_result: tool("report_monitoring_result", "local", report) },
+      store, { maxToolCalls: 1, reservedToolName: "report_monitoring_result" });
+    const state = { calls: 1 };
+    // The budget is spent: only the report's first call still runs, and it costs nothing.
+    const first = await runToolBatch(batch, state, { calls: [
+      { arguments: { status: "update" }, id: "v1", name: "report_monitoring_result" },
+      { arguments: { id: 1 }, id: "c1", name: "lookup" },
+      { arguments: { status: "no_update" }, id: "v2", name: "report_monitoring_result" }
+    ], round: 2 });
+    expect(first.results.map((item) => [item.callId, item.outcome])).toEqual([["v1", "complete"], ["c1", "error"], ["v2", "error"]]);
+    expect(first.budgetExhausted).toBe(true);
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(state).toEqual({ calls: 1, reservedCalled: true });
+    // Within budget, a repeated report counts like any other call.
+    const later = { calls: 0, reservedCalled: true };
+    await runToolBatch(deps({ report_monitoring_result: tool("report_monitoring_result", "local", report) }, fakeStore().store,
+      { maxToolCalls: 5, reservedToolName: "report_monitoring_result" }), later,
+      { calls: [{ arguments: { status: "update" }, id: "v3", name: "report_monitoring_result" }], round: 3 });
+    expect(later.calls).toBe(1);
+  });
+
   it("saves a long result once and hands the model its head, tail and handle", async () => {
     const long = "x".repeat(TOOL_RESULT_LIMITS.inlineChars + 10_000);
     const { rows, store } = fakeStore();
