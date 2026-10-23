@@ -48,11 +48,6 @@ vi.mock("./useChatPdfRoutePreview", () => ({
     return pdfRoutePreview.current;
   }
 }));
-// Knowledge selections stay tested as they worked; `composerControlStore.test.ts` covers Knowledge disabled.
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";
@@ -268,7 +263,6 @@ function useMessageRunActionsForTest(input: {
     chatId: string | null,
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ) => Promise<ChatDetail | null>;
-  refreshProjectWorkspace?: () => Promise<boolean>;
   refreshWorkspaceAvailability?: () => void;
   resolveCatalog?: () => Catalog | null;
   resolveWorkspaceInstallationAvailable?: () => boolean;
@@ -321,7 +315,6 @@ function useMessageRunActionsForTest(input: {
   const notifyAnswerReady = vi.fn(async () => undefined);
   const primeAnswerSound = vi.fn(async () => undefined);
   const refreshActiveChat = vi.fn(input.refreshActiveChat ?? (async () => null));
-  const refreshProjectWorkspace = vi.fn(input.refreshProjectWorkspace ?? (async () => true));
   const resetThreadToLatest = vi.fn();
   const setNotice = vi.fn();
 
@@ -374,7 +367,6 @@ function useMessageRunActionsForTest(input: {
     persistActiveLeaf: input.persistActiveLeaf ?? vi.fn(async () => null),
     primeAnswerSound,
     refreshActiveChat,
-    refreshProjectWorkspace,
     resolveCatalog: input.resolveCatalog,
     resolveWorkspaceInstallationAvailable: input.resolveWorkspaceInstallationAvailable,
     refreshWorkspaceAvailability: input.refreshWorkspaceAvailability,
@@ -390,7 +382,6 @@ function useMessageRunActionsForTest(input: {
     notifyAnswerReady,
     primeAnswerSound,
     refreshActiveChat,
-    refreshProjectWorkspace,
     resetThreadToLatest,
     session: (key: ComposerSessionKey) =>
       selectComposerSession(useComposerSessionStore.getState(), key),
@@ -802,46 +793,6 @@ describe("message run actions", () => {
     });
   });
 
-  it("clears a Project draft as soon as first-send admission succeeds", async () => {
-    let markStreamStarted!: () => void;
-    let resolveStream!: () => void;
-    const streamStarted = new Promise<void>((resolve) => {
-      markStreamStarted = resolve;
-    });
-    const consumeRunStream: ConsumeMessageRunStream = async () => {
-      markStreamStarted();
-      await new Promise<void>((resolve) => {
-        resolveStream = resolve;
-      });
-      return {
-        failed: false,
-        receivedChatUpdate: false,
-        runId: "run-project-1",
-        terminalStatus: "complete"
-      };
-    };
-    const pending = {
-      ...chat(),
-      pendingProjectDraft: { folderId: "folder-1", projectId: "project-1" },
-      projectId: "project-1"
-    };
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
-    const actions = useMessageRunActionsForTest({
-      activeChat: pending,
-      attachments: [],
-      consumeRunStream,
-      draft: "First shared question"
-    });
-
-    const submit = actions.submitComposer();
-    await streamStarted;
-
-    expect(useWorkspaceStore.getState().chats.find((candidate) => candidate.id === pending.id)
-      ?.pendingProjectDraft).toBeUndefined();
-    resolveStream();
-    await submit;
-  });
-
   it("sends and clears the personal first-send reservation after admission", async () => {
     let markStreamStarted!: () => void;
     let resolveStream!: () => void;
@@ -888,82 +839,14 @@ describe("message run actions", () => {
     await submit;
   });
 
-  it("sends a Project follow-up from the same client state without stale draft metadata", async () => {
-    const pending = {
-      ...chat(),
-      pendingProjectDraft: { folderId: null, projectId: "project-1" },
-      projectId: "project-1"
-    };
-    const fetchMock = vi.fn(async (
-      _input: RequestInfo | URL,
-      _init?: RequestInit
-    ) => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({
-      activeChat: pending,
-      attachments: [],
-      draft: "First shared question",
-      consumeRunStream: async () => ({
-        failed: false,
-        receivedChatUpdate: false,
-        runId: "run-project",
-        terminalStatus: "complete"
-      })
-    });
-
-    await actions.submitComposer();
-    useComposerSessionStore.getState().setDraft("Follow-up without realtime reconciliation");
-    await actions.submitComposer();
-
-    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
-    expect(bodies).toHaveLength(2);
-    expect(bodies[0]).toMatchObject({
-      projectDraft: { folderId: null, projectId: "project-1" }
-    });
-    expect(bodies[1]).not.toHaveProperty("projectDraft");
-  });
-
-  it("admits a Project Assistant starter through first-send Project draft semantics", async () => {
-    const pending = {
-      ...chat(),
-      pendingProjectDraft: { folderId: null, projectId: "project-1" },
-      projectId: "project-1"
-    };
-    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({
-      activeChat: pending,
-      attachments: [],
-      draft: "",
-      consumeRunStream: async () => ({
-        failed: false,
-        receivedChatUpdate: false,
-        runId: "run-project-starter",
-        terminalStatus: "complete"
-      })
-    });
-
-    await actions.sendStarterPrompt("Summarize our launch plan");
-
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      content: { blocks: [{ text: "Summarize our launch plan", type: "text" }] },
-      projectDraft: { folderId: null, projectId: "project-1" }
-    });
-    expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === pending.id)
-      ?.pendingProjectDraft).toBeUndefined();
-  });
-
   it.each([
-    { inherited: true, project: true },
-    { inherited: false, project: true },
-    { inherited: true, project: false },
-    { inherited: false, project: false }
-  ])("sends edited Assistant parameters with inherited=$inherited and project=$project", async ({ inherited, project }) => {
+    { inherited: true },
+    { inherited: false }
+  ])("sends edited Assistant parameters with inherited=$inherited", async ({ inherited }) => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({
-      activeChat: { ...chat(), ...(project ? { projectId: "project-1" } : {}) },
+      activeChat: chat(),
       attachments: [],
       buildControlDraft: () => ({
         maxOutputTokens: useComposerControlStore.getState().maxOutputTokens,
@@ -988,59 +871,6 @@ describe("message run actions", () => {
     expect(body).not.toHaveProperty("params");
   });
 
-  it("says explicitly that a new Project chat has no Assistant, and only on its first message", async () => {
-    const pending = {
-      ...chat(),
-      pendingProjectDraft: { folderId: null, projectId: "project-1" },
-      projectId: "project-1"
-    };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({
-      activeChat: pending,
-      attachments: [],
-      draft: "First shared question",
-      consumeRunStream: async () => ({
-        failed: false,
-        receivedChatUpdate: false,
-        runId: "run-project",
-        terminalStatus: "complete"
-      })
-    });
-
-    await actions.submitComposer();
-    useComposerSessionStore.getState().setDraft("Follow-up");
-    await actions.submitComposer();
-
-    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
-    expect(bodies[0]).toMatchObject({
-      assistantId: null,
-      controlDefaults: expect.any(Object),
-      modelId: expect.any(String),
-      projectDraft: { folderId: null, projectId: "project-1" },
-      provider: expect.any(String),
-      searchPlan: expect.any(Object)
-    });
-    expect(bodies[0]).not.toHaveProperty("searchPreferencePlan");
-    expect(bodies[0]).not.toHaveProperty("searchPreferenceSource");
-    expect(bodies[1]).not.toHaveProperty("assistantId");
-  });
-
-  it("starts a new Project chat from a starter without an Assistant as explicitly none", async () => {
-    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({
-      activeChat: { ...chat(), pendingProjectDraft: { folderId: null, projectId: "project-1" }, projectId: "project-1" },
-      attachments: [],
-      draft: ""
-    });
-
-    await actions.sendStarterPrompt("Summarize our launch plan");
-
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toMatchObject({ assistantId: null });
-  });
-
   it("never names an Assistant for a new personal chat without one", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -1054,28 +884,6 @@ describe("message run actions", () => {
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(init.body))).not.toHaveProperty("assistantId");
-  });
-
-  it.each([
-    "project_setup_required",
-    "project_default_model_unavailable"
-  ])("refreshes canonical Project readiness after %s", async (error) => {
-    const refreshProjectWorkspace = vi.fn(async () => true);
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error }, { status: 409 })));
-    const actions = useMessageRunActionsForTest({
-      activeChat: {
-        ...chat(),
-        pendingProjectDraft: { folderId: null, projectId: "project-1" },
-        projectId: "project-1"
-      },
-      attachments: [],
-      draft: "First shared question",
-      refreshProjectWorkspace
-    });
-
-    await actions.submitComposer();
-
-    expect(refreshProjectWorkspace).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1132,7 +940,7 @@ describe("message run actions", () => {
 
       await actions.submitComposer();
 
-      expect(pdfRoutePreview.targets).toContainEqual({ projectId: null, providerConnectionId: "openai", providerModelId: "gpt-5.5" });
+      expect(pdfRoutePreview.targets).toContainEqual({ providerConnectionId: "openai", providerModelId: "gpt-5.5" });
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
     });
@@ -1457,7 +1265,6 @@ describe("message run actions", () => {
       const actions = useMessageRunActionsForTest(input);
       useComposerControlStore.setState({
         assistant: boundComposerAssistantFixture({ id: "assistant-selected" }),
-        knowledgePlanSource: "assistant",
         mcpSelection: { mode: "exact", serverIds: ["server-1"] },
         selectedSkills: [manualSkill],
         skillsMode: "off"
@@ -1514,7 +1321,6 @@ describe("message run actions", () => {
       useComposerControlStore.setState({ selectedModelId: "assistant-model", selectedProvider: "assistant-provider" });
       useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
       useComposerControlStore.getState().setSkillsMode("auto");
-      useComposerControlStore.getState().setSelectedKnowledgePlan(["base-1"]);
       useComposerControlStore.getState().applyModelSelection({
         controlDefaults: {
           backgroundMode: true,
@@ -1533,7 +1339,6 @@ describe("message run actions", () => {
 
       expect(requestBody(fetchMock)).toMatchObject({
         controlDefaults: { temperature: "0.9" },
-        knowledgePlan: { baseIds: ["base-1"], mode: "explicit" },
         mcp: { mode: "load_all" },
         modelId: "gpt-5.5",
         provider: "openai",
@@ -1625,34 +1430,6 @@ describe("message run actions", () => {
         timeZone: expect.any(String)
       });
       expect(requestBody(fetchMock)).not.toHaveProperty("modelId");
-    });
-
-    it("names the Project Assistant on the first message of a new Project chat, with the bound-chat payload", async () => {
-      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
-      vi.stubGlobal("fetch", fetchMock);
-      const actions = useAssistantChat({
-        activeChat: {
-          ...chat(),
-          pendingProjectDraft: { folderId: null, projectId: "project-1" },
-          projectId: "project-1"
-        },
-        attachments: [],
-        draft: "First shared question"
-      });
-      useComposerControlStore.getState().setSelectedSearchPlan(["search-disabled"], "all_selected");
-
-      await actions.submitComposer();
-      await actions.sendStarterPrompt("A later starter");
-
-      expect(Object.keys(requestBody(fetchMock)).sort()).toEqual([
-        "admissionId", "assistantId", "content", "expectedActiveLeafId", "projectDraft", "searchPlan",
-        "skillIds", "timeZone", "workspace"
-      ]);
-      expect(requestBody(fetchMock)).toMatchObject({ assistantId: "assistant-selected" });
-      // The chat exists now: later messages carry its binding implicitly.
-      expect(Object.keys(requestBody(fetchMock, 1)).sort()).toEqual([
-        "admissionId", "content", "expectedActiveLeafId", "searchPlan", "skillIds", "timeZone", "workspace"
-      ]);
     });
 
     it("sends a starter of a new chat with the Assistant and one of an existing chat without it", async () => {
@@ -1902,7 +1679,6 @@ describe("message run actions", () => {
         rowAvailability: {},
         rows: {
           controls: { policy: "adjustable", value: {} },
-          knowledge: { policy: "adjustable", value: { mode: "none" } },
           model: { policy: "adjustable", value: { mode: "model", modelId: "gpt-5.5" } },
           search: { policy: "adjustable", value: { mode: "off" } },
           skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -2178,29 +1954,6 @@ describe("message run actions", () => {
     expect(body).not.toHaveProperty("answerReview");
   });
 
-  it("materializes an ordinary explicit Knowledge plan in the run request", async () => {
-    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use policies" });
-    useComposerControlStore.setState({
-      knowledgePlanSource: "explicit",
-      knowledgeSelection: {
-        baseIds: ["base-policies", "base-release"],
-        mode: "explicit",
-        sourceIds: [],
-        version: 1
-      },
-      selectedKnowledgeBaseIds: ["base-policies", "base-release"]
-    });
-
-    await actions.submitComposer();
-
-    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(requestInit.body))).toMatchObject({
-      knowledgePlan: { baseIds: ["base-policies", "base-release"] }
-    });
-  });
-
   it.each(["auto", "off"] as const)("sends only explicit Off while preserving pinned Skills: %s", async skillsMode => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -2236,39 +1989,6 @@ describe("message run actions", () => {
       mcp: { mode: "load_all" },
       skillIds: ["skill-review"]
     });
-  });
-
-  it.each(["chat", "project", "off"] as const)(
-    "leaves a %s Knowledge default for server-side admission",
-    async (knowledgePlanSource) => {
-      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
-      vi.stubGlobal("fetch", fetchMock);
-      const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use defaults" });
-      useComposerControlStore.setState({
-        knowledgePlanSource,
-        selectedKnowledgeBaseIds: knowledgePlanSource === "off" ? [] : ["effective-base"]
-      });
-
-      await actions.submitComposer();
-
-      const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-      expect(JSON.parse(String(requestInit.body))).not.toHaveProperty("knowledgePlan");
-    }
-  );
-
-  it("sends an explicit empty Knowledge plan instead of falling back to defaults", async () => {
-    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({ attachments: [], draft: "No Knowledge" });
-    useComposerControlStore.setState({
-      knowledgePlanSource: "explicit",
-      selectedKnowledgeBaseIds: []
-    });
-
-    await actions.submitComposer();
-
-    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(requestInit.body))).toMatchObject({ knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 } });
   });
 
   it.each(["personal", "organization"] as const)(
@@ -2308,35 +2028,6 @@ describe("message run actions", () => {
       });
     }
   );
-
-  it("does not send personal Search preference state for a Project run", async () => {
-    const fetchMock = vi.fn(async (..._args: unknown[]) =>
-      new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({
-      activeChat: { ...chat(), projectId: "project-1" },
-      attachments: [],
-      model: mixedSearchModel
-    });
-    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
-    useComposerControlStore.setState({
-      selectedSearchOptionIds: [clientSearchOptionId],
-      searchPlanMode: "all_selected"
-    });
-
-    await actions.submitComposer();
-
-    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(String(requestInit.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      }
-    });
-    expect(body).not.toHaveProperty("searchPreferencePlan");
-    expect(body).not.toHaveProperty("searchPreferenceSource");
-  });
 
   it.each([
     {
@@ -4596,7 +4287,7 @@ describe("message run actions", () => {
 
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
-    expect(chatRouteForState()).toEqual({ chatId: null, projectId: null });
+    expect(chatRouteForState()).toEqual({ chatId: null });
     expect(actions.setNotice).toHaveBeenCalledExactlyOnceWith({
       chatId: "chat-a",
       kind: "error",

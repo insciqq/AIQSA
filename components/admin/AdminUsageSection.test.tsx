@@ -78,7 +78,7 @@ describe("AdminUsageSection", () => {
     expect(within(sources).getAllByRole("listitem").map((item) => item.querySelector("p")?.textContent)).toEqual([
       "Chats", "Scheduled tasks", "Images", "System"
     ]);
-    expect(within(sources).getByText("Titles, summaries, Memory, Knowledge and checks by system models · 2,500 tokens")).toBeInTheDocument();
+    expect(within(sources).getByText("Titles, summaries, Memory and checks by system models · 2,500 tokens")).toBeInTheDocument();
     expect(within(sources).getByText("25%")).toBeInTheDocument();
 
     const users = screen.getByRole("region", { name: "User usage table" });

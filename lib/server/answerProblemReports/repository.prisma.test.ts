@@ -28,35 +28,24 @@ type Fixture = Readonly<{
   member: string;
   owner: string;
   personal: Chat;
-  projectChat: Chat;
-  projectId: string;
+  /** Another chat of the owner. */
+  other: Chat;
+  /** The member's own chat. */
+  memberChat: Chat;
   /** A second answer of the personal chat, still streaming. */
   streamingId: string;
 }>;
 
-/**
- * A question and its settled answer. In a Project chat the question names its
- * author and the run its Project binding, as the database requires.
- */
-async function exchange(chatId: string, userId: string, connectionId: string, modelId: string,
-  project?: Readonly<{ authorDisplayName: string; id: string; role: "OWNER" | "MANAGER" | "CONTRIBUTOR" | "VIEWER" }>): Promise<Chat> {
+/** A question and its settled answer. */
+async function exchange(chatId: string, userId: string, connectionId: string, modelId: string): Promise<Chat> {
   const questionId = randomUUID();
   const answerId = randomUUID();
   const runId = randomUUID();
-  await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic question"), id: questionId, role: "user",
-    ...(project ? { authorDisplayName: project.authorDisplayName, authorProjectRole: project.role, authorUserId: userId } : {}) } });
+  await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic question"), id: questionId, role: "user" } });
   await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic answer"), id: answerId, parentMessageId: questionId,
     role: "assistant", status: "complete" } });
-  await prisma.$transaction(async (tx) => {
-    await tx.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId, normalizedRequest: {},
-      provider: connectionId, status: "complete", userId, userMessageId: questionId } });
-    if (project) {
-      const revisions = await tx.project.findUniqueOrThrow({ where: { id: project.id } });
-      await tx.projectRunBinding.create({ data: { acceptedRole: project.role, accessRevision: revisions.accessRevision,
-        initiatorUserId: userId, instructionsRevision: revisions.instructionsRevision, memoryRevision: revisions.memoryRevision,
-        modelRunId: runId, personalMemoryDisabled: true, policyRevision: revisions.policyRevision, projectId: project.id } });
-    }
-  });
+  await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId, normalizedRequest: {},
+    provider: connectionId, status: "complete", userId, userMessageId: questionId } });
   await prisma.providerRunBinding.create({ data: { connectionId, credentialSource: "default", executionSnapshot: {},
     modelRunId: runId, providerModelId: modelId, role: "answer" } });
   return { answerId, chatId, questionId, runId };
@@ -67,7 +56,6 @@ async function withFixture<T>(execute: (fixture: Fixture) => Promise<T>): Promis
   const connectionId = `${marker}-conn`;
   const modelId = `${marker}-model`;
   const chatIds: string[] = [];
-  let projectId: string | null = null;
   try {
     await prisma.providerConnection.create({ data: { displayName: "Problem Conn", family: `${marker}-family`, id: connectionId } });
     await prisma.providerModel.create({ data: { capabilities: {}, connectionId, defaultParams: {}, displayName: "Problem Model",
@@ -84,19 +72,17 @@ async function withFixture<T>(execute: (fixture: Fixture) => Promise<T>): Promis
     const streamingId = randomUUID();
     await prisma.message.create({ data: { chatId: personalChat.id, content: textMessageContent(""), id: streamingId,
       parentMessageId: personal.questionId, role: "assistant", status: "streaming" } });
-    const project = await prisma.project.create({ data: { createdByDisplayName: "Owner", createdByUserId: owner.id,
-      grants: { create: [{ role: "OWNER", userId: owner.id }, { role: "VIEWER", userId: member.id }] }, name: `${marker} project` } });
-    projectId = project.id;
-    const sharedChat = await prisma.chat.create({ data: { createdByDisplayName: "Owner", createdByUserId: owner.id,
-      memoryMode: "EXCLUDED", projectId: project.id, title: "Problem report Project fixture", userId: null } });
-    chatIds.push(sharedChat.id);
-    const projectChat = await exchange(sharedChat.id, owner.id, connectionId, modelId,
-      { authorDisplayName: "Owner", id: project.id, role: "OWNER" });
-    return await execute({ admin: admin.id, member: member.id, owner: owner.id, personal, projectChat, projectId: project.id,
-      streamingId });
+    const otherChat = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Problem report second fixture",
+      userId: owner.id } });
+    chatIds.push(otherChat.id);
+    const other = await exchange(otherChat.id, owner.id, connectionId, modelId);
+    const memberOwnChat = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Problem report member fixture",
+      userId: member.id } });
+    chatIds.push(memberOwnChat.id);
+    const memberChat = await exchange(memberOwnChat.id, member.id, connectionId, modelId);
+    return await execute({ admin: admin.id, member: member.id, memberChat, other, owner: owner.id, personal, streamingId });
   } finally {
     await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-    if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { email: { endsWith: `@${marker}.example.com` } } });
     await prisma.providerModel.deleteMany({ where: { connectionId } });
     await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
@@ -127,8 +113,9 @@ describe("answer problem report storage", () => {
     // Another user, an administrator, the wrong chat, a question, a streaming answer and an unknown id look alike.
     expect(await resolve(f.personal, f.personal.answerId, f.member)).toBeNull();
     expect(await resolve(f.personal, f.personal.answerId, f.admin)).toBeNull();
-    expect(await resolve(f.projectChat, f.projectChat.answerId, f.admin)).toBeNull();
-    expect(await resolve(f.projectChat, f.personal.answerId, f.owner)).toBeNull();
+    expect(await resolve(f.memberChat, f.memberChat.answerId, f.admin)).toBeNull();
+    expect(await resolve(f.memberChat, f.memberChat.answerId, f.owner)).toBeNull();
+    expect(await resolve(f.other, f.personal.answerId, f.owner)).toBeNull();
     expect(await resolve(f.personal, f.personal.questionId, f.owner)).toBeNull();
     expect(await resolve(f.personal, f.streamingId, f.owner)).toBeNull();
     expect(await resolve(f.personal, randomUUID(), f.owner)).toBeNull();
@@ -136,31 +123,16 @@ describe("answer problem report storage", () => {
     // The owner's own report is not readable through another chat.
     const target = await resolve(f.personal, f.personal.answerId, f.owner);
     await repository.save({ comment: null, reason: "other", target: target!, userId: f.owner });
-    expect(await repository.readOwn({ ...target!, chatId: f.projectChat.chatId }, f.owner)).toBeNull();
-  }));
-
-  it("lets current Project members of any role report, and refuses former members and deleting Projects", async () => withFixture(async (f) => {
-    const target = await resolve(f.projectChat, f.projectChat.answerId, f.member);
-    expect(target).toEqual({ chatId: f.projectChat.chatId, messageId: f.projectChat.answerId, runId: f.projectChat.runId });
-    await repository.save({ comment: "Viewer's note", reason: "error_or_broken", target: target!, userId: f.member });
-    const ownerTarget = await resolve(f.projectChat, f.projectChat.answerId, f.owner);
-    await repository.save({ comment: null, reason: "other", target: ownerTarget!, userId: f.owner });
-    expect(await prisma.answerProblemReport.count({ where: { messageId: f.projectChat.answerId } })).toBe(2);
-
-    await prisma.projectGrant.deleteMany({ where: { projectId: f.projectId, userId: f.member } });
-    expect(await resolve(f.projectChat, f.projectChat.answerId, f.member)).toBeNull();
-
-    await prisma.project.update({ data: { deletionRequestedAt: new Date(), status: "DELETING" }, where: { id: f.projectId } });
-    expect(await resolve(f.projectChat, f.projectChat.answerId, f.owner)).toBeNull();
+    expect(await repository.readOwn({ ...target!, chatId: f.other.chatId }, f.owner)).toBeNull();
   }));
 
   it("follows the answer, its run, its chat and the reporting account out of existence", async () => withFixture(async (f) => {
     const personal = await resolve(f.personal, f.personal.answerId, f.owner);
     await repository.save({ comment: null, reason: "other", target: personal!, userId: f.owner });
-    const shared = await resolve(f.projectChat, f.projectChat.answerId, f.member);
-    await repository.save({ comment: null, reason: "other", target: shared!, userId: f.member });
-    const ownerShared = await resolve(f.projectChat, f.projectChat.answerId, f.owner);
-    await repository.save({ comment: null, reason: "other", target: ownerShared!, userId: f.owner });
+    const other = await resolve(f.other, f.other.answerId, f.owner);
+    await repository.save({ comment: null, reason: "other", target: other!, userId: f.owner });
+    const member = await resolve(f.memberChat, f.memberChat.answerId, f.member);
+    await repository.save({ comment: null, reason: "other", target: member!, userId: f.member });
 
     // Deleting the run clears only the run column.
     await prisma.modelRun.delete({ where: { id: f.personal.runId } });
@@ -171,30 +143,30 @@ describe("answer problem report storage", () => {
     expect(await prisma.answerProblemReport.count({ where: { messageId: f.personal.answerId } })).toBe(0);
     // Deleting the reporting account removes that account's reports only.
     await prisma.user.delete({ where: { id: f.member } });
-    expect(await prisma.answerProblemReport.findMany({ select: { userId: true }, where: { messageId: f.projectChat.answerId } }))
-      .toEqual([{ userId: f.owner }]);
+    expect(await prisma.answerProblemReport.findMany({ select: { userId: true },
+      where: { chatId: { in: [f.other.chatId, f.memberChat.chatId] } } })).toEqual([{ userId: f.owner }]);
     // Deleting the chat removes the rest.
-    await prisma.chat.delete({ where: { id: f.projectChat.chatId } });
-    expect(await prisma.answerProblemReport.count({ where: { chatId: { in: [f.personal.chatId, f.projectChat.chatId] } } })).toBe(0);
+    await prisma.chat.delete({ where: { id: f.other.chatId } });
+    expect(await prisma.answerProblemReport.count({ where: { chatId: { in: [f.personal.chatId, f.other.chatId] } } })).toBe(0);
   }));
 
   it("lists reports newest first with names for administrators and prunes those past 90 days", async () => withFixture(async (f) => {
     const personal = await resolve(f.personal, f.personal.answerId, f.owner);
     const older = await repository.save({ comment: "Old note", reason: "too_slow", target: personal!, userId: f.owner });
-    const shared = await resolve(f.projectChat, f.projectChat.answerId, f.member);
-    await repository.save({ comment: "Recent note", reason: "did_not_follow_request", target: shared!, userId: f.member });
+    const member = await resolve(f.memberChat, f.memberChat.answerId, f.member);
+    await repository.save({ comment: "Recent note", reason: "did_not_follow_request", target: member!, userId: f.member });
     expect(older).not.toBeNull();
     const setUpdatedAt = (messageId: string, updatedAt: Date) => prisma.answerProblemReport.updateMany({
       data: { updatedAt }, where: { messageId } });
     await setUpdatedAt(f.personal.answerId, new Date("2003-07-01T00:00:00.000Z"));
-    await setUpdatedAt(f.projectChat.answerId, new Date("2003-11-20T00:00:00.000Z"));
+    await setUpdatedAt(f.memberChat.answerId, new Date("2003-11-20T00:00:00.000Z"));
     const window = { from: new Date("2003-01-01T00:00:00.000Z"), to: new Date("2004-01-01T00:00:00.000Z") };
 
     const first = await listAnswerProblemReports(prisma, { ...window, limit: 1 });
     expect(first.total).toBe(2);
     expect(first.rows).toEqual([expect.objectContaining({
       comment: "Recent note", connectionName: "Problem Conn", modelName: "Problem Model", reason: "did_not_follow_request",
-      runId: f.projectChat.runId, updatedAt: new Date("2003-11-20T00:00:00.000Z"),
+      runId: f.memberChat.runId, updatedAt: new Date("2003-11-20T00:00:00.000Z"),
       user: { displayName: "Member", email: expect.stringMatching(/^member@/u), id: f.member }
     })]);
     expect(first.rows[0]).not.toHaveProperty("chatId");

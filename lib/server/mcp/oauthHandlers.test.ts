@@ -375,7 +375,7 @@ describe("MCP OAuth web handlers", () => {
     const handlerDeps = deps({ service: service(), settleAuthorization: vi.fn(async () => ({ kind: "ok" as const })) });
     const start = createMcpOAuthStartHandler(handlerDeps, { forceReconnect: false, purpose: "user" });
     const startResponse = await start(new Request(
-      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fp%2Fproject-1%2Fc%2Fchat-1",
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect?return=%2Fc%2Fchat-1",
       { method: "POST" }
     ), routeContext());
     expect((await startLocation(startResponse)).toString()).toBe("https://auth.example.test/authorize?state=fixture-state");
@@ -386,7 +386,7 @@ describe("MCP OAuth web handlers", () => {
     ), routeContext());
     const location = new URL(response.headers.get("location") ?? "");
     expect(location.origin).toBe("https://aiqsa.example.test");
-    expect(location.pathname).toBe("/p/project-1/c/chat-1");
+    expect(location.pathname).toBe("/c/chat-1");
     expect(Object.fromEntries(location.searchParams)).toEqual({ library: "mcp", oauth: outcome, server: SERVER_ID });
   });
 

@@ -3,7 +3,6 @@ import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chatHeaderGalleryAssistants,
-  chatHeaderGalleryProjectAssistants,
   chatHeaderGalleryRecentIds
 } from "@/app/ui-v2-fixture/_fixtures/ChatHeaderV2Gallery";
 import { AssistantPickerV2, assistantBylineV2, assistantPickerSectionsV2 } from "./AssistantPickerV2";
@@ -38,7 +37,6 @@ function renderPicker(overrides: Partial<Parameters<typeof AssistantPickerV2>[0]
     onBrowse: vi.fn(),
     onClose: vi.fn(),
     onSelect: vi.fn(),
-    projectScoped: false,
     recentIds: chatHeaderGalleryRecentIds,
     ...overrides
   };
@@ -50,7 +48,7 @@ describe("Assistant picker sections", () => {
   it("orders Pinned, Recent, Featured, Yours, Shared with each Assistant once", () => {
     const sections = assistantPickerSectionsV2(
       [...chatHeaderGalleryAssistants, { ...chatHeaderGalleryAssistants[1]!, archived: true, id: "archived" }],
-      { projectScoped: false, query: "", recentIds: ["assistant-notes", "assistant-hr", "assistant-review"] }
+      { query: "", recentIds: ["assistant-notes", "assistant-hr", "assistant-review"] }
     );
     expect(sections.map((section) => [section.label, section.items.map((item) => item.name)])).toEqual([
       ["Pinned", ["HR Helper"]],
@@ -60,14 +58,8 @@ describe("Assistant picker sections", () => {
     ]);
   });
 
-  it("lists a Project's Assistants flat and searches name, description and author", () => {
-    expect(assistantPickerSectionsV2(chatHeaderGalleryProjectAssistants, {
-      projectScoped: true,
-      query: "",
-      recentIds: chatHeaderGalleryRecentIds
-    })).toEqual([{ items: chatHeaderGalleryProjectAssistants, label: null }]);
+  it("searches name, description and author", () => {
     expect(assistantPickerSectionsV2(chatHeaderGalleryAssistants, {
-      projectScoped: false,
       query: "dana",
       recentIds: []
     }).flatMap((section) => section.items.map((item) => item.name))).toEqual(["Meeting notes", "Sales brief"]);
@@ -75,13 +67,9 @@ describe("Assistant picker sections", () => {
 });
 
 describe("Assistant byline", () => {
-  it("names the viewer, the owner or the Project, never by Project", () => {
+  it("names the viewer or the owner", () => {
     expect(assistantBylineV2({ owned: true, ownerDisplayName: "Local Operator" })).toBe("by you");
     expect(assistantBylineV2({ owned: false, ownerDisplayName: "Dana Ivanova" })).toBe("by Dana Ivanova");
-    expect(assistantBylineV2({ owned: true, ownerDisplayName: "Project", projectName: "Launch plan" }))
-      .toBe("Project “Launch plan”");
-    expect(assistantBylineV2({ owned: false, ownerDisplayName: "Project", projectName: null })).toBe("Project");
-    expect(assistantBylineV2({ owned: false, ownerDisplayName: "Project", projectName: "  " })).toBe("Project");
   });
 });
 
@@ -145,24 +133,14 @@ describe("Assistant picker v2", () => {
     anchor.remove();
   });
 
-  it("is a bottom sheet on phones and a flat Project list with its settings route", async () => {
+  it("is a bottom sheet on phones", async () => {
     stubMobile(true);
-    const { anchor } = renderPicker({
-      assistants: chatHeaderGalleryProjectAssistants,
-      projectScoped: true,
-      recentIds: []
-    });
+    const { anchor } = renderPicker({ recentIds: [] });
     const dialog = screen.getByRole("dialog", { name: "Choose an Assistant" });
     // No caret in the search field, so no touch keyboard covers the list.
     await waitFor(() => expect(dialog).toHaveFocus());
     expect(screen.getByTestId("assistant-picker-backdrop")).toHaveAttribute("data-layout", "sheet");
     expect(dialog.getAttribute("style")).toBeNull();
-    expect(within(dialog).queryAllByRole("heading")).toHaveLength(0);
-    const projectList = within(dialog).getByRole("region", { name: "Project Assistants" });
-    expect(projectList).toHaveTextContent("Code reviewer");
-    expect(within(projectList).getByTestId("assistant-picker-row-assistant-review")).toHaveTextContent("Project “Launch plan”");
-    expect(projectList).not.toHaveTextContent("by Project");
-    expect(within(dialog).getByRole("button", { name: "Manage in Project settings" })).toBeVisible();
     anchor.remove();
   });
 

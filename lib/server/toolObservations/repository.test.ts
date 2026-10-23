@@ -28,9 +28,9 @@ function row(index: number, input: Partial<Row> = {}): Row {
 function fixture(rows: Row[], ancestors: readonly string[] = ["answer-1"]) {
   const tx = {
     modelRun: { findFirst: vi.fn(async () => ({ id: "run-2", chatId: "chat-1", assistantMessageId: "answer-2", status: "in_progress",
-      errorPayload: null, chat: { archived: false, permanentDeletionAt: null, projectId: null } })) },
+      errorPayload: null, chat: { archived: false, permanentDeletionAt: null } })) },
     user: { findFirst: vi.fn(async () => ({ id: actor.userId })) },
-    chat: { findUnique: vi.fn(async () => ({ archived: false, permanentDeletionAt: null, projectId: null, userId: actor.userId })) },
+    chat: { findUnique: vi.fn(async () => ({ archived: false, permanentDeletionAt: null, userId: actor.userId })) },
     agentRunBinding: { findUnique: vi.fn(async () => null) },
     toolObservation: {
       findMany: vi.fn(async (query: { where: { id: { in: string[] } } }) => rows.filter(entry => query.where.id.in.includes(entry.id))),

@@ -24,33 +24,22 @@ const catalog = { version: 1, servers: [{ description: "", namespace: "gitlab", 
 const toolDefinitions = [{ description: "Fixture", inputSchema: { type: "object" }, namespacedName: "workspace__sandbox_shell",
   originalName: "sandbox_shell" }];
 
-async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unknown>; project?: boolean }> = {}) {
+async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unknown> }> = {}) {
   const userId = `${PREFIX}${randomUUID()}`;
   users.push(userId);
-  const user = await prisma.user.create({ data: { displayName: "Code MCP fixture", id: userId, status: "active" } });
-  const project = input.project ? await prisma.project.create({ data: { createdByDisplayName: user.displayName,
-    createdByUserId: userId, grants: { create: { role: "OWNER", userId } }, name: "Code MCP project" } }) : null;
-  // The run's accepted Project revisions, as admission freezes them (the grant above already moved accessRevision).
-  const accepted = project ? await prisma.project.findUniqueOrThrow({ where: { id: project.id }, select: { accessRevision: true,
-    instructionsRevision: true, memoryRevision: true, policyRevision: true } }) : null;
-  const chat = await prisma.chat.create({ data: { title: "Code MCP", workspaceEnabled: true,
-    ...(project ? { createdByDisplayName: user.displayName, createdByUserId: userId, memoryMode: "EXCLUDED" as const,
-      projectId: project.id } : { userId }) } });
-  const message = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Collect logs"), role: "user",
-    ...(project ? { authorDisplayName: user.displayName, authorProjectRole: "OWNER" as const, authorUserId: userId } : {}) } });
+  await prisma.user.create({ data: { displayName: "Code MCP fixture", id: userId, status: "active" } });
+  const chat = await prisma.chat.create({ data: { title: "Code MCP", workspaceEnabled: true, userId } });
+  const message = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Collect logs"), role: "user" } });
   const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(""), role: "assistant",
     parentMessageId: message.id } });
   const runId = randomUUID();
   const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, expiresAt: new Date(Date.now() + 600_000),
     imageRef: "aiqsa-workspace:0.1.32", internetEnabled: true, operationOwner: `run:${runId}`, policyRevision: 1,
     runtimeSandboxId: "runtime-fixture", sandboxName: `code-mcp-${randomUUID()}`, state: "RUNNING" } });
-  // A Project chat's run must carry its Project binding in the same transaction (owner boundary trigger).
   await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, id: runId, modelId: "fake", provider: "fake",
     status: "in_progress", userId, userMessageId: message.id,
     normalizedRequest: (input.normalizedRequest ?? { mcpDiscovery: { catalog, epochs: [], version: 2 },
-      workspace: { codeMcp: budgets, enabled: true, internetEnabled: true } }) as Prisma.InputJsonValue,
-    ...(project && accepted ? { projectRunBinding: { create: { ...accepted, acceptedRole: "OWNER", initiatorUserId: userId,
-      personalMemoryDisabled: true, projectId: project.id } } } : {}) } });
+      workspace: { codeMcp: budgets, enabled: true, internetEnabled: true } }) as Prisma.InputJsonValue } });
   await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: true, mcpVersion: "0.6.16",
     modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
     toolCatalogHash: "a".repeat(64), toolDefinitions, workspaceSessionId: session.id } });
@@ -73,13 +62,11 @@ async function grantFor(token: string): Promise<WorkspaceCodeGatewayGrant> {
 
 afterEach(async () => {
   const userIds = users.splice(0);
-  const chats = await prisma.chat.findMany({ where: { OR: [{ userId: { in: userIds } }, { createdByUserId: { in: userIds } }] },
-    select: { id: true } });
+  const chats = await prisma.chat.findMany({ where: { userId: { in: userIds } }, select: { id: true } });
   await prisma.modelRun.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.message.deleteMany({ where: { chatId: { in: chats.map((chat) => chat.id) } } });
   await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chats.map((chat) => chat.id) } } });
   await prisma.chat.deleteMany({ where: { id: { in: chats.map((chat) => chat.id) } } });
-  await prisma.project.deleteMany({ where: { createdByUserId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 });
 afterAll(() => prisma.$disconnect());
@@ -237,19 +224,6 @@ describe("Workspace code MCP invocations and receipts", () => {
     await prisma.workspaceSession.update({ where: { id: f.session.id }, data: { operationOwner: `run:${f.runId}` } });
     await prisma.user.update({ where: { id: f.userId }, data: { status: "disabled" } });
     await expect(gateway.assertActive(grant, invocationId)).rejects.toMatchObject({ reason: "authority" });
-  });
-
-  it("gives a Project run no bearer, only the typed reason, since members share its Workspace", async () => {
-    const f = await fixture({ project: true });
-    expect(await grants.issueCodeGrant(f.binding)).toEqual({ environment: { AIQSA_MCP_UNAVAILABLE: "project_unsupported" } });
-    expect(await prisma.workspaceCodeGrant.count({ where: { modelRunId: f.runId } })).toBe(0);
-    expect(await grants.openCodeInvocation({ kind: "command", modelRunToolCallId: await f.command(), runId: f.runId,
-      sessionId: f.session.id })).toBeNull();
-    // The gateway refuses a Project run's bearer on its own as well.
-    const token = "p".repeat(43);
-    await prisma.workspaceCodeGrant.create({ data: { issuedAt: new Date(), modelRunId: f.runId, tokenHash: workspaceCodeTokenHash(token),
-      workspaceSessionId: f.session.id } });
-    expect(await gateway.load(workspaceCodeTokenHash(token))).toBeNull();
   });
 
   it("deletes grants, invocations and receipts with their run", async () => {

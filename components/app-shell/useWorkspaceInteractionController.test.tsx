@@ -16,7 +16,6 @@ const chat: WorkspaceChatSummary = {
 };
 
 const folder: FolderSummary = {
-  defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
   id: "folder-1",
   name: "Workspace folder",
   parentId: null,
@@ -64,26 +63,12 @@ describe("useWorkspaceInteractionController", () => {
     });
   });
 
-  it("keeps create concurrency and Project Knowledge settings lifetimes explicit", () => {
+  it("keeps create concurrency explicit", () => {
     const { result } = renderHook(() => useWorkspaceInteractionController());
 
     act(() => result.current.folderMutation.beginCreate());
     expect(result.current.folderMutation.creating).toBe(true);
     act(() => result.current.folderMutation.endCreate());
     expect(result.current.folderMutation.creating).toBe(false);
-
-    act(() => {
-      result.current.projectSettings.open(folder);
-    });
-    expect(result.current.projectSettings).toMatchObject({
-      folderId: folder.id,
-      knowledgeBaseIds: ["kb-1"]
-    });
-    expect("draft" in result.current.projectSettings).toBe(false);
-    act(() => result.current.folderMutation.completeProjectSave());
-    expect(result.current.projectSettings).toMatchObject({
-      folderId: null,
-      knowledgeBaseIds: []
-    });
   });
 });

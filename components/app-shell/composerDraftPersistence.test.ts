@@ -3,14 +3,10 @@ import { clearSignedOutComposerDrafts, composerDraftRecoveryBoundary, removePers
 import { clearComposerDrafts, COMPOSER_DRAFT_INITIAL_EPOCH, COMPOSER_DRAFT_MAX_RECORD_SIZE, composerDraftEpochKey, composerDraftStorageKey,
   readComposerDraftEpoch, readComposerDraftEpochState, readComposerDrafts, replaceComposerDraftEpoch, signOutComposerDraftEpoch,
   writeComposerDrafts } from "./composerDraftStorage";
-import { composerSessionKey, projectComposerSessionKey, selectComposerSession, useComposerSessionStore } from "./composerSessionStore";
+import { composerSessionKey, selectComposerSession, useComposerSessionStore } from "./composerSessionStore";
 import { rememberSessionExpiredDraft, storedSessionExpiredDraft } from "./shellStorage";
-import { useWorkspaceActions } from "./workspaceActions";
-import { mergeWorkspaceProjectDrafts } from "./workspaceProjectDraftMerge";
-import { useChatAssistantProjectionStore } from "./chatAssistantProjectionStore";
 import { useWorkspaceStore } from "./workspaceStore";
-import { resetChatAssistantProjectionStoreForTest, resetComposerSessionStoreForTest, resetThreadStoreForTest,
-  resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import { resetComposerSessionStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 
 const root = composerSessionKey(null);
 const saved = composerSessionKey("one");
@@ -96,8 +92,8 @@ describe("composer draft persistence lifecycle", () => {
     expect(JSON.stringify(readComposerDrafts("a"))).not.toContain("private");
   });
   it("restores only text to existing sessions, without activation or focus, after workspace metadata arrives", () => {
-    const project = projectComposerSessionKey("project");
-    writeComposerDrafts("a", new Map([[root, "blank"], [saved, "saved"], [project, "project draft"]]));
+    const folder = composerSessionKey(null, "folder-1");
+    writeComposerDrafts("a", new Map([[root, "blank"], [saved, "saved"], [folder, "folder draft"]]));
     const store = useComposerSessionStore.getState();
     store.activateSession(saved);
     startComposerDraftPersistence("a");
@@ -107,8 +103,8 @@ describe("composer draft persistence lifecycle", () => {
     expect(draft(saved)).toBe("saved");
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(saved);
     expect(selectComposerSession(useComposerSessionStore.getState(), saved)).toMatchObject({ attachments: [], editingDraft: "", workspaceEnabled: false });
-    store.activateSession(project);
-    expect(draft(project)).toBe("project draft");
+    store.activateSession(folder);
+    expect(draft(folder)).toBe("folder draft");
     expect(document.activeElement).toBe(document.body);
   });
 
@@ -304,7 +300,7 @@ describe("composer draft persistence lifecycle", () => {
 
 describe("composer draft persistence across tabs, sign-in and failing storage", () => {
   it("lets two tabs that start at the same moment without a fence both persist, and restores each draft after a reload", async () => {
-    const project = projectComposerSessionKey("project");
+    const folder = composerSessionKey(null, "folder-1");
     startComposerDraftPersistence("a");
     useComposerSessionStore.getState().setDraft("first tab text");
     // The second document read the missing fence before the first one's write
@@ -321,17 +317,17 @@ describe("composer draft persistence across tabs, sign-in and failing storage", 
     fenceChanged();
     expect(readComposerDraftEpochState("a")).toMatchObject({ epoch: COMPOSER_DRAFT_INITIAL_EPOCH, signedOut: false });
 
-    second.sessions.getState().activateSession(project);
+    second.sessions.getState().activateSession(folder);
     second.sessions.getState().setDraft("second tab text");
     flush();
     expect(draft()).toBe("first tab text");
-    expect(second.draft(project)).toBe("second tab text");
+    expect(second.draft(folder)).toBe("second tab text");
 
     const reloaded = await openOtherTab();
     reloaded.startComposerDraftPersistence("a");
-    reloaded.sessions.getState().activateSession(project);
+    reloaded.sessions.getState().activateSession(folder);
     expect(reloaded.draft()).toBe("first tab text");
-    expect(reloaded.draft(project)).toBe("second tab text");
+    expect(reloaded.draft(folder)).toBe("second tab text");
   });
 
   it("keeps a signed-out tab from writing its text back and resumes it after the account signs in again", async () => {
@@ -471,50 +467,5 @@ describe("composer draft persistence across tabs, sign-in and failing storage", 
     clearSignedOutComposerDrafts("a");
     expect(localStorage.getItem(composerDraftStorageKey("a"))).toBeNull();
     expect(readComposerDraftEpochState("a").signedOut).toBe(true);
-  });
-});
-
-describe("a Project chat opened by its address", () => {
-  it("restores its stored draft when the personal workspace refresh finishes first, and a later personal refresh keeps it", async () => {
-    resetThreadStoreForTest();
-    resetChatAssistantProjectionStoreForTest();
-    const projectChat = { ...chat("project-chat"), projectId: "project-1" };
-    const key = composerSessionKey(projectChat.id);
-    writeComposerDrafts("a", new Map([[key, "stored Project draft"]]));
-    window.history.replaceState(null, "", "/p/project-1/c/project-chat");
-    let respond: (() => void) | null = null;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) !== "/api/chats") return Response.json({ error: "unexpected" }, { status: 500 });
-      if (respond === null) return Response.json({ chats: [], folders: [] });
-      return new Promise<Response>(resolve => { respond = () => resolve(Response.json({ chats: [], folders: [] })); });
-    }));
-    const actions = useWorkspaceActions({
-      activeChatIdRef: { current: null }, applyModelControlDefaults: vi.fn(), chatDetailRequestsRef: { current: new Map() },
-      chatHasActiveStream: () => false, chatMutation: { editingTitle: "", finishEditing: vi.fn() },
-      loadingChatDetailIdRef: { current: null }, resumeChatRun: vi.fn(), setNotice: vi.fn(), setSelectedKnowledgePlan: vi.fn(),
-      setSelectedModelId: vi.fn(), setSelectedProvider: vi.fn(), setSelectedSearchPlan: vi.fn(), workspaceRefreshPromiseRef: { current: null }
-    });
-    startComposerDraftPersistence("a");
-    try {
-      // A Project address first loads the personal workspace, which prunes.
-      await actions.refreshWorkspace(null);
-      expect(readComposerDrafts("a")[0]?.draft).toBe("stored Project draft");
-      // Another personal read starts before the Project owner admits its chat.
-      respond = () => {};
-      const laterRefresh = actions.refreshWorkspace();
-      const store = useWorkspaceStore.getState();
-      store.setChats(mergeWorkspaceProjectDrafts({ currentChats: store.chats, incomingChats: [projectChat], projectId: "project-1" }).chats);
-      useChatAssistantProjectionStore.getState().setProjection(projectChat.id, null);
-      await actions.activateChat(projectChat, { preserveControls: true, resumeRuns: false });
-      expect(draft(key)).toBe("stored Project draft");
-      (respond as () => void)();
-      await laterRefresh;
-      flush();
-      expect(draft(key)).toBe("stored Project draft");
-      expect(readComposerDrafts("a").map(record => record.draft)).toEqual(["stored Project draft"]);
-    } finally {
-      vi.unstubAllGlobals();
-      window.history.replaceState(null, "", "/");
-    }
   });
 });

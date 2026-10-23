@@ -10,7 +10,7 @@ const pending: ThreadMessage = {
   workspaceActivity: { entries: [], outputStatus: { state: "retrying" } },
   artifactSummary: { citations: [], reasoningText: [], sources: [], generatedFiles: [{ attachmentId: "ready", byteSize: 6, fileName: "ready.txt", mimeType: "text/plain", relativePath: "ready.txt" }] }
 };
-const props = { accountId: "account-a", chatId: "chat-a", messages: [pending], streaming: false, projectId: null as string | null };
+const props = { accountId: "account-a", chatId: "chat-a", messages: [pending], streaming: false };
 type RefreshOptions = Parameters<Parameters<typeof useWorkspaceOutputReconciliation>[0]["refreshActiveChat"]>[1];
 const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
 
@@ -52,10 +52,9 @@ describe("personal Workspace output reconciliation", () => {
     expect(completed.artifactSummary?.generatedFiles).toHaveLength(1);
   });
 
-  it.each(["project", "streaming", "terminal", "no_chat"] as const)("does not create an extra refresh owner for %s", async (kind) => {
+  it.each(["streaming", "terminal", "no_chat"] as const)("does not create an extra refresh owner for %s", async (kind) => {
     const refresh = vi.fn(async () => ({}));
     renderHook(() => useWorkspaceOutputReconciliation({ ...props, refreshActiveChat: refresh,
-      ...(kind === "project" ? { projectId: "project-a" } : {}),
       ...(kind === "streaming" ? { streaming: true } : {}),
       ...(kind === "terminal" ? { messages: [{ ...pending, workspaceActivity: { entries: [], outputStatus: { state: "failed" } } }] } : {}),
       ...(kind === "no_chat" ? { chatId: null } : {})

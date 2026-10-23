@@ -11,15 +11,6 @@ import {
 import { ASSISTANT_TEMPLATES } from "./assistantTemplates";
 import { NewAssistantSheetV2 } from "./NewAssistantSheetV2";
 
-// The Knowledge template stays tested as it worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
-
 function view(overrides: Partial<AssistantNewAssistantView> = {}): AssistantNewAssistantView {
   return {
     onBlank: vi.fn(),
@@ -33,18 +24,20 @@ function view(overrides: Partial<AssistantNewAssistantView> = {}): AssistantNewA
 }
 
 describe("New assistant sheet", () => {
-  it("offers Blank, the current chat and six templates, and saves nothing on Blank", () => {
+  it("offers Blank, the current chat and five templates, and saves nothing on Blank", () => {
     const current = view();
     render(<NewAssistantSheetV2 view={current} />);
 
     const sheet = screen.getByRole("dialog", { name: "New assistant" });
     expect(sheet).toHaveAccessibleDescription("Start from a template or from your current chat. Nothing is saved until you press Create.");
     expect(within(sheet).getAllByRole("radio").map((radio) => radio.closest("label")?.querySelector("span")?.textContent)).toEqual([
-      "Blank", "From current chat", "Writing editor", "Code reviewer", "Research analyst", "Meeting notes", "Translator", "Support with Knowledge"
+      "Blank", "From current chat", "Writing editor", "Code reviewer", "Research analyst", "Meeting notes", "Translator"
     ]);
     expect(within(sheet).getByRole("radio", { name: "Blank" })).toBeChecked();
     expect(within(sheet).getByRole("radio", { name: "Blank" })).toHaveAccessibleDescription("Only a name. Your Chat defaults fill the rest.");
-    expect(sheet).toHaveTextContent("Templates are built into AIQSA. They set the name, description, instructions and starters; no models, tools or Knowledge.");
+    expect(within(sheet).getByRole("radio", { name: "From current chat" }))
+      .toHaveAccessibleDescription("Copies the model, search, tools and Skills of the open chat as adjustable starting values.");
+    expect(sheet).toHaveTextContent("Templates are built into AIQSA. They set the name, description, instructions and starters; no models or tools.");
     fireEvent.click(within(sheet).getByRole("button", { name: "Continue" }));
     expect(current.onBlank).toHaveBeenCalledOnce();
     expect(current.onTemplate).not.toHaveBeenCalled();
@@ -65,35 +58,15 @@ describe("New assistant sheet", () => {
     expect(options).toBeUndefined();
   });
 
-  it("opens Knowledge for Support with Knowledge and carries the current chat on request", () => {
+  it("carries the current chat on request", () => {
     const current = view();
     render(<NewAssistantSheetV2 view={current} />);
-
-    fireEvent.click(screen.getByRole("radio", { name: "Support with Knowledge" }));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(current.onTemplate).toHaveBeenCalledWith(expect.objectContaining({ name: "Support with Knowledge" }), { expandedRow: "knowledge" });
 
     fireEvent.click(screen.getByRole("radio", { name: "From current chat" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(current.onFromCurrentChat).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(current.onClose).toHaveBeenCalledOnce();
-  });
-
-  it("offers no Knowledge template and copies no Knowledge from the chat while Knowledge is disabled", () => {
-    areas.knowledge = false;
-    try {
-      render(<NewAssistantSheetV2 view={view()} />);
-      const sheet = screen.getByRole("dialog", { name: "New assistant" });
-
-      expect(within(sheet).getAllByRole("radio").map((radio) => radio.closest("label")?.querySelector("span")?.textContent)).toEqual([
-        "Blank", "From current chat", "Writing editor", "Code reviewer", "Research analyst", "Meeting notes", "Translator"
-      ]);
-      expect(within(sheet).getByRole("radio", { name: "From current chat" }))
-        .toHaveAccessibleDescription("Copies the model, search, tools and Skills of the open chat as adjustable starting values.");
-    } finally {
-      areas.knowledge = true;
-    }
   });
 
   it("renders nothing while closed", () => {
@@ -104,7 +77,7 @@ describe("New assistant sheet", () => {
 
 describe("built-in templates", () => {
   it("fit the Assistant limits and use only the existing instruction variables", () => {
-    expect(ASSISTANT_TEMPLATES).toHaveLength(6);
+    expect(ASSISTANT_TEMPLATES).toHaveLength(5);
     for (const { prefill } of ASSISTANT_TEMPLATES) {
       expect(prefill.name.length).toBeLessThanOrEqual(ASSISTANT_NAME_MAX_LENGTH);
       expect(prefill.description.length).toBeLessThanOrEqual(ASSISTANT_DESCRIPTION_MAX_LENGTH);

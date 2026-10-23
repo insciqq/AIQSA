@@ -1,6 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { explicitKnowledgeSelection } from "@/lib/contracts/knowledge";
 import { AccountSettingsRowsV2 } from "./AccountSettingsRowsV2";
 import { ChatDefaultsRowsV2 } from "./ChatDefaultsRowsV2";
 import { DataSettingsRowsV2, deleteAllSummary } from "./DataSettingsRowsV2";
@@ -18,15 +17,6 @@ vi.mock("@/components/app-shell/accountApi", () => ({
   ...accountApi
 }));
 
-// The Knowledge default stays tested as it worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
-
 const strategies = [
   { displayName: "Off", kind: "none" as const, strategyId: "search-disabled" },
   { displayName: "Web search", kind: "web_search" as const, strategyId: "next-search" },
@@ -34,38 +24,15 @@ const strategies = [
 ];
 
 describe("ChatDefaultsRowsV2", () => {
-  it("persists the search engine, MCP mode and knowledge default without touching the composer", () => {
+  it("persists the search engine and MCP and Skills modes without touching the composer", () => {
     const onSearchPlan = vi.fn();
     const onMcpMode = vi.fn();
     const onSkillsMode = vi.fn();
-    const onKnowledgePlan = vi.fn();
     render(
       <ChatDefaultsRowsV2
-        knowledgeBases={[
-          {
-            archived: false,
-            description: "",
-            documentCount: 1,
-            id: "kb-1",
-            name: "Handbook",
-            owned: true,
-            readinessState: "ready"
-          },
-          {
-            archived: true,
-            description: "",
-            documentCount: 1,
-            id: "kb-old",
-            name: "Old",
-            owned: true,
-            readinessState: "archived"
-          }
-        ]}
-        knowledgePlan={null}
         mcpMode="auto"
         searchPlan={{ mode: "all_selected", optionIds: ["next-search"] }}
         searchStrategies={strategies}
-        onKnowledgePlan={onKnowledgePlan}
         onMcpMode={onMcpMode}
         onSkillsMode={onSkillsMode}
         onSearchPlan={onSearchPlan}
@@ -84,74 +51,24 @@ describe("ChatDefaultsRowsV2", () => {
     expect(onMcpMode).toHaveBeenCalledWith("load_all");
     fireEvent.keyDown(within(screen.getByRole("radiogroup", { name: "Skills default" })).getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
     expect(onSkillsMode).toHaveBeenCalledWith("off");
-
-    // The Knowledge default is a Signal select: a menu trigger showing the
-    // current choice, options as menu items.
-    const knowledge = screen.getByRole("button", { name: "Knowledge default" });
-    expect(knowledge).toHaveTextContent("None");
-    fireEvent.click(knowledge);
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "None",
-      "All my knowledge",
-      "Handbook"
-    ]);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Handbook" }));
-    expect(onKnowledgePlan).toHaveBeenCalledWith(explicitKnowledgeSelection({ baseIds: ["kb-1"] }));
-    fireEvent.click(knowledge);
-    fireEvent.click(screen.getByRole("menuitem", { name: "All my knowledge" }));
-    expect(onKnowledgePlan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "all_my_knowledge" }));
-    fireEvent.click(knowledge);
-    fireEvent.click(screen.getByRole("menuitem", { name: "None" }));
-    expect(onKnowledgePlan).toHaveBeenLastCalledWith(null);
+    expect(screen.queryByRole("button", { name: "Knowledge default" })).toBeNull();
+    expect(screen.queryByTestId("settings-default-knowledge")).toBeNull();
   });
 
-  it("keeps an unavailable saved base visible instead of silently switching", () => {
+  it("shows saved Off defaults as they are", () => {
     render(
       <ChatDefaultsRowsV2
-        knowledgeBases={[]}
-        knowledgePlan={explicitKnowledgeSelection({ baseIds: ["kb-gone"] })}
         mcpMode="off"
         searchPlan={{ mode: "all_selected", optionIds: [] }}
         searchStrategies={strategies}
-        onKnowledgePlan={vi.fn()}
         onMcpMode={vi.fn()}
         onSearchPlan={vi.fn()}
       />
     );
-    const knowledge = screen.getByRole("button", { name: "Knowledge default" });
-    expect(knowledge).toHaveTextContent("Unavailable base");
-    fireEvent.click(knowledge);
-    expect(screen.getByRole("menuitem", { name: "Unavailable base" })).toHaveAttribute("aria-current", "true");
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge default" }), { key: "Escape" });
     expect(screen.getByLabelText("Web search default")).toHaveTextContent("Off");
     expect(
       within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Off" })
     ).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("offers no Knowledge default while Knowledge is disabled, even with a saved one", () => {
-    areas.knowledge = false;
-    try {
-      render(
-        <ChatDefaultsRowsV2
-          knowledgeBases={[]}
-          knowledgePlan={explicitKnowledgeSelection({ baseIds: ["kb-1"] })}
-          mcpMode="auto"
-          searchPlan={{ mode: "all_selected", optionIds: [] }}
-          searchStrategies={strategies}
-          onKnowledgePlan={vi.fn()}
-          onMcpMode={vi.fn()}
-          onSearchPlan={vi.fn()}
-        />
-      );
-
-      expect(screen.queryByRole("button", { name: "Knowledge default" })).toBeNull();
-      expect(screen.queryByTestId("settings-default-knowledge")).toBeNull();
-      expect(screen.getByLabelText("Web search default")).toBeInTheDocument();
-      expect(screen.getByRole("radiogroup", { name: "MCP tools default" })).toBeInTheDocument();
-    } finally {
-      areas.knowledge = true;
-    }
   });
 });
 

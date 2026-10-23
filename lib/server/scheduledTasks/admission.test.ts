@@ -521,7 +521,9 @@ describe("scheduled task admission on the native engine", () => {
     // The owner's own turns before and after the previous result stay out.
     expect(f.state.requests).toHaveLength(1);
     expect(f.state.requests[0]!.history!.map((item) => [item.type, "text" in item ? item.text : null])).toEqual([
-      ["user", "Summarize the synthetic fixture"], ["assistant_text", "Previous synthetic summary"], ["user", "Summarize the synthetic fixture"]
+      ["user", "Summarize the synthetic fixture"], ["assistant_text", "Previous synthetic summary"],
+      // The turn's own facts ride just before its input.
+      ["user", expect.stringMatching(/^<turn_context>\n/u)], ["user", "Summarize the synthetic fixture"]
     ]);
     expect(native.published).toHaveLength(1);
     expect(f.state.completedText).toBeNull();

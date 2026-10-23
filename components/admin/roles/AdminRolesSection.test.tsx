@@ -1,7 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { adminKnowledgeProfileFixture, adminKnowledgeSettingsFixture } from "@/tests/support/knowledgeProfile";
 import type { AdminGroup } from "@/lib/contracts/admin";
-import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import type { AdminPublishedImageModel, AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import type { AdminSpeechToTextRole } from "@/lib/contracts/speechToText";
@@ -9,15 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminConfirmationRequest } from "../useAdminConfirmationController";
 import type { AdminFeedbackNoticeAction } from "../useAdminFeedback";
 import { AdminRolesSection } from "./AdminRolesSection";
-
-// Knowledge processing stays tested as it worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
 
 const base = {
   connectionDisplayName: "OpenAI", connectionId: "openai", defaultReasoningEffort: "medium",
@@ -76,52 +65,11 @@ const groups: AdminGroup[] = [{
   archivedAt: null, deletion: { canDelete: true, reason: null, summary: "" }, id: "g1", name: "everyone", systemRole: null, userCount: 1
 }];
 
-const alternateEmbedding = {
-  connectionDisplayName: "OpenRouter", deploymentId: "qwen", modelDisplayName: "Qwen3 Embedding 8B", provider: "openrouter", targetDimension: 1536
-};
-
-const documentModel = {
-  connectionDisplayName: "OpenAI", defaultReasoningEffort: "medium", deploymentId: "luna",
-  directPdf: true, modelDisplayName: "GPT Luna", provider: "openai",
-  reasoningEfforts: ["none", "low", "medium", "high"], upstreamModelId: "luna", vision: true
-};
-
-function documentSettings(effort: string | null = null): AdminKnowledgeSettings {
-  const knowledge = knowledgeSettings();
-  const active = { ...knowledge.profile.activeRevision!, pdfProcessing: {
-    destination: documentModel, mode: "system_model_vision" as const, parserProfileVersion: 19,
-    reasoningEffort: effort
-  } };
-  return { ...knowledge, profile: { ...knowledge.profile, activeRevision: active,
-    availablePdfDestinations: [documentModel, {
-      ...documentModel, defaultReasoningEffort: null, deploymentId: "terra",
-      modelDisplayName: "GPT Terra", reasoningEfforts: []
-    }], recentRevisions: [active, ...knowledge.profile.recentRevisions]
-  } };
-}
-
-function knowledgeSettings(): AdminKnowledgeSettings {
-  const profile = adminKnowledgeProfileFixture();
-  const active = { ...profile.activeRevision!, revisionNumber: 2 };
-  const earlier = {
-    ...profile.activeRevision!, activatedAt: "2026-08-01T00:00:00.000Z", id: "profile-revision-0",
-    destination: alternateEmbedding, revisionNumber: 1
-  };
-  return adminKnowledgeSettingsFixture({
-    profile: adminKnowledgeProfileFixture({
-      activeRevision: active,
-      availableDestinations: [...profile.availableDestinations, alternateEmbedding],
-      recentRevisions: [active, earlier]
-    })
-  });
-}
-
 type Call = { body: Record<string, unknown> | null; method: string; url: string };
 
-function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSettings(), initialModel = modelCatalog()) {
+function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
   let roles = initialRoles;
   let model = initialModel;
-  let knowledge = initialKnowledge;
   let speechToText: AdminSpeechToTextRole = { assignment: null, configuredAt: null, connections: [
     { displayName: "OpenRouter", family: "openrouter", id: "openrouter", ready: true },
     { displayName: "Local Whisper", family: "openai_compatible", id: "local", ready: false }
@@ -219,32 +167,6 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
       }
       return Response.json({ modelPolicy: model });
     }
-    if (url === "/api/admin/knowledge") {
-      if (method === "PATCH" && body) {
-        if (body.expectedVersion !== knowledge.profile.version) {
-          return Response.json({ error: "knowledge_profile_stale" }, { status: 409 });
-        }
-        const destination = knowledge.profile.availableDestinations.find((item) => item.deploymentId === body.deploymentId) ??
-          knowledge.profile.recentRevisions.find((item) => item.id === body.revisionId)?.destination;
-        if (!destination) return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
-        const activeRevision = {
-          ...knowledge.profile.activeRevision!, activatedAt: "2026-09-07T01:00:00.000Z", destination, id: "profile-revision-3", revisionNumber: 3,
-          pdfProcessing: body.action === "rollback_profile"
-            ? knowledge.profile.recentRevisions.find((item) => item.id === body.revisionId)!.pdfProcessing
-            : {
-                destination: knowledge.profile.availablePdfDestinations.find((item) => item.deploymentId === body.documentDeploymentId) ?? null,
-                mode: body.pdfProcessingMode as "local" | "system_model_vision" | "system_model_direct_pdf",
-                parserProfileVersion: 19, reasoningEffort: body.documentReasoningEffort as string | null
-              }
-        };
-        knowledge = adminKnowledgeSettingsFixture({ profile: adminKnowledgeProfileFixture({
-          ...knowledge.profile, activeRevision,
-          migration: { activeProfileBases: 0, buildingProfileBases: 1, legacyGenerations: 0, profiledGenerations: 1, totalBases: 5 },
-          recentRevisions: [activeRevision, ...knowledge.profile.recentRevisions], version: knowledge.profile.version + 1
-        }) });
-      }
-      return Response.json({ knowledge });
-    }
     if (url === "/api/admin/providers/speech-to-text") {
       if (method === "POST" && body?.action === "discover") return Response.json({ models: ["openai/whisper-1", "openai/gpt-4o-transcribe"] });
       if (method === "POST" && body?.action === "test_and_save") {
@@ -284,13 +206,11 @@ function renderSection(groupList: AdminGroup[] = groups, resource: string | null
 const patchesTo = (calls: Call[], url: string) => calls.filter((call) => call.url === url && call.method === "PATCH").map((call) => call.body);
 
 afterEach(() => {
-  areas.knowledge = true;
   vi.unstubAllGlobals();
 });
 
 describe("AdminRolesSection", () => {
-  it("offers no Knowledge processing rows while Knowledge is disabled", async () => {
-    areas.knowledge = false;
+  it("offers no Knowledge processing rows", async () => {
     server();
     renderSection();
 
@@ -486,18 +406,15 @@ describe("AdminRolesSection", () => {
     ]);
   });
 
-  it("preserves edited defaults and Knowledge fields across a background refresh", async () => {
+  it("preserves edited defaults across a background refresh", async () => {
     const calls = server();
     renderSection();
     const rounds = await screen.findByRole("spinbutton", { name: "Rounds" });
-    const documents = await screen.findByRole("combobox", { name: "Documents mode" });
     fireEvent.change(rounds, { target: { value: "11" } });
-    fireEvent.change(documents, { target: { value: "system_model_vision" } });
     const previousGetCount = calls.filter((call) => call.method === "GET").length;
     fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 3));
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 2));
     expect(rounds).toHaveValue(11);
-    expect(documents).toHaveValue("system_model_vision");
   });
 
   it("keeps a committed role when an older background read settles afterward", async () => {
@@ -710,24 +627,6 @@ describe("AdminRolesSection", () => {
     expect(screen.queryByRole("button", { name: "Page-image reader deployment" })).not.toBeInTheDocument();
   });
 
-  it("starts unconfigured Knowledge with image reading and the first eligible document model", async () => {
-    const roles = rolesCatalog();
-    const reader = { ...luna, visionInput: "verified" as const };
-    roles.documentCandidates = [reader];
-    const knowledge = knowledgeSettings();
-    const calls = server(roles, { ...knowledge, profile: {
-      ...knowledge.profile, activeRevision: null, availablePdfDestinations: [{
-        ...documentModel, directPdf: false
-      }], health: { checkedAt: null, code: "knowledge_profile_not_configured", state: "not_configured" },
-      egress: { embeddingDestination: null, pdfDestination: null, representations: ["document_text_chunks", "search_queries"] }
-    } });
-    renderSection();
-    expect(await screen.findByRole("combobox", { name: "Documents mode" })).toHaveValue("system_model_vision");
-    expect(screen.getByRole("button", { name: "Documents model" })).toHaveTextContent("GPT Luna");
-    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
-  });
-
   it("validates the MCP Auto tool count, preserves failed edits and saves on retry", async () => {
     const calls = server();
     renderSection();
@@ -756,7 +655,7 @@ describe("AdminRolesSection", () => {
     });
     const previousGetCount = calls.filter((call) => call.method === "GET").length;
     fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 3));
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 2));
     expect(tools).toHaveValue(20);
   });
 
@@ -813,7 +712,7 @@ describe("AdminRolesSection", () => {
 
   it("saves the kill switch alone while the saved reasoning effort is no longer offered", async () => {
     const model = modelCatalog();
-    const calls = server(rolesCatalog(), knowledgeSettings(), { ...model, policy: { ...model.policy, reasoningEffort: "xhigh" } });
+    const calls = server(rolesCatalog(), { ...model, policy: { ...model.policy, reasoningEffort: "xhigh" } });
     renderSection();
     const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
@@ -870,7 +769,7 @@ describe("AdminRolesSection", () => {
     const model = modelCatalog();
     const { toolObservationPolicy: _unknown, ...policy } = model.policy;
     void _unknown;
-    server(rolesCatalog(), knowledgeSettings(), { ...model, policy });
+    server(rolesCatalog(), { ...model, policy });
     renderSection();
     const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
     expect(toggle).toBeDisabled();
@@ -885,121 +784,6 @@ describe("AdminRolesSection", () => {
     const model = screen.getByRole("combobox", { name: "Default chat model" });
     expect(within(model).getByRole("option", { name: /Unavailable — OpenAI \/ GPT Luna/ })).toBeDisabled();
     expect(within(model).queryByRole("option", { name: "OpenAI / GPT Terra" })).not.toBeInTheDocument();
-  });
-
-  it("keeps Knowledge processing behind Apply plus the reindexing confirmation", async () => {
-    const calls = server();
-    const { requestConfirmation } = renderSection();
-    const embeddings = await screen.findByRole("button", { name: "Embeddings model" });
-    expect(embeddings).toHaveTextContent("Local embeddings / Multilingual embed · 1024d");
-    expect(screen.getByTestId("admin-knowledge-state")).toHaveTextContent("Ready");
-    expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
-    fireEvent.click(embeddings);
-    fireEvent.click(screen.getByRole("option", { name: /Qwen3 Embedding 8B · 1536d/ }));
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
-
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    expect(requestConfirmation).toHaveBeenCalledTimes(1);
-    const config = requestConfirmation.mock.calls[0]![0];
-    expect(config.title).toBe("Reprocess all Knowledge documents?");
-    expect(config.body).toContain("Existing indexes stay online until their replacements are ready");
-    expect(config.body).toContain("authorizes the disclosed processing, external requests, and reindexing");
-    await config.onConfirm();
-    await waitFor(() => expect(screen.getByTestId("admin-knowledge-state")).toHaveTextContent("Reindexing 1 of 5 bases"));
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([{
-      action: "activate_profile", deploymentId: "qwen", documentDeploymentId: null, documentReasoningEffort: null, expectedVersion: 1, pdfProcessingMode: "local"
-    }]);
-    expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
-  });
-
-  it("restores an earlier configuration from the sheet after the same confirmation", async () => {
-    const calls = server();
-    const { requestConfirmation } = renderSection();
-    fireEvent.click(await screen.findByRole("button", { name: "Knowledge processing actions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Earlier configurations" }));
-    const sheet = await screen.findByRole("dialog", { name: "Earlier configurations" });
-    expect(within(sheet).getByText(/Embeddings: OpenRouter \/ Qwen3 Embedding 8B · 1536d · Documents: Local · no model/)).toBeInTheDocument();
-    expect(within(sheet).queryByText(/revision/i)).not.toBeInTheDocument();
-    fireEvent.click(within(sheet).getByRole("button", { name: /^Restore configuration applied/ }));
-    const config = requestConfirmation.mock.calls[0]![0];
-    expect(config.title).toBe("Restore this configuration?");
-    await config.onConfirm();
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Earlier configurations" })).not.toBeInTheDocument());
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([{ action: "rollback_profile", expectedVersion: 1, revisionId: "profile-revision-0" }]);
-  });
-
-  it("keeps Documents reasoning independent and requires confirmation for a reasoning-only change", async () => {
-    const calls = server(rolesCatalog(), documentSettings());
-    const { requestConfirmation } = renderSection();
-    const documents = await screen.findByTestId("admin-role-documents");
-    fireEvent.click(within(documents).getByText("Advanced"));
-    const reasoning = screen.getByRole("combobox", { name: "Documents reasoning" });
-    expect(reasoning).toHaveValue("");
-    expect(within(reasoning).getByRole("option", { name: "Reasoning: Default (medium)" })).toHaveValue("");
-    expect(within(reasoning).getByRole("option", { name: "Reasoning: none" })).toHaveValue("none");
-    fireEvent.change(reasoning, { target: { value: "none" } });
-    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
-    // Cancelling the confirmation leaves the same draft and active revision.
-    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
-    expect(reasoning).toHaveValue("");
-    fireEvent.change(reasoning, { target: { value: "low" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    await act(async () => requestConfirmation.mock.calls.at(-1)![0].onConfirm());
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument());
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([{
-      action: "activate_profile", deploymentId: "embedding-model-1", documentDeploymentId: "luna",
-      documentReasoningEffort: "low", expectedVersion: 1, pdfProcessingMode: "system_model_vision"
-    }]);
-    const reads = calls.length;
-    fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(calls.length).toBeGreaterThan(reads));
-    expect(reasoning).toHaveValue("low");
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
-  });
-
-  it("resets Documents reasoning on model or mode changes and restores it on Discard", async () => {
-    const calls = server(rolesCatalog(), documentSettings("high"));
-    renderSection();
-    fireEvent.click(within(await screen.findByTestId("admin-role-documents")).getByText("Advanced"));
-    const reasoning = screen.getByRole("combobox", { name: "Documents reasoning" });
-    expect(reasoning).toHaveValue("high");
-    fireEvent.click(screen.getByRole("button", { name: "Documents model" }));
-    fireEvent.click(within(screen.getByRole("listbox", { name: "Ready for Documents" })).getByRole("option", { name: /GPT Terra/ }));
-    expect(reasoning).toHaveValue("");
-    expect(reasoning).toBeDisabled();
-    expect(within(reasoning).getAllByRole("option")).toHaveLength(1);
-    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
-    expect(reasoning).toHaveValue("high");
-    fireEvent.change(screen.getByRole("combobox", { name: "Documents mode" }), { target: { value: "system_model_direct_pdf" } });
-    expect(reasoning).toHaveValue("");
-    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
-    expect(reasoning).toHaveValue("high");
-    fireEvent.change(screen.getByRole("combobox", { name: "Documents mode" }), { target: { value: "local" } });
-    expect(screen.queryByRole("combobox", { name: "Documents reasoning" })).not.toBeInTheDocument();
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
-  });
-
-  it("shows unavailable saved reasoning honestly and preserves a failed draft across stale refresh", async () => {
-    const calls = server(rolesCatalog(), documentSettings("removed-level"));
-    const { reportError, requestConfirmation } = renderSection();
-    fireEvent.click(within(await screen.findByTestId("admin-role-documents")).getByText("Advanced"));
-    const reasoning = screen.getByRole("combobox", { name: "Documents reasoning" });
-    expect(within(reasoning).getByRole("option", { name: "Reasoning: removed-level (unavailable)" })).toBeDisabled();
-    fireEvent.change(reasoning, { target: { value: "low" } });
-    const original = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
-      String(input) === "/api/admin/knowledge" && init?.method === "PATCH"
-        ? Response.json({ error: "knowledge_profile_stale" }, { status: 409 }) : original(input, init)));
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    await act(async () => requestConfirmation.mock.calls.at(-1)![0].onConfirm());
-    await waitFor(() => expect(reportError).toHaveBeenCalledWith(expect.stringMatching(/changed elsewhere/)));
-    expect(reasoning).toHaveValue("low");
-    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
-    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
-    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
-    expect(reasoning).toHaveValue("removed-level");
   });
 
   it("reports a stale immediate apply and reloads the current assignment instead of guessing", async () => {

@@ -25,7 +25,7 @@ function fixture(chat: Readonly<{ memoryMode?: string; scheduledTaskPrompt?: boo
     $queryRaw: vi.fn(async () => [{ id: "run" }]),
     modelRun: { findFirst: vi.fn(async () => ({ status: "streaming", normalizedRequest: { memorySearch: snapshot, toolMode: "auto" },
       chatId: "chat", assistantId: null, userMessage: { scheduledTaskPrompt: chat.scheduledTaskPrompt ?? false },
-      chat: { userId: "user", projectId: null, memoryMode: chat.memoryMode ?? "NORMAL", permanentDeletionAt: null, folderId: null,
+      chat: { userId: "user", memoryMode: chat.memoryMode ?? "NORMAL", permanentDeletionAt: null, folderId: null,
         memoryBranchGeneration: 1 } })) },
     modelRunToolCall: { findFirst: vi.fn(async () => ({ state: "running", toolName: "memory_search", ordinal: 0 })),
       count: vi.fn(async () => 1) },
