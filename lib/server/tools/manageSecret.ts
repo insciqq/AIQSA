@@ -84,8 +84,8 @@ const INPUT_SCHEMA = {
 
 export const manageSecretTool: HarnessToolDescriptor = Object.freeze({
   description: DESCRIPTION,
-  // It changes the user's account outside this chat, so it is never replayed blindly; see `selfServiceCall.ts`.
-  effects: "external",
+  // The user's own AIQSA state, through its owner, which settles the call itself (`EngineToolEffects`): never retried.
+  effects: "local",
   inputSchema: INPUT_SCHEMA,
   name: MANAGE_SECRET_TOOL_NAME,
   needsApproval: false,

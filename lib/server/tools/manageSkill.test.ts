@@ -39,7 +39,7 @@ const json = (result: ToolExecutionResult) => (result.content[0] as { value: Rec
 
 describe("manage_skill", () => {
   it("changes the Skill library without the VM and without approval", () => {
-    expect(manageSkillTool).toMatchObject({ effects: "external", name: "manage_skill", needsApproval: false, requiresVm: false });
+    expect(manageSkillTool).toMatchObject({ effects: "local", name: "manage_skill", needsApproval: false, requiresVm: false });
   });
 
   it("creates a Skill from the call's files and answers with the save card", async () => {

@@ -92,8 +92,8 @@ const INPUT_SCHEMA = {
 
 export const manageAssistantTool: HarnessToolDescriptor = Object.freeze({
   description: DESCRIPTION,
-  // It changes the user's Assistants outside this chat, so it is never replayed blindly; see `selfServiceCall.ts`.
-  effects: "external",
+  // The user's own Assistants, through the editor's writes, which settle the call themselves (`EngineToolEffects`): never retried.
+  effects: "local",
   inputSchema: INPUT_SCHEMA,
   name: MANAGE_ASSISTANT_TOOL_NAME,
   needsApproval: false,

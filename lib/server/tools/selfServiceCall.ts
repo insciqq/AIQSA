@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
+import { dispatchableModelRunStatuses } from "../runs/prismaRepositoryShared";
 import type { ToolExecutionResult } from "./types";
 
 /**
@@ -73,17 +74,18 @@ export async function commitSelfServiceChange<Done, Refusal>(
 
 /**
  * The run-level fence a claim applies: the caller is active and owns the
- * run; the chat is personal (Project chats never change personal resources);
- * the run is neither a scheduled occurrence nor an answer to a scheduled
- * task's prompt, which the model may have written. Locks the run row.
+ * run, which is still running; the chat is personal (Project chats never
+ * change personal resources); the run is neither a scheduled occurrence nor
+ * an answer to a scheduled task's prompt, which the model may have written.
+ * Locks the run row.
  */
 export async function selfServiceRunAllowedInTransaction(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   scope: Pick<SelfServiceScope, "runId" | "userId">
 ): Promise<boolean> {
-  const rows = await tx.$queryRaw<Array<{ scheduledTaskId: string | null; projectId: string | null; scheduledTaskPrompt: boolean | null;
-    userStatus: string }>>`
-    SELECT r."scheduledTaskId", c."projectId", m."scheduledTaskPrompt", u."status" AS "userStatus"
+  const rows = await tx.$queryRaw<Array<{ status: string; scheduledTaskId: string | null; projectId: string | null;
+    scheduledTaskPrompt: boolean | null; userStatus: string }>>`
+    SELECT r."status", r."scheduledTaskId", c."projectId", m."scheduledTaskPrompt", u."status" AS "userStatus"
     FROM "ModelRun" r
     JOIN "Chat" c ON c."id" = r."chatId"
     JOIN "User" u ON u."id" = r."userId"
@@ -91,8 +93,8 @@ export async function selfServiceRunAllowedInTransaction(
     WHERE r."id" = ${scope.runId} AND r."userId" = ${scope.userId} AND c."userId" = ${scope.userId}
     FOR UPDATE OF r`;
   const run = rows[0];
-  return Boolean(run && run.userStatus === "active" && run.projectId === null && run.scheduledTaskId === null &&
-    run.scheduledTaskPrompt === false);
+  return Boolean(run && (dispatchableModelRunStatuses as readonly string[]).includes(run.status) && run.userStatus === "active" &&
+    run.projectId === null && run.scheduledTaskId === null && run.scheduledTaskPrompt === false);
 }
 
 /** Content-free record of an unexpected failure; the tool answers with its own stable code. */
