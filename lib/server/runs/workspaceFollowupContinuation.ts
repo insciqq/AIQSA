@@ -1,30 +1,29 @@
+import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { nativeRunResponse, nativeRunServices, type NativeEngineHandlerDeps } from "../engine/handlerSupport";
+import type { NativeRunServices } from "../engine/execution";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
-import type { NormalizedRunRequest } from "../providers/types";
 import type { StorageAdapter } from "../uploads/storage";
+import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { logEvent } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "./attachmentLimits";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
-import { CONTEXT_COMPACTION_POLICY_RETIRED, contextCompactionPolicyRetired } from "./contextCompactionContract";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
-import { createRunExecutionResponse, type RunExecutionInput } from "./runExecution";
 import type { AcceptedRunSnapshot } from "./acceptedRunSnapshot";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "./runRepositoryContract";
 import { WorkspaceFollowupError, type createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
 import type { WorkspaceFollowupCoordinatorDependencies } from "./workspaceFollowupCoordinator";
 
-type Dependencies = Omit<RunExecutionInput,
-  "adapter" | "created" | "prepared" | "repository" | "userId" | "toolBridge" | "searchRuntimes" | "structuredOutputAdapter"> & Readonly<{
+type Dependencies = Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" | "skillTools" | "vision"> & Readonly<{
+  chatTitleGenerator?: ChatTitleGenerator;
   followups: ReturnType<typeof createWorkspaceFollowupRepository>;
   kickPdf(): void;
-  /** Starts a native successor (`ModelRun.engine = native`); without it such a successor fails visibly. */
-  nativeEngine?: NativeEngineHandlerDeps;
+  nativeEngine: NativeEngineHandlerDeps;
   providerRuntime: ProviderRuntimeResolver;
   repository: RunRepository;
   storage: StorageAdapter;
+  workspace?: WorkspaceCoordinator;
 }>;
 
 export function createWorkspaceFollowupContinuation(deps: Dependencies): WorkspaceFollowupCoordinatorDependencies["continueRun"] {
@@ -39,9 +38,8 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     if (prepared.project && !await deps.repository.isProjectRunAccessCurrent?.({ ...prepared.project, userId: claim.userId })) {
       throw new WorkspaceFollowupError("workspace_followup_unavailable");
     }
-    // A native successor starts on the native engine once the predecessor handed its Workspace off, like an old-core one.
-    const nativeEngine = loaded.modelRun.engine === "native" ? deps.nativeEngine : undefined;
-    if (loaded.modelRun.engine === "native" && !nativeEngine) throw new WorkspaceFollowupError("workspace_followup_unavailable");
+    // A successor the old core admitted has no engine left to run it; it ends at startup (`retiredEngineRuns.ts`).
+    if (loaded.modelRun.engine !== "native") throw new WorkspaceFollowupError("workspace_followup_unavailable");
     const admission = (): PreparingRunAdmissionInput => ({
       ...prepared, admissionKind: "NORMAL_SEND", chatId: loaded.modelRun.chatId,
       content: prepared.normalizedRequest.content, expectedActiveLeafId: prepared.expectedActiveLeafId,
@@ -63,27 +61,8 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       claim.userId, prepared.normalizedRequest.attachmentIds, { capabilities: prepared.normalizedRequest.modelCapabilities,
         limits: getRunAttachmentLimits(), runId: claim.runId, signal, workspaceEnabled: prepared.normalizedRequest.workspace?.enabled,
         ...(prepared.project ? { projectId: prepared.project.projectId } : {}) });
-    // A native successor is never resumed here: one already past its activation was cut off, and native recovery ends it.
-    const recovered = !nativeEngine && loaded.modelRun.status === "streaming" && !loaded.modelRun.workspaceWaitPending
-      ? loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest | null : null;
-    // A request accepted under the retired context policy ends before its
-    // budget, provider or tool step (the old core's policy; the native engine keeps its own context).
-    if (!nativeEngine && contextCompactionPolicyRetired(recovered ?? prepared.normalizedRequest)) {
-      throw new WorkspaceFollowupError(CONTEXT_COMPACTION_POLICY_RETIRED.code);
-    }
-    if (nativeEngine) {
-      // The native engine measures and compacts its own context: the run keeps its admitted branch, with its attachments.
-      prepared = { ...prepared, providerRequest: { ...prepared.providerRequest, attachments } };
-    } else {
-      const budget = applyProviderRequestContextBudget({
-        request: { ...prepared.providerRequest, ...(recovered ?? {}), attachments },
-        ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {})
-      });
-      if (!budget.ok || !budget.request.context) throw new WorkspaceFollowupError("workspace_followup_invalid");
-      prepared = { ...prepared, contextTruncation: budget.contextTruncation,
-        normalizedRequest: { ...(recovered ?? prepared.normalizedRequest), context: budget.request.context },
-        providerRequest: budget.request, providerRequestPreview: runtime.adapter.buildRequestPreview(budget.request) };
-    }
+    // The engine measures and compacts its own context: the run keeps its admitted branch, with its attachments.
+    prepared = { ...prepared, providerRequest: { ...prepared.providerRequest, attachments } };
     let created: CreatedRun = { assistantMessageId: admitted.assistantMessageId, runId: claim.runId, userMessageId: admitted.userMessageId };
     if (loaded.modelRun.status === "preparing") {
       if (!deps.repository.continueWorkspacePreparedRun) throw new WorkspaceFollowupError("workspace_followup_unavailable");
@@ -95,7 +74,10 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       // The run's first execution: its wait for the answer began at admission.
       // A run resumed after a crash records no time to first output.
       created = { ...created, acceptedAt: loaded.modelRun.createdAt };
-    } else if (!recovered) throw new WorkspaceFollowupError("workspace_followup_invalid");
+    } else {
+      // A successor already past its activation was cut off; recovery ends it, and it is never started twice.
+      throw new WorkspaceFollowupError("workspace_followup_invalid");
+    }
     const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
     for (const option of prepared.normalizedRequest.searchPlan.options) {
       try { searchRuntimes[option.optionId] = await deps.providerRuntime.resolve(claim.runId, "search", `search:${option.optionId}`); }
@@ -105,13 +87,11 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     if (!await deps.followups.markAnswerDispatched(claim)) throw new WorkspaceFollowupError("workspace_followup_unavailable");
     releaseRegistry();
     const entry = snapshot.native;
-    const response = nativeEngine
-      ? nativeRunResponse(nativeEngine, { adapter: runtime.adapter, ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
-        ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
-        repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
-        userId: claim.userId, ...(deps.workspace ? { workspace: deps.workspace } : {}) })
-      : createRunExecutionResponse({ ...deps, adapter: runtime.adapter, created, prepared,
-        searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
+    const response = nativeRunResponse(deps.nativeEngine, { adapter: runtime.adapter,
+      ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
+      ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
+      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
+      userId: claim.userId, ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     void (async () => {
       const reader = response.body?.getReader();
       if (!reader) return;
@@ -124,13 +104,11 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
 
 export function createWorkspaceFollowupFailure(deps: Pick<Dependencies, "repository" | "workspace">): WorkspaceFollowupCoordinatorDependencies["fail"] {
   return async (claim, error) => {
-    const retired = error.code === CONTEXT_COMPACTION_POLICY_RETIRED.code;
     const message = error.code === "workspace_followup_expired"
       ? "Workspace preparation timed out. Retry this message."
-      : retired ? CONTEXT_COMPACTION_POLICY_RETIRED.message
       : "Workspace could not finish preparing for this message. Retry when the environment is available.";
     let settled = await deps.repository.settlePreparingRunFailure({ workspaceClaimToken: claim.claimToken,
-      errorCode: error.code, message, retryable: !retired, runId: claim.runId, state: "FAILED", userId: claim.userId });
+      errorCode: error.code, message, retryable: true, runId: claim.runId, state: "FAILED", userId: claim.userId });
     if (!settled) {
       const run = await deps.repository.getRunControlForRecovery?.(claim.runId);
       if (run?.status === "streaming" && run.assistantMessageId) settled = await deps.repository.failRun(

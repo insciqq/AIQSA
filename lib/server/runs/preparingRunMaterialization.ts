@@ -2,7 +2,7 @@ import type { CreatedRun, PreparingRunMemoryMaterializer } from "./runRepository
 import type { NormalizedRunRequest, ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
 import type { materializePreparedRunData } from "./runPreparation";
-import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { applyProviderRequestContextBudget } from "./requestContextBudget";
 import { contextCompactionPolicyRetired } from "./contextCompactionContract";
 
 export function createPreparingMemoryMaterializer(

@@ -14,7 +14,7 @@ import { createGetModelRunHandler, createSendMessageHandler, stopModelRun } from
 import { createPrismaRunFollowupOperations } from "../../runs/prismaRepositoryFollowups";
 import { createRunFollowupHandler } from "../../runs/runFollowupHandler";
 import { parameterDialect } from "../../runs/runPreparation";
-import { activeRunStaleMs } from "../../runs/runRecovery";
+import { NATIVE_RUN_STALE_MS } from "../../engine/recovery";
 import type { TelegramAccessResolver } from "../control/access";
 import { createPrismaTelegramChatListStore } from "../store/chats";
 import { createPrismaTelegramTimeZoneStore } from "../store/timeZone";
@@ -151,7 +151,7 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
     },
 
     async activeRun({ chatId, userId }) {
-      const run = await sendDeps.repository.findRecentActiveRunForChat({ chatId, since: new Date(Date.now() - activeRunStaleMs), userId });
+      const run = await sendDeps.repository.findRecentActiveRunForChat({ chatId, since: new Date(Date.now() - NATIVE_RUN_STALE_MS), userId });
       return run ? { runId: run.id } : null;
     },
 

@@ -50,7 +50,7 @@ import type {
   MemoryPreparingSettingsSnapshot
 } from "../../runs/preparingRun";
 import { memoryControlReuseSettingsHash, MemoryPreparingRunConflictError } from "../../runs/preparingRun";
-import { normalizedRequestPersonalContextTokenLimit } from "../../runs/runContextBudget";
+import { normalizedRequestPersonalContextTokenLimit } from "../../runs/requestContextBudget";
 import {
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../admissionDeadline";

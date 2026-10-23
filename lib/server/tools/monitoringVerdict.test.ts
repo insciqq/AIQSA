@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { readOnlyRunTool } from "../runs/toolReadOnly";
 import {
   executeMonitoringVerdict,
   isMonitoringVerdictCall,
@@ -21,8 +20,6 @@ describe("monitoring verdict tool", () => {
       expect(isMonitoringVerdictCall(request, MONITORING_VERDICT_TOOL_NAME)).toBe(false);
     }
     expect(isMonitoringVerdictCall({ monitoringVerdictTool: true }, "get_session_status")).toBe(false);
-    // Reporting changes nothing another call reads: repeated identical business calls stay detectable.
-    expect(readOnlyRunTool({ tools: [monitoringVerdictTool] })(MONITORING_VERDICT_TOOL_NAME)).toBe(true);
   });
 
   it("records a valid report for its own run, and the same report again records the same value", async () => {
