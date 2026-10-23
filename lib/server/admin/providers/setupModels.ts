@@ -8,6 +8,7 @@ import { rerankerModelConfiguration, rerankerPresetsForFamily } from "../../../d
 import { jevModelConfiguration } from "../../../domain/decisionModels";
 import { codexLbConnection, type ProviderConnectionConfiguration, type ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import { CODEX_LB_TEMPLATE_CONTEXT_WINDOW } from "./codexLbContextWindow";
 
 export type SetupModel = Readonly<{
   configuration: ProviderModelConfiguration;
@@ -24,6 +25,7 @@ export type SetupModel = Readonly<{
 /**
  * Code-owned candidates only; availability and capabilities still need exact-key checks.
  * Legacy Quick Setup candidates are never set up or suggested; stored rows keep their tariffs.
+ * Codex LB answer windows are a fallback: setup replaces them with the gateway listing's window.
  */
 export function providerSetupModels(family: string, connection?: Pick<ProviderConnectionConfiguration, "apiRoot" | "responsesRequestIsolationDetected">): readonly SetupModel[] {
   if (family === "openai_compatible" && codexLbConnection(connection)) {
@@ -32,7 +34,7 @@ export function providerSetupModels(family: string, connection?: Pick<ProviderCo
       return {
         configuration: {
           adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer", upstreamModelId,
-          capabilities: { ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES, reasoning: true, contextWindow: 272_000, maxOutputTokens: 128_000 },
+          capabilities: { ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES, reasoning: true, contextWindow: CODEX_LB_TEMPLATE_CONTEXT_WINDOW, maxOutputTokens: 128_000 },
           defaultParams: { reasoning: { effort: "medium" } }
         },
         displayName: candidate.displayName, modelId: `codex-lb:${upstreamModelId}`, templateKey: `codex-lb:${upstreamModelId}`,
