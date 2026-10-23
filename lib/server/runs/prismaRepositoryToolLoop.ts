@@ -769,7 +769,6 @@ type CapabilityKind = "boolean" | "imageInputLimits" | "optionalBoolean" |
 // capability shape again.
 const capabilityKinds = {
   backgroundStreaming: "optionalBoolean",
-  codexStandaloneWebSearch: "optionalBoolean",
   contextWindow: "optionalPositiveInteger",
   defaultMaxOutputTokens: "optionalPositiveInteger",
   defaultReasoningEffort: "optionalString",

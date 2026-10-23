@@ -58,8 +58,6 @@ export type AdminProviderModelCapabilities = {
    * requires current verification evidence for the exact credential tuple. */
   nativePdfInput: boolean;
   nativeSearch: boolean;
-  /** Native Codex /alpha/search, independent of AIQSA Search. */
-  codexStandaloneWebSearch?: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
@@ -106,8 +104,10 @@ export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMappi
 export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
 export const ADMIN_PROVIDER_CAPABILITY_CHECKS = ["modelAccess", "structuredOutput", "toolCalling",
-  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "hostedSearch", "codexWebSearch", "embedding", "reranking", "decisions", "imageGeneration", "imageEditing"] as const;
+  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "hostedSearch", "embedding", "reranking", "decisions", "imageGeneration", "imageEditing"] as const;
 export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHECKS)[number];
+/** Checks of removed capabilities: stored setup evidence that names one still decodes, without it. */
+export const RETIRED_ADMIN_PROVIDER_CAPABILITY_CHECKS: readonly string[] = ["codexWebSearch"];
 export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
 export const ADMIN_PROVIDER_CAPABILITY_REASONS = ["verified", "adapter_unsupported", "route_unsupported", "refusal",
   "budget_exhausted", "invalid_input", "http_error", "timeout", "network", "rate_limit", "authorization",
@@ -132,6 +132,7 @@ export function decodeAdminProviderCapabilityAttempts(value: unknown): NonNullab
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const attempts: NonNullable<AdminProviderCapabilitySetupEvidence["attempts"]> = {};
   for (const [key, rawAttempt] of Object.entries(value)) {
+    if (RETIRED_ADMIN_PROVIDER_CAPABILITY_CHECKS.includes(key)) continue;
     if (!(ADMIN_PROVIDER_CAPABILITY_CHECKS as readonly string[]).includes(key) || !rawAttempt || typeof rawAttempt !== "object" || Array.isArray(rawAttempt)) return null;
     const attempt = rawAttempt as Record<string, unknown>;
     const imageFailure = attempt.imageFailure === undefined ? undefined : decodeImageFailureDiagnostic(attempt.imageFailure);
@@ -178,13 +179,6 @@ export type AdminProviderTestEvidence = {
   };
   /** Initial setup/retry results; stored under the same exact tuple as the proofs. */
   capabilitySetup?: AdminProviderCapabilitySetupEvidence;
-  codexWebSearch?: {
-    adapterKind: "openai_responses_compatible";
-    sourceCount: number;
-    probeVersion: 1;
-    upstreamModelId: string;
-    verified: true;
-  };
   hostedSearch?: {
     adapterKind: "openai_responses_compatible";
     normalizedSourceCount: number;
