@@ -39,6 +39,7 @@ import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { runAgentLoop, type LoopToolChoice } from "./loop";
 import { callModel } from "./modelCall";
+import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, type RunContext } from "./runContext";
 import type { NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
@@ -479,6 +480,18 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             ? { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) } : null
         });
         runContext = context;
+        // The chat header's context status (`contextStatus.ts`): the engine's own measure at every request boundary, written
+        // beside the request rather than before it, and once more after the answer. Writes are serialized: the last is the
+        // latest snapshot.
+        let statusWrite: Promise<void> = Promise.resolve();
+        const recordContextStatus = (phase: "after_answer" | "request") => {
+          const measured = context.measured();
+          if (!measured) return statusWrite;
+          const event = contextStatusArtifact(nativeContextStatus({ maxOutputTokens: maxOutputTokens(base), phase,
+            request: measured.request, tokens: measured.tokens }));
+          statusWrite = statusWrite.then(() => sink.record(event));
+          return statusWrite;
+        };
         // A request the provider rejected for its size is compacted and sent once more.
         const sendOnceMore = async (request: ProviderRunRequest, send: (sent: ProviderRunRequest) => Promise<ProviderRunResult>) => {
           try {
@@ -555,6 +568,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             };
             // Compaction at the request boundary; a request that cannot fit even then fails visibly.
             const prepared = await context.prepare(request);
+            void recordContextStatus("request");
             // The reserved round's instruction rides on its request only, never on the transcript.
             return reservedRound && reserved
               ? { ...prepared, history: [...(prepared.history ?? []), { text: reserved.instruction, type: "user" as const }] }
@@ -599,6 +613,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         await startAnswer();
         // Answer first: a finished compaction is kept now, a running one goes on detached and never holds the run.
         await context.afterAnswer();
+        await recordContextStatus("after_answer");
         // The transcript is on record (or given up) before the run completes and the next turn can read it.
         await writer.flush();
         if (input.chatTitleGenerator && answer.text) {

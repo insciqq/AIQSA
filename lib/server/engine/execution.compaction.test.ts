@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
@@ -222,6 +223,36 @@ describe("native run compaction", () => {
     expect(scripted.answers[1]!.history?.some((item) => item.type === "tool_call" && item.callId === "call-read")).toBe(true);
     expect(compactionStatuses(result)).toEqual([expect.objectContaining({ state: "complete" })]);
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["tool_call", "tool_result", "compaction", "assistant_text"]);
+  });
+
+  it("records the context the chat header shows from the engine's own measure, which drops once a compaction is in", async () => {
+    const scripted = scriptedAdapter([
+      { calls: [{ arguments: { handle: `tor1_${"a".repeat(32)}` }, id: "call-read", name: "read_tool_result" }] },
+      { text: "Read it; continuing." }
+    ]);
+    const memory = memoryEngine(earlierWork(CONTEXT_TOKENS));
+    const runRepository = repository();
+    const contextWindow = windowFor(0.78);
+    const result = await events(createNativeRunExecutionResponse({ adapter: scripted.adapter, created, engine: memory.engine,
+      prepared: prepared(contextWindow), repository: runRepository as unknown as RunRepository, services: {}, userId: "user" }));
+    // On record (the chat detail reads the latest run's latest one) and live, each as the header decodes it.
+    const recorded = runRepository.appendRunOutputEvent.mock.calls.flatMap(([, event]) => {
+      const artifact = event as { data?: { artifactType?: string; payload?: unknown }; type?: string };
+      return artifact.type === "artifact" && artifact.data?.artifactType === "context_status"
+        ? [decodeSessionContextStatus(artifact.data.payload)] : [];
+    });
+    const live = result.filter((event) => event.type === "artifact" && event.data.artifactType === "context_status");
+    expect(recorded.map((status) => status?.phase)).toEqual(["request", "request", "after_answer"]);
+    expect(live).toHaveLength(3);
+    const [first, second, settled] = recorded as SessionContextStatus[];
+    // The first request carries the whole earlier work; the second its summary and kept tail, after the swap.
+    expect(first!.approximateInputTokens).toBeGreaterThan(CONTEXT_TOKENS);
+    expect(second!.approximateInputTokens).toBeLessThan(first!.approximateInputTokens);
+    // After the answer: the provider's input report of the last request (100) plus the answer added after it.
+    expect(settled!.approximateInputTokens).toBeGreaterThan(100);
+    expect(settled!.approximateInputTokens).toBeLessThan(second!.approximateInputTokens);
+    expect(settled).toMatchObject({ contextWindow, droppedMessages: 0, loadedTools: expect.any(Number), modelId: "fake-qsa",
+      provider: "fake", version: 1 });
   });
 
   it("compacts in the foreground on a size rejection and sends the request once more", async () => {
