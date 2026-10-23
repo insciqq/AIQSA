@@ -15,29 +15,35 @@
  *    connection from its models catalog or, when the catalog cannot be read,
  *    from the explicit model id that setup proves with a tiny generation. It
  *    then publishes the journey window as the model's administrator-set
- *    `capabilities.contextWindow` so the 80 % compaction trigger is cheap;
+ *    `capabilities.contextWindow` so the engine's 72 % background compaction
+ *    trigger is cheap;
  * 2. signs in with the stand's test bootstrap token (as
  *    tests/e2e/support/localAuth.ts does);
  * 3. creates a personal chat excluded from Memory (kept in Memory, so Memory
  *    search is admitted, with AIQSA_JOURNEY_MEMORY=1) and sends a bounded
  *    journey: a long Cyrillic brief, two corrections, a standing three-item
- *    list rule, fillers until the session estimate nears the trigger or a
- *    summary is bought, then one probe that needs the corrections and rule;
+ *    list rule, fillers until a summary is in context, then one probe that
+ *    needs the corrections and rule. The engine summarizes in the background
+ *    and records the summary on the turn that started it once its call ends,
+ *    possibly after that turn's answer, so a turn past the trigger waits for
+ *    it (bounded) before the next one, and a marker that lands later still
+ *    counts for its own turn;
  * 4. after every turn reads the chat projection (the session context status,
- *    which estimates the request as dispatched, and the run's
- *    context-compaction status), whether the run's own event stream began a
- *    summary cycle, and the Admin usage ledger (provider-reported input tokens);
+ *    the engine's measure of the request as dispatched, and each run's
+ *    context-compaction status), whether the run's own event stream waited
+ *    for a summary, and the Admin usage ledger (provider-reported input tokens);
  * 5. prints ONE sanitized JSON document (numbers, booleans, stable codes and
  *    model ids only; prompts and answers are never printed or persisted),
  *    including the reported/estimated ratio of every single-request turn and
- *    the first summary's share of the budget in reported tokens;
+ *    the first summary's share of the engine's window in reported tokens;
  * 6. deletes the journey chat; provider configuration stays unless
  *    AIQSA_JOURNEY_CLEANUP_PROVIDERS=1 (then a connection this run created is
  *    deleted, or disabled when run bindings still reference it).
  *
- * Exit 0 only when at least one route ran and every route that ran bought its
- * first summary at the first turn whose dispatched estimate exceeded 80 % of
- * the budget (no earlier turn above it), kept every single-request
+ * Exit 0 only when at least one route ran and every route that ran started its
+ * first summary at the first turn whose dispatched estimate exceeded 72 % of
+ * the engine's window or the next one, had it in context before the probe
+ * answered, kept every single-request
  * reported/estimated ratio inside its route band (codex-lb 0.85-1.0; Anthropic
  * is reported unchecked), and got a probe answer carrying both corrections as
  * a three-item list, and no explicitly requested route was skipped.
@@ -72,7 +78,7 @@ import {
   decodeMemoryConsumerChatModeResponse,
   decodeMemoryConsumerPermanentChatDeleteResponse
 } from "../lib/contracts/memoryClient";
-import { sessionContextCapacity, type SessionContextStatus } from "../lib/contracts/sessionStatus";
+import type { SessionContextStatus } from "../lib/contracts/sessionStatus";
 import { calculateContextBudgetLimits } from "../lib/domain/contextBudget";
 import { contextTokenEstimator } from "../lib/domain/tokenEstimate";
 import {
@@ -83,12 +89,15 @@ import {
   JOURNEY_RULE,
   JOURNEY_TEST_AUTH_TOKEN,
   JourneyFailure,
+  awaitsSummary,
   catalogReadiness,
   codexLbSetupBody,
+  compactionMarker,
   contextWindowUpdate,
   createDebugEmitter,
   createRunStreamScanner,
   debugHttpLine,
+  engineContextTokens,
   exceptionDiagnostics,
   journeyBrief,
   journeyConfig,
@@ -108,11 +117,13 @@ import {
   quickSetupCandidate,
   readConnections,
   settledTurn,
+  summaryShown,
   type CatalogReadiness,
   type JourneyConfig,
   type JourneyConnection,
   type JourneyReuseDecision,
   type JourneyRound,
+  type JourneyRoundInput,
   type JourneyRouteConfig,
   type JourneyStage,
   type JourneyTurnKind,
@@ -452,6 +463,8 @@ async function journeyCatalogModel(api: Api, target: ProviderTarget, contextWind
 // Journey ----------------------------------------------------------------------------
 
 type RouteState = {
+  /** Each round's answer, whose compaction marker can land after its turn. */
+  assistantIds: string[];
   chatId: string | null;
   /** The turn being sent or read, for the failure report. */
   currentTurn: Readonly<{ kind: JourneyTurnKind; turn: number }> | null;
@@ -459,6 +472,8 @@ type RouteState = {
   createdConnectionId: string | null;
   probeAnswerCarriesCorrections: boolean;
   reused: boolean | null;
+  /** What each round was computed from, so a marker that lands later recomputes it. */
+  roundInputs: JourneyRoundInput[];
   rounds: JourneyRound[];
   stage: JourneyStage;
 };
@@ -559,21 +574,37 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
       // The stand measures with the admitted route's own estimate family.
       if (session) estimate = contextTokenEstimator({ modelId: session.modelId, provider: session.provider });
       const answerTokens = await step(api, "evidence", "answer_estimate_failed", () => estimate(answer));
+      const input = { answerTokens, compaction: null, kind, reported: null, session, summaryBought,
+        toolCalls: assistant.toolActivity?.calls.length ?? 0, turn: number };
+      // A background summary lands on the turn that started it once its call ends, after that turn's answer.
+      const ids = [...state.assistantIds, assistant.id];
+      let current = detail;
+      if (awaitsSummary(state.rounds, journeyRound(input).budgetShare)) {
+        const deadline = Date.now() + JOURNEY_LIMITS.summaryWaitMs;
+        while (!summaryShown(current, ids) && Date.now() < deadline) {
+          await sleep(POLL_INTERVAL_MS);
+          current = await chatDetail(api, chatId);
+        }
+      }
+      // An earlier turn's summary that landed since is its own evidence; its call's usage reached this turn's ledger.
+      let compactionSettled = false;
+      for (const [index, earlier] of state.roundInputs.entries()) {
+        const compaction = compactionMarker(current, state.assistantIds[index]!);
+        if (JSON.stringify(compaction) === JSON.stringify(earlier.compaction)) continue;
+        compactionSettled = true;
+        const refreshed = { ...earlier, compaction };
+        state.roundInputs[index] = refreshed;
+        state.rounds[index] = journeyRound(refreshed);
+      }
       const ledgerAfter = await ledger();
       const reported = ledgerDelta(ledgerBefore, ledgerAfter);
       ledgerBefore = ledgerAfter;
-      return { answer, session, value: journeyRound({
-        answerTokens,
-        compaction: assistant.artifactSummary?.contextCompaction ?? null,
-        kind,
-        reported,
-        session,
-        summaryBought,
-        toolCalls: assistant.toolActivity?.calls.length ?? 0,
-        turn: number
-      }) };
+      const value: JourneyRoundInput = { ...input, compaction: compactionMarker(current, assistant.id), compactionSettled, reported };
+      return { answer, session, input: value };
     });
-    state.rounds.push(round.value);
+    state.assistantIds.push(assistant.id);
+    state.roundInputs.push(round.input);
+    state.rounds.push(journeyRound(round.input));
     const { answer, session } = round;
     if (assistant.status !== "complete") fail("turn", "turn_not_complete");
     if (!session) fail("evidence", "session_status_missing");
@@ -583,11 +614,11 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
   let last = await turn("brief", journeyBrief(Math.floor(initialBudget * JOURNEY_LIMITS.briefBudgetShare), estimate));
   for (const correction of JOURNEY_CORRECTIONS) last = await turn("correction", correction);
   last = await turn("rule", JOURNEY_RULE);
+  // Fillers until a summary is in context, so the probe reads the chat as compacted.
   for (let filler = 0; state.rounds.length < config.maxTurns - 1; filler += 1) {
     if (state.rounds.some((round) => round.summaryAtBudgetShare !== null)) break;
-    const budgetTokens = sessionContextCapacity(last.session).budgetTokens ?? initialBudget;
+    const budgetTokens = engineContextTokens(last.session) ?? initialBudget;
     const tokens = nextFillerTokens({ approximateInputTokens: last.session.approximateInputTokens, budgetTokens });
-    if (tokens === null) break;
     last = await turn("filler", journeyFiller(filler, tokens, estimate));
   }
   const probe = await turn("probe", JOURNEY_PROBE);
@@ -647,8 +678,8 @@ type RouteResult = Record<string, unknown> & { status: "failed" | "passed" | "sk
 
 async function runRoute(api: Api, config: JourneyConfig, route: JourneyRouteConfig): Promise<RouteResult> {
   const state: RouteState = {
-    chatId: null, contextWindow: null, createdConnectionId: null, currentTurn: null, probeAnswerCarriesCorrections: false,
-    reused: null, rounds: [], stage: "provider_setup"
+    assistantIds: [], chatId: null, contextWindow: null, createdConnectionId: null, currentTurn: null,
+    probeAnswerCarriesCorrections: false, reused: null, roundInputs: [], rounds: [], stage: "provider_setup"
   };
   let failure: JourneyFailure | null = null;
   try {
