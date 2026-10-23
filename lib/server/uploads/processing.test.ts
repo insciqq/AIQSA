@@ -92,7 +92,7 @@ describe("attachment processor", () => {
     const parser = {
       parse: vi.fn(async () => finalizeParsedDocument({
         blocks: [],
-        engine: "docling" as const,
+        engine: "tika" as const,
         mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         pageCount: 2,
         status: "complete" as const,
@@ -110,7 +110,7 @@ describe("attachment processor", () => {
       extractedText: "Structured document text",
       metadata: {
         document: {
-          engine: "docling",
+          engine: "tika",
           pageCount: 2,
           parserStatus: "complete",
           status: "complete"
@@ -125,7 +125,7 @@ describe("attachment processor", () => {
     const parser = {
       parse: vi.fn(async () => finalizeParsedDocument({
         blocks: [],
-        engine: "docling" as const,
+        engine: "tika" as const,
         mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         pageCount: 1,
         status: "complete" as const,
@@ -144,7 +144,7 @@ describe("attachment processor", () => {
       metadata: {
         document: {
           characterCount: 2,
-          engine: "docling",
+          engine: "tika",
           extractedTextMaxChars: 3,
           pageCount: 1,
           parserStatus: "complete",
@@ -182,7 +182,7 @@ describe("attachment processor", () => {
     const parser = {
       parse: vi.fn(async () => finalizeParsedDocument({
         blocks: [],
-        engine: "docling" as const,
+        engine: "tika" as const,
         mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         pageCount: 1,
         status: "partial" as const,

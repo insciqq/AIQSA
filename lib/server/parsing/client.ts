@@ -1,7 +1,7 @@
 import type { ParserEngineConfig } from "./config";
 import { parseRetryAfterMs } from "../retryAfter";
 import { DocumentParserError, isDocumentParserError } from "./errors";
-import { normalizeDoclingResponse, normalizeTikaResponse } from "./normalization";
+import { normalizeTikaResponse } from "./normalization";
 import { normalizedFileExtension } from "./routing";
 import type {
   DocumentParserEngineAdapter,
@@ -112,58 +112,14 @@ function httpError(
   );
 }
 
-function requestBody(input: SidecarParseInput, engine: SidecarParserEngine): BodyInit {
-  const bytes = new Uint8Array(input.bytes);
-  if (engine === "tika") return new Blob([bytes], { type: input.mediaType });
-
-  const pageRange = input.docling?.pageRange;
-  if (pageRange && (!Number.isSafeInteger(pageRange.start) ||
-    !Number.isSafeInteger(pageRange.end) || pageRange.start < 1 ||
-    pageRange.end < pageRange.start)) {
-    throw new DocumentParserError("parser_rejected", "docling");
-  }
-  const doOcr = input.docling?.doOcr ?? true;
-
-  const form = new FormData();
-  form.append("files", new Blob([bytes], { type: input.mediaType }), sidecarFileName(input.fileName));
-  form.append("to_formats", "json");
-  form.append("image_export_mode", "placeholder");
-  form.append("table_mode", "accurate");
-  form.append("table_cell_matching", "true");
-  form.append("abort_on_error", "true");
-  form.append("do_ocr", String(doOcr));
-  form.append("force_ocr", "false");
-  if (pageRange) {
-    form.append("page_range", String(pageRange.start));
-    form.append("page_range", String(pageRange.end));
-  }
-  if (doOcr) {
-    form.append("ocr_preset", "easyocr");
-    form.append("ocr_lang", "ru");
-    form.append("ocr_lang", "en");
-  }
-  return form;
-}
-
 function sidecarFileName(fileName: string): string {
   const extension = normalizedFileExtension(fileName);
   return `document${extension ?? ""}`;
 }
 
-function parseRequest(input: SidecarParseInput, engine: SidecarParserEngine, signal: AbortSignal): RequestInit {
-  if (engine === "docling") {
-    return {
-      body: requestBody(input, engine),
-      cache: "no-store",
-      headers: { accept: "application/json" },
-      method: "POST",
-      redirect: "error",
-      signal
-    };
-  }
-
+function parseRequest(input: SidecarParseInput, signal: AbortSignal): RequestInit {
   return {
-    body: requestBody(input, engine),
+    body: new Blob([new Uint8Array(input.bytes)], { type: input.mediaType }),
     cache: "no-store",
     headers: {
       accept: "application/json",
@@ -203,11 +159,8 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
     let response: Response;
     try {
       response = await this.#fetch(
-        endpoint(
-          this.#config.baseUrl,
-          this.#engine === "docling" ? "v1/convert/file" : "rmeta"
-        ),
-        parseRequest(input, this.#engine, timeout.signal)
+        endpoint(this.#config.baseUrl, "rmeta"),
+        parseRequest(input, timeout.signal)
       );
     } catch (error) {
       timeout.clear();
@@ -230,9 +183,7 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
         this.#config.responseMaxBytes,
         this.#engine
       );
-      const parsed = this.#engine === "docling"
-        ? normalizeDoclingResponse(value, input.mediaType)
-        : normalizeTikaResponse(value, input.mediaType);
+      const parsed = normalizeTikaResponse(value, input.mediaType);
 
       if (Buffer.byteLength(parsed.text, "utf8") > this.#config.responseMaxBytes) {
         throw new DocumentParserError("parser_output_too_large", this.#engine);
@@ -254,10 +205,10 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
     const timeout = timeoutSignal(signal, Math.min(PROBE_TIMEOUT_MS, this.#config.timeoutMs));
     try {
       const response = await this.#fetch(
-        endpoint(this.#config.baseUrl, this.#engine === "docling" ? "health" : "tika"),
+        endpoint(this.#config.baseUrl, "tika"),
         {
           cache: "no-store",
-          headers: { accept: this.#engine === "docling" ? "application/json" : "text/plain" },
+          headers: { accept: "text/plain" },
           method: "GET",
           redirect: "error",
           signal: timeout.signal
@@ -270,10 +221,7 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
 
       const bytes = await readBoundedBytes(response, PROBE_MAX_BYTES, this.#engine);
       const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      const valid = this.#engine === "docling"
-        ? isRecordWithOkStatus(text)
-        : text.includes("Tika Server");
-      return valid
+      return text.includes("Tika Server")
         ? { available: true, configured: true, engine: this.#engine }
         : { available: false, configured: true, engine: this.#engine, error: "parser_invalid_output" };
     } catch (error) {
@@ -291,17 +239,5 @@ export class HttpDocumentParserEngineAdapter implements DocumentParserEngineAdap
     } finally {
       timeout.clear();
     }
-  }
-}
-
-function isRecordWithOkStatus(text: string): boolean {
-  try {
-    const value: unknown = JSON.parse(text);
-    return typeof value === "object"
-      && value !== null
-      && !Array.isArray(value)
-      && (value as Record<string, unknown>).status === "ok";
-  } catch {
-    return false;
   }
 }

@@ -10,7 +10,7 @@ For local use by one person with external model providers:
 - systemd-journald, standard on systemd distributions, keeps container logs across updates (see [Health and logs](#health-and-logs)). Hosts without it work with a fallback that loses the logs whenever a container is recreated.
 - **KVM (`/dev/kvm`) is required.** Workspace runs commands in KVM virtual machines and much of AIQSA depends on it; installations without it are not supported. On cloud and other virtual machines enable nested virtualization, or use a bare-metal host.
 - **Minimum: 2 CPU cores, 8 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups. Each workspace defaults to 4 GB RAM and 10 GB disk.
-- **Recommended: 16 GB RAM** for several concurrent workspaces and OCR.
+- **Recommended: 16 GB RAM** for several concurrent workspaces.
 
 Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources.
 
@@ -102,7 +102,7 @@ An agent working on the host can read everything at once: `./aiqsa.sh health --f
 ./aiqsa.sh logs --warnings --follow        # stream warnings and errors
 ```
 
-`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, Tika, Docling and SeaweedFS; omit them to read those services.
+`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, Tika and SeaweedFS; omit them to read those services.
 
 Container logs go to the host journal (Docker's journald driver), so they survive the container recreation of `up` and `upgrade`. Without a time window `logs` prints the current containers; with `--since` or `--until` it reads the journal, which also holds the lines of containers recreated since, with the time of each line:
 

@@ -246,7 +246,7 @@ jobs:
           shopt -s nullglob
           notes_file="${RUNNER_TEMP}/component-images.md"
           : > "${notes_file}"
-          for component in docling tika workspace-runner; do
+          for component in tika workspace-runner; do
             digest_files=("${RUNNER_TEMP}/component-digests/${component}"/*)
             reuse_digest="$(jq -r --arg component "${component}" '.[$component] // ""' <<< "${REUSE_IMAGES}")"
             expected=2
@@ -312,7 +312,6 @@ jobs:
           ```dotenv
           AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:rc
           AIQSA_POSTGRES_IMAGE=ghcr.io/insciqq/aiqsa-postgres:rc
-          AIQSA_DOCLING_IMAGE=ghcr.io/insciqq/aiqsa:docling-rc
           AIQSA_TIKA_IMAGE=ghcr.io/insciqq/aiqsa:tika-rc
           AIQSA_WORKSPACE_RUNNER_IMAGE=ghcr.io/insciqq/aiqsa:workspace-runner-rc
           ```

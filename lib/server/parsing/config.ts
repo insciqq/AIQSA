@@ -16,7 +16,6 @@ export type ParserEngineConfig = Readonly<{
 }>;
 
 export type DocumentParserConfig = Readonly<{
-  docling?: ParserEngineConfig;
   tika?: ParserEngineConfig;
 }>;
 
@@ -25,11 +24,6 @@ type DocumentParserConfigOptions = Readonly<{
 }>;
 
 const defaults = Object.freeze({
-  docling: Object.freeze({
-    requestMaxBytes: DEFAULT_UPLOAD_MAX_BYTES,
-    responseMaxBytes: 32 * 1_024 * 1_024,
-    timeoutMs: 5 * 60_000
-  }),
   tika: Object.freeze({
     requestMaxBytes: DEFAULT_UPLOAD_MAX_BYTES,
     responseMaxBytes: 16 * 1_024 * 1_024,
@@ -40,12 +34,6 @@ const defaults = Object.freeze({
 export const DEFAULT_DOCUMENT_PARSER_LIMITS = defaults;
 
 const environmentNames = Object.freeze({
-  docling: Object.freeze({
-    baseUrl: "AIQSA_DOCLING_URL",
-    requestMaxBytes: "AIQSA_DOCLING_REQUEST_MAX_BYTES",
-    responseMaxBytes: "AIQSA_DOCLING_RESPONSE_MAX_BYTES",
-    timeoutMs: "AIQSA_DOCLING_TIMEOUT_MS"
-  }),
   tika: Object.freeze({
     baseUrl: "AIQSA_TIKA_URL",
     requestMaxBytes: "AIQSA_TIKA_REQUEST_MAX_BYTES",
@@ -145,7 +133,6 @@ export function getDocumentParserConfig(
     ? configuredRequestDefault
     : defaultUploadMaxBytes(environment);
   return Object.freeze({
-    docling: engineConfig("docling", environment, requestMaxBytesDefault),
     tika: engineConfig("tika", environment, requestMaxBytesDefault)
   });
 }

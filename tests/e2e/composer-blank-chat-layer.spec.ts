@@ -55,7 +55,7 @@ function attachmentWire(status: "processing" | "ready") {
       fileName: ATTACHMENT_NAME,
       id: ATTACHMENT_ID,
       kind: "document",
-      metadata: status === "ready" ? { document: { engine: "docling" } } : {},
+      metadata: status === "ready" ? { document: { engine: "tika" } } : {},
       mimeType: DOCX,
       processingErrorCode: null,
       status,

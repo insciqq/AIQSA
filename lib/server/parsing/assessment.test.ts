@@ -56,7 +56,7 @@ describe("parsed document assessment", () => {
   it("turns partial coverage and OCR evidence into bounded canonical warnings", () => {
     const document = finalizeParsedDocument({
       blocks: [block("Readable page content")],
-      engine: "docling",
+      engine: "tika",
       mediaType: "application/pdf",
       ocrConfidence: 0.4,
       pageCount: 3,
@@ -91,7 +91,7 @@ describe("parsed document assessment", () => {
           readingOrder: page * 2 + 1
         })
       ]),
-      engine: "docling",
+      engine: "tika",
       mediaType: "application/pdf",
       pageCount: 2,
       status: "complete"
@@ -115,7 +115,7 @@ describe("parsed document assessment", () => {
           readingOrder: page * 2 + 1
         })
       ]),
-      engine: "docling",
+      engine: "tika",
       mediaType: "application/pdf",
       pageCount: 3,
       status: "complete"
@@ -132,7 +132,7 @@ describe("parsed document assessment", () => {
         table: null,
         type: "table"
       })],
-      engine: "docling",
+      engine: "tika",
       mediaType: "application/pdf",
       pageCount: 1,
       status: "complete"
@@ -144,7 +144,7 @@ describe("parsed document assessment", () => {
   it("preserves an explicit parser-proven table degradation warning", () => {
     const document = finalizeParsedDocument({
       blocks: [block("Flattened table text remains searchable")],
-      engine: "docling",
+      engine: "tika",
       mediaType: "application/pdf",
       pageCount: 1,
       status: "complete",

@@ -5,7 +5,6 @@ import { planAdaptivePdfPages, type AdaptivePdfPlan } from "../parsing/adaptiveP
 import { assembleAdaptivePdfPages } from "../parsing/adaptivePdfAssembly";
 import { adaptivePdfTableRegions, adaptivePdfVisionPrompt, prepareAdaptivePdfVisionSupplement } from "../parsing/adaptivePdfVision";
 import { finalizeParsedDocument } from "../parsing/assessment";
-import { createConfiguredDoclingLayoutParser, type DoclingLayoutParser } from "../parsing/doclingLayout";
 import { decodeModelPdfBatchOutput, MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION, modelPdfPagesToDocument, modelPdfTranscriptionPrompt } from "../parsing/modelPdfOutput";
 import { digestPreparedPdfBatch, modelPdfProviderRequest } from "../parsing/modelPdfRequest";
 import { extractNativePdfGeometry, type NativePdfGeometry } from "../parsing/nativePdf";
@@ -87,6 +86,8 @@ export class ChatPdfPreparationError extends Error {
 }
 
 export type ChatPdfLocalExtraction = Readonly<{
+  /** A docling layout that a preparation planned before the sidecar's removal
+   * stored here; it keeps that preparation's crops. New plans have none. */
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry | null;
   pageCount: number;
@@ -178,13 +179,10 @@ export function decodeChatPdfArtifact(body: Buffer, expected: Readonly<{
 export function createChatPdfCore(options: Readonly<{
   extractGeometry?: typeof extractNativePdfGeometry;
   inspect?: typeof inspectPdfForModelProcessing;
-  parseDocling?: DoclingLayoutParser | null;
   prepare?: typeof preparePdfModelBatch;
 }> = {}) {
   const inspect = options.inspect ?? inspectPdfForModelProcessing;
   const extractGeometry = options.extractGeometry ?? extractNativePdfGeometry;
-  const parseDocling = options.parseDocling === undefined
-    ? createConfiguredDoclingLayoutParser() : options.parseDocling;
   const prepare = options.prepare ?? preparePdfModelBatch;
   return {
     async plan(input: Readonly<{
@@ -212,16 +210,14 @@ export function createChatPdfCore(options: Readonly<{
         : CURRENT_VERSIONS;
       if (!versions) throw new ChatPdfPreparationError("pdf_preparation_invalid");
       let geometry: NativePdfGeometry | null = null;
-      let docling: ParsedDocument | null = null;
       let adaptive: AdaptivePdfPlan | null = null;
       if (input.admission.route === "system_pdf") {
         // Every page is transcribed through the frozen native-PDF reader.
         // Native text cannot silently bypass the selected input method.
       } else if (input.admission.route !== "local_text" && isSharedPdfOcrParserVersion(versions.parserVersion)) {
         const local = await planPdfOcrSource({ bytes: input.bytes, maxBlocks, maxCharacters, maxPages,
-          pageCount, parserVersion: versions.parserVersion, signal: input.signal }, { extractGeometry, parseDocling });
+          pageCount, parserVersion: versions.parserVersion, signal: input.signal }, { extractGeometry });
         geometry = local.geometry;
-        docling = local.docling;
         adaptive = local.plan;
       } else {
         try {
@@ -229,15 +225,8 @@ export function createChatPdfCore(options: Readonly<{
           mimeType: "application/pdf", signal: input.signal }, { maxBlocks, maxCharacters, maxPages });
         if (geometry.pageCount !== pageCount) geometry = null;
         } catch { aborted(input.signal); }
-        if (input.admission.route !== "local_text" && geometry && parseDocling) {
-        try {
-          docling = await parseDocling({ bytes: input.bytes, fileName: "source.pdf",
-            mimeType: "application/pdf", parserProfileVersion: versions.parserVersion,
-            signal: input.signal });
-        } catch { aborted(input.signal); }
-        }
         adaptive = input.admission.route !== "local_text" && geometry
-          ? planAdaptivePdfPages({ geometry, docling }) : null;
+          ? planAdaptivePdfPages({ geometry, docling: null }) : null;
       }
       const compatibilityKey = chatPdfCompatibilityKey(input.admission, versions);
       const units = Array.from({ length: pageCount }, (_, index) => {
@@ -247,10 +236,10 @@ export function createChatPdfCore(options: Readonly<{
           : adaptive?.pages[index]?.route ?? "vision_required" as const;
         const metrics = geometry?.quality.pages[index];
         const crops = route === "vision_required" && geometry && metrics
-          ? adaptivePdfTableRegions({ geometry, docling, page: metrics }) : [];
+          ? adaptivePdfTableRegions({ geometry, docling: null, page: metrics }) : [];
         return { crops, key: chatPdfFingerprint({ compatibilityKey, crops, page, route }), page, route };
       });
-      return { local: { docling, geometry, pageCount }, plan: {
+      return { local: { docling: null, geometry, pageCount }, plan: {
         adaptive, compatibilityKey, limits: chatPdfImageLimits(input.admission, versions.parserVersion), maxBlocks, maxCharacters,
         pageCount, ...versions, units, version: 1
       } };
