@@ -129,6 +129,13 @@ describe("state block", () => {
     expect(everyHandle.match(/^- tor1_/gmu)).toHaveLength(1);
   });
 
+  it("records the line of a failed result that names the failure", () => {
+    const chat = transcriptBuilder();
+    chat.tool("run_pipeline", { stage: "export" },
+      "2026-04-11T03:17:40Z INFO job=JOB-1 stage=export rows=10\n2026-04-11T03:17:44Z ERROR job=JOB-7Q4M-2291 failed: upstream timeout\nmore", "error");
+    expect(buildStateBlock(chat.items)).toContain("- run_pipeline stage=\"export\" → 2026-04-11T03:17:44Z ERROR job=JOB-7Q4M-2291 failed: upstream timeout");
+  });
+
   it("records nothing for a conversation without tools, and takes the loop's classifier", () => {
     const chat = transcriptBuilder();
     chat.user("hello");
