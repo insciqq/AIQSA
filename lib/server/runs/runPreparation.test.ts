@@ -47,8 +47,7 @@ import { admittedRunGuidance, splitTurnGuidance } from "../engine/systemPrompt";
 import { logEvent } from "../observability";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { openAIResponsesToolBridge } from "../tools/bridges";
-import { followupRequestHeadroom, followupTokenCost } from "./runFollowups";
-import { contextCompactionCheckpoint, type BranchContextCheckpoint } from "./contextCompactionContract";
+import { followupTokenCost } from "./runFollowups";
 import { fetchUrlDigest } from "../webFetch/urls";
 
 // Passthrough spy: content-free degradation events are asserted directly.
@@ -928,7 +927,6 @@ describe("standing Memory and optional search admission", () => {
     expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
     expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search")).toBe(true);
     // Memory search no longer disables notes: the one policy applies.
-    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
   });
   it.each(["none", "no_capability"])("retains standing preparation when search is unavailable (%s)", async mode => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: mode === "none" } });
@@ -939,7 +937,6 @@ describe("standing Memory and optional search admission", () => {
     expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
     expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
     // A model without tools (or tools off) still compacts by notes.
-    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
   });
   it("keeps excluded chats outside both Memory contracts", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
@@ -2422,14 +2419,10 @@ describe("run preparation", () => {
           resolveStandardChatBaseline({ timeZone: "Europe/Berlin" })
         ] as const
     );
-    const { context: sendContext, contextCompactionPolicy: sendPolicy, ...sendNormalized } = sendPrepared.normalizedRequest;
-    const { context: regenerateContext, contextCompactionPolicy: regeneratePolicy, ...regenerateNormalized } =
-      regeneratePrepared.normalizedRequest;
+    const { context: sendContext, ...sendNormalized } = sendPrepared.normalizedRequest;
+    const { context: regenerateContext, ...regenerateNormalized } = regeneratePrepared.normalizedRequest;
 
     expect(sendNormalized).toEqual(regenerateNormalized);
-    // Each source freezes its own branch identity under the same policy.
-    expect(sendPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: "prior-user-message" } });
-    expect(regeneratePolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: "stored-user-message" } });
     expect(sendContext?.messages.map((message) => ({ content: message.content, role: message.role }))).toEqual(
       regenerateContext?.messages.map((message) => ({ content: message.content, role: message.role }))
     );
@@ -2904,8 +2897,7 @@ describe("run preparation", () => {
     expect(off.normalizedRequest.sessionStatusTool).toBe(true);
     expect(off.normalizedRequest.toolObservationVersion).toBe(0);
     // The call reader is admitted independently of the observation policy.
-    expect(off.normalizedRequest.toolCallReader).toBe(true);
-    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_call", "fetch_url"]);
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "fetch_url"]);
     expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
     expect(off.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch") ?? []).toEqual([]);
     expect(catalog).not.toHaveBeenCalled();
@@ -3048,7 +3040,6 @@ describe("run preparation", () => {
     const fitting = preparedFrom(await prepareRun(deps, sendInput(successBody({
       modelId: "openai-tool-model", provider: "openai"
     }))));
-    expect(fitting.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
     // About 30 000 estimated tokens: no summary or mask can make it fit.
     const result = await prepareRun(deps, sendInput(successBody({
       content: textMessageContent("q".repeat(121_000)), modelId: "openai-tool-model", provider: "openai"
@@ -4165,7 +4156,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_call", "fetch_url", "search_engine_1"]);
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "fetch_url", "search_engine_1"]);
   });
 
   it("routes a provider-admitted multi-engine plan", async () => {
@@ -5201,58 +5192,6 @@ describe("run preparation", () => {
   });
 });
 
-describe("cross-turn tool history admission", () => {
-  const snapshot = { version: 1 as const, turns: [{ turnMessageId: "prior-user-message", callRefs: [`tcr1_${"a".repeat(32)}`],
-    digest: "d".repeat(64) }] };
-
-  it("freezes the branch's call references from the send's leaf, never record text", async () => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const loadToolHistory = vi.fn(async () => snapshot);
-    const projectToolHistory = vi.fn();
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory,
-      projectToolHistory } }, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))));
-    expect(loadToolHistory).toHaveBeenCalledWith({ chatId: "chat-1", leafMessageId: "prior-user-message", userId: "user-1" });
-    expect(prepared.normalizedRequest.toolHistory).toEqual(snapshot);
-    expect(prepared.providerRequest.toolHistory).toEqual(snapshot);
-    // Records are projected for each answer request; admission persists none.
-    expect(projectToolHistory).not.toHaveBeenCalled();
-    for (const messages of [prepared.normalizedRequest.context!.messages, prepared.providerRequest.context!.messages]) {
-      expect(messages.some((message) => message.historyClass !== undefined || message.id.startsWith("tch1_"))).toBe(false);
-    }
-  });
-
-  it("freezes a regeneration's history from its own user message and an empty history without a loader", async () => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const loadToolHistory = vi.fn(async () => snapshot);
-    await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory } },
-      regenerateInput(successBody({ provider: "openai", modelId: "openai-tool-model" })));
-    expect(loadToolHistory).toHaveBeenCalledWith({ chatId: "chat-1", leafMessageId: "stored-user-message", userId: "user-1" });
-    // Every new run is eligible for later turns, with or without earlier calls.
-    const plain = preparedFrom(await prepareRun(harness.deps, sendInput()));
-    expect(plain.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
-  });
-
-  it("freezes that the history could not be loaded instead of refusing the message when the history read fails", async () => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const loadToolHistory = vi.fn(async () => { throw new Error("synthetic_database_timeout"); });
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory } },
-      sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))));
-    expect(loadToolHistory).toHaveBeenCalledOnce();
-    // Never an empty history, which would read as a chat without calls.
-    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [], unavailable: true });
-  });
-
-  it("admits the call reader only for tool-capable answer models", async () => {
-    const tools = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    expect(preparedFrom(await prepareRun(tools.deps, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))))
-      .normalizedRequest.toolCallReader).toBe(true);
-    const plain = createHarness({ capabilities: { ...baseCapabilities, toolCalling: false } });
-    const prepared = preparedFrom(await prepareRun(plain.deps, sendInput()));
-    expect(prepared.normalizedRequest.toolCallReader).toBeUndefined();
-    expect(prepared.providerRequest.tools?.some((tool) => tool.name === "read_tool_call") ?? false).toBe(false);
-  });
-});
-
 describe("scheduled task sends", () => {
   const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
     ({ content: textMessageContent(text), id, role });
@@ -5260,10 +5199,6 @@ describe("scheduled task sends", () => {
   const path = [say("owner-user", "user", "Owner question"), say("owner-answer", "assistant", "Owner answer"),
     say("result-user", "user", "Task prompt"), say("result-answer", "assistant", "Task result"),
     say("later-user", "user", "Owner follow-up"), say("prior-user-message", "assistant", "Owner follow-up answer")];
-  const history = { version: 1 as const, omittedCalls: 4, turns: [
-    { callRefs: [`tcr1_${"a".repeat(32)}`], digest: "a".repeat(64), turnMessageId: "owner-answer", userMessageId: "owner-user" },
-    { callRefs: [`tcr1_${"b".repeat(32)}`], digest: "b".repeat(64), turnMessageId: "result-answer", userMessageId: "result-user" }
-  ] };
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
 
   function scheduledInput(previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null,
@@ -5278,42 +5213,30 @@ describe("scheduled task sends", () => {
 
   function scheduledDeps() {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, sendContext: path });
-    const loadToolHistory = vi.fn(async () => history);
-    const loadBranchContextCheckpoints = vi.fn(async () => ({ ancestorMessageIds: path.map((message) => message.id), checkpoints: [] }));
     const contextForChat = vi.fn(async () => []);
-    const deps: RunPreparationDeps = { ...harness.deps, artifacts: { contextForChat } as never,
-      repository: { ...harness.deps.repository, loadBranchContextCheckpoints, loadToolHistory } };
-    return { contextForChat, deps, loadBranchContextCheckpoints, loadToolHistory };
+    const deps: RunPreparationDeps = { ...harness.deps, artifacts: { contextForChat } as never };
+    return { contextForChat, deps };
   }
 
-  it("selects the previous result alone and keeps branch notes, other turns' tool history and chat artifacts out", async () => {
+  it("selects the previous result alone and keeps chat artifacts out", async () => {
     const f = scheduledDeps();
     const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput({ assistantMessageId: "result-answer", userMessageId: "result-user" })));
     expect(prepared.normalizedRequest.context!.messages.map((message) => message.id))
       .toEqual(["result-user", "result-answer", "current-user-message"]);
-    // The tool history follows the selection: only the result's own turn, nothing counted from other turns.
-    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [history.turns[1]] });
-    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: null } });
-    expect(f.loadBranchContextCheckpoints).not.toHaveBeenCalled();
     expect(f.contextForChat).not.toHaveBeenCalled();
 
     // The owner's own message in the same chat keeps all of them.
     const ordinary = preparedFrom(await prepareRun(f.deps, sendInput(toolBody)));
     expect(ordinary.normalizedRequest.context!.messages).toHaveLength(path.length + 1);
-    expect(ordinary.normalizedRequest.toolHistory).toEqual(history);
-    // Earlier runs' context notes are no part of admission: the engine compacts from its own transcript.
-    expect(f.loadBranchContextCheckpoints).not.toHaveBeenCalled();
     expect(f.contextForChat).toHaveBeenCalledOnce();
   });
 
-  it("reads no tool history when the run's context holds no earlier result", async () => {
+  it("starts from the prompt alone when the run's context holds no earlier result", async () => {
     const f = scheduledDeps();
     for (const previousResult of [null, { assistantMessageId: "gone-answer", userMessageId: "result-user" }]) {
       const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput(previousResult)));
       expect(prepared.normalizedRequest.context!.messages.map((message) => message.id)).toEqual(["current-user-message"]);
-      expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
     }
-    expect(f.loadToolHistory).not.toHaveBeenCalled();
   });
 
   it("sees a result carried into a rotated chat as the task prompt and the copied answer, never the old chat's ids", async () => {
@@ -5332,9 +5255,6 @@ describe("scheduled task sends", () => {
     // The prompt of the same generation is the task's current one.
     expect(messages[0]!.content).toEqual(messages[2]!.content);
     expect(messages[1]!.content).toEqual(textMessageContent("Carried answer"));
-    // A copy brings no tool history from another chat.
-    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
-    expect(f.loadToolHistory).not.toHaveBeenCalled();
     // The rotated chat's own previous result on the path wins over the copy.
     const own = preparedFrom(await prepareRun(f.deps, carried({ assistantMessageId: "result-answer", userMessageId: "result-user" })));
     expect(own.normalizedRequest.context!.messages.map((message) => message.id))

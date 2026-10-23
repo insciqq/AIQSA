@@ -23,7 +23,6 @@ import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { ProviderAdapter, ProviderModelCapabilities } from "../providers/types";
 import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { SESSION_STATUS_TOOL_NAME } from "../tools/sessionStatus";
-import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { materializePreparedRunData, prepareRun, type RunPreparationDeps } from "./runPreparation";
 
 // Knowledge admission stays tested as it worked; `runPreparation.test.ts` covers Knowledge disabled.
@@ -352,7 +351,6 @@ describe("ordinary Knowledge plan resolution", () => {
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME,
         FETCH_URL_TOOL_NAME
       ]);
     }
@@ -412,8 +410,7 @@ describe("ordinary Knowledge plan resolution", () => {
       expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
-        SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME
+        SESSION_STATUS_TOOL_NAME
       ]);
     }
   });
@@ -481,7 +478,6 @@ describe("ordinary Knowledge plan resolution", () => {
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME,
         FETCH_URL_TOOL_NAME
       ]);
     }
@@ -604,7 +600,6 @@ describe("assistant run admission", () => {
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME,
         FETCH_URL_TOOL_NAME
       ]);
     }
@@ -695,7 +690,6 @@ describe("assistant run admission", () => {
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME,
         FETCH_URL_TOOL_NAME
       ]);
     }
