@@ -24,6 +24,7 @@ vi.mock("../chats/titleGenerationWorker", () => ({ createPrismaChatTitleWorker: 
 vi.mock("./prismaRepository", () => ({ createPrismaRunRepository: () => ({ kind: "repository" }) }));
 vi.mock("../prisma", () => ({ prisma: { kind: "prisma" } }));
 vi.mock("./retiredEngineRuns", () => ({
+  createRetiredEngineRunFinder: (client: unknown) => ({ client, kind: "finder" }),
   createRetiredEngineRunSweep: (input: Record<string, unknown>) => { mocks.retiredSweepInput.push(input); return mocks.retiredSweep; }
 }));
 vi.mock("../engine/defaultEngine", () => ({ defaultNativeRecoveryDeps: (input: Record<string, unknown>) => ({ kind: "nativeRecovery", ...input }) }));
@@ -49,7 +50,8 @@ describe("default run recovery scheduler", () => {
     getDefaultRunRecoveryScheduler();
     await mocks.schedulerInput[0]!.reconcile(new AbortController().signal);
     expect(mocks.order).toEqual(["retired", "pdf", "workspace", "native"]);
-    expect(mocks.retiredSweepInput[0]).toMatchObject({ client: { kind: "prisma" }, repository: { kind: "repository" },
+    expect(mocks.retiredSweepInput[0]).toMatchObject({ findRuns: { client: { kind: "prisma" }, kind: "finder" },
+      repository: { kind: "repository" },
       workspace: { kind: "workspace", storage: mocks.storage } });
     expect(mocks.reconcileNative.mock.calls[0]![0]).toMatchObject({ kind: "nativeRecovery", repository: { kind: "repository" },
       workspace: { kind: "workspace" } });

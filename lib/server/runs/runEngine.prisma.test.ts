@@ -7,7 +7,7 @@ import { prisma } from "../prisma";
 import { createChatPdfRepository } from "../uploads/chatPdfPersistence";
 import { createNativeOrphanFinder } from "../engine/recovery";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { endRetiredEngineRuns } from "./retiredEngineRuns";
+import { createRetiredEngineRunFinder, endRetiredEngineRuns } from "./retiredEngineRuns";
 import { ActiveRunConflictError, type RunRepository } from "./runRepositoryContract";
 import { createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
 
@@ -201,8 +201,8 @@ describe("the old run core's rows beside the agent engine on one database", () =
     const runIds = [oldCore.runId, native.runId, previous.runId];
     const nativeAnswer = await messageStatus(native.assistantMessageId);
 
-    // Other files' old-core rows may end in the same pass; only this file's are checked.
-    for (let pass = 0; pass < 20 && (await endRetiredEngineRuns({ client: prisma, repository })).found > 0; pass += 1) { /* next batch */ }
+    // Only this test's owner: other files' old-core rows stay theirs.
+    await endRetiredEngineRuns({ findRuns: createRetiredEngineRunFinder(prisma), repository }, { userId });
 
     await expect(runStates(runIds)).resolves.toEqual({
       [oldCore.runId]: { code: "run_interrupted", engine: "v1", status: "error" },

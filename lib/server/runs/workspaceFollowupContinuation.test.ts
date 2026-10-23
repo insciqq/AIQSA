@@ -47,7 +47,7 @@ function recordingWorkspace(order: string[]) {
 function continuation(input: Readonly<{ adapter: ProviderAdapter; memory: ReturnType<typeof memoryNativeEngine>; order: string[] }>) {
   const secrets: RunSecretSource = { list: vi.fn(async () => []), read: vi.fn() };
   const nativeEngine: NativeEngineHandlerDeps = { engine: input.memory.engine,
-    findOrphans: async () => [], tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } } };
+    findOrphans: async () => [], findRetiredRuns: async () => [], tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } } };
   const repository = { ...nativeRunRepository(), continueWorkspacePreparedRun: vi.fn(async (activation: { created: typeof admitted }) => {
     input.order.push("activated");
     return { ...activation.created };

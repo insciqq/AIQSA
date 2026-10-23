@@ -58,6 +58,7 @@ export function nativeEngineFake(options: Readonly<{
       }
     },
     findOrphans: async () => [],
+    findRetiredRuns: async () => [],
     ...(options.tools ? { tools: {
       secrets: { list: async () => [], read: async () => { throw new Error("secret_not_expected"); } },
       selfService: { assistants: {} as never, db: {} as never, storage: {} as never }

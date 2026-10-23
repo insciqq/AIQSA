@@ -1492,6 +1492,8 @@
   "self_service_change_failed",
   "retired_engine_run_failed",
   "retired_engine_runs_ended",
+  "retired_engine_runs_unavailable",
+  "retired_engine_runs_unsettled",
   "model_tool_calling_required",
   "model_adapter_unsupported"
 ]
