@@ -139,6 +139,16 @@ enum ModelRunEngine {
   native
 }
 
+/// The kind of one native engine transcript item (`lib/server/engine/transcript.ts`).
+enum RunTranscriptItemKind {
+  user
+  assistant_text
+  reasoning
+  tool_call
+  tool_result
+  compaction
+}
+
 enum WorkspaceFollowupState {
   waiting
   preparing
@@ -4037,6 +4047,7 @@ model ModelRun {
   skillRunBindings             ModelRunSkillBinding[]
   toolCalls                    ModelRunToolCall[]
   toolObservations             ToolObservation[]
+  transcriptItems              RunTranscriptItem[]
   userMessage                  Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
   workspaceRunBinding          WorkspaceRunBinding?
@@ -4123,6 +4134,27 @@ model ModelRunSkillBinding {
   @@unique([modelRunId, alias])
   @@index([modelRunId, modelRunToolCallId])
   @@index([skillId, revisionId])
+}
+
+/// One item of a native engine run's provider-neutral transcript, in run order
+/// (`sequence`). Items are immutable: a chat's transcript is the items of the
+/// native runs on its branch, in message order. A large tool output is bounded
+/// here and kept whole as the `ToolObservation` of its call.
+model RunTranscriptItem {
+  id         String                @id @default(uuid())
+  userId     String
+  chatId     String
+  modelRunId String
+  sequence   Int
+  kind       RunTranscriptItemKind
+  /// The provider call id of a tool call or result, pairing them across runs.
+  callId     String?               @db.VarChar(256)
+  /// The item's fields as `lib/server/engine/transcriptCodec.ts` writes them.
+  body       Json
+  createdAt  DateTime              @default(now())
+  modelRun   ModelRun              @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "RunTranscriptItem_modelRun_fkey")
+
+  @@unique([modelRunId, sequence])
 }
 
 model ModelRunEvent {
