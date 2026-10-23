@@ -72,7 +72,7 @@ describe("native Memory search activity", () => {
     expect(kept?.calls.map(call => call.memorySearchOutcome)).toEqual(["results", "cancelled"]);
     expect(memorySearchCallHiddenV2({ origin: "memory", toolName: "memory_search", status: "complete",
       memorySearchOutcome: "failure" })).toBe(true);
-    expect(memorySearchCallHiddenV2({ origin: "knowledge", toolName: "search_knowledge", status: "error" })).toBe(false);
+    expect(memorySearchCallHiddenV2({ origin: "mcp", serverName: "Docs", toolName: "search", status: "error" })).toBe(false);
     for (const phase of ["failed", "settled"] as const) {
       expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome: "failure" }, phase))
         .not.toMatch(/unavailable|fail|limit/iu);
@@ -341,14 +341,13 @@ describe("run lifecycle v2 presentation", () => {
       expect(presentRunLifecycleV2(state({ runId, status: "streaming" })).activity?.label).toBe(phrase);
     }
     // Specific work keeps its own words; settled answers keep their factual line.
-    expect(presentRunLifecycleV2(state({ events: [summary({ stage: "knowledge", status: "running" })], runId: runIds[0]!,
-      status: "streaming" })).activity?.label).toBe("Searching Knowledge…");
+    expect(presentRunLifecycleV2(state({ events: [summary({ stage: "files", status: "running" })], runId: runIds[0]!,
+      status: "streaming" })).activity?.label).toBe("Reading files…");
     expect(answerProcessLabelV2({ hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: 12_000 })).toBe("Thought for 12s");
   });
 
   it.each([
     [summary({ stage: "files", status: "running" }), "files", "Reading files…"],
-    [summary({ stage: "knowledge", status: "running" }), "knowledge", "Searching Knowledge…"],
     [summary({ stage: "model", status: "waiting" }), "provider", "Thinking…"]
   ] as const)("uses normalized lifecycle artifacts", (event, kind, label) => {
     expect(presentRunLifecycleV2(state({ events: [event] }))).toMatchObject({
@@ -357,16 +356,14 @@ describe("run lifecycle v2 presentation", () => {
     });
   });
 
-  it("marks a model request after shown tool or Knowledge work, which waits with the run's own phrase", () => {
+  it("marks a model request after shown tool work, which waits with the run's own phrase", () => {
     const model = summary({ stage: "model", status: "waiting" });
     const files = summary({ stage: "files", status: "running" });
-    const knowledge = summary({ stage: "knowledge", status: "running" });
     const tool = { data: { artifactType: "tool_call", payload: { name: "fetch_url", origin: "web_fetch", round: 1,
       serverName: "Web", status: "requested" } }, type: "artifact" } satisfies RunEventView;
     const heading = summary({ heading: "Comparing the two pages", stage: "reasoning", status: "running" });
     expect(presentRunLifecycleV2(state({ events: [tool, model], runId: "run-tools" })).activity)
       .toMatchObject({ kind: "results", label: runWaitingPhraseV2("run-tools") });
-    expect(presentRunLifecycleV2(state({ events: [knowledge, model] })).activity).toMatchObject({ kind: "results" });
     expect(presentRunLifecycleV2(state({ events: [files, model] })).activity).toMatchObject({ kind: "provider" });
     expect(presentRunLifecycleV2(state({ events: [tool, model, heading] })).activity)
       .toMatchObject({ kind: "results", label: runWaitingPhraseV2(null), reasoningHeading: "Comparing the two pages" });
@@ -753,8 +750,6 @@ describe("answer process label", () => {
 
   it.each([
     ["Repository Tools", "search", "search"],
-    ["Document Tools", "search_knowledge", "search knowledge"],
-    ["Knowledge", "retrieve_knowledge", "retrieve knowledge"],
     ["Auto tools", "find_tools", "find tools"],
     ["Web search", "web_search", "web search"],
     ["Workspace", "search", "search"]
@@ -766,7 +761,7 @@ describe("answer process label", () => {
     expect(describeToolCallV2(call, "cancelled")).toBe(`${serverName}: ${operation} stopped`);
   });
 
-  it.each(["search", "search_knowledge", "find_tools"])(
+  it.each(["search", "find_tools"])(
     "retains the server for a %s call without explicit origin",
     (toolName) => {
       expect(toolActivityOriginV2({ serverName: "Repository Tools", toolName })).toBe("mcp");
@@ -777,7 +772,6 @@ describe("answer process label", () => {
 
   it.each([
     ["web_search", "Searching the web", "Searched the web", "Web search failed", "Web search stopped"],
-    ["knowledge", "Searching Knowledge", "Searched Knowledge", "Knowledge search unavailable", "Knowledge search stopped"],
     ["discovery", "Finding relevant tools", "Found relevant tools", "Tool discovery failed", "Tool discovery stopped"],
     ["workspace", "Working in Workspace", "Worked in Workspace", "Workspace step failed", "Workspace step stopped"]
   ])("preserves explicit built-in %s regardless of its display names", (origin, running, settled, failed, cancelled) => {
@@ -855,24 +849,13 @@ describe("answer process label", () => {
       .toBe(`Using ${"S".repeat(160)}: ${"t".repeat(80)}`);
   });
 
-  it("distinguishes Knowledge retrieval progress, success, and technical failure", () => {
-    expect(describeToolCallV2({ toolName: "search_knowledge" }, "running"))
-      .toBe("Searching Knowledge");
-    expect(describeToolCallV2({ toolName: "search_knowledge" }, "settled"))
-      .toBe("Searched Knowledge");
-    expect(describeToolCallV2({ toolName: "search_knowledge" }, "failed"))
-      .toBe("Knowledge search unavailable");
-    expect(describeToolCallV2({ toolName: "retrieve_knowledge" }, "failed"))
-      .toBe("Knowledge search unavailable");
-  });
-
   it("falls back to the settled step durations", () => {
     expect(stepDurationSumV2(null)).toBeNull();
     expect(stepDurationSumV2({ calls: [{ round: 1, status: "running", toolName: "web_search" }] })).toBeNull();
     expect(stepDurationSumV2({
       calls: [
         { durationMs: 1_400, round: 1, status: "complete", toolName: "web_search" },
-        { durationMs: 800, round: 2, status: "complete", toolName: "search_knowledge" }
+        { durationMs: 800, round: 2, status: "complete", toolName: "fetch_url" }
       ]
     })).toBe(2_200);
   });

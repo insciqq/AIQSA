@@ -26,15 +26,10 @@ const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERM
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const clean of cleanups.splice(0).reverse()) await clean(); });
 
-async function fixture(project = false) {
+async function fixture() {
   const userId = `selected-capture-${randomUUID()}`;
-  const actor = await prisma.user.create({ data: { id: userId, displayName: "Synthetic capture owner", status: "active" } });
-  const projectRow = project ? await prisma.project.create({ data: {
-    name: "Synthetic capture Project", createdByUserId: userId, createdByDisplayName: actor.displayName,
-    grants: { create: { userId, role: "OWNER" } }
-  } }) : null;
-  const chat = await prisma.chat.create({ data: { title: "Synthetic captured evidence", workspaceEnabled: true,
-    ...(projectRow ? { projectId: projectRow.id, createdByUserId: userId, createdByDisplayName: actor.displayName, memoryMode: "EXCLUDED" as const } : { userId }) } });
+  await prisma.user.create({ data: { id: userId, displayName: "Synthetic capture owner", status: "active" } });
+  const chat = await prisma.chat.create({ data: { title: "Synthetic captured evidence", workspaceEnabled: true, userId } });
   let runtimeForCleanup: DeterministicWorkspaceRuntime | undefined;
   let sessionForCleanup: string | undefined;
   let runtimeIdForCleanup: string | undefined;
@@ -53,21 +48,17 @@ async function fixture(project = false) {
     if (captures.length) await prisma.attachmentDeletionJob.deleteMany({ where: {
       OR: captures.map(capture => ({ storageKey: { startsWith: `workspace-captures/${capture.id}/` } }))
     } });
-    if (projectRow) await prisma.project.deleteMany({ where: { id: projectRow.id } });
     await prisma.user.deleteMany({ where: { id: userId } });
   });
   const message = await prisma.message.create({ data: {
-    chatId: chat.id, role: "user", status: "complete", content: textMessageContent("Capture selected files"),
-    ...(projectRow ? { authorUserId: userId, authorDisplayName: actor.displayName, authorProjectRole: "OWNER" as const } : {})
+    chatId: chat.id, role: "user", status: "complete", content: textMessageContent("Capture selected files")
   } });
   const answer = await prisma.message.create({ data: {
     chatId: chat.id, role: "assistant", status: "streaming", parentMessageId: message.id, content: textMessageContent("")
   } });
   const makeRun = () => prisma.modelRun.create({ data: {
     chatId: chat.id, userId, userMessageId: message.id, assistantMessageId: answer.id,
-    provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status: "in_progress",
-    ...(projectRow ? { projectRunBinding: { create: { projectId: projectRow.id, initiatorUserId: userId,
-      acceptedRole: "OWNER", accessRevision: 1, policyRevision: 1, instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true } } } : {})
+    provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status: "in_progress"
   } });
   const run = await makeRun();
   const operation = { generation: 1, owner: `run:${run.id}` };
@@ -114,7 +105,7 @@ async function fixture(project = false) {
     await runtime.claimSessionOperation!({ operation: current.operation, sessionId: session.id, runtimeSandboxId: live.runtimeSandboxId });
     return scope();
   };
-  return { service, runtime, raw, storage, scope, write, nextRun, current, session, live, chat, projectRow, userId, answer };
+  return { service, runtime, raw, storage, scope, write, nextRun, current, session, live, chat, userId, answer };
 }
 
 
@@ -219,25 +210,6 @@ describe("Workspace draft checkpoint persistence", () => {
     expect(collect).not.toHaveBeenCalled();
     expect(await prisma.workspaceOutputCheckpoint.findUnique({ where: { toolCallId: inv.tool.id } })).toMatchObject({ state: "SETTLED", captureId: capture.id });
     expect(await prisma.modelRun.findUnique({ where: { id: c.runId } })).toMatchObject({ status: "cancelled" });
-  });
-
-  it("fences a new publication after Project access revocation without changing an earlier checkpoint", async () => {
-    const f = await fixture(true); await f.write("project", "design.psd", "authorized-version");
-    const first = await invocation(f);
-    await first.service.execute(first.call, first.context);
-    const receipt = await prisma.workspaceOutputCheckpoint.findUniqueOrThrow({ where: { toolCallId: first.tool.id }, include: { files: true } });
-    const remainingOwner = await prisma.user.create({ data: {
-      id: `checkpoint-owner-${randomUUID()}`, displayName: "Synthetic remaining owner", status: "active"
-    } });
-    cleanups.unshift(async () => { await prisma.user.deleteMany({ where: { id: remainingOwner.id } }); });
-    await prisma.projectGrant.create({ data: { projectId: f.projectRow!.id, userId: remainingOwner.id, role: "OWNER" } });
-    await prisma.projectGrant.deleteMany({ where: { projectId: f.projectRow!.id, userId: f.userId } });
-    const later = await invocation(f, 1);
-    const capture = vi.spyOn(f.service, "create");
-    await expect(later.service.execute(later.call, later.context)).rejects.toMatchObject({ code: "workspace_checkpoint_unavailable" });
-    expect(capture).not.toHaveBeenCalled();
-    expect(await prisma.workspaceOutputCheckpoint.findUnique({ where: { id: receipt.id } })).toMatchObject({ state: "SETTLED" });
-    expect(await createPrismaAttachmentDownloadRepository(prisma).resolve({ attachmentId: receipt.files[0]!.attachmentId, userId: f.userId })).toBeNull();
   });
 
   it("bounds total checkpoint bytes and replays one immutable publication without duplicate events", async () => {

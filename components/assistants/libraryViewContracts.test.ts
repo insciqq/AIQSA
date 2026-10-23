@@ -113,8 +113,6 @@ function summary(overrides: Partial<AssistantSummary> = {}): AssistantSummary {
     featured: false,
     featuredOrder: null,
     fingerprint: {
-      knowledgeLabel: null,
-      knowledgeResourceCount: 2,
       mcpServerCount: 1,
       modelLabel: null,
       reasoningEffort: null,
@@ -139,7 +137,6 @@ describe("Assistant rows draft", () => {
   it("starts a new Assistant as a persona over the user's own setup", () => {
     expect(defaultAssistantDraftRows()).toEqual({
       controls: { policy: "adjustable", value: controlsDraft() },
-      knowledge: { policy: "adjustable", value: { mode: "none" } },
       model: { policy: "adjustable", value: { mode: "inherit" } },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -157,11 +154,10 @@ describe("Assistant rows draft", () => {
   it("reads stored rows with inherit and policies intact and drops projection counts", () => {
     const rows: AssistantRows = {
       controls: { policy: "fixed", value: { temperature: 0.4 } },
-      knowledge: { policy: "adjustable", value: { baseIds: ["base-1"], hiddenCount: 1, mode: "explicit", sourceIds: ["doc-1"] } },
       model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       skills: { policy: "fixed", value: { links: [{ delivery: "on_demand", skillId: "skill-1" }], mode: "off" } },
-      tools: { policy: "adjustable", value: { mode: "off" } }
+      tools: { policy: "adjustable", value: { hiddenCount: 1, mode: "exact", serverIds: ["mcp-1"] } }
     };
     const stored = { answerRules: "Be brief.", avatar, category: null, description: "", name: "Reviewer",
       responseReminder: "Check facts.", rows, starterPrompts: ["Review this"], systemPrompt: "Review." } as unknown as AssistantContent;
@@ -175,11 +171,10 @@ describe("Assistant rows draft", () => {
       responseReminder: "Check facts.",
       rows: {
         controls: { policy: "fixed", value: controlsDraft({ temperature: "0.4" }) },
-        knowledge: { policy: "adjustable", value: { baseIds: ["base-1"], mode: "explicit", sourceIds: ["doc-1"] } },
         model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
         search: { policy: "adjustable", value: { mode: "inherit" } },
         skills: { policy: "fixed", value: { links: [{ delivery: "on_demand", skillId: "skill-1" }], mode: "off" } },
-        tools: { policy: "adjustable", value: { mode: "off" } }
+        tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["mcp-1"] } }
       },
       starterPrompts: ["Review this"],
       systemPrompt: "Review."
@@ -322,7 +317,6 @@ describe("Assistant editor run-control contracts", () => {
 describe("From current chat", () => {
   const setup: AssistantChatSetup = {
     backgroundMode: false,
-    knowledge: { baseIds: ["base-1"], mode: "explicit", sourceIds: ["doc-1"] },
     maxOutputTokens: "2048",
     mcp: { mode: "exact", serverIds: ["mcp-1"] },
     modelId: "model-1",
@@ -339,7 +333,6 @@ describe("From current chat", () => {
     expect(Object.values(rows).every((row) => row.policy === "adjustable")).toBe(true);
     expect(rows).toMatchObject({
       controls: { value: { backgroundMode: false, maxOutputTokens: "2048", reasoningEffort: "high", streamMode: true, temperature: "0.7" } },
-      knowledge: { value: { baseIds: ["base-1"], mode: "explicit", sourceIds: ["doc-1"] } },
       model: { value: { mode: "model", modelId: "model-1" } },
       search: { value: { mode: "model_choice", optionIds: ["web"] } },
       skills: { value: { links: setup.skills.links, mode: "off" } },
@@ -348,8 +341,7 @@ describe("From current chat", () => {
   });
 
   it("uses inherit for chat values rows cannot express", () => {
-    expect(draftRowsFromChatSetup({ ...setup, knowledge: { mode: "all" }, mcp: { mode: "auto" } })).toMatchObject({
-      knowledge: { value: { mode: "inherit" } },
+    expect(draftRowsFromChatSetup({ ...setup, mcp: { mode: "auto" } })).toMatchObject({
       tools: { value: { mode: "inherit" } }
     });
     expect(draftRowsFromChatSetup({ ...setup, mcp: { enabledServerIds: ["mcp-1", "mcp-2"], mode: "load_all" } }).tools.value)
@@ -358,12 +350,10 @@ describe("From current chat", () => {
       .toEqual({ mode: "inherit" });
     expect(draftRowsFromChatSetup({
       ...setup,
-      knowledge: { mode: "none" },
       mcp: { mode: "off" },
       modelId: null,
       search: { mode: "all_selected", optionIds: [] }
     })).toMatchObject({
-      knowledge: { value: { mode: "none" } },
       model: { value: { mode: "inherit" } },
       search: { value: { mode: "off" } },
       tools: { value: { mode: "off" } }
@@ -409,7 +399,7 @@ describe("Assistant gallery contracts", () => {
 
   it("fills the capability line from the fingerprint and the Skill link count", () => {
     expect(assistantCardView(summary({ skillLinkCount: 3 })).capabilities)
-      .toEqual({ knowledge: 2, search: 0, skills: 3, tools: 1 });
+      .toEqual({ search: 0, skills: 3, tools: 1 });
     expect(assistantCardView(summary()).capabilities.skills).toBe(0);
   });
 

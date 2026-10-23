@@ -190,33 +190,6 @@ describe("Header Assistant selector v2", () => {
     });
   });
 
-  it("reads a Project's Assistant as the Project's, with only Change and Remove", () => {
-    const current = chatHeaderGalleryCurrent("project-menu");
-    // Even an Assistant the member owns is managed in Project settings here.
-    const assistant = actions({ canSaveChatSetup: true, current: current?.state === "bound" ? { ...current, owned: true } : current });
-    const { trigger } = renderSelector(assistant);
-
-    expect(trigger).toHaveAccessibleName("Assistant: Code reviewer");
-    expect(trigger).toHaveAttribute("data-state", "chosen");
-    fireEvent.click(trigger);
-    const menu = screen.getByRole("menu", { name: "Assistant" });
-    expect(within(menu).getByTestId("header-assistant-menu-head")).toHaveTextContent("Code reviewer · Project “Launch plan”");
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Change…",
-      "Remove for this chatapplies to the next messages"
-    ]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Change…" }));
-    expect(assistant.setPickerOpen).toHaveBeenCalledWith(true);
-  });
-
-  it("offers an unavailable Project binding another Project Assistant or none", () => {
-    const assistant = actions({ current: chatHeaderGalleryCurrent("project-unavailable"), restore: undefined });
-    fireEvent.click(renderSelector(assistant).trigger);
-
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent))
-      .toEqual(["Choose another…", "Continue without the Assistant"]);
-  });
-
   it("shows the widest form whose label fits the room the header leaves it", () => {
     // A chosen name may shorten to its minimum; a blocking label never shortens.
     const name = [{ fit: "label", minimum: 41 }] as const;
@@ -262,13 +235,5 @@ describe("Header model provenance", () => {
       .toEqual({ fromAssistant: false, locked: false, title: "HR Helper's model isn't available to you; using your default" });
     expect(headerModelProvenanceV2(chatHeaderGalleryCurrent("deleted"), "DeepSeek V4.1 Flash", models).fromAssistant)
       .toBe(false);
-  });
-
-  it("names the Project default when the Project does not provide the Assistant's model", () => {
-    expect(headerModelProvenanceV2(chatHeaderGalleryCurrent("project-fallback"), "DeepSeek V4.1 Flash", models)).toEqual({
-      fromAssistant: false,
-      locked: false,
-      title: "Code reviewer's model isn't available in this Project; using the Project default"
-    });
   });
 });

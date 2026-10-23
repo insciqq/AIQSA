@@ -10,15 +10,6 @@ import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import { AssistantEditorPageV2 } from "./AssistantEditorPageV2";
 
-// The Knowledge row stays tested as it worked; the tests "while Knowledge is disabled" turn it off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
-
 const avatar: AssistantAvatarRecipe = {
   accents: [0, 4],
   backgroundShape: "circle",
@@ -79,10 +70,6 @@ function editor(overrides: Partial<AssistantEditorView> = {}): AssistantEditorVi
     onSaveAndTry: vi.fn(async () => true),
     onUseInChat: null,
     options: {
-      knowledgeBases: [{ available: true, id: "base-1", name: "Product docs" }],
-      knowledgeDataError: null,
-      knowledgeDataState: "ready",
-      knowledgeSources: [{ available: true, id: "source-1", name: "API contract" }],
       mcpServers: [
         { enabled: true, id: "mcp-ready", name: "Jira", readiness: "ready" },
         { enabled: true, id: "mcp-setup", name: "Kubernetes", readiness: "needs_setup" },
@@ -97,7 +84,6 @@ function editor(overrides: Partial<AssistantEditorView> = {}): AssistantEditorVi
         providerLabel: "OpenAI",
         supportsTools: true
       }],
-      onRetryKnowledge: vi.fn(),
       searchOptions: [{ id: "web", label: "Web Search" }],
       selectedSkills: [
         { id: "review", name: "Review" },
@@ -129,7 +115,6 @@ function renderPage(view: AssistantEditorView, props: { onOpenSharing?(): void; 
 const row = (key: string) => screen.getByTestId(`assistant-setup-row-${key}`);
 
 afterEach(() => {
-  areas.knowledge = true;
   resetSkillLibraryStoreForTest();
   vi.unstubAllGlobals();
 });
@@ -149,13 +134,11 @@ describe("Assistant editor page", () => {
     expect(screen.getByText("Response reminder (optional)")).toBeVisible();
     expect(screen.getByLabelText("Conversation starter 1")).toHaveValue("Review this handler");
     expect(screen.getByText(/Shown on an empty chat\. One click sends the starter\. 1 of 6\./)).toBeVisible();
-    for (const name of ["Model", "Reasoning & parameters", "Web search", "Tools", "Knowledge", "Skills"]) {
+    for (const name of ["Model", "Reasoning & parameters", "Web search", "Tools", "Skills"]) {
       expect(screen.getByRole("button", { expanded: false, name })).toBeVisible();
     }
     expect(within(row("model")).getByRole("button", { expanded: false, name: "Model" }))
       .toHaveAccessibleDescription("Your default model (Inherit)");
-    expect(within(row("knowledge")).getByRole("button", { expanded: false, name: "Knowledge" }))
-      .toHaveAccessibleDescription("None");
     expect(screen.getByText("Only you")).toBeVisible();
     expect(screen.getByRole("button", { name: "Manage sharing…" })).toBeEnabled();
     expect(screen.getByText("Ctrl / ⌘ S to save")).toBeVisible();
@@ -187,7 +170,7 @@ describe("Assistant editor page", () => {
     expect(manage).toBeDisabled();
     expect(manage).toHaveAccessibleDescription("Save first");
     const toggles = screen.getAllByRole("button", { name: "Adjustable" });
-    expect(toggles).toHaveLength(6);
+    expect(toggles).toHaveLength(5);
     for (const toggle of toggles) {
       // The name is explicit, so the visible tooltip (generated content) can never join it.
       expect(toggle).toHaveAttribute("aria-label", "Adjustable");
@@ -276,45 +259,21 @@ describe("Assistant editor page", () => {
     expect(view.onOpenMcpSettings).toHaveBeenCalledOnce();
   });
 
-  it("chooses Web search and Knowledge as Inherit, Off or None, or a selection", () => {
+  it("chooses Web search as Inherit, Off or a selection", () => {
     const view = editor();
     renderPage(view);
 
     fireEvent.click(screen.getByRole("button", { name: "Web search" }));
     fireEvent.click(within(row("search")).getByRole("radio", { name: /Selected sources/ }));
     expect(view.onRowChange).toHaveBeenCalledWith("search", { value: { mode: "model_choice", optionIds: [] } });
-    fireEvent.click(screen.getByRole("button", { name: "Knowledge" }));
-    expect(within(row("knowledge")).getByRole("radio", { name: "None" })).toBeChecked();
-    fireEvent.click(within(row("knowledge")).getByRole("radio", { name: "Your default (Inherit)" }));
-    expect(view.onRowChange).toHaveBeenCalledWith("knowledge", { value: { mode: "inherit" } });
   });
 
-  it("offers no Knowledge row while Knowledge is disabled", () => {
-    areas.knowledge = false;
+  it("offers five Setup rows and no Knowledge row", () => {
     renderPage(editor());
 
     expect(screen.queryByTestId("assistant-setup-row-knowledge")).toBeNull();
     expect(screen.queryByRole("button", { name: "Knowledge" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Adjustable" })).toHaveLength(5);
-  });
-
-  it("keeps a saved Knowledge selection visible while Knowledge is disabled, only so it can be cleared", () => {
-    areas.knowledge = false;
-    const rows = defaultAssistantDraftRows();
-    const view = editor({
-      draft: draft({ rows: { ...rows, knowledge: { policy: "fixed", value: { baseIds: ["base-1"], mode: "explicit", sourceIds: [] } } } })
-    });
-    renderPage(view);
-
-    fireEvent.click(screen.getByRole("button", { name: "Knowledge" }));
-    const knowledge = row("knowledge");
-    expect(within(knowledge).getByRole("radio", { name: /Selected/ })).toBeChecked();
-    expect(within(knowledge).getByRole("status")).toHaveTextContent(
-      "Knowledge is turned off. Choose None or Your default (Inherit) to save this Assistant."
-    );
-    expect(within(knowledge).queryByRole("checkbox", { name: "Product docs" })).toBeNull();
-    fireEvent.click(within(knowledge).getByRole("radio", { name: "None" }));
-    expect(view.onRowChange).toHaveBeenCalledWith("knowledge", { value: { mode: "none" } });
   });
 
   it("keeps one Skills list with Always or On demand per link and honest counts", () => {
@@ -437,7 +396,6 @@ describe("Assistant editor page", () => {
       "Web search: Your default (Inherit) · Adjustable",
       // A server outside the owner's list is not named.
       "Tools: Jira, Unavailable MCP server · Adjustable — differs from your draft",
-      "Knowledge: None · Adjustable",
       "Skills: Auto · no Skills linked · Adjustable"
     ]);
     expect(conflict).toHaveTextContent("Newer text.");

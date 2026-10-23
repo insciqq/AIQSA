@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import type { PowerAppShellV2Props } from "@/components/app-shell/powerAppShellV2Contracts";
@@ -12,17 +12,7 @@ import {
 } from "@/tests/support/appShellStores";
 import { PowerAppShellV2View } from "./PowerAppShellV2View";
 
-// Project chats stay tested as they worked; the last test turns Projects off.
-const areas = vi.hoisted(() => ({ projects: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get PROJECTS_ENABLED() {
-    return areas.projects;
-  }
-}));
-
 afterEach(() => {
-  areas.projects = true;
   cleanup();
   deactivatePersonalMcp();
   resetComposerControlStoreForTest();
@@ -40,15 +30,14 @@ const personalConnection: PersonalMcpConnection = {
 };
 
 // Only the view-consumed blank-chat state is needed; the composer reads its
-// MCP disclosure from the shared stores and the Project detail.
-function shellProps(project: boolean): PowerAppShellV2Props {
+// MCP disclosure from the shared stores.
+function shellProps(): PowerAppShellV2Props {
   return {
     branches: { open: false },
     session: { accountId: "owner", accountDisplayName: "Owner", accountEmail: null, activeChatId: null, notice: null },
     composer: {
       attachments: [], catalog: composerGalleryConfig.catalog, draft: "", currentParameterControls: defaultParameterControls(),
       assistant: { current: null, pickerItems: [], recentIds: [], openPicker: false, stripItems: [] },
-      knowledge: { bases: [], sources: [], documentTotal: null },
       memory: { mode: "NORMAL" }, workspace: { available: false, enabled: false },
       composerActions: {}, selectedSearchOptionIds: []
     },
@@ -56,19 +45,7 @@ function shellProps(project: boolean): PowerAppShellV2Props {
     thread: { visibleMessages: [], events: [], refreshLayout: vi.fn() },
     overlays: { share: { target: null }, confirmations: {} },
     workspace: {
-      pane: { state: {}, actions: {} }, projectSettings: { folder: null },
-      projects: project ? {
-        selectedProjectId: "project-1", projects: [], syncState: "idle", workspace: { chats: [], folders: [] },
-        detail: { id: "project-1", name: "Shared Project", status: "ACTIVE", directRole: "OWNER",
-          effectiveRole: "OWNER", capabilities: { mutateChats: true }, resources: [], policy: { externalToolsEnabled: true },
-          defaults: { knowledgePlan: { baseIds: [], sourceIds: [] }, providerModelId: null, searchPlan: { optionIds: [] } },
-          composer: { mcpServers: [{ description: "", enabled: true, id: "project-tracker", knownToolCount: 1,
-            name: "Project tracker", readiness: "idle", source: "installation" }] } },
-        actions: { refresh: vi.fn(), leave: vi.fn(), openSettings: vi.fn() }
-      } : {
-        selectedProjectId: null, projects: [], workspace: { chats: [], folders: [] }, detail: null,
-        actions: { refresh: vi.fn(), leave: vi.fn() }
-      }
+      pane: { state: {}, actions: {} }
     }
   } as unknown as PowerAppShellV2Props;
 }
@@ -96,41 +73,10 @@ function mcpSources(): (string | null)[] {
 describe("personal MCP connections in the composer disclosure", () => {
   it("loads and discloses the personal store in a personal chat", async () => {
     const fetchMock = stubFetch();
-    render(<PowerAppShellV2View {...shellProps(false)} />);
+    render(<PowerAppShellV2View {...shellProps()} />);
     await waitFor(() => expect(usePersonalMcpStore.getState().loadState).toBe("ready"));
     expect(personalReads(fetchMock)).toHaveLength(1);
     expect(mcpSources()).toEqual(["personal"]);
     expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("Personal notes (your connection)");
-  });
-
-  it("never loads or discloses personal connections in a Project chat", async () => {
-    window.history.replaceState(null, "", "/p/project-1");
-    const fetchMock = stubFetch();
-    render(<PowerAppShellV2View {...shellProps(true)} />);
-    await act(async () => undefined);
-    expect(personalReads(fetchMock)).toEqual([]);
-    expect(usePersonalMcpStore.getState().loadState).toBe("idle");
-    // Rows a personal chat loaded earlier stay out of the Project's list.
-    act(() => { usePersonalMcpStore.setState({ connections: [personalConnection], loadState: "ready" }); });
-    expect(mcpSources()).toEqual(["installation"]);
-    expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("Project tracker");
-    expect(screen.getByTestId("composer-v2-mcp-servers")).not.toHaveTextContent("Personal notes");
-  });
-
-  it("opens a Project chat read-only while Projects are disabled: a notice replaces the composer", async () => {
-    areas.projects = false;
-    window.history.replaceState(null, "", "/p/project-1");
-    const fetchMock = stubFetch();
-    render(<PowerAppShellV2View {...shellProps(true)} />);
-    await act(async () => undefined);
-
-    expect(screen.getByTestId("projects-disabled-notice")).toHaveTextContent(
-      "Projects are turned off. You can read this shared chat, but you can't send messages in it."
-    );
-    expect(screen.queryByTestId("composer-v2")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Change MCP mode" })).toBeNull();
-    expect(personalReads(fetchMock)).toEqual([]);
-    // No Project surfaces around it: no Projects destination on the rail.
-    expect(within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("button", { name: "Projects" })).toBeNull();
   });
 });

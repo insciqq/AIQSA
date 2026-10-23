@@ -10,16 +10,9 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
-import { useComposerControlStore } from "./composerControlStore";
 import { useWorkspaceStore } from "./workspaceStore";
 import type { WorkspaceChatSummary, FolderSummary, Notice } from "./types";
 import type { WorkspaceFolderMutationPort } from "./useWorkspaceInteractionController";
-
-// Folder Knowledge defaults stay tested as they worked; `composerControlStore.test.ts` covers Knowledge disabled.
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
 
 function folder(input: Partial<FolderSummary> & { id: string; name: string }): FolderSummary {
   return {
@@ -44,11 +37,9 @@ function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string
 }
 
 function createFolderActionsHarness({
-  activeBlankFolder = false,
-  projectKnowledgeBaseIds = []
+  activeBlankFolder = false
 }: {
   activeBlankFolder?: boolean;
-  projectKnowledgeBaseIds?: string[];
 } = {}) {
   const researchFolder = folder({ id: "folder-research", name: "Research" });
   const chats = [
@@ -79,13 +70,11 @@ function createFolderActionsHarness({
     actionId: null,
     beginAction: vi.fn(),
     beginCreate: vi.fn(),
-    completeProjectSave: vi.fn(),
     completeRename: vi.fn(),
     creating: false,
     editingName: "",
     endAction: vi.fn(),
-    endCreate: vi.fn(),
-    projectKnowledgeBaseIds
+    endCreate: vi.fn()
   };
 
   const actions = createFolderActions({
@@ -226,52 +215,6 @@ describe("folder actions", () => {
     });
   });
 
-  it("saves the exact ordered Knowledge default without writing legacy Project Memory", async () => {
-    const state = createFolderActionsHarness({
-      projectKnowledgeBaseIds: ["base-policies", "base-release"]
-    });
-    const updated = folder({
-      defaultKnowledgePlan: {
-        baseIds: ["base-policies", "base-release"],
-        mode: "explicit",
-        sourceIds: [],
-        version: 1
-      },
-      id: state.folder.id,
-      name: state.folder.name,
-      projectMemory: "Prefer the current release policy."
-    });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ folder: updated }));
-    vi.stubGlobal("fetch", fetchMock);
-    useComposerControlStore.getState().setSelectedKnowledgePlan(
-      ["old-project-base"],
-      "project",
-      "system"
-    );
-
-    await state.actions.saveProjectSettings(state.folder);
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/folders/folder-research",
-      expect.objectContaining({
-        body: JSON.stringify({
-          defaultKnowledgePlan: { baseIds: ["base-policies", "base-release"] }
-        }),
-        method: "PATCH"
-      })
-    );
-    expect(state.folderMutation.completeProjectSave).toHaveBeenCalledOnce();
-    expect(state.folders()).toEqual([updated]);
-    expect(useComposerControlStore.getState()).toMatchObject({
-      knowledgePlanSource: "project",
-      selectedKnowledgeBaseIds: ["base-policies", "base-release"]
-    });
-    expect(state.notices().at(-1)).toMatchObject({
-      kind: "success",
-      text: "Default Knowledge saved: Research"
-    });
-  });
-
   it("reports a server name rejection as a field error and only a stored folder as success", async () => {
     const state = createFolderActionsHarness();
     vi.stubGlobal("fetch", vi.fn()
@@ -289,18 +232,5 @@ describe("folder actions", () => {
     expect(state.folders().map((candidate) => candidate.id)).toEqual(["folder-research"]);
     await expect(state.actions.createFolder(null, "Notes")).resolves.toEqual({ ok: true });
     expect(state.folders().map((candidate) => candidate.id)).toContain("folder-new");
-  });
-
-  it("names a failed folder default save without calling it Project settings", async () => {
-    const state = createFolderActionsHarness();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
-
-    await state.actions.saveProjectSettings(state.folder);
-
-    expect(state.folderMutation.completeProjectSave).not.toHaveBeenCalled();
-    expect(state.notices().at(-1)).toEqual({
-      kind: "error",
-      text: "Default Knowledge failed with HTTP 503 (default_knowledge_failed_503)"
-    });
   });
 });

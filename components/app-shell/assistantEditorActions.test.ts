@@ -71,7 +71,6 @@ describe("New assistant", () => {
     expect(store().newAssistantOpen).toBe(false);
     expect(editor).toMatchObject({ dirty: false, mode: "create", onOpenSharing: null });
     expect(editor.draft.rows).toMatchObject({
-      knowledge: { policy: "adjustable", value: { mode: "none" } },
       model: { policy: "adjustable", value: { mode: "inherit" } },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -85,13 +84,13 @@ describe("New assistant", () => {
     store().patch({ open: true });
 
     view(input, actions).newAssistant.onTemplate(
-      { description: "Answers from your documents.", name: "Support with Knowledge", starterPrompts: ["Where is the refund policy?"] },
-      { expandedRow: "knowledge" }
+      { description: "Checks claims against sources.", name: "Research analyst", starterPrompts: ["Compare these two reports"] },
+      { expandedRow: "search" }
     );
 
     expect(view(input, actions).editor).toMatchObject({
-      draft: { description: "Answers from your documents.", name: "Support with Knowledge", starterPrompts: ["Where is the refund policy?"] },
-      initialExpandedRow: "knowledge",
+      draft: { description: "Checks claims against sources.", name: "Research analyst", starterPrompts: ["Compare these two reports"] },
+      initialExpandedRow: "search",
       mode: "create"
     });
     expect(mocks.createAssistant).not.toHaveBeenCalled();
@@ -100,7 +99,6 @@ describe("New assistant", () => {
   it("carries the current chat's setup as adjustable rows with Skill delivery", () => {
     useComposerControlStore.setState({
       assistant: null,
-      knowledgeSelection: { baseIds: ["base-1"], mode: "explicit", sourceIds: ["doc-1"], version: 1 },
       mcpSelection: { mode: "exact", serverIds: ["mcp-1"] },
       searchPlanMode: "model_choice",
       selectedModelId: "model-1",
@@ -121,7 +119,6 @@ describe("New assistant", () => {
     expect(Object.values(editor.draft.rows).every((row) => row.policy === "adjustable")).toBe(true);
     expect(editor.draft.rows).toMatchObject({
       controls: { value: { temperature: "0.5" } },
-      knowledge: { value: { baseIds: ["base-1"], mode: "explicit", sourceIds: ["doc-1"] } },
       model: { value: { mode: "model", modelId: "model-1" } },
       search: { value: { mode: "model_choice", optionIds: ["web"] } },
       skills: {
@@ -194,7 +191,6 @@ describe("Assistant editor", () => {
     const sent = mocks.createAssistant.mock.calls[0]![0] as { rows: AssistantRows };
     expect(sent.rows).toEqual({
       controls: { policy: "adjustable", value: {} },
-      knowledge: { policy: "adjustable", value: { mode: "none" } },
       model: { policy: "adjustable", value: { mode: "inherit" } },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       skills: { policy: "adjustable", value: { links: [], mode: "auto" } },

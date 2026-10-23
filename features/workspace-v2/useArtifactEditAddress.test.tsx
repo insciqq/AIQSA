@@ -84,13 +84,13 @@ describe("artifact edits handed to a chat through its address", () => {
     expect(prepareArtifactEdit).toHaveBeenCalledOnce();
   });
 
-  it("follows a Project chat address and docks the artifact when it fits", async () => {
-    window.history.replaceState(null, "", "/p/project-1/c/chat-1?artifactEdit=edit&artifactId=artifact-1&versionId=version-2");
+  it("follows the chat address and docks the artifact when it fits", async () => {
+    window.history.replaceState(null, "", "/c/chat-1?artifactEdit=edit&artifactId=artifact-1&versionId=version-2");
     const shell = mountShell(true);
     showChat("chat-1");
     shell.rerender({ activeChatId: "chat-1", detailLoading: false, panelFits: () => true });
 
-    await waitFor(() => expect(address()).toBe("/p/project-1/c/chat-1"));
+    await waitFor(() => expect(address()).toBe("/c/chat-1"));
     expect(useArtifactPanelStore.getState().open).toEqual({ artifactId: "artifact-1", chatId: "chat-1", versionId: "version-2" });
     expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-1")).draft).toBe("");
   });

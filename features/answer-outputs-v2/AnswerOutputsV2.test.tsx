@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
-import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { summarizeThreadArtifacts } from "@/components/app-shell/threadContent";
 import { foldReasoningEntries } from "@/lib/domain/answerReasoning";
@@ -19,9 +18,6 @@ const artifact: ThreadArtifactSummary = {
     source: "Research notes",
     title: "Cross-language retrieval",
     url: "https://example.com/retrieval"
-  }],
-  knowledgeCitations: [{
-    handle: "K1.1"
   }],
   reasoningText: ["**Compared sources** without exposing the query."],
   sources: [{
@@ -222,41 +218,15 @@ describe("answer outputs v2", () => {
     expect(screen.getAllByRole("status").map(status => status.textContent)).toEqual(["Artifact wasn’t created. Creation was stopped."]);
   });
 
-  it("shows safe Sources under the actions row, reauthorized Project evidence, and Thinking above", async () => {
-    shellFetch.mockResolvedValue(new Response(JSON.stringify({
-      citation: {
-        blocks: [],
-        excerpt: "The accepted Project passage.",
-        excerptTruncated: false,
-        handle: "K1.1",
-        headingPath: ["Retrieval policy"],
-        libraryAvailable: false,
-        locator: { boundingBoxes: [], pageEnd: 18, pageStart: 18 },
-        originalKind: null,
-        source: {
-          baseName: "Engineering handbook",
-          fileName: "retrieval-policy.pdf",
-          mimeType: "application/pdf",
-          name: "Retrieval policy",
-          statuses: [],
-          versionNumber: 3
-        },
-        state: "available",
-        visual: null,
-        workbook: null
-      }
-    }), { status: 200 }));
+  it("shows safe Sources under the actions row and Thinking above", () => {
     render(
-      <KnowledgeCitationViewerProvider>
-        <RunAnswerV2
-          actions={{ onCopy: () => undefined, onRegenerate: () => undefined }}
-          artifact={artifact}
-          content="Answer [K1.1]"
-          knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
-          leadingSlot={<span>Quarterly analyst</span>}
-          presentation={{ kind: "complete", runId: "run-1" }}
-        />
-      </KnowledgeCitationViewerProvider>
+      <RunAnswerV2
+        actions={{ onCopy: () => undefined, onRegenerate: () => undefined }}
+        artifact={artifact}
+        content="Answer"
+        leadingSlot={<span>Quarterly analyst</span>}
+        presentation={{ kind: "complete", runId: "run-1" }}
+      />
     );
 
     expect(screen.getByText("Quarterly analyst")).toBeVisible();
@@ -266,20 +236,12 @@ describe("answer outputs v2", () => {
     const toolbar = screen.getByRole("toolbar", { name: "Answer actions" });
     const toggle = screen.getByTestId("answer-sources-toggle");
     expect(toolbar).toContainElement(toggle);
-    expect(toggle).toHaveAccessibleName("Sources, 2 items");
+    expect(toggle).toHaveAccessibleName("Sources, 1 item");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveAttribute("aria-controls", screen.getByTestId("answer-sources").id);
     expect(screen.getByRole("link", { name: "Cross-language retrieval" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Knowledge document [K1.1]" }));
-    expect(await screen.findByText("The accepted Project passage.")).toBeVisible();
-    expect(shellFetch).toHaveBeenCalledWith(
-      "/api/runs/run-1/messages/message-1/citations/K1.1",
-      expect.objectContaining({ method: "GET" })
-    );
-    expect(screen.getByText("retrieval-policy.pdf · Engineering handbook")).toBeVisible();
-    expect(screen.queryByText(/version 3/iu)).not.toBeInTheDocument();
     openProcess();
     expect(screen.getByTestId("answer-reasoning")).toHaveTextContent("Thinking");
     expect(screen.getByTestId("answer-reasoning").textContent).not.toContain("**");
@@ -294,26 +256,16 @@ describe("answer outputs v2", () => {
     expect(text).not.toMatch(/invocation|threshold|candidate|Run details|Answer evidence|tool call/iu);
   });
 
-  it("fails closed when a Project citation is no longer authorized", async () => {
-    shellFetch.mockResolvedValue(new Response(JSON.stringify({
-      error: "knowledge_reference_not_available"
-    }), { status: 404 }));
+  it("leaves nothing for the process line while Reasoning is hidden by preference", () => {
     render(
-      <KnowledgeCitationViewerProvider>
-        <RunAnswerV2
-          artifact={artifact}
-          content="Answer"
-          knowledgeReference={{ messageId: "message-1", runId: "run-1" }}
-          presentation={{ kind: "complete", runId: "run-1" }}
-          showReasoning={false}
-        />
-      </KnowledgeCitationViewerProvider>
+      <RunAnswerV2
+        artifact={artifact}
+        content="Answer"
+        presentation={{ kind: "complete", runId: "run-1" }}
+        showReasoning={false}
+      />
     );
-    // Reasoning hidden by preference leaves nothing for the process line.
     expect(screen.queryByTestId("tool-activity-disclosure")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("answer-sources-toggle"));
-    fireEvent.click(screen.getByRole("button", { name: "Knowledge document [K1.1]" }));
-    expect((await screen.findAllByText("Document unavailable"))[0]).toBeVisible();
   });
 
   it("renders no placeholder when there is no output", () => {
@@ -360,44 +312,6 @@ describe("answer outputs v2", () => {
     fireEvent.click(screen.getByTestId("answer-sources-toggle"));
     expect(screen.getByTestId("answer-sources-truncated"))
       .toHaveTextContent("This answer has more sources than can be listed.");
-  });
-
-  it("distinguishes insufficient evidence and a partially ready selected scope", () => {
-    render(
-      <AnswerOutputsV2
-        artifact={{
-          citations: [],
-          knowledgeCitations: [],
-          knowledgeState: {
-            answer: "insufficient_evidence",
-            scope: "partial_sources_ready"
-          },
-          reasoningText: [],
-          sources: []
-        }}
-      />
-    );
-
-    const state = screen.getByRole("status");
-    expect(state).toHaveAttribute("data-answer", "insufficient_evidence");
-    expect(state).toHaveAttribute("data-scope", "partial_sources_ready");
-    expect(state).toHaveTextContent(/ready documents did not contain enough evidence/iu);
-    expect(state).toHaveTextContent(/still processing/iu);
-  });
-
-  it("presents a failed Knowledge retrieval as a technical availability issue", () => {
-    render(
-      <AnswerProcessV2
-        toolActivity={{
-          calls: [{ round: 1, status: "error", toolName: "search_knowledge" }]
-        }}
-      />
-    );
-    openProcess();
-
-    expect(screen.getByText("Knowledge search unavailable")).toBeVisible();
-    expect(screen.getByText(/Failed · round 1/iu)).toBeVisible();
-    expect(document.body.textContent).not.toContain("search_knowledge");
   });
 
   it("keeps a page read the run skipped by its rules neutral, and a page that could not be read a failure", () => {
@@ -799,7 +713,6 @@ describe("AnswerOutputsV2 Workspace output status", () => {
         artifact={{
           citations: [],
           generatedFiles: [{ attachmentId: "att-1", byteSize: 4_200, fileName: "report.md", mimeType: "text/markdown", relativePath: "report.md" }],
-          knowledgeCitations: [],
           reasoningText: [],
           sources: []
         }}

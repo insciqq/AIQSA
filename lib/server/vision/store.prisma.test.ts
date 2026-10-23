@@ -184,7 +184,7 @@ describe("durable auxiliary Vision accounting", () => {
       await lockRunSettlementScope(tx, f.context.runId);
       await persistCompletedAnswerUsage(tx, { ...f.context, assistantMessageId: "unused-by-accounting",
         finalText: "Synthetic answer", provider: "fake", modelId: "text-only", estimatedCostMicros: null,
-        usage: { inputTokens: 11, outputTokens: 3 } }, null);
+        usage: { inputTokens: 11, outputTokens: 3 } });
     });
     expect(await f.db.usageEvent.findUnique({ where: { id: receipt.id } })).toEqual(settledReceipt);
     expect(await f.db.usageEvent.findMany({ where: { modelRunId: f.context.runId, visionAnalysis: false } }))

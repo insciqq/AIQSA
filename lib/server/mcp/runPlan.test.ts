@@ -346,11 +346,7 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
     return { definitionHash, description: `${name} tool`, inputSchema: { type: "object" }, name };
   }
 
-  /**
-   * A real coordinator over a published revision {echo, large, slow} and a
-   * changed upstream server: a member's runtime and the server's shared
-   * Project runtime admit the same way from their own generations.
-   */
+  /** A real coordinator over a published revision {echo, large, slow} and a changed upstream server. */
   async function admittedRuntime() {
     const persisted = new Map<string, unknown>();
     const session: McpRuntimeSession = {
@@ -389,7 +385,6 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
       }),
       markStarting: vi.fn(async () => true),
       synchronizeDesired: vi.fn(async () => [generationLaunch("generation-1", "fingerprint-1")]),
-      synchronizeShared: vi.fn(async () => [generationLaunch("shared-generation-1", "shared-fingerprint-1")]),
       touchLastUsed: vi.fn(async () => undefined)
     };
     const coordinator = new McpRuntimeCoordinator({ now: () => now, repository, sessions: { create: async () => session } });
@@ -397,37 +392,27 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
     return {
       coordinator,
       record: record({ inventory: persisted.get("generation-1") }),
-      session,
-      shared: record({
-        credentialSources: ["shared"],
-        fingerprint: "shared-fingerprint-1",
-        generationId: "shared-generation-1",
-        inventory: persisted.get("shared-generation-1")
-      })
+      session
     };
   }
 
-  it("keeps additions and changed definitions out of load_all, Assistant and Project plans", async () => {
-    const { coordinator, record: admitted, shared } = await admittedRuntime();
+  it("keeps additions and changed definitions out of load_all and Assistant plans", async () => {
+    const { coordinator, record: admitted } = await admittedRuntime();
     const isGenerationLive = (generationId: string) => coordinator.hasLiveGeneration(generationId);
-    for (const inventory of [admitted.inventory, shared.inventory]) {
-      expect(mcpInventoryExclusions(inventory)).toEqual([
-        { name: "delete_repo", reason: "unpublished_addition" },
-        { name: "echo", reason: "definition_drift" },
-        { name: "slow", reason: "missing_upstream" }
-      ]);
-    }
+    expect(mcpInventoryExclusions(admitted.inventory)).toEqual([
+      { name: "delete_repo", reason: "unpublished_addition" },
+      { name: "echo", reason: "definition_drift" },
+      { name: "slow", reason: "missing_upstream" }
+    ]);
 
     const plans = await Promise.all([
       prepareMcpRunPlan({ isGenerationLive, load: async () => [admitted], now: () => now }),
-      prepareMcpRunPlan({ allowedServerIds: ["server-1"], isGenerationLive, load: async () => [admitted], now: () => now }),
-      prepareMcpRunPlan({ allowedServerIds: ["server-1"], isGenerationLive, load: async () => [shared], now: () => now })
+      prepareMcpRunPlan({ allowedServerIds: ["server-1"], isGenerationLive, load: async () => [admitted], now: () => now })
     ]);
     for (const plan of plans) {
       expect(plan.ok).toBe(true);
       if (plan.ok) expect(plan.snapshot.tools.map(({ originalName }) => originalName)).toEqual(["large"]);
     }
-    expect(plans[2]).toMatchObject({ bindings: [{ runtimeGenerationId: "shared-generation-1" }] });
     await coordinator.stop();
   });
 

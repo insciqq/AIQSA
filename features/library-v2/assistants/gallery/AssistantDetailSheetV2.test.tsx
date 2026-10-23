@@ -10,8 +10,6 @@ import { assistantContent, assistantDetail, assistantSummary } from "@/tests/sup
 import { ASSISTANT_NOT_AVAILABLE_TEXT, AssistantDetailSheetV2 } from "./AssistantDetailSheetV2";
 
 const names: AssistantResourceNames = {
-  knowledgeBases: [{ id: "base-hr", name: "HR handbook" }],
-  knowledgeSources: [],
   mcpServers: [{ id: "mcp-jira", name: "Jira" }],
   models: [{ id: "model-1", label: "Model one" }],
   searchOptions: [{ id: "web", label: "Web Search" }]
@@ -71,7 +69,6 @@ const ownerDetail = assistantDetail(4, {
     responseReminder: "SECRET REMINDER TEXT",
     rows: {
       controls: { policy: "adjustable", value: { reasoningEffort: "medium", temperature: 0.4 } },
-      knowledge: { policy: "fixed", value: { baseIds: ["base-hr", "base-gone"], mode: "explicit", sourceIds: [] } },
       model: { policy: "adjustable", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "off" } },
       skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }, { delivery: "on_demand", skillId: "skill-2" }], mode: "auto" } },
@@ -88,7 +85,6 @@ const ownerDetail = assistantDetail(4, {
     listed: false,
     request: { createdAt: "2026-09-20T00:00:00.000Z", definitionVersion: 4, id: "request-1", outdated: false, reviewNote: null, reviewedAt: null, state: "pending" }
   },
-  projects: { otherProjectCount: 1, projects: [{ id: "project-1", name: "People Ops" }] },
   publications: [{ groupId: "group-1", groupName: "Support team", id: "publication-1", scope: "group", updatedAt: "2026-09-20T00:00:00.000Z" }],
   recentChatCount: 38,
   rowAvailability: { model: { dependencies: [{ kind: "model", name: "Model one" }], reason: "model_access" } },
@@ -121,14 +117,12 @@ describe("Assistant detail sheet", () => {
       "Reasoning & parametersReasoning: medium · Temperature 0.4Adjustable",
       "Web searchOffFixed",
       "ToolsJiraFixed",
-      "KnowledgeHR handbook · 1 unavailableFixed",
       "SkillsLoads on demand · 1 always: Policy citations · 1 on demandAdjustable"
     ]);
 
     const sharing = within(dialog).getByRole("region", { name: "Sharing" });
     expect(sharing).toHaveTextContent("Groups: Support team · Featured #1");
     expect(sharing).toHaveTextContent("Request to list for everyone: waiting for an administrator");
-    expect(sharing).toHaveTextContent("Used by Projects: People Ops, 1 other Project");
     fireEvent.click(within(sharing).getByRole("button", { name: "Manage sharing…" }));
     expect(actions.onShare).toHaveBeenCalledWith("assistant-1");
     expect(within(dialog).getByRole("region", { name: "Usage" })).toHaveTextContent("38 chats in the last 30 days");
@@ -161,7 +155,6 @@ describe("Assistant detail sheet", () => {
         responseReminder: "Keep it short.",
         rows: {
           controls: { policy: "fixed", value: {} },
-          knowledge: { policy: "fixed", value: { baseIds: ["base-hr"], hiddenCount: 2, mode: "explicit", sourceIds: [] } },
           model: { policy: "adjustable", value: { mode: "model", modelId: null } },
           search: { policy: "adjustable", value: { mode: "inherit" } },
           skills: { policy: "adjustable", value: { hiddenCount: 1, links: [], mode: "auto" } },
@@ -172,7 +165,6 @@ describe("Assistant detail sheet", () => {
       listingRequest: undefined,
       owned: false,
       ownerDisplayName: "Ada Analyst",
-      projects: undefined,
       publications: undefined,
       recentChatCount: undefined,
       rowAvailability: { model: { reason: "model_access" } },
@@ -200,7 +192,6 @@ describe("Assistant detail sheet", () => {
       "Reasoning & parametersYour saved valuesFixed",
       "Web searchYour defaultAdjustable",
       "Tools1 MCP server you can't accessNot available to youFixed",
-      "KnowledgeHR handbook · 2 bases or documents you can't accessFixed",
       "SkillsLoads on demand · 1 Skill you can't accessAdjustable"
     ]);
     expect(within(dialog).getByRole("region", { name: "Sharing" })).toHaveTextContent("Shared with Sales group");
@@ -265,7 +256,7 @@ describe("Assistant detail sheet", () => {
 
     const consumer = assistantDetail(undefined, {
       featuredOrder: undefined, listingRequest: undefined, owned: false, ownerDisplayName: "Ada Analyst",
-      projects: undefined, publications: undefined, recentChatCount: undefined,
+      publications: undefined, recentChatCount: undefined,
       scope: { kind: "installation" }, version: undefined
     });
     // The list entry, when any, no longer decides the section.
@@ -274,30 +265,6 @@ describe("Assistant detail sheet", () => {
     expect(sharing).toHaveTextContent("Everyone in this installation");
     expect(sharing).not.toHaveTextContent("Stale");
     expect(within(sharing).queryByRole("button", { name: "Manage sharing…" })).not.toBeInTheDocument();
-  });
-
-  it("shows a Project member the Project scope and the update date without a list entry", () => {
-    const member = assistantDetail(undefined, {
-      featuredOrder: undefined,
-      listingRequest: undefined,
-      owned: false,
-      ownerDisplayName: "Ada Analyst",
-      projects: undefined,
-      publications: undefined,
-      recentChatCount: undefined,
-      scope: { kind: "project", projectName: "Support" },
-      updatedAt: "2026-09-22T12:00:00.000Z",
-      version: undefined
-    });
-    const { actions } = renderSheet(sheet(member, { summary: null }));
-    const dialog = screen.getByRole("dialog", { name: "Code reviewer" });
-    expect(dialog).toHaveTextContent("By Ada Analyst · Project “Support” · Updated Sep 22, 2026");
-    expect(within(dialog).queryByRole("button", { name: "Pin" })).not.toBeInTheDocument();
-    const sharing = within(dialog).getByRole("region", { name: "Sharing" });
-    expect(sharing).toHaveTextContent("Project “Support”");
-    expect(within(sharing).queryByRole("button", { name: "Manage sharing…" })).not.toBeInTheDocument();
-    fireEvent.click(within(sharing).getByRole("button", { name: "Copy link" }));
-    expect(actions.onCopyLink).toHaveBeenCalledWith("assistant-1");
   });
 
   it("shows one neutral notice for an Assistant the viewer cannot open", () => {

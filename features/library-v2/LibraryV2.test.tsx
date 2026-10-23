@@ -4,7 +4,6 @@ import { memoryConsumerItemFixture } from "@/tests/support/memoryFixtures";
 import type { ComponentProps } from "react";
 import {
   FilesPanelV2,
-  KnowledgePanelV2,
   LibraryV2,
   libraryTabGroups,
   MemoryPanelV2
@@ -133,7 +132,7 @@ describe("LibraryV2", () => {
         onBack={vi.fn()}
         tabs={[
           { content: <p>Assistant owner</p>, id: "assistants", label: "Assistants" },
-          { content: <p>Knowledge owner</p>, id: "knowledge", label: "Knowledge" },
+          { content: <p>Skills owner</p>, id: "skills", label: "Skills" },
           { content: <p>Files owner</p>, id: "files", label: "Files" },
           { content: <p>Memory owner</p>, id: "memory", label: "Memory" }
         ]}
@@ -185,7 +184,7 @@ describe("LibraryV2", () => {
           onBack={vi.fn()}
           tabs={[
             { content: <p>Assistant owner</p>, id: "assistants", label: "Assistants" },
-            { content: <p>Knowledge owner</p>, id: "knowledge", label: "Knowledge" },
+            { content: <p>Skills owner</p>, id: "skills", label: "Skills" },
             { content: <p>Files owner</p>, id: "files", label: "Files" },
             { content: <p>Memory owner</p>, id: "memory", label: "Memory" }
           ]}
@@ -246,19 +245,19 @@ describe("LibraryV2", () => {
         onBack={onBack}
         tabs={[
           { content: <p>Assistant owner</p>, id: "assistants", label: "Assistants" },
-          { content: <p>Knowledge owner</p>, id: "knowledge", label: "Knowledge" }
+          { content: <p>Skills owner</p>, id: "skills", label: "Skills" }
         ]}
       />
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Knowledge" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
     expect(guard).toHaveBeenCalledWith(
-      { from: "assistants", kind: "tab", to: "knowledge" },
+      { from: "assistants", kind: "tab", to: "skills" },
       expect.any(Function)
     );
     expect(screen.getByText("Assistant owner")).toBeInTheDocument();
     act(() => release?.());
-    expect(screen.getByText("Knowledge owner")).toBeInTheDocument();
+    expect(screen.getByText("Skills owner")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
     expect(onBack).not.toHaveBeenCalled();
@@ -285,29 +284,29 @@ describe("Library sub-views", () => {
     const exit = vi.fn();
     const tabs = [
       { content: <p>Assistant owner</p>, id: "assistants" as const, label: "Assistants" },
-      { content: <p>Base detail</p>, id: "knowledge" as const, label: "Knowledge" }
+      { content: <p>Skill detail</p>, id: "skills" as const, label: "Skills" }
     ];
     const { rerender } = render(
       <LibraryV2
-        initialTab="knowledge"
+        initialTab="skills"
         onBack={onBack}
-        subview={{ backLabel: "Back to Knowledge", key: "detail:base-1", label: "Product docs", onBack: exit }}
+        subview={{ backLabel: "Back to Skills", key: "detail:skill-1", label: "Review checklist", onBack: exit }}
         tabs={tabs}
       />
     );
 
-    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Knowledge / Product docs");
-    const back = screen.getByRole("button", { name: "Back to Knowledge" });
+    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Skills / Review checklist");
+    const back = screen.getByRole("button", { name: "Back to Skills" });
     expect(back).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Back to chat" })).not.toBeInTheDocument();
     fireEvent.click(back);
     expect(exit).toHaveBeenCalledOnce();
     expect(onBack).not.toHaveBeenCalled();
 
-    rerender(<LibraryV2 initialTab="knowledge" onBack={onBack} subview={null} tabs={tabs} />);
-    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Knowledge");
+    rerender(<LibraryV2 initialTab="skills" onBack={onBack} subview={null} tabs={tabs} />);
+    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Skills");
     expect(screen.getByRole("button", { name: "Back to chat" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "Knowledge" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Skills" })).toHaveFocus();
   });
 
   it("leaves the sub-view from the selected tab and the crumb root without the guard", () => {
@@ -316,7 +315,7 @@ describe("Library sub-views", () => {
     const exit = vi.fn();
     const tabs = [
       { content: <p>Assistant owner</p>, id: "assistants" as const, label: "Assistants" },
-      { content: <p>Knowledge owner</p>, id: "knowledge" as const, label: "Knowledge" }
+      { content: <p>Skills owner</p>, id: "skills" as const, label: "Skills" }
     ];
     const subview = { backLabel: "Back to Assistants", key: "editor:assistant-1", label: "Stylist Agent", onBack: exit };
     const { rerender } = render(
@@ -348,120 +347,6 @@ describe("Library sub-views", () => {
 });
 
 describe("Library resource panels", () => {
-  it("shows simple Base readiness, Source count, access, and updated time", () => {
-    const onOpen = vi.fn();
-    render(
-      <KnowledgePanelV2
-        bases={[{
-          description: "Product references",
-          id: "base-1",
-          name: "Product docs",
-          owned: true,
-          readinessLabel: "Ready · 1 processing · 1 needs attention",
-          sourceCount: 3,
-          status: "needs_attention",
-          updatedLabel: "Aug 18, 2026"
-        }]}
-        onOpen={onOpen}
-      />
-    );
-
-    const row = screen.getByRole("button", { name: "Open Product docs" }).closest("li")!;
-    expect(row).toHaveTextContent("Ready · 1 processing · 1 needs attention");
-    expect(row).toHaveTextContent("3 documents");
-    expect(row).toHaveTextContent("Yours");
-    expect(row).toHaveTextContent("Updated Aug 18, 2026");
-    expect(row).not.toHaveTextContent(/embedding|generation|revision|fingerprint|chunk/iu);
-    fireEvent.click(screen.getByRole("button", { name: "Open Product docs" }));
-    expect(onOpen).toHaveBeenCalledWith("base-1");
-  });
-
-  it("keeps existing Bases available while creation is temporarily unavailable", () => {
-    const onOpen = vi.fn();
-    render(
-      <KnowledgePanelV2
-        bases={[{ description: "", id: "base-1", name: "Product docs", owned: true, sourceCount: 1, status: "ready" }]}
-        canCreate={false}
-        onOpen={onOpen}
-      />
-    );
-
-    expect(screen.getByText("Knowledge is temporarily unavailable")).toBeVisible();
-    expect(screen.getByRole("button", { name: "New base" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Open Product docs" }));
-    expect(onOpen).toHaveBeenCalledWith("base-1");
-  });
-
-  it("opens the reusable Source catalog separately from Base creation", () => {
-    const onBrowseSources = vi.fn();
-    const onCreate = vi.fn();
-    render(
-      <KnowledgePanelV2
-        bases={[]}
-        onBrowseSources={onBrowseSources}
-        onCreate={onCreate}
-      />
-    );
-
-    expect(screen.getByText(/A base is a set of documents an answer may read/)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "All documents" }));
-    fireEvent.click(screen.getByRole("button", { name: "New base" }));
-    expect(onBrowseSources).toHaveBeenCalledOnce();
-    expect(onCreate).toHaveBeenCalledOnce();
-  });
-
-  it("shows the exact Knowledge readiness instead of presenting every active Base as ready", () => {
-    render(
-      <KnowledgePanelV2
-        bases={[
-          {
-            description: "No documents yet",
-            id: "empty",
-            name: "Empty Base",
-            owned: true,
-            sourceCount: 0,
-            status: "empty"
-          },
-          {
-            description: "One document failed",
-            id: "attention",
-            name: "Review Base",
-            owned: true,
-            sourceCount: 2,
-            status: "needs_attention"
-          }
-        ]}
-      />
-    );
-
-    expect(screen.getByText("Empty · no documents yet")).toBeVisible();
-    expect(screen.getByText("Needs attention")).toBeVisible();
-    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
-  });
-
-  it("keeps first-load and retryable Knowledge failures distinct from an empty Library", () => {
-    const onRetry = vi.fn();
-    const { rerender } = render(
-      <KnowledgePanelV2 bases={[]} loadState="loading" />
-    );
-
-    expect(screen.getByRole("status")).toHaveTextContent("Loading knowledge…");
-    expect(screen.queryByText("No knowledge bases yet.")).not.toBeInTheDocument();
-
-    rerender(
-      <KnowledgePanelV2
-        bases={[]}
-        error="Knowledge is temporarily unavailable."
-        loadState="error"
-        onRetry={onRetry}
-      />
-    );
-    expect(screen.getByRole("alert")).toHaveTextContent("Knowledge is temporarily unavailable.");
-    expect(screen.queryByText("No knowledge bases yet.")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(onRetry).toHaveBeenCalledOnce();
-  });
-
   it("keeps explicit Memory CRUD reachable when admin recall is disabled", () => {
     const onCreate = vi.fn();
     const { container } = render(

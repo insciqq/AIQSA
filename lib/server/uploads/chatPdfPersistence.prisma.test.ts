@@ -225,7 +225,7 @@ describe("chat PDF database lifecycle", () => {
     await expect(prisma.chatPdfAttachmentPreparation.update({ where: { id: h.preparationId }, data: { state: "preparing" } }))
       .rejects.toThrow(/chat_pdf_transition_invalid|chat_pdf_preparation_immutable/);
     const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
-    expect(await runs.loadAttachments(h.userId, [h.admission.attachmentId], undefined, h.runId))
+    expect(await runs.loadAttachments(h.userId, [h.admission.attachmentId], h.runId))
       .toEqual([expect.objectContaining({ workspaceOriginalOnly: true })]);
     await prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } });
     expect(await repository.markAnswerDispatched(h.claim)).toBe(true);

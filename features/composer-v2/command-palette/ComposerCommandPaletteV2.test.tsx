@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatHeaderGalleryAssistants } from "@/app/ui-v2-fixture/_fixtures/ChatHeaderV2Gallery";
 import { composerGalleryAssistant, composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
-import { explicitKnowledgeSelection } from "@/lib/contracts/knowledge";
 import { ComposerV2 } from "../ComposerV2";
 import type { ComposerPaletteEntry } from "./paletteModel";
 
@@ -38,7 +37,6 @@ function Harness({ initialDraft = "", initialPins = [], onPin, onSkillSearch, ..
       draft={draft}
       onDraftChange={setDraft}
       onOpenSkillLibrary={vi.fn()}
-      onSelectKnowledgeSelection={vi.fn()}
       onSelectMcp={vi.fn()}
       onSelectModel={vi.fn()}
       onSelectSearchOptionIds={vi.fn()}
@@ -306,41 +304,16 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(option(/Fact check/u)).toHaveAttribute("data-disabled");
   });
 
-  it("opens the Knowledge, MCP and Search layers as their chips do", () => {
+  it("opens the MCP and Search layers as their chips do", () => {
     render(<Harness selectedSearchOptionIds={["web-primary"]} />);
-    type("/", "/choose know");
-    key("Enter");
-    expect(screen.getByRole("menu", { name: "Knowledge" })).toBeInTheDocument();
-    expect(field()).toHaveValue("");
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge" }), { key: "Escape" });
     type("/", "/mcp");
     key("Enter");
     expect(screen.getByRole("menu", { name: "MCP tools" })).toBeInTheDocument();
+    expect(field()).toHaveValue("");
     fireEvent.keyDown(screen.getByRole("menu", { name: "MCP tools" }), { key: "Escape" });
     type("/", "/web search");
     key("Enter");
     expect(screen.getByRole("dialog", { name: "Web search" })).toBeInTheDocument();
-  });
-
-  it("selects a Knowledge base by name like its layer row, with the layer's limits", () => {
-    const onSelectKnowledgeSelection = vi.fn();
-    render(<Harness onSelectKnowledgeSelection={onSelectKnowledgeSelection} />);
-    type("/");
-    expect(within(list()).queryByRole("option", { name: /Product research/u })).toBeNull();
-    type("/prod");
-    expect(option(/Product research/u)).toHaveTextContent("Knowledge base · 27 documents");
-    key("Enter");
-    expect(onSelectKnowledgeSelection).toHaveBeenCalledWith(expect.objectContaining({ baseIds: ["kb-product"], mode: "explicit" }));
-    type("/", "/архив");
-    expect(option(/Архив проекта/u)).toHaveAttribute("aria-disabled", "true");
-  });
-
-  it("offers no Knowledge command or base while Knowledge is not offered", () => {
-    render(<Harness knowledgeOffered={false} />);
-    type("/", "/know");
-    expect(within(list()).queryByRole("option", { name: /Choose Knowledge/u })).toBeNull();
-    type("/", "/prod");
-    expect(within(list()).queryByRole("option", { name: /Product research/u })).toBeNull();
   });
 
   it("turns web search off and Agent on or off, with the chips' reasons and no Workspace command", () => {
@@ -358,10 +331,9 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(onAgent).toHaveBeenCalledWith(true);
     // A mode change speaks through the chip alone, not a status line.
     expect(screen.queryByText(/^Agent (on|off)/u)).toBeNull();
-    view.rerender(<Harness selectedKnowledgeSelection={explicitKnowledgeSelection({ baseIds: ["kb-finance"] })}
-      agent={{ enabled: false, onToggle: onAgent }} />);
+    view.rerender(<Harness agent={{ enabled: false, onToggle: onAgent, unavailableReason: "Agent is unavailable right now." }} />);
     type("", "/");
-    expect(option(/Turn on Agent/u)).toHaveTextContent("Turn off Knowledge to use Agent.");
+    expect(option(/Turn on Agent/u)).toHaveTextContent("Agent is unavailable right now.");
     fireEvent.click(option(/Turn on Agent/u));
     expect(onAgent).toHaveBeenCalledTimes(1);
   });
@@ -376,9 +348,9 @@ describe("composer / palette entries mirror existing actions", () => {
     type("/", "/attach");
     key("Enter");
     expect(click).toHaveBeenCalledOnce();
-    view.rerender(<Harness onCreateArtifact={onCreateArtifact} sharedProject onUploadFiles={undefined} />);
+    view.rerender(<Harness onCreateArtifact={onCreateArtifact} artifactUnavailableReason="Not available here" onUploadFiles={undefined} />);
     type("", "/");
-    expect(option(/Create artifact/u)).toHaveTextContent("Not available in projects");
+    expect(option(/Create artifact/u)).toHaveTextContent("Not available here");
     expect(option(/Attach files/u)).toHaveTextContent("Unavailable");
     expect(option(/Attach files/u)).toHaveAttribute("aria-disabled", "true");
   });

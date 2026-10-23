@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   authorizedMcpPersonalSlotKeys,
   mcpRuntimeFingerprint,
-  mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
   resolveEffectiveMcpValues
 } from "./access";
@@ -222,7 +221,7 @@ describe("MCP runtime fingerprints", () => {
     }));
   });
 
-  it("keeps member and shared runtime identities byte-identical to their selection-free shape", () => {
+  it("keeps a member's runtime identity byte-identical to its selection-free shape", () => {
     const plan = [
       { authorized: true, slotKey: "tool", source: "literal" as const, valueVersion: null },
       { authorized: true, slotKey: "auth", source: "personal" as const, valueVersion: 2 }
@@ -233,7 +232,5 @@ describe("MCP runtime fingerprints", () => {
     // switch keeps the generation and an unswitched runtime keeps its hash.
     expect(mcpRuntimeFingerprint({ oauthConnectionRevision: "oauth-1", plan, revisionId: "revision-1", userId: "user-1" }))
       .toBe(hashCanonicalMcpValue({ oauthConnectionRevision: "oauth-1", plan: sorted, revisionId: "revision-1", userId: "user-1" }));
-    expect(mcpSharedRuntimeFingerprint({ plan, revisionId: "revision-1" }))
-      .toBe(hashCanonicalMcpValue({ owner: "shared", plan: sorted, revisionId: "revision-1" }));
   });
 });

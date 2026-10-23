@@ -37,7 +37,7 @@ describe("loadMemoryRunPresentationStatuses", () => {
       where: {
         chat: {
           memoryMode: { not: "TEMPORARY" },
-          projectId: null
+          userId: "user-1"
         },
         id: { in: ["run-failed", "run-used", "run-degraded"] },
         userId: "user-1"

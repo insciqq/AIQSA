@@ -1,11 +1,7 @@
-import { adminKnowledgeProfileFixture } from "@/tests/support/knowledgeProfile";
 import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { describe, expect, it } from "vitest";
 import {
-  embeddingDestinationLabel,
   generativeRoleItems,
-  knowledgeDocumentItems,
-  knowledgeProcessingState,
   rerankerFallbacksLine,
   roleStatus
 } from "./rolesView";
@@ -58,16 +54,6 @@ function catalog(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {
   };
 }
 
-describe("embeddingDestinationLabel", () => {
-  it("adds the vector size once, even when the display name already carries it", () => {
-    const base = { connectionDisplayName: "OpenRouter", deploymentId: "m", provider: "openrouter", targetDimension: 1536 };
-    expect(embeddingDestinationLabel({ ...base, modelDisplayName: "Qwen3 Embedding 8B" }))
-      .toBe("OpenRouter / Qwen3 Embedding 8B · 1536d");
-    expect(embeddingDestinationLabel({ ...base, modelDisplayName: "Qwen3 Embedding 8B · 1536d" }))
-      .toBe("OpenRouter / Qwen3 Embedding 8B · 1536d");
-  });
-});
-
 describe("rolesView", () => {
   it("groups Memory candidates from the server's eligibility lists without client guesses", () => {
     expect(generativeRoleItems(catalog(), "memory")).toMatchObject([
@@ -87,19 +73,6 @@ describe("rolesView", () => {
     expect(rerankerFallbacksLine(catalog({ rerankerModel: null }))).toBeNull();
   });
 
-  it("builds Documents items from the Knowledge profile plus the role catalog's Check first group", () => {
-    const destinations = [{
-      connectionDisplayName: "OpenAI", deploymentId: "luna", directPdf: false,
-      defaultReasoningEffort: null, reasoningEfforts: [],
-      modelDisplayName: "GPT Luna", provider: "openai", upstreamModelId: "luna", vision: true
-    }];
-    expect(knowledgeDocumentItems(destinations, "system_model_vision", catalog())).toMatchObject([
-      { group: "ready", id: "luna", label: "OpenAI / GPT Luna" },
-      { group: "ineligible", id: "claude", label: "Anthropic / Claude", note: "image input unsupported on this route" }
-    ]);
-    expect(knowledgeDocumentItems(destinations, "system_model_direct_pdf", null)).toEqual([]);
-  });
-
   it("explains the actual tools blocker independently of verified JSON and links to its model", () => {
     const value = catalog();
     value.candidates = [];
@@ -113,21 +86,5 @@ describe("rolesView", () => {
       { group: "check", note: "forced tool calls verification required", configurationHref: "/admin?section=providers&resource=openai#provider-model-forced" },
       { group: "check", note: "forced tool calls check was rejected" }
     ]);
-    value.ineligible.direct_pdf = [{ ...ready, pdfInput: "verified", reason: "capability_disabled", requirement: "direct_pdf" }];
-    expect(knowledgeDocumentItems([], "system_model_direct_pdf", value)[0]).toMatchObject({
-      group: "ineligible", note: "direct PDF input disabled in model settings"
-    });
-  });
-
-  it("reports Reindexing N of M bases while bases rebuild and Ready afterwards", () => {
-    const profile = adminKnowledgeProfileFixture();
-    expect(knowledgeProcessingState(profile)).toEqual({ label: "Ready", status: "working" });
-    expect(knowledgeProcessingState(adminKnowledgeProfileFixture({
-      migration: { ...profile.migration, activeProfileBases: 4, buildingProfileBases: 1, totalBases: 5 }
-    }))).toEqual({ label: "Reindexing 1 of 5 bases", status: "reindexing" });
-    expect(knowledgeProcessingState(adminKnowledgeProfileFixture({
-      activeRevision: null,
-      health: { checkedAt: null, code: "knowledge_profile_not_configured", state: "not_configured" }
-    }))).toEqual({ label: "Not assigned", status: "not_assigned" });
   });
 });

@@ -1,20 +1,9 @@
 import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { adminKnowledgeOperationsFixture, adminKnowledgeSettingsFixture } from "@/tests/support/knowledgeProfile";
-import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminMemoryStatus } from "@/lib/contracts/adminMemory";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminConfirmationRequest } from "../useAdminConfirmationController";
 import { AdminRetrievalSection } from "./AdminRetrievalSection";
-
-// The Knowledge card stays tested as it worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
 
 function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemoryStatus {
   return {
@@ -32,8 +21,7 @@ function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemorySt
 
 type Call = { body: Record<string, unknown> | null; method: string; url: string };
 
-function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?: AdminMemoryStatus }> = {}) {
-  let knowledge = initial.knowledge ?? adminKnowledgeSettingsFixture();
+function server(initial: Readonly<{ memory?: AdminMemoryStatus }> = {}) {
   let memory = initial.memory ?? memoryStatus();
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -41,28 +29,6 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
     calls.push({ body, method, url });
-    if (url === "/api/admin/knowledge") {
-      if (method === "PATCH" && body) {
-        if (body.expectedVersion !== knowledge.answerPolicy.version) {
-          return Response.json({ error: "knowledge_answer_policy_stale" }, { status: 409 });
-        }
-        knowledge = adminKnowledgeSettingsFixture({ ...knowledge, answerPolicy: {
-          ...knowledge.answerPolicy, version: knowledge.answerPolicy.version + 1,
-          ...(body.action === "update_answer_policy" ? { maximumKnowledgeSearches: Number(body.maximumKnowledgeSearches) } : {}),
-          ...(body.action === "update_ingestion_parallelism" ? { ingestionParallelism: Number(body.ingestionParallelism) } : {})
-        } });
-      }
-      if (method === "POST" && body?.action === "retry_failed_search_projections") {
-        const retried = knowledge.operations.search.failedProjections;
-        knowledge = adminKnowledgeSettingsFixture({ ...knowledge, operations: adminKnowledgeOperationsFixture({
-          ...knowledge.operations, alerts: [],
-          search: { ...knowledge.operations.search, failedBases: 0, failedProjections: 0, failedSources: 0,
-            pendingProjections: knowledge.operations.search.pendingProjections + retried }
-        }) });
-        return Response.json({ knowledge, retried });
-      }
-      return Response.json({ knowledge });
-    }
     if (url === "/api/admin/memory") {
       if (method === "PUT" && body) {
         memory = { ...memory, searchTimeout: { seconds: Number(body.timeoutSeconds), version: memory.searchTimeout.version + 1 } };
@@ -84,29 +50,23 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
 }
 
 function renderSection() {
-  const onOpenRoles = vi.fn();
   const reportNotice = vi.fn();
   const requestConfirmation = vi.fn<(config: AdminConfirmationRequest) => void>();
-  const onMutationCommitted = vi.fn();
   render(
     <AdminRetrievalSection
-      onMutationCommitted={onMutationCommitted}
-      onOpenRoles={onOpenRoles}
       reportNotice={reportNotice}
       requestConfirmation={requestConfirmation}
     />
   );
-  return { onMutationCommitted, onOpenRoles, reportNotice, requestConfirmation };
+  return { reportNotice, requestConfirmation };
 }
 
 afterEach(() => {
-  areas.knowledge = true;
   vi.unstubAllGlobals();
 });
 
 describe("AdminRetrievalSection", () => {
-  it("keeps only the Memory card, and reads no Knowledge, while Knowledge is disabled", async () => {
-    areas.knowledge = false;
+  it("shows only the Memory card and reads no Knowledge", async () => {
     const calls = server();
     renderSection();
 
@@ -226,87 +186,6 @@ describe("AdminRetrievalSection", () => {
     expect(memory).toHaveTextContent("1 search; oldest 10m");
     expect(memory).not.toHaveTextContent(/Processing blocked|Processing delayed/u);
   });
-  it("shows one processing line, alerts and metrics, and links assignments to Defaults & roles", async () => {
-    server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
-      alerts: [{ code: "knowledge_search_worker_unavailable", severity: "warning" }],
-      search: { backendState: "available", expectedProjections: 3, failedBases: 0, failedProjections: 0, failedSources: 0, pendingProjections: 1, readyProjections: 2, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "stale" }
-    }) }) });
-    const { onOpenRoles } = renderSection();
-    const knowledge = await screen.findByTestId("admin-retrieval-knowledge");
-    expect(within(knowledge).getByTestId("knowledge-processing-state")).toHaveTextContent("Ready");
-    expect(within(knowledge).getByTestId("knowledge-processing-line"))
-      .toHaveTextContent("Documents: Local · no model · Embeddings: Local embeddings / Multilingual embed · 1024d");
-    expect(within(knowledge).getByRole("list", { name: "Knowledge alerts" }))
-      .toHaveTextContent("The Knowledge search worker heartbeat is missing or stale.");
-    expect(within(knowledge).getByText("2 / 3")).toBeInTheDocument();
-    expect(within(knowledge).getByText("Search backend available · Worker stale")).toBeInTheDocument();
-    expect(within(knowledge).queryByText(/Manage assignments|revision|Normalized text/)).not.toBeInTheDocument();
-    fireEvent.click(within(knowledge).getByRole("button", { name: "Processing model and embeddings: Defaults & roles" }));
-    expect(onOpenRoles).toHaveBeenCalledTimes(1);
-    expect(await screen.findByTestId("admin-retrieval-memory")).toHaveTextContent("Memory");
-  });
-
-  it("retries failed Knowledge search indexing from the card without a rebuild", async () => {
-    const calls = server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
-      alerts: [{ code: "knowledge_search_projection_failures", severity: "critical" }],
-      search: { backendState: "available", expectedProjections: 5, failedBases: 3, failedProjections: 2, failedSources: 2,
-        pendingProjections: 0, readyProjections: 3, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "healthy" }
-    }) }) });
-    const { onMutationCommitted, reportNotice } = renderSection();
-    const failures = await screen.findByTestId("knowledge-search-failures");
-    expect(failures).toHaveTextContent("Search indexing failed for 2 sources in 3 bases.");
-    expect(screen.getByRole("list", { name: "Knowledge alerts" }))
-      .toHaveTextContent("Search indexing failed for one or more sources and needs an administrator retry.");
-    fireEvent.click(within(failures).getByRole("button", { name: "Retry failed indexing" }));
-    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith(
-      "2 failed search projections queued for indexing. Ready sources keep serving."
-    ));
-    expect(calls.filter(({ method }) => method === "POST").map(({ body }) => body))
-      .toEqual([{ action: "retry_failed_search_projections" }]);
-    expect(onMutationCommitted).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId("knowledge-search-failures")).not.toBeInTheDocument();
-    expect(within(screen.getByTestId("admin-retrieval-knowledge")).getByText("3 / 5")).toBeInTheDocument();
-  });
-
-  it("keeps a failed search indexing retry inline", async () => {
-    server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
-      search: { backendState: "available", expectedProjections: 1, failedBases: 1, failedProjections: 1, failedSources: 1,
-        pendingProjections: 0, readyProjections: 0, workerLastSeenAt: "2026-08-18T00:00:00.000Z", workerState: "healthy" }
-    }) }) });
-    renderSection();
-    const failures = await screen.findByTestId("knowledge-search-failures");
-    expect(failures).toHaveTextContent("Search indexing failed for 1 source in 1 base.");
-    const original = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "POST") return Response.json({ error: "knowledge_admin_action_failed" }, { status: 500 });
-      return original(input, init);
-    }));
-    fireEvent.click(within(failures).getByRole("button", { name: "Retry failed indexing" }));
-    expect(await within(failures).findByRole("alert")).toHaveTextContent("Knowledge settings could not be updated.");
-    expect(within(failures).getByRole("button", { name: "Retry failed indexing" })).toBeEnabled();
-  });
-
-  it("saves both Knowledge limits with one Save as chained requests", async () => {
-    const calls = server();
-    const { onMutationCommitted, reportNotice } = renderSection();
-    const searches = await screen.findByRole("spinbutton", { name: /Maximum Knowledge searches per answer/ });
-    const parallelism = screen.getByRole("spinbutton", { name: /Parallel document processing/ });
-    const knowledge = screen.getByTestId("admin-retrieval-knowledge");
-    const save = within(knowledge).getByRole("button", { name: "Save" });
-    expect(save).toBeDisabled();
-    fireEvent.change(searches, { target: { value: "18" } });
-    fireEvent.change(parallelism, { target: { value: "16" } });
-    fireEvent.click(save);
-    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith(expect.stringMatching(/Knowledge limits saved/)));
-    expect(calls.filter((call) => call.url === "/api/admin/knowledge" && call.method === "PATCH").map((call) => call.body)).toEqual([
-      { action: "update_answer_policy", expectedVersion: 1, maximumKnowledgeSearches: 18 },
-      { action: "update_ingestion_parallelism", expectedVersion: 2, ingestionParallelism: 16 }
-    ]);
-    expect(onMutationCommitted).toHaveBeenCalledTimes(1);
-    expect(save).toBeDisabled();
-    expect(searches).toHaveValue(18);
-  });
-
   it("saves the Memory search time limit and confirms before a rebuild", async () => {
     const calls = server({ memory: memoryStatus({ index: { generation: 4, readiness: "REBUILD_REQUIRED" }, rebuild: { state: "AVAILABLE" } }) });
     const { reportNotice, requestConfirmation } = renderSection();
@@ -334,20 +213,5 @@ describe("AdminRetrievalSection", () => {
     expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([{ action: "REBUILD_REQUIRED" }]);
     expect(within(memory).queryByRole("button", { name: "Rebuild" })).not.toBeInTheDocument();
     expect(within(memory).getByTestId("memory-state")).toHaveTextContent("Rebuilding");
-  });
-
-  it("keeps a stale limit save inline and leaves the field editable", async () => {
-    server({ knowledge: adminKnowledgeSettingsFixture({ answerPolicy: { ...adminKnowledgeSettingsFixture().answerPolicy, version: 9 } }) });
-    renderSection();
-    const searches = await screen.findByRole("spinbutton", { name: /Maximum Knowledge searches per answer/ });
-    fireEvent.change(searches, { target: { value: "20" } });
-    const original = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "PATCH") return Response.json({ error: "knowledge_answer_policy_stale" }, { status: 409 });
-      return original(input, init);
-    }));
-    fireEvent.click(within(screen.getByTestId("admin-retrieval-knowledge")).getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/changed elsewhere/);
-    expect(searches).toHaveValue(20);
   });
 });
