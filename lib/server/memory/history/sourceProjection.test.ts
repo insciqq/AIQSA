@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { MEMORY_UNPROCESSED_TEXT_PLACEHOLDER } from "../explicit/safety";
+import {
+  MEMORY_SAVED_SECRET_MARKER,
+  MEMORY_SAVED_SECRET_REDACTION_REASON
+} from "../persistence/savedSecretMatching";
+import { chunkMemoryRecallProjection } from "./chunking";
+import { projectMemoryRecallRounds } from "./rounds";
 import { MEMORY_HISTORY_UNPROCESSED_TEXT_REASON } from "./safety";
 import {
   buildMemorySafeSourceSnapshot,
@@ -721,6 +727,66 @@ describe("Memory safe source snapshot", () => {
     });
     expect(snapshot.recallChunkProjection.turnGroups.some((group) =>
       group.userMessageId === user.id)).toBe(false);
+  });
+
+  it("never indexes or recalls the value of a saved secret, in any field of the chunk", () => {
+    const token = "tok_demo_7f3a9c21b8e4";
+    const user = userMessage({
+      id: "user-secret",
+      parentMessageId: null,
+      text: `Сохрани мой секрет DEMO_API_TOKEN со значением ${token}`
+    });
+    const assistant = assistantMessage({
+      id: "assistant-secret",
+      parentMessageId: user.id,
+      text: "Секрет сохранён."
+    });
+    const messages = [user, assistant];
+
+    // Safety Lite does not recognize this format, which is why history kept it.
+    const plain = chunkMemoryRecallProjection(buildMemorySafeSourceSnapshot(snapshotInput(messages)));
+    expect(JSON.stringify(plain)).toContain(token);
+
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput(messages, {
+      savedSecretValues: [token]
+    }));
+    const chunks = chunkMemoryRecallProjection(snapshot);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.safeProjectedText).not.toContain(token);
+    expect(chunks[0]!.providerSafeText).not.toContain(token);
+    expect(JSON.stringify(chunks)).not.toContain(token);
+    expect(JSON.stringify(projectMemoryRecallRounds(snapshot, chunks))).not.toContain(token);
+    expect(chunks[0]!.safeProjectedText).toContain(
+      `DEMO_API_TOKEN со значением ${MEMORY_SAVED_SECRET_MARKER}`
+    );
+    expect(chunks[0]).toMatchObject({
+      redactionReasonCodes: [MEMORY_SAVED_SECRET_REDACTION_REASON],
+      redactionState: "REDACTED"
+    });
+    // The recall turn, which rounds and segments are built from, holds only the marker.
+    expect(snapshot.recallChunkProjection.turnGroups[0]!.messages[0]!.safeText)
+      .not.toContain(token);
+  });
+
+  it("leaves a turn alone when the saved value does not occur, and excludes a turn that is only the value", () => {
+    const token = "tok_demo_7f3a9c21b8e4";
+    const unrelated = userMessage({ id: "user-plain", parentMessageId: null, text: "Мой сервер — localhost." });
+    const reply = assistantMessage({ id: "assistant-plain", parentMessageId: unrelated.id, text: "Понял." });
+    const plain = buildMemorySafeSourceSnapshot(snapshotInput([unrelated, reply]));
+    expect(buildMemorySafeSourceSnapshot(snapshotInput([unrelated, reply], {
+      savedSecretValues: [token]
+    }))).toEqual(plain);
+
+    const pasted = userMessage({ id: "user-pasted", parentMessageId: null, text: token });
+    const answer = assistantMessage({ id: "assistant-pasted", parentMessageId: pasted.id, text: "Принято." });
+    const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([pasted, answer], {
+      savedSecretValues: [token]
+    }));
+    expect(snapshot.provenanceGraph[0]).toMatchObject({
+      eligibleForRecall: false,
+      reasonCodes: ["SECRET_ONLY"]
+    });
+    expect(JSON.stringify(chunkMemoryRecallProjection(snapshot))).not.toContain(token);
   });
 
   it("fails closed on an incomplete or cyclic active path", () => {

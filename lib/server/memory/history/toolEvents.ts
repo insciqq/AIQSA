@@ -139,7 +139,18 @@ function sanitizeEndpoint(value: string): string | null {
 
 type ExtractedScalar = Readonly<{ label: string; value: string }>;
 
-function extractAllowedScalars(value: Prisma.JsonValue | null): Readonly<{
+/** A string field holding a saved secret's value, as stored or as it would be indexed. */
+function holdsSavedSecret(value: unknown, savedSecretValues: readonly string[]): boolean {
+  if (typeof value !== "string" || savedSecretValues.length === 0) return false;
+  const indexed = scalarText(value);
+  return savedSecretValues.some((saved) =>
+    value.includes(saved) || (indexed !== null && indexed.includes(saved)));
+}
+
+function extractAllowedScalars(
+  value: Prisma.JsonValue | null,
+  savedSecretValues: readonly string[]
+): Readonly<{
   redactionReasonCodes: readonly string[];
   sawMeaningfulSafeScalar: boolean;
   sawRecognizedSecret: boolean;
@@ -166,6 +177,11 @@ function extractAllowedScalars(value: Prisma.JsonValue | null): Readonly<{
       continue;
     }
     for (const [key, child] of Object.entries(current.value).slice(0, 64)) {
+      if (holdsSavedSecret(child, savedSecretValues)) {
+        sawRecognizedSecret = true;
+        redactionReasonCodes.add("SECRET_FIELD_DROPPED");
+        continue;
+      }
       const observableScalar = scalarText(child);
       if (observableScalar) {
         const observed = projectMemoryHistorySafeText(observableScalar);
@@ -220,8 +236,10 @@ function extractAllowedScalars(value: Prisma.JsonValue | null): Readonly<{
   };
 }
 
+/** `savedSecretValues`: the owner's saved secret values; a field holding one is dropped. */
 export function projectMemoryToolEvent(
-  source: MemoryToolEventSource
+  source: MemoryToolEventSource,
+  savedSecretValues: readonly string[] = []
 ): MemoryToolEventProjection | null {
   if (
     !safeToolNamePattern.test(source.toolName) ||
@@ -235,7 +253,7 @@ export function projectMemoryToolEvent(
     source.sourceCallUpdatedAt < source.completedAt
   ) return null;
 
-  const extracted = extractAllowedScalars(source.result);
+  const extracted = extractAllowedScalars(source.result, savedSecretValues);
   if (extracted.values.length === 0 && extracted.sawRecognizedSecret &&
     !extracted.sawMeaningfulSafeScalar) return null;
   const operation = extracted.values.find(({ label }) => label === "operation")?.value ??
