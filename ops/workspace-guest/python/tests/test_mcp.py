@@ -42,8 +42,7 @@ def refusal(code: str, message: str = "refused", **detail: Any) -> Dict[str, Any
 class FakeGateway:
     """Answers like the run gateway behind the relay: SSE-framed JSON-RPC."""
 
-    def __init__(self, agent: bool = False):
-        self.agent = agent
+    def __init__(self) -> None:
         self.requests: List[Dict[str, Any]] = []
         self.busy = 0
         self.status = 200
@@ -61,9 +60,9 @@ class FakeGateway:
                     return self.reply(gateway.status, {"error": "refused"})
                 if self.headers.get("authorization") != f"Bearer {TOKEN}":
                     return self.reply(401, {"error": "agent_authorization_required"})
-                if not gateway.agent and self.headers.get("x-aiqsa-invocation-id") != INVOCATION:
+                if self.headers.get("x-aiqsa-invocation-id") != INVOCATION:
                     return self.reply(403, {"error": "code_invocation_required"})
-                result = gateway.agent_answer(body) if gateway.agent else gateway.answer(body)
+                result = gateway.answer(body)
                 message = {"jsonrpc": "2.0", "id": body["id"], **result}
                 data = f"event: message\ndata: {json.dumps(message)}\n\n".encode()
                 self.send_response(200)
@@ -110,21 +109,6 @@ class FakeGateway:
             return {"result": refusal("execution_outcome_unknown", dispatched=True)}
         if name == "mcp_signin_7777777777":
             return {"result": refusal("authorization_required")}
-        return {"error": {"code": -32602, "message": f"Tool {name} not found"}}
-
-    def agent_answer(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        if body["method"] == "tools/list":
-            return {"result": {"tools": [{"name": "find_tools", "inputSchema": {"type": "object"}},
-                                         {"name": "call_tool", "inputSchema": {"type": "object"}}]}}
-        name, args = body["params"]["name"], body["params"].get("arguments", {})
-        if name == "find_tools":
-            found = [{"tool_id": COMMITS, "tool_version": "v" * 64}] if COMMITS in args["query"] or "GitLab/" in args["query"] else []
-            return {"result": {"content": [{"type": "text", "text": json.dumps({"tools": found})}]}}
-        if name == "call_tool" and args["tool_id"] == COMMITS:
-            if args["arguments"].get("limit") == 0:
-                return {"result": {"content": [{"type": "text", "text": json.dumps({
-                    "code": "agent_mcp_call_limit", "message": "Agent MCP call limit reached."})}], "isError": True}}
-            return {"result": {"content": [{"type": "text", "text": "agent ok"}], "structuredContent": {"via": "agent"}}}
         return {"error": {"code": -32602, "message": f"Tool {name} not found"}}
 
 
@@ -244,31 +228,6 @@ class CodeClientTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
-
-
-class AgentClientTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.gateway = FakeGateway(agent=True)
-        self.client = mcp.Client(environ={"AIQSA_AGENT_TOKEN": TOKEN, "AIQSA_GATEWAY_URL": self.gateway.url})
-
-    def tearDown(self) -> None:
-        self.gateway.close()
-
-    def test_uses_the_agent_surface_without_an_invocation(self) -> None:
-        self.assertEqual(self.client.call(COMMITS, {"project": "x"}).json(), {"via": "agent"})
-        methods = [(item["body"]["method"], item["body"]["params"].get("name")) for item in self.gateway.requests]
-        self.assertEqual(methods, [("tools/list", None), ("tools/call", "find_tools"), ("tools/call", "call_tool")])
-        self.assertNotIn("x-aiqsa-invocation-id", self.gateway.requests[-1]["headers"])
-        self.assertEqual(self.gateway.requests[-1]["body"]["params"]["arguments"],
-                         {"tool_id": COMMITS, "tool_version": "v" * 64, "arguments": {"project": "x"}})
-
-    def test_clear_errors_in_agent_contexts(self) -> None:
-        with self.assertRaises(errors.AgentModeUnsupported):
-            self.client.list_tools()
-        with self.assertRaises(errors.ToolUnavailable):
-            self.client.call("Nowhere/nothing")
-        with self.assertRaises(errors.BudgetExhausted):
-            self.client.call(COMMITS, {"limit": 0})
 
 
 class CliTests(unittest.TestCase):
