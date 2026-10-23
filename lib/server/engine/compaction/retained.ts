@@ -115,7 +115,7 @@ const LIMITS = Object.freeze({
   errors: 10,
   filesChanged: 40,
   filesRead: 40,
-  largeResults: 30,
+  largeResults: 60,
   lineChars: 240,
   listed: 20,
   writes: 30
@@ -133,13 +133,21 @@ function clip(text: string, chars: number): string {
   return flat.length <= chars ? flat : `${flat.slice(0, Math.max(0, chars - 1))}…`;
 }
 
+/** Head and tail of a one-line value: a query's filter or a path's file name is at its end. */
+function clipMiddle(text: string, chars: number): string {
+  const flat = text.replace(/\s+/gu, " ").trim();
+  if (flat.length <= chars) return flat;
+  const head = Math.floor((chars - 1) * 0.45);
+  return `${flat.slice(0, head)}…${flat.slice(flat.length - (chars - 1 - head))}`;
+}
+
 /** A short identity of a call's arguments: scalar fields, bodies and secret values left out. */
 export function describeArguments(text: string, chars: number = LIMITS.argumentsChars): string {
   const value = parsedArguments(text);
   const parts: string[] = [];
   for (const [key, field] of Object.entries(value)) {
     if (UNCOPIED_KEYS.test(key)) continue;
-    if (typeof field === "string") parts.push(`${key}=${JSON.stringify(clip(field, 72))}`);
+    if (typeof field === "string") parts.push(`${key}=${JSON.stringify(clipMiddle(field, 72))}`);
     else if (typeof field === "number" || typeof field === "boolean") parts.push(`${key}=${String(field)}`);
     else if (Array.isArray(field) && field.every((entry) => typeof entry === "string")) {
       parts.push(`${key}=${JSON.stringify(clip(field.join(", "), 72))}`);
@@ -318,9 +326,9 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
     }
     const handle = handleOf(result);
     if (handle && result.output.length > LISTED_RESULT_CHARS && call.name !== COMPACTION_PRODUCT_TOOLS.readToolResult) {
-      large.push(`- ${handle}: ${identity} → ${result.output.length.toLocaleString("en-US")} characters; begins "${firstLine(result.output, 90)}"`);
+      large.push(`- ${handle}: ${identity} (${result.output.length.toLocaleString("en-US")} characters)`);
     } else if (!handle && result.output.length >= LARGE_RESULT_CHARS && kind !== "skill_load") {
-      large.push(`- (no handle) ${identity} → ${result.output.length.toLocaleString("en-US")} characters; only an excerpt survives compaction`);
+      large.push(`- (no handle) ${identity} (${result.output.length.toLocaleString("en-US")} characters; only an excerpt survives compaction)`);
     }
     if (result.outcome === "error") errors.push(`- ${identity} → ${errorLine(result.output, 160)}`);
   }
@@ -330,8 +338,8 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
     (entry.failed ? " (last attempt failed)" : ""));
   const readLines = [...read].filter((path) => !changed.has(path)).map((path) => `- ${path}`);
   const lines = [
-    ...section("Workspace files changed (latest last):", capped(changedLines, LIMITS.filesChanged, true)),
-    ...section("Workspace files read:", capped(readLines, LIMITS.filesRead, true)),
+    ...section("Files changed (latest last):", capped(changedLines, LIMITS.filesChanged, true)),
+    ...section("Files read:", capped(readLines, LIMITS.filesRead, true)),
     ...section(`Workspace commands (latest ${Math.min(commands.length, LIMITS.commands)} of ${commands.length}):`,
       commands.slice(-LIMITS.commands)),
     ...section("Artifacts:", capped(artifacts, LIMITS.listed, true)),

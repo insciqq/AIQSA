@@ -73,6 +73,9 @@ describe("default tool kinds", () => {
     expect(describeArguments(JSON.stringify({ content: "BODY", path: "/a.py", value: "sk_live_1", title: "T", tags: ["a", "b"] })))
       .toBe("path=\"/a.py\" title=\"T\" tags=\"a, b\"");
     expect(describeArguments("not json")).toBe("");
+    // A long value keeps its end, where a query's filter or a path's file name sits.
+    const query = "SELECT warehouse, region, gross, net_margin, units, share FROM settlements WHERE region = 'north' AND month = '2026-03'";
+    expect(describeArguments(JSON.stringify({ query }))).toMatch(/^query="SELECT warehouse, region, gros.*….*month = '2026-03'"$/u);
   });
 });
 
@@ -110,7 +113,7 @@ describe("state block", () => {
       "- /workspace/project/etl/merge.py: written ×2",
       "- /workspace/project/new.csv: renamed from /workspace/project/old.csv",
       "- /workspace/project/old.csv: renamed to /workspace/project/new.csv",
-      "Workspace files read:\n- /workspace/project/data/ledger.csv",
+      "Files read:\n- /workspace/project/data/ledger.csv",
       "Workspace commands (latest 2 of 2):\n- `pytest -q` → exit 1\n- `pytest -q` → exit 0",
       `- ${ARTIFACT_TOOL_NAME} intent="create" kind="html" title="Q1 dashboard" → done (artifactId=art_42, versionId=ver_7)`,
       "Skills loaded:\n- xlsx",
@@ -120,7 +123,7 @@ describe("state block", () => {
       `- ${namespacedMcpToolName("crm", "create_ticket")} title="Refund 1001" → done (id=T-1001)`,
       `- ${namespacedMcpToolName("crm", "send_email")} to="ops@example.test" → outcome unknown: check its effect before repeating it`,
       `- ${namespacedMcpToolName("crm", "update_deal")} deal_id="D-77" (call call_16): approval or result pending`,
-      `- ${handle}: run_sql query="SELECT warehouse, net_margin FROM settlements" →`,
+      `- ${handle}: run_sql query="SELECT warehouse, net_margin FROM settlements" (`,
       "Recent tool errors:\n- run_pipeline stage=\"validate\" → ERR_SCHEMA_DRIFT_0x3F2: column settled_at type mismatch"
     ]) expect(block).toContain(line);
     expect(block).not.toMatch(/SECRET|sk_live/u);
@@ -143,7 +146,7 @@ describe("state block", () => {
     expect(buildStateBlock(chat.items)).toBe("");
     const { chat: worked } = workedChat();
     const quiet = buildStateBlock(worked.items, { classify: () => "other" });
-    expect(quiet).not.toContain("Workspace files changed");
+    expect(quiet).not.toContain("Files changed");
     expect(quiet).toContain("Waiting when this record was made:");
     const throwing = buildStateBlock(worked.items, { classify: () => { throw new Error("classifier failed"); } });
     expect(throwing).toContain("Recent tool errors:");

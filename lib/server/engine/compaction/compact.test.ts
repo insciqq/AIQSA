@@ -138,8 +138,8 @@ describe("summary compaction", () => {
     const outcome = await compact(input(chat, keep, retried.call, { path: "summary" }));
     expect(outcome).toMatchObject({ metadata: { calls: 2 }, ok: true });
     const texts = retried.requests.map(requestText);
-    expect(texts[0]).toContain("about 1,800 words");
-    expect(texts[1]).toContain("about 900 words");
+    expect(texts[0]).toContain("about 1,200 words");
+    expect(texts[1]).toContain("about 600 words");
     expect(texts[1]!.length).toBeLessThan(texts[0]!.length);
 
     const incomplete = fakeCall(() => ({ status: "incomplete", text: SUMMARY }), summaryReply());

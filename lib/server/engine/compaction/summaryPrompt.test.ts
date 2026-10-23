@@ -88,8 +88,8 @@ describe("summary prompt", () => {
   });
 
   it("scales the word target with the output budget", () => {
-    expect(summaryWordTarget(4_096)).toBe(1_800);
-    expect(summaryWordTarget(8_192)).toBe(3_650);
+    expect(summaryWordTarget(4_096)).toBe(1_200);
+    expect(summaryWordTarget(8_192)).toBe(2_450);
     expect(summaryWordTarget(100)).toBe(300);
   });
 
