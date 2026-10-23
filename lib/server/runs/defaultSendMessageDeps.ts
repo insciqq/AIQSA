@@ -19,8 +19,8 @@ import { installationToolBudgetPolicy } from "./toolBudgets";
  * Everything the ordinary send admission needs except who is sending: the chat
  * messages route adds the request session, the scheduled task runner the task
  * owner, Telegram the linked user and answer review the session's initiator.
- * Every entry point therefore admits through identical services, the native
- * engine included (`lib/server/engine/routing.ts` decides per run).
+ * Every entry point therefore admits through identical services and runs on
+ * the same agent engine.
  */
 export function createDefaultSendMessageDeps(): Omit<RunHandlerDeps, "resolveAuth" | "scheduledOccurrence"> {
   const storage = createS3StorageAdapter();

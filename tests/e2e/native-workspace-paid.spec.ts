@@ -21,7 +21,6 @@
  *   AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME=0
  *   AIQSA_WORKSPACE_RUNNER_URL=http://workspace-runner:4310     # http(s), no credentials, query or hash
  *   AIQSA_WORKSPACE_RUNNER_TOKEN=<32..1024 chars, no spaces>     # the runner's own token, set on both sides
- *   AIQSA_NATIVE_ENGINE_USERS='*'                               # or the operator's id or email
  *
  * Every other AIQSA_WORKSPACE_* setting is optional and validated by
  * `getWorkspaceConfig` (defaults: 2 CPUs, 4096 MiB, 10240 MiB disk, 1800 s
@@ -60,7 +59,7 @@
  *
  *   docker compose -f docker-compose.dev.yml --profile workspace-live up -d --build
  *   docker compose -f docker-compose.dev.yml run --rm -T \
- *     -e AIQSA_FEATURES_PAID_E2E=DISPOSABLE -e AIQSA_NATIVE_ENGINE_USERS='*' \
+ *     -e AIQSA_FEATURES_PAID_E2E=DISPOSABLE \
  *     -e AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME=0 -e CODEX_LB_API_KEY -e CODEX_LB_BASE_URL \
  *     app npx playwright test --project=chromium tests/e2e/native-workspace-paid.spec.ts
  *
@@ -286,7 +285,7 @@ async function settledRun(runId: string): Promise<ModelRun> {
     return ACTIVE_RUN_STATUSES.includes(current.status) ? null : current;
   }, "native_workspace_run_timeout");
   const code = (run.errorPayload as { code?: unknown } | null)?.code;
-  expect(run.engine, "the run ran on the native engine (the stand's app needs AIQSA_NATIVE_ENGINE_USERS)").toBe("native");
+  expect(run.engine, "the run ran on the agent engine").toBe("native");
   expect(run.status, `the run completes (${typeof code === "string" ? code : run.status})`).toBe("complete");
   return run;
 }

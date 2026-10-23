@@ -17,8 +17,7 @@
  * Every scenario is its own test in its own chat, so a stand piece that is
  * missing skips only the scenarios that need it (with the reason), and a
  * failure does not stop the others (no serial mode, no retries: a retry
- * would pay again). What each scenario needs besides the Codex LB pair and
- * AIQSA_NATIVE_ENGINE_USERS='*' (or the operator's id or email) on the app:
+ * would pay again). What each scenario needs besides the Codex LB pair:
  *
  *   0. Context window        nothing more: the shared codex-lb model is set
  *                            up with the template window, which setup
@@ -57,7 +56,7 @@
  *
  *   docker compose -f docker-compose.dev.yml --profile workspace-live up -d --build
  *   docker compose -f docker-compose.dev.yml run --rm -T \
- *     -e AIQSA_FEATURES_PAID_E2E=DISPOSABLE -e AIQSA_NATIVE_ENGINE_USERS='*' \
+ *     -e AIQSA_FEATURES_PAID_E2E=DISPOSABLE \
  *     -e AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME=0 -e CODEX_LB_API_KEY -e CODEX_LB_BASE_URL \
  *     app npx playwright test --project=chromium tests/e2e/native-scenarios-paid.spec.ts
  *
@@ -383,7 +382,7 @@ const errorCode = (run: ModelRun): string | null => {
 
 /** The run completed on the native engine. */
 function expectNativeComplete(run: ModelRun): void {
-  expect(run.engine, "the run ran on the native engine (the stand's app needs AIQSA_NATIVE_ENGINE_USERS)").toBe("native");
+  expect(run.engine, "the run ran on the agent engine").toBe("native");
   expect(run.status, `the run completes (${errorCode(run) ?? run.status})`).toBe("complete");
 }
 
