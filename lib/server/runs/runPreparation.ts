@@ -2277,6 +2277,16 @@ async function prepareRunWith(
     workspaceTurnContract = contract.turn;
   }
 
+  // What holds only for this turn (its paths, the current message's facts, the chat's images, files and
+  // artifacts as they stand now) is appended like the rest and also recorded as it was appended
+  // (`prompt.turnGuidance`): the native engine sends it with the run's input instead, so its system
+  // prompt stays the same across the chat's turns and provider caches keep reading it.
+  const turnGuidance: string[] = [];
+  const appendTurnGuidance = (part: string | null | undefined) => {
+    if (!part?.trim()) return;
+    turnGuidance.push(part);
+    prompt = { ...prompt, system: [prompt.system, part].filter(Boolean).join("\n\n") };
+  };
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
   if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
   // One run binds one System Vision plan: a Knowledge image description already resolved it.
@@ -2284,13 +2294,13 @@ async function prepareRunWith(
     ? (knowledgeImageObservation?.route === "system_vision" ? knowledgeImageObservation.vision : await deps.vision?.resolve()) : undefined;
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
-  if (workspaceVision) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(workspaceVision, false, {
+  if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, false, {
     nativeCurrentImages: !agentEnabled && modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
     hasIndexedFiles: hasWorkspaceIndexedFiles
-  })].filter(Boolean).join("\n\n") };
+  }));
   const visionAnalysis = workspaceVision ?? chatVision;
   // Turn paths and chat facts follow the stable checkpoint and Vision guidance.
-  if (workspaceTurnContract) prompt = { ...prompt, system: [prompt.system, workspaceTurnContract].filter(Boolean).join("\n\n") };
+  appendTurnGuidance(workspaceTurnContract);
   if (imagePlan || imageReferences.length > 0) {
     prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
   }
@@ -2298,18 +2308,16 @@ async function prepareRunWith(
     prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };
   }
   if (imagePlan || chatVision) {
-    prompt = { ...prompt, system: [prompt.system,
-      imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision))].filter(Boolean).join("\n\n") };
+    appendTurnGuidance(imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision)));
   }
   const artifactFileGuidance = artifactToolAvailable ? artifactFileInstructions(fileReferences, workspaceCheckpoints) : null;
-  if (artifactFileGuidance) prompt = { ...prompt, system: [prompt.system, artifactFileGuidance].filter(Boolean).join("\n\n") };
+  appendTurnGuidance(artifactFileGuidance);
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
   // The frozen prompt names a scheduled run's missing sources through recovery.
-  const missingSourcesNotice = scheduledUnavailableSourcesNotice(scheduledMissingSources);
-  if (missingSourcesNotice) prompt = { ...prompt, system: [prompt.system, missingSourcesNotice].filter(Boolean).join("\n\n") };
-  if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
+  appendTurnGuidance(scheduledUnavailableSourcesNotice(scheduledMissingSources));
+  if (artifactIntent) appendTurnGuidance("The user explicitly asked for an artifact: call create_artifact for this message.");
   // The check's server-owned instruction, frozen with the accepted prompt: it
   // compares with the previous shown result only while the context holds it.
   if (monitoringCheck) {
@@ -2318,8 +2326,9 @@ async function prepareRunWith(
   }
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
-  let artifactCompactSystem: string | undefined;
+  let artifactCompactPrompt: Pick<NormalizedRunRequest["prompt"], "system" | "turnGuidance"> | undefined;
   const beforeArtifactSystem = prompt.system;
+  const beforeArtifactTurnGuidance = [...turnGuidance];
   // A scheduled run's context is its selection alone: the chat's other artifacts stay out of it.
   if (artifactToolAvailable && deps.artifacts && !scheduledOccurrence) {
     const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId,
@@ -2333,17 +2342,15 @@ async function prepareRunWith(
       artifactFocus = artifactReferences[0];
       const guidance = "Artifacts already created in this chat are private server-owned context. Use read_artifact for omitted file text, and edits with the exact base_version_id for changes; unmentioned files and assets are preserved. Never invent asset references or URLs.";
       const editGuidance = artifactEdit ? `The user's current message edits artifact_id=${JSON.stringify(artifactEdit.artifactId)} from base_version_id=${JSON.stringify(artifactEdit.versionId)}; update that artifact with intent=update unless the message clearly asks for something else.` : "";
-      artifactCompactSystem = [beforeArtifactSystem, guidance + "\n" + JSON.stringify(artifactContext.map(artifact => ({ ...artifact,
-        files: artifact.files.map(file => { const { text: _text, ...metadata } = file; return metadata; }) }))), editGuidance].filter(Boolean).join("\n\n");
-      prompt = {
-        ...prompt,
-        system: [prompt.system,
-          "Artifacts already created in this chat are private server-owned context. For an edit, use intent=update and the exact base_version_id; preserve useful files unless the user asks to replace them. Never invent asset references or URLs.\n" + JSON.stringify(artifactContext),
-          editGuidance
-        ].filter(Boolean).join("\n\n")
-      };
+      const compactContext = guidance + "\n" + JSON.stringify(artifactContext.map(artifact => ({ ...artifact,
+        files: artifact.files.map(file => { const { text: _text, ...metadata } = file; return metadata; }) })));
+      artifactCompactPrompt = { system: [beforeArtifactSystem, compactContext, editGuidance].filter(Boolean).join("\n\n"),
+        turnGuidance: [...beforeArtifactTurnGuidance, compactContext, ...(editGuidance ? [editGuidance] : [])] };
+      appendTurnGuidance("Artifacts already created in this chat are private server-owned context. For an edit, use intent=update and the exact base_version_id; preserve useful files unless the user asks to replace them. Never invent asset references or URLs.\n" + JSON.stringify(artifactContext));
+      appendTurnGuidance(editGuidance);
     }
   }
+  if (turnGuidance.length > 0) prompt = { ...prompt, turnGuidance };
   // The call reader is a session tool like the status tool: admitted for
   // every tool-capable answer model, independent of the observation policy.
   const toolCallReader = agentEnabled || modelCapabilities.toolCalling === true &&
@@ -2763,8 +2770,8 @@ async function prepareRunWith(
     });
     budgetedAnswer = budgetAnsweringRequest(answeringPlan);
   }
-  if (!budgetedAnswer.budget.ok && artifactCompactSystem) {
-    baseNormalizedRequest.prompt = { ...baseNormalizedRequest.prompt, system: artifactCompactSystem };
+  if (!budgetedAnswer.budget.ok && artifactCompactPrompt) {
+    baseNormalizedRequest.prompt = { ...baseNormalizedRequest.prompt, ...artifactCompactPrompt };
     budgetedAnswer = budgetAnsweringRequest(answeringPlan);
   }
   if (!budgetedAnswer.budget.ok) {

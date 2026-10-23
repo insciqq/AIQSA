@@ -34,7 +34,7 @@ export type TranscriptOrigin = Readonly<{ model: string; provider: string }>;
 export type TranscriptTarget = TranscriptOrigin & Readonly<{
   /** The route takes back its own native compaction items (Responses). */
   nativeCompaction?: boolean;
-  /** `current_turn`: reasoning before the current turn's user item stays out. */
+  /** `current_turn`: reasoning before the current turn's user input stays out (run context and follow-ups start no turn). */
   reasoningScope?: "all" | "current_turn";
 }>;
 
@@ -43,8 +43,8 @@ export type TranscriptUserItem = Readonly<{
   followup?: true;
   id: string;
   kind: "user";
-  /** Context the server adds for this run (the Skills index, pinned Skills): rebuilt for every run and never
-   * kept on record, so no compaction covers it; replay keeps it even before a compaction's kept tail. */
+  /** Context the server adds for this run (the Skills index, pinned Skills, the turn context): rebuilt for every run and
+   * never kept on record, so no compaction covers it; replay keeps it even before a compaction's kept tail. */
   runContext?: true;
   text: string;
 }>;
@@ -272,9 +272,10 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
 
   let turnStart = -1;
   if (target.reasoningScope === "current_turn") {
+    // The turn starts at the user's input: run context (last in an approval continuation) starts none.
     for (let index = window.length - 1; index >= 0; index -= 1) {
       const item = window[index]!;
-      if (item.kind === "user" && !item.followup) {
+      if (item.kind === "user" && !item.followup && !item.runContext) {
         turnStart = index;
         break;
       }

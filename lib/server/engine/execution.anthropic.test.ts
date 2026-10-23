@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
+import { resolveStandardChatBaseline } from "@/lib/domain/promptTemplates";
 import {
   memoryNativeEngine, NATIVE_MCP_SNAPSHOT, nativePrepared, nativeRunRepository, nativeSay, nativeSseEvents
 } from "@/tests/support/nativeRunExecution";
@@ -181,6 +182,62 @@ describe("native Anthropic on the engine", () => {
     expect(bodies[0]!.messages[1]!.content).toEqual([{ id: "toolu_0", input: { key: "A-1" }, name: "mcp_jira_get_issue", type: "tool_use" }]);
     expect(memory.published()).toBe("Still open.");
   });
+
+  it("sends a chat's next turn the same system prompt and tools, with the time and the turn's own guidance only before its input",
+    async () => {
+      const zone = "Europe/Moscow";
+      const chatGuidance = "A Workspace is available in this chat.\nWorking directory: /workspace/project";
+      // One chat, two turns on one day, each admitted with its own baseline time and output directory.
+      const admitted = (at: Date, output: string, messages: ReturnType<typeof nativeSay>[]) => {
+        const baseline = resolveStandardChatBaseline({ now: at, timeZone: zone }).renderedSystemPrompt;
+        return anthropicPrepared({ content: messages.at(-1)!.content, context: { messages, mode: "branch_path" },
+          prompt: { baseline: { source: "standard_chat", timeZone: zone, timeZoneSource: "client" }, developer: null,
+            system: [baseline, chatGuidance, output].join("\n\n"), turnGuidance: [output] } });
+      };
+      const morning = new Date("2026-10-23T06:05:00Z");
+      const evening = new Date("2026-10-23T17:40:00Z");
+      const first = recordedAdapter([
+        response({ calls: [{ id: "toolu_1", input: { key: "A-1" } }], signature: "SIG-1", text: "Checking A-1.", thought: "Read it." }),
+        response({ signature: "SIG-2", text: "A-1 is open.", thought: "Open." })
+      ]);
+      const memory = memoryNativeEngine();
+      const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+      await nativeSseEvents(createNativeRunExecutionResponse({ adapter: first.adapter, created,
+        engine: { ...memory.engine, now: () => morning.getTime() },
+        mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: admitted(morning, "This turn's output directory: /workspace/outputs/run-1.",
+          [nativeSay("current-user-message", "user", "Check A-1")]),
+        repository: nativeRunRepository() as unknown as RunRepository, services: {}, userId: "user-1" }));
+
+      const second = recordedAdapter([response({ signature: "SIG-3", text: "Still open.", thought: "Same." })]);
+      const later = memoryNativeEngine();
+      later.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-1", "run-1"]]));
+      later.transcripts.loadRuns.mockResolvedValue(new Map([["run-1", memory.transcriptRows]]));
+      await nativeSseEvents(createNativeRunExecutionResponse({ adapter: second.adapter,
+        created: { assistantMessageId: "answer-2", runId: "run-2", userMessageId: "question-2" },
+        engine: { ...later.engine, now: () => evening.getTime() },
+        mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: admitted(evening, "This turn's output directory: /workspace/outputs/run-2.", [nativeSay("question-1", "user", "Check A-1"),
+          nativeSay("answer-1", "assistant", "A-1 is open."), nativeSay("current-user-message", "user", "And now?")]),
+        repository: nativeRunRepository() as unknown as RunRepository, services: {}, userId: "user-1" }));
+
+      const [morningBody, eveningBody] = [first.bodies[0]!, second.bodies[0]!];
+      // Byte for byte, markers included: the next turn reads the system prompt and tools the first one cached.
+      expect(JSON.stringify(eveningBody.system)).toBe(JSON.stringify(morningBody.system));
+      expect(JSON.stringify(eveningBody.tools)).toBe(JSON.stringify(morningBody.tools));
+      const system = morningBody.system![0]!.text;
+      expect(system).toContain(`${chatGuidance}\n\n# Environment\nToday is October 23, 2026 in the user's time zone (${zone}).`);
+      expect(system).not.toMatch(/09:05|08:40|outputs\/run-|<turn_context>/u);
+      // The time and the output directory come just before each run's input, and a later turn never sees an earlier one's.
+      expect(morningBody.messages.at(-1)!.content.slice(0, 2)).toEqual([
+        { text: `<turn_context>\nCurrent local time: 09:05 AM GMT+3 (${zone}).\n\n` +
+          "This turn's output directory: /workspace/outputs/run-1.\n</turn_context>", type: "text" },
+        expect.objectContaining({ text: "Check A-1", type: "text" })]);
+      expect(eveningBody.messages.at(-1)!.content[0]).toEqual({ text: `<turn_context>\nCurrent local time: 08:40 PM GMT+3 (${zone}).\n\n` +
+        "This turn's output directory: /workspace/outputs/run-2.\n</turn_context>", type: "text" });
+      expect(JSON.stringify(eveningBody.messages.slice(0, -1))).not.toContain("<turn_context>");
+      expect(memory.transcriptRows.some((item) => item.kind === "user")).toBe(false);
+    });
 
   it("has the engine send a dropped Anthropic stream again: one ended early or with an error event", async () => {
     const drop = async (events: AnthropicStreamEvent[]) => {

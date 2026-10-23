@@ -47,6 +47,7 @@ import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalys
 import { renderCodexManagedProfile } from "../agents/codexProfile";
 import { agentPrompts } from "../agents/prompt";
 import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
+import { admittedRunGuidance, splitTurnGuidance } from "../engine/systemPrompt";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { logEvent } from "../observability";
 import { estimateApproxTokens } from "../../domain/contextBudget";
@@ -1506,6 +1507,7 @@ describe("run preparation", () => {
     const deps = { ...h.deps, workspace: contractWorkspace(),
       repository: { ...h.deps.repository, loadWorkspaceFileFacts } };
     const body = successBody({ workspace: { enabled: true } });
+    const chatGuidance: string[] = [];
     for (const input of [sendInput(body), regenerateInput(body)]) {
       const request = preparedFrom(await prepareRun(deps, input)).normalizedRequest;
       expect(request.prompt.system?.includes("Bounded file references")).toBe(facts.hasFiles);
@@ -1521,7 +1523,14 @@ describe("run preparation", () => {
       expect(system.indexOf("This turn's output directory:")).toBeGreaterThan(system.indexOf(WORKSPACE_CHECKPOINT_GUIDANCE));
       expect(loadWorkspaceFileFacts).toHaveBeenLastCalledWith({ chatId: "chat-1", userId: "user-1",
         leafMessageId: input.source.kind === "send" ? "prior-user-message" : "stored-user-message", imageIds: [] });
+      // The run's own parts are recorded as appended; without them the native engine's guidance is the chat's.
+      const split = splitTurnGuidance(admittedRunGuidance(request.prompt), request.prompt.turnGuidance);
+      expect(split.turn).toEqual(request.prompt.turnGuidance);
+      expect(split.turn.some((part) => part.includes(`This turn's output directory: /workspace/output/`))).toBe(true);
+      expect(split.chat).not.toMatch(/This turn's output directory:|\/workspace\/output\/|Bounded file references|earlier completed exports/u);
+      chatGuidance.push(split.chat);
     }
+    expect(chatGuidance[1]).toBe(chatGuidance[0]);
   });
 
   it("includes the current attachment before it has an inbox database binding", async () => {
@@ -3044,6 +3053,9 @@ describe("run preparation", () => {
     const prepared = preparedFrom(await prepareRun({ ...harness.deps, artifacts }, sendInput(body)));
     expect(prepared.normalizedRequest.artifactIntent).toBe("create");
     expect(prepared.normalizedRequest.prompt.system).toContain("The user explicitly asked for an artifact: call create_artifact");
+    // It holds for this message only: the native engine sends it with the input.
+    expect(prepared.normalizedRequest.prompt.turnGuidance)
+      .toContain("The user explicitly asked for an artifact: call create_artifact for this message.");
     expect(prepared.providerRequest.tools).toContainEqual(expect.objectContaining({ name: "create_artifact" }));
     expect(prepared.providerRequest.toolChoice).not.toEqual({ type: "function", name: "create_artifact" });
     await expect(prepareRun({ ...harness.deps, artifacts }, sendInput({ ...body, artifactIntent: "other" }))).resolves.toMatchObject({ ok: false, code: "artifact_intent_invalid", status: 400 });
@@ -3068,6 +3080,11 @@ describe("run preparation", () => {
       expect(prepared.normalizedRequest.prompt.system).toContain("The user's current message edits artifact_id=\"artifact-one\" from base_version_id=\"version-one\"");
       expect(prepared.normalizedRequest.content).toEqual(textMessageContent("Shared question"));
       expect(Object.isFrozen(prepared.normalizedRequest.artifactEdit)).toBe(true);
+      // The chat's artifacts as they stand now and the message's edit hold for this turn only.
+      const { prompt } = prepared.normalizedRequest;
+      expect(prompt.turnGuidance).toEqual(expect.arrayContaining([expect.stringContaining("\"artifact_id\":\"artifact-one\""),
+        expect.stringMatching(/^The user's current message edits artifact_id="artifact-one"/u)]));
+      expect(splitTurnGuidance(admittedRunGuidance(prompt), prompt.turnGuidance).chat).not.toMatch(/artifact-one|Existing page/u);
     }
     expect(validateEditTarget).toHaveBeenCalledTimes(2);
     expect(validateEditTarget).toHaveBeenLastCalledWith({ ...artifactEdit, chatId: "chat-1", ownerUserId: "user-1" });

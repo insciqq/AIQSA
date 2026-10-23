@@ -130,7 +130,7 @@ describe("a scheduled run's flat context on the native engine", () => {
 
   it("carries the previous result's own items, never a compaction of what came before it nor a follow-up", async () => {
     const flat = await firstHistory(true);
-    expect(flat.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "assistant_text", "user"]);
+    expect(flat.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "assistant_text", "user", "user"]);
     expect(JSON.stringify(flat)).not.toContain("SYNTHETIC OLDER RESULTS");
     // An ordinary chat continues from the compaction.
     expect(JSON.stringify(await firstHistory(false))).toContain("SYNTHETIC OLDER RESULTS");
@@ -293,7 +293,8 @@ describe("an Auto MCP run on the native engine", () => {
         services: { mcp: { filterTools: async (_userId, tools) => [...tools], materialize: vi.fn(materialize) as never } },
         userId: "owner" }));
       const history = requests[0]!.history!;
-      const last = history.at(-1);
+      // The run's turn context follows the approved call's result.
+      const last = history.at(-2);
       return { ...auto, history, output: last?.type === "tool_result" ? last.output : null, request: requests[0]! };
     }
 
@@ -313,7 +314,7 @@ describe("an Auto MCP run on the native engine", () => {
       expect(run.callTool).toHaveBeenCalledWith(expect.objectContaining({ arguments: { summary: "x" }, generationId: "gen-1",
         name: "create_issue" }));
       // The turn continues from the call's result, as with Load all; the server's load is no part of the conversation.
-      expect(run.history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result"]);
+      expect(run.history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "user"]);
       expect(run.output).toContain("Done: A-2");
       expect(toolNames(run.request)).toContain("mcp_jira_create_issue");
       expect(run.memory.published()).toBe("Created A-2.");
