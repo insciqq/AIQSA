@@ -123,12 +123,12 @@ function engine(): NativeEngineDeps {
   } satisfies ToolCallStore;
   const transcripts = {
     append: vi.fn(async () => undefined), approvalContinuationTurns: vi.fn(async () => new Set<string>()), loadRuns: vi.fn(async () => new Map()),
-    nativeRunsForAnswers: vi.fn(async () => new Map()), nextSequence: vi.fn(async () => 0)
+    nativeRunsForAnswers: vi.fn(async () => new Map()), nextSequence: vi.fn(async () => 0), runLive: vi.fn(async () => true)
   } satisfies TranscriptRepository;
   return {
     approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
     observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never),
-    runs: { applyUsageTotals: vi.fn(async () => undefined), complete: vi.fn(async () => true), publishAnswer: vi.fn(async () => true),
+    runs: { appendCompactionStatus: vi.fn(async () => true), applyUsageTotals: vi.fn(async () => undefined), complete: vi.fn(async () => true), publishAnswer: vi.fn(async () => true),
       saveStoppedText: vi.fn(async () => true), writeUsageRows: vi.fn(async () => undefined) },
     savedResults: { read: vi.fn(async () => null) }, toolCalls, transcripts
   };
