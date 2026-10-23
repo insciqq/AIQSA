@@ -25,8 +25,9 @@ async function fixture(status: "cancelled" | "streaming" = "streaming", engine: 
       status: "complete" } });
     const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(""), parentMessageId: question.id,
       role: "assistant", status: runStatus === "streaming" ? "streaming" : "cancelled" } });
-    return prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine, modelId: "fake-qsa", provider: "fake",
-      status: runStatus, userId, userMessageId: question.id } });
+    // Only a preparing run lacks its normalized request (ModelRun_memory_request_shape_check).
+    return prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine, modelId: "fake-qsa",
+      normalizedRequest: {}, provider: "fake", status: runStatus, userId, userMessageId: question.id } });
   };
   const current = await run(status);
   const approval = mcpApprovalRequest({ arguments: { id: "r-1" }, definitionHash: "d".repeat(64), originalName: "delete_record",
@@ -70,10 +71,13 @@ describe("native tool call records", () => {
   it("consumes the user's Allow once from an earlier answer of the chat and sends the call", async () => {
     const { approval, begin, chatId, run, runId, serverId, userId } = await fixture();
     const earlier = await run("cancelled");
+    // A model's request names the refused call it gated (McpToolApproval_state_check).
+    const refusedCall = await prisma.modelRunToolCall.create({ data: { arguments: { id: "r-1" }, completedAt: new Date(),
+      modelRunId: earlier.id, ordinal: 0, providerCallId: "call-earlier", roundIndex: 1, state: "error", toolName: approval.toolName } });
     const allowed = await prisma.mcpToolApproval.create({ data: {
       argumentsDigest: approval.argumentsDigest, chatId, decidedAt: new Date(), decision: "allow_once", definitionHash: approval.definitionHash,
       expiresAt: new Date(Date.now() + 60_000), modelRunId: earlier.id, serverId, serverName: approval.serverName, source: "model",
-      toolName: approval.toolName, toolTitle: approval.toolTitle, userId
+      toolCallId: refusedCall.id, toolName: approval.toolName, toolTitle: approval.toolTitle, userId
     } });
     const begun = await begin({ approval });
     expect(begun.kind).toBe("running");
@@ -81,6 +85,34 @@ describe("native tool call records", () => {
       .toMatchObject({ consumedByRunId: runId });
     // The approval is spent: the next identical call waits again.
     await expect(begin({ approval, ordinal: 1 })).resolves.toMatchObject({ kind: "gated" });
+  });
+
+  it("sends a continuation's call only with the user's Allow that names exactly it", async () => {
+    const { approval, begin, chatId, run, runId, serverId, userId } = await fixture();
+    const earlier = await run("cancelled");
+    let refused = 0;
+    const decided = async (decision: "allow_once" | "allow_server", argumentsDigest = approval.argumentsDigest) => {
+      const refusedCall = await prisma.modelRunToolCall.create({ data: { arguments: { id: "r-1" }, completedAt: new Date(),
+        modelRunId: earlier.id, ordinal: refused++, providerCallId: `call-${randomUUID()}`, roundIndex: 1, state: "error",
+        toolName: approval.toolName } });
+      return prisma.mcpToolApproval.create({ data: { argumentsDigest, chatId, decidedAt: new Date(), decision,
+        definitionHash: approval.definitionHash, ...(decision === "allow_once" ? { expiresAt: new Date(Date.now() + 60_000) } : {}),
+        modelRunId: earlier.id, serverId, serverName: approval.serverName, source: "model", toolCallId: refusedCall.id,
+        toolName: approval.toolName, toolTitle: approval.toolTitle, userId } });
+    };
+    // Always allow stands: the call is sent and the consent is not consumed.
+    const always = await decided("allow_server");
+    await expect(begin({ approval, approvedBy: always.id })).resolves.toMatchObject({ kind: "running" });
+    await expect(prisma.mcpToolApproval.findUniqueOrThrow({ where: { id: always.id } })).resolves.toMatchObject({ consumedAt: null });
+    // Allow once is consumed by this run, once.
+    const once = await decided("allow_once");
+    await expect(begin({ approval, approvedBy: once.id, ordinal: 1 })).resolves.toMatchObject({ kind: "running" });
+    await expect(prisma.mcpToolApproval.findUniqueOrThrow({ where: { id: once.id } })).resolves
+      .toMatchObject({ consumedByRunId: runId });
+    await expect(begin({ approval, approvedBy: once.id, ordinal: 2 })).resolves.toMatchObject({ kind: "gated" });
+    // An Allow of other arguments allows nothing here: the call asks with a card of its own.
+    const other = await decided("allow_once", "e".repeat(64));
+    await expect(begin({ approval, approvedBy: other.id, ordinal: 3 })).resolves.toMatchObject({ kind: "gated" });
   });
 
   it("records nothing once the run stopped, or for a run of the old core", async () => {

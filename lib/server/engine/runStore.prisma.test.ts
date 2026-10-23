@@ -21,8 +21,9 @@ async function nativeRun(engine: "native" | "v1" = "native", status: "cancelled"
   const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(""), parentMessageId: question.id,
     role: "assistant", status: status === "streaming" ? "streaming" : "cancelled" } });
   await prisma.chat.update({ data: { activeLeafMessageId: answer.id }, where: { id: chat.id } });
+  // Only a preparing run lacks its normalized request (ModelRun_memory_request_shape_check).
   const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine, modelId: "fake-qsa",
-    provider: "fake", status, userId, userMessageId: question.id } });
+    normalizedRequest: {}, provider: "fake", status, userId, userMessageId: question.id } });
   return { assistantMessageId: answer.id, chatId: chat.id, runId: run.id, userId };
 }
 
@@ -52,6 +53,15 @@ describe("native run store", () => {
   it("publishes nothing for a stopped run or a run of the old core", async () => {
     await expect(store.publishAnswer(await nativeRun("native", "cancelled"), { followupRevision: 0, text: "x" })).resolves.toBe(false);
     await expect(store.publishAnswer(await nativeRun("v1"), { followupRevision: 0, text: "x" })).resolves.toBe(false);
+  });
+
+  it("keeps the streamed text with a stopped answer, and writes no other answer", async () => {
+    const stopped = await nativeRun("native", "cancelled");
+    await expect(store.saveStoppedText(stopped, "Partial text")).resolves.toBe(true);
+    await expect(prisma.message.findUniqueOrThrow({ where: { id: stopped.assistantMessageId } })).resolves
+      .toMatchObject({ content: textMessageContent("Partial text"), status: "cancelled" });
+    await expect(store.saveStoppedText(await nativeRun(), "x")).resolves.toBe(false);
+    await expect(store.saveStoppedText(await nativeRun("v1", "cancelled"), "x")).resolves.toBe(false);
   });
 
   it("writes each call's usage once and the totals once, however often the write repeats", async () => {

@@ -7048,6 +7048,7 @@ function nativeEngineFake(listed: readonly string[]) {
         applyUsageTotals: async () => undefined,
         complete: async () => true,
         publishAnswer: async (_scope, input) => { published.push(input.text); return true; },
+        saveStoppedText: async () => true,
         writeUsageRows: async () => undefined
       },
       savedResults: { read: async () => null },

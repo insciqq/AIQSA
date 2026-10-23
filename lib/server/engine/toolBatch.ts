@@ -18,12 +18,14 @@ import {
   unknownToolCallName,
   unknownToolCallResult
 } from "../runs/unknownToolCall";
+import type { McpApprovalRequest } from "../mcp/writeApproval";
 import type { ToolObservationSource } from "../toolObservations/contract";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
 import { toolOutputExcerpt, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
+import type { UnknownEffects } from "./unknownEffects";
 
 /**
  * One tool batch of a native run: every call of a model response goes
@@ -33,12 +35,19 @@ import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
  * record, output events), in the response's order. A batch never re-sends a
  * call: only a call of a read-only tool that failed in transport is tried
  * again, and a call whose run stopped meanwhile keeps an unknown outcome.
+ * Neither does the model: a call equivalent to an earlier one whose effect
+ * is unknown (`unknownEffects.ts`) is sent only when the user decides, in the
+ * approval card for an MCP tool, otherwise by writing to the chat after the
+ * model checked and asked.
  */
 export const TOOL_BATCH_LIMITS = Object.freeze({
   /** Calls of one batch that run at once. */
   concurrency: 4,
   /** Retries of a read-only call that failed in transport. */
   readOnlyRetries: 2,
+  /** Attempts to settle a call's record after it ran; a record that stays unsettled only logs. */
+  recordAttempts: 3,
+  recordRetryDelayMs: 250,
   retryBaseDelayMs: 1_000
 });
 
@@ -56,6 +65,18 @@ export function transcriptRecord(registry: ToolRegistry, item: TranscriptItem): 
   return item.kind === "tool_result" && registry.resolve(item.name)?.runScopedResult
     ? { ...item, output: RUN_SCOPED_RESULT_NOTE } : item;
 }
+
+/** A call refused because an equivalent earlier call's effect is unknown and the user has not spoken since. */
+export const UNKNOWN_OUTCOME_REPEAT_OUTPUT =
+  "Not sent: an identical earlier call failed after it may have been sent, so its effect is unknown, and it is never sent " +
+  "again automatically. Check the current state first (a read-only step), tell the user what you found, and send it again " +
+  "only if the user asks you to.";
+
+/** The same refusal where the user decides in the approval card. */
+export const UNKNOWN_OUTCOME_APPROVAL_OUTPUT =
+  "Not sent: an identical earlier call failed after it may have been sent, so its effect is unknown. Check the current state " +
+  "if you can and tell the user what you found; the user decides in the card below whether to send it again. Do not call it " +
+  "again meanwhile.";
 
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
@@ -75,8 +96,13 @@ export type ToolBatchDeps = Readonly<{
   signal: AbortSignal;
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
+  /** Effects of the chat's earlier calls that are still unknown; the batch adds its own. */
+  unknownEffects: UnknownEffects;
   userId: string;
 }>;
+
+/** The call an approval continuation sends, with the user's Allow that names it. */
+export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string }>;
 
 /** What the run has spent on tools so far. */
 export type ToolBatchState = { calls: number };
@@ -101,7 +127,12 @@ export class ToolBatchInactiveError extends Error {
 
 type BeforeToolCall =
   | Readonly<{ budget?: true; kind: "refuse"; output: string; result: ToolLoopJsonValue; toolName: string }>
-  | Readonly<{ kind: "run"; tool: EngineTool }>;
+  | Readonly<{
+    /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it. */
+    retry?: Readonly<{ approval: McpApprovalRequest; approvedBy?: string }>;
+    kind: "run";
+    tool: EngineTool;
+  }>;
 
 function jsonError(call: Pick<ModelToolCall, "id" | "name">, value: Record<string, unknown>): ToolLoopJsonValue {
   return { callId: call.id, content: [{ type: "json", value: value as { [key: string]: ToolLoopJsonValue } }], name: call.name,
@@ -125,7 +156,8 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
    * without sending anything refuses here; the approval itself is consumed
    * or requested in the call's recording transaction.
    */
-  function beforeToolCall(call: ModelToolCall, round: number, batch: readonly ModelToolCall[]): BeforeToolCall {
+  function beforeToolCall(call: ModelToolCall, round: number, batch: readonly ModelToolCall[],
+    approved?: ApprovedToolCall): BeforeToolCall {
     const tool = deps.registry.resolve(call.name);
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
@@ -149,6 +181,19 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       return { kind: "refuse", output: repeatBlockedNote(repeatOf), toolName: call.name,
         result: repeatBlockedToolCallResult({ providerCallId: call.id, repeatOf, toolName: call.name }) };
     }
+    const unknown = tool.effects === "external" ? deps.unknownEffects.find(call) : null;
+    if (unknown) {
+      // It may have happened already: the user decides, in the card where the tool has one.
+      const approval = tool.retryApproval?.(call);
+      if (approval) {
+        const approvedBy = approved && approved.callId === call.id ? approved.approvalId : undefined;
+        return { kind: "run", retry: { approval, ...(approvedBy ? { approvedBy } : {}) }, tool };
+      }
+      if (!unknown.userSpokeSince) {
+        return { kind: "refuse", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT, toolName: call.name,
+          result: jsonError(call, { error: "tool_outcome_unknown_repeat", message: UNKNOWN_OUTCOME_REPEAT_OUTPUT }) };
+      }
+    }
     return { kind: "run", tool };
   }
 
@@ -169,14 +214,14 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     const rowResult = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) ??
       snapshotToolExecutionResult({ callId: result.callId, content: [{ text: excerpt.output, type: "text" }], name: result.name,
         status: result.status }, toolLoopPersistenceLimits.resultBytes)!;
-    await deps.store.settle({ callId: row.id, result: rowResult, runId: deps.runId, state: result.status });
+    await settleRecord(deps, { callId: row.id, result: rowResult, runId: deps.runId, state: result.status });
     deps.history.record({ ...row, result: rowResult, state: result.status });
     const identical = deps.history.identicalRound({ ...row, result: rowResult, state: result.status });
     try {
       await tool.settled?.(execution, result);
     } catch (error) {
-      logEvent("tool_execution", { error, stage: "result", outcome: "degraded", action: "degrade", code: "tool_records_unsaved",
-        reason: "unknown" });
+      logEvent("service_operation", { action: "degrade", code: "tool_records_unsaved", error, outcome: "degraded",
+        run_id: deps.runId, stage: "write", subsystem: "database" });
     }
     for (const event of result.artifacts ?? []) await deps.onEvent(event);
     return {
@@ -193,6 +238,28 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
   return { afterToolCall, beforeToolCall };
 }
 
+/**
+ * Settles a call's record after it ran: bookkeeping behind the answer (the
+ * model has the result either way). A record that stays unsettled is closed
+ * with an unknown outcome when the run ends.
+ */
+async function settleRecord(deps: ToolBatchDeps, input: Parameters<ToolCallStore["settle"]>[0]): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await deps.store.settle(input);
+      return;
+    } catch (error) {
+      if (deps.signal.aborted) throw error;
+      if (attempt >= TOOL_BATCH_LIMITS.recordAttempts) {
+        logEvent("service_operation", { action: "degrade", attempt, code: "tool_record_unsettled", error, outcome: "degraded",
+          run_id: deps.runId, stage: "write", subsystem: "database" });
+        return;
+      }
+      await (deps.sleep ?? sleepWithSignal)(TOOL_BATCH_LIMITS.recordRetryDelayMs * 2 ** (attempt - 1), deps.signal);
+    }
+  }
+}
+
 async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, execution: EngineToolExecution): Promise<ToolExecutionResult> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -207,7 +274,7 @@ async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, executi
 
 /** Runs one batch; results follow the calls' order. */
 export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
-  input: Readonly<{ calls: readonly ModelToolCall[]; round: number }>): Promise<ToolBatchOutcome> {
+  input: Readonly<{ approved?: ApprovedToolCall; calls: readonly ModelToolCall[]; round: number }>): Promise<ToolBatchOutcome> {
   const hooks = createToolHooks(deps, state);
   const approvals: string[] = [];
   let budgetExhausted = false;
@@ -216,7 +283,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
   if (declared.length > 0) deps.onLiveEvent(liveRunPhaseStatus({ count: declared.length, phase: "tools" }));
 
   const runCall = async (call: ModelToolCall, ordinal: number): Promise<TranscriptToolResultItem> => {
-    const before = hooks.beforeToolCall(call, input.round, input.calls);
+    const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved);
     const record = { arguments: call.arguments, chatId: deps.chatId, ordinal, providerCallId: call.id, roundIndex: input.round,
       runId: deps.runId, userId: deps.userId };
     if (before.kind === "refuse") {
@@ -237,13 +304,15 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: message };
     }
-    const approval = tool.approval?.(call);
-    const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}), toolName: call.name });
+    const approval = before.retry?.approval ?? tool.approval?.(call);
+    const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}),
+      ...(before.retry?.approvedBy ? { approvedBy: before.retry.approvedBy } : {}), toolName: call.name });
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
       approvals.push(begun.approvalId);
-      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: APPROVAL_PENDING_OUTPUT };
+      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
+        output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT };
     }
     executed += 1;
     deps.onLiveEvent(liveToolCallStatus(call, { ...tool.activity(call), round: input.round }));
@@ -261,12 +330,14 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
           "Check its effect before trying again.";
         result = { callId: call.id, content: [{ type: "json", value: { error: code, message, outcome: "unknown" } }], name: call.name,
           status: "error" };
+        deps.unknownEffects.record(call, "unknown");
         const item = await hooks.afterToolCall(execution, tool, begun.row, result);
         return { ...item, outcome: "unknown" };
       }
       result = { callId: call.id, content: [{ type: "json", value: { error: code, message: "The tool failed; nothing changed." } }],
         name: call.name, status: "error" };
     }
+    deps.unknownEffects.record(call, result.status);
     return hooks.afterToolCall(execution, tool, begun.row, result);
   };
 

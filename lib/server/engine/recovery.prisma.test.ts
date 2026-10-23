@@ -32,8 +32,9 @@ async function activeRun(userId: string, engine: "native" | "v1", options: Reado
   const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Partial work"),
     parentMessageId: question.id, role: "assistant", status: options.published ? "complete" : "streaming" } });
   await prisma.chat.update({ data: { activeLeafMessageId: answer.id }, where: { id: chat.id } });
+  // Only a preparing run lacks its normalized request (ModelRun_memory_request_shape_check).
   const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine, modelId: "fake-qsa",
-    provider: "fake", status: "streaming", userId, userMessageId: question.id,
+    normalizedRequest: {}, provider: "fake", status: "streaming", userId, userMessageId: question.id,
     ...(options.published ? { answerCompletedAt: new Date() } : {}),
     ...(options.backdated ? { createdAt: BACKDATED, updatedAt: BACKDATED } : {}) } });
   return { answerId: answer.id, chatId: chat.id, runId: run.id };
