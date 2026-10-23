@@ -7,7 +7,7 @@ import { logEvent, runWithContext } from "../observability";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
-import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
+import { codexLbConnection, effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -29,12 +29,14 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
-import { measureContext, contextAnchor, type ContextAnchor } from "./contextMeasure";
+import { engineItemRules } from "./compaction";
+import { compactionModelCall } from "./compactionCalls";
 import { buildRunConversation } from "./conversation";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { runAgentLoop, type LoopToolChoice } from "./loop";
 import { callModel } from "./modelCall";
+import { createRunContext, type RunContext } from "./runContext";
 import type { NativeRunStore } from "./runStore";
 import { runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps } from "./toolBatch";
 import type { ToolCallStore } from "./toolCallStore";
@@ -109,6 +111,17 @@ export function nativeRequestParams(adapterKind: string, params: Record<string, 
   return adapterKind === "openai_responses_compatible" || adapterKind === "openai_responses_native"
     ? { ...params, background: false, stream: true }
     : params;
+}
+
+/**
+ * Routes that compact natively and take their own compaction items back:
+ * OpenAI's Responses API and Codex LB (`compaction/native.ts`). Other
+ * compatible Responses gateways are not known to.
+ */
+export function nativeCompactionRoute(snapshot: Readonly<{ connection?: Parameters<typeof codexLbConnection>[0];
+  model: Readonly<{ adapterKind: string }> }>): boolean {
+  const kind = snapshot.model.adapterKind;
+  return kind === "openai_responses_native" || kind === "openai_responses_compatible" && codexLbConnection(snapshot.connection);
 }
 
 /** A response's items for adapters that report none. */
@@ -219,6 +232,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       };
       logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "started" });
       let runRecords: TranscriptWriter | null = null;
+      let runContext: RunContext | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -335,18 +349,51 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           if (batch.approvals.length > 0) await emitApprovalCards();
         }
 
-        const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId };
+        const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId,
+          ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}) };
         const params = nativeRequestParams(snapshot.model.adapterKind, base.params);
         const timeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
           snapshot.model.adapterKind === "fake" ? null : snapshot.model);
-        let anchor: ContextAnchor | null = null;
-        let requestItems = 0;
         let pending: ModelRunSseEvent[] = [];
         let followupRevision = 0;
+        const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),
+          modelId: normalizedRequest.modelId, operationCount: 1, provider: normalizedRequest.provider,
+          providerModelId: snapshot.providerModelId, purpose: "chat_answer", usage: reported } satisfies RunUsageAttribution);
+        // Measurement and compaction before every request (`runContext.ts`); compaction calls are the answer model's.
+        const context = createRunContext({
+          append,
+          compactionCall: (latest) => compactionModelCall({ adapter: input.adapter, deadlineAt: startedAt + turnMs, now,
+            onUsage: recordModelUsage, timeoutMs }, latest),
+          items,
+          now,
+          onStatus: (status) => sink.publish({ data: { artifactType: "context_compaction", payload: status }, type: "artifact" }),
+          projection: conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {},
+          record: (item) => transcriptRecord(registry, item),
+          rules: engineItemRules(input.approvalContinuation ? conversation.currentInputId : null),
+          runId,
+          signal,
+          target,
+          tooLarge: () => new EngineFailure("context_too_large", CONTEXT_TOO_LARGE_MESSAGE),
+          window: base.modelCapabilities.contextWindow
+            ? { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) } : null
+        });
+        runContext = context;
+        // A request the provider rejected for its size is compacted and sent once more.
+        const sendOnceMore = async (request: ProviderRunRequest, send: (sent: ProviderRunRequest) => Promise<ProviderRunResult>) => {
+          try {
+            return await send(request);
+          } catch (error) {
+            const retry = await context.overflow(request, error);
+            if (!retry) throw error;
+            pending = [];
+            answer.discardAttempt();
+            return send(retry);
+          }
+        };
         const outcome = await runAgentLoop({
           append,
           appendCalls,
-          callModel: (request) => callModel({
+          callModel: (request) => sendOnceMore(request, (sent) => callModel({
             adapter: input.adapter,
             deadlineAt: startedAt + turnMs,
             faults,
@@ -362,12 +409,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               else if (projectRunOutputArtifactEvent(pinned)) pending.push(pinned);
               else if (pinned.type !== "usage") sink.send(pinned);
             },
-            onUsage: (reported: ModelRunUsage, costUsd) => usage.add({ ...reportedAnswerCost(costUsd), modelId: normalizedRequest.modelId,
-              operationCount: 1, provider: normalizedRequest.provider, providerModelId: snapshot.providerModelId, purpose: "chat_answer",
-              usage: reported } satisfies RunUsageAttribution),
+            onUsage: recordModelUsage,
             signal,
             timeoutMs
-          }, request),
+          }, sent)),
           closeFollowups: async () => {
             if (!followupOps) return true;
             const batch = await followupOps.load({ runId, userId: input.userId });
@@ -406,15 +451,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               toolChoice,
               tools
             };
-            // The compaction seam: until it exists, a request that cannot fit fails visibly.
-            const measure = measureContext({ anchor, estimate: estimateApproxTokens,
-              fixedTokens: estimateApproxTokens([base.prompt, tools]), items, target });
-            const window = base.modelCapabilities.contextWindow ?? 0;
-            if (window > 0 && measure.tokens + maxOutputTokens(base) > window) {
-              throw new EngineFailure("context_too_large", CONTEXT_TOO_LARGE_MESSAGE);
-            }
-            requestItems = items.length;
-            return request;
+            // Compaction at the request boundary; a request that cannot fit even then fails visibly.
+            return context.prepare(request);
           },
           responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens,
             history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target, usage: result.usage }),
@@ -422,7 +460,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             for (const event of pending) await sink.publish(event);
             pending = [];
             answer.completeRound(result.finalText);
-            anchor = contextAnchor({ itemCount: requestItems, target, usage: result.usage }) ?? anchor;
+            context.observe(result.usage);
           },
           roundStart: async (round) => {
             answer.beginRound();
@@ -450,6 +488,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         answerPublished = true;
         sink.send({ data: { assistantMessageId: scope.assistantMessageId, runId }, type: "answer_complete" });
+        // A compaction still running is awaited (bounded) so the next turn starts compacted; an approval stop does not wait.
+        await context.afterAnswer({ wait: outcome.kind !== "approval" });
         // The transcript is on record (or given up) before the run completes and the next turn can read it.
         await writer.flush();
         if (input.chatTitleGenerator && answer.text) {
@@ -476,6 +516,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           outcome: cancelled ? "cancelled" : "failed", providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
           run_id: runId, stage: answerPublished ? "completion" : "execution" });
         answer.stop();
+        await runContext?.close();
         if (workspace && input.workspace) {
           await input.workspace.settle({ onActivity: onWorkspaceActivity,
             outcome: cancelled ? "cancelled" : deadline.signal.aborted ? "timed_out" : "failed", runId, userId: input.userId, workspace })
