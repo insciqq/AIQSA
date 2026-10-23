@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { makeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
+import { contextOutputReserveTokens } from "../../domain/contextBudget";
 import { contextTokenEstimator, tokenEstimateProfileFor } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import { logEvent } from "../observability";
@@ -111,7 +112,8 @@ export type RunContextDeps = Readonly<{
   target: TranscriptTarget;
   /** The failure of a request that cannot fit even after compaction. */
   tooLarge(): Error;
-  /** The model's window and the output each request reserves; without a window nothing is measured. */
+  /** The model's window and its maximum output, of which a small window reserves only a share
+   * (`contextOutputReserveTokens`); without a window nothing is measured. */
   window: Readonly<{ contextWindow: number; maxOutputTokens: number }> | null;
 }>;
 
@@ -170,7 +172,11 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   const target = deps.target;
   /** Every compaction of the run takes this path: native only where switched on and the route takes its items back. */
   const path: CompactionPath = (deps.native ?? COMPACTION_LIFECYCLE.native) && target.nativeCompaction === true ? "native" : "summary";
-  const window = deps.window && deps.window.contextWindow > 0 ? deps.window : null;
+  const maximumOutput = deps.window?.maxOutputTokens ?? 0;
+  const window = deps.window && deps.window.contextWindow > 0
+    ? { contextWindow: deps.window.contextWindow,
+      maxOutputTokens: contextOutputReserveTokens(deps.window.contextWindow, maximumOutput) }
+    : null;
   /** Tokens a request may carry; a size rejection that states a smaller window lowers it for the rest of the run. */
   let usable = window ? usableContextTokens(window) : 0;
   let weights: Readonly<{ calibration: ContextMeasureCalibration; estimate: (value: unknown) => number }> | null = null;
@@ -513,7 +519,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       // A window the provider states smaller than the configured one holds for the rest of the run.
       const maximum = facts?.reportedMaximumTokens;
       if (maximum !== undefined) {
-        usable = Math.max(0, Math.min(usable, usableContextTokens({ contextWindow: maximum, maxOutputTokens: window.maxOutputTokens })));
+        usable = Math.max(0, Math.min(usable, usableContextTokens({ contextWindow: maximum,
+          maxOutputTokens: contextOutputReserveTokens(maximum, maximumOutput) })));
       }
       // What fits, in the measure's own units: that window scaled by how far the provider's count of this
       // request exceeded the measure, and in any case well below what was just rejected.
