@@ -4,7 +4,6 @@ import { knowledgeProviderDispatchLifecycle } from "../knowledge/defaultEvidence
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
-import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { admitMemorySearch } from "../memory/search/admission";
 import { createPrismaMemorySearchService } from "../memory/search/runtime";
 import { prisma } from "../prisma";
@@ -28,7 +27,6 @@ export function defaultRunServices(storage: StorageAdapter) {
     knowledgeAdmission: knowledgeRunAdmissionService,
     knowledgeExecutor: knowledgeToolExecutor,
     knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
-    memoryEgress: defaultMemoryToolEgressReceiptService,
     memorySearch: createPrismaMemorySearchService(),
     memorySearchAdmission: { async admit(userId: string, assistantId?: string | null) {
       const policy = await prisma.modelPolicy.findUniqueOrThrow({

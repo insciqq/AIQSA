@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { McpSafeFetchError } from "../mcp/safeFetch";
 import { ProviderSafeFetchError } from "../providers/providerSafeFetch";
-import { WorkspaceHandoffFailure } from "../runs/settlementFailure";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { databaseFailureCode, databaseFailureKind } from "./databaseFailure";
 import { describeFailureFacts, retainFailureCause } from "./failureFacts.cjs";
@@ -41,13 +40,11 @@ function expectContentFree(value: unknown): void {
 }
 
 describe("failure facts of a cause chain", () => {
-  it("names an expired transaction behind a Workspace handoff failure", () => {
+  it("names an expired transaction behind a Workspace step failure", () => {
     const expired = expiredTransaction();
-    const step = new WorkspaceRuntimeError("workspace_runtime_unavailable", { factsOf: expired });
-    const handoff = new WorkspaceHandoffFailure(step);
-    // The chain stops at the facts-retaining wrapper: no raw database error is reachable.
-    expect(handoff.cause).toBe(step);
-    expect(step.cause).toBeUndefined();
+    const handoff = new WorkspaceRuntimeError("workspace_runtime_unavailable", { factsOf: expired });
+    // The facts-retaining error keeps no raw database error reachable.
+    expect(handoff.cause).toBeUndefined();
     expect(inspect(handoff, { depth: 8 })).not.toContain(CANARY);
     expect([databaseFailureCode(handoff), databaseFailureKind(handoff)]).toEqual(["P2028", "transaction_expired"]);
     const event = record("run_execution", {
@@ -55,7 +52,7 @@ describe("failure facts of a cause chain", () => {
       prisma_code: "unknown"
     });
     expect(event).toMatchObject({
-      level: "error", error_class: "WorkspaceHandoffFailure", prisma_code: "P2028", db_failure: "transaction_expired",
+      level: "error", error_class: "WorkspaceRuntimeError", prisma_code: "P2028", db_failure: "transaction_expired",
       tx_timeout_ms: 5000, tx_elapsed_ms: 5012, cause_class: "PrismaClientKnownRequestError"
     });
     expect(event.cause_site).toMatch(TEST_SITE);

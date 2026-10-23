@@ -15,7 +15,7 @@ import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryCo
 import { createNativeRunExecutionResponse } from "./execution";
 import { modelCallRetryDecision } from "./modelCall";
 import { CLAUDE_FAMILY_PROMPT } from "./prompts/claude";
-import { nativeEngineRoute, parseNativeEngineUsers } from "./routing";
+import { engineAdmissionRefusal } from "./handlerSupport";
 import type { TranscriptItem } from "./transcript";
 
 /**
@@ -99,8 +99,7 @@ describe("native Anthropic on the engine", () => {
     const memory = memoryNativeEngine();
     const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
     const prepared = anthropicPrepared();
-    expect(nativeEngineRoute({ allowlist: parseNativeEngineUsers("user-1"), prepared, user: { email: null, id: "user-1" } }))
-      .toEqual({ engine: "native" });
+    expect(engineAdmissionRefusal(prepared)).toBeNull();
     const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
       mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never, prepared,
       repository: nativeRunRepository() as unknown as RunRepository, services: {}, userId: "user-1" }));

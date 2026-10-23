@@ -13,7 +13,6 @@ import { createTelemetryAggregator } from "@/lib/server/telemetry/aggregator";
 import { databaseFailureCode, databaseFailureKind } from "@/lib/server/observability/databaseFailure";
 import { prisma } from "@/lib/server/prisma";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
-import { WorkspaceHandoffFailure } from "@/lib/server/runs/settlementFailure";
 import { getWorkspaceConfig } from "./config";
 import {
   createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator, WORKSPACE_EXPORT_MAX_ATTEMPTS, type WorkspaceExportLease
@@ -1248,8 +1247,6 @@ describe("Prisma Workspace export behind a held chat row", () => {
         expect(failure).toBeInstanceOf(WorkspaceRuntimeError);
         expect(failure).toMatchObject({ code: "workspace_output_export_failed" });
         expect([databaseFailureCode(failure), databaseFailureKind(failure)]).toEqual(["P2010", "lock_timeout"]);
-        // The run's terminal record keeps that cause.
-        expect(databaseFailureKind(new WorkspaceHandoffFailure(failure))).toBe("lock_timeout");
         expect(seal.mock.calls.length).toBeGreaterThan(0);
         expect(handoff.records.filter((record) => record.outcome === "failed")).toEqual([expect.objectContaining({
           work_stage: "seal", code: "workspace_output_export_failed", prisma_code: "P2010", db_failure: "lock_timeout",
