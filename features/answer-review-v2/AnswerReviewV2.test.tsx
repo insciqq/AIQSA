@@ -219,7 +219,7 @@ describe("answer review availability", () => {
   ];
   const answer = message("a", "q", "assistant", { modelId: "claude-sonnet-5", provider: "anthropic" });
   const authors = answerReviewAuthorModelsV2(answer, models);
-  const base: AnswerReviewAvailabilityInput = { activeRun: false, agentEnabled: false, answer, assistantChat: false,
+  const base: AnswerReviewAvailabilityInput = { activeRun: false, answer, assistantChat: false,
     authorModels: authors, candidates: answerReviewReviewerCandidatesV2(models, authors), knowledgeEnabled: false, latest: true,
     mutationReason: null };
 
@@ -234,7 +234,6 @@ describe("answer review availability", () => {
       [{ assistantChat: true }, /Assistant chats/u],
       [{ activeRun: true }, /Wait for the current answer/u],
       [{ latest: false }, /latest answer/u],
-      [{ agentEnabled: true }, /Turn Agent off/u],
       [{ knowledgeEnabled: true }, /Knowledge/u],
       [{ answer: { ...answer, artifactSummary: artifact({ generatedImages: [{ attachmentId: "i", fileName: "x.png" }] as never }) } },
         /generated images/u],

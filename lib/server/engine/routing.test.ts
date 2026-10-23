@@ -74,7 +74,6 @@ describe("native engine routing", () => {
     expect(route({ allowlist: parseNativeEngineUsers("") })).toEqual({ engine: "v1", reason: "not_listed" });
     expect(route({ prepared: prepared({ project: {} }) })).toMatchObject({ reason: "project_chat" });
     expect(route({ prepared: prepared({ assistant: {}, project: {} }) })).toMatchObject({ reason: "project_chat" });
-    expect(route({ prepared: prepared({}, { agent: {} }) })).toMatchObject({ reason: "agent_turn" });
     expect(route({ prepared: prepared({}, { knowledgePlan: { mode: "auto" } }) })).toMatchObject({ reason: "knowledge" });
     expect(route({ prepared: prepared({}, {}, "openai_chat_completions_compatible") })).toMatchObject({ reason: "adapter_without_history" });
     expect(route({ prepared: prepared({}, { modelCapabilities: {} }) })).toMatchObject({ reason: "tool_calling_unverified" });

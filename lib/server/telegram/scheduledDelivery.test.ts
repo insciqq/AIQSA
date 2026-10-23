@@ -84,7 +84,7 @@ function memoryStore(context: () => TelegramScheduledDeliveryContext | null) {
 
 function link(telegramChatId: number, botId: number, id = "link-1"): TelegramLinkRecord {
   return {
-    agentEnabled: false, botId, currentChatId: null, displayName: null, id, lastSeenAt: new Date(START),
+    botId, currentChatId: null, displayName: null, id, lastSeenAt: new Date(START),
     linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
     telegramChatId, telegramUserId: telegramChatId, telegramUsername: null, userId: "user-1", workspaceEnabled: false
   };

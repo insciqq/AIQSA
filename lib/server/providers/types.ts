@@ -122,8 +122,8 @@ export type ProviderImageProvenance = Readonly<
  * and is never accepted from the browser as configuration. */
 export type NormalizedRunWorkspace = Readonly<{
   enabled: true;
-  /** Guest code of this Internet-On, non-Agent run can reach the run gateway,
-   * with these code-call budgets. Absent: no code token (older runs too). */
+  /** Guest code of this Internet-On run can reach the run gateway, with these
+   * code-call budgets. Absent: no code token (older runs too). */
   codeMcp?: import("../workspace/codeMcp").NormalizedWorkspaceCodeMcp;
   /** Absent historical turns retain their inline-guide Agent contract. */
   guidanceVersion?: 1;
@@ -146,7 +146,6 @@ export type NormalizedRunWorkspace = Readonly<{
 export type NormalizedRunRequest = {
   /** Preparation keeps room for accepted clarifications. Released at execution. */
   followupContextReserveTokens?: number;
-  agent?: import("../agents/config").NormalizedRunAgent;
   /** Server-admitted provider-neutral browser artifact tool. */
   artifactTool?: true;
   /** Exact private tool guidance from the resource policy at admission. */
@@ -304,7 +303,7 @@ export type NormalizedRunRequest = {
   };
   provider: string;
   /** Server-owned admission marker of an ordinary personal run (never a
-   * scheduled, temporary, Project, Assistant, Agent or Knowledge run) whose
+   * scheduled, temporary, Project, Assistant or Knowledge run) whose
    * tool-calling model may create one scheduled task through
    * `create_scheduled_task`: the settings such a task takes, frozen from this
    * admission. `modelId` and `provider` are the catalog identity the run
@@ -333,15 +332,15 @@ export type NormalizedRunRequest = {
   }>;
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker of an interactive personal chat with
-   * Workspace on, or a personal Agent run: the model may save one Workspace
-   * folder per answer as a personal Skill through `save_skill` (never a
+   * Workspace on: the model may save one Workspace folder per answer as a
+   * personal Skill through `save_skill` (never a
    * scheduled, temporary, Project, Assistant or Knowledge run). Never set
    * from a request field. */
   skillSaveTool?: true;
   /** Server-owned admission marker of an interactive run with MCP authority
    * (any run a user started, never a scheduled task's run): its MCP calls
-   * of tools that may change data need the initiator's approval, model,
-   * guest-code and Agent calls alike. Carries the initiator's "Always allow"
+   * of tools that may change data need the initiator's approval, model and
+   * guest-code calls alike. Carries the initiator's "Always allow"
    * consents for the run's servers as admission read them. Never set from a
    * request field. */
   mcpApproval?: import("../mcp/writeApproval").McpApprovalAdmission;

@@ -437,18 +437,6 @@ describe("message run actions", () => {
     expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
   });
 
-  it("sends an existing creation chip with Agent and retains the draft when admission rejects it", async () => {
-    const fetchMock = vi.fn(async () => Response.json({ error: "agent_unavailable" }, { status: 409 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Create a page" });
-    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { artifactCreate: { intent: "create" }, agentEnabled: true });
-    await actions.submitComposer();
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const request = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(request[1].body))).toMatchObject({ agentEnabled: true, artifactIntent: "create" });
-    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ artifactCreate: { intent: "create" }, draft: "Create a page", pendingSend: null });
-  });
-
   it("consumes an admitted artifact edit before the answer arrives without releasing send or consuming the next intent", async () => {
     let release!: () => void;
     const stream = new Promise<void>(resolve => { release = resolve; });
@@ -780,17 +768,15 @@ describe("message run actions", () => {
     });
 
     it.each([
-      ["workspace_model_tools_required", false],
-      ["agent_unavailable", true],
-      ["workspace_secret_unavailable", true]
-    ] as const)("offers no send without Workspace for %s (Agent on: %s)", async (error, agentEnabled) => {
+      "workspace_model_tools_required",
+      "agent_mode_removed"
+    ])("offers no send without Workspace for %s", async (error) => {
       vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error }, { status: 409 })));
       const actions = useMessageRunActionsForTest({
         attachments: [],
         draft: "Use the files",
         resolveWorkspaceInstallationAvailable: () => true
       });
-      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { agentEnabled });
 
       await actions.submitComposer();
 

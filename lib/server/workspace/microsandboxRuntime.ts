@@ -45,12 +45,7 @@ import {
 import type { WorkspaceOutputSkipReason } from "@/lib/contracts/workspace";
 import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
-import { AgentExecutionOutput } from "../agents/executionOutput";
-import { CodexJsonlDecoder } from "../agents/codexProtocol";
 import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
-import { AGENT_PROMPT_MAX_BYTES, INSTALL_CODEX_PROFILE } from "../agents/guest";
-import { CODEX_HOME_DIRECTORY, CODEX_RUN_TOKEN_ENV, codexExecArguments, renderCodexManagedProfile } from "../agents/codexProfile";
-import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
@@ -103,9 +98,6 @@ type McpConnection = Readonly<{
 }>;
 
 type LocalSession = {
-  agents?: Map<string, { modelRunId: string; handle: ExecHandle; output: AgentExecutionOutput; failed: boolean;
-    decoder: CodexJsonlDecoder; interrupted: boolean; continuable: boolean; exited: boolean }>;
-  lastAgentExecId?: string;
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
   execOwners: Map<string, string>;
   mcp?: McpConnection;
@@ -608,10 +600,6 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     return this.skills ??= new WorkspaceSkillRunState(directory);
   }
 
-  private noAgent(session: LocalSession): void {
-    if (session.agents?.size) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-  }
-
   private async withGuestOperation<T>(session: LocalSession, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
     signal?.throwIfAborted();
     // Native fs/exec calls have no AbortSignal API. Stop this exact guest on
@@ -644,15 +632,15 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     this.session(input.sessionId, input.runtimeSandboxId);
     return this.skillState().prepare(input, async () => {
-      const session = await this.runningSession(input); this.noAgent(session);
+      const session = await this.runningSession(input);
       await this.withGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "reset" }, input.signal));
-    }, async () => this.noAgent(this.session(input.sessionId, input.runtimeSandboxId)));
+    }, async () => { this.session(input.sessionId, input.runtimeSandboxId); });
   }
 
   async installSkillBundle(input: Parameters<WorkspaceRuntime["installSkillBundle"]>[0]) {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     return this.skillState().install(input, input.bundle, async () => {
-      const session = await this.runningSession(input); this.noAgent(session);
+      const session = await this.runningSession(input);
       return this.withGuestOperation(session, input.signal, async () => {
         const archive = await readSkillArchive(input);
         parseSkillArchive(archive);
@@ -673,7 +661,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   async completeSkillRunPreparation(input: Parameters<WorkspaceRuntime["completeSkillRunPreparation"]>[0]): Promise<void> {
     input = { ...input, signal: skillOperationSignal(input.signal) };
     await this.skillState().complete(input, async refs => {
-      const session = await this.runningSession(input); this.noAgent(session);
+      const session = await this.runningSession(input);
       await this.withGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "links", aliases: refs.map(ref => ref.alias) }, input.signal));
     });
   }
@@ -869,7 +857,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           .memory(input.memoryMiB)
           .workdir(WORKSPACE_PROJECT_DIRECTORY)
           // The SDK's multi-tenant floor forbids even a single host gateway.
-          // Agent-capable sessions use our fixed policy below, never guest input.
+          // Gateway-capable sessions use our fixed policy below, never guest input.
           .deploymentProfile(input.internetEnabled && this.config.agentGatewayEnabled ? "single-tenant" : "multi-tenant")
           .security("restricted")
           .idleTimeout(this.config.idleTtlSeconds)
@@ -1250,115 +1238,6 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     return (await this.mcp(this.session(input.sessionId, input.runtimeSandboxId))).catalog;
   }
 
-  async startAgent(input: WorkspaceAgentStart): Promise<void> {
-    return this.skillState().start({ ...input, manifestHash: input.skillManifestHash }, () => this.startPreparedAgent(input));
-  }
-
-  private async startPreparedAgent(input: WorkspaceAgentStart): Promise<void> {
-    if (!this.config.agentGatewayEnabled || input.profile.gatewayOrigin !== RUNNER_GATEWAY_ORIGIN) {
-      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-    }
-    if (!/^agent-[a-f0-9-]{36}$/iu.test(input.runtimeExecSessionId) ||
-      !/^[a-zA-Z0-9_-]{43,128}$/u.test(input.runToken) ||
-      typeof input.prompt !== "string" || Buffer.byteLength(input.prompt) > AGENT_PROMPT_MAX_BYTES ||
-      (input.timeoutSeconds !== null && (!Number.isSafeInteger(input.timeoutSeconds) || input.timeoutSeconds < 1 || input.timeoutSeconds > 7200))) {
-      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-    }
-    const config = renderCodexManagedProfile(input.profile);
-    const args = codexExecArguments(input.threadId);
-    const session = await this.runningSession(input);
-    session.agents ??= new Map();
-    // Lost start replies must never dispatch a second agent or replay effects.
-    const previous = input.previousExecSessionId ? session.agents.get(input.previousExecSessionId) : null;
-    if (session.agents.has(input.runtimeExecSessionId) || (input.previousExecSessionId
-      ? session.lastAgentExecId !== input.previousExecSessionId || !previous || previous.modelRunId !== input.modelRunId ||
-        previous.failed || !previous.continuable || !input.threadId || previous.decoder.nativeThreadId !== input.threadId
-      : session.lastAgentExecId !== undefined || session.agents.size > 0)) {
-      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-    }
-    input.signal?.throwIfAborted();
-    // Reserve before guest I/O; an ambiguous start cannot be retried even if
-    // execStreamWith never returned its handle to this process.
-    session.lastAgentExecId = input.runtimeExecSessionId;
-    const prepared = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
-      .args(["-I", "-c", INSTALL_CODEX_PROFILE]).timeout(10_000)
-      .stdinBytes(Buffer.from(JSON.stringify({ config }))));
-    if (!prepared.success) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-    const environment = await this.secretEnvironment(session, input.modelRunId);
-    input.signal?.throwIfAborted();
-    const handle = await session.sandbox.execStreamWith("/usr/local/bin/codex", (builder) => {
-      const command = builder.args(args).cwd(WORKSPACE_PROJECT_DIRECTORY)
-        .envs({ ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment, HOME: "/root", CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
-        .stdinBytes(Buffer.from(input.prompt));
-      return input.timeoutSeconds === null ? command : command.timeout(input.timeoutSeconds * 1000);
-    });
-    const execution = { modelRunId: input.modelRunId, handle, output: new AgentExecutionOutput(), failed: false,
-      decoder: new CodexJsonlDecoder(), interrupted: false, continuable: false, exited: false };
-    session.agents.set(input.runtimeExecSessionId, execution);
-    session.execOwners.set(input.runtimeExecSessionId, input.modelRunId);
-    // The receiver operation and durable registry retain cleanup ownership
-    // after this HTTP request ends. Only polling carries these raw bytes.
-    void (async () => {
-      let exitCode: number | null = null;
-      try {
-        for (;;) {
-          const event = await handle.recv();
-          if (!event) break;
-          if (event.kind === "stdout") {
-            execution.decoder.push(event.data);
-            execution.output.stdout(event.data);
-          }
-          if (event.kind === "stderr") execution.output.stderr(event.data);
-          if (event.kind === "exited") exitCode = event.code;
-        }
-        execution.exited = true;
-        try {
-          if (execution.interrupted) execution.decoder.finishInterrupted(exitCode);
-          else execution.decoder.finish(exitCode);
-          execution.continuable = execution.decoder.toolsSettled;
-        } catch { /* Polling retains the original protocol/exit failure. */ }
-        execution.output.end(exitCode);
-      } catch {
-        execution.failed = true;
-        await handle.kill().catch(() => undefined);
-      }
-    })();
-    if (input.signal?.aborted) {
-      await handle.kill().catch(() => undefined);
-      throw new WorkspaceRuntimeError("workspace_tool_cancelled");
-    }
-  }
-
-  async interruptAgent(input: WorkspaceAgentIdentity): Promise<boolean> {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
-    const execution = session.agents?.get(input.runtimeExecSessionId);
-    if (!execution || execution.modelRunId !== input.modelRunId || session.lastAgentExecId !== input.runtimeExecSessionId || execution.failed) {
-      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
-    }
-    input.signal?.throwIfAborted();
-    if (execution.interrupted) return true;
-    if (execution.exited || !execution.decoder.canInterrupt) return false;
-    // The gateway has already frozen executable output under this segment's
-    // grant. This operation is deliberately fixed to SIGINT, never Stop.
-    execution.interrupted = true;
-    try { await execution.handle.signal(2); }
-    catch { execution.failed = true; throw new WorkspaceRuntimeError("workspace_runtime_unavailable"); }
-    return true;
-  }
-
-  async pollAgent(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>) {
-    const session = this.session(input.sessionId, input.runtimeSandboxId);
-    const execution = session.agents?.get(input.runtimeExecSessionId);
-    if (!execution || execution.modelRunId !== input.modelRunId) {
-      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
-    }
-    input.signal?.throwIfAborted();
-    try {
-      if (execution.failed) throw new Error("output_invalid");
-      return execution.output.poll(input.cursor);
-    } catch { throw new WorkspaceRuntimeError("workspace_agent_output_invalid"); }
-  }
-
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -1545,12 +1424,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     // Do not turn a large registry into minutes of sequential signal timeouts.
     // The VM fallback covers all commands regardless of batch size.
     if (ids.length > 32 || signal?.aborted) return unknown;
-    // Native Codex handles cannot certify escaped descendants either. Stop
-    // their leaders promptly, then require the existing exact-VM stop proof.
-    if (ids.some((id) => id.startsWith("agent-"))) {
-      await Promise.all(ids.map((id) => session.agents?.get(id)?.handle.kill().catch(() => undefined)));
-      return unknown;
-    }
+    // Executions of the removed Codex Agent, registered by earlier releases,
+    // are no MCP executions: only the exact-VM stop proves their cleanup.
+    if (ids.some((id) => id.startsWith("agent-"))) return unknown;
     const mcp = await this.mcp(session);
     const deadline = AbortSignal.timeout(10_000);
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;

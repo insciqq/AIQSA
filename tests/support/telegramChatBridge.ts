@@ -34,7 +34,6 @@ export const SEARCH_OPTION: CatalogWireSearchStrategy = {
 
 export function fakeCatalogModel(overrides: Partial<TelegramCatalogModel> = {}): TelegramCatalogModel {
   return {
-    agentAvailable: false,
     capabilities: {
       background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false,
       reasoning: false, streaming: true, text: true, toolCalling: true
@@ -443,7 +442,7 @@ export function createBridgeHarness(options: Readonly<{
 
   function link(telegramUser: FakeTelegramUser, userId = "user-1", overrides: Partial<TelegramLinkRecord> = {}): TelegramLinkRecord {
     const record: TelegramLinkRecord = {
-      agentEnabled: false, botId: fake.bot.id, currentChatId: null, displayName: telegramUser.first_name, id: `link-${userId}`,
+      botId: fake.bot.id, currentChatId: null, displayName: telegramUser.first_name, id: `link-${userId}`,
       lastSeenAt: new Date(TEST_NOW), linkedAt: new Date(TEST_NOW), pendingAssistantId: null, searchEnabled: true, selectedModelId: null,
       selectedProvider: null, telegramChatId: telegramUser.id, telegramUserId: telegramUser.id, telegramUsername: telegramUser.username ?? null,
       userId, workspaceEnabled: false, ...overrides

@@ -1,5 +1,5 @@
 import { getAuthConfig } from "@/lib/server/auth/config";
-import { publicAgentGuideResponse } from "@/lib/server/agents/guide";
+import { publicAgentGuideResponse } from "@/lib/server/agentConnections/guide";
 import { isMcpHubEnabled } from "@/lib/server/mcp/hubConfiguration";
 
 export const runtime = "nodejs";

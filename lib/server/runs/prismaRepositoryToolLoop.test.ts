@@ -1,7 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
-import { agentLimits } from "../agents/config";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { NormalizedRunRequest, ProviderModelCapabilities } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
@@ -613,25 +611,14 @@ describe("provider dispatch recovery request loading", () => {
     }
   });
 
-  it("loads an Agent request accepted under an earlier guest Codex only so recovery can settle it", async () => {
-    const agent = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
-      compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
+  it("never loads a request accepted as a Codex Agent turn: recovery ends it before replay", async () => {
     let accepted: unknown;
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
       chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
       normalizedRequest: accepted, provider: "provider-one"
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
-    for (const codexVersion of [agent.codexVersion, "0.158.0"]) {
-      accepted = { ...normalizedRequest, workspace, agent: { ...agent, codexVersion } };
-      await expect(load()).resolves.toMatchObject({ agent: { codexVersion } });
-    }
-    for (const invalid of [{ codexVersion: 154 }, { codexVersion: "0.158.0-alpha" }, { codexVersion: "0.158.0", compatibilityHash: "x" },
-      { codexVersion: "0.158.0", mcpMode: "sometimes" }]) {
-      accepted = { ...normalizedRequest, workspace, agent: { ...agent, ...invalid } };
-      await expect(load()).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
-    }
-    accepted = { ...normalizedRequest, agent: { ...agent, codexVersion: "0.158.0" } };
+    accepted = { ...normalizedRequest, workspace, agent: { version: 2, codexVersion: "0.160.0", compatibilityHash: "a".repeat(64), mcpMode: "auto" } };
     await expect(load()).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 

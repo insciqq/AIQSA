@@ -11,7 +11,7 @@ describe("the self-service tools' chats", () => {
     expect(selfServiceChat(prepared())).toBe(true);
     expect(selfServiceChat(prepared({ initialChatMode: "TEMPORARY" }))).toBe(true);
     for (const other of [prepared({ project: { projectId: "p" } }), prepared({ assistant: { id: "a" } }), prepared({ chatAssistant: { id: "a" } }),
-      prepared({}, { agent: {} }), prepared({}, { answerReviewStep: {} }), prepared({}, { monitoringVerdictTool: true })]) {
+      prepared({}, { answerReviewStep: {} }), prepared({}, { monitoringVerdictTool: true })]) {
       expect(selfServiceChat(other)).toBe(false);
     }
   });

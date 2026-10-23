@@ -107,7 +107,7 @@ function setup(options: Readonly<{
   });
   function link(telegramUser: FakeTelegramUser, userId = `user-${telegramUser.id}`): TelegramLinkRecord {
     const record: TelegramLinkRecord = {
-      agentEnabled: false, botId: fake.bot.id, currentChatId: null, displayName: telegramUser.first_name, id: `link-${telegramUser.id}`,
+      botId: fake.bot.id, currentChatId: null, displayName: telegramUser.first_name, id: `link-${telegramUser.id}`,
       lastSeenAt: new Date(clock), linkedAt: new Date(clock), pendingAssistantId: null, searchEnabled: true, selectedModelId: null,
       selectedProvider: null, telegramChatId: telegramUser.id, telegramUserId: telegramUser.id, telegramUsername: telegramUser.username ?? null,
       userId, workspaceEnabled: false

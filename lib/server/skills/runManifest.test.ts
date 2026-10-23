@@ -22,21 +22,6 @@ describe("accepted Skills catalog", () => {
     expect(estimateApproxTokens(small.catalog)).toBeLessThanOrEqual(skillCatalogBudget(8_000));
   });
 
-  it("delivers the full Agent discovery catalog without AIQSA tools, context text or loaded ordering", () => {
-    const available = Array.from({ length: 200 }, (_, index) => ({ ...skill(`a-${String(index).padStart(3, "0")}`),
-      description: "長".repeat(1024), loadedBefore: index === 199 }));
-    const native = freezeSkillManifest({ mode: "auto", pinned: [skill("p")], available, toolsSupported: false,
-      nativeDiscovery: true, contextWindow: 1000, loadedBefore: new Set(["a-199"]) });
-    expect(native.catalog).toBe("");
-    expect(native.manifest.available).toHaveLength(200);
-    expect(native.manifest.available[0]?.skillId).toBe("a-000");
-    expect(native.manifest.available.every(entry => !entry.loadedBefore && entry.description.length === 1024)).toBe(true);
-    expect(native.manifest.omittedCount).toBeUndefined();
-    expect(skillToolsForRequest({ skills: native.manifest })).toEqual([]);
-    const off = freezeSkillManifest({ mode: "off", pinned: [skill("p")], available, toolsSupported: false, nativeDiscovery: true });
-    expect(off.manifest.available).toEqual([]);
-    expect(off.pinned).toHaveLength(1);
-  });
   it("freezes aliases without collisions and preserves legacy pinned-only admission", () => {
     const input = [skill("1", "中文"), skill("2", "русский"), skill("3", "skill"), skill("4", "A".repeat(80)), skill("5", "A".repeat(80))];
     const aliases = assignSkillAliases(input).map((item) => item.alias);
@@ -131,16 +116,13 @@ describe("accepted Skills catalog", () => {
     expect(JSON.stringify(actual)).toBe(JSON.stringify(baseline));
   });
 
-  it("cannot use ranking to restore unavailable catalogs or create tools in native discovery", () => {
+  it("cannot use ranking to restore unavailable catalogs or create tools", () => {
     const input = { mode: "auto" as const, pinned: [skill("p")], available: [skill("a"), skill("b")], toolsSupported: false };
     expect(freezeSkillManifest({ ...input, rankedAvailableSkillIds: ["a"] })).toEqual(freezeSkillManifest(input));
-    const off = { ...input, mode: "off" as const, nativeDiscovery: true };
+    expect(freezeSkillManifest(input).manifest.available).toEqual([]);
+    expect(freezeSkillManifest(input).manifest.tools).toBeUndefined();
+    const off = { ...input, mode: "off" as const };
     expect(freezeSkillManifest({ ...off, rankedAvailableSkillIds: ["a"] })).toEqual(freezeSkillManifest(off));
-    const native = freezeSkillManifest({ ...input, nativeDiscovery: true, rankedAvailableSkillIds: ["b", "a"] });
-    expect(native.manifest.available.map(({ skillId }) => skillId)).toEqual(["b", "a"]);
-    expect(native.catalog).toBe("");
-    expect(native.manifest.tools).toBeUndefined();
-    expect(native.pinned).toEqual(freezeSkillManifest(input).pinned);
   });
 
   it("budgets the selected priority order and counts only budget omissions", () => {

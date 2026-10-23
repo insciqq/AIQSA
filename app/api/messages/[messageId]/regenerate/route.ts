@@ -1,4 +1,3 @@
-import { agentPolicyRepository } from "@/lib/server/agents/defaultPolicy";
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultInstructionPresets } from "@/lib/server/instructions/defaultInstructions";
@@ -36,7 +35,6 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunH
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,
-  agentPolicy: agentPolicyRepository,
   runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
   skillCatalogRelevance: defaultSkillCatalogRelevance,

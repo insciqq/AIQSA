@@ -357,7 +357,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   // The self-service tools: the user's own resources through their owners, each call settled
   // with its change and card in one transaction, which fences the run once more.
   const selfService = input.services.selfService;
-  const selfServiceOffered = clientTools && selfService !== undefined && secrets !== undefined && !request.agent &&
+  const selfServiceOffered = clientTools && selfService !== undefined && secrets !== undefined &&
     !request.answerReviewStep && !request.monitoringVerdictTool;
   if (selfServiceOffered && selfService && secrets) {
     const deps: SelfServiceRunDeps = { ...selfService, attachmentIds: admittedAttachmentIds(request), request: { skills: request.skills },

@@ -21,9 +21,9 @@ import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
  * (`[AIQSA_MCP_E2E:<tool>:<id>]`) against the synthetic records server, and
  * the deterministic Workspace runtime. The oracles are the endpoint's received
  * calls, the persisted approval rows and what reached Telegram, never model
- * wording. The spec owns its bot identity. Agent runs need a real Codex
- * provider: the Agent wording, the 5 s edit pacing and the 30 s wait for a
- * settling run are unit-tested in lib/server/telegram/{agentStatus,approvals}.test.ts.
+ * wording. The spec owns its bot identity. The status wording, the 5 s edit
+ * pacing and the 30 s wait for a settling run are unit-tested in
+ * lib/server/telegram/{agentStatus,approvals}.test.ts.
  */
 
 test.describe.configure({ mode: "serial", timeout: 180_000 });

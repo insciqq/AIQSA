@@ -5,7 +5,6 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
-import { agentTokenHash } from "../agents/store";
 import {
   createPrismaWorkspaceCodeGatewayStore,
   createPrismaWorkspaceCodeGrantRepository,
@@ -89,7 +88,6 @@ describe("Workspace code MCP grants", () => {
     const f = await fixture();
     const first = await grants.issueCodeGrant(f.binding);
     expect(first.environment).toEqual({ AIQSA_GATEWAY_URL: RUNNER_GATEWAY_ORIGIN, AIQSA_RUN_TOKEN: first.token });
-    expect(workspaceCodeTokenHash(first.token!)).toBe(agentTokenHash(first.token!));
     const row = await prisma.workspaceCodeGrant.findUniqueOrThrow({ where: { modelRunId: f.runId } });
     expect(row).toMatchObject({ revokedAt: null, tokenHash: workspaceCodeTokenHash(first.token!), workspaceSessionId: f.session.id });
     expect(JSON.stringify(row)).not.toContain(first.token);
@@ -111,10 +109,9 @@ describe("Workspace code MCP grants", () => {
     expect(await gateway.load(workspaceCodeTokenHash(issued.token!))).toBeNull();
   });
 
-  it("issues nothing but a reason to Agent, Internet-Off, gateway-less and MCP-Off runs", async () => {
+  it("issues nothing but a reason to Internet-Off, gateway-less and MCP-Off runs", async () => {
     const workspace = { codeMcp: budgets, enabled: true, internetEnabled: true };
     const cases: Array<[Record<string, unknown>, Record<string, string>]> = [
-      [{ agent: { mcpMode: "auto" }, mcpDiscovery: { catalog, epochs: [], version: 2 }, workspace }, {}],
       [{ mcpDiscovery: { catalog, epochs: [], version: 2 }, workspace: { ...workspace, internetEnabled: false } },
         { AIQSA_MCP_UNAVAILABLE: "internet_off" }],
       [{ mcpDiscovery: { catalog, epochs: [], version: 2 }, workspace: { enabled: true, internetEnabled: true } },

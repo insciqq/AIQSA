@@ -6,13 +6,7 @@ import { validateMcpDraft } from "../mcp/definitions";
 import { encryptMcpEnvelope, mcpRuntimeGenerationEnvelopeContext } from "../mcp/encryption";
 import { namespacedMcpToolName } from "../mcp/runPlan";
 import { prisma } from "../prisma";
-import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
-import { agentLimits } from "../agents/config";
-import { agentPrompts } from "../agents/prompt";
-import { createAgentRunStore } from "../agents/store";
-import type { ProviderRunRequest } from "../providers/types";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
-import { insertToolHistory } from "./toolHistory";
 import { TOOL_HISTORY_LIMITS, toolCallRef, toolHistoryDigest } from "./toolHistoryContract";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -26,8 +20,8 @@ const operations = createPrismaToolHistoryOperations(prisma);
 const syntheticSecret = 'synthetic-"tool\\history"-secret';
 const escapedSecret = JSON.stringify(syntheticSecret).slice(1, -1);
 const readers = { call: true, result: true } as const;
-const agentConfiguration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
-  compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
+/** What a Codex Agent turn (now retired) stored as its accepted Agent binding. */
+const agentConfiguration = { compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
 const syntheticKey = Buffer.alloc(32, 41);
 const ref = (call: Readonly<{ id: string }>) => toolCallRef(call.id)!;
 
@@ -366,76 +360,24 @@ describe("Prisma cross-turn tool history", () => {
   });
 });
 
-describe("Agent runs", () => {
-  /** Agent turns of one chat on one Workspace session, with their admitted MCP tool. */
-  async function agentFixture() {
+describe("retired Agent turns", () => {
+  it("stay in a later run's history as plain tool calls without retained values", async () => {
     const f = await fixture();
-    const session = await prisma.workspaceSession.create({ data: { chatId: f.chat.id, sandboxName: `history-${randomUUID()}`,
-      imageRef: "aiqsa-workspace:0.1.31", internetEnabled: true, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
-      state: "RUNNING", expiresAt: new Date(Date.now() + 600_000) } });
-    cleanups.push(async () => {
-      await prisma.modelRun.deleteMany({ where: { chatId: f.chat.id } });
-      await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
-    });
-    const agentTurn = async (userMessage: Readonly<{ id: string }>, status: RunStatus) => {
-      const turn = await f.answer(userMessage, { agent: true, status });
-      await prisma.workspaceRunBinding.create({ data: { modelRunId: turn.run.id, workspaceSessionId: session.id,
-        imageRef: session.imageRef, internetEnabled: true, policyRevision: 1, runtimeVersion: "0.6.16", mcpVersion: "0.6.16",
-        toolCatalogHash: "a".repeat(64), toolDefinitions: [{ originalName: "sandbox_exec_start", namespacedName: "workspace__sandbox_exec_start",
-          description: "Fixture", inputSchema: { type: "object" } }], outputDirectory: `/workspace/output/${turn.run.id}` } });
-      await prisma.agentRunBinding.create({ data: { modelRunId: turn.run.id, configuration: agentConfiguration,
-        compatibilityHash: agentConfiguration.compatibilityHash,
-        ...(status === "complete" ? { startedAt: new Date(), completedAt: new Date(),
-          tokenHash: createHash("sha256").update(randomUUID()).digest("hex") } : {}) } });
-      await prisma.agentMcpTool.create({ data: { modelRunId: turn.run.id, toolId: f.toolName, version: "v".repeat(64), snapshot: {
-        servers: [{ serverId: f.serverId, revisionId: f.revisionId, fingerprint: f.fingerprint, serverName: "Synthetic Records" }],
-        tools: [{ namespacedName: f.toolName, originalName: "records", serverId: f.serverId, serverName: "Synthetic Records" }] } } });
-      return turn;
-    };
-    return { ...f, agentTurn };
-  }
-
-  it("projects earlier Agent calls into the first prompt of a run whose binding is not armed yet, and reads them once armed", async () => {
-    const f = await agentFixture();
     const first = await f.question(null);
-    const earlier = await f.agentTurn(first, "complete");
-    // The gateway keeps only a content-free settlement of an Agent MCP call.
+    const earlier = await f.answer(first, { agent: true });
+    // The Agent gateway kept only a content-free settlement of its MCP call.
     const write = await prisma.modelRunToolCall.create({ data: { modelRunId: earlier.run.id, mcpRunBindingId: earlier.binding.id,
       roundIndex: 0, ordinal: 0, providerCallId: `agent-call-${randomUUID()}`, toolName: f.toolName, state: "complete",
       startedAt: new Date(), arguments: { argumentHash: "h".repeat(64) }, result: { state: "COMPLETE", code: null } } });
-    const second = await f.question(earlier.answer.id);
-    const current = await f.agentTurn(second, "in_progress");
+    const current = await f.answer(await f.question(earlier.answer.id), { status: "in_progress" });
     const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: earlier.answer.id, userId: f.initiatorId });
     expect(toolHistory.turns.map(turn => turn.callRefs)).toEqual([[ref(write)]]);
-
-    // Before arming: the run's own projection reads; its saved-call reader does not.
     const projection = await operations.projectToolHistory({ actor: current.actor, readers: { call: true, result: false }, toolHistory });
     const [entry] = projection.blocks[0]!.entries;
-    expect(entry!.full).toContain(`[${ref(write)}] MCP Synthetic Records › records (tool ${f.toolName}): executed; the tool reported success`);
-    expect(entry!.full).toContain("Arguments: not retained");
-    expect(await operations.readToolCall(current.actor, ref(write))).toBeNull();
-    // A fresh native thread receives it in its full prompt; the real answer stays the predecessor.
-    const request = { attachments: [], content: textMessageContent("Did the write happen?"), prompt: { developer: null, system: "baseline" },
-      context: { mode: "branch_path", messages: [
-        { id: first.id, role: "user", content: textMessageContent("Write the record") },
-        { id: earlier.answer.id, role: "assistant", content: textMessageContent("Written.") },
-        { id: second.id, role: "user", content: textMessageContent("Did the write happen?") }
-      ] } } as unknown as ProviderRunRequest;
-    const prompts = agentPrompts(insertToolHistory(request, projection));
-    expect(prompts.prompt).toContain(ref(write));
-    expect(prompts.prompt).toContain("MCP Synthetic Records › records");
-    expect(prompts.previousAssistantMessageId).toBe(earlier.answer.id);
-
-    // A revoked binding is never read, armed or not.
-    await prisma.agentRunBinding.update({ where: { modelRunId: current.run.id }, data: { revokedAt: new Date() } });
-    const revoked = await operations.projectToolHistory({ actor: current.actor, readers: { call: true, result: false }, toolHistory });
-    expect(revoked.blocks[0]!.entries).toEqual([]);
-    await prisma.agentRunBinding.update({ where: { modelRunId: current.run.id }, data: { revokedAt: null } });
-
-    // Armed by its executor, the run's reader reads the call.
-    await createAgentRunStore(prisma, { runId: current.run.id, userId: f.initiatorId, configuration: agentConfiguration }).arm(null);
-    expect(await operations.readToolCall(current.actor, ref(write))).toMatchObject({ ref: ref(write), kind: "mcp",
-      outcome: { status: "succeeded" }, arguments: { state: "not_retained" } });
+    expect(entry!.full).toContain(`[${ref(write)}]`);
+    expect(entry!.full).not.toContain("Synthetic Records");
+    expect(await operations.readToolCall(current.actor, ref(write))).toMatchObject({ ref: ref(write), kind: "tool",
+      outcome: { status: "succeeded" } });
   });
 });
 

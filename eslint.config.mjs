@@ -93,16 +93,6 @@ const eslintConfig = [
     rules: {
       "aiqsa-architecture/architecture-boundaries": architectureBoundary("providers")
     }
-  },
-  {
-    // Guest-code MCP keeps working when the Codex Agent (`lib/server/agents/`) is removed.
-    files: [
-      "lib/server/workspace/{runnerGateway,runnerGatewayRelay,runnerGatewayProof,runnerGatewayLease}.ts",
-      "lib/server/workspace/{codeMcp,codeMcpGateway,codeMcpStore,codeMcpSummary}.ts"
-    ],
-    rules: {
-      "aiqsa-architecture/architecture-boundaries": architectureBoundary("runner-gateway")
-    }
   }
 ];
 

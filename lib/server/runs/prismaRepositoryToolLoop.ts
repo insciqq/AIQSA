@@ -15,7 +15,6 @@ import { validAcceptedInstructions } from "../instructions/snapshot";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspaceActivityFingerprint, WORKSPACE_ACTIVITY_RECEIPT } from "./workspaceActivityPersistence";
-import { validAcceptedAgent } from "../agents/config";
 import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { measureTransaction } from "../observability/transactionTiming";
@@ -664,7 +663,6 @@ const MAX_TURN_GUIDANCE_PARTS = 16;
 
 const normalizedRequestKeys = new Set([
   "followupContextReserveTokens",
-  "agent",
   "answerReviewStep",
   "artifactTool",
   "artifactToolDescription",
@@ -1076,7 +1074,6 @@ function decodeProviderDispatchRecoveryRequest(
   identity: Readonly<{ chatId: string; modelId: string; provider: string; runId: string }>
 ): NormalizedRunRequest | null {
   if (!isRecord(value) || !onlyKnownKeys(value, normalizedRequestKeys) ||
-    (value.agent !== undefined && (!value.workspace || !validAcceptedAgent(value.agent))) ||
     value.chatId !== identity.chatId || value.modelId !== identity.modelId ||
     value.provider !== identity.provider || !nonBlank(value.chatId) ||
     !nonBlank(value.modelId) || !nonBlank(value.provider) ||
@@ -1106,7 +1103,7 @@ function decodeProviderDispatchRecoveryRequest(
     value.workspaceCheckpoints !== undefined && (value.workspaceCheckpoints !== true || !value.workspace) ||
     value.workspaceCheckpointToolDescription !== undefined &&
       (value.workspaceCheckpoints !== true || !nonBlank(value.workspaceCheckpointToolDescription, 16_384)) ||
-    value.workspaceImageView !== undefined && (value.workspaceImageView !== true || !value.workspace || value.agent !== undefined) ||
+    value.workspaceImageView !== undefined && (value.workspaceImageView !== true || !value.workspace) ||
     value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
     (value.artifactTool !== undefined && value.artifactTool !== true) ||
     (value.artifactToolDescription !== undefined && (value.artifactTool !== true || !nonBlank(value.artifactToolDescription, 16_384))) ||
@@ -1240,7 +1237,7 @@ function decodeProviderDispatchRecoveryRequest(
   const personalContext = value.personalContext;
   if (value.memoryStandingVersion !== undefined && value.memoryStandingVersion !== 1) return null;
   if (value.memorySearch !== undefined && (!decodeMemorySearchSnapshot(value.memorySearch) ||
-    value.memoryStandingVersion !== 1 || value.agent !== undefined || value.toolMode === "none" ||
+    value.memoryStandingVersion !== 1 || value.toolMode === "none" ||
     !isRecord(value.modelCapabilities) || value.modelCapabilities.toolCalling !== true)) return null;
   if (personalContext !== undefined && (!isRecord(personalContext) ||
     !onlyKnownKeys(personalContext, new Set([

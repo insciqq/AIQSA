@@ -16,8 +16,7 @@ import { RunSettlementError, WorkspaceHandoffFailure, runSettlementFailure } fro
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
-import { agentFailureMessage } from "../agents/failures";
-import { agentCodexVersionRetired } from "../agents/config";
+import { AGENT_MODE_REMOVED } from "./retiredAgent";
 import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -381,7 +380,7 @@ export type RunRecoveryRepository = Pick<
   | "groundKnowledgeEvidenceAnswer"
   | "hasPendingPdfPreparation"
   | "hasPendingWorkspacePreparation"
-  | "interruptExpiredAgentRun"
+  | "isRetiredAgentRun"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
@@ -3397,7 +3396,7 @@ async function recoverCheckpointedToolLoop(
         roundIndex: round,
         runId: run.id,
         userId: run.userId,
-        ...(!run.normalizedRequest.agent && run.normalizedRequest.contextCompactionPolicy && context.sessionRequest
+        ...(run.normalizedRequest.contextCompactionPolicy && context.sessionRequest
           ? { contextCompaction: contextCompactionCheckpoint({
               ownerId: run.userId,
               request: context.sessionRequest,
@@ -3958,7 +3957,7 @@ async function recoverCheckpointedToolLoop(
       },
       // A tool-batch fence records every earlier rebuild; a lost provider
       // round may have rebuilt unrecorded, so resuming from it never rebuilds.
-      allowContextRebuild: run.checkpoint.phase !== "provider_running" && !run.normalizedRequest.agent &&
+      allowContextRebuild: run.checkpoint.phase !== "provider_running" &&
         run.normalizedRequest.toolObservationVersion === 1,
       resume: {
         continuation,
@@ -5257,17 +5256,15 @@ async function refreshProviderRunOnceRegistered(
 
   const publishedAnswer = await deps.repository.loadPublishedRunAnswer?.({ runId, userId });
   if (publishedAnswer) {
-    const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
-    if (agentCodexVersionRetired(request?.agent)) {
-      // Accepted under an earlier guest Codex: keep the published answer, skip
-      // handoff and replay, and settle like a failed capture.
-      await failRecoveredRun(deps.repository, runId, publishedAnswer.assistantMessageId, {
-        code: "agent_execution_interrupted",
-        message: agentFailureMessage("agent_execution_interrupted")
-      }, { recoveryTerminal: true });
+    if (await deps.repository.isRetiredAgentRun?.({ runId, userId })) {
+      // A Codex Agent turn left running when the Agent was removed: keep the
+      // published answer, skip handoff and replay, and settle like a failed capture.
+      await failRecoveredRun(deps.repository, runId, publishedAnswer.assistantMessageId, RETIRED_AGENT_FAILURE,
+        { recoveryTerminal: true });
       await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) });
       return;
     }
+    const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
     if (!request?.workspace || !deps.workspace) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     let handoff;
     try {
@@ -6254,15 +6251,21 @@ function recoveredWorkspaceActivity(deps: RunRecoveryDeps, runId: string) {
   };
 }
 
-async function recoverAgentIfNeeded(deps: RunRecoveryDeps, runId: string, userId: string, now = new Date()): Promise<boolean> {
-  const agent = await deps.repository.interruptExpiredAgentRun?.({ runId, userId, now });
-  if (!agent || agent.kind === "not_agent") return false;
-  if (agent.kind === "active") return true;
-  await settleRecoveredError(deps.repository, {
-    runId, userId, outputEvents: [],
-    error: { code: agent.failureCode, message: agentFailureMessage(agent.failureCode) },
-    usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions(agent.usage))
-  });
+/** How a Codex Agent turn still running when the Agent was removed ends. */
+const RETIRED_AGENT_FAILURE = {
+  code: AGENT_MODE_REMOVED,
+  message: "Agent mode was removed, so this answer stopped. Nothing it started was replayed. Send the message again to continue."
+} as const;
+
+/**
+ * A Codex Agent turn left running when the Agent was removed (operator
+ * decision 2026-10-23) ends visibly: its executor is gone, and nothing it
+ * started is replayed. Its gateway kept the usage it was settling with the
+ * Agent's own records, which went with them.
+ */
+async function recoverAgentIfNeeded(deps: RunRecoveryDeps, runId: string, userId: string): Promise<boolean> {
+  if (!await deps.repository.isRetiredAgentRun?.({ runId, userId })) return false;
+  await settleRecoveredError(deps.repository, { runId, userId, outputEvents: [], error: RETIRED_AGENT_FAILURE, usageAttributions: [] });
   await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) });
   return true;
 }
@@ -6307,7 +6310,7 @@ export async function reconcileInstallationRuns(
         });
         return;
       }
-      if (await recoverAgentIfNeeded(deps, run.id, run.userId, now)) return;
+      if (await recoverAgentIfNeeded(deps, run.id, run.userId)) return;
       const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
         runId: run.id,
         userId: run.userId
@@ -6389,7 +6392,7 @@ export async function reconcileStaleRuns(
         return;
       }
 
-      if (await recoverAgentIfNeeded(deps, run.id, input.userId, now)) return;
+      if (await recoverAgentIfNeeded(deps, run.id, input.userId)) return;
 
       const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
         runId: run.id,

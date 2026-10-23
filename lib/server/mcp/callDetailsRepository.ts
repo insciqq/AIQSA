@@ -17,9 +17,10 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         const user = await tx.user.findFirst({ where: { id: key.userId, status: "active" }, select: { id: true } });
         if (!user) return null;
         const run = await tx.modelRun.findFirst({ where: { id: key.runId, userId: key.userId },
-          select: { id: true, chatId: true, normalizedRequest: true, status: true, workspaceRunBinding: { select: { agent: { select: { modelRunId: true } } } },
+          select: { id: true, chatId: true, normalizedRequest: true, status: true,
             chat: { select: { projectId: true, memoryMode: true, temporaryRetentionDeadline: true } } } });
-        if (!run || run.workspaceRunBinding?.agent || record(run.normalizedRequest) && run.normalizedRequest.agent ||
+        // A retired Codex Agent turn's MCP calls never had displayable details.
+        if (!run || record(run.normalizedRequest) && run.normalizedRequest.agent ||
           !await resolveChatAccess(tx, { chatId: run.chatId, userId: key.userId })) return null;
         const call = await tx.modelRunToolCall.findUnique({ where: { modelRunId_roundIndex_ordinal: {
           modelRunId: key.runId, roundIndex: key.roundIndex, ordinal: key.ordinal

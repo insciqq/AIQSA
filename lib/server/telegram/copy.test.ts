@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  TELEGRAM_BOT_COMMANDS, TELEGRAM_COPY, telegramAgentWorkingText, telegramConnectedText, telegramFilesSummaryText, telegramReasonText,
+  TELEGRAM_BOT_COMMANDS, TELEGRAM_COPY, telegramConnectedText, telegramFilesSummaryText, telegramReasonText,
   telegramWorkActivityText, telegramWorkFailedText, telegramWorkspaceWorkingText
 } from "./copy";
 
@@ -18,18 +18,16 @@ describe("Telegram bot copy", () => {
   it("bounds interpolated names and lists every command in /help", () => {
     expect(telegramConnectedText("  Alex\nSmith ")).toBe("Connected to AIQSA as Alex Smith. Send a message to start a new chat. /help lists commands.");
     expect(telegramConnectedText("x".repeat(500)).length).toBeLessThan(250);
-    expect(telegramAgentWorkingText(3 * 60_000, "Running tests")).toBe("Agent is working · 3 min — Running tests");
-    expect(telegramAgentWorkingText(10_000)).toBe("Agent is working · 1 min");
     for (const { command } of TELEGRAM_BOT_COMMANDS) expect(TELEGRAM_COPY.help).toContain(`/${command} — `);
   });
 
   it("words the Workspace status and its steps in one bounded line", () => {
     expect(telegramWorkspaceWorkingText(150_000, "Running npm test")).toBe("Working in Workspace · 3 min — Running npm test");
     expect(telegramWorkFailedText(20_000)).toBe("Failed after 1 min");
-    const long = telegramAgentWorkingText(60_000, telegramWorkActivityText({
+    const long = telegramWorkspaceWorkingText(60_000, telegramWorkActivityText({
       command: { preview: `python - <<'PY'\n${"print(1)\n".repeat(100)}PY` }, id: "cmd-1", kind: "command", phase: "running"
     })!);
-    expect(long.length).toBeLessThanOrEqual("Agent is working · 1 min — ".length + 200);
+    expect(long.length).toBeLessThanOrEqual("Working in Workspace · 1 min — ".length + 200);
     expect(long).not.toContain("\n");
     expect(telegramWorkActivityText({ command: { preview: "npm test" }, id: "c", kind: "command", phase: "failed" })).toBe("npm test failed");
     expect(telegramWorkActivityText({ file: { displayPath: "out/report.md" }, id: "w", kind: "file_write", phase: "succeeded" }))

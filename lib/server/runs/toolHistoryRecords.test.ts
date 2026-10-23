@@ -44,8 +44,8 @@ describe("tool history classification", () => {
       toolName: "search_engine_1" }).kind).toBe("web_search");
     expect(toolHistoryKind({ agent: false, normalizedRequest: {}, toolName: "create_artifact" }).kind).toBe("artifact");
     expect(toolHistoryKind({ agent: true, normalizedRequest: {}, toolName: "aiqsa_search" }).kind).toBe("web_search");
-    expect(toolHistoryKind({ agent: true, normalizedRequest: {}, toolName: "mcp_x",
-      agentMcpTools: new Map([["mcp_x", { originalName: "x", serverName: "Srv" }]]) }).kind).toBe("mcp");
+    // A retired Agent turn's MCP calls lost their admitted tool records with the Agent.
+    expect(toolHistoryKind({ agent: true, normalizedRequest: {}, toolName: "mcp_x" }).kind).toBe("tool");
   });
 });
 

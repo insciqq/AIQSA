@@ -545,12 +545,11 @@ describe("Telegram chat bridge: commands", () => {
     expect(h.aiqsa.sent.at(-1)!.body).toMatchObject({ modelId: "model-10", provider: "connection-fake" });
   });
 
-  it("toggles Search, Workspace and Agent in one settings menu that edits itself", async () => {
-    const agentModel = fakeCatalogModel({ agentAvailable: true, displayName: "Agent model", modelId: "model-agent" });
-    const gateway = createFakeGateway({ catalog: fakeCatalog({ models: [fakeCatalogModel(), agentModel] }) });
+  it("toggles Search and Workspace in one settings menu that edits itself", async () => {
+    const gateway = createFakeGateway({ catalog: fakeCatalog({ models: [fakeCatalogModel()] }) });
     const h = harness({ gateway });
     await h.deliver(h.fake.inject.command(h.user, "settings"));
-    let menu = h.fake.botMessages(h.user.id).at(-1)!;
+    const menu = h.fake.botMessages(h.user.id).at(-1)!;
     const current = () => h.fake.botMessages(h.user.id).find((message) => message.message_id === menu.message_id)!;
     const labels = () => (current().reply_markup as { inline_keyboard: Array<Array<{ text: string }>> }).inline_keyboard.flat()
       .map((button) => button.text);
@@ -564,20 +563,16 @@ describe("Telegram chat bridge: commands", () => {
     await h.settle();
     expect(gateway.sent.at(-1)!.body.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
 
-    await h.links.store.updatePreferences(h.linkRecord.id, { selectedModel: { modelId: "model-agent", provider: "connection-fake" } });
-    await h.deliver(h.fake.inject.command(h.user, "settings"));
-    menu = h.fake.botMessages(h.user.id).at(-1)!;
-    expect(labels()).toEqual(["Search: off", "Workspace: off", "Agent: off", "Model: Agent model"]);
-    await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Agent: off")));
-    expect(labels()).toEqual(["Search: off", "Workspace: on", "Agent: on", "Model: Agent model"]);
+    await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Workspace: off")));
+    expect(labels()).toEqual(["Search: off", "Workspace: on", "Model: Fake QSA"]);
     await say(h, h.fake.inject.text(h.user, "fix the build"));
     await h.settle();
-    expect(gateway.sent.at(-1)!.body).toMatchObject({ agentEnabled: true, modelId: "model-agent", workspace: { enabled: true } });
-
+    expect(gateway.sent.at(-1)!.body).toMatchObject({ workspace: { enabled: true } });
+    expect(gateway.sent.at(-1)!.body).not.toHaveProperty("agentEnabled");
     await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Workspace: on")));
-    expect(labels()).toEqual(["Search: off", "Workspace: off", "Agent: off", "Model: Agent model"]);
+    expect(labels()).toEqual(["Search: off", "Workspace: off", "Model: Fake QSA"]);
     // The Model button opens the model list in the same message.
-    await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Model: Agent model")));
+    await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Model: Fake QSA")));
     expect(current().text).toBe(TELEGRAM_BRIDGE_COPY.modelsTitle);
   });
 

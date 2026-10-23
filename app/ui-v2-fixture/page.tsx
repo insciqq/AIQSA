@@ -66,7 +66,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "chips-wide-comments",
         "chips-off",
         "chips-off-pinned",
-        "chips-agent",
         "commands",
         "default",
         "error",

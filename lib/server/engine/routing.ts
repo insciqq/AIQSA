@@ -8,8 +8,8 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
  * everyone; unset or empty is nobody) that it can run, whichever entry point
  * admitted it: personal, temporary and Assistant chats from the web or
  * Telegram, scheduled task occurrences and answer review steps. Everything
- * else stays on the old core: Project and Knowledge work, Codex Agent turns,
- * a model without verified tool calling or whose adapter cannot replay the
+ * else stays on the old core: Project and Knowledge work, a model without
+ * verified tool calling or whose adapter cannot replay the
  * neutral history, and a send that must wait for PDF preparation (that
  * continuation runs on the old core). A send behind the previous answer's
  * Workspace hand-off waits for it as a Workspace follow-up on either engine.
@@ -65,7 +65,6 @@ export const NATIVE_ENGINE_ADAPTER_KINDS: ReadonlySet<string> = new Set([
 
 export type NativeEngineRefusal =
   | "adapter_without_history"
-  | "agent_turn"
   | "deferred_preparation"
   | "knowledge"
   | "not_listed"
@@ -84,7 +83,6 @@ export function nativeEngineRoute(input: Readonly<{
   const prepared = input.prepared;
   const request = prepared.normalizedRequest;
   if (prepared.project) return refuse("project_chat");
-  if (request.agent) return refuse("agent_turn");
   if (request.knowledgePlan.mode !== "none") return refuse("knowledge");
   if (!NATIVE_ENGINE_ADAPTER_KINDS.has(prepared.providerAdmissionPlan.answer.snapshot.model.adapterKind)) {
     return refuse("adapter_without_history");

@@ -91,7 +91,6 @@ export type CatalogWireModelCapabilities = {
 };
 
 export type CatalogWireModel = {
-  agentAvailable?: boolean;
   capabilities: CatalogWireModelCapabilities;
   contextWindow: number | null;
   defaultParams: Record<string, unknown>;
@@ -277,7 +276,6 @@ function isModelParameterControls(value: unknown): value is ModelParameterContro
 }
 
 function decodeCatalogModel(value: unknown): CatalogModel | null {
-  if (isRecord(value) && value.agentAvailable !== undefined && typeof value.agentAvailable !== "boolean") return null;
   if (
     !isRecord(value) ||
     !isRecord(value.capabilities) ||
@@ -340,7 +338,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       streaming: capabilities.streaming,
       toolCalling: capabilities.toolCalling
     },
-    ...(typeof value.agentAvailable === "boolean" ? { agentAvailable: value.agentAvailable } : {}),
     contextWindow: value.contextWindow,
     defaultParams: value.defaultParams,
     displayName: value.displayName,

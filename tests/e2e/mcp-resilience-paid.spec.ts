@@ -1,22 +1,18 @@
 /**
- * Opt-in, paid, bounded browser checks of MCP Auto partial discovery and the
- * Agent output-cap admission with a real codex-lb model on a DISPOSABLE
- * stand. Never a default lane: it runs only with
- * AIQSA_FEATURES_PAID_E2E=DISPOSABLE plus CODEX_LB_API_KEY and
+ * Opt-in, paid, bounded browser checks of MCP Auto partial discovery with a
+ * real codex-lb model on a DISPOSABLE stand. Never a default lane: it runs only
+ * with AIQSA_FEATURES_PAID_E2E=DISPOSABLE plus CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL (the Codex root ending in `/backend-api/codex`);
  * AIQSA_FEATURES_CODEX_MODEL picks the codex-lb model (default as
- * `setupCodexLbAnswerModel`). The Agent case additionally needs
- * AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE on a KVM Microsandbox topology with the
- * Agent gateway. AIQSA_FEATURES_FIXTURE_HOST /
+ * `setupCodexLbAnswerModel`). AIQSA_FEATURES_FIXTURE_HOST /
  * AIQSA_FEATURES_FIXTURE_PUBLIC_HOST place the synthetic MCP peers for a
  * stand that reaches them by another name.
  *
  * The synthetic peers run in the Playwright process: an orders server
  * (`lookup_order`) and an invoices server (`lookup_invoice`), both read-only.
  * The invoices peer is closed after publication, so its find_tools load
- * fails. Oracles are the persisted runs (status, frozen discovery epochs,
- * frozen Agent cap), the refusal's stable code and the rendered cards, never
- * the model's wording. Prompts, answers and payloads are never printed; the
+ * fails. Oracles are the persisted runs (status, frozen discovery epochs) and
+ * the rendered cards, never the model's wording. Prompts, answers and payloads are never printed; the
  * summary holds counts, codes and booleans only. Chats, servers and consents
  * are removed afterwards and the account's chat defaults restored; the
  * codex-lb connection stays on the stand like the other paid specs'
@@ -25,14 +21,12 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type ModelRun } from "@prisma/client";
-import { expect, test, type Locator, type Page, type Response, type TestInfo } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
-import { decodeCatalogResponse, type CatalogModel } from "../../lib/contracts/catalog";
 import type { AdminMcpServer, UserMcpCatalogResponse } from "../../lib/contracts/mcp";
 import { parseChatRoutePath } from "../../lib/domain/chatRoute";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
-import { AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE, agentMaxOutputTokensLimit } from "../../lib/domain/runParams";
-import { closeRunSetup, openRunSetup, selectModel } from "./shell/composer";
+import { selectModel } from "./shell/composer";
 import { keepAccountMcpDefault } from "./support/chatDefaults";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/composerToolsOff";
@@ -53,7 +47,6 @@ test.afterAll(() => prisma.$disconnect());
 
 const WARMUP_TIMEOUT_MS = 300_000;
 const TURN_TIMEOUT_MS = 600_000;
-const GUEST_TURN_TIMEOUT_MS = 900_000;
 /** Two MCP health cadences: long enough for the app to notice a closed peer. */
 const READINESS_TIMEOUT_MS = 120_000;
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
@@ -377,122 +370,6 @@ test("MCP Auto loads the reachable server and reports the unreachable one", asyn
       await expect(list.locator('li[data-reason="mcp_server_unavailable"]').filter({ hasText: invoicesName })).toHaveCount(1);
       await expect(list).not.toContainText(ordersName);
       session.summary.ui = { listed: true, shots: await captureAtDevices(page, testInfo, "mcp-unavailable", listed) };
-    });
-  });
-});
-
-const agentPrompt = "Reply with exactly: AGENT-OK. Do not run any commands.";
-
-function isMessageSend(response: Response): boolean {
-  return response.request().method() === "POST" &&
-    /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname);
-}
-
-async function catalogModel(page: Page, model: PaidAnswerModel): Promise<CatalogModel> {
-  const catalog = decodeCatalogResponse(await (await page.request.get("/api/me/catalog")).json());
-  const found = catalog?.models.find((candidate) => candidate.provider === model.connectionId && candidate.modelId === model.modelId);
-  expect(found, "the codex-lb model is in the catalog").toBeTruthy();
-  return found!;
-}
-
-test("Agent refuses an oversized Max output tokens and runs a valid one", async ({ page }, testInfo) => {
-  // Agent runs only in a real Microsandbox guest, never the deterministic runtime.
-  test.skip(process.env.AIQSA_WORKSPACE_LIVE_E2E !== "DISPOSABLE", "requires an explicitly disposable KVM Microsandbox topology");
-  test.setTimeout(60 * 60_000);
-  await withSession(page, testInfo, "agent-output-limit", async (session) => {
-    const workspace = (await (await page.request.get("/api/workspace")).json() as {
-      workspace?: { agentAvailable?: boolean; available?: boolean; internetEnabled?: boolean | null };
-    }).workspace;
-    expect(workspace?.available, "workspace_unavailable").toBe(true);
-    expect(workspace?.agentAvailable, "agent_runtime_unavailable").toBe(true);
-    expect(workspace?.internetEnabled, "agent_internet_required").toBe(true);
-    const model = await catalogModel(page, session.model);
-    expect(model.agentAvailable, "agent_model_unavailable").toBe(true);
-    const limit = agentMaxOutputTokensLimit(model.contextWindow);
-    const controls = model.parameterControls.maxOutputTokens;
-    // Above the Agent limit yet within the model's own maximum, so only the Agent admission refuses it.
-    const requested = Math.min(500_000, controls.maxValue ?? 500_000);
-    expect(requested > limit && requested !== controls.defaultValue, "model_max_output_not_above_agent_limit").toBe(true);
-    const policy = await prisma.agentPolicy.findFirst({ select: { limitsEnabled: true, maxOutputTokens: true } });
-    // An enabled Agent policy cap at or below the limit admits any chosen value by clamping it.
-    expect(!(policy?.limitsEnabled && policy.maxOutputTokens <= limit), "agent_policy_cap_hides_refusal").toBe(true);
-    const limitText = new Intl.NumberFormat("en-US").format(limit);
-    session.summary.limit = { contextWindowKnown: model.contextWindow !== null, limit, requestedAboveLimit: true };
-    const message = page.getByRole("textbox", { exact: true, name: "Message" });
-    const agent = page.getByRole("button", { name: "Agent", exact: true });
-
-    await test.step("a value saved with Agent off stays above the limit and Model parameters warns with Agent on", async () => {
-      await newChat(page, session.model, "off");
-      // Typing with Agent on stops at the limit; a value chosen before Agent was turned on keeps its value.
-      const setup = await openRunSetup(page);
-      const maxOutput = setup.getByLabel("Max output tokens");
-      await maxOutput.fill(String(requested));
-      await expect(maxOutput).toHaveValue(String(requested));
-      await closeRunSetup(page);
-      await expect(agent).toBeEnabled({ timeout: 30_000 });
-      if (await agent.getAttribute("aria-pressed") !== "true") await agent.click();
-      await expect(agent).toHaveAttribute("aria-pressed", "true");
-      const shots = await captureAtDevices(page, testInfo, "agent-limit", async () => {
-        const dialog = await openRunSetup(page);
-        await expect(dialog.getByLabel("Max output tokens")).toHaveValue(String(requested));
-        const alert = dialog.getByRole("alert").filter({ hasText: `Agent allows at most ${limitText} output tokens` });
-        await expect(alert).toBeVisible();
-        await expect(alert.getByRole("button", { name: `Use ${limitText}` })).toBeEnabled();
-        return alert;
-      });
-      await closeRunSetup(page);
-      session.summary.warning = { alert: true, shots };
-    });
-
-    let chatId = "";
-    await test.step("the composer's send is refused before any run or Workspace starts", async () => {
-      await message.fill(agentPrompt);
-      const responded = page.waitForResponse(isMessageSend, { timeout: 120_000 });
-      await message.press("Enter");
-      const response = await responded;
-      chatId = new URL(response.url()).pathname.split("/")[3]!;
-      session.chatIds.add(chatId);
-      const sent = response.request().postDataJSON() as { agentEnabled?: unknown; params?: { maxOutputTokens?: unknown } } | null;
-      const refusal = await response.json().catch(() => ({})) as { error?: unknown; message?: unknown };
-      const namesLimit = typeof refusal.message === "string" && refusal.message.includes(limitText);
-      const runs = await runCount(chatId);
-      const workspaceSessions = await prisma.workspaceSession.count({ where: { chatId } });
-      session.summary.refusal = {
-        agentSent: sent?.agentEnabled === true, code: typeof refusal.error === "string" ? refusal.error : null, namesLimit, runs,
-        sentRequested: sent?.params?.maxOutputTokens === requested, status: response.status(), workspaceSessions
-      };
-      expect(sent?.agentEnabled, "the composer sent an Agent turn").toBe(true);
-      expect(response.status(), "the oversized Agent cap is refused").toBe(400);
-      expect(refusal.error).toBe(AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE);
-      expect(namesLimit, "the refusal names the limit").toBe(true);
-      expect(runs, "no run was created").toBe(0);
-      expect(workspaceSessions, "no Workspace was started").toBe(0);
-      await expect(message, "the draft stays for a corrected send").toHaveValue(agentPrompt, { timeout: 30_000 });
-    });
-
-    await test.step("after Reset output settings the same Agent turn runs within the limit", async () => {
-      const setup = await openRunSetup(page);
-      await setup.getByRole("button", { name: "Reset output settings" }).click();
-      await expect(setup.getByLabel("Max output tokens")).toHaveValue(String(controls.defaultValue));
-      if (controls.defaultValue <= limit) await expect(setup.getByTestId("run-setup-agent-output-limit")).toHaveCount(0);
-      await closeRunSetup(page);
-      await expect(agent).toHaveAttribute("aria-pressed", "true");
-      if (await message.inputValue() !== agentPrompt) await message.fill(agentPrompt);
-      await message.press("Enter");
-      const validChatId = await activeChatId(page);
-      session.chatIds.add(validChatId);
-      const run = await settledRun(validChatId, 0, GUEST_TURN_TIMEOUT_MS);
-      await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 120_000 });
-      const frozen = (run.normalizedRequest as { agent?: { maxOutputTokens?: unknown } } | null)?.agent?.maxOutputTokens;
-      expect(typeof frozen, "the run froze an Agent output cap").toBe("number");
-      expect(frozen as number, "the frozen Agent cap is within the limit").toBeLessThanOrEqual(limit);
-      session.summary.validRun = {
-        answerHasMarker: (await answerText(run)).includes("AGENT-OK"),
-        frozenEqualsDefault: frozen === Math.min(controls.defaultValue, limit),
-        frozenWithinLimit: true,
-        sameChat: validChatId === chatId,
-        status: run.status
-      };
     });
   });
 });
