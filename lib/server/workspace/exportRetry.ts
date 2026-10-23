@@ -1,5 +1,4 @@
 import { randomInt } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
 import { databaseFailureKind, type DatabaseFailureKind } from "../observability/databaseFailure";
 import { WorkspaceRuntimeError } from "./runtime";
 
@@ -29,6 +28,17 @@ export function workspaceExportRetryDelayMs(
   const ceiling = Math.min(WORKSPACE_EXPORT_RETRY_MAX_DELAY_MS,
     WORKSPACE_EXPORT_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, retry - 1));
   return random(1, ceiling + 1);
+}
+
+/** The default pause between attempts. It uses the global timer, which a
+ * test's fake clock drives together with the `Date.now` the lease is measured on. */
+function pause(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal?.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, milliseconds);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 export type WorkspaceExportRetry = Readonly<{
@@ -69,7 +79,7 @@ export async function retryWorkspaceExportStep<T>(
       if (now() + delayMs >= options.leaseValidUntil()) throw error;
       options.onRetry?.({ delayMs, error, kind, retry });
       try {
-        await (options.wait ?? ((milliseconds, signal) => sleep(milliseconds, undefined, { signal })))(delayMs, options.signal);
+        await (options.wait ?? pause)(delayMs, options.signal);
       } catch {
         // Stop or a lost lease ends the pause; the step reports its own failure.
         throw error;

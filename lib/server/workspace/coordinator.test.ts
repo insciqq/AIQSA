@@ -2144,17 +2144,50 @@ describe("Workspace coordinator export database retries", () => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       throw lockTimeout();
     };
-    // The heartbeat is blocked by the same holder, so nothing extends the lease.
-    vi.spyOn(value.repository, "renewExportLease").mockResolvedValueOnce(true).mockImplementation(blocked);
+    // Every claim or renewal that succeeded started the lease again at that moment.
+    const leaseStarts: number[] = [];
+    const claimExport = value.repository.claimExport.bind(value.repository);
+    vi.spyOn(value.repository, "claimExport").mockImplementation(async (claim) => {
+      leaseStarts.push(Date.now());
+      return claimExport(claim);
+    });
+    // The heartbeat is blocked by the same holder, so nothing extends the lease
+    // after its first renewal.
+    vi.spyOn(value.repository, "renewExportLease").mockImplementationOnce(async () => {
+      leaseStarts.push(Date.now());
+      return true;
+    }).mockImplementation(blocked);
     const starts: number[] = [];
     vi.spyOn(value.repository, "sealOutputCapture").mockImplementation(async () => { starts.push(Date.now()); return blocked(); });
     const coordinator = createWorkspaceCoordinator({ ...value, exportLeaseMs: 2_000 });
-    const started = Date.now();
+    // The lease window and the attempts' starts are read from one fake clock
+    // that moves only from timer to timer, so event-loop lag cannot move them.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     let caught: unknown;
-    const records = await exportRecords(async () => { caught = await handoff(value, coordinator).catch((error: unknown) => error); });
+    let elapsed = 0;
+    const records = await exportRecords(async () => {
+      const started = Date.now();
+      let settled = false;
+      const pending = handoff(value, coordinator).catch((error: unknown) => error)
+        .then((error) => { caught = error; settled = true; });
+      try {
+        // The clock jumps to each due timer in turn; with none due, let other pending work run.
+        while (!settled) {
+          if (vi.getTimerCount() > 0) await vi.advanceTimersToNextTimerAsync();
+          else await new Promise((resolve) => setImmediate(resolve));
+        }
+        await pending;
+      } finally {
+        elapsed = Date.now() - started;
+        vi.useRealTimers();
+      }
+    });
+    expect(leaseStarts.length).toBe(2);
+    const leaseEnd = Math.max(...leaseStarts) + 2_000;
     expect(starts.length).toBeGreaterThan(1);
-    for (const start of starts) expect(start).toBeLessThan(started + 2_100);
-    expect(Date.now() - started).toBeLessThan(4_000);
+    for (const start of starts) expect(start).toBeLessThan(leaseEnd);
+    // The last attempt still runs its blocked 400 ms; nothing waits after it.
+    expect(elapsed).toBeLessThan(4_000);
     expect(records.at(-1)).toMatchObject({ work_stage: "seal", outcome: "failed", code: "workspace_output_export_failed",
       prisma_code: "P2010", db_failure: "lock_timeout" });
     expect(records.filter((record) => record.outcome === "degraded" && record.work_stage === "seal")).toHaveLength(starts.length - 1);
