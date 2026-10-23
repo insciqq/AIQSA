@@ -228,6 +228,21 @@ describe("native tool batch", () => {
     expect(report).toHaveBeenCalledTimes(1);
     expect(lookup).not.toHaveBeenCalled();
     expect(state).toEqual({ calls: 1, reservedCalled: true });
+    // A first report refused before running (malformed arguments) keeps the reservation for the corrected one.
+    const spent = deps({ report_monitoring_result: tool("report_monitoring_result", "local", report) }, fakeStore().store,
+      { maxToolCalls: 1, reservedToolName: "report_monitoring_result" });
+    const malformed = { calls: 1 };
+    const refused = await runToolBatch(spent, malformed, { calls: [
+      { arguments: invalidProviderToolArguments(), id: "v4", name: "report_monitoring_result" }
+    ], round: 2 });
+    expect(refused.results[0]).toMatchObject({ callId: "v4", outcome: "error" });
+    expect(malformed).toEqual({ calls: 1 });
+    const corrected = await runToolBatch(spent, malformed, { calls: [
+      { arguments: { status: "update" }, id: "v5", name: "report_monitoring_result" }
+    ], round: 3 });
+    expect(corrected.results[0]).toMatchObject({ callId: "v5", outcome: "complete" });
+    expect(report).toHaveBeenCalledTimes(2);
+    expect(malformed).toEqual({ calls: 1, reservedCalled: true });
     // Within budget, a repeated report counts like any other call.
     const later = { calls: 0, reservedCalled: true };
     await runToolBatch(deps({ report_monitoring_result: tool("report_monitoring_result", "local", report) }, fakeStore().store,
