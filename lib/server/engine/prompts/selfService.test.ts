@@ -2,6 +2,9 @@
 import { describe, expect, it } from "vitest";
 import { ARTIFACT_TOOL_NAME } from "../../tools/artifact";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../../tools/aiqsaGuide";
+import { MANAGE_ASSISTANT_TOOL_NAME } from "../../tools/manageAssistant";
+import { MANAGE_SECRET_TOOL_NAME } from "../../tools/manageSecret";
+import { MANAGE_SKILL_TOOL_NAME } from "../../tools/manageSkill";
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../../tools/scheduledTaskManagement";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../../tools/scheduledTaskCreation";
 import { HARNESS_TOOL_NAMES, systemPromptFor } from "./index";
@@ -45,11 +48,14 @@ describe("self-service prompt section", () => {
   });
 
   it("refers to tools by the names their owners register", () => {
-    expect(SELF_SERVICE_TOOL_NAMES).toMatchObject({
+    expect(SELF_SERVICE_TOOL_NAMES).toEqual({
+      assistants: MANAGE_ASSISTANT_TOOL_NAME,
       createArtifact: ARTIFACT_TOOL_NAME,
       createScheduledTask: CREATE_SCHEDULED_TASK_TOOL_NAME,
       guide: READ_AIQSA_GUIDE_TOOL_NAME,
-      manageScheduledTask: MANAGE_SCHEDULED_TASK_TOOL_NAME
+      manageScheduledTask: MANAGE_SCHEDULED_TASK_TOOL_NAME,
+      secrets: MANAGE_SECRET_TOOL_NAME,
+      skills: MANAGE_SKILL_TOOL_NAME
     });
   });
 });

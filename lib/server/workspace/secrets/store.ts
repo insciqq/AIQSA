@@ -120,6 +120,64 @@ export function decryptWorkspaceSecret(value: StoredValue, userId: string, key =
   } catch { throw new WorkspaceSecretError("workspace_secret_unavailable"); }
 }
 
+/**
+ * One parsed settings mutation inside the caller's transaction: the owner
+ * lock, the version guard, the limits, the new revision and pruning. An SSH
+ * key is validated before the transaction (`validateWorkspaceSshKey`). The
+ * secret's id and new revision, or null after a deletion.
+ */
+export async function mutateWorkspaceSecretInTransaction(tx: Prisma.TransactionClient, userId: string,
+  mutation: WorkspaceSecretMutation, encryptionKey: () => Buffer): Promise<Readonly<{ id: string; versionId: string }> | null> {
+  const replacement = mutation.action === "create" ? mutation.value
+    : mutation.action === "update" && mutation.value.action === "replace" ? mutation.value.content : null;
+  await lockWorkspaceSecretOwner(tx, userId, true);
+  const current = mutation.action === "create" ? null : await tx.workspaceSecret.findFirst({
+    include: { value: true }, where: { id: mutation.id, userId }
+  });
+  if (mutation.action !== "create" && (!current || current.valueId !== mutation.expectedVersionId)) {
+    throw new WorkspaceSecretError("workspace_secret_conflict");
+  }
+  const browserSequence = current?.value.kind === "browser_session" || replacement?.kind === "browser_session"
+    ? await advanceWorkspaceBrowserSequence(tx, userId, true) : 0n;
+  let saved: Readonly<{ id: string; versionId: string }> | null = null;
+  if (mutation.action === "delete") {
+    await tx.workspaceSecret.delete({ where: { id: mutation.id } });
+  } else {
+    const value = replacement ?? decryptWorkspaceSecret(current!.value, userId, encryptionKey()).value;
+    if (current && value.kind !== current.value.kind) throw new WorkspaceSecretError("workspace_secret_invalid");
+    const others = await tx.workspaceSecret.findMany({
+      select: { browserFileName: true, value: { select: { byteSize: true, envNames: true, kind: true } } },
+      where: { userId, ...(current ? { id: { not: current.id } } : {}) }
+    });
+    const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    const ordinary = others.filter((entry) => entry.value.kind !== "browser_session");
+    const browsers = others.filter((entry) => entry.value.kind === "browser_session");
+    if (value.kind === "browser_session" && browsers.some((entry) => entry.browserFileName === value.originalName)) {
+      throw new WorkspaceSecretError("workspace_browser_session_conflict");
+    }
+    if ((value.kind === "browser_session" ? browsers.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT ||
+      browsers.reduce((total, entry) => total + entry.value.byteSize, Buffer.byteLength(value.base64, "base64")) > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES :
+      ordinary.length >= WORKSPACE_SECRET_MAX_COUNT || ordinary.reduce((total, entry) => total + entry.value.byteSize, bytes) > WORKSPACE_SECRET_TOTAL_MAX_BYTES) ||
+      others.reduce((total, entry) => total + (entry.value.kind === "env" ? entry.value.byteSize : 0), value.kind === "env" ? bytes : 0) > WORKSPACE_SECRET_ENV_MAX_BYTES) {
+      throw new WorkspaceSecretError("workspace_secret_limit");
+    }
+    const envNames = value.kind === "env" ? value.entries.map(({ name }) => name) : [];
+    if (others.some((entry) => entry.value.envNames.some((name) => envNames.includes(name)))) {
+      throw new WorkspaceSecretError("workspace_secret_env_conflict");
+    }
+    const id = current?.id ?? randomUUID();
+    const versionId = await createWorkspaceSecretRevision(tx, { userId, secretId: id, value, key: encryptionKey(),
+      name: mutation.name.trim(), description: mutation.description, autoSaved: !replacement && current?.value.autoSaved });
+    const browser = { browserFileName: value.kind === "browser_session" ? value.originalName : null, browserWriterSequence: browserSequence };
+    if (current) await tx.workspaceSecret.update({ data: { valueId: versionId, ...browser }, where: { id } });
+    else await tx.workspaceSecret.create({ data: { id, userId, valueId: versionId, ...browser } });
+    saved = { id, versionId };
+  }
+  // Revisions still used by an accepted run survive replacement/deletion.
+  await pruneWorkspaceSecretRevisions(tx, userId);
+  return saved;
+}
+
 export function createWorkspaceSecretStore(prisma: PrismaClient, options: Readonly<{
   key?: () => Buffer;
   validateSshKey?: typeof validateWorkspaceSshKey;
@@ -157,51 +215,7 @@ export function createWorkspaceSecretStore(prisma: PrismaClient, options: Readon
       const replacement = mutation.action === "create" ? mutation.value
         : mutation.action === "update" && mutation.value.action === "replace" ? mutation.value.content : null;
       if (replacement?.kind === "ssh_key") await validateSshKey(replacement.privateKey, replacement.passphrase);
-      await prisma.$transaction(async (tx) => {
-        await lockWorkspaceSecretOwner(tx, userId, true);
-        const current = mutation.action === "create" ? null : await tx.workspaceSecret.findFirst({
-          include: { value: true }, where: { id: mutation.id, userId }
-        });
-        if (mutation.action !== "create" && (!current || current.valueId !== mutation.expectedVersionId)) {
-          throw new WorkspaceSecretError("workspace_secret_conflict");
-        }
-        const browserSequence = current?.value.kind === "browser_session" || replacement?.kind === "browser_session"
-          ? await advanceWorkspaceBrowserSequence(tx, userId, true) : 0n;
-        if (mutation.action === "delete") {
-          await tx.workspaceSecret.delete({ where: { id: mutation.id } });
-        } else {
-          const value = replacement ?? decryptWorkspaceSecret(current!.value, userId, encryptionKey()).value;
-          if (current && value.kind !== current.value.kind) throw new WorkspaceSecretError("workspace_secret_invalid");
-          const others = await tx.workspaceSecret.findMany({
-            select: { browserFileName: true, value: { select: { byteSize: true, envNames: true, kind: true } } },
-            where: { userId, ...(current ? { id: { not: current.id } } : {}) }
-          });
-          const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
-          const ordinary = others.filter((entry) => entry.value.kind !== "browser_session");
-          const browsers = others.filter((entry) => entry.value.kind === "browser_session");
-          if (value.kind === "browser_session" && browsers.some((entry) => entry.browserFileName === value.originalName)) {
-            throw new WorkspaceSecretError("workspace_browser_session_conflict");
-          }
-          if ((value.kind === "browser_session" ? browsers.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT ||
-            browsers.reduce((total, entry) => total + entry.value.byteSize, Buffer.byteLength(value.base64, "base64")) > WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES :
-            ordinary.length >= WORKSPACE_SECRET_MAX_COUNT || ordinary.reduce((total, entry) => total + entry.value.byteSize, bytes) > WORKSPACE_SECRET_TOTAL_MAX_BYTES) ||
-            others.reduce((total, entry) => total + (entry.value.kind === "env" ? entry.value.byteSize : 0), value.kind === "env" ? bytes : 0) > WORKSPACE_SECRET_ENV_MAX_BYTES) {
-            throw new WorkspaceSecretError("workspace_secret_limit");
-          }
-          const envNames = value.kind === "env" ? value.entries.map(({ name }) => name) : [];
-          if (others.some((entry) => entry.value.envNames.some((name) => envNames.includes(name)))) {
-            throw new WorkspaceSecretError("workspace_secret_env_conflict");
-          }
-          const id = current?.id ?? randomUUID();
-          const versionId = await createWorkspaceSecretRevision(tx, { userId, secretId: id, value, key: encryptionKey(),
-            name: mutation.name.trim(), description: mutation.description, autoSaved: !replacement && current?.value.autoSaved });
-          const browser = { browserFileName: value.kind === "browser_session" ? value.originalName : null, browserWriterSequence: browserSequence };
-          if (current) await tx.workspaceSecret.update({ data: { valueId: versionId, ...browser }, where: { id } });
-          else await tx.workspaceSecret.create({ data: { id, userId, valueId: versionId, ...browser } });
-        }
-        // Revisions still used by an accepted run survive replacement/deletion.
-        await pruneWorkspaceSecretRevisions(tx, userId);
-      });
+      await prisma.$transaction((tx) => mutateWorkspaceSecretInTransaction(tx, userId, mutation, encryptionKey));
     }
   };
 }
