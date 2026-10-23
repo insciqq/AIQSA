@@ -15,7 +15,6 @@ import { prepareMcpRunPlan } from "./runPlan";
 import {
   createPrismaMcpCapabilityCatalogLoader,
   createPrismaMcpCapabilityCatalogWithOmissionsLoader,
-  createPrismaMcpProjectRunPlanLoader,
   createPrismaMcpRunPlanLoader
 } from "./runPlanRepository";
 import { filterMcpToolsForUser } from "./toolAccess";
@@ -97,7 +96,6 @@ export function kickDefaultMcpRuntime(userId?: string): void {
 }
 
 const loadRunPlan = createPrismaMcpRunPlanLoader();
-const loadProjectRunPlan = createPrismaMcpProjectRunPlanLoader();
 const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();
 const loadCapabilityCatalogWithOmissions = createPrismaMcpCapabilityCatalogWithOmissionsLoader();
 
@@ -124,28 +122,6 @@ async function prepareExactMcpRunPlan(
       signal?.throwIfAborted();
       await currentCoordinator().reconcileNow(userId);
     }
-  });
-}
-
-async function prepareExactProjectMcpRunPlan(userId: string, serverIds: readonly string[], toolNames?: readonly string[]) {
-  let coordinator: McpRuntimeCoordinator | null = null;
-  const currentCoordinator = () => {
-    coordinator ??= getDefaultMcpRuntimeCoordinator();
-    return coordinator;
-  };
-  // Project execution never calls ensureUserServersReady: that operation can
-  // create or reconcile a member's personal McpUserServer row. It starts the
-  // servers' installation-owned shared runtimes instead, so a cold process,
-  // an idle member or a stale inventory never leaves the Project without MCP.
-  // The loader applies the initiator's tool restrictions to that runtime.
-  const ensureShared = () => currentCoordinator().ensureSharedServersReady(serverIds);
-  await ensureShared();
-  return prepareMcpRunPlan({
-    allowedServerIds: serverIds,
-    ...(toolNames ? { allowedToolNames: toolNames } : {}),
-    isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
-    load: () => loadProjectRunPlan(userId, serverIds),
-    reconcile: ensureShared
   });
 }
 
@@ -205,8 +181,5 @@ export const defaultMcpRunPlan = {
     const serverIds = options?.allowedServerIds ??
       (await loadCapabilityCatalog(userId)).servers.map((server) => server.serverId);
     return prepareExactMcpRunPlan(userId, serverIds, options?.allowedToolNames);
-  },
-  async prepareProject(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>) {
-    return prepareExactProjectMcpRunPlan(userId, serverIds, options?.allowedToolNames);
   }
 };

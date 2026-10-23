@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadChatUsageTotals } from "./usageTotals";
 
 describe("cumulative chat accounting", () => {
-  it("projects an aggregate without exposing records or filtering out another Project actor", async () => {
+  it("projects an aggregate without exposing records or filtering out another actor", async () => {
     const query = vi.fn().mockResolvedValue([{ hasCompletedAnswer: true, recordCount: 4n, knownCostRecordCount: 2n,
       incompleteRecordCount: 1n, totalTokens: 9876n, estimatedCostMicros: 12500n }]);
     expect(await loadChatUsageTotals({ $queryRaw: query } as never, "allowed-chat")).toEqual({
@@ -16,7 +16,7 @@ describe("cumulative chat accounting", () => {
     await loadChatUsageTotals({ $queryRaw: query } as never, "stopped-chat");
     const sql = (query.mock.calls[0]![0].strings as string[]).join("?").replace(/\s+/gu, " ");
     expect(sql).toContain(`"role" = 'assistant' AND "status" = 'complete' ) OR EXISTS ( SELECT 1 FROM "UsageEvent" WHERE "chatId" = ? AND "modelRunId" IS NOT NULL`);
-    // Only the answer model's own rows are an answer attempt; Search, Knowledge and system receipts are not.
+    // Only the answer model's own rows are an answer attempt; Search and system receipts are not.
     expect(sql).toContain(`AND "modelRunId" IS NOT NULL AND "purpose" = 'chat_answer'::"UsagePurpose" )`);
   });
   it("preserves unavailable totals and rejects unsafe numeric overflow", async () => {

@@ -1,15 +1,10 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
 import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
-import { PDF_PROCESSING_MAX_PAGES } from "../../contracts/uploads";
-import { createKnowledgeModelPdfParser } from "../knowledge/modelPdfParser";
-import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "../knowledge/knowledgeProfile";
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
-import type { ProviderRunRequest } from "../providers/types";
 import type { ChatPdfAttachmentAdmission } from "../uploads/chatPdfAdmission";
-import { CHAT_PDF_PARSER_VERSION, chatPdfCompatibilityKey, createChatPdfCore } from "../uploads/chatPdfCore";
+import { chatPdfCompatibilityKey, createChatPdfCore } from "../uploads/chatPdfCore";
 import { finalizeParsedDocument } from "./assessment";
 import { modelPdfPageEndMarker, modelPdfPageStartMarker } from "./modelPdfOutput";
 import type { NativePdfGeometry } from "./nativePdf";
@@ -49,7 +44,7 @@ function snapshot(): ProviderExecutionSnapshot {
   });
 }
 
-describe("attachment and Knowledge OCR parity", () => {
+describe("attachment PDF OCR", () => {
   it("bounds the complete base64 request before dispatch, including tighter model limits", async () => {
     const binding = snapshot();
     const limits = pdfOcrImageLimits(binding.model.capabilities);
@@ -74,7 +69,7 @@ describe("attachment and Knowledge OCR parity", () => {
 
   const routes = ["no_native", "native", "layout", "math_native_layer"] as const;
   it.each([19, 20].flatMap(parserVersion => routes.map(route => ({ parserVersion, route }))))(
-    "keeps images, prompt and assembly equal with $route and accepted profile $parserVersion", async ({ parserVersion, route }) => {
+    "assembles the model transcription with $route and accepted profile $parserVersion", async ({ parserVersion, route }) => {
       const bytes = Buffer.from("%PDF-neutral-parity-source");
       const image = await sharp({ create: { width: 200, height: 200, channels: 3, background: "white" } })
         .png().toBuffer();
@@ -113,31 +108,8 @@ describe("attachment and Knowledge OCR parity", () => {
       expect(planned.plan.parserVersion).toBe(parserVersion);
       const chatPage = await core.page({ admission: admitted, bytes, ...planned, page: 1 });
       const chat = core.assemble({ admission: admitted, ...planned, results: [{ page: 1, text: modelText }] });
-      const execute = vi.fn(async (_snapshot: ProviderExecutionSnapshot, request: ProviderRunRequest) => {
-        void _snapshot; void request;
-        return { finalText: modelText, finalProviderResponsePreview: {},
-          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } };
-      });
-      const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
-        inspect, extractGeometry, parseDocling, prepare, execute: execute as never,
-        attemptRepository: {
-          reserve: vi.fn(async () => ({ kind: "dispatch", attemptId: "attempt" })),
-          markDispatched: vi.fn(async () => true), markAmbiguous: vi.fn(),
-          settle: vi.fn(async (value: Record<string, unknown>) => value)
-        } as never
-      });
-      const knowledge = await parser.parse({ artifactId: "artifact", bytes, ownerUserId: "owner",
-        maxBlocks: planned.plan.maxBlocks, maxCharacters: planned.plan.maxCharacters,
-        maxPages: PDF_PROCESSING_MAX_PAGES, mode: "system_model_vision",
-        parserProfileVersion: parserVersion, processingGeneration: 0,
-        profileRevisionId: "profile", sourceVersionId: "source-version", systemModelPolicyVersion: 3,
-        systemModelSnapshot: binding });
-      expect(CHAT_PDF_PARSER_VERSION).toBe(KNOWLEDGE_PDF_PARSER_PROFILE_VERSION);
-      expect(execute).toHaveBeenCalledOnce();
-      expect({ ...chatPage.request, chatId: "knowledge-pdf-transcription" }).toEqual(execute.mock.calls[0]![1]);
-      expect(prepare.mock.calls).toHaveLength(2);
-      expect(prepare.mock.calls[0]).toEqual(prepare.mock.calls[1]);
-      expect(chat).toEqual(knowledge);
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(chatPage.request.attachments).toHaveLength(1);
       expect(chat.blocks.some(block => block.text === formula)).toBe(true);
       expect(chat.blocks.find(block => block.table)?.table?.cells)
         .toContainEqual({ row: 2, column: 0, rowSpan: 1, columnSpan: 1, text: "" });

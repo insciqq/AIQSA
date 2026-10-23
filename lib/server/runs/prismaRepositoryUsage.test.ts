@@ -24,19 +24,18 @@ describe("run attribution usage rows", () => {
     });
   });
 
-  it("writes each attribution with its own purpose", () => {
-    const rows = runAttributionUsageRows({ chatId: "chat-1", projectId: "project-1", runId: "run-1", userId: "user-1" }, [
+  it("writes each attribution with its own purpose and never a Project", () => {
+    const rows = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [
       { modelId: "answer", operationCount: 2, provider: "openai", purpose: "chat_answer", usage, estimatedCostMicros: 9 },
       { modelId: "search", provider: "perplexity", purpose: "web_search", usage: normalizeTokenUsage({ inputTokens: 3 }) }
     ]);
     expect(rows).toEqual([
       expect.objectContaining({ modelId: "answer", purpose: "chat_answer", operationCount: 2, estimatedCostMicros: 9,
-        projectId: "project-1", modelRunId: "run-1", chatId: "chat-1", userId: "user-1", usageCompleteness: "COMPLETE" }),
+        modelRunId: "run-1", chatId: "chat-1", userId: "user-1", usageCompleteness: "COMPLETE" }),
       expect.objectContaining({ modelId: "search", purpose: "web_search", operationCount: null, estimatedCostMicros: null,
         usageCompleteness: "PARTIAL" })
     ]);
-    expect(runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" },
-      [{ modelId: "answer", provider: "openai", purpose: "chat_answer", usage }])[0]).not.toHaveProperty("projectId");
+    expect(rows[0]).not.toHaveProperty("projectId");
   });
 
   it("stores the web searches a row paid for, and none when no search was reported", () => {
@@ -93,9 +92,9 @@ describe("completed answer usage", () => {
 
   it("records a completion without attributions as answer usage", async () => {
     const { tx, createMany } = transaction();
-    await persistCompletedAnswerUsage(tx, input, "project-1");
+    await persistCompletedAnswerUsage(tx, input);
     expect(createMany).toHaveBeenCalledWith({ data: [expect.objectContaining({ modelId: "answer", provider: "openai",
-      purpose: "chat_answer", operationCount: 1, estimatedCostMicros: 5, projectId: "project-1" })] });
+      purpose: "chat_answer", operationCount: 1, estimatedCostMicros: 5, userId: "user-1" })] });
   });
 });
 

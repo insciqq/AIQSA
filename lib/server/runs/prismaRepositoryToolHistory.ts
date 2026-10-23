@@ -4,7 +4,7 @@ import { canAccessSearchStrategy } from "../auth/entitlements";
 import { acceptedMcpCallIdentity, canReadAcceptedMcpCall, mcpDetailRecord as record,
   type AcceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { mcpCallRedactionEvidence, type McpRedactionEvidence } from "../mcp/callDetailsRedaction";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { decodeToolObservationSourceBinding, ObservationStoreError } from "../toolObservations/contract";
 import { branchPathMessageIds, observationRunAuthority, runOnBranchPath } from "../toolObservations/repository";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
@@ -38,15 +38,14 @@ export type ToolHistoryActor =
   | Readonly<{ runId: string; userId: string }>
   | Readonly<{ chatId: string; leafMessageId: string | null; userId: string }>;
 
-/** The reading side every check uses: the reader's chat, Project, branch and
- * own run. Calls of other chats, other edits and ineligible runs never pass. */
+/** The reading side every check uses: the reader's chat, branch and own
+ * run. Calls of other chats, other edits and ineligible runs never pass. */
 type ReadingContext = Readonly<{
   chatId: string;
   /** The user message the reader answers (earlier attempts of it are the
    * current turn's record), or null for a new message. */
   currentUserMessageId: string | null;
   pathIds: ReadonlySet<string>;
-  projectId: string | null;
   retentionExpired: boolean;
   runId: string | null;
   userId: string;
@@ -89,10 +88,10 @@ async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryAc
     currentUserMessageId = leaf?.role === "user" ? leafMessageId : null;
   }
   const chat = await tx.chat.findUnique({ where: { id: chatId }, select: { archived: true, permanentDeletionAt: true,
-    projectId: true, memoryMode: true, temporaryRetentionDeadline: true } });
+    memoryMode: true, temporaryRetentionDeadline: true } });
   if (!chat || chat.archived || chat.permanentDeletionAt) throw new ToolHistoryUnavailable();
   return {
-    chatId, currentUserMessageId, projectId: chat.projectId, runId, userId: actor.userId,
+    chatId, currentUserMessageId, runId, userId: actor.userId,
     pathIds: leafMessageId ? await branchPathMessageIds(tx, chatId, leafMessageId) : new Set<string>(),
     retentionExpired: chat.memoryMode === "TEMPORARY" && chat.temporaryRetentionDeadline !== null &&
       chat.temporaryRetentionDeadline <= new Date()
@@ -189,7 +188,7 @@ function mcpAuthority(tx: Prisma.TransactionClient, context: ReadingContext) {
       const key = `${identity.serverId}\u0000${identity.originalName}`;
       let value = readable.get(key);
       if (!value) {
-        value = canReadAcceptedMcpCall(tx, { ...identity, projectId: context.projectId, userId: context.userId });
+        value = canReadAcceptedMcpCall(tx, { ...identity, userId: context.userId });
         readable.set(key, value);
       }
       return value;
@@ -198,7 +197,7 @@ function mcpAuthority(tx: Prisma.TransactionClient, context: ReadingContext) {
       const key = `${identity.serverId}\u0000${identity.revisionId}\u0000${identity.fingerprint}\u0000${generationId ?? ""}`;
       let value = evidence.get(key);
       if (!value) {
-        value = mcpCallRedactionEvidence(tx, identity, generationId, context.userId, context.projectId);
+        value = mcpCallRedactionEvidence(tx, identity, generationId, context.userId);
         evidence.set(key, value);
       }
       return value;
@@ -328,7 +327,7 @@ async function projectionValues(tx: Prisma.TransactionClient, ids: readonly stri
 }
 
 /** Search options the call's accepted plan routed it to must still be
- * enabled and, outside Projects, entitled, as the saved-result owner checks. */
+ * enabled and entitled, as the saved-result owner checks. */
 async function searchAvailable(tx: Prisma.TransactionClient, context: ReadingContext, call: CallHead, run: AcceptedRun): Promise<boolean> {
   const plan = record(run.normalizedRequest.searchPlan) ? run.normalizedRequest.searchPlan : null;
   const options = Array.isArray(plan?.options)
@@ -336,13 +335,13 @@ async function searchAvailable(tx: Prisma.TransactionClient, context: ReadingCon
   const index = /^search_engine_(\d+)$/u.exec(call.toolName);
   const routed = call.toolName === "search_selected_engines" ? options : index ? options.slice(Number(index[1]) - 1, Number(index[1])) : [];
   if (routed.length === 0) return false;
-  const entitlements = context.projectId ? null : await loadEntitlementsForUser(context.userId, tx);
+  const entitlements = await loadEntitlementsForUser(context.userId, tx);
   for (const option of routed) {
     if (typeof option.optionId !== "string" || typeof option.revisionId !== "string") return false;
     const revision = await tx.searchIntegrationRevision.findFirst({ where: { id: option.revisionId,
-      searchStrategy: { enabled: true, archivedAt: null, searchOption: { optionId: option.optionId, enabled: true, archivedAt: null,
-        ...(context.projectId ? { projectBindings: { some: { projectId: context.projectId } } } : {}) } } }, select: { id: true } });
-    if (!revision || entitlements && !canAccessSearchStrategy(entitlements, option.optionId)) return false;
+      searchStrategy: { enabled: true, archivedAt: null, searchOption: { optionId: option.optionId, enabled: true, archivedAt: null } } },
+      select: { id: true } });
+    if (!revision || !canAccessSearchStrategy(entitlements, option.optionId)) return false;
   }
   return true;
 }

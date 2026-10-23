@@ -230,7 +230,7 @@ function UsageContent({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
         <p className="mt-1">
           Amounts are estimates from provider-reported usage, including usage kept after a failure or cancellation.
           Usage with unknown prices is left out of cost and counted in tokens. System is work done by system models
-          for people, such as chat titles and summaries, Memory and Knowledge; By model lists only the models people
+          for people, such as chat titles and summaries and Memory; By model lists only the models people
           chose. Other is earlier usage whose purpose could not be recovered. Group totals follow current membership,
           so a user in several groups counts in each and group sums can overlap. Days and months follow the
           {" "}{usage.window.timeZone} time zone.

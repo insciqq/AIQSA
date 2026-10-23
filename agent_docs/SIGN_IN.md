@@ -78,7 +78,7 @@ Administrators see refused sign-ins on the Users page and can invite those peopl
 
 - `/scim/v2` is an admin-level integration outside `/api`. Its client sees every user and active group and changes accounts and memberships only through the commands the administrator paths use. `DELETE` never erases. Every token failure, and SCIM being off, gets the same 401.
 - SCIM never changes the email of an administrator or an account with a local password. It is the only path that creates groups; Full access links only by its exact name and is never renamed or archived.
-- Deactivation revokes sessions and inbound MCP grants at once, under `disableUser`'s guards: the last administrator who can sign in stays, and a sole direct Project Owner stays active (409) until ownership moves. Reactivation re-enables only accounts SCIM disabled; an administrator's disable wins.
+- Deactivation revokes sessions and inbound MCP grants at once, under `disableUser`'s guard: the last administrator who can sign in stays. Reactivation re-enables only accounts SCIM disabled; an administrator's disable wins.
 
 ## Dependencies
 

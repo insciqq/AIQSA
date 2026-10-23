@@ -33,14 +33,12 @@ function chatSummary(id: string, title: string, messageCount = 0) {
   return {
     activeLeafMessageId: messageCount ? "assistant-normal" : null,
     createdAt: timestamp,
-    defaultKnowledgePlan: null,
     defaultModelId: "gpt-5.5",
     defaultProvider: "openai",
     folderId: null,
     id,
     messageCount,
     pinned: false,
-    projectId: null,
     title,
     updatedAt: timestamp
   };
@@ -66,7 +64,6 @@ test("opens an authorized Personal Memory source at its exact message", async ({
       hasOlder: false,
       snapshotUpdatedAt: timestamp
     },
-    projectId: null,
     usageStats: null
   };
   await installMatrixCatalogFixture(page, { chats: [linked], folders: [] });

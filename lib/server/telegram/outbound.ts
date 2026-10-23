@@ -132,7 +132,7 @@ export function createTelegramOutbound(deps: Readonly<{
   function openInAiqsaUrl(chatId: string): string | null {
     try {
       const base = new URL(deps.appBaseUrl);
-      return base.protocol === "https:" ? new URL(formatChatRoutePath({ chatId, projectId: null }), base).toString() : null;
+      return base.protocol === "https:" ? new URL(formatChatRoutePath({ chatId }), base).toString() : null;
     } catch {
       return null;
     }

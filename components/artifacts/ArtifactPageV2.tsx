@@ -17,7 +17,7 @@ export function ArtifactPageV2({ artifactId, versionId }: { artifactId: string; 
         const chatId = await prepareArtifactEdit(artifactId, versionId);
         if (intent === "runtime_error" && error) storeArtifactRuntimeError(versionId, error);
         router.push(chatRouteHref(
-          { chatId, projectId: null },
+          { chatId },
           new URLSearchParams({ artifactEdit: intent, artifactId, versionId })
         ));
       }} />

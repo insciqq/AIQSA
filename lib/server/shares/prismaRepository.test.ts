@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../prisma", () => ({ prisma: {} }));
-// Only the Project chat test reaches Project access; personal chats never ask.
-vi.mock("../projects/access", () => ({ resolveProjectAccess: vi.fn(async () => ({ projectId: "p", role: "MANAGER" })) }));
 
 import { createPrismaShareRepository } from "./prismaRepository";
-import { ProjectsDisabledError } from "../projects/disabled";
 
 /**
  * A public share holds the selected leaf's path only: an answer review that
@@ -43,7 +40,7 @@ async function share(activeLeafMessageId: string) {
   const created: unknown[] = [];
   const tx = {
     answerReviewSession: { findMany: async () => [{ id: "s", sourceAssistantMessageId: "a" }] },
-    chat: { findFirst: async () => ({ activeLeafMessageId: "v2", id: "c", messages, project: null, projectId: null, title: "Chat" }) },
+    chat: { findFirst: async () => ({ activeLeafMessageId: "v2", id: "c", messages, title: "Chat" }) },
     message: { findMany: async () => [] },
     sharedChatSnapshot: { create: async ({ data }: { data: unknown }) => { created.push(data); return { id: "share" }; } }
   };
@@ -69,22 +66,19 @@ describe("createChatShare with answer reviews", () => {
   });
 });
 
-describe("createChatShare while Projects are disabled", () => {
-  it("creates no public share of a Project chat", async () => {
-    const create = vi.fn();
+describe("createChatShare ownership", () => {
+  it("shares only the requester's own chat and records them as its owner", async () => {
+    const create = vi.fn(async () => ({ id: "share" }));
     const tx = {
-      $queryRaw: vi.fn(async () => []),
       answerReviewSession: { findMany: async () => [] },
-      chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "a", id: "c", messages, project: { publicSharingEnabled: true, status: "ACTIVE" },
-        projectId: "p", title: "Chat" })) },
+      chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "a", id: "c", messages, title: "Chat" })) },
       message: { findMany: async () => [] },
       sharedChatSnapshot: { create }
     };
     const repository = createPrismaShareRepository({ $transaction: async (work: (client: typeof tx) => unknown) => work(tx) } as never);
 
-    await expect(repository.createChatShare({ activeLeafMessageId: "a", chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" }))
-      .rejects.toBeInstanceOf(ProjectsDisabledError);
-    expect(create).not.toHaveBeenCalled();
-    expect(tx.chat.findFirst).toHaveBeenCalledOnce();
+    await repository.createChatShare({ activeLeafMessageId: "a", chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" });
+    expect(tx.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: "c", userId: "u" }) }));
+    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ chatId: "c", ownerUserId: "u" }) });
   });
 });

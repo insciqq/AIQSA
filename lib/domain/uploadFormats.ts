@@ -1,4 +1,4 @@
-export type UploadFormatScope = "attachment" | "knowledge" | "workspace";
+export type UploadFormatScope = "attachment" | "workspace";
 export type UploadKind = "document" | "file" | "image" | "pdf";
 export type InlineDocumentFormat = "csv" | "json" | "markdown" | "text";
 export type StructuredDocumentFormat = "csv" | "ods" | "xls" | "xlsx";
@@ -46,9 +46,8 @@ export type UploadFormatDefinition = Readonly<{
   scopes: readonly UploadFormatScope[];
 }>;
 
-const bothScopes = Object.freeze(["attachment", "knowledge", "workspace"] as const);
-const knowledgeOnly = Object.freeze(["knowledge", "workspace"] as const);
-const attachmentOnly = Object.freeze(["attachment", "workspace"] as const);
+const attachmentScopes = Object.freeze(["attachment", "workspace"] as const);
+const workspaceOnly = Object.freeze(["workspace"] as const);
 
 /**
  * Canonical upload-format inventory. Browser filters, server admission, content
@@ -65,7 +64,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "PDF",
     mimeTypes: ["application/pdf"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/msword",
@@ -76,7 +75,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Word (DOC)",
     mimeTypes: ["application/msword", "application/x-msword"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -87,7 +86,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Word (DOCX)",
     mimeTypes: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -98,7 +97,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "PowerPoint",
     mimeTypes: ["application/vnd.openxmlformats-officedocument.presentationml.presentation"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/rtf",
@@ -109,7 +108,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "RTF",
     mimeTypes: ["application/rtf", "text/rtf"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/vnd.oasis.opendocument.text",
@@ -120,7 +119,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "OpenDocument text",
     mimeTypes: ["application/vnd.oasis.opendocument.text"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "text/plain",
@@ -131,7 +130,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Plain text",
     mimeTypes: ["text/plain"],
     parser: { format: "text", kind: "inline" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "text/markdown",
@@ -142,7 +141,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Markdown",
     mimeTypes: ["text/markdown", "text/plain", "text/x-markdown"],
     parser: { format: "markdown", kind: "inline" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "text/html",
@@ -153,7 +152,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "HTML",
     mimeTypes: ["text/html", "application/xhtml+xml"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/json",
@@ -164,7 +163,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "JSON",
     mimeTypes: ["application/json", "text/json"],
     parser: { format: "json", kind: "inline" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "text/csv",
@@ -175,7 +174,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "CSV",
     mimeTypes: ["text/csv", "application/csv", "text/plain"],
     parser: { format: "csv", kind: "spreadsheet" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/vnd.ms-excel",
@@ -186,7 +185,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Excel (XLS)",
     mimeTypes: ["application/vnd.ms-excel", "application/x-msexcel"],
     parser: { format: "xls", kind: "spreadsheet" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -197,7 +196,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Excel (XLSX)",
     mimeTypes: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
     parser: { format: "xlsx", kind: "spreadsheet" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "application/vnd.oasis.opendocument.spreadsheet",
@@ -208,7 +207,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "OpenDocument spreadsheet",
     mimeTypes: ["application/vnd.oasis.opendocument.spreadsheet"],
     parser: { format: "ods", kind: "spreadsheet" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "application/vnd.oasis.opendocument.presentation",
@@ -219,7 +218,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "OpenDocument presentation",
     mimeTypes: ["application/vnd.oasis.opendocument.presentation"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "message/rfc822",
@@ -230,7 +229,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Email (EML)",
     mimeTypes: ["message/rfc822", "application/octet-stream"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "application/vnd.ms-outlook",
@@ -241,7 +240,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "Outlook message",
     mimeTypes: ["application/vnd.ms-outlook", "application/x-msg"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "application/epub+zip",
@@ -252,7 +251,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "EPUB",
     mimeTypes: ["application/epub+zip"],
     parser: { engines: ["tika"], kind: "sidecar" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "image/png",
@@ -263,7 +262,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "PNG",
     mimeTypes: ["image/png"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "image/jpeg",
@@ -274,7 +273,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "JPEG",
     mimeTypes: ["image/jpeg", "image/jpg"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "image/tiff",
@@ -285,7 +284,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "TIFF",
     mimeTypes: ["image/tiff", "image/x-tiff"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "image/webp",
@@ -296,7 +295,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "WebP",
     mimeTypes: ["image/webp"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: bothScopes
+    scopes: attachmentScopes
   },
   {
     canonicalMimeType: "image/bmp",
@@ -307,7 +306,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "BMP",
     mimeTypes: ["image/bmp", "image/x-bmp"],
     parser: { engines: ["docling", "tika"], kind: "sidecar" },
-    scopes: knowledgeOnly
+    scopes: workspaceOnly
   },
   {
     canonicalMimeType: "image/gif",
@@ -318,7 +317,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     label: "GIF",
     mimeTypes: ["image/gif"],
     parser: null,
-    scopes: attachmentOnly
+    scopes: attachmentScopes
   }
 ] satisfies readonly UploadFormatDefinition[]);
 
@@ -366,11 +365,8 @@ const STATIC_RASTER_FORMAT_IDS: ReadonlySet<string> = new Set(["png", "jpeg", "w
  * another static PNG/JPEG/WebP format: the server then decodes the bytes fully
  * and normalizes the name and MIME to the decoded format.
  */
-export function isNormalizableRasterUploadFormat(
-  format: UploadFormatDefinition,
-  scope: UploadFormatScope
-): boolean {
-  return scope !== "knowledge" && STATIC_RASTER_FORMAT_IDS.has(format.id);
+export function isNormalizableRasterUploadFormat(format: UploadFormatDefinition): boolean {
+  return STATIC_RASTER_FORMAT_IDS.has(format.id);
 }
 
 /**
@@ -386,10 +382,10 @@ export function uploadAdmissionFormatFor(
   const format = uploadFormatFor(fileName, mimeType, scope);
   if (format) return format;
   const byExtension = uploadFormatForExtension(fileName, scope);
-  if (!byExtension || !isNormalizableRasterUploadFormat(byExtension, scope)) return undefined;
+  if (!byExtension || !isNormalizableRasterUploadFormat(byExtension)) return undefined;
   const normalizedMime = normalizedUploadMimeType(mimeType);
   return UPLOAD_FORMAT_REGISTRY.some((candidate) =>
-    isNormalizableRasterUploadFormat(candidate, scope) &&
+    isNormalizableRasterUploadFormat(candidate) &&
     normalizedMime !== undefined &&
     candidate.mimeTypes.includes(normalizedMime)
   ) ? byExtension : undefined;
@@ -440,12 +436,6 @@ export function uploadAcceptFor(input: Readonly<{
   ]))].join(",");
 }
 
-export const KNOWLEDGE_UPLOAD_ACCEPT = uploadAcceptFor({ scope: "knowledge" });
-export const KNOWLEDGE_UPLOAD_FORMAT_LABELS = Object.freeze(
-  UPLOAD_FORMAT_REGISTRY
-    .filter((format) => format.scopes.includes("knowledge"))
-    .map((format) => format.label)
-);
 export const ATTACHMENT_UPLOAD_FORMAT_LABELS = Object.freeze(
   UPLOAD_FORMAT_REGISTRY
     .filter((format) => format.scopes.includes("attachment"))

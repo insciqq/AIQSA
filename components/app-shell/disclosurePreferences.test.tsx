@@ -19,13 +19,14 @@ describe("Account disclosure preferences", () => {
     second.rerender(<DisclosurePreferencesProvider accountId="a"><Folder /></DisclosurePreferencesProvider>);
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   });
-  it("bounds stored choices and isolates Projects, with a usable fallback for blocked storage", () => {
+  it("bounds stored choices and ignores unknown keys, with a usable fallback for blocked storage", () => {
     const store = createDisclosurePreferences("a");
     for (let i = 0; i < 510; i++) store.set(`workspace:${i}`, true);
     expect(store.get("workspace:0", false)).toBe(false);
     expect(createDisclosurePreferences("a").get("workspace:509", false)).toBe(true);
+    // Keys of the removed Projects are never stored.
     store.set("project-folder:first:folder", false);
-    expect(store.get("project-folder:second:folder", true)).toBe(true);
+    expect(store.get("project-folder:first:folder", true)).toBe(true);
     const denied = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
     store.set("folder:offline", false);
     expect(store.get("folder:offline", true)).toBe(false);

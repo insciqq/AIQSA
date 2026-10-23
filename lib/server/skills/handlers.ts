@@ -123,14 +123,12 @@ export function skillDetail(entry: SkillDetailEntry, actorIsAdmin: boolean): Ski
     assistantUsageCount: entry.assistantUsageCount,
     audiences: entry.audiences.map((audience) => audience.kind === "installation"
       ? { id: audience.id, kind: "everyone", name: "Everyone" }
-      : audience.kind === "project"
-        ? { id: audience.id, kind: "project", name: "Project publication" }
-        : {
-            id: audience.id,
-            kind: "workspace",
-            name: audience.name,
-            workspaceId: audience.workspaceId
-          }),
+      : {
+          id: audience.id,
+          kind: "workspace",
+          name: audience.name,
+          workspaceId: audience.workspaceId
+        }),
     canDelete: entry.owned,
     canEdit: entry.owned && !entry.archived,
     canPublish: entry.owned && !entry.archived,

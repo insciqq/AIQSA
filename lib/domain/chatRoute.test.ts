@@ -21,9 +21,7 @@ const projectId = "9d3b0a7c-2b61-4f8e-8f5c-6f0b3a1e2d44";
 describe("chat route contract", () => {
   it.each([
     ["/", BLANK_CHAT_ROUTE],
-    [`/c/${chatId}`, { chatId, projectId: null }],
-    [`/p/${projectId}`, { chatId: null, projectId }],
-    [`/p/${projectId}/c/${chatId}`, { chatId, projectId }]
+    [`/c/${chatId}`, { chatId }]
   ])("round-trips %s", (pathname, route) => {
     expect(parseChatRoutePath(pathname)).toEqual(route);
     expect(formatChatRoutePath(route)).toBe(pathname);
@@ -31,10 +29,9 @@ describe("chat route contract", () => {
   });
 
   it("decodes path segments and encodes ids that need it", () => {
-    expect(parseChatRoutePath("/c/chat%20one")).toEqual({ chatId: "chat one", projectId: null });
-    expect(formatChatRoutePath({ chatId: "a/b?c#d", projectId: "p q" })).toBe("/p/p%20q/c/a%2Fb%3Fc%23d");
-    expect(parseChatRoutePath(formatChatRoutePath({ chatId: "a/b?c#d", projectId: "p q" })))
-      .toEqual({ chatId: "a/b?c#d", projectId: "p q" });
+    expect(parseChatRoutePath("/c/chat%20one")).toEqual({ chatId: "chat one" });
+    expect(formatChatRoutePath({ chatId: "a/b?c#d" })).toBe("/c/a%2Fb%3Fc%23d");
+    expect(parseChatRoutePath(formatChatRoutePath({ chatId: "a/b?c#d" }))).toEqual({ chatId: "a/b?c#d" });
   });
 
   it("applies the deep-link id bound to every segment", () => {
@@ -47,16 +44,14 @@ describe("chat route contract", () => {
       `/c/${"x".repeat(257)}`,
       "/c/%00",
       "/c/%E0%A4%A",
-      "/c/%20",
-      `/p/%7F/c/${chatId}`,
-      `/p/${projectId}/c/%0A`
+      "/c/%20"
     ]) {
       expect(parseChatRoutePath(pathname)).toBeNull();
       expect(isChatRoutePathname(pathname)).toBe(true);
     }
   });
 
-  it.each(["", "/c", "/c/", "/p", `/c/${chatId}/`, `/c/${chatId}/extra`, `/p/${projectId}/x/${chatId}`,
+  it.each(["", "/c", "/c/", "/p", `/c/${chatId}/`, `/c/${chatId}/extra`, `/p/${projectId}`, `/p/${projectId}/c/${chatId}`,
     `/x/${chatId}`, "/admin", "/artifacts/a/versions/v", "/login"])("rejects the non-route %s", (pathname) => {
     expect(parseChatRoutePath(pathname)).toBeNull();
   });
@@ -65,6 +60,8 @@ describe("chat route contract", () => {
     expect(isChatRoutePathname("/admin")).toBe(false);
     expect(isChatRoutePathname("/artifacts/a/versions/v")).toBe(false);
     expect(isChatRoutePathname("/c")).toBe(false);
+    // Addresses of removed Projects redirect to the new chat before any chat page.
+    expect(isChatRoutePathname(`/p/${projectId}/c/${chatId}`)).toBe(false);
   });
 
   it("round-trips the Assistant entry link, which is a chat page but never a chat's route", () => {
@@ -91,13 +88,13 @@ describe("chat route contract", () => {
     expect(isChatRoutePathname("/assistants/a")).toBe(false);
   });
 
-  it("compares routes by chat and Project", () => {
-    expect(sameChatRoute({ chatId, projectId: null }, { chatId, projectId: null })).toBe(true);
-    expect(sameChatRoute({ chatId, projectId: null }, { chatId, projectId })).toBe(false);
+  it("compares routes by chat", () => {
+    expect(sameChatRoute({ chatId }, { chatId })).toBe(true);
+    expect(sameChatRoute({ chatId }, BLANK_CHAT_ROUTE)).toBe(false);
   });
 
   it("carries unconsumed parameters and never writes legacy route parameters", () => {
-    expect(chatRouteHref({ chatId, projectId: null }, "chat=old&project=old&message=m&library=mcp&oauth=connected"))
+    expect(chatRouteHref({ chatId }, "chat=old&project=old&message=m&library=mcp&oauth=connected"))
       .toBe(`/c/${chatId}?message=m&library=mcp&oauth=connected`);
     expect(chatRouteHref(BLANK_CHAT_ROUTE)).toBe("/");
     expect(withoutChatScopedParameters("message=m&artifactEdit=edit&artifactId=a&versionId=v&memorySource=x").toString())
@@ -108,12 +105,13 @@ describe("chat route contract", () => {
     expect(legacyChatRouteHref(new URLSearchParams(`chat=${chatId}`))).toBe(`/c/${chatId}`);
     expect(legacyChatRouteHref(new URLSearchParams(`chat=${chatId}&message=m1&keep=yes`)))
       .toBe(`/c/${chatId}?message=m1&keep=yes`);
+    // A removed Project's parameter is only dropped.
     expect(legacyChatRouteHref(new URLSearchParams(`project=${projectId}&chat=${chatId}`)))
-      .toBe(`/p/${projectId}/c/${chatId}`);
+      .toBe(`/c/${chatId}`);
     expect(legacyChatRouteHref(new URLSearchParams(
       `chat=${chatId}&artifactEdit=edit&artifactId=artifact&versionId=version`
     ))).toBe(`/c/${chatId}?artifactEdit=edit&artifactId=artifact&versionId=version`);
-    expect(legacyChatRouteHref(new URLSearchParams(`project=${projectId}`))).toBe(`/p/${projectId}`);
+    expect(legacyChatRouteHref(new URLSearchParams(`project=${projectId}`))).toBe("/");
     expect(legacyChatRouteHref(new URLSearchParams("library=artifacts"))).toBeNull();
     expect(legacyChatRouteHref(new URLSearchParams("chat=&message=m&keep=yes"))).toBe("/?keep=yes");
     expect(legacyChatRouteHref(new URLSearchParams(`chat=a&chat=b`))).toBe("/");
@@ -121,8 +119,8 @@ describe("chat route contract", () => {
 
   it("accepts only internal chat routes as return paths", () => {
     expect(chatReturnPath(`/c/${chatId}`)).toBe(`/c/${chatId}`);
-    expect(chatReturnPath(`/p/${projectId}/c/${chatId}`)).toBe(`/p/${projectId}/c/${chatId}`);
-    expect(chatReturnPath(`/p/${projectId}`)).toBe(`/p/${projectId}`);
+    expect(chatReturnPath(`/p/${projectId}/c/${chatId}`)).toBe("/");
+    expect(chatReturnPath(`/p/${projectId}`)).toBe("/");
     expect(chatReturnPath("/")).toBe("/");
     for (const tampered of [
       null,
@@ -147,8 +145,7 @@ describe("chat route contract", () => {
 
   it("builds the Control Center entry from the origin chat route", () => {
     expect(controlCenterHref(`/c/${chatId}`)).toBe(`/admin?return=%2Fc%2F${chatId}`);
-    expect(new URLSearchParams(controlCenterHref(`/p/${projectId}/c/${chatId}`).split("?")[1]).get("return"))
-      .toBe(`/p/${projectId}/c/${chatId}`);
+    expect(controlCenterHref(`/p/${projectId}/c/${chatId}`)).toBe("/admin");
     expect(controlCenterHref("/")).toBe("/admin");
     expect(controlCenterHref("https://evil.example/")).toBe("/admin");
     expect(controlCenterHref("/", { resource: "chat_pdf", section: "roles" }))

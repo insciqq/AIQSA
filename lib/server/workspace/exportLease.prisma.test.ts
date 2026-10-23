@@ -48,7 +48,7 @@ async function cleanupFixtures(): Promise<void> {
   if (userIds.length === 0) return;
   const chats = await prisma.chat.findMany({
     select: { id: true },
-    where: { OR: [{ userId: { in: userIds } }, { project: { createdByUserId: { in: userIds } } }] }
+    where: { userId: { in: userIds } }
   });
   const chatIds = chats.map(({ id }) => id);
   // Produced outputs restrict run deletion; the output rows cascade from the attachments.
@@ -64,7 +64,6 @@ async function cleanupFixtures(): Promise<void> {
   await prisma.message.deleteMany({ where: { chatId: { in: chatIds } } });
   await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
   await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-  await prisma.project.deleteMany({ where: { createdByUserId: { in: userIds } } });
   // The held-chat-row Memory commit's own job; its settings row goes with the user.
   await prisma.memoryJob.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
@@ -73,7 +72,6 @@ async function cleanupFixtures(): Promise<void> {
 type Fixture = Readonly<{
   chatId: string;
   generation: number;
-  projectId?: string;
   runId: string;
   runtimeSandboxId: string | null;
   sessionId: string;
@@ -92,40 +90,20 @@ const FIXTURE_TOOL_DEFINITIONS = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName)
 async function createFixture(input: Readonly<{
   exportState?: "EXPORTING" | "FAILED" | "PENDING";
   lastExportErrorCode?: string;
-  project?: boolean;
 }> = {}): Promise<Fixture> {
   const userId = `${TEST_USER_PREFIX}${randomUUID()}`;
   const user = await prisma.user.create({
     data: { displayName: "Workspace Export Lease Test", id: userId, status: "active" }
   });
-  const projectOwner = input.project ? await prisma.user.create({
-    data: { displayName: "Export Recovery Owner", id: `${TEST_USER_PREFIX}${randomUUID()}`, status: "active" }
-  }) : null;
-  const project = projectOwner ? await prisma.project.create({
-    data: {
-      createdByDisplayName: "Export Recovery Owner", createdByUserId: projectOwner.id,
-      grants: { create: { role: "OWNER", userId: projectOwner.id } },
-      name: "Export recovery access"
-    }
-  }) : null;
-  if (project) {
-    await prisma.projectGrant.create({ data: { projectId: project.id, role: "CONTRIBUTOR", userId } });
-  }
   const chat = await prisma.chat.create({
     data: {
       title: "Export lease",
-      ...(project ? {
-        createdByDisplayName: user.displayName, createdByUserId: userId,
-        memoryMode: "EXCLUDED" as const, projectId: project.id
-      } : { userId: user.id }),
+      userId: user.id,
       workspaceEnabled: true
     }
   });
   const userMessage = await prisma.message.create({
     data: {
-      ...(project ? {
-        authorDisplayName: user.displayName, authorProjectRole: "CONTRIBUTOR" as const, authorUserId: userId
-      } : {}),
       chatId: chat.id,
       content: textMessageContent("Export something"),
       modelId: "fake-qsa",
@@ -151,10 +129,6 @@ async function createFixture(input: Readonly<{
       chatId: chat.id,
       modelId: "fake-qsa",
       normalizedRequest: {},
-      ...(project ? { projectRunBinding: { create: {
-        acceptedRole: "CONTRIBUTOR" as const, accessRevision: 1, initiatorUserId: userId,
-        instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true, policyRevision: 1, projectId: project.id
-      } } } : {}),
       provider: "fake",
       status: "complete",
       userId,
@@ -201,7 +175,7 @@ async function createFixture(input: Readonly<{
       workspaceRunBindingId: run.id
     }
   });
-  return { chatId: chat.id, generation: session.version, ...(project ? { projectId: project.id } : {}), runId: run.id,
+  return { chatId: chat.id, generation: session.version, runId: run.id,
     runtimeSandboxId: session.runtimeSandboxId, sessionId: session.id, toolCallId: toolCall.id, userId };
 }
 
@@ -669,39 +643,26 @@ describe("Prisma Workspace export lease", () => {
     expect((await bindingState(fixture.runId)).exportState).toBe(kind === "retention" ? "FAILED" : "PENDING");
   });
 
-  it("traverses an inaccessible Project head and a busy chat to reach later eligible work", async () => {
-    const denied: Fixture[] = [];
-    for (let index = 0; index < 10; index += 1) {
-      const fixture = await createFixture({ project: true });
-      expect(await repository.binding(fixture)).not.toBeNull();
-      const grant = { projectId: fixture.projectId!, userId: fixture.userId };
-      if (index % 3 === 0) await prisma.projectGrant.deleteMany({ where: grant });
-      if (index % 3 === 1) await prisma.projectGrant.updateMany({ data: { role: "VIEWER" }, where: grant });
-      if (index % 3 === 2) await prisma.project.update({ data: { archivedAt: new Date(), status: "ARCHIVED" }, where: { id: fixture.projectId! } });
-      denied.push(fixture);
-    }
+  it("pages past earlier candidates and a busy chat to reach later eligible work", async () => {
+    const earlier: Fixture[] = [];
+    for (let index = 0; index < 10; index += 1) earlier.push(await createFixture());
     const busy = await createFixture();
     const healthy = await createFixture();
     const headTime = new Date("2001-01-01T00:00:00.000Z");
-    await prisma.workspaceRunBinding.updateMany({ data: { updatedAt: headTime }, where: { modelRunId: { in: denied.map((row) => row.runId) } } });
+    await prisma.workspaceRunBinding.updateMany({ data: { updatedAt: headTime }, where: { modelRunId: { in: earlier.map((row) => row.runId) } } });
     await prisma.workspaceRunBinding.updateMany({ data: { updatedAt: new Date(headTime.getTime() + 1) }, where: { modelRunId: { in: [busy.runId, healthy.runId] } } });
     const parent = await prisma.modelRun.findUniqueOrThrow({ where: { id: busy.runId } });
     const active = await prisma.modelRun.create({ data: {
       chatId: busy.chatId, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "streaming", userId: busy.userId, userMessageId: parent.userMessageId
     } });
     const first = await repository.exportRecoveryCandidates({ limit: 10, staleBefore: new Date(headTime.getTime() + 2) });
-    expect(new Set(first.map((row) => row.runId))).toEqual(new Set(denied.map((row) => row.runId)));
-    for (const candidate of first) expect(await repository.binding(candidate)).toBeNull();
+    expect(new Set(first.map((row) => row.runId))).toEqual(new Set(earlier.map((row) => row.runId)));
     const cursor = first.at(-1)!;
     const second = await repository.exportRecoveryCandidates({ cursor, limit: 10, staleBefore: new Date(headTime.getTime() + 2) });
     expect(new Set(second.map((row) => row.runId))).toEqual(new Set([busy.runId, healthy.runId]));
     expect(await repository.claimExportForRecovery({ ...busy, leaseMs: 10_000, runId: busy.runId, sessionId: busy.sessionId })).toEqual({ status: "busy" });
     expect((await bindingState(busy.runId)).exportAttemptCount).toBe(0);
     expect(await repository.claimExportForRecovery({ ...healthy, leaseMs: 10_000, runId: healthy.runId, sessionId: healthy.sessionId })).toMatchObject({ status: "claimed" });
-    // Deferral preserves a legitimate future retry after access is restored.
-    const revoked = denied[0]!;
-    await prisma.projectGrant.create({ data: { projectId: revoked.projectId!, role: "CONTRIBUTOR", userId: revoked.userId } });
-    expect(await repository.binding({ runId: revoked.runId, userId: revoked.userId })).not.toBeNull();
     await prisma.modelRun.update({ data: { status: "complete" }, where: { id: active.id } });
   });
 

@@ -36,12 +36,10 @@ export function assistantContent(overrides: Partial<AssistantContent> = {}): Ass
     avatar: assistantAvatar,
     category: "coding",
     description: "Reviews changes with care.",
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: "Code reviewer",
     providerModelId: "model-1",
     rows: assistantRowsFromLegacyFields({
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       providerModelId: "model-1",
       runControls: {},
@@ -95,8 +93,6 @@ export function assistantSummary(overrides: Partial<AssistantSummary> = {}): Ass
     featured: false,
     featuredOrder: null,
     fingerprint: {
-      knowledgeLabel: null,
-      knowledgeResourceCount: 0,
       mcpServerCount: 0,
       modelLabel: "Model one",
       reasoningEffort: null,
@@ -203,7 +199,6 @@ export function savedEditorDraft(): AssistantEditorDraft {
     responseReminder: "",
     rows: {
       ...rows,
-      knowledge: { policy: "fixed", value: { mode: "none" } },
       model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "off" } },
       skills: { policy: "fixed", value: { links: [], mode: "auto" } },
@@ -220,13 +215,8 @@ export function assistantControllerInput(): AssistantLibraryControllerInput {
     chooseAssistant: vi.fn(async (_detail: AssistantDetail): Promise<string | null> => null),
     catalog: catalog(),
     catalogError: null,
-    knowledgeBases: [],
-    knowledgeSources: [],
-    knowledgeDataError: null,
-    knowledgeDataState: "ready",
     openMcpSettings: vi.fn(),
     retryCatalog: vi.fn(),
-    retryKnowledge: vi.fn(),
     setShellNotice: vi.fn(),
     skills: []
   };

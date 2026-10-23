@@ -40,8 +40,6 @@ export type AdminAssistantResourceName = { id: string; name: string };
  * the administrator cannot access.
  */
 export type AdminAssistantReviewNames = {
-  knowledgeBases: AdminAssistantResourceName[];
-  knowledgeSources: AdminAssistantResourceName[];
   mcpServers: AdminAssistantResourceName[];
   models: AdminAssistantResourceName[];
   searchOptions: AdminAssistantResourceName[];
@@ -60,7 +58,7 @@ export type AdminAssistantDefinitionReview = {
   responseReminder: string;
   starterPrompts: string[];
   /**
-   * The six rows projected for the administrator as the viewer, exactly as a
+   * The five rows projected for the administrator as the viewer, exactly as a
    * consumer's detail projects them: only resources in the administrator's
    * own catalog are identified; the rest are counted in `hiddenCount`, and a
    * model outside it is `modelId: null`. Approval rechecks that every linked

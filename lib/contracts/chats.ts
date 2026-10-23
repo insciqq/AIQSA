@@ -29,7 +29,6 @@ import {
   decodeAssistantAvailability,
   decodeAssistantAvatarRecipe,
   decodeAssistantIdentity,
-  decodeAssistantKnowledgeValue,
   decodeAssistantModelValue,
   decodeAssistantRowDeviation,
   decodeAssistantRowKey,
@@ -42,7 +41,6 @@ import {
   type AssistantAvailability,
   type AssistantAvatarRecipe,
   type AssistantIdentity,
-  type AssistantKnowledgeValue,
   type AssistantModelValue,
   type AssistantRowDeviation,
   type AssistantRowKey,
@@ -52,7 +50,8 @@ import {
   type AssistantRunControls,
   type AssistantSearchValue,
   type AssistantSkillsValue,
-  type AssistantToolsValue
+  type AssistantToolsValue,
+  RETIRED_ASSISTANT_ROW_KEY
 } from "./assistants";
 import { isAssistantReferenceId } from "./chatDefaults";
 import {
@@ -68,11 +67,6 @@ import {
   decodeThreadSearchSource,
   type ThreadSearchSource
 } from "./searchSources";
-import {
-  decodeKnowledgeCitationHandle,
-  decodeKnowledgePlan,
-  type KnowledgePlan
-} from "./knowledge";
 import {
   MEMORY_ANSWER_SOURCE_MAX_ITEMS,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
@@ -143,11 +137,10 @@ export const THREAD_REASONING_MAX_ENTRIES = 100;
 export const THREAD_CITATION_MAX_ITEMS = 4_000;
 export const THREAD_SEARCH_SOURCE_MAX_ITEMS = 4_000;
 /**
- * User-entered chat titles (personal and Project chats) and personal folder
- * names, counted in Unicode code points. Stored columns are unbounded: the
- * server rejects longer input (`chat_title_too_long`/`folder_name_too_long`)
- * instead of truncating, so a saved name is exactly what was submitted.
- * Project folders keep their own contract. Browser `maxLength` counts UTF-16
+ * User-entered chat titles and personal folder names, counted in Unicode
+ * code points. Stored columns are unbounded: the server rejects longer input
+ * (`chat_title_too_long`/`folder_name_too_long`) instead of truncating, so a
+ * saved name is exactly what was submitted. Browser `maxLength` counts UTF-16
  * code units, so any input the field accepts also fits here.
  */
 export const CHAT_TITLE_MAX_LENGTH = 120;
@@ -233,7 +226,6 @@ export type ThreadMessage = {
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
-  author?: ProjectMessageAuthorWire | null;
   citationMessageId?: string | null;
   content: unknown;
   id: string;
@@ -268,8 +260,6 @@ export type ThreadArtifactSummary = {
   generatedFiles?: ThreadGeneratedFile[];
   generatedImages?: ThreadGeneratedImage[];
   groundingDisplay?: ThreadGroundingDisplay | null;
-  knowledgeState?: ThreadKnowledgeAnswerState;
-  knowledgeCitations?: ThreadKnowledgeCitation[];
   memoryAction?: MemoryActionFeedback;
   memoryStatus?: "INPUT_TOO_LONG" | "LIMITED" | "UNAVAILABLE";
   memorySources?: MemoryAnswerSource[];
@@ -306,11 +296,6 @@ export type ThreadGeneratedArtifact = Readonly<{
   versionNumber: number;
 }>;
 
-export type ThreadKnowledgeAnswerState = Readonly<{
-  answer: "answered" | "insufficient_evidence";
-  scope: "partial_sources_ready" | "ready";
-}>;
-
 export type ThreadToolActivity = {
   calls: ThreadToolActivityCall[];
   searchEngines?: ThreadSearchEngineActivity[];
@@ -321,7 +306,6 @@ export type ThreadToolActivityOrigin =
   | "artifact"
   | "image"
   | "discovery"
-  | "knowledge"
   | "mcp"
   | "memory"
   | "session"
@@ -333,7 +317,7 @@ export type ThreadToolActivityOrigin =
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
-  return value === "artifact" || value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
+  return value === "artifact" || value === "image" || value === "discovery" || value === "mcp" ||
     value === "memory" || value === "session" || value === "skill" || value === "tool" || value === "vision" ||
     value === "web_fetch" || value === "web_search" || value === "workspace";
 }
@@ -384,25 +368,6 @@ export function decodeThreadToolBudgetWarning(value: unknown): ThreadToolBudgetW
   return { kind: value.kind, limit: Number(value.limit) };
 }
 
-export type ThreadKnowledgeCitation =
-  | {
-      deleted?: false;
-      handle: string;
-    }
-  | {
-      deleted: true;
-      handle: string;
-    };
-
-export type ThreadKnowledgeOutcome = {
-  invocationOrdinal: number;
-  outcome:
-    | "base_empty"
-    | "base_indexing"
-    | "complete"
-    | "embedding_model_unavailable";
-};
-
 export type ThreadGroundingDisplay = {
   provider: "gemini";
   suggestionsHtml: string;
@@ -433,7 +398,6 @@ export type WorkspaceChatSummary = {
   createdAt: string;
   defaultModelId: string;
   defaultSearchPlan?: SearchPlan | null;
-  defaultKnowledgePlan?: KnowledgePlan | null;
   defaultProvider: string;
   folderId: string | null;
   id: string;
@@ -442,9 +406,6 @@ export type WorkspaceChatSummary = {
   memoryMode?: MemoryChatMode;
   memorySourceRevision?: number;
   pendingInitialMemoryMode?: "TEMPORARY";
-  /** Local-only first-send reservation. The server creates this Project chat
-   * atomically with its first message/run and never serializes this field. */
-  pendingProjectDraft?: Readonly<{ folderId: string | null; projectId: string }>;
   /** Local-only personal first-send reservation. The server creates the chat
    * atomically with its first message/run and never serializes this field. */
   pendingPersonalDraft?: Readonly<{
@@ -452,7 +413,6 @@ export type WorkspaceChatSummary = {
     memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   }>;
   pinned?: boolean;
-  projectId?: string | null;
   temporaryRetentionDeadline?: string | null;
   title: string;
   updatedAt: string;
@@ -507,7 +467,6 @@ export type ChatMessageWire = {
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
-  author?: ProjectMessageAuthorWire | null;
   citationMessageId: string | null;
   content: unknown;
   createdAt: string;
@@ -549,12 +508,6 @@ export type ChatMessageScheduledTaskWire = Readonly<{
   unseen: boolean;
 }>;
 
-export type ProjectMessageAuthorWire = Readonly<{
-  displayName: string;
-  role: "CONTRIBUTOR" | "MANAGER" | "OWNER" | "VIEWER";
-  userId: string | null;
-}>;
-
 export type WorkspaceChatSummaryWire = Omit<
   WorkspaceChatSummary,
   | "defaultModelId"
@@ -571,7 +524,6 @@ export type WorkspaceChatSummaryWire = Omit<
   defaultModelId: string | null;
   defaultProvider: string | null;
   pinned: boolean;
-  projectId?: string | null;
   /** Present on current responses; optional only for stale caches/fixtures. */
   workspace?: ChatWorkspaceState;
 };
@@ -697,7 +649,6 @@ export type UpdateChatRequestWire = {
   assistantOverrides?: ChatAssistantOverridesPatch;
   defaultSearchPlan?: SearchPlan | null;
   activeLeafMessageId?: string | null;
-  defaultKnowledgePlan?: KnowledgePlan | null;
   folderId?: string | null;
   pinned?: boolean;
   title?: string | null;
@@ -726,7 +677,6 @@ export type ChatRouteServerErrorCode =
   | "chat_not_found"
   | "chat_revision_stale"
   | "chat_title_too_long"
-  | "knowledge_plan_invalid"
   | "search_plan_invalid"
   | "workspace_state_invalid"
   | "workspace_not_found";
@@ -734,7 +684,6 @@ export type ChatRouteServerErrorCode =
 export type ChatRouteErrorResponse = ErrorResponse<ChatRouteServerErrorCode>;
 
 export type FolderWire = {
-  defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
   name: string;
   parentId: string | null;
@@ -743,7 +692,6 @@ export type FolderWire = {
 };
 
 export type UpdateFolderRequestWire = {
-  defaultKnowledgePlan?: KnowledgePlan | null;
   name?: string | null;
   parentId?: string | null;
   projectMemory?: string;
@@ -1164,14 +1112,6 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const generatedArtifacts = Array.isArray(value.generatedArtifacts)
     ? decodeOptionalItems(value.generatedArtifacts, decodeThreadGeneratedArtifact, 16, (artifact) => artifact.versionId).items
     : undefined;
-  const knowledgeCitations = Array.isArray(value.knowledgeCitations)
-    ? decodeOptionalItems(value.knowledgeCitations, decodeThreadKnowledgeCitation, 24, (citation) => citation.handle).items
-    : undefined;
-  const knowledgeState: ThreadKnowledgeAnswerState | undefined = isRecord(value.knowledgeState) &&
-    (value.knowledgeState.answer === "answered" || value.knowledgeState.answer === "insufficient_evidence") &&
-    (value.knowledgeState.scope === "ready" || value.knowledgeState.scope === "partial_sources_ready")
-    ? { answer: value.knowledgeState.answer, scope: value.knowledgeState.scope }
-    : undefined;
   const memoryActionResult = value.memoryAction === undefined ? null : decodeMemoryActionFeedback(value.memoryAction);
   const memoryAction: MemoryActionFeedback | undefined = memoryActionResult?.ok ? memoryActionResult.value : undefined;
   const memorySources = Array.isArray(value.memorySources)
@@ -1210,8 +1150,6 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(generatedImages ? { generatedImages } : {}),
     ...(generatedFiles !== undefined ? { generatedFiles } : {}),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
-    ...(knowledgeState ? { knowledgeState } : {}),
-    ...(knowledgeCitations !== undefined ? { knowledgeCitations } : {}),
     ...(memoryAction ? { memoryAction } : {}),
     ...(memoryStatus ? { memoryStatus } : {}),
     ...(memorySources !== undefined ? { memorySources } : {}),
@@ -1227,14 +1165,6 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})
   };
-}
-
-function decodeThreadKnowledgeCitation(value: unknown): ThreadKnowledgeCitation | null {
-  if (!isRecord(value)) return null;
-  const handle = requiredString(value.handle);
-  if (!handle || !decodeKnowledgeCitationHandle(handle)) return null;
-  if (value.deleted === true) return { deleted: true, handle };
-  return { handle };
 }
 
 const decodeThreadAssistantIdentity = decodeAssistantIdentity;
@@ -1414,23 +1344,6 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   if (value.systemTurnKind !== undefined && (!isMessageSystemTurnKind(value.systemTurnKind) || role !== "user")) return null;
   const answerReview = value.answerReview === undefined ? undefined : decodeAnswerReviewMessageWire(value.answerReview);
   if (answerReview === null) return null;
-  let author: ProjectMessageAuthorWire | null | undefined;
-  if (value.author === undefined || value.author === null) {
-    author = value.author;
-  } else if (
-    isRecord(value.author) &&
-    typeof value.author.displayName === "string" &&
-    (value.author.userId === null || typeof value.author.userId === "string") &&
-    ["CONTRIBUTOR", "MANAGER", "OWNER", "VIEWER"].includes(String(value.author.role))
-  ) {
-    author = {
-      displayName: value.author.displayName,
-      role: value.author.role as ProjectMessageAuthorWire["role"],
-      userId: value.author.userId as string | null
-    };
-  } else {
-    return null;
-  }
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1454,7 +1367,6 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ...(value.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary,
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
-    ...(author !== undefined ? { author } : {}),
     citationMessageId,
     content: value.content,
     createdAt,
@@ -1525,14 +1437,12 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     value.defaultModelId,
     value.defaultProvider
   );
-  const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
   const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
   if (search && !search.ok) return null;
   const answerReview = value.answerReview === undefined ? undefined : decodeAnswerReviewAutoConfig(value.answerReview);
   if (answerReview === null) return null;
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
-  const projectId = value.projectId === undefined ? null : nullableId(value.projectId);
   const title = requiredString(value.title);
   const updatedAt = requiredString(value.updatedAt);
   const workspace = value.workspace === undefined
@@ -1543,11 +1453,9 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     (value.assistantId !== undefined && assistantId === undefined) ||
     !id ||
     !createdAt ||
-    defaultKnowledgePlan === undefined ||
     !defaultSelection ||
     folderId === undefined ||
     messageCount === null ||
-    projectId === undefined ||
     typeof value.pinned !== "boolean" ||
     !title ||
     !updatedAt ||
@@ -1564,7 +1472,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     ...importMarker,
     ...(value.titlePending === true ? { titlePending: true } : {}),
-    defaultKnowledgePlan,
     ...(search?.ok ? { defaultSearchPlan: search.plan } : {}),
     defaultModelId: defaultSelection.defaultModelId,
     defaultProvider: defaultSelection.defaultProvider,
@@ -1572,17 +1479,10 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     id,
     messageCount,
     pinned: value.pinned,
-    projectId,
     title,
     updatedAt,
     ...(workspace ? { workspace } : {})
   };
-}
-
-function decodeKnowledgeDefault(value: unknown): KnowledgePlan | null | undefined {
-  if (value === undefined || value === null) return null;
-  const decoded = decodeKnowledgePlan(value);
-  return decoded.ok ? decoded.plan : undefined;
 }
 
 function decodeFolderWire(value: unknown): FolderWire | null {
@@ -1591,13 +1491,11 @@ function decodeFolderWire(value: unknown): FolderWire | null {
   }
 
   const id = requiredString(value.id);
-  const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
   const name = requiredString(value.name);
   const parentId = nullableId(value.parentId);
   const projectMemory = typeof value.projectMemory === "string" ? value.projectMemory : null;
   const sortOrder = finiteNumber(value.sortOrder);
   if (
-    defaultKnowledgePlan === undefined ||
     !id ||
     !name ||
     parentId === undefined ||
@@ -1608,7 +1506,6 @@ function decodeFolderWire(value: unknown): FolderWire | null {
   }
 
   return {
-    defaultKnowledgePlan,
     id,
     name,
     parentId,
@@ -1964,7 +1861,6 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "activeLeafMessageId",
       "archived",
       "createdAt",
-      "defaultKnowledgePlan",
       "defaultModelId",
       "defaultProvider",
       "folderId",
@@ -1973,7 +1869,6 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "memoryMode",
       "messageCount",
       "pinned",
-      "projectId",
       "sourceRevision",
       "title",
       "updatedAt",
@@ -1985,7 +1880,6 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       ...(Object.hasOwn(value, "workspace") ? ["workspace"] : [])
     ])
   ) return null;
-  if (value.projectId !== null) return null;
   const summary = decodeWorkspaceChatSummaryWire(value);
   const lastMessageAt = value.lastMessageAt === null
     ? null
@@ -2036,7 +1930,6 @@ export function decodeArchivedChatDetailResponse(
     "archived",
     "contextStats",
     "createdAt",
-    "defaultKnowledgePlan",
     "defaultModelId",
     "defaultProvider",
     "folderId",
@@ -2046,7 +1939,6 @@ export function decodeArchivedChatDetailResponse(
     "messages",
     "pageInfo",
     "pinned",
-    "projectId",
     "sourceRevision",
     "title",
     "updatedAt",
@@ -2059,7 +1951,6 @@ export function decodeArchivedChatDetailResponse(
     ...(Object.hasOwn(value.chat, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;
-  if (value.chat.projectId !== null) return null;
   const memoryMode = retainedMemoryMode(value.chat.memoryMode);
   const sourceRevision = nonNegativeInteger(value.chat.sourceRevision);
   return memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)
@@ -2196,10 +2087,6 @@ export function decodeChatUpdateData(value: unknown): ChatUpdateDataWire | null 
  */
 export type ChatAssistantOverrideValues = {
   controls: AssistantRunControls;
-  knowledge:
-    | { mode: "all_my_knowledge" }
-    | { mode: "none" }
-    | { baseIds: string[]; mode: "explicit"; sourceIds: string[] };
   model: { mode: "model"; modelId: string };
   search: { mode: "off" } | { mode: SearchPlanMode; optionIds: string[] };
   skills: SkillsSelection;
@@ -2227,7 +2114,6 @@ export type StoredChatAssistantOverrides =
 /** Effective values may also be the user's own defaults, in ordinary chat vocabulary. */
 export type ChatAssistantRowValues = {
   controls: AssistantRunControls;
-  knowledge: Exclude<AssistantKnowledgeValue, { mode: "inherit" }> | { mode: "all_my_knowledge" };
   model: Exclude<AssistantModelValue, { mode: "inherit" }>;
   search: Exclude<AssistantSearchValue, { mode: "inherit" }>;
   skills: AssistantSkillsValue;
@@ -2275,12 +2161,6 @@ function withoutInherit<T extends { mode: string }>(value: T | null): Exclude<T,
   return value && value.mode !== "inherit" ? value as Exclude<T, { mode: "inherit" }> : null;
 }
 
-function allMyKnowledge(value: unknown): { mode: "all_my_knowledge" } | null {
-  return isRecord(value) && value.mode === "all_my_knowledge" && Object.keys(value).length === 1
-    ? { mode: "all_my_knowledge" }
-    : null;
-}
-
 function decodeChatAssistantOverrideValue<Key extends AssistantRowKey>(
   key: Key,
   value: unknown
@@ -2290,8 +2170,7 @@ function decodeChatAssistantOverrideValue<Key extends AssistantRowKey>(
       : key === "model" ? withoutInherit(decodeAssistantModelValue(value)) as ChatAssistantOverrideValues["model"] | null
         : key === "search" ? withoutInherit(decodeAssistantSearchValue(value))
           : key === "tools" ? decodeMcpRunSelection(value)
-            : key === "knowledge" ? allMyKnowledge(value) ?? withoutInherit(decodeAssistantKnowledgeValue(value))
-              : isRecord(value) ? decodeSkillsSelection(value) : null;
+            : isRecord(value) ? decodeSkillsSelection(value) : null;
   return decoded as ChatAssistantOverrideValues[Key] | null;
 }
 
@@ -2301,6 +2180,8 @@ function decodeOverrideEntries(
 ): { ok: true; value: ChatAssistantOverridesPatch } | { ok: false; row?: AssistantRowKey } {
   const decoded: Record<string, unknown> = {};
   for (const [name, entry] of Object.entries(value)) {
+    // Stored overrides and clients from before Knowledge was removed may still name its row.
+    if (name === RETIRED_ASSISTANT_ROW_KEY) continue;
     const key = decodeAssistantRowKey(name);
     if (!key) return { ok: false };
     if (entry === null && allowNull) {
@@ -2381,9 +2262,7 @@ function decodeChatEffectiveValue<Key extends AssistantRowKey>(
         : key === "search" ? withoutInherit(decodeAssistantSearchValue(value, "projection"))
           : key === "tools" ? decodeMcpRunSelection(value) ??
             withoutInherit(decodeAssistantToolsValue(value, "projection"))
-            : key === "knowledge" ? allMyKnowledge(value) ??
-              withoutInherit(decodeAssistantKnowledgeValue(value, "projection"))
-              : decodeAssistantSkillsValue(value, "projection");
+            : decodeAssistantSkillsValue(value, "projection");
   return decoded as ChatAssistantRowValues[Key] | null;
 }
 
@@ -2396,8 +2275,7 @@ function decodeAssistantOwnValue<Key extends AssistantRowKey>(
       : key === "model" ? decodeAssistantModelValue(value, "projection")
         : key === "search" ? decodeAssistantSearchValue(value, "projection")
           : key === "tools" ? decodeAssistantToolsValue(value, "projection")
-            : key === "knowledge" ? decodeAssistantKnowledgeValue(value, "projection")
-              : decodeAssistantSkillsValue(value, "projection");
+            : decodeAssistantSkillsValue(value, "projection");
   return decoded as AssistantRowValues[Key] | null;
 }
 

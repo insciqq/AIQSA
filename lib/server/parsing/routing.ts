@@ -35,7 +35,8 @@ export function resolveDocumentParserRoute(
   mimeType: string
 ): DocumentParserRoute | undefined {
   const extension = normalizedUploadFileExtension(fileName);
-  const format = uploadFormatFor(fileName, mimeType, "knowledge");
+  // The Workspace inventory holds every format a parser reads.
+  const format = uploadFormatFor(fileName, mimeType, "workspace");
   if (!extension || !format?.parser) return undefined;
 
   return format.parser.kind === "inline"

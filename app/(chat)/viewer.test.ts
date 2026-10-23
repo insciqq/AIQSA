@@ -23,7 +23,6 @@ vi.mock("@/lib/server/telegram/defaultTelegram", () => ({ isTelegramAvailableFor
 import NewChatPage from "./page";
 import AssistantEntryPage from "./assistant/[assistantId]/page";
 import ChatPage from "./c/[chatId]/page";
-import ProjectChatPage from "./p/[projectId]/c/[chatId]/page";
 import { loadChatViewer } from "./viewer";
 
 function signedIn(status = "active") {
@@ -68,13 +67,13 @@ describe("chat pages", () => {
 
   it("returns a stale session to the exact chat address after sign-in", async () => {
     mocks.resolveAuthToken.mockResolvedValue(null);
-    await expect(ProjectChatPage({
-      params: Promise.resolve({ chatId: "chat 1", projectId: "project-1" }),
+    await expect(ChatPage({
+      params: Promise.resolve({ chatId: "chat 1" }),
       searchParams: search({ message: "message-1" })
     })).rejects.toThrow("NEXT_REDIRECT");
     const location = new URL(mocks.redirect.mock.calls[0]![0], "https://aiqsa.invalid");
     expect(location.pathname).toBe("/login");
-    expect(location.searchParams.get("next")).toBe("/p/project-1/c/chat%201?message=message-1");
+    expect(location.searchParams.get("next")).toBe("/c/chat%201?message=message-1");
 
     signedIn("disabled");
     await expect(NewChatPage({ searchParams: search({}) })).rejects.toThrow("NEXT_REDIRECT /login");
@@ -97,8 +96,9 @@ describe("chat pages", () => {
   it("redirects legacy query links to the path form before rendering the new chat", async () => {
     await expect(NewChatPage({ searchParams: search({ chat: "chat-1", keep: ["a", "b"], message: "m" }) }))
       .rejects.toThrow("NEXT_REDIRECT /c/chat-1?keep=a&keep=b&message=m");
+    // A legacy Project parameter is dropped: the chat opens by its own address.
     await expect(NewChatPage({ searchParams: search({ chat: "chat-1", project: "project-1" }) }))
-      .rejects.toThrow("NEXT_REDIRECT /p/project-1/c/chat-1");
+      .rejects.toThrow("NEXT_REDIRECT /c/chat-1");
     expect(mocks.resolveAuthToken).not.toHaveBeenCalled();
   });
 

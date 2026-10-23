@@ -8,85 +8,29 @@ import {
 import { prisma } from "../prisma";
 import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
-import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
-import { resolveProjectAccess } from "../projects/access";
-import { ProjectsDisabledError } from "../projects/disabled";
 import type { ShareRepository } from "./handlers";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
-async function lockProject(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
-  await tx.$queryRaw(Prisma.sql`
-    SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR UPDATE
-  `);
-}
-
 export function createPrismaShareRepository(prismaClient = prisma): ShareRepository {
   return {
     createChatShare: async ({ activeLeafMessageId, chatId, shareToken, slugHash, userId }) =>
       prismaClient.$transaction(async (tx) => {
-        let chat = await tx.chat.findFirst({
-          include: {
-            messages: true,
-            project: { select: { publicSharingEnabled: true, status: true } }
-          },
+        const chat = await tx.chat.findFirst({
+          include: { messages: true },
           where: {
             archived: false,
             id: chatId,
             memoryMode: { not: "TEMPORARY" },
             permanentDeletionAt: null,
-            OR: [{ userId }, { projectId: { not: null } }]
+            userId
           }
         });
 
         if (!chat) {
           return null;
-        }
-        let projectCreator: { displayName: string } | null = null;
-        if (chat.projectId) {
-          await lockProject(tx, chat.projectId);
-          await tx.$queryRaw(Prisma.sql`
-            SELECT "id" FROM "Chat" WHERE "id" = ${chat.id} FOR UPDATE
-          `);
-          const access = await resolveProjectAccess(tx, {
-            minimumRole: "MANAGER",
-            projectId: chat.projectId,
-            requireActive: true,
-            userId
-          });
-          if (!access) {
-            return null;
-          }
-          // Projects are disabled: a Project chat gets no new public share.
-          if (!PROJECTS_ENABLED) throw new ProjectsDisabledError();
-          const currentChat = await tx.chat.findFirst({
-            include: {
-              messages: true,
-              project: { select: { publicSharingEnabled: true, status: true } }
-            },
-            where: {
-              archived: false,
-              id: chat.id,
-              memoryMode: { not: "TEMPORARY" },
-              permanentDeletionAt: null,
-              projectId: chat.projectId
-            }
-          });
-          if (
-            !currentChat ||
-            currentChat.project?.status !== "ACTIVE" ||
-            !currentChat.project.publicSharingEnabled
-          ) {
-            return null;
-          }
-          chat = currentChat;
-          projectCreator = await tx.user.findUnique({
-            select: { displayName: true },
-            where: { id: userId }
-          });
-          if (!projectCreator) return null;
         }
 
         const leaf = activeLeafMessageId ?? chat.activeLeafMessageId;
@@ -130,29 +74,12 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         const share = await tx.sharedChatSnapshot.create({
           data: {
             chatId: chat.id,
-            ...(chat.projectId
-              ? {
-                  createdByDisplayName: projectCreator?.displayName ?? "Project member",
-                  ownerUserId: null,
-                  projectId: chat.projectId
-                }
-              : { ownerUserId: userId, projectId: null }),
+            ownerUserId: userId,
             slugHash,
             snapshot: json(snapshot),
             title: chat.title
           }
         });
-        if (chat.projectId) {
-          await tx.projectAuditEvent.create({
-            data: {
-              actorDisplayName: projectCreator?.displayName ?? "Project member",
-              actorUserId: userId,
-              eventType: "public_snapshot_created",
-              metadata: { chatId: chat.id, shareId: share.id },
-              projectId: chat.projectId
-            }
-          });
-        }
 
         return {
           createdAt: share.createdAt,
@@ -204,20 +131,10 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
     },
     listChatShares: async ({ chatId, now, userId }) => {
       const chat = await prismaClient.chat.findUnique({
-        select: { projectId: true, userId: true },
+        select: { userId: true },
         where: { id: chatId }
       });
-      if (!chat) return [];
-      if (chat.projectId) {
-        const access = await resolveProjectAccess(prismaClient, {
-          minimumRole: "MANAGER",
-          projectId: chat.projectId,
-          userId
-        });
-        if (!access) return [];
-      } else if (chat.userId !== userId) {
-        return [];
-      }
+      if (!chat || chat.userId !== userId) return [];
       const shares = await prismaClient.sharedChatSnapshot.findMany({
         orderBy: { createdAt: "desc" },
         select: {
@@ -231,7 +148,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
             permanentDeletionAt: null
           },
           chatId,
-          ...(chat.projectId ? { projectId: chat.projectId } : { ownerUserId: userId }),
+          ownerUserId: userId,
           revokedAt: null
         }
       });
@@ -240,46 +157,20 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
     },
     revokeShare: async ({ shareId, userId }) => prismaClient.$transaction(async (tx) => {
       const share = await tx.sharedChatSnapshot.findUnique({
-        select: { ownerUserId: true, projectId: true },
+        select: { ownerUserId: true },
         where: { id: shareId }
       });
-      if (!share) return false;
-      if (share.projectId) {
-        await lockProject(tx, share.projectId);
-        const access = await resolveProjectAccess(tx, {
-          minimumRole: "MANAGER",
-          projectId: share.projectId,
-          userId
-        });
-        if (!access) return false;
-      } else if (share.ownerUserId !== userId) {
-        return false;
-      }
+      if (!share || share.ownerUserId !== userId) return false;
       const result = await tx.sharedChatSnapshot.updateMany({
         data: {
           revokedAt: new Date()
         },
         where: {
           id: shareId,
-          ...(share.projectId ? { projectId: share.projectId } : { ownerUserId: userId }),
+          ownerUserId: userId,
           revokedAt: null
         }
       });
-      if (result.count > 0 && share.projectId) {
-        const actor = await tx.user.findUnique({
-          select: { displayName: true },
-          where: { id: userId }
-        });
-        await tx.projectAuditEvent.create({
-          data: {
-            actorDisplayName: actor?.displayName ?? "Project member",
-            actorUserId: userId,
-            eventType: "public_snapshot_revoked",
-            metadata: { shareId },
-            projectId: share.projectId
-          }
-        });
-      }
 
       return result.count > 0;
     })

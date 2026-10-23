@@ -21,7 +21,7 @@ const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
 const DESKTOP = { viewport: { height: 900, width: 1440 } } as const;
-const ROW_LABELS = ["Model", "Reasoning & parameters", "Web search", "Tools", "Knowledge", "Skills"] as const;
+const ROW_LABELS = ["Model", "Reasoning & parameters", "Web search", "Tools", "Skills"] as const;
 const POLICY_NAME = /^(Fixed|Adjustable)$/u;
 
 type Fixtures = Readonly<{ assistants: AssistantFixture; people: PeopleFixture }>;
@@ -247,7 +247,7 @@ test("gallery chips count exactly what they list under category and search, Feat
   });
 });
 
-test("detail sheet shows six Setup rows with policies, names for the owner, counts for a consumer and read-only instructions · A-24", async ({ browser }, testInfo) => {
+test("detail sheet shows five Setup rows with policies, names for the owner, counts for a consumer and read-only instructions · A-24", async ({ browser }, testInfo) => {
   test.setTimeout(240_000);
   await withFixtures(async ({ assistants, people }) => {
     const group = await people.group("Detail team");
@@ -296,7 +296,7 @@ test("detail sheet shows six Setup rows with policies, names for the owner, coun
 
     const ownerSheet = await openSheet(ownerPage, (await openAssistants(ownerPage)).gallery);
     const ownerSetup = ownerSheet.getByRole("region", { name: "Setup" });
-    await expect(ownerSetup.getByRole("row")).toHaveCount(6);
+    await expect(ownerSetup.getByRole("row")).toHaveCount(5);
     for (const label of ROW_LABELS) {
       await expect(ownerSetup.getByRole("row", { name: new RegExp(`^${label}`, "u") })).toContainText(label === "Reasoning & parameters" ? "Adjustable" : "Fixed");
     }
@@ -317,7 +317,7 @@ test("detail sheet shows six Setup rows with policies, names for the owner, coun
     await expect(consumerCard.getByRole("button", { exact: true, name: `Start chat with ${assistant.name}` })).toBeDisabled();
     const consumerSheet = await openSheet(consumerPage, consumerGallery);
     const consumerSetup = consumerSheet.getByRole("region", { name: "Setup" });
-    await expect(consumerSetup.getByRole("row")).toHaveCount(6);
+    await expect(consumerSetup.getByRole("row")).toHaveCount(5);
     for (const label of ROW_LABELS) {
       await expect(consumerSetup.getByRole("row", { name: new RegExp(`^${label}`, "u") })).toContainText(/Fixed|Adjustable/u);
     }
@@ -362,7 +362,7 @@ test("editor has two columns at 1440 and one column with Setup after the starter
       await expect(setup.getByRole("button", { exact: true, name: label })).toHaveAttribute("aria-expanded", "false");
     }
     const toggles = setup.getByRole("button", { name: POLICY_NAME });
-    await expect(toggles).toHaveCount(6);
+    await expect(toggles).toHaveCount(5);
     for (const toggle of await toggles.all()) {
       const name = (await toggle.innerText()).trim();
       await expect(toggle).toHaveAttribute("aria-pressed", name === "Fixed" ? "true" : "false");
@@ -416,8 +416,8 @@ test("policy toggles ask for a concrete value before Create and save exactly wha
     const editor = library.getByTestId("assistant-editor");
     const name = `Fixed rows ${people.suffix}`;
     await editor.getByLabel("Name Required", { exact: true }).fill(name);
-    await expect(editor.getByRole("button", { name: POLICY_NAME })).toHaveCount(6);
-    await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(6);
+    await expect(editor.getByRole("button", { name: POLICY_NAME })).toHaveCount(5);
+    await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(5);
 
     const fixRow = async (key: "controls" | "model" | "tools", label: string) => {
       const row = editor.getByTestId(`assistant-setup-row-${key}`);
@@ -463,7 +463,6 @@ test("policy toggles ask for a concrete value before Create and save exactly wha
     expect(rows.tools).toEqual({ policy: "fixed", value: { mode: "off" } });
     expect(rows.controls.policy).toBe("adjustable");
     expect(rows.search).toEqual({ policy: "adjustable", value: { mode: "inherit" } });
-    expect(rows.knowledge).toEqual({ policy: "adjustable", value: { mode: "none" } });
     expect(rows.skills).toEqual({ policy: "adjustable", value: { links: [], mode: "auto" } });
   });
 });
@@ -558,7 +557,6 @@ test("Save & try from the Code reviewer template opens a Temporary chat with the
     const rows = (await readAssistant(page.request, created.id)).content.rows;
     expect(rows).toEqual({
       controls: { policy: "adjustable", value: {} },
-      knowledge: { policy: "adjustable", value: { mode: "none" } },
       model: { policy: "adjustable", value: { mode: "inherit" } },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -593,7 +591,7 @@ test("templates and From current chat only fill the editor; nothing is created u
     };
 
     let sheet = await openNewAssistantSheet(page, library);
-    await expect(sheet.getByRole("radio")).toHaveCount(8);
+    await expect(sheet.getByRole("radio")).toHaveCount(7);
     await captureState(page, testInfo, "studio-assistant-new-sheet", {
       atEachSize: async () => {
         await expectWithinViewport(page, sheet.getByRole("button", { exact: true, name: "Continue" }));
@@ -612,25 +610,12 @@ test("templates and From current chat only fill the editor; nothing is created u
     for (const [index, starter] of starters.entries()) {
       await expect(editor.getByRole("textbox", { exact: true, name: `Conversation starter ${index + 1}` })).toHaveValue(starter);
     }
-    await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(6);
+    await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(5);
     await expect(editor.getByText("Not saved yet", { exact: true })).toBeVisible();
     await expect(editor.getByTestId("assistant-editor-save")).toHaveText("Create");
     await captureState(page, testInfo, "studio-assistant-editor-new-template", { atEachSize: () => expectNoHorizontalOverflow(page) });
     await cancelEditor(editor);
 
-    // "Support with Knowledge" opens the Knowledge row for its first choice.
-    sheet = await openNewAssistantSheet(page, library);
-    await sheet.getByText("Support with Knowledge", { exact: true }).click();
-    await sheet.getByRole("button", { exact: true, name: "Continue" }).click();
-    editor = library.getByTestId("assistant-editor");
-    const knowledge = editor.getByTestId("assistant-setup-row-knowledge");
-    await expect(knowledge.getByRole("button", { exact: true, name: "Knowledge" })).toHaveAttribute("aria-expanded", "true");
-    await expect(knowledge.getByRole("radio", { exact: true, name: "None" })).toBeChecked();
-    await captureState(page, testInfo, "studio-assistant-editor-setup-expanded", {
-      anchor: knowledge,
-      atEachSize: () => expectNoHorizontalOverflow(page)
-    });
-    await cancelEditor(editor);
     expect(creations()).toBe(0);
 
     // From current chat: the composer's pinned Skill becomes an Always link of an adjustable row.
@@ -651,7 +636,7 @@ test("templates and From current chat only fill the editor; nothing is created u
     await sheet.getByRole("button", { exact: true, name: "Continue" }).click();
     editor = library.getByTestId("assistant-editor");
     await expect(editor.getByTestId("assistant-editor-save")).toHaveText("Create");
-    await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(6);
+    await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(5);
     await expect(editor.getByRole("button", { exact: true, name: "Fixed" })).toHaveCount(0);
     const skillsRow = editor.getByTestId("assistant-setup-row-skills");
     await expect(skillsRow).toContainText("1 always · 0 on demand");
@@ -805,7 +790,6 @@ test("unsaved edits of an existing Assistant are guarded on every exit from Stud
       ["another Studio section", () => library.getByRole("tab", { exact: true, name: "Files" }).click()],
       ["New chat", () => rail.getByRole("button", { exact: true, name: "New chat" }).click()],
       ["Chats", () => rail.getByRole("button", { exact: true, name: "Chats" }).click()],
-      ["Projects", () => rail.getByRole("button", { exact: true, name: "Projects" }).click()],
       ["new chat shortcut", () => page.keyboard.press("Control+Shift+O")]
     ];
     for (const [label, exit] of exits) {

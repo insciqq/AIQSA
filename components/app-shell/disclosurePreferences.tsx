@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
 const LIMIT = 500;
-const validKey = (key: string) => /^(folder|project-folder|workspace):[^\u0000-\u001f]{1,240}$/u.test(key);
+const validKey = (key: string) => /^(folder|workspace):[^\u0000-\u001f]{1,240}$/u.test(key);
 
 export function createDisclosurePreferences(accountId: string | null) {
   const storageKey = accountId ? `aiqsa:disclosures:v1:${accountId}` : null;

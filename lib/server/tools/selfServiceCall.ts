@@ -74,18 +74,17 @@ export async function commitSelfServiceChange<Done, Refusal>(
 
 /**
  * The run-level fence a claim applies: the caller is active and owns the
- * run, which is still running; the chat is personal (Project chats never
- * change personal resources); the run is neither a scheduled occurrence nor
- * an answer to a scheduled task's prompt, which the model may have written.
- * Locks the run row.
+ * run and its chat, and the run is still running; the run is neither a
+ * scheduled occurrence nor an answer to a scheduled task's prompt, which the
+ * model may have written. Locks the run row.
  */
 export async function selfServiceRunAllowedInTransaction(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   scope: Pick<SelfServiceScope, "runId" | "userId">
 ): Promise<boolean> {
-  const rows = await tx.$queryRaw<Array<{ status: string; scheduledTaskId: string | null; projectId: string | null;
+  const rows = await tx.$queryRaw<Array<{ status: string; scheduledTaskId: string | null;
     scheduledTaskPrompt: boolean | null; userStatus: string }>>`
-    SELECT r."status", r."scheduledTaskId", c."projectId", m."scheduledTaskPrompt", u."status" AS "userStatus"
+    SELECT r."status", r."scheduledTaskId", m."scheduledTaskPrompt", u."status" AS "userStatus"
     FROM "ModelRun" r
     JOIN "Chat" c ON c."id" = r."chatId"
     JOIN "User" u ON u."id" = r."userId"
@@ -94,7 +93,7 @@ export async function selfServiceRunAllowedInTransaction(
     FOR UPDATE OF r`;
   const run = rows[0];
   return Boolean(run && (dispatchableModelRunStatuses as readonly string[]).includes(run.status) && run.userStatus === "active" &&
-    run.projectId === null && run.scheduledTaskId === null && run.scheduledTaskPrompt === false);
+    run.scheduledTaskId === null && run.scheduledTaskPrompt === false);
 }
 
 /** Content-free record of an unexpected failure; the tool answers with its own stable code. */

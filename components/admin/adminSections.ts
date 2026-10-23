@@ -20,7 +20,6 @@ import {
   Wrench,
   type LucideIcon
 } from "lucide-react";
-import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 
 export type AdminSectionId =
   | "announcements"
@@ -67,8 +66,7 @@ export const adminSections = [
   { Icon: Boxes, group: "models", id: "providers", label: "Providers" },
   { Icon: Sparkles, group: "models", id: "roles", label: "Defaults & roles" },
   { Icon: Search, group: "models", id: "search", label: "Search" },
-  // Knowledge is disabled: the page holds only Memory.
-  { Icon: BookOpenText, group: "models", id: "retrieval", label: KNOWLEDGE_ENABLED ? "Knowledge & Memory" : "Memory" },
+  { Icon: BookOpenText, group: "models", id: "retrieval", label: "Memory" },
   { Icon: Users, group: "people", id: "users", label: "Users" },
   { Icon: Layers, group: "people", id: "groups", label: "Groups" },
   { Icon: Wallet, group: "people", id: "limits", label: "Budgets & limits" },

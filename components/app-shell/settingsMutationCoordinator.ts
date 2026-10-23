@@ -122,9 +122,6 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     ...(Object.prototype.hasOwnProperty.call(patch, "searchPlan")
       ? { defaultSearchPlan: patch.searchPlan }
       : {}),
-    ...(Object.prototype.hasOwnProperty.call(patch, "knowledgePlan")
-      ? { defaultKnowledgePlan: patch.knowledgePlan ?? null }
-      : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "assistantId")
       ? { defaultAssistantId: patch.assistantId ?? null }
       : {}),
@@ -194,9 +191,6 @@ function reconciledPatch(
     patch.searchPlan = settings.defaultSearchPlan;
     patch.organizationSearchPlan = settings.organizationSearchPlan;
     patch.searchPreferenceSource = settings.searchPreferenceSource;
-  }
-  if (Object.prototype.hasOwnProperty.call(sent, "knowledgePlan")) {
-    patch.knowledgePlan = settings.defaultKnowledgePlan;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "assistantId")) {
     patch.assistantId = settings.defaultAssistantId ?? null;

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ModelRunStatus } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { workspaceRunOutputDirectory } from "../../domain/workspace";
@@ -18,19 +18,11 @@ import {
   MEMORY_TEMPORARY_DELETION_TARGET_TYPE
 } from "../memory/temporaryRetention";
 import { prisma } from "../prisma";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, type RunRepository } from "../runs/runRepositoryContract";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import { ActiveMessageMutationConflictError } from "./handlers";
 import { createPrismaMessageBranchRepository } from "./prismaRepository";
-
-// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
-// it keeps the switch on to test the code that still exists.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  PROJECTS_ENABLED: true
-}));
 
 async function withMessageBranchUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
   const userId = `message-branch-test-${randomUUID()}`;
@@ -144,7 +136,6 @@ async function withMemoryBranchOwner<T>(run: (userId: string) => Promise<T>): Pr
 
 async function createSettledTurn(input: Readonly<{
   assistantDelayMs?: number;
-  author?: Readonly<{ displayName: string; projectRole: "OWNER" }>;
   chatId: string;
   createdAt: Date;
   parentMessageId: string | null;
@@ -153,13 +144,6 @@ async function createSettledTurn(input: Readonly<{
 }>) {
   const userMessage = await prisma.message.create({
     data: {
-      ...(input.author
-        ? {
-            authorDisplayName: input.author.displayName,
-            authorProjectRole: input.author.projectRole,
-            authorUserId: input.userId
-          }
-        : {}),
       chatId: input.chatId,
       content: textMessageContent(input.userText),
       createdAt: input.createdAt,
@@ -183,8 +167,7 @@ async function createSettledTurn(input: Readonly<{
       updatedAt: assistantAt
     }
   });
-  // Project fixtures need no run; a branch tolerates a missing answer binding.
-  if (!input.author) await prisma.modelRun.create({
+  await prisma.modelRun.create({
     data: {
       assistantMessageId: assistantMessage.id,
       chatId: input.chatId,
@@ -1053,8 +1036,11 @@ describe("Prisma-backed message branch repository", () => {
 
         const branched = await createPrismaMessageBranchRepository(prisma)
           .createChatBranchFromMessage({ sourceMessageId: assistantMessage.id, userId });
-        expect(branched?.defaultKnowledgePlan).toEqual(knowledgePlan);
         if (!branched) throw new Error("branch_not_created");
+        // A Knowledge default stored before Knowledge was removed stays behind with its source.
+        expect(branched).not.toHaveProperty("defaultKnowledgePlan");
+        await expect(prisma.chat.findUniqueOrThrow({ select: { defaultKnowledgePlan: true }, where: { id: branched.id } }))
+          .resolves.toEqual({ defaultKnowledgePlan: null });
 
         await prisma.assistantDefinition.update({ where: { id: assistant.id },
           data: { name: "Future branch analyst", systemPrompt: "Future instructions only" } });
@@ -1092,7 +1078,7 @@ describe("Prisma-backed message branch repository", () => {
             }]
           }
         });
-        expect(detail?.defaultKnowledgePlan).toEqual(knowledgePlan);
+        expect(detail).not.toHaveProperty("defaultKnowledgePlan");
         expect(detail?.usageStats).toEqual({
           hasCompletedAnswer: true,
           recordCount: 0,
@@ -1764,7 +1750,7 @@ describe("Prisma-backed message branch repository", () => {
     });
   });
 
-  it("keeps Temporary sources unbranchable and Project branches outside Personal Memory", async () => {
+  it("keeps Temporary sources unbranchable", async () => {
     await withMemoryBranchOwner(async (userId) => {
       const repository = createPrismaMessageBranchRepository(prisma);
       const deadline = new Date(Date.now() + 3_600_000);
@@ -1820,61 +1806,6 @@ describe("Prisma-backed message branch repository", () => {
             where: { operation: "TEMPORARY_DELETE", targetId: temporaryChat.id, userId }
           });
         });
-      }
-
-      const project = await createPrismaProjectRepository(prisma).create({
-        actorDisplayName: "Message Branch Memory User",
-        description: "",
-        name: "Branch memory fixture",
-        userId
-      });
-      if (project.kind !== "ok") throw new Error("project_fixture_failed");
-      try {
-        const projectChat = await prisma.chat.create({
-          data: {
-            createdByDisplayName: "Message Branch Memory User",
-            createdByUserId: userId,
-            memoryMode: "EXCLUDED",
-            projectId: project.value.id,
-            title: "Project source",
-            userId: null
-          }
-        });
-        const projectTurn = await createSettledTurn({
-          author: { displayName: "Message Branch Memory User", projectRole: "OWNER" },
-          chatId: projectChat.id,
-          createdAt: new Date(Date.now() - 60_000),
-          parentMessageId: null,
-          userId,
-          userText: "Project text."
-        });
-        await prisma.chat.update({
-          data: { activeLeafMessageId: projectTurn.assistantMessage.id },
-          where: { id: projectChat.id }
-        });
-
-        const branch = await repository.createChatBranchFromMessage({
-          sourceMessageId: projectTurn.assistantMessage.id,
-          userId
-        });
-
-        expect(branch).toMatchObject({ projectId: project.value.id });
-        await expect(prisma.chat.findUniqueOrThrow({
-          select: { memoryMode: true, userId: true },
-          where: { id: branch!.id }
-        })).resolves.toEqual({ memoryMode: "EXCLUDED", userId: null });
-        const clones = await branchMessageCreatedAt(branch!.id);
-        expect(clones.map(({ createdAt }) => createdAt)).toEqual([
-          projectTurn.userMessage.createdAt,
-          projectTurn.assistantMessage.createdAt
-        ]);
-        await seedHistoryBackfill(userId);
-        await expect(prisma.memoryJob.count({ where: { userId } })).resolves.toBe(0);
-        await expect(prisma.chatMemoryCheckpoint.count({ where: { chatId: branch!.id } }))
-          .resolves.toBe(0);
-      } finally {
-        await prisma.chat.deleteMany({ where: { projectId: project.value.id } });
-        await prisma.project.delete({ where: { id: project.value.id } });
       }
     });
   });

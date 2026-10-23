@@ -394,7 +394,7 @@ describe("upload wire decoders", () => {
     ).toBeNull();
   });
 
-  it.each(["file_required", "image_invalid", "image_limit_exceeded", "unsupported_type", "project_not_found", "unauthorized"])(
+  it.each(["file_required", "image_invalid", "image_limit_exceeded", "unsupported_type", "unauthorized"])(
     "decodes the direct-upload refusal %s by code only",
     (error) => {
       expect(decodeUploadErrorResponse({ error })).toEqual({ error });

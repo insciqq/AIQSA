@@ -25,10 +25,10 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
 - **Ready in minutes.** Add an API key and AIQSA checks what each model can actually do (images, PDFs, tools, web search) and turns on exactly that. There is nothing to wire together before your team starts.
 - **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download.
-- **Answers you can check.** A built-in Knowledge engine reads PDFs, scans and tables, finds the right passages with hybrid search and reranking, and checks the answer against the passages it cites before you see it. Web search answers come with linked sources.
+- **Answers you can check.** Web search answers come with linked sources you can open.
 - **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
 - **Work that runs on its own.** Scheduled tasks run a prompt daily, weekly or monthly and deliver the answer to its own chat, with an optional email.
-- **Built for teams.** Role-based access control, shared Projects and Assistants, invitations, API keys per installation, group or person, and usage per user.
+- **Built for teams.** Role-based access control, shared Assistants and Skills, invitations, API keys per installation, group or person, and usage per user.
 
 ## Features
 
@@ -37,12 +37,6 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - File, image and PDF attachments, read natively by models that support them.
 - Artifacts: documents and interactive pages the model builds in chat, with versions and shareable links.
 - Image generation.
-
-**Knowledge**
-- Document parsing with OCR for scans; vision models read PDF pages, tables and charts.
-- Hybrid lexical and vector search with reranking; small collections are read in full.
-- Answers are reviewed against the retrieved evidence, and each citation opens the exact passage or PDF page.
-- Versioned sources shared across chats, Projects and Assistants.
 
 **Tools and automation**
 - Web search with sources.
@@ -62,9 +56,8 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - Connect your coding agents to AIQSA over OAuth with one command: your team's MCP tools through the MCP Hub, your Skills, and your Memory.
 
 **Team and administration**
-- Projects with shared chats, files, instructions and Knowledge.
-- Assistants with fixed instructions, models and Knowledge.
-- Role-based access control: administrator and user roles, groups that decide who can use which providers, models and search, and Owner, Manager, Contributor and Viewer roles in Projects.
+- Assistants with fixed instructions, models, search, tools and Skills.
+- Role-based access control: administrator and user roles, and groups that decide who can use which providers, models and search.
 - Email invitations.
 - Sign-in with Google, Yandex, OpenID Connect with group sync, LDAP/Active Directory, SAML 2.0 or a trusted reverse-proxy header, SCIM 2.0 provisioning and optional TOTP two-factor sign-in, all configured in the admin panel ([recipes](SELF_HOSTING.md#sign-in-methods)).
 - Usage and cost per user.

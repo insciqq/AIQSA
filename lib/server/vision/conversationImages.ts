@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import type { PrismaClient } from "@prisma/client";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { extractImageMetadata } from "../uploads/imageMetadata";
 import { StaticRasterError, validateStaticRaster, type StaticRasterMetadata } from "../uploads/staticRaster";
 import { isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
@@ -61,8 +61,8 @@ type Decoded = Readonly<{ bytes: Buffer; metadata: StaticRasterMetadata; checksu
 
 /**
  * Chat images for System Vision under the run's current chat authority: the
- * user's own attachments in a personal chat, the Project's in a Project chat,
- * limited to the references admitted with the run and images this run
+ * user's own attachments in their chat, limited to the references admitted
+ * with the run and images this run
  * generated. PNG and JPEG reach Vision as stored; WebP and a static GIF are
  * decoded to PNG; any other format is refused before dispatch.
  */
@@ -72,7 +72,7 @@ export function createConversationImageSource(db: PrismaClient, storage: Pick<St
     const access = await resolveChatAccess(db, { chatId: input.chatId, userId: input.userId });
     if (!access) throw new VisionAnalysisError("vision_analysis_access_denied");
     return db.attachment.findMany({ where: { id: { in: [...imageIds] }, kind: "image", status: "ready", savedAt: null,
-      ...(access.kind === "project" ? { projectId: access.project.projectId } : { userId: input.userId }),
+      userId: input.userId,
       OR: [{ id: { in: [...input.admittedImageIds] } }, { origin: "IMAGE_OUTPUT", producerModelRunId: input.runId, chatId: input.chatId }]
     }, select: { id: true, storageKey: true, byteSize: true, checksum: true, mimeType: true } });
   }

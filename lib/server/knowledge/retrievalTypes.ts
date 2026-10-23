@@ -17,7 +17,36 @@ import type { KnowledgeVisualAnalysisResult } from "./visualEvidence";
 import type { NormalizedReadSourceRequest } from "./readSourceLocator";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
-import type { KnowledgeLexicalBackendEvidenceV1 } from "./searchRetrieval";
+import type { KNOWLEDGE_RANKING_PROFILE_VERSION } from "./retrievalRanking";
+
+/* Knowledge searched an OpenSearch passage index until Knowledge was removed
+ * (operator decision 2026-10-23). Receipts recorded then carry this lexical
+ * backend evidence and are read against these exact values. */
+export const KNOWLEDGE_SEARCH_OPENSEARCH_VERSION = "3.8.0" as const;
+export const KNOWLEDGE_SEARCH_BACKEND_KIND = "opensearch_bm25_v1" as const;
+export const KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION = 1 as const;
+export const KNOWLEDGE_SEARCH_MAPPING_VERSION = 1 as const;
+export const KNOWLEDGE_SEARCH_ANALYZER_PROFILE = "standard_v1" as const;
+/** Two query variants of at most 64 hits each. */
+export const KNOWLEDGE_SEARCH_MAX_MERGED_HITS = 128;
+
+export type KnowledgeLexicalBackendEvidenceV1 = Readonly<{
+  analyzerProfile: typeof KNOWLEDGE_SEARCH_ANALYZER_PROFILE;
+  backendKind: typeof KNOWLEDGE_SEARCH_BACKEND_KIND;
+  candidateCount: number;
+  canonicalRejectionCount: 0;
+  durationMs: number;
+  mappingVersion: typeof KNOWLEDGE_SEARCH_MAPPING_VERSION;
+  openSearchVersion: typeof KNOWLEDGE_SEARCH_OPENSEARCH_VERSION;
+  physicalIndexVersion: typeof KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION;
+  projectionCompleteness: "complete";
+  queryVariantCount: number;
+  rankingProfileVersion: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | typeof KNOWLEDGE_RANKING_PROFILE_VERSION;
+  requestId: string | null;
+  status: "complete";
+  timedOut: false;
+  version: 1;
+}>;
 
 /** Server-only checkpoint operation. This name is never advertised to an
  * answer provider. */

@@ -196,7 +196,7 @@ describe("attachment reconciliation", () => {
       useComposerSessionStore.getState().activateSession(session);
       const fetchMock = vi.fn(async () => Response.json(settings([imageModel("creates", false), imageModel("edits", true)])));
       vi.stubGlobal("fetch", fetchMock);
-      const pending = reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      const pending = reportRejectedAttachments(["scan.png"], toolModel, { workspaceAvailable: false });
       expect(errorOf(session)).toBe(plain);
       await pending;
       expect(errorOf(session)).toBe("Text model does not support this attachment: scan.png. Text model can't read images, " +
@@ -204,7 +204,7 @@ describe("attachment reconciliation", () => {
         "pick an image model that can edit in Studio → Chat defaults → Image model or ask an administrator to assign the Vision Model.");
       // Known settings answer at once without another read.
       useComposerSessionStore.getState().updateSession(session, { operationError: null });
-      await reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      await reportRejectedAttachments(["scan.png"], toolModel, { workspaceAvailable: false });
       expect(errorOf(session)).toContain("Studio → Chat defaults → Image model");
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
@@ -215,15 +215,13 @@ describe("attachment reconciliation", () => {
       // No usable editing model: the plain recovery stays.
       vi.stubGlobal("fetch", vi.fn(async () => Response.json(settings([
         imageModel("creates", false), imageModel("edits", true, "credential_unavailable")]))));
-      await reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      await reportRejectedAttachments(["scan.png"], toolModel, { workspaceAvailable: false });
       expect(errorOf(session)).toBe(plain);
-      // A Project chat follows the organization default; a model without tools has no editing route.
+      // A model without tools has no editing route.
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
       resetImageModelStoreForTest();
-      await reportRejectedAttachments(["scan.png"], toolModel, { personalChat: false, workspaceAvailable: false });
-      expect(errorOf(session)).toBe(plain);
-      await reportRejectedAttachments(["scan.png"], textOnlyModel, { personalChat: true, workspaceAvailable: false });
+      await reportRejectedAttachments(["scan.png"], textOnlyModel, { workspaceAvailable: false });
       expect(errorOf(session)).toBe("Text model does not support this attachment: scan.png. Text model can't read images. " +
         "To use images, choose a model that supports images.");
       expect(fetchMock).not.toHaveBeenCalled();
@@ -233,7 +231,7 @@ describe("attachment reconciliation", () => {
       const session = composerSessionKey("chat-a");
       useComposerSessionStore.getState().activateSession(session);
       vi.stubGlobal("fetch", vi.fn(async () => Response.json(settings([imageModel("edits", true)]))));
-      const pending = reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      const pending = reportRejectedAttachments(["scan.png"], toolModel, { workspaceAvailable: false });
       useComposerSessionStore.getState().updateSession(session, { operationError: "Upload failed." });
       await pending;
       expect(errorOf(session)).toBe("Upload failed.");

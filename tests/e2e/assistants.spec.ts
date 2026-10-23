@@ -211,7 +211,7 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   await expect(editor.getByRole("heading", { name: "New assistant", exact: true })).toBeVisible();
   const save = editor.getByTestId("assistant-editor-save");
   await expect(save).toHaveText("Create");
-  await expect(editor.getByRole("button", { name: "Adjustable", exact: true })).toHaveCount(6);
+  await expect(editor.getByRole("button", { name: "Adjustable", exact: true })).toHaveCount(5);
 
   await editor.getByLabel("Name Required", { exact: true }).fill(name);
   await editor.getByRole("button", { name: "Model", exact: true }).click();
@@ -455,11 +455,11 @@ test("archives, restores and deletes an assistant from the gallery", async ({ pa
     await gallery.getByRole("button", { name: /^All \d+$/u }).click();
     await card.getByRole("button", { exact: true, name }).click();
     const sheet = page.getByRole("dialog", { exact: true, name });
-    await expect(sheet.getByRole("region", { name: "Setup" }).getByRole("row")).toHaveCount(6);
+    await expect(sheet.getByRole("region", { name: "Setup" }).getByRole("row")).toHaveCount(5);
     await sheet.getByRole("button", { name: `More actions for ${name}` }).click();
     await page.getByRole("menuitem", { exact: true, name: "Delete" }).click();
     const confirm = page.getByRole("dialog", { name: `Delete “${name}”?` });
-    await expect(confirm).toContainText("It isn't shared, used by a Project or bound to a chat.");
+    await expect(confirm).toContainText("It isn't shared or bound to a chat.");
     await confirm.getByRole("button", { exact: true, name: "Delete" }).click();
 
     await expect(confirm).toHaveCount(0);

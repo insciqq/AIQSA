@@ -85,7 +85,7 @@ describe("run attachment materialization", () => {
     const result = await loadProviderAttachments({ repository: store, storage: { getObject } }, "user", ["pdf"], {
       capabilities: { ...baseCapabilities, nativePdfInput }, limits: limits(), runId: "accepted-run"
     });
-    expect(store.loadAttachments).toHaveBeenCalledWith("user", ["pdf"], undefined, "accepted-run");
+    expect(store.loadAttachments).toHaveBeenCalledWith("user", ["pdf"], "accepted-run");
     expect(result[0]?.pdfDelivery).toBe("prepared_text");
     expect(result[0]?.base64Data).toBeUndefined();
     expect(getObject).toHaveBeenCalledOnce();

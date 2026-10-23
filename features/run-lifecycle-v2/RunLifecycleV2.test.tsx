@@ -934,7 +934,7 @@ describe("Run lifecycle v2 Workspace timeline", () => {
     fireEvent.click(disclosure.querySelector("summary")!);
     expect(screen.getByText("Read package.json")).toBeVisible();
     expect(screen.getByText("npm test failed")).toBeVisible();
-    expect(screen.getByText("Searched Knowledge")).toBeVisible();
+    expect(screen.getByText("Used Knowledge: search knowledge")).toBeVisible();
     expect(disclosure.textContent).not.toMatch(/sandbox_fs_read|Used Workspace/u);
   });
 

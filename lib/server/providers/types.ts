@@ -303,7 +303,7 @@ export type NormalizedRunRequest = {
   };
   provider: string;
   /** Server-owned admission marker of an ordinary personal run (never a
-   * scheduled, temporary, Project, Assistant or Knowledge run) whose
+   * scheduled, temporary or Assistant run) whose
    * tool-calling model may create one scheduled task through
    * `create_scheduled_task`: the settings such a task takes, frozen from this
    * admission. `modelId` and `provider` are the catalog identity the run
@@ -334,7 +334,7 @@ export type NormalizedRunRequest = {
   /** Server-owned admission marker of an interactive personal chat with
    * Workspace on: the model may save one Workspace folder per answer as a
    * personal Skill through `save_skill` (never a
-   * scheduled, temporary, Project, Assistant or Knowledge run). Never set
+   * scheduled, temporary or Assistant run). Never set
    * from a request field. */
   skillSaveTool?: true;
   /** Server-owned admission marker of an interactive run with MCP authority

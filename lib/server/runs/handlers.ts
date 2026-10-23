@@ -17,7 +17,6 @@ import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
 import type { UsageLimitRefusalResponse } from "../../contracts/usageLimits";
-import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { decideUsageAdmission } from "../../domain/usageLimits";
 import type { UsageLimitStatus, UsageLimitsRepository } from "../usageLimits/repository";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
@@ -138,7 +137,8 @@ export type RunHandlerDeps = {
   }>;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
-  knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
+  /** The old core's own Knowledge execution reads it; admission never admits Knowledge. */
+  knowledgeAdmission?: import("./runExecution").RunExecutionInput["knowledgeAdmission"];
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   memoryEgress?: MemoryToolEgressReceiptService;
@@ -180,21 +180,6 @@ export type RunHandlerDeps = {
 
 const activeRunGateWindowMs = activeRunStaleMs;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-
-function projectDraftFromBody(body: Record<string, unknown> | null):
-  | Readonly<{ folderId: string | null; projectId: string }>
-  | "invalid"
-  | null {
-  if (!body || body.projectDraft === undefined) return null;
-  const value = body.projectDraft;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return "invalid";
-  const draft = value as Record<string, unknown>;
-  const folderId = draft.folderId ?? null;
-  if (!uuidPattern.test(String(draft.projectId ?? "")) ||
-    (folderId !== null && !uuidPattern.test(String(folderId))) ||
-    Object.keys(draft).some((key) => key !== "folderId" && key !== "projectId")) return "invalid";
-  return { folderId: folderId === null ? null : String(folderId), projectId: String(draft.projectId) };
-}
 
 function personalDraftFromBody(body: Record<string, unknown> | null):
   | Readonly<{
@@ -650,27 +635,14 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       folderId: string | null;
       memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
     }> | null = null;
-    let projectChat: Readonly<{ folderId: string | null }> | null = null;
-    const projectDraft = projectDraftFromBody(body);
     const personalDraft = personalDraftFromBody(body);
     const personalTemporaryPayload = body?.chatMode === "TEMPORARY";
     if (
-      projectDraft === "invalid" ||
       personalDraft === "invalid" ||
-      (projectDraft && personalDraft) ||
       (personalDraft && (personalDraft.memoryMode === "TEMPORARY") !== personalTemporaryPayload) ||
-      ((projectDraft || personalDraft) && !chat && !uuidPattern.test(params.chatId))
+      (personalDraft && !chat && !uuidPattern.test(params.chatId))
     ) {
-      if (personalDraft) {
-        return Response.json({ error: "personal_draft_invalid" }, { status: 400 });
-      }
-      return Response.json({ error: "project_draft_invalid" }, { status: 400 });
-    }
-    // Projects are disabled: a Project chat the caller can open stays
-    // readable but admits nothing, and no new one starts. The chat lookup has
-    // already authorized it, so the refusal reveals nothing about others.
-    if (!PROJECTS_ENABLED && (projectDraft || chat?.project)) {
-      return Response.json({ error: PROJECTS_DISABLED_CODE }, { status: 409 });
+      return Response.json({ error: "personal_draft_invalid" }, { status: 400 });
     }
     if (!chat && personalDraft) {
       if (!deps.repository.loadPersonalFirstSend || body?.expectedActiveLeafId !== null) {
@@ -690,41 +662,17 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         };
       }
     }
-    if (!chat && projectDraft) {
-      if (!deps.repository.loadProjectFirstSend || body?.expectedActiveLeafId !== null) {
-        return Response.json({ error: "project_draft_invalid" }, { status: 400 });
-      }
-      chat = await deps.repository.loadProjectFirstSend({
-        chatId: params.chatId,
-        folderId: projectDraft.folderId,
-        projectId: projectDraft.projectId,
-        userId: auth.userId
-      });
-      if (chat) projectChat = { folderId: projectDraft.folderId };
-    }
     if (!chat) {
       return Response.json({
-        error: projectDraft
-          ? "project_not_found"
-          : personalDraft
-            ? "chat_not_created"
-            : "chat_not_found"
+        error: personalDraft ? "chat_not_created" : "chat_not_found"
       }, { status: 404 });
     }
     if (chat && personalDraft && !personalChat) {
       const matchingMode = personalDraft.memoryMode === "TEMPORARY"
         ? chat.memoryMode === "NORMAL" || chat.memoryMode === "TEMPORARY"
         : chat.memoryMode === personalDraft.memoryMode;
-      if (chat.project || chat.folderId !== personalDraft.folderId || !matchingMode) {
+      if (chat.folderId !== personalDraft.folderId || !matchingMode) {
         return Response.json({ error: "personal_draft_conflict" }, { status: 409 });
-      }
-    }
-    if (chat && projectDraft && !projectChat) {
-      const matchesPersistedProjectChat = chat.id === params.chatId &&
-        chat.project?.projectId === projectDraft.projectId &&
-        chat.projectFolderId === projectDraft.folderId;
-      if (!matchesPersistedProjectChat) {
-        return Response.json({ error: "project_draft_conflict" }, { status: 409 });
       }
     }
     // A review step's body is the server's own; it never also names an approval.
@@ -760,7 +708,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       interactive: !deps.scheduledOccurrence && !deps.answerReviewStep, stage: "send", userId: auth.userId
     });
     if (usageRefusal) return usageRefusal;
-    const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, project: chat.project ?? null, memoryMode: chat.memoryMode ?? null });
+    const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body: sendBody,
       skillCatalogDecision: {
@@ -771,12 +719,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           const current = personalChat && personalDraft
             ? await deps.repository.loadPersonalFirstSend?.({ chatId: params.chatId,
                 folderId: personalDraft.folderId, memoryMode: personalDraft.memoryMode, userId: auth.userId })
-            : projectChat && projectDraft
-              ? await deps.repository.loadProjectFirstSend?.({ chatId: params.chatId,
-                  folderId: projectDraft.folderId, projectId: projectDraft.projectId, userId: auth.userId })
-              : await deps.repository.findOwnedChat(params.chatId, auth.userId);
+            : await deps.repository.findOwnedChat(params.chatId, auth.userId);
           if (!current || current.activeLeafMessageId !== expectedActiveLeaf.value ||
-            chatPdfFingerprint({ chatId: current.id, project: current.project ?? null, memoryMode: current.memoryMode ?? null }) !== scopeFingerprint) {
+            chatPdfFingerprint({ chatId: current.id, memoryMode: current.memoryMode ?? null }) !== scopeFingerprint) {
             throw new SkillCatalogAuthorityChangedError();
           }
         }
@@ -787,7 +732,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ...chat,
           activeLeafMessageId: expectedActiveLeaf.value
         },
-        ...(projectChat ? { draftProjectChat: true } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send",
         ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {}),
@@ -849,7 +793,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           : {}),
         workspaceEnabled: preparedData.normalizedRequest.workspace?.enabled === true,
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
-        ...(preparedData.project ? { project: preparedData.project } : {}),
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
           preparedData,
@@ -861,7 +804,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(preparedData.followupAdmission ? { followupAdmission: preparedData.followupAdmission } : {}),
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
-        ...(projectChat ? { projectChat } : {}),
         ...(deps.scheduledOccurrence ? {
           scheduledOccurrence: deps.scheduledOccurrence,
           ...(preparedData.scheduledUnavailableSources ? { scheduledUnavailableSources: preparedData.scheduledUnavailableSources } : {})
@@ -1034,10 +976,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (!source) {
       return Response.json({ error: "message_not_found_or_not_regeneratable" }, { status: 404 });
     }
-    // Projects are disabled: regenerating, editing or retrying in a Project chat starts nothing.
-    if (!PROJECTS_ENABLED && source.chat.project) {
-      return Response.json({ error: PROJECTS_DISABLED_CODE }, { status: 409 });
-    }
 
     const activeRunResponse = await activeRunConflictResponse(source.chat.id, deps.repository, auth.userId);
     if (activeRunResponse) {
@@ -1066,7 +1004,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         if (!target?.ok) return Response.json({ error: target?.code ?? "artifact_edit_unavailable" }, { status: 409 });
       }
     }
-    const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id, project: source.chat.project ?? null,
+    const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id,
       memoryMode: source.chat.memoryMode ?? null, userMessage: source.userMessage });
     const preparation = retry ? await preparePdfRetry(deps, { ...retry, signal: request.signal,
       userId: auth.userId, userMessageId: source.userMessage.id }) : await prepareRun(deps, {
@@ -1077,7 +1015,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           const currentAuth = await deps.resolveAuth(request);
           if (currentAuth?.userId !== auth.userId) throw new SkillCatalogAuthorityChangedError();
           const current = await deps.repository.findRegenerationSource(params.messageId, auth.userId);
-          if (!current || chatPdfFingerprint({ chatId: current.chat.id, project: current.chat.project ?? null,
+          if (!current || chatPdfFingerprint({ chatId: current.chat.id,
             memoryMode: current.chat.memoryMode ?? null, userMessage: current.userMessage }) !== scopeFingerprint) {
             throw new SkillCatalogAuthorityChangedError();
           }
@@ -1134,7 +1072,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           : {}),
         workspaceEnabled: preparedData.normalizedRequest.workspace?.enabled === true,
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
-        ...(preparedData.project ? { project: preparedData.project } : {}),
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
           preparedData,

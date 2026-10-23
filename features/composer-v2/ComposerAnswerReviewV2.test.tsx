@@ -60,7 +60,7 @@ describe("answer review in the model picker and the header chip", () => {
     expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
   });
 
-  it("offers its initiator the review's Stop and another member of a Project chat none", () => {
+  it("offers its initiator the review's Stop and a viewer who may not act none", () => {
     const onStop = vi.fn();
     const composer = (stopUnavailableReason: string | null) => (
       <ComposerV2 activeRun config={composerGalleryConfig} draft="" onDraftChange={vi.fn()} onSelectModel={vi.fn()} onStop={onStop}

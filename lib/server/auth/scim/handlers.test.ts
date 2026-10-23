@@ -220,7 +220,6 @@ describe("SCIM endpoint routing", () => {
   it("maps refusals to SCIM errors and content-free health codes", async () => {
     const cases = [
       { code: "uniqueness", result: { kind: "uniqueness" }, scimType: "uniqueness" },
-      { code: "owner_transfer_required", result: { kind: "owner_transfer_required", projectCount: 2 }, scimType: undefined },
       { code: "admin_disabled", result: { kind: "admin_disabled" }, scimType: undefined },
       { code: "last_admin", result: { kind: "last_admin" }, scimType: undefined }
     ] as const;
@@ -233,10 +232,6 @@ describe("SCIM endpoint routing", () => {
       expect(body.scimType).toBe(entry.scimType);
       expect(outcomes).toEqual([entry.code]);
     }
-    const ownerTransfer = setup({ repository: { deactivateUser: vi.fn(async () => ({ kind: "owner_transfer_required" as const, projectCount: 1 })) } });
-    const deleted = await ownerTransfer.call("DELETE", `Users/${USER_ID}`);
-    expect(deleted.status).toBe(409);
-    expect((await deleted.json()).detail).toBe("Transfer Project ownership first; the account's access is already revoked.");
   });
 
   it("deactivates on DELETE and answers PATCH and PUT with the resource", async () => {

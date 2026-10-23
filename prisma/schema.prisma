@@ -958,8 +958,8 @@ model User {
   roleManagedBy                       String?
   status                              UserStatus                         @default(pending)
   scimExternalId                      String?                            @unique
-  /// When SCIM last asked to deactivate the account. With status `active` the deactivation
-  /// waits for a Project ownership transfer; with `disabled`, SCIM may reactivate it.
+  /// When SCIM last asked to deactivate the account; with `disabled`, SCIM may reactivate it.
+  /// With `active` (only an administrator no other one could replace) sign-in stays refused.
   scimDeactivatedAt                   DateTime?
   createdAt                           DateTime                           @default(now())
   updatedAt                           DateTime                           @updatedAt

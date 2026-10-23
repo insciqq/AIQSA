@@ -1,5 +1,3 @@
-import { decodeKnowledgeSelection, type KnowledgeSelection } from "./knowledge";
-
 /** Ordinary chat defaults; diagnostic and utility budgets are owned separately. */
 export const DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 65_536;
 
@@ -8,8 +6,6 @@ export type ChatDefaultMcpMode = "auto" | "load_all" | "off";
 export type ChatDefaultSkillsMode = "auto" | "off";
 
 export type ChatDefaults = Readonly<{
-  /** Knowledge selection attached to new chats; null starts new chats without Knowledge. */
-  knowledgePlan: KnowledgeSelection | null;
   mcpMode: ChatDefaultMcpMode;
   skillsMode: ChatDefaultSkillsMode;
   /** Composer keyboard contract: Enter sends (true) or inserts a newline while Ctrl/⌘+Enter sends. */
@@ -17,7 +13,6 @@ export type ChatDefaults = Readonly<{
 }>;
 
 export const INSTALLATION_CHAT_DEFAULTS: ChatDefaults = Object.freeze({
-  knowledgePlan: null,
   mcpMode: "auto",
   skillsMode: "auto",
   sendWithEnter: true
@@ -33,17 +28,10 @@ export function decodeChatDefaultMcpMode(value: unknown): ChatDefaultMcpMode | n
  * whole object (null).
  */
 export function decodeOptionalChatDefaults(input: Readonly<{
-  knowledgePlan: unknown;
   mcpMode: unknown;
   skillsMode?: unknown;
   sendWithEnter: unknown;
 }>): ChatDefaults | null {
-  let knowledgePlan: KnowledgeSelection | null = null;
-  if (input.knowledgePlan !== undefined && input.knowledgePlan !== null) {
-    const decoded = decodeKnowledgeSelection(input.knowledgePlan);
-    if (!decoded.ok || decoded.plan.mode === "inherited") return null;
-    knowledgePlan = decoded.plan.mode === "none" ? null : decoded.plan;
-  }
   const mcpMode = input.mcpMode === undefined
     ? INSTALLATION_CHAT_DEFAULTS.mcpMode
     : decodeChatDefaultMcpMode(input.mcpMode);
@@ -52,7 +40,6 @@ export function decodeOptionalChatDefaults(input: Readonly<{
   if (skillsMode !== "auto" && skillsMode !== "off") return null;
   if (input.sendWithEnter !== undefined && typeof input.sendWithEnter !== "boolean") return null;
   return {
-    knowledgePlan,
     mcpMode,
     skillsMode,
     sendWithEnter: input.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter

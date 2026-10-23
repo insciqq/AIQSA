@@ -130,7 +130,6 @@ describe("Prisma run repository search evidence", () => {
         findUnique: vi.fn().mockResolvedValue({
           archived: false,
           permanentDeletionAt: null,
-          projectId: null,
           userId: "user-1"
         })
       }
@@ -166,17 +165,7 @@ describe("Prisma run repository search evidence", () => {
                 workspaceRunBinding: { select: {
                   exportAttemptCount: true, exportLeaseExpiresAt: true, exportState: true, lastExportErrorCode: true,
                   outputCapture: true, updatedAt: true
-                } },
-                knowledgeRetrievalSession: {
-                  select: {
-                    degradedFlags: true,
-                    evidenceItems: {
-                      orderBy: { ordinal: "asc" },
-                      select: { handle: true, state: true }
-                    },
-                    groundingResult: { select: { outcome: true } }
-                  }
-                }
+                } }
               })
             })
           })

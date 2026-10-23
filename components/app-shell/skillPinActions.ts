@@ -6,22 +6,14 @@ import { resolveEffectiveSkillIds, SKILL_MAX_PINNED } from "@/lib/contracts/skil
 export async function pinSkillForNextTurn(input: Readonly<{
   skillId: string;
   isCurrentScope(): boolean;
-  projectSkills?: readonly (ComposerSkillSelection & { available: boolean })[];
 }>): Promise<void> {
   if (!input.isCurrentScope()) return;
-  let selected: ComposerSkillSelection;
-  if (input.projectSkills) {
-    const skill = input.projectSkills.find(skill => skill.id === input.skillId && skill.available);
-    if (!skill) throw new Error("This Skill is no longer available in this Project.");
-    selected = skill;
-  } else {
-    let skill;
-    try { skill = await loadSkillDetail(input.skillId); }
-    catch { throw new Error("This Skill is no longer available. Open Skills to review your selection."); }
-    if (skill.archived) throw new Error("This Skill is archived. Restore it before pinning.");
-    selected = { id: skill.id, name: skill.name, description: skill.description,
-      promptCharacterCount: skill.instructionCharacterCount, instructionApproxTokens: skill.instructionApproxTokens };
-  }
+  let skill;
+  try { skill = await loadSkillDetail(input.skillId); }
+  catch { throw new Error("This Skill is no longer available. Open Skills to review your selection."); }
+  if (skill.archived) throw new Error("This Skill is archived. Restore it before pinning.");
+  const selected: ComposerSkillSelection = { id: skill.id, name: skill.name, description: skill.description,
+    promptCharacterCount: skill.instructionCharacterCount, instructionApproxTokens: skill.instructionApproxTokens };
   if (!input.isCurrentScope()) return;
   const controls = useComposerControlStore.getState();
   const pinnedIds = resolveEffectiveSkillIds(

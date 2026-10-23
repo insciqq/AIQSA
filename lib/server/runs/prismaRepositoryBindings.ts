@@ -234,47 +234,6 @@ export async function applyAcceptedChatAssistant(
   }
 }
 
-/** Project publication is its own authority; the admission snapshot must
- * still match the complete live definition and current Project binding. */
-export async function assertProjectAssistantRunProvenance(
-  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
-  input: Readonly<{
-    assistantId: string;
-    projectId: string;
-    definitionVersion: number;
-  }>
-): Promise<void> {
-  const bindings = await tx.$queryRaw<Array<{ id: string }>>`
-    SELECT project_binding."id"
-    FROM "ProjectAssistantBinding" AS project_binding
-    INNER JOIN "AssistantDefinition" AS definition
-      ON definition."id" = project_binding."assistantId"
-     AND definition."archivedAt" IS NULL
-    WHERE project_binding."projectId" = ${input.projectId}
-      AND project_binding."assistantId" = ${input.assistantId}
-      AND definition."version" = ${input.definitionVersion}
-    FOR SHARE OF project_binding, definition
-  `;
-  if (!bindings[0]) throw new AssistantRunConflictError();
-  const dependencies = await tx.$queryRaw<Array<{ skillId: string }>>`
-    SELECT "skillId" FROM "AssistantSkill" WHERE "assistantId" = ${input.assistantId}
-    ORDER BY "skillId" FOR SHARE
-  `;
-  for (const dependency of dependencies) {
-    const available = await tx.$queryRaw<Array<{ skillId: string }>>`
-      SELECT skill."id" AS "skillId"
-      FROM "SkillDefinition" AS skill
-      INNER JOIN "ProjectSkillBinding" AS binding ON binding."skillId" = skill."id"
-      INNER JOIN "SkillRevision" AS revision ON revision."id" = skill."sharedRevisionId"
-        AND revision."skillId" = skill."id" AND revision."bundleReady" = true
-      WHERE skill."id" = ${dependency.skillId} AND binding."projectId" = ${input.projectId}
-        AND skill."archivedAt" IS NULL AND skill."deletedAt" IS NULL
-      FOR SHARE OF skill, binding
-    `;
-    if (!available[0]) throw new AssistantRunConflictError();
-  }
-}
-
 export function serializeRunAssistantIdentity(modelRun: {
   assistantIdentity?: unknown;
 } | undefined): AssistantIdentity | null {
@@ -286,7 +245,6 @@ export async function insertAcceptedMcpRunBindings(
   input: {
     bindings: McpRunPlanBinding[] | undefined;
     tools: readonly import("../mcp/toolAccess").McpToolIdentity[];
-    projectId?: string;
     runId: string;
     userId: string;
   }
@@ -308,50 +266,7 @@ export async function insertAcceptedMcpRunBindings(
   }
 
   for (const binding of bindings) {
-    const inserted = input.projectId
-      ? await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "McpRunBinding" (
-        "id",
-        "modelRunId",
-        "runtimeGenerationId",
-        "runtimeGenerationFingerprint"
-      )
-      SELECT
-        ${randomUUID()},
-        ${input.runId},
-        generation."id",
-        generation."fingerprint"
-      FROM "McpRuntimeGeneration" AS generation
-      INNER JOIN "McpSharedRuntime" AS shared
-        ON shared."serverId" = generation."sharedServerId"
-       AND shared."desiredRuntimeGenerationId" = generation."id"
-      INNER JOIN "McpServer" AS server
-        ON server."id" = shared."serverId"
-      INNER JOIN "McpRevision" AS revision
-        ON revision."id" = generation."revisionId"
-      INNER JOIN "ProjectMcpBinding" AS project_binding
-        ON project_binding."serverId" = server."id"
-       AND project_binding."projectId" = ${input.projectId}
-      WHERE server."id" = ${binding.serverId}
-        AND server."enabled" = true
-        AND server."archivedAt" IS NULL
-        AND server."ownerUserId" IS NULL
-        AND server."activeRevisionId" = generation."revisionId"
-        AND (
-          server."sharedConfigEnvelope" IS NOT NULL
-          OR revision."configuration" #>> '{auth,mode}' = 'none'
-        )
-        AND generation."userServerId" IS NULL
-        AND generation."oauthConnectionId" IS NULL
-        AND generation."id" = ${binding.runtimeGenerationId}
-        AND generation."fingerprint" = ${binding.fingerprint}
-        AND generation."state" = 'ready'
-        AND generation."inventory" IS NOT NULL
-        AND generation."inventoryUpdatedAt" IS NOT NULL
-        AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
-        AND NOT (generation."credentialSources" && ARRAY['oauth', 'personal']::TEXT[])
-      `)
-      : await tx.$executeRaw`
+    const inserted = await tx.$executeRaw`
       INSERT INTO "McpRunBinding" (
         "id",
         "modelRunId",
@@ -411,7 +326,6 @@ export async function insertAcceptedSkillRunBindings(
   tx: Pick<Prisma.TransactionClient, "$executeRaw" | "$queryRaw">,
   input: {
     bindings: readonly AcceptedSkillRun[] | undefined;
-    projectId?: string;
     runId: string;
     userId: string;
   }
@@ -425,36 +339,6 @@ export async function insertAcceptedSkillRunBindings(
   }
   for (const binding of [...bindings].sort((left, right) =>
     left.skillId.localeCompare(right.skillId))) {
-    if (input.projectId) {
-      const locked = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT definition."id" FROM "SkillDefinition" AS definition
-        JOIN "ProjectSkillBinding" AS binding ON binding."skillId" = definition."id"
-        WHERE definition."id" = ${binding.skillId} AND binding."projectId" = ${input.projectId}
-          AND definition."sharedRevisionId" = ${binding.revisionId}
-          AND definition."archivedAt" IS NULL AND definition."deletedAt" IS NULL
-        FOR SHARE OF definition, binding`;
-      if (!locked[0]) throw new SkillRunConflictError();
-      const inserted = await tx.$executeRaw`
-        INSERT INTO "ModelRunSkillBinding" ("modelRunId", "skillId", "revisionId", "alias")
-        SELECT run."id", revision."skillId", revision."id", ${binding.alias ?? ""}
-        FROM "ModelRun" AS run
-        INNER JOIN "ProjectSkillBinding" AS project_binding
-          ON project_binding."projectId" = ${input.projectId}
-         AND project_binding."skillId" = ${binding.skillId}
-        INNER JOIN "SkillDefinition" AS definition
-          ON definition."id" = project_binding."skillId"
-         AND definition."archivedAt" IS NULL
-         AND definition."deletedAt" IS NULL
-         AND definition."sharedRevisionId" = ${binding.revisionId}
-        INNER JOIN "SkillRevision" AS revision
-          ON revision."skillId" = definition."id"
-         AND revision."id" = definition."sharedRevisionId"
-        WHERE run."id" = ${input.runId}
-          AND run."userId" = ${input.userId}
-      `;
-      if (inserted !== 1) throw new SkillRunConflictError();
-      continue;
-    }
     await assertSkillRunProvenance(tx, {
       revisionId: binding.revisionId,
       skillId: binding.skillId,
@@ -1271,8 +1155,6 @@ export async function insertAcceptedProviderRunBindings(
   input: {
     nativeBackgroundRequested: boolean;
     imagePlan?: AcceptedImageGenerationPlan;
-    /** The server-authorized chat scope that chose the image model. */
-    imageScope: "personal" | "project";
     visionAnalysis?: AcceptedVisionAnalysisPlan;
     plan: ProviderAdmissionPlan | undefined;
     runId: string;
@@ -1292,12 +1174,10 @@ export async function insertAcceptedProviderRunBindings(
   }
   if (input.imagePlan) {
     const accepted = input.imagePlan;
-    // Personal runs: the model is still published and the initiating user's
-    // current effective choice. Project runs: the current administrator
-    // default, never a personal preference. Both fence the policy version,
-    // parameters and exact authority revision.
-    const current = await createImageModelRoleResolver(tx).resolveFor(input.imageScope === "project"
-      ? { kind: "project" } : { kind: "personal", userId: input.userId });
+    // The model is still published and the initiating user's current
+    // effective choice, fencing the policy version, parameters and exact
+    // authority revision.
+    const current = await createImageModelRoleResolver(tx).resolveFor({ kind: "personal", userId: input.userId });
     if (!current.ok || !sameAcceptedImageGenerationPlan(current.plan, accepted)) {
       throw new ProviderAdmissionConflictError();
     }

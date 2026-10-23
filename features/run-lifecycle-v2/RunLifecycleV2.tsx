@@ -7,7 +7,7 @@ import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { runReferenceLabel } from "@/lib/contracts/runReference";
 import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/contracts/runs";
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
-import type { MarkdownCitationRenderer, MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
+import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { workspaceActiveLabelV2, workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
@@ -40,7 +40,7 @@ type MaybePromise = Promise<unknown> | unknown;
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
 
-const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "knowledge", "results"]);
+const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "results"]);
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
   let call: ToolCallV2 | undefined;
@@ -273,7 +273,6 @@ export type RunAnswerV2Props = Readonly<{
   /** Settled answer outputs: Sources chip + list and the process fold's memory rows. */
   artifact?: ThreadArtifactSummary | null;
   content: string;
-  knowledgeReference?: Readonly<{ messageId: string; runId: string }>;
   /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
   /** The memory-saved notice, rendered under the process line and above the text. */
@@ -288,7 +287,6 @@ export type RunAnswerV2Props = Readonly<{
   onSelectModel?(): void;
   onUseLoadAll?(): void;
   presentation: RunPresentationV2;
-  renderCitation?: MarkdownCitationRenderer;
   /** Resolves model-written Workspace output links to authorized downloads or inert text. */
   resolveHref?: MarkdownHrefResolver;
   showReasoning?: boolean;
@@ -307,7 +305,6 @@ export function RunAnswerV2({
   processDisclosureId,
   artifact = null,
   content,
-  knowledgeReference,
   leadingSlot = null,
   noticeSlot = null,
   onPinSkill,
@@ -322,7 +319,6 @@ export function RunAnswerV2({
   pdfPreparation,
   onStop,
   stopping = false,
-  renderCitation,
   resolveHref,
   showReasoning = true,
   toolbarLeading = null,
@@ -331,10 +327,7 @@ export function RunAnswerV2({
   workspaceActivity = null
 }: RunAnswerV2Props) {
   const settled = settledRunPresentationV2(presentation);
-  const sources = useAnswerSourcesV2({
-    artifact: settled ? artifact : null,
-    knowledgeReference
-  });
+  const sources = useAnswerSourcesV2({ artifact: settled ? artifact : null });
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
@@ -432,7 +425,6 @@ export function RunAnswerV2({
       hideEmptyContent={!content.trim() && presentation.kind !== "idle"}
       role="assistant"
       quoteEligible={settledRunPresentationV2(presentation)}
-      renderCitation={renderCitation}
       resolveHref={resolveHref}
       streaming={presentation.kind === "streaming"}
       toolbarLeading={toolbarLeading || sources.chip ? (

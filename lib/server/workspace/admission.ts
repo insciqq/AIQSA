@@ -164,8 +164,7 @@ export function createWorkspaceAdmissionService(input: Readonly<{
       const internetEnabled = existing?.internetEnabled ?? policy.internetEnabled;
       // Guest code reaches MCP only through the runner relay, which only an
       // Internet-On guest of a runner with the gateway enabled can reach.
-      // Budgets freeze with the run; a Project run's stay unused, since
-      // minting refuses it from its chat.
+      // Budgets freeze with the run.
       const codeMcp = internetEnabled && health.agentReady === true
         ? { version: 1 as const, maxCalls: input.config.codeMcpMaxCalls,
           maxConcurrent: input.config.codeMcpMaxConcurrent, maxPerSecond: input.config.codeMcpMaxPerSecond }

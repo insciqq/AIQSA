@@ -34,7 +34,6 @@ const draft: AssistantDraft = {
   responseReminder: "",
   rows: {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -69,7 +68,6 @@ function detailJson() {
       avatar,
       category: null,
       description: "",
-      knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [],
       name: "Reviewer (copy)",
       providerModelId: null,
@@ -169,16 +167,14 @@ describe("Assistants API routes", () => {
         consequences: {
           audiences: { groupNames: ["Platform"], installation: false },
           chatCount: 3,
-          hiddenProjectCount: 1,
           pendingListingRequest: false,
-          projects: [{ isDefault: true, name: "Support" }],
           version: 7
         }
       }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
     await expect(fetchAssistantDeletionConsequences("assistant-1")).resolves.toMatchObject({
-      data: { chatCount: 3, projects: [{ isDefault: true, name: "Support" }], version: 7 },
+      data: { audiences: { groupNames: ["Platform"], installation: false }, chatCount: 3, version: 7 },
       ok: true
     });
     await expect(deleteAssistant("assistant-1", 7)).resolves.toEqual({ data: undefined, ok: true });

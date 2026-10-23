@@ -6,7 +6,7 @@ import type { ChatUsageStats } from "../../contracts/chats";
  * `hasCompletedAnswer` gates the Spent display: a completed answer, or usage of
  * an answer attempt (the run's own answer usage, also when the answer was
  * stopped or failed). Every other run-linked row, such as PDF preparation,
- * optional decisions, Search or Knowledge retrieval, alone never opens it; they
+ * optional decisions or Search, alone never opens it; they
  * still count in the totals. */
 export async function loadChatUsageTotals(tx: Prisma.TransactionClient, chatId: string): Promise<ChatUsageStats> {
   const [row] = await tx.$queryRaw<Array<{

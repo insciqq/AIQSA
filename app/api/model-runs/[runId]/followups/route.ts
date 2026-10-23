@@ -7,6 +7,5 @@ import { createRunFollowupHandler } from "@/lib/server/runs/runFollowupHandler";
 export const runtime = "nodejs";
 export const POST: AsyncRouteHandler<ReturnType<typeof createRunFollowupHandler>> = createRunFollowupHandler({
   resolveAuth: resolveRequestAuth,
-  followups: createPrismaRunFollowupOperations(prisma),
-  projectIdForChat: async chatId => (await prisma.chat.findUnique({ where: { id: chatId }, select: { projectId: true } }))?.projectId ?? null
+  followups: createPrismaRunFollowupOperations(prisma)
 });

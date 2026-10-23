@@ -69,7 +69,8 @@ async function fixture(runTest: (fixture: {
     await db.publishedImageModel.create({ data: { providerModelId: model.id, paramsJson: { quality: "low" } } });
     await db.systemModelPolicy.upsert({ where: { id: "installation" }, create: { id: "installation", imageProviderModelId: model.id },
       update: { imageProviderModelId: model.id } });
-    const resolved = await createImageModelRoleResolver(db).resolveFor({ kind: "project" });
+    // The fixture user has no personal choice and follows the administrator default.
+    const resolved = await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId: user.id });
     if (!resolved.ok) throw new Error("image_fixture_plan_unavailable");
     const plan = resolved.plan;
     const chat = await db.chat.create({ data: { userId: user.id, title: "Image fixture", memoryMode: "EXCLUDED" } });
@@ -276,38 +277,35 @@ describe("durable conversational images", () => {
     expect(await f.db.attachmentDeletionJob.findUnique({ where: { storageKey: storageKey! } })).toMatchObject({ claimToken: null });
     expect(fetchFn).toHaveBeenCalledTimes(1);
   }));
-  it("binds personal runs to the user's published choice and Project runs to the administrator default", async () => fixture(async (f) => {
+  it("binds a run to the user's published choice, or to the administrator default without one", async () => fixture(async (f) => {
     const chosen = await f.publishImageModel("gpt-image-1", { quality: "high" });
-    await f.chooseImageModel(chosen);
     const resolver = createImageModelRoleResolver(f.db);
+    const following = await resolver.resolveFor({ kind: "personal", userId: f.userId });
+    await f.chooseImageModel(chosen);
     const personal = await resolver.resolveFor({ kind: "personal", userId: f.userId });
-    const project = await resolver.resolveFor({ kind: "project" });
     expect(personal).toMatchObject({ ok: true, providerModelId: chosen, source: "personal", plan: { parameters: { quality: "high" } } });
-    expect(project).toMatchObject({ ok: true, providerModelId: f.modelId, source: "organization", plan: { parameters: { quality: "low" } } });
-    if (!personal.ok || !project.ok) throw new Error("fixture_plans_unavailable");
-    const admit = async (imagePlan: AcceptedImageGenerationPlan, imageScope: "personal" | "project") => {
+    expect(following).toMatchObject({ ok: true, providerModelId: f.modelId, source: "organization", plan: { parameters: { quality: "low" } } });
+    if (!personal.ok || !following.ok) throw new Error("fixture_plans_unavailable");
+    const admit = async (imagePlan: AcceptedImageGenerationPlan) => {
       await f.db.providerRunBinding.deleteMany({ where: { modelRunId: f.runId, bindingKey: "image" } });
       await insertAcceptedProviderRunBindings(f.db as unknown as Prisma.TransactionClient, {
-        imagePlan, imageScope, nativeBackgroundRequested: false, plan: undefined, runId: f.runId, userId: f.userId
+        imagePlan, nativeBackgroundRequested: false, plan: undefined, runId: f.runId, userId: f.userId
       });
       return f.db.providerRunBinding.findFirstOrThrow({ where: { modelRunId: f.runId, bindingKey: "image" } });
     };
-    // A Project member who chose another model personally is admitted on the
-    // default, as every tool-capable message, text-only ones included, is.
-    expect(await admit(project.plan, "project")).toMatchObject({ providerModelId: f.modelId });
-    await expect(admit(personal.plan, "project")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
-    expect(await admit(personal.plan, "personal")).toMatchObject({ providerModelId: chosen });
-    await expect(admit(project.plan, "personal")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    expect(await admit(personal.plan)).toMatchObject({ providerModelId: chosen });
+    // The default is no longer this user's effective choice.
+    await expect(admit(following.plan)).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
     // A later Studio change affects only future admissions; the accepted binding stays.
-    await admit(personal.plan, "personal");
+    await admit(personal.plan);
     await f.chooseImageModel(null);
     expect(await f.db.providerRunBinding.findFirstOrThrow({ where: { modelRunId: f.runId, bindingKey: "image" } }))
       .toMatchObject({ providerModelId: chosen });
-    await expect(admit(personal.plan, "personal")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
-    expect(await admit(project.plan, "personal")).toMatchObject({ providerModelId: f.modelId });
+    await expect(admit(personal.plan)).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    expect(await admit(following.plan)).toMatchObject({ providerModelId: f.modelId });
     // Changed administrator parameters fence a plan resolved before the change.
     await f.db.publishedImageModel.update({ where: { providerModelId: f.modelId }, data: { paramsJson: { quality: "medium" } } });
-    await expect(admit(project.plan, "project")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    await expect(admit(following.plan)).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
   }));
 
   it("withdraws a model and clears the role in one save each, returning users to the default and keeping accepted bindings", async () => fixture(async (f) => {
@@ -349,14 +347,18 @@ describe("durable conversational images", () => {
     const resolver = createImageModelRoleResolver(f.db);
     expect(await resolver.resolveFor({ kind: "personal", userId: f.userId }))
       .toEqual({ ok: false, reason: "model_unavailable", providerModelId: chosen, source: "personal" });
-    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: true, providerModelId: f.modelId });
     expect(await f.db.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ imageProviderModelId: chosen });
     expect((await createUserImageModelService(f.db).read(f.userId)).models.find((model) => model.id === chosen))
       .toMatchObject({ unavailableReason: "model_unavailable", generation: false, editing: false });
+    // Without a personal choice the user follows the default, which names its own reasons.
+    await f.chooseImageModel(null);
+    expect(await resolver.resolveFor({ kind: "personal", userId: f.userId })).toMatchObject({ ok: true, providerModelId: f.modelId });
     await f.db.providerModelCredentialCheck.updateMany({ where: { providerModelId: f.modelId }, data: { status: "unavailable" } });
-    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: false, reason: "verification_required", providerModelId: f.modelId });
+    expect(await resolver.resolveFor({ kind: "personal", userId: f.userId }))
+      .toMatchObject({ ok: false, reason: "verification_required", providerModelId: f.modelId });
     await f.db.providerCredentialVersion.update({ where: { id: f.credentialVersionId }, data: { revokedAt: new Date() } });
-    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: false, reason: "credential_unavailable", providerModelId: f.modelId });
+    expect(await resolver.resolveFor({ kind: "personal", userId: f.userId }))
+      .toMatchObject({ ok: false, reason: "credential_unavailable", providerModelId: f.modelId });
     await expect(createUserImageModelService(f.db).select(f.userId, randomUUID())).rejects.toMatchObject({ code: "image_model_not_published" });
   }));
 
@@ -370,14 +372,13 @@ describe("durable conversational images", () => {
     await f.db.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: null } });
     const off = { ok: false, reason: "not_configured", providerModelId: null, source: "organization" };
     expect(await resolver.resolveFor({ kind: "personal", userId: f.userId })).toEqual(off);
-    expect(await resolver.resolveFor({ kind: "project" })).toEqual(off);
     const users = createUserImageModelService(f.db);
     expect(await users.read(f.userId)).toEqual({ models: [], organizationDefaultId: null, selectedId: null, effective: null });
     await expect(users.select(f.userId, chosen)).rejects.toMatchObject({ code: "image_model_not_published" });
     // A plan resolved before the clear is fenced at admission; nothing generates on it.
     await f.db.providerRunBinding.deleteMany({ where: { modelRunId: f.runId, bindingKey: "image" } });
     await expect(insertAcceptedProviderRunBindings(f.db as unknown as Prisma.TransactionClient, {
-      imagePlan: before.plan, imageScope: "personal", nativeBackgroundRequested: false, plan: undefined, runId: f.runId, userId: f.userId
+      imagePlan: before.plan, nativeBackgroundRequested: false, plan: undefined, runId: f.runId, userId: f.userId
     })).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
     // The administrator withdraws the leftovers by clearing the role, which also resets the choice.
     const admin = await f.db.user.create({ data: { id: randomUUID(), displayName: "Image administrator", role: "admin", status: "active" } });

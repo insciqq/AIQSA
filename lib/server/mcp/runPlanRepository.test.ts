@@ -7,8 +7,7 @@ import {
   loadMcpCapabilityCatalog,
   loadMcpCapabilityCatalogWithOmissions,
   loadMcpRunPlanRecords,
-  loadMcpRunPlanRecordsForServers,
-  loadMcpRunPlanRecordsForProjectServers
+  loadMcpRunPlanRecordsForServers
 } from "./runPlanRepository";
 
 const NOW = new Date("2026-07-22T20:00:00.000Z");
@@ -143,84 +142,6 @@ function clientWith(records: PreferenceFixture[]) {
   };
 }
 
-type ProjectServerFixture = {
-  ownerUserId: string | null;
-  activeRevision: { configuration: Record<string, unknown>; validationEvidence: Record<string, unknown> } | null;
-  activeRevisionId: string | null;
-  archivedAt: Date | null;
-  description: string;
-  displayName: string;
-  enabled: boolean;
-  id: string;
-  namespace: string;
-  sharedConfigEnvelope: string | null;
-  sharedRuntime: { desiredRuntimeGeneration: Record<string, unknown> | null } | null;
-};
-
-/** The shared generation Project runs use: owned by the server, never a member. */
-function sharedGeneration(overrides: Record<string, unknown> = {}) {
-  return {
-    credentialSources: ["shared"],
-    errorCode: null,
-    fingerprint: "project-fingerprint-1",
-    id: "project-generation-1",
-    inventory: {
-      tools: [{
-        definitionHash: HASH,
-        description: "Echo",
-        inputSchema: { type: "object" },
-        name: "echo"
-      }],
-      version: 1
-    },
-    inventoryUpdatedAt: NOW,
-    oauthConnectionId: null,
-    revisionId: "project-revision-1",
-    sharedServerId: "project-server-1",
-    state: "ready",
-    userServerId: null,
-    ...overrides
-  };
-}
-
-function projectServer(overrides: Partial<ProjectServerFixture> = {}): ProjectServerFixture {
-  return {
-    activeRevision: {
-      configuration: { auth: { mode: "none" }, slots: [] },
-      validationEvidence: {
-        toolInventory: [{ arguments: [], description: "Echo", name: "echo" }]
-      }
-    },
-    activeRevisionId: "project-revision-1",
-    archivedAt: null,
-    description: "Shared Project tools",
-    displayName: "Project MCP",
-    enabled: true,
-    id: "project-server-1",
-    namespace: "project_tools",
-    ownerUserId: null,
-    sharedConfigEnvelope: null,
-    sharedRuntime: { desiredRuntimeGeneration: sharedGeneration() },
-    ...overrides
-  };
-}
-
-function projectClientWith(servers: unknown[], restrictedToolNames: readonly string[] = []) {
-  const findMany = vi.fn(async () => servers);
-  return {
-    client: {
-      mcpServer: { findMany },
-      mcpToolAccessPolicy: {
-        findMany: async () => restrictedToolNames.map((toolName) => ({
-          groups: [], restricted: true, serverId: "project-server-1", toolName, users: []
-        }))
-      },
-      user: { findUnique: async () => ({ status: "active", groups: [] }) }
-    } as unknown as PrismaClient,
-    findMany
-  };
-}
-
 describe("Prisma MCP run-plan loader", () => {
   it("offers the owner's personal OAuth inventory to Auto and filters a switched-off tool from the projection only", async () => {
     const record = preference();
@@ -328,131 +249,6 @@ describe("Prisma MCP run-plan loader", () => {
     record.server.ownerUserId = "other-user";
     const [denied] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
     expect(denied).toMatchObject({ catalogTools: [], generationId: null, errorCode: "mcp_access_revoked" });
-  });
-
-  it("rejects a personal server from Project runs even with a shared generation", async () => {
-    const [denied] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
-      projectClientWith([projectServer({ ownerUserId: "user-1" })]).client);
-    expect(denied).toMatchObject({ catalogTools: [], enabled: false, generationId: null, errorCode: "mcp_project_credentials_unavailable" });
-  });
-
-  it("admits the server's shared Project runtime without a personal grant or a member's runtime", async () => {
-    const { client, findMany } = projectClientWith([projectServer()]);
-
-    await expect(loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1", "project-server-1"], client))
-      .resolves.toEqual([expect.objectContaining({
-        credentialSources: ["shared"],
-        enabled: true,
-        externalAccountLabel: null,
-        fingerprint: "project-fingerprint-1",
-        generationId: "project-generation-1",
-        readiness: "ready",
-        serverId: "project-server-1"
-      })]);
-    // Only the server and its shared runtime are read: no member row, grant or generation scan.
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      select: expect.objectContaining({
-        sharedRuntime: expect.objectContaining({ select: expect.objectContaining({ desiredRuntimeGeneration: expect.anything() }) })
-      }),
-      where: { id: { in: ["project-server-1"] } }
-    }));
-    expect(JSON.stringify(findMany.mock.calls[0])).not.toMatch(/userServer"|desiredFor|grants/u);
-  });
-
-  it.each([
-    ["personal credential source", { desiredRuntimeGeneration: sharedGeneration({ credentialSources: ["personal"] }) },
-      "mcp_project_credentials_unavailable"],
-    ["OAuth connection", { desiredRuntimeGeneration: sharedGeneration({ oauthConnectionId: "oauth-1" }) },
-      "mcp_project_credentials_unavailable"],
-    ["member-owned generation", {
-      desiredRuntimeGeneration: sharedGeneration({ sharedServerId: null, userServerId: "member-preference-1" })
-    }, "mcp_runtime_stale"],
-    ["another server's generation", { desiredRuntimeGeneration: sharedGeneration({ sharedServerId: "project-server-2" }) },
-      "mcp_runtime_stale"],
-    ["historical revision", { desiredRuntimeGeneration: sharedGeneration({ revisionId: "project-revision-0" }) },
-      "mcp_revision_changed"],
-    ["missing shared runtime", null, "mcp_runtime_unavailable"],
-    ["shared runtime without a desired generation", { desiredRuntimeGeneration: null }, "mcp_runtime_unavailable"]
-  ])("fails Project MCP closed for %s", async (_label, sharedRuntime, errorCode) => {
-    const [record] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
-      projectClientWith([projectServer({ sharedRuntime })]).client
-    );
-
-    expect(record).toMatchObject({
-      credentialSources: [],
-      enabled: false,
-      errorCode,
-      generationId: null,
-      readiness: "unavailable"
-    });
-  });
-
-  it.each([
-    ["an OAuth identity", { auth: { mode: "oauth" }, slots: [] }, null, "mcp_project_credentials_unavailable"],
-    ["a personal-only value", { auth: { mode: "static" }, slots: [{ policy: { kind: "personal", required: true } }] },
-      "encrypted-shared", "mcp_project_credentials_unavailable"],
-    ["static authentication without shared values", { auth: { mode: "static" }, slots: [] }, null, "mcp_runtime_unavailable"]
-  ])("never starts a Project runtime for a server that needs %s", async (_label, configuration, sharedConfigEnvelope, errorCode) => {
-    const [record] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
-      projectClientWith([projectServer({
-        activeRevision: { configuration, validationEvidence: { toolInventory: [] } },
-        sharedConfigEnvelope
-      })]).client
-    );
-
-    expect(record).toMatchObject({ enabled: false, errorCode, generationId: null, readiness: "unavailable" });
-  });
-
-  it.each([
-    ["disabled server", { archivedAt: null, enabled: false }],
-    ["archived server", { archivedAt: NOW, enabled: true }],
-    ["server without an active revision", { activeRevision: null, activeRevisionId: null }]
-  ])("fails Project MCP closed for a %s", async (_label, serverOverride) => {
-    const [record] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
-      projectClientWith([projectServer(serverOverride)]).client
-    );
-
-    expect(record).toMatchObject({
-      credentialSources: [],
-      enabled: false,
-      errorCode: "mcp_server_unavailable",
-      generationId: null,
-      readiness: "unavailable"
-    });
-  });
-
-  it("reports a failed shared runtime's own cause", async () => {
-    const [record] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
-      projectClientWith([projectServer({
-        sharedRuntime: { desiredRuntimeGeneration: sharedGeneration({ errorCode: "mcp_connect_failed", state: "failed" }) }
-      })]).client
-    );
-
-    expect(record).toMatchObject({ enabled: true, errorCode: "mcp_connect_failed", readiness: "unavailable" });
-  });
-
-  it("applies the initiator's tool restrictions to the shared runtime's projection only", async () => {
-    const generation = sharedGeneration({
-      inventory: {
-        tools: ["echo", "write"].map((name) => ({ definitionHash: HASH, description: null, inputSchema: { type: "object" }, name })),
-        version: 1
-      }
-    });
-    const server = projectServer({ sharedRuntime: { desiredRuntimeGeneration: generation } });
-    server.activeRevision!.validationEvidence = {
-      toolInventory: [{ arguments: [], description: "Echo", name: "echo" }, { arguments: [], description: "Write", name: "write" }]
-    };
-
-    const [restricted] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
-      projectClientWith([server], ["write"]).client);
-    const [open] = await loadMcpRunPlanRecordsForProjectServers("user-2", ["project-server-1"],
-      projectClientWith([server]).client);
-
-    expect(restricted).toMatchObject({ catalogTools: [{ name: "echo" }], generationId: "project-generation-1" });
-    expect((restricted?.inventory as { tools: { name: string }[] }).tools.map(({ name }) => name)).toEqual(["echo"]);
-    expect((open?.inventory as { tools: { name: string }[] }).tools.map(({ name }) => name)).toEqual(["echo", "write"]);
-    // The shared generation's own inventory is never rewritten by one member's projection.
-    expect((generation.inventory as { tools: unknown[] }).tools).toHaveLength(2);
   });
 
   it("loads a current ready generation through a direct grant", async () => {
@@ -670,32 +466,6 @@ describe("Prisma MCP catalogs over held-back runtime tools", () => {
     ]).client);
 
     expect(record?.catalogTools?.map(({ name }) => name)).toEqual(["echo", "search"]);
-  });
-
-  it("subtracts the Project generation's held-back tools from its catalog", async () => {
-    const server = projectServer({
-      sharedRuntime: {
-        desiredRuntimeGeneration: sharedGeneration({
-          inventory: {
-            exclusions: [{ name: "search", reason: "missing_upstream" }],
-            tools: [{ definitionHash: HASH, description: "Echo", inputSchema: { type: "object" }, name: "echo" }],
-            version: 1
-          }
-        })
-      }
-    });
-    server.activeRevision!.validationEvidence = {
-      toolInventory: [
-        { arguments: [], description: "Echo", name: "echo" },
-        { arguments: [], description: "Search", name: "search" }
-      ]
-    };
-
-    const [record] = await loadMcpRunPlanRecordsForProjectServers(
-      "user-1", ["project-server-1"], projectClientWith([server]).client
-    );
-
-    expect(record?.catalogTools?.map(({ name }) => name)).toEqual(["echo"]);
   });
 
   it("filters a restricted tool from the user's projection and keeps the runtime's held-back names", async () => {

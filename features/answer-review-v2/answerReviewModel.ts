@@ -243,8 +243,8 @@ export type AnswerReviewAutoWaitV2 = Readonly<{
 
 /**
  * The chat is busy while an automatic review runs, for every viewer. Only its
- * initiator may stop it (the server refuses anyone else): another member of a
- * Project chat waits for it, with no Stop.
+ * initiator may stop it (the server refuses anyone else); anyone else waits
+ * for it, with no Stop.
  */
 export function answerReviewAutoWaitV2(group: AnswerReviewGroupV2): AnswerReviewAutoWaitV2 {
   return group.session.canAct === true
@@ -298,7 +298,6 @@ export type AnswerReviewAvailabilityInput = Readonly<{
   candidates: readonly AnswerReviewCatalogModelV2[];
   /** The answer is the latest of the active path (a group's latest version). */
   latest: boolean;
-  knowledgeEnabled: boolean;
   mutationReason: string | null;
 }>;
 
@@ -318,9 +317,6 @@ export function answerReviewAvailabilityV2(input: AnswerReviewAvailabilityInput)
   if (!input.latest) return unavailable("Only the latest answer can be reviewed.");
   if (answer.status !== "complete") return unavailable("Only a finished answer can be reviewed.");
   if (answer.answerReview && !answer.answerReview.session.canAct) return unavailable(ANSWER_REVIEW_NOT_INITIATOR_COPY);
-  if (input.knowledgeEnabled || (answer.artifactSummary?.knowledgeCitations?.length ?? 0) > 0 || answer.artifactSummary?.knowledgeState) {
-    return unavailable("Review isn't available with Knowledge: Knowledge answers stay bound to their sources.");
-  }
   if ((answer.artifactSummary?.generatedImages?.length ?? 0) > 0) return unavailable("Answers with generated images can't be reviewed.");
   if (input.authorModels.length > 0 && input.authorModels.every((model) => model.capabilities.toolCalling !== true)) {
     return unavailable("This answer's model can't use tools, so it can't revise after a review.");
@@ -333,7 +329,7 @@ export const ANSWER_REVIEW_PICK_LIMIT = ANSWER_REVIEW_MAX_REVIEWERS;
 
 /** Automatic review in this chat now: the chat's choice, who may review, and why it cannot run. */
 export type AnswerReviewAutoStateV2 = Readonly<{
-  /** Why review is unavailable in this chat (an Assistant, Knowledge, the model): it cannot be set here. */
+  /** Why review is unavailable in this chat (an Assistant, the model): it cannot be set here. */
   blockedReason: string | null;
   /** Tool-calling models other than the answer's: who may review. */
   candidates: readonly AnswerReviewCatalogModelV2[];
@@ -350,7 +346,6 @@ export function answerReviewAutoStateV2(input: Readonly<{
   assistantChat: boolean;
   authorModel: AnswerReviewCatalogModelV2 | undefined;
   config: AnswerReviewAutoConfig;
-  knowledgeEnabled: boolean;
   models: readonly AnswerReviewCatalogModelV2[];
 }>): AnswerReviewAutoStateV2 {
   const author = input.authorModel;
@@ -359,15 +354,13 @@ export function answerReviewAutoStateV2(input: Readonly<{
     candidates.filter((model) => model.provider === pick.provider && model.modelId === pick.modelId));
   const blockedReason = input.assistantChat
     ? "Review isn't available in Assistant chats yet: the Assistant fixes the model."
-    : input.knowledgeEnabled
-      ? "Review isn't available with Knowledge: Knowledge answers stay bound to their sources."
-      : !author
-        ? "Choose a model first."
-        : author.capabilities.toolCalling !== true
-          ? "This model can't use tools, so it can't revise after a review."
-          : candidates.length === 0
-            ? "No other model that can use tools is available to review."
-            : null;
+    : !author
+      ? "Choose a model first."
+      : author.capabilities.toolCalling !== true
+        ? "This model can't use tools, so it can't revise after a review."
+        : candidates.length === 0
+          ? "No other model that can use tools is available to review."
+          : null;
   // Nothing is substituted: a chosen reviewer that is gone, or is now the answer's model, stops the review here.
   const unavailableReason = blockedReason ?? (input.config.enabled && reviewers.length < input.config.reviewers.length
     ? "A chosen reviewer is unavailable or is this answer's model. Choose another one." : null);

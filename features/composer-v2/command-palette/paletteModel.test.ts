@@ -40,11 +40,10 @@ describe("composer palette filter", () => {
     entry("summarize", "skills", "Summarize sources"),
     entry("assistant", "assistants", "Summit planner"),
     entry("model", "models", "GPT-5.2"),
-    entry("base", "actions", "Finance 2026", { queryOnly: true }),
     entry("attach", "actions", "Attach files")
   ];
 
-  it("lists every section in its fixed order without a filter, leaving out filter-only entries", () => {
+  it("lists every section in its fixed order without a filter", () => {
     const groups = filterComposerPaletteEntries(entries, "");
     expect(groups.map((group) => group.label)).toEqual(["Skills", "Actions", "Models", "Assistants"]);
     expect(groups[1]!.entries.map((item) => item.id)).toEqual(["attach"]);
@@ -57,9 +56,9 @@ describe("composer palette filter", () => {
     expect(groups[1]!.entries.map((item) => item.id)).toEqual(["assistant"]);
   });
 
-  it("finds a filter-only entry by its name and returns nothing for an unknown filter", () => {
-    expect(filterComposerPaletteEntries(entries, "fin").flatMap((group) => group.entries.map((item) => item.id)))
-      .toEqual(["base"]);
+  it("finds an entry by its name and returns nothing for an unknown filter", () => {
+    expect(filterComposerPaletteEntries(entries, "att").flatMap((group) => group.entries.map((item) => item.id)))
+      .toEqual(["attach"]);
     expect(filterComposerPaletteEntries(entries, "zzz")).toEqual([]);
   });
 

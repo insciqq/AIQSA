@@ -215,7 +215,7 @@ describe("SkillLibraryDialog", () => {
     render(<SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />);
     fireEvent.click(await screen.findByRole("button", { name: "Open Careful editor" }));
     expect(await screen.findByText("Your version: v3. Approved for sharing: v1.")).toBeVisible();
-    expect(screen.getByText("You use your latest version. Other people and Projects continue using the approved version.")).toBeVisible();
+    expect(screen.getByText("You use your latest version. Other people continue using the approved version.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Request approval for v3" }));
     expect(await screen.findByText("Awaiting approval · v3")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Withdraw request" }));

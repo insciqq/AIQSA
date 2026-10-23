@@ -50,11 +50,11 @@ export function createChatTitleRepository(client: PrismaClient) {
         const job = await tx.chatTitleGeneration.findUniqueOrThrow({
           where: { runId: candidate.runId },
           include: { chat: { select: {
-            archived: true, permanentDeletionAt: true, projectId: true, title: true,
+            archived: true, permanentDeletionAt: true, title: true,
             titleRevision: true, userId: true, user: { select: { status: true } }
           } } }
         });
-        if (job.chat.archived || job.chat.permanentDeletionAt || job.chat.projectId ||
+        if (job.chat.archived || job.chat.permanentDeletionAt ||
           job.chat.userId !== job.userId || job.chat.user?.status !== "active" ||
           job.chat.title !== job.expectedTitle || job.chat.titleRevision !== job.titleRevision ||
           !job.providerSnapshot || !job.credentialVersionId) {
@@ -85,7 +85,7 @@ export function createChatTitleRepository(client: PrismaClient) {
 
     async isCurrent(work: ChatTitleWork): Promise<boolean> {
       return Boolean(await client.chat.findFirst({ select: { id: true }, where: {
-        archived: false, id: work.chatId, permanentDeletionAt: null, projectId: null,
+        archived: false, id: work.chatId, permanentDeletionAt: null,
         title: work.expectedTitle, titleRevision: work.titleRevision,
         userId: work.userId, user: { status: "active" },
         titleGeneration: { runId: work.runId, status: "dispatched", modelRun: { status: "complete" } }
@@ -142,7 +142,7 @@ export function createChatTitleRepository(client: PrismaClient) {
             id: work.providerSnapshot.credentialVersionId, revokedAt: null
           } })) return;
         await tx.chat.updateMany({ where: {
-          archived: false, id: work.chatId, permanentDeletionAt: null, projectId: null,
+          archived: false, id: work.chatId, permanentDeletionAt: null,
           title: work.expectedTitle, titleRevision: work.titleRevision,
           userId: work.userId, user: { status: "active" }
         }, data: { title, titleRevision: { increment: 1 } } });

@@ -19,9 +19,7 @@ function session(role: "admin" | "user" = "user"): AuthenticatedSession {
 const consequences = {
   audiences: { groupNames: ["Design"], installation: true },
   chatCount: 4,
-  hiddenProjectCount: 1,
   pendingListingRequest: true,
-  projects: [{ isDefault: true, name: "Launch" }],
   version: 7
 };
 

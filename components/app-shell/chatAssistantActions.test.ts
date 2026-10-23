@@ -14,7 +14,6 @@ import { useComposerControlStore } from "./composerControlStore";
 import { useWorkspaceStore } from "./workspaceStore";
 import type { CatalogModel, WorkspaceChatSummary } from "./types";
 import type { AssistantDetail } from "@/lib/contracts/assistants";
-import { EMPTY_KNOWLEDGE_SELECTION } from "@/lib/contracts/knowledge";
 
 const model = {
   capabilities: { toolCalling: true },
@@ -57,13 +56,11 @@ function detail(overrides: Partial<AssistantDetail> = {}): AssistantDetail {
       avatar: assistantAvatarFixture,
       category: null,
       description: "Reviews code",
-      knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
       mcpServerIds: [],
       name: "Reviewer",
       providerModelId: "assistant-model",
       rows: {
         controls: { policy: "adjustable", value: {} },
-        knowledge: { policy: "adjustable", value: { mode: "none" } },
         model: { policy: "adjustable", value: { mode: "model", modelId: "assistant-model" } },
         search: { policy: "fixed", value: { mode: "off" } },
         skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -103,7 +100,6 @@ function scope(): ChatAssistantChooseScope {
       skill: () => null
     },
     defaults: {
-      knowledge: { selection: EMPTY_KNOWLEDGE_SELECTION, source: "off" },
       model: { modelId: "assistant-model", provider: "assistant-provider" },
       search: { mode: "all_selected", optionIds: [] },
       skillsMode: "auto",

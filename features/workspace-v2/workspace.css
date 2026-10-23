@@ -899,7 +899,7 @@
   overflow-wrap: anywhere;
 }
 
-/* One line; a long Project name ends in an ellipsis. */
+/* One line; a long owner name ends in an ellipsis. */
 .v2-live-assistant-intro > .v2-live-assistant-by {
   max-width: min(30rem, 100%);
   overflow: hidden;
@@ -1167,8 +1167,8 @@
   color: var(--v2-color-text2);
 }
 
-/* Notices above the composer share its edges: the composer wrap's width on
-   project pages, the full column in the thread dock and the blank chat. In
+/* Notices above the composer share its edges: the composer wrap's width,
+   the full column in the thread dock and the blank chat. In
    the stack they are quiet strips, not floating cards. */
 .v2-live-notice {
   width: min(var(--v2-measure), calc(100% - 2rem));
@@ -1445,12 +1445,6 @@
     padding-right: 6rem;
   }
 
-  /* The projects section renders no "+" float: a Project chat reserves the
-     right edge for "⋯" alone, so the centre island stays centred. */
-  .v2-workspace-shell[data-shell-section="projects"][data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
-    padding-right: 3rem;
-  }
-
   .v2-live-header:not(:has(.v2-live-model, .v2-live-title > *, .v2-live-header-actions > *)) {
     display: none;
   }
@@ -1578,7 +1572,7 @@
 
   /* No title pill on phones (operator, 2026-09-02): the drawer and the
      thread itself carry the name and Rename lives in "⋯". The island
-     survives only for the Project chip or the inline rename form. */
+     survives only for the inline rename form. */
   .v2-live-title > h1 {
     display: none;
   }
@@ -1893,9 +1887,5 @@
   /* A Temporary chat hands the right edge to its in-flow indicator. */
   .v2-workspace-shell[data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
     padding-right: 6.5rem;
-  }
-
-  .v2-workspace-shell[data-shell-section="projects"][data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
-    padding-right: 3.25rem;
   }
 }

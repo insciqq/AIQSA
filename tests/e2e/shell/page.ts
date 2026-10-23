@@ -2,14 +2,14 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export async function runAccountMenuAction(
   page: Page,
-  name: "Assistants" | "Knowledge" | "Memory" | "Settings" | "Chat defaults" | "Instructions" | "Secrets" | "MCP servers" | "Skills" | "Files" | "Scheduled"
+  name: "Assistants" | "Memory" | "Settings" | "Chat defaults" | "Instructions" | "Secrets" | "MCP servers" | "Skills" | "Files" | "Scheduled"
 ): Promise<Locator> {
   // Library and the account menu live on the rail (desktop/compact) or in
   // the mobile drawer's footer, which has to be opened first.
   const rail = page.getByRole("navigation", { name: "Workspace" });
   let owner = rail;
   if (!(await rail.isVisible())) {
-    const navigation = page.getByRole("complementary", { name: /^(Chat|Project) navigation$/ });
+    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
     if (!(await navigation.isVisible())) {
       await page.getByRole("button", { name: "Open sidebar" }).click();
       await expect(navigation).toBeVisible();

@@ -1,27 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { CHAT_ASSISTANT_DELETED_MARKER, type ChatAssistantOverridesPatch } from "../../contracts/chats";
-import type { KnowledgePlan } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { defaultProviderModels } from "../../domain/catalog";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { prisma } from "../prisma";
-import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { ChatAssistantUpdateError } from "./assistantUpdateError";
 import { createPrismaChatNavigationRepository } from "./navigation";
 import { createPrismaChatRepository } from "./prismaRepository";
-
-// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
-// it keeps the switch on to test the code that still exists.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  PROJECTS_ENABLED: true,
-  KNOWLEDGE_ENABLED: true
-}));
 
 const avatar = {
   accents: [0, 4],
@@ -44,7 +34,6 @@ type BindingFixture = Readonly<{
     ownFixed: string;
   }>;
   groupId: string;
-  projectIds: string[];
   userId: string;
 }>;
 
@@ -54,7 +43,6 @@ async function withBindingFixture<T>(run: (fixture: BindingFixture) => Promise<T
   const userId = `chat-binding-user-${suffix}`;
   const ownerId = `chat-binding-owner-${suffix}`;
   const assistantIds: string[] = [];
-  const projectIds: string[] = [];
   await prisma.user.create({
     data: {
       displayName: "Binding user",
@@ -90,7 +78,6 @@ async function withBindingFixture<T>(run: (fixture: BindingFixture) => Promise<T
 
   try {
     const own = await define(userId, "Own helper", {
-      knowledgePolicy: "adjustable",
       modelPolicy: "adjustable",
       searchPolicy: "adjustable",
       skillsPolicy: "adjustable",
@@ -116,15 +103,12 @@ async function withBindingFixture<T>(run: (fixture: BindingFixture) => Promise<T
     return await run({
       assistants: { archived, foreign, groupShared, installation, own, ownArchived, ownFixed },
       groupId: group.id,
-      projectIds,
       userId
     });
   } finally {
     await prisma.assistantPublication.deleteMany({ where: { assistantId: { in: assistantIds } } });
-    await prisma.projectAssistantBinding.deleteMany({ where: { assistantId: { in: assistantIds } } });
     await prisma.modelRun.deleteMany({ where: { userId } });
     await prisma.chat.deleteMany({ where: { userId } });
-    await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
     await prisma.userSettings.updateMany({ data: { defaultAssistantId: null }, where: { userId } });
     await prisma.assistantDefinition.deleteMany({ where: { id: { in: assistantIds } } });
     await prisma.group.deleteMany({ where: { id: group.id } });
@@ -161,7 +145,6 @@ async function bindingColumns(chatId: string) {
     select: {
       assistantId: true,
       assistantOverrides: true,
-      defaultKnowledgePlan: true,
       defaultProviderModelId: true,
       defaultSearchPlan: true,
       updatedAt: true
@@ -180,10 +163,8 @@ describe("chat Assistant binding", () => {
       const chats = repository();
       const created = await chats.createChat({ title: "Bound chat", userId });
       const chatId = created!.id;
-      const knowledge: KnowledgePlan = { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 };
       await chats.updateChat({
         chatId,
-        defaultKnowledgePlan: knowledge,
         defaultSearchPlan: { mode: "all_selected", optionIds: [] },
         userId
       });
@@ -221,7 +202,6 @@ describe("chat Assistant binding", () => {
       expect(removed).toMatchObject({
         assistantId: null,
         assistantOverrides: null,
-        defaultKnowledgePlan: ordinary.defaultKnowledgePlan,
         defaultProviderModelId: ordinary.defaultProviderModelId,
         defaultSearchPlan: ordinary.defaultSearchPlan
       });
@@ -276,7 +256,6 @@ describe("chat Assistant binding", () => {
       await expect(code({
         assistantOverrides: {
           controls: { maxOutputTokens: 1_000 },
-          knowledge: { mode: "all_my_knowledge" },
           model: { mode: "model", modelId: "gpt-5.5" },
           search: { mode: "off" }
         },
@@ -286,7 +265,6 @@ describe("chat Assistant binding", () => {
       await expect(bindingColumns(chatId)).resolves.toMatchObject({
         assistantOverrides: {
           controls: { maxOutputTokens: 1_000 },
-          knowledge: { mode: "all_my_knowledge" },
           model: { mode: "model", modelId: "gpt-5.5" },
           search: { mode: "off" }
         }
@@ -294,98 +272,37 @@ describe("chat Assistant binding", () => {
       // Parameters follow the model they were chosen for.
       await expect(code({ assistantOverrides: { model: null }, chatId, userId })).resolves.toBeNull();
       await expect(bindingColumns(chatId)).resolves.toMatchObject({
-        assistantOverrides: { knowledge: { mode: "all_my_knowledge" }, search: { mode: "off" } }
+        assistantOverrides: { search: { mode: "off" } }
       });
 
       const invalid: ChatAssistantOverridesPatch[] = [
         { model: { mode: "model", modelId: "not-in-catalog" } },
-        { search: { mode: "all_selected", optionIds: ["unknown-search"] } },
-        { knowledge: { baseIds: [randomUUID()], mode: "explicit", sourceIds: [] } }
+        { search: { mode: "all_selected", optionIds: ["unknown-search"] } }
       ];
       for (const assistantOverrides of invalid) {
         await expect(code({ assistantOverrides, chatId, userId })).resolves.toBe("assistant_overrides_invalid");
       }
       await expect(bindingColumns(chatId)).resolves.toMatchObject({
-        assistantOverrides: { knowledge: { mode: "all_my_knowledge" }, search: { mode: "off" } }
+        assistantOverrides: { search: { mode: "off" } }
       });
+
+      // A Knowledge override stored before Knowledge was removed is ignored and
+      // dropped by the next write.
+      await prisma.chat.update({
+        data: { assistantOverrides: { knowledge: { mode: "all_my_knowledge" }, search: { mode: "off" } } },
+        where: { id: chatId }
+      });
+      await expect(code({ assistantOverrides: { skills: { mode: "off" } }, chatId, userId })).resolves.toBeNull();
+      await expect(bindingColumns(chatId)).resolves.toMatchObject({
+        assistantOverrides: { search: { mode: "off" }, skills: { mode: "off" } }
+      });
+      expect((await bindingColumns(chatId)).assistantOverrides).not.toHaveProperty("knowledge");
 
       // A binding that stopped being available cannot be adjusted.
       await chats.updateChat({ assistantId: assistants.installation, chatId, userId });
       await prisma.assistantPublication.deleteMany({ where: { assistantId: assistants.installation } });
       await expect(code({ assistantOverrides: { tools: null }, chatId, userId }))
         .resolves.toBe("assistant_not_available");
-    });
-  });
-
-  it("keeps a Project chat to its Project's Assistants and checks its values against the Project", async () => {
-    await withBindingFixture(async ({ assistants, projectIds, userId }) => {
-      const project = await createPrismaProjectRepository(prisma).create({
-        actorDisplayName: "Binding user",
-        description: "",
-        name: `Binding project ${randomUUID()}`,
-        preferredModelId: providerTemplateIds.fakeModel,
-        userId
-      });
-      if (project.kind !== "ok") throw new Error(project.kind);
-      projectIds.push(project.value.id);
-      const chat = await prisma.chat.create({
-        data: {
-          createdByDisplayName: "Binding user",
-          createdByUserId: userId,
-          memoryMode: "EXCLUDED",
-          projectId: project.value.id,
-          title: "Project chat",
-          userId: null
-        }
-      });
-      const chats = repository();
-      const code = (assistantOverrides: ChatAssistantOverridesPatch) =>
-        chats.updateChat({ assistantOverrides, chatId: chat.id, userId }).then(() => null, (error: unknown) =>
-          error instanceof ChatAssistantUpdateError ? error.code : error);
-      const projectDefaults = async () => (await prisma.project.findUniqueOrThrow({
-        select: { defaults: true },
-        where: { id: project.value.id }
-      })).defaults;
-      const defaultsBefore = await projectDefaults();
-
-      // Owning the Assistant is not enough: the Project must bind it.
-      await expect(chats.updateChat({ assistantId: assistants.own, chatId: chat.id, userId }))
-        .rejects.toMatchObject({ code: "assistant_not_available" });
-      await prisma.projectAssistantBinding.create({
-        data: { addedByUserId: userId, assistantId: assistants.own, projectId: project.value.id }
-      });
-      await expect(chats.updateChat({ assistantId: assistants.own, chatId: chat.id, userId }))
-        .resolves.toMatchObject({ assistantId: assistants.own });
-
-      // Values the Project provides are stored for the chat.
-      await expect(code({
-        model: { mode: "model", modelId: providerTemplateIds.fakeModel },
-        tools: { mode: "off" }
-      })).resolves.toBeNull();
-      await expect(bindingColumns(chat.id)).resolves.toMatchObject({
-        assistantId: assistants.own,
-        assistantOverrides: { model: { mode: "model", modelId: providerTemplateIds.fakeModel }, tools: { mode: "off" } }
-      });
-
-      // The member's personal model, Search, Knowledge and "All my knowledge" never run in a Project.
-      const personal: ChatAssistantOverridesPatch[] = [
-        { model: { mode: "model", modelId: "gpt-5.5" } },
-        { search: { mode: "all_selected", optionIds: ["unknown-search"] } },
-        { knowledge: { baseIds: [randomUUID()], mode: "explicit", sourceIds: [] } },
-        { knowledge: { mode: "all_my_knowledge" } }
-      ];
-      for (const assistantOverrides of personal) {
-        await expect(code(assistantOverrides)).resolves.toBe("assistant_overrides_invalid");
-      }
-      await expect(bindingColumns(chat.id)).resolves.toMatchObject({
-        assistantOverrides: { model: { mode: "model", modelId: providerTemplateIds.fakeModel }, tools: { mode: "off" } }
-      });
-
-      // Changing the chat's Assistant never changes the Project's defaults.
-      await expect(chats.updateChat({ assistantId: null, chatId: chat.id, userId }))
-        .resolves.toMatchObject({ assistantId: null });
-      await expect(bindingColumns(chat.id)).resolves.toMatchObject({ assistantId: null, assistantOverrides: null });
-      await expect(projectDefaults()).resolves.toEqual(defaultsBefore);
     });
   });
 

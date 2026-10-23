@@ -181,7 +181,6 @@ export async function loadMemoryRunSources(
             memoryMode: true,
             memorySourceRevision: true,
             permanentDeletionAt: true,
-            projectId: true,
             title: true
           },
           where: { id: { in: sourceChatIds }, userId: input.userId }
@@ -385,7 +384,7 @@ export async function loadMemoryRunSources(
         version.sourceMode === "AUTOMATIC" && evidenceChat &&
         item.sourceBranchGenerationSnapshot !== null &&
         item.sourceMessageIdsSnapshot.length > 0 &&
-        evidenceChat.projectId === null && evidenceChat.memoryMode === "NORMAL" &&
+        evidenceChat.memoryMode === "NORMAL" &&
         evidenceChat.permanentDeletionAt === null &&
         item.sourceMessageIdsSnapshot.every((messageId) =>
           evidenceMessageIds.has(messageId) &&
@@ -453,8 +452,7 @@ export async function loadMemoryRunSources(
         checkpoint.sourceRevision === chat.memorySourceRevision &&
         checkpoint.activeLeafMessageId === chat.activeLeafMessageId &&
         checkpoint.lastIndexedMessageId === checkpoint.activeLeafMessageId &&
-        chat.memoryMode === "NORMAL" && chat.permanentDeletionAt === null &&
-        chat.projectId === null
+        chat.memoryMode === "NORMAL" && chat.permanentDeletionAt === null
       );
       const frozenChunk = Boolean(
         chunk && chat && chunk.chatId === chat.id && chunk.state === "ACTIVE" &&
@@ -526,8 +524,7 @@ export async function loadMemoryRunSources(
         checkpoint.sourceRevision === chat.memorySourceRevision &&
         checkpoint.activeLeafMessageId === chat.activeLeafMessageId &&
         checkpoint.lastIndexedMessageId === checkpoint.activeLeafMessageId &&
-        chat.memoryMode === "NORMAL" && chat.permanentDeletionAt === null &&
-        chat.projectId === null
+        chat.memoryMode === "NORMAL" && chat.permanentDeletionAt === null
       );
       const frozenRound = Boolean(
         round && chat && round.chatId === chat.id && round.state === "ACTIVE" &&

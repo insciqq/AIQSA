@@ -76,8 +76,7 @@ const requestInclude = {
   skill: { include: {
     owner: { select: { displayName: true } }, currentRevision: true,
     sharedRevision: { include: { files: { select: fileSelect, orderBy: { path: "asc" as const } } } },
-    publications: { include: { group: { select: { id: true, name: true } } } },
-    projectBindings: { select: { id: true } }
+    publications: { include: { group: { select: { id: true, name: true } } } }
   } }
 } satisfies Prisma.SkillShareRequestInclude;
 type RequestRecord = Prisma.SkillShareRequestGetPayload<{ include: typeof requestInclude }>;
@@ -95,7 +94,6 @@ function adminDetail(row: RequestRecord): AdminSkillShareRequestDetail {
   const audiences: SkillAudience[] = row.skill.publications.map((entry) => entry.scope === "installation"
     ? { id: entry.id, kind: "everyone", name: "Everyone" }
     : { id: entry.id, kind: "workspace", name: entry.group!.name, workspaceId: entry.group!.id });
-  audiences.push(...row.skill.projectBindings.map((binding): SkillAudience => ({ id: `project:${binding.id}`, kind: "project", name: "Project publication" })));
   const skillMarkdown = renderSkillMarkdown(revision);
   return { ...adminSummary(row), audiences,
     currentRevision: row.skill.currentRevision ? skillRevisionSummary(row.skill.currentRevision) : null,

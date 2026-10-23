@@ -14,7 +14,6 @@ function identity(entries: readonly SkillRunCatalogEntry[]): string {
  * required binding or disclose metadata after its current authority changed. */
 export function skillCatalogAuthorization(input: Readonly<{
   userId: string;
-  projectId?: string;
   assistant: AssistantRunMaterialization | null;
   assistants?: AssistantRunResolver;
   skills: SkillRunResolver;
@@ -25,25 +24,21 @@ export function skillCatalogAuthorization(input: Readonly<{
   const expected = identity([...input.pinned, ...input.available]);
   const expectedAssistant = input.assistant ? hashCanonicalMcpValue(input.assistant) : null;
   const pinnedIds = new Set(input.pinned.map(skill => skill.skillId));
-  const requiredIds = input.assistant || input.projectId
+  const requiredIds = input.assistant
     ? [...input.pinned, ...input.available].map(skill => skill.skillId)
     : [...pinnedIds];
   return async () => {
     await input.authorizeScope();
     if (input.assistant) {
-      const resolution = input.projectId
-        ? await input.assistants?.resolveForProject?.(input.projectId, input.assistant.assistantId)
-        : await input.assistants?.resolveForRun(input.userId, input.assistant.assistantId);
+      const resolution = await input.assistants?.resolveForRun(input.userId, input.assistant.assistantId);
       if (!resolution?.ok || hashCanonicalMcpValue(resolution.assistant) !== expectedAssistant) {
         throw new SkillCatalogAuthorityChangedError();
       }
     }
     const required = requiredIds.length === 0 ? { ok: true as const, skills: [] }
-      : input.projectId
-        ? await input.skills.resolveForProject?.(input.projectId, requiredIds)
-        : await input.skills.resolveForRun(input.userId, requiredIds);
+      : await input.skills.resolveForRun(input.userId, requiredIds);
     if (!required?.ok) throw new SkillCatalogAuthorityChangedError();
-    const available = input.assistant || input.projectId ? []
+    const available = input.assistant ? []
       : (await input.skills.listEnabledForRun?.(input.userId) ?? []).filter(skill => !pinnedIds.has(skill.skillId));
     if (identity([...required.skills, ...available]) !== expected) throw new SkillCatalogAuthorityChangedError();
     await input.authorizeScope();

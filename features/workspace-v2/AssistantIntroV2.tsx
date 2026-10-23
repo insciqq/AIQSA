@@ -115,8 +115,7 @@ function ClampedText({ clamped, text }: Readonly<{ clamped: string | null; text:
 
 /**
  * The quiet intro of a blank chat with an Assistant (PRD 10.6): avatar, name,
- * description and who made it (a Project's Assistant reads as the Project's).
- * The header already names the Assistant, so
+ * description and who made it. The header already names the Assistant, so
  * there is no kicker, publication scope, accent colour or framed block. The
  * name and description are clamped (see workspace.css) so the composer below
  * stays in view on short screens, cut at a word with every line centred;
@@ -127,18 +126,15 @@ export function AssistantIntroV2({
   description,
   name,
   owned,
-  ownerDisplayName,
-  projectName
+  ownerDisplayName
 }: Readonly<{
   avatar: AssistantAvatarRecipe;
   description: string;
   name: string;
   owned: boolean;
   ownerDisplayName: string;
-  /** Only for a Project's Assistant: the Project's name, or null while unknown. */
-  projectName?: string | null;
 }>) {
-  const byline = assistantBylineV2({ owned, ownerDisplayName, projectName });
+  const byline = assistantBylineV2({ owned, ownerDisplayName });
   const nameRef = useRef<HTMLHeadingElement>(null);
   const descriptionRef = useRef<HTMLSpanElement>(null);
   const clampedName = useWordClamp(nameRef, name);

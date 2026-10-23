@@ -8,7 +8,6 @@ import { loadAccountMemoryOwnedCounts } from "../memory/accountDeletion/inventor
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminDashboard, AdminDashboardNavigation } from "./adminRepositoryContract";
-import { countSoleOwnedProjects } from "./adminUserSessionCommands";
 import {
   serializeAdminEntitlements,
   serializeAdminGrant,
@@ -80,7 +79,6 @@ const adminDashboardUserSelect = {
   },
   id: true,
   role: true,
-  scimDeactivatedAt: true,
   settings: {
     select: {
       id: true
@@ -263,22 +261,17 @@ export async function listAdminDashboard(
     }),
     loadAccountMemoryOwnedCounts(prisma),
     loadAccountKnowledgeOwnedCounts(prisma),
+    // Personal chats only: chats of the removed Projects have no owner until retirement deletes them.
     prisma.modelRun.groupBy({
       _count: { _all: true },
       by: ["userId"],
-      where: { chat: { projectId: null } }
+      where: { chat: { userId: { not: null } } }
     })
   ]);
   const personalModelRunCountByUserId = new Map(personalModelRunCounts.map((row) => [
     row.userId,
     row._count._all
   ]));
-  // A SCIM deactivation waits while the account still owns Projects alone.
-  const scimPendingProjectCounts = new Map(await Promise.all(
-    users
-      .filter((user) => user.status === "active" && Boolean(user.scimDeactivatedAt))
-      .map(async (user) => [user.id, await countSoleOwnedProjects(prisma, user.id)] as const)
-  ));
   const groupNamesById = new Map(groups.map((group) => [group.id, { name: group.name }]));
   const serializedAccessRules = accessRules.map((rule) => serializeAdminRule(rule, groupNamesById));
   const searchIds = [...new Set(grants.flatMap((grant) => grant.searchStrategy ? [grant.searchStrategy] : []))];
@@ -339,9 +332,6 @@ export async function listAdminDashboard(
       id: user.id,
       lastSessionAt: serializeAdminLastSession(user.authSessions),
       role: user.role,
-      ...(scimPendingProjectCounts.has(user.id)
-        ? { scimDeactivationPending: { projectCount: scimPendingProjectCounts.get(user.id)! } }
-        : {}),
       status: user.status,
       twoFactorEnabled: Boolean(user.authTotpFactor?.confirmedAt)
     };

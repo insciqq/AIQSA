@@ -782,8 +782,8 @@ describe("Workspace switch write-back at admission", () => {
     const tx = {
       $queryRaw: vi.fn(async () => [{ id: "user-1" }]),
       chat: {
-        findUnique: vi.fn(async () => ({ projectId: null, userId: "user-1" })),
-        findUniqueOrThrow: vi.fn(async () => ({ projectId: null, userId: "user-1" })),
+        findUnique: vi.fn(async () => ({ userId: "user-1" })),
+        findUniqueOrThrow: vi.fn(async () => ({ userId: "user-1" })),
         update: vi.fn(async (args: unknown) => { chatUpdates.push(args); return {}; })
       },
       modelRun: { count: vi.fn(async () => 0) },

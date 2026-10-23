@@ -9,7 +9,7 @@ const user = { email: "Pilot@Example.test", id: "user-1" };
 
 function prepared(overrides: Record<string, unknown> = {}, request: Record<string, unknown> = {}, adapterKind = "openai_responses_compatible") {
   return {
-    normalizedRequest: { knowledgePlan: { mode: "none" }, modelCapabilities: { toolCalling: true }, ...request },
+    normalizedRequest: { modelCapabilities: { toolCalling: true }, ...request },
     providerAdmissionPlan: { answer: { snapshot: { model: { adapterKind } } } },
     ...overrides
   } as unknown as MaterializedPreparedRunData;
@@ -72,9 +72,6 @@ describe("native engine routing", () => {
 
   it("keeps everything the native engine cannot run on the old core", () => {
     expect(route({ allowlist: parseNativeEngineUsers("") })).toEqual({ engine: "v1", reason: "not_listed" });
-    expect(route({ prepared: prepared({ project: {} }) })).toMatchObject({ reason: "project_chat" });
-    expect(route({ prepared: prepared({ assistant: {}, project: {} }) })).toMatchObject({ reason: "project_chat" });
-    expect(route({ prepared: prepared({}, { knowledgePlan: { mode: "auto" } }) })).toMatchObject({ reason: "knowledge" });
     expect(route({ prepared: prepared({}, {}, "openai_chat_completions_compatible") })).toMatchObject({ reason: "adapter_without_history" });
     expect(route({ prepared: prepared({}, { modelCapabilities: {} }) })).toMatchObject({ reason: "tool_calling_unverified" });
     expect(route({ prepared: prepared({ chatPdfAdmissions: [{ route: "prepared_text" }] }) })).toMatchObject({ reason: "deferred_preparation" });

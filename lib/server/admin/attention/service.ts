@@ -1,5 +1,4 @@
 import { adminMemoryProcessingCopy } from "../../../domain/adminMemoryProcessing";
-import { KNOWLEDGE_ENABLED } from "../../../domain/disabledAreas";
 import { formatEstimatedCostMicros } from "../../../domain/formatEstimatedCost";
 import { adminMemoryProcessingIssueKey } from "../../../contracts/adminMemory";
 import type { AdminDashboard } from "../../../contracts/admin";
@@ -8,7 +7,6 @@ import type {
   AdminAttentionItem,
   AdminAttentionSource
 } from "../../../contracts/adminAttention";
-import type { AdminKnowledgeSettings } from "../../../contracts/adminKnowledge";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
@@ -31,7 +29,6 @@ export type AdminAttentionUsageLimitsInput = Pick<AdminUsageLimits, "installatio
 export type AdminAttentionSources = Readonly<{
   dashboard(actingAdminUserId: string): Promise<AdminAttentionDashboardInput>;
   email(): Promise<AdminEmailState | null>;
-  knowledge(): Promise<AdminKnowledgeSettings>;
   mcp(actingAdminUserId: string): Promise<readonly AdminMcpServer[]>;
   memory(): Promise<AdminMemoryStatus>;
   providers(): Promise<readonly AdminProviderConnection[]>;
@@ -50,7 +47,6 @@ export type AdminAttentionInputs = Readonly<{
   actingAdminUserId: string;
   dashboard: AdminAttentionDashboardInput | null;
   email: AdminEmailState | null;
-  knowledge: AdminKnowledgeSettings | null;
   mcp: readonly AdminMcpServer[] | null;
   memory: AdminMemoryStatus | null;
   providers: readonly AdminProviderConnection[] | null;
@@ -331,85 +327,18 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
           "warn"
         )
       : null,
-    // Without a reranker only Knowledge answers lose ranking (Memory ranks with
-    // the System model), so a missing one matters only while Knowledge is on.
-    // An assigned reranker that is unavailable still breaks Memory ranking.
-    KNOWLEDGE_ENABLED || policy.rerankerModel
+    // Without a reranker Memory ranks with the System model, so a missing one
+    // needs nothing; an assigned reranker that is unavailable breaks Memory ranking.
+    policy.rerankerModel
       ? roleItem(
           "reranker",
           "Reranking",
           policy.rerankerModel,
-          "Knowledge answers use plain ranking until a reranker is assigned",
+          "Memory ranks with the System model until a reranker is assigned",
           "neutral"
         )
       : null
   ].filter((item): item is AdminAttentionItem => item !== null);
-}
-
-function knowledgeAlertLine(
-  code: AdminKnowledgeSettings["operations"]["alerts"][number]["code"],
-  operations: AdminKnowledgeSettings["operations"]
-): string {
-  switch (code) {
-    case "knowledge_deletion_backlog":
-      return `${plural(operations.deletion.pendingJobs, "deletion")} waiting`;
-    case "knowledge_deletion_blocked":
-      return `${plural(operations.deletion.blockedJobs, "deletion")} blocked`;
-    case "knowledge_ingestion_failures":
-      return `${plural(operations.ingestion.failedArtifacts, "document")} need reprocessing`;
-    case "knowledge_ingestion_queue_stalled":
-      return "document processing is stalled";
-    case "knowledge_object_deletion_stalled":
-      return `${plural(operations.deletion.unclaimedObjects, "file")} waiting for deletion`;
-    case "knowledge_retrieval_degraded":
-      return "retrieval was degraded in the last 24 hours";
-    case "knowledge_search_backend_unavailable":
-      return "the search backend is unavailable";
-    case "knowledge_search_projection_backlog":
-      return `${plural(operations.search.pendingProjections, "search projection")} waiting`;
-    case "knowledge_search_projection_failures":
-      return `${plural(operations.search.failedProjections, "search projection")} failed`;
-    case "knowledge_search_worker_unavailable":
-      return "the search worker is not running";
-    case "knowledge_upload_sessions_expired":
-      return `${plural(operations.ingestion.expiredUploads, "upload")} expired`;
-    case "knowledge_v1_reconciliation_incomplete":
-      return "an earlier data migration is incomplete";
-  }
-}
-
-function knowledgeItems(knowledge: AdminKnowledgeSettings): AdminAttentionItem[] {
-  const items: AdminAttentionItem[] = [];
-  const { operations, profile } = knowledge;
-  if (operations.alerts.length > 0) {
-    const failures = operations.alerts.some((alert) => alert.code === "knowledge_ingestion_failures");
-    items.push({
-      action: "Open Knowledge",
-      code: "knowledge_needs_attention",
-      count: operations.alerts.length,
-      detail: operations.alerts
-        .slice(0, 3)
-        .map((alert) => knowledgeAlertLine(alert.code, operations))
-        .join(" · "),
-      id: "knowledge_needs_attention",
-      severity: operations.alerts.some((alert) => alert.severity === "critical") ? "bad" : "warn",
-      target: { section: "retrieval" },
-      title: failures ? "Knowledge documents failed processing" : "Knowledge needs attention"
-    });
-  }
-  if (profile.migration.buildingProfileBases > 0) {
-    items.push({
-      action: "Open Knowledge",
-      code: "knowledge_reindexing",
-      count: profile.migration.buildingProfileBases,
-      detail: `${profile.migration.buildingProfileBases} of ${plural(profile.migration.totalBases, "base")} still reindexing`,
-      id: "knowledge_reindexing",
-      severity: "neutral",
-      target: { section: "retrieval" },
-      title: "Knowledge is reindexing"
-    });
-  }
-  return items;
 }
 
 function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
@@ -532,7 +461,6 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
     ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles).filter((item) =>
       item.target.resource !== "memory" || !inputs.memory?.processing.issues.some((issue) =>
         issue.stage === "LEARNING" && ["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"].includes(issue.reason))) : []),
-    ...(inputs.knowledge ? knowledgeItems(inputs.knowledge) : []),
     ...(inputs.memory ? memoryItems(inputs.memory) : []),
     ...(inputs.mcp ? mcpItems(inputs.mcp) : []),
     ...(inputs.email ? emailItems(inputs.email) : []),
@@ -565,13 +493,11 @@ export function createAdminAttentionService(input: Readonly<{
           return null;
         }
       }
-      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants, usageLimits, health, queues] = await Promise.all([
+      const [dashboard, providers, search, systemRoles, memory, mcp, email, skills, assistants, usageLimits, health, queues] = await Promise.all([
         load("dashboard", () => sources.dashboard(actingAdminUserId)),
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
         load("system_roles", () => sources.systemRoles()),
-        // Knowledge is disabled: its health is neither shown nor named as unavailable.
-        KNOWLEDGE_ENABLED ? load("knowledge", () => sources.knowledge()) : Promise.resolve(null),
         load("memory", () => sources.memory()),
         load("mcp", () => sources.mcp(actingAdminUserId)),
         load("email", () => sources.email()),
@@ -587,7 +513,6 @@ export function createAdminAttentionService(input: Readonly<{
           actingAdminUserId,
           dashboard,
           email,
-          knowledge,
           mcp,
           memory,
           providers,

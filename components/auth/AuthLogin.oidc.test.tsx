@@ -9,10 +9,10 @@ describe("AuthLogin with OIDC", () => {
   });
 
   it("offers the OIDC button with the administrator's label and the next path", () => {
-    render(<AuthLogin nextPath="/projects?tab=a" oauthProviders={["google", "oidc"]} oidcButtonLabel="Company SSO" />);
+    render(<AuthLogin nextPath="/c/chat-1?tab=a" oauthProviders={["google", "oidc"]} oidcButtonLabel="Company SSO" />);
 
     const link = screen.getByRole("link", { name: "Continue with Company SSO" });
-    expect(link).toHaveAttribute("href", "/api/auth/oauth/oidc?next=%2Fprojects%3Ftab%3Da");
+    expect(link).toHaveAttribute("href", "/api/auth/oauth/oidc?next=%2Fc%2Fchat-1%3Ftab%3Da");
     expect(link).toHaveTextContent(/^CContinue with Company SSO$/u);
     expect(screen.getByRole("link", { name: "Continue with Google" })).toBeInTheDocument();
   });

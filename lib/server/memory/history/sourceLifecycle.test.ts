@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  LockedMemorySourceChat,
   MemoryRetainedSourceMutationEvent,
   MemorySourceSnapshot
 } from "../sourceState";
@@ -33,7 +32,6 @@ function branchEvent(
     memoryMode: "NORMAL",
     memorySourceRevision: 1,
     messages: [],
-    projectId: null,
     sourceHash: "b".repeat(64),
     temporaryRetentionDeadline: null,
     temporaryRetentionPolicyVersion: null,
@@ -51,7 +49,6 @@ function branchEvent(
       memoryBranchGeneration: 0,
       memoryMode: snapshot.memoryMode,
       memorySourceRevision: 0,
-      projectId: snapshot.projectId,
       temporaryRetentionDeadline: null,
       temporaryRetentionPolicyVersion: null,
       userId: snapshot.userId
@@ -67,47 +64,6 @@ function checkpointTransaction(resumeCreatedAtCutoff: Date | null) {
   return { findUnique, tx, upsert };
 }
 
-function projectEvent(): MemoryRetainedSourceMutationEvent {
-  const snapshot: MemorySourceSnapshot = {
-    activeLeafMessageId: "assistant-1",
-    archived: false,
-    folderId: null,
-    id: "chat-project",
-    memoryBranchGeneration: 0,
-    memoryMode: "NORMAL",
-    memorySourceRevision: 1,
-    messages: [],
-    projectId: "project-1",
-    sourceHash: "a".repeat(64),
-    temporaryRetentionDeadline: null,
-    temporaryRetentionPolicyVersion: null,
-    userId: "owner-1"
-  };
-  const previous: LockedMemorySourceChat = {
-    activeLeafMessageId: snapshot.activeLeafMessageId,
-    archived: snapshot.archived,
-    folderId: snapshot.folderId,
-    id: snapshot.id,
-    memoryBranchGeneration: snapshot.memoryBranchGeneration,
-    memoryMode: snapshot.memoryMode,
-    memorySourceRevision: 0,
-    projectId: snapshot.projectId,
-    temporaryRetentionDeadline: snapshot.temporaryRetentionDeadline,
-    temporaryRetentionPolicyVersion: snapshot.temporaryRetentionPolicyVersion,
-    userId: snapshot.userId
-  };
-  return {
-    mutations: ["TERMINAL_SETTLEMENT"],
-    previous,
-    settlement: {
-      assistantMessageId: snapshot.activeLeafMessageId,
-      runId: "run-1",
-      status: "complete"
-    },
-    snapshot
-  };
-}
-
 function settledTurnEvent(): MemoryRetainedSourceMutationEvent {
   const snapshot: MemorySourceSnapshot = {
     activeLeafMessageId: "assistant-2",
@@ -118,7 +74,6 @@ function settledTurnEvent(): MemoryRetainedSourceMutationEvent {
     memoryMode: "NORMAL",
     memorySourceRevision: 4,
     messages: [],
-    projectId: null,
     sourceHash: "c".repeat(64),
     temporaryRetentionDeadline: null,
     temporaryRetentionPolicyVersion: null,
@@ -154,7 +109,6 @@ function branchPathChangeEvent(
     memoryMode: "NORMAL",
     memorySourceRevision: 9,
     messages: [],
-    projectId: null,
     sourceHash: "d".repeat(64),
     temporaryRetentionDeadline: null,
     temporaryRetentionPolicyVersion: null,
@@ -319,17 +273,6 @@ describe("memory history source lifecycle", () => {
     });
   });
 
-  it("does not read, write, or enqueue artifacts for project chats", async () => {
-    const tx = new Proxy({}, {
-      get() {
-        throw new Error("project_history_transaction_touched");
-      }
-    }) as MemoryTransaction;
-
-    await expect(applyMemoryHistorySourceMutation(tx, projectEvent()))
-      .resolves.toBeUndefined();
-  });
-
   it("seeds a Normal branch with its source chat's Resume cutoff", async () => {
     const cutoff = new Date("2026-09-20T10:00:00.000Z");
     const { findUnique, tx, upsert } = checkpointTransaction(cutoff);
@@ -366,7 +309,6 @@ describe("memory history source lifecycle", () => {
 
   it.each([
     ["an Excluded branch", branchEvent({ memoryMode: "EXCLUDED" })],
-    ["a Project branch", branchEvent({ projectId: "project-1" })],
     ["an ordinary append", branchEvent({}, null)]
   ])("does not touch checkpoints for %s", async (_label, event) => {
     await expect(inheritMemoryHistoryBranchResumeCutoff(untouchedTransaction, event))

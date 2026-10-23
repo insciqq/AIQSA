@@ -323,7 +323,7 @@ test("an Assistant chat runs on the native engine under the Assistant's own inst
   try {
     await withRolloutStand(page, testInfo, "native-rollout-assistant", async (stand) => {
       const token = codeWord("ADA-");
-      // The codex-lb model fixed, every other row the product's default for a new Assistant (tools, Search and Knowledge off).
+      // The codex-lb model fixed, every other row the product's default for a new Assistant (tools and Search off).
       const created = await page.request.post("/api/me/assistants", { data: {
         answerRules: null, avatar: e2eAssistantAvatar(), category: null, description: "", name: `Native rollout Ada ${assistants.suffix}`,
         responseReminder: "", rows: e2eAssistantRows(stand.model.modelId), starterPrompts: [],

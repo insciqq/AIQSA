@@ -19,7 +19,7 @@ export function createPrismaAttachmentLibraryRepository(
     async listSent({ cursor = null, limit, userId }) {
       const before = cursor ? await prismaClient.attachment.findFirst({
         select: { createdAt: true, id: true, savedAt: true },
-        where: { id: cursor, projectId: null, userId }
+        where: { id: cursor, userId }
       }) : null;
       if (cursor && !before) return [];
       return prismaClient.$queryRaw<AttachmentLibraryRecord[]>(Prisma.sql`
@@ -33,7 +33,6 @@ export function createPrismaAttachmentLibraryRepository(
             ON message."chatId" = chat."id"
             AND message."id" = chat."activeLeafMessageId"
           WHERE chat."userId" = ${userId}
-            AND chat."projectId" IS NULL
             AND chat."archived" = false
             AND chat."permanentDeletionAt" IS NULL
             AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
@@ -67,7 +66,6 @@ export function createPrismaAttachmentLibraryRepository(
         LEFT JOIN "Chat" AS chat
           ON chat."id" = attachment."chatId"
         WHERE attachment."userId" = ${userId}
-          AND attachment."projectId" IS NULL
           AND (attachment."savedAt" IS NOT NULL OR active_message."id" IS NOT NULL)
           ${before ? Prisma.sql`AND (
             (attachment."savedAt" IS NOT NULL)::int, COALESCE(attachment."savedAt", attachment."createdAt"), attachment."id"

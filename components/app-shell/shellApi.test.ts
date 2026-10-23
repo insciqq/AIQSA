@@ -258,14 +258,12 @@ describe("chat wire mapping", () => {
     expect(chatSummaryFromApi(detail)).toEqual({
       activeLeafMessageId: "message-cancelled",
       createdAt: "2026-07-12T00:00:00.000Z",
-      defaultKnowledgePlan: null,
       defaultModelId: "gpt-5.5",
       defaultProvider: "openai",
       folderId: null,
       id: "chat-1",
       messageCount: 2,
       pinned: false,
-      projectId: null,
       title: "Mapped chat",
       updatedAt: "2026-07-12T00:01:00.000Z",
       workspace: detail.workspace

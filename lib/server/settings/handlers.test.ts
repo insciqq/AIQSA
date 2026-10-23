@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { defaultProviderModels, defaultSearchStrategies } from "../../domain/catalog";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
@@ -10,15 +10,6 @@ import {
   type UserSettingsUpdate,
   type UserSettingsUpdateResult
 } from "./handlers";
-
-// The Knowledge default stays tested as it worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -348,7 +339,6 @@ describe("settings handler", () => {
       "defaultAssistantId",
       "defaultAssistantUnavailable",
       "defaultControlValues",
-      "defaultKnowledgePlan",
       "defaultMcpMode",
       "defaultSkillsMode",
       "defaultWorkspaceEnabled",
@@ -383,61 +373,33 @@ describe("settings handler", () => {
     }));
 
     const response = await send({
-      defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
       defaultMcpMode: "load_all",
       defaultSkillsMode: "off",
       sendWithEnter: false
     });
     expect(response.status).toBe(200);
     expect(captured).toEqual({
-      defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
       defaultMcpMode: "load_all",
       defaultSkillsMode: "off",
       sendWithEnter: false
     });
     await expect(response.json()).resolves.toMatchObject({
       settings: {
-        defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit" },
         defaultMcpMode: "load_all",
         defaultSkillsMode: "off",
         sendWithEnter: false
       }
     });
 
-    const cleared = await send({ defaultKnowledgePlan: null, defaultMcpMode: "auto", sendWithEnter: true });
+    const cleared = await send({ defaultMcpMode: "auto", sendWithEnter: true });
     expect(cleared.status).toBe(200);
-    expect(captured).toEqual({ defaultKnowledgePlan: null, defaultMcpMode: "auto", sendWithEnter: true });
+    expect(captured).toEqual({ defaultMcpMode: "auto", sendWithEnter: true });
 
     expect((await send({ defaultMcpMode: "always" })).status).toBe(400);
     expect((await send({ defaultSkillsMode: "always" })).status).toBe(400);
     expect((await send({ sendWithEnter: "yes" })).status).toBe(400);
-    expect((await send({
-      defaultKnowledgePlan: { baseIds: [], inheritedFrom: "project", mode: "inherited", sourceIds: [], version: 1 }
-    })).status).toBe(400);
-  });
-
-  it("refuses choosing a Knowledge default while Knowledge is disabled, still clears one and shows none", async () => {
-    areas.knowledge = false;
-    try {
-      const data = baseSettingsData();
-      const updateSettings = vi.fn(async (_userId: string, update: UserSettingsUpdate) =>
-        updated({ ...data.settings, ...update } as UserSettingsRecord));
-      const PATCH = createUpdateSettingsHandler({ resolveAuth: auth.resolveAuth, loadSettingsData: async () => data, updateSettings });
-      const send = (body: unknown) => PATCH(new Request("http://app.local/api/me/settings", {
-        body: JSON.stringify(body), headers: { cookie: authCookie() }, method: "PATCH"
-      }));
-
-      const refused = await send({ defaultKnowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 } });
-      expect(refused.status).toBe(409);
-      await expect(refused.json()).resolves.toEqual({ error: "knowledge_disabled" });
-      expect(updateSettings).not.toHaveBeenCalled();
-
-      const cleared = await send({ defaultKnowledgePlan: null });
-      expect(cleared.status).toBe(200);
-      await expect(cleared.json()).resolves.toMatchObject({ settings: { defaultKnowledgePlan: null } });
-    } finally {
-      areas.knowledge = true;
-    }
+    // Knowledge was removed: its old default is no longer a setting.
+    expect((await send({ defaultKnowledgePlan: null })).status).toBe(400);
   });
 
   it("persists the automatic review new chats start with, from the user's own tool-calling models only", async () => {

@@ -27,7 +27,7 @@ export const USAGE_CATEGORY_META: Record<AdminUsageCategory, Readonly<{
   chat: {
     color: "var(--v2-chart-1)",
     label: "Chats",
-    meaning: "Answers and Search in personal and Project chats"
+    meaning: "Answers and Search in chats"
   },
   scheduled: {
     color: "var(--v2-chart-2)",
@@ -42,7 +42,7 @@ export const USAGE_CATEGORY_META: Record<AdminUsageCategory, Readonly<{
   system: {
     color: "var(--v2-chart-4)",
     label: "System",
-    meaning: "Titles, summaries, Memory, Knowledge and checks by system models"
+    meaning: "Titles, summaries, Memory and checks by system models"
   }
 };
 

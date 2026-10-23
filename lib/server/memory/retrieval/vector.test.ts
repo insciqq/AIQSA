@@ -69,7 +69,7 @@ function hit(entryId: string): MemoryVectorHit {
 }
 
 describe("Memory vector lane orchestration", () => {
-  it("fences project history and same-conversation negative feedback in vector SQL", () => {
+  it("fences same-conversation negative feedback in vector SQL", () => {
     const chunkSql = memoryVectorCandidateSql({
       input: input(),
       itemType: "RECALL_CHUNK",
@@ -81,7 +81,6 @@ describe("Memory vector lane orchestration", () => {
       limit: 2
     }).strings.join("?");
 
-    expect(chunkSql).toContain('source_chat."projectId" IS NULL');
     expect(chunkSql).toContain('chunk."chunkingVersion" =');
     expect(chunkSql).toContain('chunk."sourceProjectionVersion" =');
     expect(chunkSql).toContain(
@@ -97,9 +96,7 @@ describe("Memory vector lane orchestration", () => {
     expect(chunkSql).toContain('negative_run."chatId" =');
     expect(factSql).toContain('negative_feedback."memoryFactVersionId" = version."id"');
     expect(factSql).not.toContain('version."sensitivityClass" <> \'SENSITIVE\'');
-    expect(factSql).toContain('evidence_chat."projectId" IS NULL');
     expect(factSql).toContain('evidence_chat."permanentDeletionAt" IS NULL');
-    expect(factSql).toContain('current_chat."projectId" IS NULL');
     expect(factSql).toContain('current_chat."permanentDeletionAt" IS NULL');
     expect(factSql).toContain('current_chat."memoryMode" IN');
     expect(factSql).toContain("'EXCLUDED'::\"MemoryChatMode\"");

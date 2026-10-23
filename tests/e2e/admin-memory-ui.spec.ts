@@ -3,7 +3,6 @@ import { expect, test } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminMemoryStatusResponse } from "../../lib/contracts/adminMemory";
 import { adminMemoryProcessingCopy } from "../../lib/domain/adminMemoryProcessing";
-import { adminKnowledgeSettingsFixture } from "../support/knowledgeProfile";
 import {
   expectNoHorizontalOverflow,
   expectTouchSafe
@@ -27,7 +26,6 @@ test("Memory card lists recent command, search and preparation failures as neutr
       { stage: "PREPARATION", reason: "PREPARATION_SKIPPED", count: 4, oldestAgeSeconds: 5400, severity: "warn" }
     ] } };
   await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
-  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
   await page.route("**/api/admin/memory", (route) => route.fulfill({ json: { memory } }));
   await signInWithLocalToken(page);
   await page.goto("/admin?section=retrieval");
@@ -67,7 +65,6 @@ test("Memory recovery distinguishes stalled and stopped workers across responsiv
       protected: 2, permanent: 1, obsolete: 3 }) };
   const bodies: unknown[] = [];
   await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
-  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
   await page.route("**/api/admin/memory", async (route) => {
     if (unavailable) return route.fulfill({ status: 503, json: { error: "memory_admin_status_failed" } });
     if (route.request().method() === "POST") {
@@ -149,7 +146,6 @@ test("Overview observes blocked learning and recovery in the background, retains
     queue: { inProgress: 0, length: blocked ? 3 : 0, oldestAgeSeconds: blocked ? 1865 : null }
   } });
   await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
-  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
   await page.route("**/api/admin/memory", (route) => route.fulfill({ json: status() }));
   await page.route("**/api/admin/attention", (route) => {
     reads += 1;
@@ -267,9 +263,6 @@ test("administrator sees minimal Memory runtime status and starts a bounded rebu
   await page.route("**/api/admin/release", async (route) => {
     await route.fulfill({ contentType: "application/json", json: { state: "unavailable" } });
   });
-  await page.route("**/api/admin/knowledge", async (route) => {
-    await route.fulfill({ contentType: "application/json", json: { knowledge: adminKnowledgeSettingsFixture() } });
-  });
   await page.route("**/api/admin/memory", async (route) => {
     if (route.request().method() === "POST") {
       rebuildBodies.push(route.request().postDataJSON());
@@ -290,7 +283,7 @@ test("administrator sees minimal Memory runtime status and starts a bounded rebu
   });
 
   await signInWithLocalToken(page);
-  // The retired `memory` section id still lands on Knowledge & Memory.
+  // The retired `memory` section id still lands on the Memory section.
   await page.goto("/admin?section=memory");
   await expect(page).toHaveURL(/section=retrieval/u);
 

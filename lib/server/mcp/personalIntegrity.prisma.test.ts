@@ -15,7 +15,6 @@ import { listAdminDashboard } from "../auth/adminDashboardQueries";
 import { createPrismaAdminRepository } from "../auth/adminRepository";
 import { ensureFullAccessGroup } from "../auth/fullAccessGroup";
 import type { RequestAuthResolver } from "../auth/requestAuth";
-import { knowledgeObservationOwner } from "../knowledge/observationOwner";
 import { prisma } from "../prisma";
 import { createToolObservationRepository } from "../toolObservations/repository";
 import { createToolObservationService } from "../toolObservations/service";
@@ -42,7 +41,6 @@ const owned = {
   chats: [] as string[],
   clients: [] as string[],
   groups: [] as string[],
-  projects: [] as string[],
   servers: [] as string[],
   users: [] as string[]
 };
@@ -94,11 +92,9 @@ afterEach(async () => {
     { revision: { serverId: { in: serverIds } } },
     { userServer: { serverId: { in: serverIds } } }
   ] } });
-  await prisma.projectMcpBinding.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpRevision.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpServer.deleteMany({ where: { id: { in: serverIds } } });
   await prisma.mcpOAuthClient.deleteMany({ where: { id: { in: owned.clients.splice(0) } } });
-  await prisma.project.deleteMany({ where: { id: { in: owned.projects.splice(0) } } });
   await prisma.group.deleteMany({ where: { id: { in: owned.groups.splice(0) } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 });
@@ -316,13 +312,6 @@ describe("personal MCP tenant fence", () => {
     const serverId = await personalServer(ownerId);
     const group = await prisma.group.create({ data: { name: `Integrity fence ${randomUUID()}` } });
     owned.groups.push(group.id);
-    const project = await prisma.project.create({ data: {
-      createdByDisplayName: "Personal MCP integrity fixture",
-      createdByUserId: ownerId,
-      grants: { create: { role: "OWNER", userId: ownerId } },
-      name: "Personal MCP integrity fixture"
-    } });
-    owned.projects.push(project.id);
 
     await expectRejected((tx) => tx.mcpUserServer.create({ data: { serverId, userId: otherId } }), boundary);
     await expectRejected((tx) => tx.mcpOAuthConnection.create({ data: {
@@ -330,8 +319,6 @@ describe("personal MCP tenant fence", () => {
     } }), boundary);
     await expectRejected((tx) => tx.mcpGrant.create({ data: { canUse: true, serverId, userId: otherId } }), boundary);
     await expectRejected((tx) => tx.mcpGrant.create({ data: { canUse: true, groupId: group.id, serverId } }), boundary);
-    await expectRejected((tx) => tx.projectMcpBinding.create({ data: { projectId: project.id, serverId } }), boundary);
-    await expectRejected((tx) => tx.mcpSharedRuntime.create({ data: { serverId } }), boundary);
     await expectRejected((tx) => tx.mcpToolAccessPolicy.create({ data: { serverId, toolName: "read" } }), boundary);
     await expectRejected((tx) => tx.mcpActivationJob.create({ data: {
       draftHash: "integrity-fence", serverId, sharedConfigVersion: 0
@@ -350,7 +337,6 @@ describe("personal MCP tenant fence", () => {
     await prisma.mcpOAuthConnection.create({ data: { policyFingerprint: "integrity-owner", purpose: "user", serverId, userId: ownerId } });
     await prisma.mcpServer.update({ data: { ownerUserId: ownerId }, where: { id: serverId } });
     await prisma.mcpToolAccessPolicy.create({ data: { serverId: installationId, toolName: "read" } });
-    await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: installationId } });
     expect(await prisma.mcpGrant.count({ where: { serverId, OR: [{ groupId: { not: null } }, { userId: { not: ownerId } }] } })).toBe(0);
   });
 
@@ -359,17 +345,8 @@ describe("personal MCP tenant fence", () => {
     const otherId = await user();
     const personalId = await personalServer(ownerId);
     const installationId = await installationServer(otherId);
-    const project = await prisma.project.create({ data: {
-      createdByDisplayName: "Personal MCP integrity fixture",
-      createdByUserId: otherId,
-      grants: { create: { role: "OWNER", userId: otherId } },
-      name: "Personal MCP integrity move fixture"
-    } });
-    owned.projects.push(project.id);
     const grant = await prisma.mcpGrant.findFirstOrThrow({ where: { serverId: installationId, userId: otherId } });
     const policy = await prisma.mcpToolAccessPolicy.create({ data: { serverId: installationId, toolName: "read" } });
-    await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: installationId } });
-    await prisma.mcpSharedRuntime.create({ data: { serverId: installationId } });
     const job = await prisma.mcpActivationJob.create({ data: {
       draftHash: "integrity-move", serverId: installationId, sharedConfigVersion: 0
     } });
@@ -380,10 +357,6 @@ describe("personal MCP tenant fence", () => {
 
     await expectRejected((tx) => tx.mcpGrant.update({ data: { serverId: personalId }, where: { id: grant.id } }), boundary);
     await expectRejected((tx) => tx.mcpToolAccessPolicy.update({ data: { serverId: personalId }, where: { id: policy.id } }), boundary);
-    await expectRejected((tx) => tx.projectMcpBinding.update({
-      data: { serverId: personalId }, where: { projectId_serverId: { projectId: project.id, serverId: installationId } }
-    }), boundary);
-    await expectRejected((tx) => tx.mcpSharedRuntime.update({ data: { serverId: personalId }, where: { serverId: installationId } }), boundary);
     await expectRejected((tx) => tx.mcpActivationJob.update({ data: { serverId: personalId }, where: { id: job.id } }), boundary);
     await expectRejected((tx) => tx.mcpUserServer.update({ data: { serverId: personalId }, where: { id: preference.id } }), boundary);
     await expectRejected((tx) => tx.mcpOAuthConnection.update({ data: { serverId: personalId }, where: { id: connection.id } }), boundary);
@@ -393,7 +366,6 @@ describe("personal MCP tenant fence", () => {
       .toEqual([{ groupId: null, userId: ownerId }]);
     expect(await prisma.mcpUserServer.count({ where: { serverId: personalId, userId: { not: ownerId } } })).toBe(0);
     expect(await prisma.mcpToolAccessPolicy.count({ where: { serverId: personalId } })).toBe(0);
-    expect(await prisma.projectMcpBinding.count({ where: { serverId: personalId } })).toBe(0);
   });
 });
 
@@ -765,7 +737,7 @@ describe("personal MCP tool observations", () => {
       roundIndex: 1, state: "running", toolName: name
     } });
     const service = createToolObservationService({
-      repository: createToolObservationRepository({ prisma, ...createObservationSourceOwners(knowledgeObservationOwner) }),
+      repository: createToolObservationRepository({ prisma, ...createObservationSourceOwners() }),
       storage: createMemoryStorageAdapter()
     });
     const actor = { runId: run.id, userId: ownerId };

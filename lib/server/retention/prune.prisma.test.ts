@@ -4,7 +4,6 @@ import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaChatRepository, summarizeMessageRunArtifacts, summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
-import { createPrismaKnowledgeUploadRepository } from "../knowledge/uploadRepository";
 import { prisma } from "../prisma";
 import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
 import { projectRunOutputArtifactEvent, type RunOutputArtifactEvent } from "../runs/runOutputEvents";
@@ -324,7 +323,7 @@ describe("Prisma attachment retention outbox", () => {
     }
   });
 
-  it("releases expired Knowledge upload authority while preserving an independently retryable receipt", async () => {
+  it("releases the upload authority of expired Knowledge uploads left from before Knowledge was removed", async () => {
     const user = await createUser();
     const fixture = await createKnowledgePayloadFixture(
       user.id,
@@ -381,8 +380,7 @@ describe("Prisma attachment retention outbox", () => {
         },
         knowledgeBaseId: fixture.base.id,
         ownerUserId: user.id
-      },
-      include: { items: true }
+      }
     });
     const repository = createPrismaRetentionRepository(prisma);
     const cutoff = new Date("2000-02-01T00:00:00.000Z");
@@ -453,24 +451,6 @@ describe("Prisma attachment retention outbox", () => {
         { multipartUploadId: "retention-multipart-id", storageKey: multipartKey },
         { multipartUploadId: null, storageKey: proxyKey }
       ]);
-
-      const proxyItem = batch.items.find(({ clientFileId }) => clientFileId === "proxy-old")!;
-      await expect(createPrismaKnowledgeUploadRepository(prisma).retry({
-        attemptNumber: proxyItem.attemptNumber,
-        batchId: batch.id,
-        itemId: proxyItem.id,
-        knowledgeBaseId: fixture.base.id,
-        multipartUploadId: null,
-        now: retentionNow,
-        parts: [],
-        sessionExpiresAt: new Date("2100-01-01T00:00:00.000Z"),
-        storageKey: `retention/upload-proxy-retry-${randomUUID()}`,
-        transport: "PROXY",
-        userId: user.id
-      })).resolves.toMatchObject({
-        cleanup: { multipartUploadId: null, storageKey: null, transport: "PROXY" },
-        kind: "ok"
-      });
     } finally {
       await prisma.knowledgeUploadBatch.deleteMany({ where: { id: batch.id } });
       await prisma.attachmentDeletionJob.deleteMany({

@@ -29,14 +29,13 @@ import {
 } from "./chatRoute";
 import {
   composerSessionKey,
-  projectComposerSessionKey,
   useComposerSessionStore
 } from "./composerSessionStore";
 import { useRunLifecycleStore } from "./runLifecycleStore";
 import type { WorkspaceChatSummary } from "./types";
 import { useWorkspaceStore } from "./workspaceStore";
 
-const BLANK: ChatRoute = { chatId: null, projectId: null };
+const BLANK: ChatRoute = { chatId: null };
 const address = () => `${window.location.pathname}${window.location.search}${window.location.hash}`;
 
 function summary(input: Partial<WorkspaceChatSummary> & { id: string }): WorkspaceChatSummary {
@@ -48,7 +47,6 @@ function summary(input: Partial<WorkspaceChatSummary> & { id: string }): Workspa
     folderId: null,
     messageCount: 0,
     pinned: false,
-    projectId: null,
     title: "Chat",
     updatedAt: "2026-09-26T00:00:00.000Z",
     ...input
@@ -61,11 +59,7 @@ function targets(overrides: Partial<ChatRouteTargets> = {}) {
     openAssistant: vi.fn(async (_assistantId: string | null) => "opened" as const),
     openBlank: vi.fn(() => { state = BLANK; }),
     openChat: vi.fn(async (chatId: string) => {
-      state = { chatId, projectId: null };
-      return "opened" as const;
-    }),
-    openProject: vi.fn(async (projectId: string, chatId: string | null) => {
-      state = { chatId, projectId };
+      state = { chatId };
       return "opened" as const;
     }),
     showUnavailable: vi.fn(),
@@ -88,21 +82,21 @@ afterEach(() => {
 describe("chat route writer", () => {
   it("replaces the address for state-owner writes and keeps history length", () => {
     const length = window.history.length;
-    writeChatRoute({ chatId: "chat-1", projectId: null });
+    writeChatRoute({ chatId: "chat-1" });
     expect(address()).toBe("/c/chat-1");
-    writeChatRoute({ chatId: "chat-2", projectId: "project-1" });
-    expect(address()).toBe("/p/project-1/c/chat-2");
+    writeChatRoute({ chatId: "chat-2" });
+    expect(address()).toBe("/c/chat-2");
     writeChatRoute(BLANK);
     expect(address()).toBe("/");
     expect(window.history.length).toBe(length);
   });
 
   it("pushes one entry for an explicit navigation, whatever it writes on the way", () => {
-    window.history.replaceState(null, "", "/p/project-1/c/chat-1");
+    window.history.replaceState(null, "", "/c/chat-1");
     const push = vi.spyOn(window.history, "pushState");
     const result = navigateChatRoute(() => {
       writeChatRoute(BLANK);
-      navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+      navigateChatRoute(() => writeChatRoute({ chatId: "chat-2" }));
       return "done";
     });
     expect(result).toBe("done");
@@ -110,43 +104,43 @@ describe("chat route writer", () => {
     expect(address()).toBe("/c/chat-2");
 
     push.mockClear();
-    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2" }));
     navigateChatRoute(() => undefined);
     expect(push).not.toHaveBeenCalled();
   });
 
   it("carries unconsumed parameters for the same chat and drops chat-scoped ones for another", () => {
     window.history.replaceState(null, "", "/c/chat-1?message=m1&library=mcp&chat=legacy#answer");
-    writeChatRoute({ chatId: "chat-1", projectId: "project-1" });
-    expect(address()).toBe("/p/project-1/c/chat-1?message=m1&library=mcp");
+    writeChatRoute({ chatId: "chat-1" });
+    expect(address()).toBe("/c/chat-1?message=m1&library=mcp#answer");
     window.history.replaceState(null, "", "/c/chat-1?message=m1&artifactEdit=edit&artifactId=a&versionId=v&oauth=connected#answer");
-    writeChatRoute({ chatId: "chat-2", projectId: null });
+    writeChatRoute({ chatId: "chat-2" });
     expect(address()).toBe("/c/chat-2?oauth=connected");
   });
 
   it("never rewrites a page outside the chat routes", () => {
     window.history.replaceState(null, "", "/artifacts/artifact/versions/version");
-    writeChatRoute({ chatId: "chat-1", projectId: null });
+    writeChatRoute({ chatId: "chat-1" });
     navigateChatRoute(() => writeChatRoute(BLANK));
     expect(address()).toBe("/artifacts/artifact/versions/version");
   });
 
   it("holds the address while it is resolved and settles once on the resulting route", () => {
-    window.history.replaceState(null, "", "/p/project-1/c/chat-1?message=m1");
+    window.history.replaceState(null, "", "/c/chat-1?message=m1");
     const resolution = beginChatRouteResolution();
     writeChatRoute(BLANK);
-    writeChatRoute({ chatId: null, projectId: "project-1" });
-    expect(address()).toBe("/p/project-1/c/chat-1?message=m1");
-    expect(settleChatRouteResolution(resolution, { chatId: "chat-1", projectId: "project-1" })).toBe(true);
-    expect(address()).toBe("/p/project-1/c/chat-1?message=m1");
+    writeChatRoute({ chatId: "chat-2" });
+    expect(address()).toBe("/c/chat-1?message=m1");
+    expect(settleChatRouteResolution(resolution, { chatId: "chat-1" })).toBe(true);
+    expect(address()).toBe("/c/chat-1?message=m1");
     expect(settleChatRouteResolution(resolution, BLANK)).toBe(false);
-    expect(address()).toBe("/p/project-1/c/chat-1?message=m1");
+    expect(address()).toBe("/c/chat-1?message=m1");
   });
 
   it("lets explicit navigation supersede a pending resolution", () => {
     window.history.replaceState(null, "", "/c/chat-1");
     const resolution = beginChatRouteResolution();
-    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2" }));
     expect(isCurrentChatRouteResolution(resolution)).toBe(false);
     expect(address()).toBe("/c/chat-2");
     expect(settleChatRouteResolution(resolution, BLANK)).toBe(false);
@@ -158,21 +152,17 @@ describe("chat routes of state", () => {
   it("keeps an unsent draft on its blank route until its first send is under way", () => {
     const draft = summary({ id: "draft-1", pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" } });
     expect(chatRouteForChat(draft, false)).toEqual(BLANK);
-    expect(chatRouteForChat(draft, true)).toEqual({ chatId: "draft-1", projectId: null });
-    const projectDraft = summary({ id: "draft-2", pendingProjectDraft: { folderId: null, projectId: "project-1" }, projectId: "project-1" });
-    expect(chatRouteForChat(projectDraft, false)).toEqual({ chatId: null, projectId: "project-1" });
-    expect(chatRouteForChat(projectDraft, true)).toEqual({ chatId: "draft-2", projectId: "project-1" });
-    expect(chatRouteForChat(summary({ id: "chat-1", projectId: "project-1" }), false))
-      .toEqual({ chatId: "chat-1", projectId: "project-1" });
+    expect(chatRouteForChat(draft, true)).toEqual({ chatId: "draft-1" });
+    expect(chatRouteForChat(summary({ id: "chat-1" }), false)).toEqual({ chatId: "chat-1" });
   });
 
   it("derives the shown route from the workspace and composer owners", () => {
     expect(chatRouteForState()).toEqual(BLANK);
-    useComposerSessionStore.getState().activateSession(projectComposerSessionKey("project-1"));
-    expect(chatRouteForState()).toEqual({ chatId: null, projectId: "project-1" });
-    useWorkspaceStore.setState({ activeChatId: "chat-1", chats: [summary({ id: "chat-1", projectId: "project-1" })] });
+    useComposerSessionStore.getState().activateSession(composerSessionKey(null, "folder-1"));
+    expect(chatRouteForState()).toEqual(BLANK);
+    useWorkspaceStore.setState({ activeChatId: "chat-1", chats: [summary({ id: "chat-1" })] });
     useComposerSessionStore.getState().activateSession(composerSessionKey("chat-1"));
-    expect(chatRouteForState()).toEqual({ chatId: "chat-1", projectId: "project-1" });
+    expect(chatRouteForState()).toEqual({ chatId: "chat-1" });
   });
 
   it("counts an answer stream without a composer send, such as an Assistant starter prompt", () => {
@@ -206,18 +196,13 @@ describe("the shown chat's own route", () => {
   });
 
   it("returns a failed first send to the blank route it came from", () => {
-    const draft = summary({
-      id: "draft-2",
-      pendingProjectDraft: { folderId: null, projectId: "project-1" },
-      projectId: "project-1"
-    });
+    const draft = summary({ id: "draft-2", pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" } });
     showDraft(draft);
-    window.history.replaceState(null, "", "/p/project-1");
     renderHook(() => useShownChatRoute());
     act(() => useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-2", chatId: "draft-2" }));
-    expect(address()).toBe("/p/project-1/c/draft-2");
+    expect(address()).toBe("/c/draft-2");
     act(() => useRunLifecycleStore.getState().streamFinished({ chatId: "draft-2" }));
-    expect(address()).toBe("/p/project-1");
+    expect(address()).toBe("/");
   });
 
   it("leaves the address alone while it is being resolved", () => {
@@ -235,15 +220,15 @@ describe("resolving an address", () => {
     window.history.replaceState(null, "", "/c/chat-1");
     const fake = targets();
     const resolution = beginChatRouteResolution();
-    await expect(resolveChatRoute({ chatId: "chat-1", projectId: null }, resolution, fake))
-      .resolves.toEqual({ chatId: "chat-1", projectId: null });
+    await expect(resolveChatRoute({ chatId: "chat-1" }, resolution, fake))
+      .resolves.toEqual({ chatId: "chat-1" });
     expect(fake.showUnavailable).not.toHaveBeenCalled();
     expect(isCurrentChatRouteResolution(resolution)).toBe(false);
     expect(address()).toBe("/c/chat-1");
   });
 
   it("shows one privacy-neutral notice for missing, foreign and malformed chats and lands on the new chat", async () => {
-    for (const [route, pathname] of [[{ chatId: "gone", projectId: null }, "/c/gone?message=m"], [null, "/c/%00"]] as const) {
+    for (const [route, pathname] of [[{ chatId: "gone" }, "/c/gone?message=m"], [null, "/c/%00"]] as const) {
       window.history.replaceState(null, "", pathname);
       const fake = targets({ openChat: vi.fn(async () => "missing" as const) });
       await resolveChatRoute(route, beginChatRouteResolution(), fake);
@@ -259,7 +244,7 @@ describe("resolving an address", () => {
     const push = vi.spyOn(window.history, "pushState");
     const replace = vi.spyOn(window.history, "replaceState");
     const fake = targets({ openChat: vi.fn(async () => "missing" as const) });
-    await resolveChatRoute({ chatId: "gone", projectId: null }, beginChatRouteResolution(), fake);
+    await resolveChatRoute({ chatId: "gone" }, beginChatRouteResolution(), fake);
     expect(replace).toHaveBeenCalledExactlyOnceWith(null, "", "/");
     expect(push).not.toHaveBeenCalled();
     expect(window.history.length).toBe(length);
@@ -270,47 +255,10 @@ describe("resolving an address", () => {
     window.history.replaceState(null, "", "/c/chat-1");
     const fake = targets({ openChat: vi.fn(async () => "failed" as const) });
     const resolution = beginChatRouteResolution();
-    await expect(resolveChatRoute({ chatId: "chat-1", projectId: null }, resolution, fake)).resolves.toBeNull();
+    await expect(resolveChatRoute({ chatId: "chat-1" }, resolution, fake)).resolves.toBeNull();
     expect(fake.showUnavailable).not.toHaveBeenCalled();
     expect(isCurrentChatRouteResolution(resolution)).toBe(false);
     expect(address()).toBe("/c/chat-1");
-  });
-
-  it("moves a readable Project chat to its Project address", async () => {
-    window.history.replaceState(null, "", "/c/chat-1?message=m1");
-    const fake = targets({ openChat: vi.fn(async () => ({ projectId: "project-1" })) });
-    await resolveChatRoute({ chatId: "chat-1", projectId: null }, beginChatRouteResolution(), fake);
-    expect(fake.openProject).toHaveBeenCalledExactlyOnceWith("project-1", "chat-1");
-    expect(fake.showUnavailable).not.toHaveBeenCalled();
-    expect(address()).toBe("/p/project-1/c/chat-1?message=m1");
-  });
-
-  it("keeps an accessible Project open when its chat is unavailable", async () => {
-    window.history.replaceState(null, "", "/p/project-1/c/other");
-    let shown: ChatRoute = BLANK;
-    const fake = targets({
-      openProject: vi.fn(async (projectId: string) => {
-        shown = { chatId: null, projectId };
-        return "project" as const;
-      }),
-      stateRoute: () => shown
-    });
-    await resolveChatRoute({ chatId: "other", projectId: "project-1" }, beginChatRouteResolution(), fake);
-    expect(fake.showUnavailable).toHaveBeenCalledExactlyOnceWith("projectChat");
-    expect(fake.openBlank).not.toHaveBeenCalled();
-    expect(address()).toBe("/p/project-1");
-  });
-
-  it.each([
-    [{ chatId: "chat-1", projectId: "project-1" }, "projectChat"],
-    [{ chatId: null, projectId: "project-1" }, "project"]
-  ] as const)("falls back to the new chat when the Project is unavailable", async (route, notice) => {
-    window.history.replaceState(null, "", route.chatId ? "/p/project-1/c/chat-1" : "/p/project-1");
-    const fake = targets({ openProject: vi.fn(async () => "unavailable" as const) });
-    await resolveChatRoute(route, beginChatRouteResolution(), fake);
-    expect(fake.openBlank).toHaveBeenCalledOnce();
-    expect(fake.showUnavailable).toHaveBeenCalledExactlyOnceWith(notice);
-    expect(address()).toBe("/");
   });
 
   it("opens an Assistant entry on the new chat and replaces the entry address with it", async () => {
@@ -348,7 +296,7 @@ describe("resolving an address", () => {
     let finish!: (outcome: "unavailable") => void;
     const fake = targets({ openAssistant: vi.fn(() => new Promise<"unavailable">((resolve) => { finish = resolve; })) });
     const pending = resolveChatRoute({ assistantId: "assistant-1" }, beginChatRouteResolution(), fake);
-    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2" }));
     finish("unavailable");
     await expect(pending).resolves.toBeNull();
     expect(fake.showUnavailable).not.toHaveBeenCalled();
@@ -359,8 +307,8 @@ describe("resolving an address", () => {
     window.history.replaceState(null, "", "/c/chat-1");
     let finish!: (outcome: "missing") => void;
     const fake = targets({ openChat: vi.fn(() => new Promise<"missing">((resolve) => { finish = resolve; })) });
-    const pending = resolveChatRoute({ chatId: "chat-1", projectId: null }, beginChatRouteResolution(), fake);
-    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    const pending = resolveChatRoute({ chatId: "chat-1" }, beginChatRouteResolution(), fake);
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2" }));
     finish("missing");
     await expect(pending).resolves.toBeNull();
     expect(fake.openBlank).not.toHaveBeenCalled();
@@ -382,13 +330,13 @@ describe("navigating to an address the shell cannot activate yet", () => {
       }),
       openChat: vi.fn(async (chatId: string) => {
         await listLoaded;
-        shown = { chatId, projectId: null };
+        shown = { chatId };
         return "opened" as const;
       }),
       stateRoute: vi.fn(() => shown)
     });
     let pending: Promise<ChatRoute | null> | null = null;
-    navigateToChatAddress({ chatId: "chat-1", projectId: null }, (route, resolution) => {
+    navigateToChatAddress({ chatId: "chat-1" }, (route, resolution) => {
       // An owner writing the blank route on the way never wins over the choice.
       fake.openBlank();
       pending = resolveChatRoute(route, resolution, fake);
@@ -396,7 +344,7 @@ describe("navigating to an address the shell cannot activate yet", () => {
     expect(push).toHaveBeenCalledExactlyOnceWith(null, "", "/c/chat-1");
     expect(address()).toBe("/c/chat-1");
     release();
-    await expect(pending).resolves.toEqual({ chatId: "chat-1", projectId: null });
+    await expect(pending).resolves.toEqual({ chatId: "chat-1" });
     expect(fake.openChat).toHaveBeenCalledExactlyOnceWith("chat-1");
     expect(push).toHaveBeenCalledOnce();
     expect(address()).toBe("/c/chat-1");
@@ -412,10 +360,10 @@ describe("navigating to an address the shell cannot activate yet", () => {
       })
     });
     let pending: Promise<ChatRoute | null> | null = null;
-    navigateToChatAddress({ chatId: "chat-1", projectId: null }, (route, resolution) => {
+    navigateToChatAddress({ chatId: "chat-1" }, (route, resolution) => {
       pending = resolveChatRoute(route, resolution, fake);
     });
-    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2" }));
     release();
     await expect(pending).resolves.toBeNull();
     expect(fake.openBlank).not.toHaveBeenCalled();
@@ -429,7 +377,7 @@ describe("starting a chat with an Assistant from inside the shell", () => {
     window.history.replaceState(null, "", "/c/chat-1");
     const push = vi.spyOn(window.history, "pushState");
     const replace = vi.spyOn(window.history, "replaceState");
-    let shown: ChatRoute = { chatId: "chat-1", projectId: null };
+    let shown: ChatRoute = { chatId: "chat-1" };
     let release!: () => void;
     const assistantResolved = new Promise<void>((resolve) => { release = resolve; });
     const fake = targets({
@@ -488,17 +436,18 @@ describe("browser history", () => {
   }
 
   it("resolves a traversed chat route once, even under Strict Mode", () => {
-    const { resolve } = renderHistory({ currentRoute: () => ({ chatId: "chat-2", projectId: null }), requestNavigation: (proceed) => proceed() });
+    const { resolve } = renderHistory({ currentRoute: () => ({ chatId: "chat-2" }), requestNavigation: (proceed) => proceed() });
     traverse("/c/chat-1");
     expect(resolve).toHaveBeenCalledOnce();
     const [route, resolution] = resolve.mock.calls[0]!;
-    expect(route).toEqual({ chatId: "chat-1", projectId: null });
+    expect(route).toEqual({ chatId: "chat-1" });
     expect(isCurrentChatRouteResolution(resolution)).toBe(true);
+    // An address of the removed Projects is not a chat route.
     traverse("/p/project-1");
-    expect(resolve.mock.calls[1]![0]).toEqual({ chatId: null, projectId: "project-1" });
-    expect(isCurrentChatRouteResolution(resolution)).toBe(false);
+    expect(resolve).toHaveBeenCalledOnce();
     traverse("/c/%00");
-    expect(resolve.mock.calls[2]![0]).toBeNull();
+    expect(resolve.mock.calls[1]![0]).toBeNull();
+    expect(isCurrentChatRouteResolution(resolution)).toBe(false);
   });
 
   it("resolves a traversed Assistant entry, even from the new chat it settles on", () => {
@@ -511,7 +460,7 @@ describe("browser history", () => {
   it("adds the new chat, not the entry address, when a confirmation releases a traversed entry", () => {
     let release!: () => void;
     const { resolve } = renderHistory({
-      currentRoute: () => ({ chatId: "chat-2", projectId: null }),
+      currentRoute: () => ({ chatId: "chat-2" }),
       requestNavigation: (proceed) => { release = proceed; }
     });
     traverse("/assistant/assistant-1");
@@ -522,7 +471,7 @@ describe("browser history", () => {
   });
 
   it("ignores traversals that keep the shown route or leave the chat pages", () => {
-    const { resolve } = renderHistory({ currentRoute: () => ({ chatId: "chat-1", projectId: null }), requestNavigation: (proceed) => proceed() });
+    const { resolve } = renderHistory({ currentRoute: () => ({ chatId: "chat-1" }), requestNavigation: (proceed) => proceed() });
     traverse("/c/chat-1?message=m1");
     traverse("/artifacts/artifact/versions/version");
     expect(resolve).not.toHaveBeenCalled();
@@ -530,7 +479,7 @@ describe("browser history", () => {
 
   it("puts the shown route back when a guard blocks the traversal", () => {
     const push = vi.spyOn(window.history, "pushState");
-    const { resolve } = renderHistory({ currentRoute: () => ({ chatId: "chat-2", projectId: null }), requestNavigation: () => undefined });
+    const { resolve } = renderHistory({ currentRoute: () => ({ chatId: "chat-2" }), requestNavigation: () => undefined });
     traverse("/c/chat-1");
     expect(resolve).not.toHaveBeenCalled();
     expect(push).toHaveBeenCalledExactlyOnceWith(null, "", "/c/chat-2");
@@ -540,7 +489,7 @@ describe("browser history", () => {
   it("adds the traversed route as a new entry when a confirmation releases it later", () => {
     let release!: () => void;
     const { resolve } = renderHistory({
-      currentRoute: () => ({ chatId: "chat-2", projectId: null }),
+      currentRoute: () => ({ chatId: "chat-2" }),
       requestNavigation: (proceed) => { release = proceed; }
     });
     traverse("/c/chat-1");
@@ -549,7 +498,7 @@ describe("browser history", () => {
     release();
     release();
     expect(push).toHaveBeenCalledExactlyOnceWith(null, "", "/c/chat-1");
-    expect(resolve).toHaveBeenCalledExactlyOnceWith({ chatId: "chat-1", projectId: null }, expect.anything());
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({ chatId: "chat-1" }, expect.anything());
   });
 
   it("stops following history after unmount", () => {
@@ -573,8 +522,8 @@ describe("links that return to the shown chat", () => {
     window.history.replaceState(null, "", "/c/chat-1");
     const { result } = renderHook(() => ({ href: useControlCenterHref(), path: useChatRoutePath() }));
     expect(result.current).toEqual({ href: "/admin?return=%2Fc%2Fchat-1", path: "/c/chat-1" });
-    act(() => writeChatRoute({ chatId: "chat-2", projectId: "project-1" }));
-    expect(result.current.path).toBe("/p/project-1/c/chat-2");
+    act(() => writeChatRoute({ chatId: "chat-2" }));
+    expect(result.current.path).toBe("/c/chat-2");
     act(() => {
       window.history.replaceState(null, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));

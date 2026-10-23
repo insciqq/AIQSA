@@ -183,10 +183,10 @@ export function createAgentSecretService(input: Readonly<{
 
     async readAttachment(attachmentId, maxBytes) {
       if (!input.storage) return { kind: "missing" };
-      // Only a file of this chat the run admitted or produced, of this user, outside Projects.
+      // Only a file of this chat the run admitted or produced, of this user.
       const row = await db.attachment.findFirst({
         select: { byteSize: true, checksum: true, fileName: true, mimeType: true, storageKey: true },
-        where: { chatId: scope.chatId, id: attachmentId, projectId: null, userId,
+        where: { chatId: scope.chatId, id: attachmentId, userId,
           OR: [...input.attachmentIds?.length ? [{ id: { in: [...input.attachmentIds] } }] : [], { producerModelRunId: scope.runId }] }
       });
       if (!row || !row.checksum || row.byteSize < 1) return { kind: "missing" };

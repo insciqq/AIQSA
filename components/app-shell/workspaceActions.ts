@@ -35,13 +35,6 @@ import {
 import { chatPrintPath } from "@/lib/domain/chatPrintDocument";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import {
-  EMPTY_KNOWLEDGE_SELECTION,
-  explicitKnowledgeSelection,
-  type KnowledgePlan,
-  type KnowledgeSelection
-} from "@/lib/contracts/knowledge";
-import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
-import {
   decodeChatMessagesPageResponse,
   decodeChatSummaryResponse,
   decodeWorkspaceChatsResponse
@@ -52,7 +45,6 @@ import {
   composerSessionKey,
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
-  projectIdFromComposerSessionKey,
   selectComposerSession,
   type ComposerSessionKey,
   useComposerSessionStore
@@ -89,11 +81,7 @@ import {
   type ThreadSnapshot
 } from "@/components/app-shell/threadStore";
 import { sortChatsByFavoriteThenUpdatedAt, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import {
-  chatScopeProjectId,
-  mergeWorkspaceProjectDrafts,
-  nextChatInScope
-} from "@/components/app-shell/workspaceProjectDraftMerge";
+import { mergeWorkspaceDrafts, nextChatAfterRemoval } from "@/components/app-shell/workspaceDraftMerge";
 import type { WorkspaceChatMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 
 type MutableRef<T> = {
@@ -103,24 +91,8 @@ type MutableRef<T> = {
 type ActivateChatOptions = {
   catalogOverride?: Catalog | null;
   preserveControls?: boolean;
-  /**
-   * With preserved controls, still reads a chat whose Assistant projection
-   * is unknown: a Project chat opened by its owner, which applies the
-   * Project's values but never an Assistant.
-   */
-  readAssistant?: boolean;
   resumeRuns?: boolean;
 };
-
-/**
- * Opens what replaces a removed active chat inside its scope (`null` for
- * personal): `next`, or the scope's blank chat. The address follows through
- * `replaceState`, so the removal adds no history entry.
- */
-export type RemovedChatFallback = (
-  scopeProjectId: string | null,
-  next: WorkspaceChatSummary | null
-) => Promise<unknown> | void;
 
 export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
 
@@ -177,8 +149,8 @@ export type ChatAssistantScope = {
 /**
  * The personal default Assistant of the open blank chat: still loading, or
  * applied; `skipped` when something else decides the blank chat's Assistant
- * (an Assistant entry link, the end of Project access). It stays with that
- * blank chat; the next new chat starts afresh.
+ * (an Assistant entry link). It stays with that blank chat; the next new chat
+ * starts afresh.
  */
 export type BlankDefaultAssistant =
   | Readonly<{ assistantId: string; state: "applied" | "loading" }>
@@ -201,16 +173,9 @@ type WorkspaceActionsInput = {
    */
   chooseDefaultAssistant?(assistantId: string, isCurrent: () => boolean): Promise<boolean>;
   loadingChatDetailIdRef: MutableRef<string | null>;
-  /** The scope of a Project chat's Assistant; null while its Project is not loaded. */
-  projectChatAssistantScope?(chat: WorkspaceChatSummary): ChatAssistantScope | null;
   resumeChatRun(chat: WorkspaceChatSummary): void;
   setNotice(notice: Notice | null): void;
   setSelectedModelId(value: string, origin?: ComposerControlChangeOrigin): void;
-  setSelectedKnowledgePlan(
-    selection: KnowledgePlan | readonly string[],
-    source?: "chat" | "explicit" | "off" | "project",
-    origin?: ComposerControlChangeOrigin
-  ): void;
   setSelectedProvider(value: string, origin?: ComposerControlChangeOrigin): void;
   setSelectedSearchPlan(
     optionIds: readonly string[],
@@ -230,11 +195,9 @@ export function useWorkspaceActions({
   chatMutation,
   chooseDefaultAssistant,
   loadingChatDetailIdRef,
-  projectChatAssistantScope,
   resumeChatRun,
   setNotice,
   setSelectedModelId,
-  setSelectedKnowledgePlan,
   setSelectedProvider,
   setSelectedSearchPlan,
   workspaceRefreshPromiseRef
@@ -247,7 +210,6 @@ export function useWorkspaceActions({
       activeLeafMessageId: detail.activeLeafMessageId,
       answerReview: detail.answerReview,
       createdAt: detail.createdAt,
-      defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,
       ...(detail.defaultSearchPlan ? { defaultSearchPlan: detail.defaultSearchPlan } : {}),
       defaultModelId: detail.defaultModelId,
       defaultProvider: detail.defaultProvider,
@@ -255,7 +217,6 @@ export function useWorkspaceActions({
       id: detail.id,
       messageCount: detail.messageCount,
       pinned: detail.pinned,
-      projectId: detail.projectId ?? null,
       title: detail.title,
       ...(detail.titlePending ? { titlePending: true } : {}),
       updatedAt: detail.updatedAt,
@@ -292,7 +253,6 @@ export function useWorkspaceActions({
       ? { ...chat, titlePending: chat.titlePending === true } : chat);
     if (
       useWorkspaceStore.getState().navigationReady &&
-      !resolvedChat.projectId &&
       resolvedChat.memoryMode !== "TEMPORARY" &&
       resolvedChat.pendingInitialMemoryMode !== "TEMPORARY"
     ) {
@@ -442,10 +402,7 @@ export function useWorkspaceActions({
         const summaryKnown = useWorkspaceStore.getState().chats.some(
           (candidate) => candidate.id === chatId
         );
-        if (
-          !summaryKnown &&
-          (!options.admitMissingPersonalSummary || chat.projectId !== null)
-        ) {
+        if (!summaryKnown && !options.admitMissingPersonalSummary) {
           return null;
         }
         useChatAssistantProjectionStore.getState().setProjection(chatId, chat.assistant);
@@ -670,10 +627,7 @@ export function useWorkspaceActions({
     chat: WorkspaceChatSummary,
     catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog
   ) {
-    const scope = chatScopeProjectId(chat) === null
-      ? personalChatAssistantScope(catalogOverride)
-      : projectChatAssistantScope?.(chat) ?? null;
-    if (!scope) return;
+    const scope = personalChatAssistantScope(catalogOverride);
     const projection = cachedChatAssistantProjection(chat.id);
     if (projection?.state === "bound") {
       useComposerControlStore.getState().applyAssistantState(composerAssistantFromProjection(
@@ -711,20 +665,6 @@ export function useWorkspaceActions({
       catalogOverride?.searchStrategies
     );
     setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
-    const folderDefault = chat.folderId
-      ? useWorkspaceStore.getState().folders.find((folder) => folder.id === chat.folderId)
-          ?.defaultKnowledgePlan ?? null
-      : null;
-    const knowledgePlan = chat.defaultKnowledgePlan ?? folderDefault;
-    setSelectedKnowledgePlan(
-      knowledgePlan ?? EMPTY_KNOWLEDGE_SELECTION,
-      chat.defaultKnowledgePlan
-        ? "chat"
-        : folderDefault
-          ? "project"
-          : "off",
-      "system"
-    );
     applyModelControlDefaults(model, catalogOverride?.defaults.controlValues);
     // A chat keeps no MCP mode of its own: it runs in the user's saved mode.
     useComposerControlStore.getState().setMcpSelection({
@@ -737,9 +677,7 @@ export function useWorkspaceActions({
     const activeChat = activeId
       ? useWorkspaceStore.getState().chats.find((candidate) => candidate.id === activeId)
       : null;
-    // The Project owner applies a Project chat's controls; the personal
-    // catalog never replaces them.
-    if (!activeChat || chatScopeProjectId(activeChat) !== null) {
+    if (!activeChat) {
       return false;
     }
 
@@ -784,11 +722,9 @@ export function useWorkspaceActions({
     }
     // A chat's Assistant is restored from the server projection, never from
     // browser state; a chat opened with its own controls not read in this
-    // session reads it once. Preserved controls already hold the Assistant,
-    // unless the caller asks for it (`readAssistant`).
+    // session reads it once. Preserved controls already hold the Assistant.
     const projectionUnknown = cachedChatAssistantProjection(chat.id) === undefined &&
-      !chat.pendingPersonalDraft && !chat.pendingProjectDraft &&
-      (!options.preserveControls || Boolean(options.readAssistant));
+      !chat.pendingPersonalDraft && !options.preserveControls;
     const needsDetail =
       projectionUnknown ||
       !cachedThread ||
@@ -830,8 +766,7 @@ export function useWorkspaceActions({
       resumeRuns: options.resumeRuns !== false
     });
     // The fresh projection replaces what the cache knew when the chat opened.
-    // A Project chat's owner applies its Project values first.
-    if (!options.preserveControls || options.readAssistant || chatScopeProjectId(currentSummary) !== null) {
+    if (!options.preserveControls) {
       applyChatAssistant(currentSummary, options.catalogOverride ?? undefined);
     }
     return detail;
@@ -854,9 +789,6 @@ export function useWorkspaceActions({
 
   async function activatePersonalChatById(chatId: string): Promise<ChatDetail | null> {
     const existing = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
-    if (existing?.projectId) {
-      return null;
-    }
     if (existing) {
       return activateChat(existing);
     }
@@ -865,21 +797,17 @@ export function useWorkspaceActions({
       admitMissingPersonalSummary: true,
       force: true
     });
-    if (!detail || detail.projectId) {
+    if (!detail) {
       return null;
     }
     const summary = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
     return summary ? activateChat(summary) : null;
   }
 
-  /**
-   * The pending folder of a personal blank chat stays browser state; a
-   * Project's blank chat is addressed by its Project.
-   */
+  /** The pending folder of a blank chat stays browser state. */
   function activateBlankWorkspace(
     folderId: string | null = null,
-    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL",
-    routeProjectId: string | null = null
+    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL"
   ) {
     // A chat's Assistant stays with that chat; an Assistant chosen for the
     // blank chat stays while the blank chat does.
@@ -890,20 +818,20 @@ export function useWorkspaceActions({
     useWorkspaceStore.getState().setActiveChatDetailError(null);
     useWorkspaceStore.getState().setActiveChatDetailLoading(false);
     useWorkspaceStore.getState().setActiveChatId(null);
-    writeChatRoute({ chatId: null, projectId: routeProjectId });
+    writeChatRoute({ chatId: null });
     useComposerSessionStore.getState().activateSession(
       composerSessionKey(null, folderId, memoryMode)
     );
     pruneThreadCache();
     if (leavingChat || !useComposerControlStore.getState().assistant) {
-      applyPersonalBlankDefaults(folderId);
+      applyPersonalBlankDefaults();
     }
-    if (routeProjectId === null) reconcileBlankDefaultAssistant(leavingChat);
+    reconcileBlankDefaultAssistant(leavingChat);
   }
 
   /**
    * A new personal chat starts with the personal default Assistant as if the
-   * user had chosen it. Temporary and Project chats never use it; after
+   * user had chosen it. Temporary chats never use it; after
    * "Remove for this chat" the blank chat stays without it until the next
    * new chat. Call it whenever the open blank chat changes its mode.
    */
@@ -911,11 +839,7 @@ export function useWorkspaceActions({
     if (!blankDefaultAssistantRef || !chooseDefaultAssistant) return;
     if (newChat) blankDefaultAssistantRef.current = null;
     const sessionKey = useComposerSessionStore.getState().activeSessionKey;
-    if (
-      activeChatIdRef.current !== null ||
-      chatIdFromComposerSessionKey(sessionKey) !== null ||
-      projectIdFromComposerSessionKey(sessionKey) !== null
-    ) return;
+    if (activeChatIdRef.current !== null || chatIdFromComposerSessionKey(sessionKey) !== null) return;
     const mark = blankDefaultAssistantRef.current;
     if (mark?.state === "skipped") return;
     const bound = boundComposerAssistant(useComposerControlStore.getState());
@@ -923,7 +847,7 @@ export function useWorkspaceActions({
       if (mark?.state === "loading") blankDefaultAssistantRef.current = null;
       if (mark?.state === "applied" && bound?.id === mark.assistantId) {
         blankDefaultAssistantRef.current = null;
-        applyPersonalBlankDefaults(folderIdFromComposerSessionKey(sessionKey));
+        applyPersonalBlankDefaults();
       }
       return;
     }
@@ -931,7 +855,7 @@ export function useWorkspaceActions({
     if (mark && mark.assistantId !== assistantId) {
       // The setting changed since this blank chat took the previous default.
       blankDefaultAssistantRef.current = null;
-      if (bound?.id === mark.assistantId) applyPersonalBlankDefaults(folderIdFromComposerSessionKey(sessionKey));
+      if (bound?.id === mark.assistantId) applyPersonalBlankDefaults();
     }
     if (blankDefaultAssistantRef.current || useComposerControlStore.getState().assistant || !assistantId) return;
     const loading: BlankDefaultAssistant = { assistantId, state: "loading" };
@@ -949,16 +873,15 @@ export function useWorkspaceActions({
 
   /**
    * Something else decides the open personal blank chat's Assistant (an
-   * Assistant entry link, whether it resolves or not; the end of Project
-   * access): the personal default stops loading and does not come back for
-   * this blank chat.
+   * Assistant entry link, whether it resolves or not): the personal default
+   * stops loading and does not come back for this blank chat.
    */
   function skipBlankDefaultAssistant() {
     if (blankDefaultAssistantRef) blankDefaultAssistantRef.current = SKIPPED_BLANK_ASSISTANT;
   }
 
   /** Personal Chat defaults of a new chat, without an Assistant. */
-  function applyPersonalBlankDefaults(folderId: string | null = useWorkspaceStore.getState().pendingChatFolderId) {
+  function applyPersonalBlankDefaults() {
     const catalog = useWorkspaceStore.getState().catalog;
     useComposerControlStore.getState().clearAssistant({
       mcpSelection: { mode: catalog?.defaults.mcpMode ?? "auto" },
@@ -974,89 +897,10 @@ export function useWorkspaceActions({
     applyModelControlDefaults(defaultModel, catalog?.defaults.controlValues);
     const searchPlan = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
     setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
-    const projectPlan = folderId
-      ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
-          ?.defaultKnowledgePlan ?? null
-      : null;
-    // Personal Chat defaults start a new chat; a
-    // folder default still wins for Knowledge. Admission re-checks both.
-    const personalPlan = projectPlan
-      ? null
-      : reconcilePersonalKnowledgeDefault(catalog?.defaults.knowledgePlan ?? null);
-    setSelectedKnowledgePlan(
-      projectPlan ?? personalPlan ?? EMPTY_KNOWLEDGE_SELECTION,
-      projectPlan ? "project" : personalPlan ? "explicit" : "off",
-      "system"
-    );
     useComposerControlStore.getState().setMcpSelection({
       mode: catalog?.defaults.mcpMode ?? "auto"
     }, "system");
     useComposerControlStore.getState().setSkillsMode(catalog?.defaults.skillsMode ?? "auto", "system");
-  }
-
-  /**
-   * Drops bases the user can no longer reach from the personal Knowledge
-   * default and says so; the default is never substituted silently. Unloaded
-   * Knowledge keeps the plan as saved and admission fails closed instead.
-   */
-  function reconcilePersonalKnowledgeDefault(
-    plan: KnowledgeSelection | null
-  ): KnowledgeSelection | null {
-    if (!plan || plan.mode !== "explicit") return plan;
-    const known = useKnowledgeLibraryStore.getState().data?.knowledgeBases;
-    if (!known) return plan;
-    const available = new Set(known.filter((base) => !base.archived).map((base) => base.id));
-    const baseIds = plan.baseIds.filter((id) => available.has(id));
-    if (baseIds.length === plan.baseIds.length) return plan;
-    setNotice({
-      autoDismiss: true,
-      kind: "error",
-      text: "A default knowledge base is no longer available. This chat starts without it."
-    });
-    return baseIds.length > 0 || plan.sourceIds.length > 0
-      ? explicitKnowledgeSelection({ baseIds, sourceIds: plan.sourceIds })
-      : null;
-  }
-
-  async function setChatKnowledgeDefault(plan: KnowledgePlan | null): Promise<boolean> {
-    const chatId = activeChatIdRef.current;
-    if (!chatId) return false;
-    try {
-      const response = await shellFetch(`/api/chats/${chatId}`, {
-        body: JSON.stringify({ defaultKnowledgePlan: plan }),
-        headers: { "content-type": "application/json" },
-        method: "PATCH"
-      });
-      if (!response.ok) throw new Error(`chat_knowledge_default_failed_${response.status}`);
-      const decoded = decodeChatSummaryResponse(await response.json());
-      if (!decoded || decoded.id !== chatId) throw new Error("chat_knowledge_default_malformed");
-      const chat = chatSummaryFromApi(decoded);
-      mergeChatIntoList(chat);
-      const folderPlan = chat.folderId
-        ? useWorkspaceStore.getState().folders.find((folder) => folder.id === chat.folderId)
-            ?.defaultKnowledgePlan ?? null
-        : null;
-      const effective = chat.defaultKnowledgePlan ?? folderPlan;
-      if (activeChatIdRef.current === chatId) {
-        setSelectedKnowledgePlan(
-          effective ?? EMPTY_KNOWLEDGE_SELECTION,
-          chat.defaultKnowledgePlan ? "chat" : folderPlan ? "project" : "off",
-          "system"
-        );
-      }
-      setNotice({
-        kind: "success",
-        text: plan === null
-          ? folderPlan
-            ? "This chat now follows its project Knowledge default."
-            : "Chat Knowledge default cleared. Knowledge is Off."
-          : "Chat Knowledge default saved."
-      });
-      return true;
-    } catch (error) {
-      setNotice({ kind: "error", text: errorMessage(error) });
-      return false;
-    }
   }
 
   async function refreshActiveChat(
@@ -1095,15 +939,14 @@ export function useWorkspaceActions({
    * Reloads the personal workspace and activates `nextActiveChatId`, falling
    * back to the blank chat. `isCurrent` lets an address resolution drop a
    * result that another navigation superseded; `onTargetUnavailable` reports
-   * a target that is neither listed nor a recoverable Temporary chat, with
-   * the Project of a readable Project chat and `null` for any other target.
+   * a target that is neither listed nor a recoverable Temporary chat.
    */
   function refreshWorkspace(
     nextActiveChatId: string | null = useWorkspaceStore.getState().activeChatId,
     options: {
       catalogOverride?: Catalog | null;
       isCurrent?(): boolean;
-      onTargetUnavailable?(projectId: string | null): void;
+      onTargetUnavailable?(): void;
       preserveControls?: boolean;
       resumeRuns?: boolean;
     } = {}
@@ -1132,18 +975,9 @@ export function useWorkspaceActions({
         const targetActiveChatId = nextActiveChatId;
         let recoveredTemporaryDetail: ChatDetail | null = null;
         let recoveredTemporarySummary: WorkspaceChatSummary | null = null;
-        let targetProjectId: string | null = null;
-        // A Project chat its owner already admitted needs no classification.
-        const knownProjectTarget = useWorkspaceStore.getState().chats.some((chat) =>
-          chat.id === targetActiveChatId && chatScopeProjectId(chat) !== null);
-        if (
-          targetActiveChatId &&
-          !knownProjectTarget &&
-          !nextChats.some((chat) => chat.id === targetActiveChatId)
-        ) {
+        if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
           try {
-            // One detail read separates a readable Project chat, which is never
-            // admitted here, from a hidden personal one.
+            // One detail read recovers a hidden Temporary chat.
             const detailResponse = await shellFetch(
               `/api/chats/${encodeURIComponent(targetActiveChatId)}`
             );
@@ -1154,19 +988,15 @@ export function useWorkspaceActions({
             if (!wireDetail || wireDetail.id !== targetActiveChatId) {
               throw new Error("chat_detail_malformed");
             }
-            if (wireDetail.projectId) {
-              targetProjectId = wireDetail.projectId;
-            } else {
-              const memoryState = await loadChatMemoryState(targetActiveChatId);
-              if (memoryState.mode === "TEMPORARY" && !memoryState.archived) {
-                recoveredTemporaryDetail = chatDetailFromApi(wireDetail);
-                useChatAssistantProjectionStore.getState().setProjection(wireDetail.id, wireDetail.assistant);
-                recoveredTemporarySummary = {
-                  ...summaryFromDetail(recoveredTemporaryDetail),
-                  memoryMode: "TEMPORARY",
-                  temporaryRetentionDeadline: memoryState.temporaryRetentionDeadline
-                };
-              }
+            const memoryState = await loadChatMemoryState(targetActiveChatId);
+            if (memoryState.mode === "TEMPORARY" && !memoryState.archived) {
+              recoveredTemporaryDetail = chatDetailFromApi(wireDetail);
+              useChatAssistantProjectionStore.getState().setProjection(wireDetail.id, wireDetail.assistant);
+              recoveredTemporarySummary = {
+                ...summaryFromDetail(recoveredTemporaryDetail),
+                memoryMode: "TEMPORARY",
+                temporaryRetentionDeadline: memoryState.temporaryRetentionDeadline
+              };
             }
           } catch {
             // Archived, expired, deleted, or inaccessible hidden targets fall
@@ -1179,16 +1009,15 @@ export function useWorkspaceActions({
         const current = useWorkspaceStore.getState();
         const selectionChanged = current.activeChatId !== before.activeChatId ||
           useComposerSessionStore.getState().activeSessionKey !== sourceSessionKey;
-        const mergedChats = mergeWorkspaceProjectDrafts({
+        const mergedChats = mergeWorkspaceDrafts({
           currentChats: current.chats,
           incomingChats: preserveChangesDuringRead(before.chats, current.chats, ownedChats)
         }).chats;
         const mergedFolders = preserveChangesDuringRead(before.folders, current.folders, body.folders);
         useWorkspaceStore.getState().setFolders(mergedFolders);
         useWorkspaceStore.getState().setChats(mergedChats);
-        // Only chats this personal read removed lose their composer and
-        // thread: Project chats stay in `mergedChats`, and a send, edit or
-        // upload in flight keeps its session until it settles.
+        // Only chats this read removed lose their composer and thread; a send,
+        // edit or upload in flight keeps its session until it settles.
         const nextChatIds = new Set(mergedChats.map((chat) => chat.id));
         const nextFolderIds = new Set(mergedFolders.map((folder) => folder.id));
         const pendingChatIds = pendingComposerChatIds();
@@ -1199,10 +1028,7 @@ export function useWorkspaceActions({
         ) as ComposerSessionKey[];
         for (const sessionKey of composerSessionKeys) {
           const sessionChatId = chatIdFromComposerSessionKey(sessionKey);
-          // Project blank folders are not personal folders.
-          const sessionFolderId = projectIdFromComposerSessionKey(sessionKey) === null
-            ? folderIdFromComposerSessionKey(sessionKey)
-            : null;
+          const sessionFolderId = folderIdFromComposerSessionKey(sessionKey);
           if (sessionChatId) {
             if (!retainedChatId(sessionChatId)) {
               useComposerSessionStore.getState().removeSession(sessionKey);
@@ -1238,17 +1064,11 @@ export function useWorkspaceActions({
             }
             return await activateChat(nextActive, {
               catalogOverride: activationCatalog,
-              // A Project chat keeps the controls its Project owner applied.
-              preserveControls: options.preserveControls || chatScopeProjectId(nextActive) !== null,
+              preserveControls: options.preserveControls,
               resumeRuns: options.resumeRuns
             });
           }
-          options.onTargetUnavailable?.(targetProjectId);
-        } else if (
-          projectIdFromComposerSessionKey(useComposerSessionStore.getState().activeSessionKey) !== null
-        ) {
-          // A personal read leaves an open Project's blank chat to its owner.
-          return null;
+          options.onTargetUnavailable?.();
         }
 
         activateBlankWorkspace();
@@ -1369,7 +1189,6 @@ export function useWorkspaceActions({
       const summary: WorkspaceChatSummary = {
         activeLeafMessageId: null,
         createdAt: now,
-        defaultKnowledgePlan: null,
         defaultModelId: controls.selectedModelId,
         defaultProvider: controls.selectedProvider,
         folderId,
@@ -1381,7 +1200,6 @@ export function useWorkspaceActions({
           ? { pendingInitialMemoryMode: "TEMPORARY" as const }
           : {}),
         pinned: false,
-        projectId: null,
         title: "New Chat",
         updatedAt: now
       };
@@ -1444,10 +1262,7 @@ export function useWorkspaceActions({
     }
   }
 
-  async function deleteChat(
-    chat: WorkspaceChatSummary,
-    activateFallback: RemovedChatFallback = activatePersonalFallback
-  ) {
+  async function deleteChat(chat: WorkspaceChatSummary) {
     if (chatHasActiveStream(chat.id)) {
       setNotice({
         kind: "error",
@@ -1464,8 +1279,7 @@ export function useWorkspaceActions({
       const source = await resolveChatSource(chat.id);
       const archived = await archiveChatRequest(chat.id, source.source.sourceRevision);
 
-      const scopeProjectId = chatScopeProjectId(chat);
-      const nextActive = nextChatInScope(useWorkspaceStore.getState().chats, chat.id, scopeProjectId);
+      const nextActive = nextChatAfterRemoval(useWorkspaceStore.getState().chats, chat.id);
       // Undo brings the row back with the Assistant it showed.
       const listedAssistant = useWorkspaceStore.getState().navigationChats
         .find((candidate) => candidate.id === chat.id)?.assistant ?? null;
@@ -1513,7 +1327,7 @@ export function useWorkspaceActions({
       });
 
       if (activeChatIdRef.current === chat.id) {
-        await activateFallback(scopeProjectId, nextActive);
+        await activatePersonalFallback(nextActive);
       }
     } catch (error) {
       setNotice({
@@ -1524,14 +1338,12 @@ export function useWorkspaceActions({
   }
 
   /**
-   * Without a Project owner a removed chat falls back within the personal
-   * scope; a Project chat falls back to the personal blank chat.
+   * A removed active chat falls back to another chat, or to the blank chat.
+   * The address follows through `replaceState`, so the removal adds no
+   * history entry.
    */
-  async function activatePersonalFallback(
-    scopeProjectId: string | null,
-    next: WorkspaceChatSummary | null
-  ) {
-    if (scopeProjectId === null && next) await activateChat(next);
+  async function activatePersonalFallback(next: WorkspaceChatSummary | null) {
+    if (next) await activateChat(next);
     else activateBlankWorkspace();
   }
 
@@ -1674,7 +1486,6 @@ export function useWorkspaceActions({
     refreshWorkspace,
     renameChat,
     skipBlankDefaultAssistant,
-    setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder
   };

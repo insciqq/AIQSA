@@ -172,9 +172,6 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   } else {
     add(roles?.rerankerModel?.id, "Reranker");
   }
-  const revision = sources.knowledge?.profile.activeRevision;
-  add(revision?.pdfProcessing.destination?.deploymentId, "Knowledge docs");
-  add(revision?.destination.deploymentId, "Knowledge embeddings");
   for (const integration of sources.search?.integrations ?? []) {
     if (integration.archivedAt || !integration.enabled) continue;
     add(integration.providerModel?.id, integration.displayName);
@@ -243,12 +240,10 @@ export function turnOffConsequence(input: Readonly<{
   if (input.tags.includes("Relevance checks")) uses.push("the optional relevance-check model");
   if (roles.length) {
     uses.push(roles.includes("Reranker · primary") || roles.includes("Reranker")
-      ? "the primary reranker for Memory and Knowledge"
-      : "a fallback reranker for Memory and Knowledge");
+      ? "the primary reranker for Memory"
+      : "a fallback reranker for Memory");
   }
-  if (input.tags.includes("Knowledge docs")) uses.push("the Knowledge document model");
-  if (input.tags.includes("Knowledge embeddings")) uses.push("the Knowledge embedding model");
-  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Vision Model", "Knowledge docs", "Knowledge embeddings",
+  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Vision Model",
     "Relevance checks", IMAGE_GENERATION_TAG, IMAGE_GENERATION_OFF_TAG]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {

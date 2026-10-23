@@ -12,7 +12,6 @@ import {
 import { initialComposerControlSnapshot, type ComposerControlSnapshot } from "./composerControlStore";
 import type { CatalogModel } from "./types";
 import type { ChatAssistantProjection } from "@/lib/contracts/chats";
-import { EMPTY_KNOWLEDGE_SELECTION } from "@/lib/contracts/knowledge";
 import { assistantAvatarFixture, boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
 
 function catalogModel(modelId: string, provider: string): CatalogModel {
@@ -60,7 +59,6 @@ const context: ComposerAssistantContext = {
 };
 
 const defaults: ComposerAssistantDefaults = {
-  knowledge: { selection: EMPTY_KNOWLEDGE_SELECTION, source: "off" },
   model: { modelId: "default-model", provider: "default-provider" },
   search: { mode: "all_selected", optionIds: ["web"] },
   skillsMode: "auto",
@@ -80,7 +78,6 @@ function definition(overrides: Partial<ComposerAssistantDefinition> = {}): Compo
     rowAvailability: {},
     rows: {
       controls: { policy: "fixed", value: { temperature: 0.2 } },
-      knowledge: { policy: "adjustable", value: { mode: "inherit" } },
       model: { policy: "fixed", value: { mode: "model", modelId: "assistant-model" } },
       search: { policy: "adjustable", value: { mode: "off" } },
       skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-1" }], mode: "off" } },
@@ -97,14 +94,11 @@ describe("composer Assistant state", () => {
 
     expect(applied?.controls).toEqual({
       backgroundMode: false,
-      knowledgePlanSource: "off",
-      knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
       maxOutputTokens: "4096",
       mcpSelection: { mode: "exact", serverIds: ["server-1"] },
       reasoningEffort: "medium",
       reasoningMode: "standard",
       searchPlanMode: "all_selected",
-      selectedKnowledgeBaseIds: [],
       selectedModelId: "assistant-model",
       selectedProvider: "assistant-provider",
       selectedSearchOptionIds: [],
@@ -116,7 +110,6 @@ describe("composer Assistant state", () => {
       includedSkills: [{ id: "skill-1", instructionApproxTokens: 40, mode: "pinned", name: "Reviewer" }],
       rows: {
         controls: { origin: "assistant", policy: "fixed" },
-        knowledge: { origin: "default", policy: "adjustable" },
         model: { origin: "assistant", policy: "fixed" },
         search: { origin: "assistant" },
         skills: { origin: "assistant" },
@@ -166,13 +159,6 @@ describe("composer Assistant state", () => {
       ownerDisplayName: "Owner",
       rows: {
         controls: { assistantValue: {}, deviation: null, policy: "adjustable", provenance: "chat", value: { temperature: 1.4 } },
-        knowledge: {
-          assistantValue: { baseIds: [], hiddenCount: 2, mode: "explicit", sourceIds: [] },
-          deviation: null,
-          policy: "fixed",
-          provenance: "assistant",
-          value: { baseIds: [], hiddenCount: 2, mode: "explicit", sourceIds: [] }
-        },
         model: {
           assistantValue: { mode: "model", modelId: "assistant-model" },
           deviation: null,
@@ -190,8 +176,6 @@ describe("composer Assistant state", () => {
     const restored = composerAssistantFromProjection(projection, context, { starterPrompts: ["Hi"] });
 
     expect(restored.controls).toMatchObject({
-      knowledgePlanSource: "assistant",
-      knowledgeSelection: { inheritedFrom: "assistant", mode: "inherited" },
       mcpSelection: { mode: "auto" },
       reasoningEffort: "low",
       searchPlanMode: "model_choice",
@@ -206,7 +190,6 @@ describe("composer Assistant state", () => {
       owned: false,
       rows: {
         controls: { origin: "chat" },
-        knowledge: { origin: "assistant", policy: "fixed" },
         model: { origin: "chat" },
         search: { origin: "default" },
         tools: { origin: "chat" }
@@ -216,7 +199,7 @@ describe("composer Assistant state", () => {
     });
     // Rows changed for the chat return through a chat update, not locally.
     expect(restored.assistant.state === "bound" && Object.keys(restored.assistant.resets).sort())
-      .toEqual(["knowledge", "search", "skills"]);
+      .toEqual(["search", "skills"]);
 
     expect(composerAssistantFromProjection({ state: "deleted" }, context)).toEqual({
       assistant: { state: "deleted" },
@@ -232,7 +215,6 @@ describe("composer Assistant state", () => {
     const state: ComposerControlSnapshot = {
       ...initialComposerControlSnapshot,
       assistant: boundComposerAssistantFixture(),
-      knowledgeSelection: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 },
       mcpSelection: { mode: "exact", serverIds: ["server-1"] },
       selectedModelId: "assistant-model",
       selectedSearchOptionIds: ["search-disabled"],
@@ -242,8 +224,6 @@ describe("composer Assistant state", () => {
     expect(composerAssistantRowValue(state, "search", assistantModel)).toEqual({ mode: "off" });
     expect(composerAssistantRowValue(state, "tools", assistantModel)).toEqual({ mode: "exact", serverIds: ["server-1"] });
     expect(composerAssistantOverride(state, "tools", assistantModel)).toBeNull();
-    expect(composerAssistantOverride(state, "knowledge", assistantModel))
-      .toEqual({ baseIds: ["base-1"], mode: "explicit", sourceIds: [] });
     expect(composerAssistantOverride(state, "controls", assistantModel)).toEqual({
       maxOutputTokens: Number(initialComposerControlSnapshot.maxOutputTokens),
       reasoningEffort: "medium",

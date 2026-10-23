@@ -29,11 +29,6 @@ import type {
   ChatAssistantOverrideValues,
   UpdateChatRequestWire
 } from "@/lib/contracts/chats";
-import {
-  EMPTY_KNOWLEDGE_SELECTION,
-  explicitKnowledgeSelection,
-  KNOWLEDGE_SELECTION_VERSION
-} from "@/lib/contracts/knowledge";
 
 /** Where the active composer resolves an Assistant it chooses before a chat exists. */
 export type ChatAssistantChooseScope = {
@@ -178,7 +173,7 @@ export function createChatAssistantActions(input: ChatAssistantActionsInput) {
     const chat = workspace.activeChatId
       ? workspace.chats.find((candidate) => candidate.id === workspace.activeChatId)
       : null;
-    return chat && !chat.pendingPersonalDraft && !chat.pendingProjectDraft ? chat.id : null;
+    return chat && !chat.pendingPersonalDraft ? chat.id : null;
   }
 
   /**
@@ -547,15 +542,6 @@ export function createChatAssistantActions(input: ChatAssistantActionsInput) {
       case "tools":
         store.setMcpSelection(value as ChatAssistantOverrideValues["tools"]);
         break;
-      case "knowledge": {
-        const knowledge = value as ChatAssistantOverrideValues["knowledge"];
-        store.setSelectedKnowledgePlan(knowledge.mode === "explicit"
-          ? explicitKnowledgeSelection({ baseIds: knowledge.baseIds, sourceIds: knowledge.sourceIds })
-          : knowledge.mode === "all_my_knowledge"
-            ? { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: KNOWLEDGE_SELECTION_VERSION }
-            : EMPTY_KNOWLEDGE_SELECTION);
-        break;
-      }
       default:
         store.setSkillsMode((value as ChatAssistantOverrideValues["skills"]).mode);
     }

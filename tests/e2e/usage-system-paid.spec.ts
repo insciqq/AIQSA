@@ -106,8 +106,7 @@ test("administrator model checks are system usage: known cost, System analytics,
   summary.embeddingRows = embeddingRows.length;
   for (const row of [...rerankRows, ...embeddingRows]) {
     expect(row.estimatedCostMicros, "OpenRouter reports the cost of a reranker or embedding probe").not.toBeNull();
-    expect({ chatId: row.chatId, modelRunId: row.modelRunId, projectId: row.projectId })
-      .toEqual({ chatId: null, modelRunId: null, projectId: null });
+    expect({ chatId: row.chatId, modelRunId: row.modelRunId }).toEqual({ chatId: null, modelRunId: null });
   }
   const systemSpent = checks.reduce((sum, row) => sum + (row.estimatedCostMicros ?? 0), 0);
   summary.systemSpentPositive = systemSpent > 0;

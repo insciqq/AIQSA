@@ -41,14 +41,12 @@ import {
 const summary = {
   activeLeafMessageId: "message-1",
   createdAt: "2026-07-14T08:00:00.000Z",
-  defaultKnowledgePlan: null,
   defaultModelId: "gpt-5.5",
   defaultProvider: "openai",
   folderId: null,
   id: "chat-1",
   messageCount: 1,
   pinned: false,
-  projectId: null,
   title: "Exact boundary",
   updatedAt: "2026-07-14T08:01:00.000Z"
 };
@@ -192,11 +190,12 @@ describe("chat wire contracts", () => {
       chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [{ ...call, origin }] } }], usageStats })
     });
 
-    for (const origin of ["mcp", "web_search", "knowledge", "discovery", "workspace", "memory", "session", "tool", "vision"]) {
+    for (const origin of ["mcp", "web_search", "discovery", "workspace", "memory", "session", "tool", "vision"]) {
       expect(decode(origin)?.messages[0]?.toolActivity).toEqual({ calls: [{ ...call, origin }] });
     }
     expect(decode(undefined)?.messages[0]?.toolActivity).toEqual({ calls: [call] });
-    for (const origin of ["unknown", "", null, { kind: "mcp" }]) {
+    // Knowledge was removed; the server no longer names it as an origin.
+    for (const origin of ["unknown", "knowledge", "", null, { kind: "mcp" }]) {
       expect(decode(origin)).toBeNull();
     }
   });
@@ -240,7 +239,7 @@ describe("chat wire contracts", () => {
       expect(decode(details)).toBeNull();
     }
     for (const origin of [undefined, "workspace", "memory", "skill", "discovery", "tool", "web_search",
-      "knowledge", "session", "artifact", "image"]) {
+      "session", "artifact", "image"]) {
       const row = { ...call, origin, details: { roundIndex: 2, ordinal: 0 } };
       expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message,
         toolActivity: { calls: [row] } }], usageStats }) })).toBeNull();
@@ -481,39 +480,12 @@ describe("chat wire contracts", () => {
     }
   });
 
-  it("decodes bounded chat/folder Knowledge defaults and rejects malformed persisted plans", () => {
-    const knowledgePlan = { baseIds: ["base-a", "base-b"] };
-    const canonicalKnowledgePlan = {
-      baseIds: ["base-a", "base-b"], mode: "explicit", sourceIds: [], version: 1
-    };
-    const folder = {
-      defaultKnowledgePlan: knowledgePlan,
-      id: "folder-1",
-      name: "Research",
-      parentId: null,
-      projectMemory: "",
-      sortOrder: 0
-    };
+  it("ignores the Knowledge defaults and Project fields a server from before their removal still sends", () => {
+    const folder = { id: "folder-1", name: "Research", parentId: null, projectMemory: "", sortOrder: 0 };
     expect(decodeWorkspaceChatsResponse({
-      chats: [{ ...summary, defaultKnowledgePlan: knowledgePlan }],
-      folders: [folder]
-    })).toEqual({
-      chats: [{ ...summary, defaultKnowledgePlan: canonicalKnowledgePlan }],
-      folders: [{ ...folder, defaultKnowledgePlan: canonicalKnowledgePlan }]
-    });
-    expect(decodeWorkspaceChatsResponse({
-      chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["same", "same"] } }],
-      folders: []
-    })).toBeNull();
-    expect(decodeWorkspaceChatsResponse({
-      chats: [summary],
-      folders: [{
-        ...folder,
-        defaultKnowledgePlan: {
-          baseIds: Array.from({ length: 129 }, (_, index) => `base-${index}`)
-        }
-      }]
-    })).toBeNull();
+      chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["base-a"] }, projectId: null }],
+      folders: [{ ...folder, defaultKnowledgePlan: { baseIds: ["base-a"] } }]
+    })).toEqual({ chats: [summary], folders: [folder] });
   });
 
   it("rejects missing or malformed required summary fields", () => {
@@ -543,6 +515,7 @@ describe("chat wire contracts", () => {
         url: "https://example.com/citation"
       }],
       contextTruncation: { approxDroppedTokens: 100, droppedMessages: 2 },
+      // Retired Knowledge outputs an older server may still send are dropped.
       knowledgeCitations: [{
         baseName: "Policies",
         documentVersionNumber: 3,
@@ -594,13 +567,6 @@ describe("chat wire contracts", () => {
         title: "Direct citation",
         url: "https://example.com/citation"
       }],
-      knowledgeCitations: [{
-        handle: "K1.1"
-      }],
-      knowledgeState: {
-        answer: "insufficient_evidence",
-        scope: "partial_sources_ready"
-      },
       reasoningText: ["Checked reasoning"],
       sources: [{
         rank: 1,
@@ -614,15 +580,9 @@ describe("chat wire contracts", () => {
     );
   });
 
-  it("drops malformed direct output fields and duplicate Knowledge handles one by one", () => {
+  it("drops malformed direct output fields one by one", () => {
     const artifactSummary = {
       citations: [],
-      knowledgeCitations: [{
-        baseName: "Policies",
-        fileName: "handbook.pdf",
-        handle: "K1.1",
-        page: 12
-      }],
       reasoningText: [],
       sources: []
     };
@@ -633,7 +593,7 @@ describe("chat wire contracts", () => {
       })
     })?.messages[0]?.artifactSummary;
 
-    expect(decode(artifactSummary)).toEqual({ ...artifactSummary, knowledgeCitations: [{ handle: "K1.1" }] });
+    expect(decode(artifactSummary)).toEqual(artifactSummary);
     expect(decode({ ...artifactSummary, reasoningText: "not-an-array" })?.reasoningText).toEqual([]);
     expect(decode({
       ...artifactSummary,
@@ -642,13 +602,6 @@ describe("chat wire contracts", () => {
         { rank: 2, title: "Safe", url: "https://example.com/safe" }
       ]
     })?.sources).toEqual([{ rank: 2, title: "Safe", url: "https://example.com/safe" }]);
-    expect(decode({
-      ...artifactSummary,
-      knowledgeCitations: [
-        artifactSummary.knowledgeCitations[0],
-        artifactSummary.knowledgeCitations[0]
-      ]
-    })?.knowledgeCitations).toEqual([{ handle: "K1.1" }]);
   });
 
   it("never lets an optional answer output invalidate its message, page or terminal update", () => {
@@ -1147,7 +1100,6 @@ function boundProjection(rowOverrides: Record<string, unknown> = {}, overrides: 
     ownerDisplayName: "Alex",
     rows: {
       controls: chatRow({ assistantValue: {}, provenance: "default", value: { temperature: 0.4 } }),
-      knowledge: chatRow({ assistantValue: { mode: "inherit" }, provenance: "default", value: { mode: "all_my_knowledge" } }),
       model: chatRow(),
       search: chatRow({ assistantValue: { hiddenCount: 1, mode: "all_selected", optionIds: [] }, provenance: "chat", value: { mode: "off" } }),
       skills: chatRow({ assistantValue: { links: [], mode: "auto" }, policy: "fixed", value: { links: [], mode: "auto" } }),
@@ -1203,8 +1155,11 @@ describe("chat Assistant projection", () => {
       model: chatRow({ deviation: { dependencies: [{ kind: "model", name: "Gemini" }], reason: "model_access" },
         provenance: "fallback", value: { mode: "model", modelId: "model-2" } })
     }, { owned: true }))).not.toBeNull();
-    const { skills: _skills, ...fiveRows } = boundProjection().rows;
-    expect(decodeChatAssistantProjection({ ...boundProjection(), rows: fiveRows })).toBeNull();
+    const { skills: _skills, ...fourRows } = boundProjection().rows;
+    expect(decodeChatAssistantProjection({ ...boundProjection(), rows: fourRows })).toBeNull();
+    // A server from before Knowledge was removed still sends its row.
+    expect(decodeChatAssistantProjection({ ...boundProjection(), rows: { ...boundProjection().rows,
+      knowledge: chatRow({ assistantValue: { mode: "inherit" }, provenance: "default", value: { mode: "none" } }) } })).toBeNull();
   });
 
   it("keeps an archived preview free of Assistant state", () => {
@@ -1219,7 +1174,6 @@ describe("chat Assistant projection", () => {
 describe("chat Assistant overrides", () => {
   const overrides = {
     controls: { temperature: 0.2 },
-    knowledge: { mode: "all_my_knowledge" },
     model: { mode: "model", modelId: "model-2" },
     search: { mode: "off" },
     skills: { mode: "off" },
@@ -1229,6 +1183,10 @@ describe("chat Assistant overrides", () => {
   it("decodes stored overrides, the deleted marker and an empty column", () => {
     expect(decodeStoredChatAssistantOverrides(null)).toEqual({ kind: "overrides", overrides: {} });
     expect(decodeStoredChatAssistantOverrides(overrides)).toEqual({ kind: "overrides", overrides });
+    // A Knowledge row stored before Knowledge was removed is ignored, whatever it holds.
+    for (const knowledge of [{ mode: "all_my_knowledge" }, { mode: "inherit" }, null]) {
+      expect(decodeStoredChatAssistantOverrides({ ...overrides, knowledge })).toEqual({ kind: "overrides", overrides });
+    }
     expect(decodeStoredChatAssistantOverrides({ search: { mode: "all_selected", optionIds: ["web"] } }))
       .toEqual({ kind: "overrides", overrides: { search: { mode: "all_selected", optionIds: ["web"] } } });
     expect(decodeStoredChatAssistantOverrides(JSON.parse(JSON.stringify(CHAT_ASSISTANT_DELETED_MARKER))))
@@ -1240,7 +1198,6 @@ describe("chat Assistant overrides", () => {
       { search: { mode: "inherit" } },
       { model: { mode: "model", modelId: null } },
       { tools: { mode: "exact", serverIds: ["jira"] } },
-      { knowledge: { mode: "inherit" } },
       { skills: { links: [], mode: "auto" } },
       { prompt: "x" },
       ["search"]

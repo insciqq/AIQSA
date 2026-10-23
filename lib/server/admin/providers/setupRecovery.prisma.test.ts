@@ -58,7 +58,7 @@ async function fixture(family: "anthropic" | "gemini" | "openrouter", run: (cont
 
 describe("persisted provider setup recovery", () => {
   it("persists an OpenRouter 400, admits editing only, and admits generation after Retry without repeating editing", async () => {
-    await fixture("openrouter", async ({ db, addModel, connectionId, credentialId, credentialVersionId }) => {
+    await fixture("openrouter", async ({ db, addModel, connectionId, credentialId, credentialVersionId, userId }) => {
       const preset = providerSetupModels("openrouter").find((preset) => preset.configuration.modelClass === "image")!;
       const configuration = initialModelConfiguration({ ...preset.configuration, image: { profile: "openrouter",
         parameters: { resolution: { type: "enum", values: ["1K", "2K", "4K"] } } } });
@@ -72,7 +72,7 @@ describe("persisted provider setup recovery", () => {
       await db.systemModelPolicy.upsert({ where: { id: "installation" },
         create: { id: "installation", imageProviderModelId: modelId },
         update: { imageProviderModelId: modelId } });
-      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" }))
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId }))
         .toEqual({ ok: false, reason: "verification_required", providerModelId: modelId, source: "organization" });
       const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toBuffer();
       const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: {
@@ -92,11 +92,11 @@ describe("persisted provider setup recovery", () => {
       expect(partial).toMatchObject({ credentialId, credentialVersionId, evidence: { capabilitySetup: {
         checks: { imageGeneration: "incomplete", imageEditing: "verified" }, attempts: { imageGeneration: {
           reason: "invalid_input", httpStatus: 400, imageFailure: { category: "invalid_parameter", parameter: "resolution" } } } } } });
-      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" })).toMatchObject({ ok: true,
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId })).toMatchObject({ ok: true,
         plan: { snapshot: { model: { capabilities: { imageGeneration: false, imageEditing: true } } } } });
       expect((await check()).failed).toEqual([]);
       expect(fetchFn).toHaveBeenCalledTimes(3);
-      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" })).toMatchObject({ ok: true,
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId })).toMatchObject({ ok: true,
         plan: { snapshot: { model: { capabilities: { imageGeneration: true, imageEditing: true } } } } });
       // The administrator list marks the same published model usable again.
       const roles = await createAdminSystemModelPolicyService(db).list();

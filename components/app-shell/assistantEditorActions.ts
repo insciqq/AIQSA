@@ -109,7 +109,6 @@ function serverErrors(
 export function currentChatSetup(): AssistantChatSetup {
   const controls = useComposerControlStore.getState();
   const assistant = controls.assistant?.state === "bound" ? controls.assistant : null;
-  const selection = controls.knowledgeSelection;
   const mcp = controls.mcpSelection;
   const mcpSettings = useMcpSettingsStore.getState();
   const links: AssistantSkillLink[] = (assistant?.includedSkills ?? []).map((skill) => ({
@@ -121,11 +120,6 @@ export function currentChatSetup(): AssistantChatSetup {
   }
   return {
     backgroundMode: controls.backgroundMode,
-    knowledge: selection.mode === "explicit" ||
-      (selection.mode === "inherited" && selection.baseIds.length + selection.sourceIds.length > 0)
-      ? { baseIds: selection.baseIds, mode: "explicit", sourceIds: selection.sourceIds }
-      : selection.mode === "none" ? { mode: "none" }
-        : selection.mode === "all_my_knowledge" ? { mode: "all" } : { mode: "inherit" },
     maxOutputTokens: controls.maxOutputTokens,
     mcp: mcp.mode === "exact"
       ? { mode: "exact", serverIds: mcp.serverIds }
@@ -585,10 +579,6 @@ export function buildAssistantEditorView(
       ? () => handlers.onUseInChat(savedId)
       : null,
     options: {
-      knowledgeBases: input.knowledgeBases,
-      knowledgeSources: input.knowledgeSources,
-      knowledgeDataError: input.knowledgeDataError,
-      knowledgeDataState: input.knowledgeDataState,
       mcpServers: [
         ...snapshot.mcpOptions,
         ...selectedServerIds
@@ -614,7 +604,6 @@ export function buildAssistantEditorView(
         providerLabel: providerNames.get(model.provider) ?? model.provider,
         supportsTools: model.capabilities.toolCalling
       })),
-      onRetryKnowledge: input.retryKnowledge,
       searchOptions: (catalog?.searchStrategies ?? [])
         .filter((strategy) => strategy.kind !== "none")
         .map((strategy) => ({ id: strategy.strategyId, label: strategy.displayName })),

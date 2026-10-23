@@ -41,7 +41,7 @@ export type AnswerReviewStepStartInput = Readonly<{
   admissionId: string;
   /**
    * The chat's current controls: Search (reconciled to the step's model),
-   * MCP, Workspace, Knowledge, Skills and the time zone. Prompt text, models,
+   * MCP, Workspace, Skills and the time zone. Prompt text, models,
    * params and drafts are never taken from here.
    */
   controls: Readonly<Record<string, unknown>>;
@@ -103,7 +103,7 @@ async function stopSession(prisma: PrismaClient, sessionId: string, stopReason: 
 /** Send refusals that end the session: the step can never run as it is. */
 function refusalStopReason(status: number, code: string | null): AnswerReviewStopReason | null {
   if (status === 429) return "budget";
-  if (code && ["answer_review_assistant_unsupported", "answer_review_knowledge_unsupported",
+  if (code && ["answer_review_assistant_unsupported",
     "answer_review_model_unsupported", "provider_not_available", "credential_assignment_ambiguous", "model_not_available"].includes(code)) {
     return "error";
   }
@@ -179,8 +179,8 @@ export async function startAnswerReviewStep(
     expectedActiveLeafId: snapshot.lastMessageId,
     modelId: model.modelId,
     provider: model.provider,
-    // A personal send names its Search; without one the step searches nothing.
-    ...(!snapshot.chat.projectId && controls.searchPlan === undefined ? { searchPlan: { mode: "all_selected", optionIds: [] } } : {})
+    // A send names its Search; without one the step searches nothing.
+    ...(controls.searchPlan === undefined ? { searchPlan: { mode: "all_selected", optionIds: [] } } : {})
   };
   const chatId = snapshot.session.chatId;
   const response = await createSendMessageHandler({

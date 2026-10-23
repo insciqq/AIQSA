@@ -93,7 +93,7 @@ function harness(input: {
 }
 
 async function run(h: ReturnType<typeof harness>, query: { code?: string; error?: string } = { code: "valid-code" }) {
-  const started = await h.start(new Request("https://aiqsa.example/api/auth/oauth/oidc?next=%2Fprojects"), { params: { provider: "oidc" } });
+  const started = await h.start(new Request("https://aiqsa.example/api/auth/oauth/oidc?next=%2Flibrary"), { params: { provider: "oidc" } });
   const location = new URL(started.headers.get("location")!);
   const flowToken = readCookie(started.headers.get("set-cookie"), OAUTH_FLOW_COOKIE_NAME)!;
   idp.state.nonce = location.searchParams.get("nonce") ?? "";
@@ -129,7 +129,7 @@ describe("OIDC through the OAuth start and callback", () => {
     expect(location.searchParams.get("redirect_uri")).toBe("https://aiqsa.example/api/auth/oauth/oidc/callback");
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("https://aiqsa.example/projects");
+    expect(response.headers.get("location")).toBe("https://aiqsa.example/library");
     expect(sessionCookie(response)).toBeTruthy();
     expect(h.recordOutcome).toHaveBeenCalledWith("accepted");
 
@@ -187,7 +187,7 @@ describe("OIDC through the OAuth start and callback", () => {
       idp.state.idTokenClaims = input.claims;
       const h = harness({ config: oidcConfig({ idpLogout: true }), encryptionKey: input.encryptionKey });
       const { response } = await run(h);
-      expect(response.headers.get("location")).toBe("https://aiqsa.example/projects");
+      expect(response.headers.get("location")).toBe("https://aiqsa.example/library");
       expect(sessionCookie(response)).toBeTruthy();
       expect(h.settle.mock.calls[0]![0].session).not.toHaveProperty("idTokenHint");
     }
@@ -253,8 +253,8 @@ describe("OIDC auto-redirect", () => {
   const params = (value: Record<string, string>) => value;
 
   it("sends /login to the OIDC start with the next path", () => {
-    expect(oidcAutoRedirectPath({ config: oidcConfig({ autoRedirect: true }), nextPath: "/projects?tab=a", params: {} }))
-      .toBe("/api/auth/oauth/oidc?next=%2Fprojects%3Ftab%3Da");
+    expect(oidcAutoRedirectPath({ config: oidcConfig({ autoRedirect: true }), nextPath: "/library?tab=a", params: {} }))
+      .toBe("/api/auth/oauth/oidc?next=%2Flibrary%3Ftab%3Da");
   });
 
   it.each([

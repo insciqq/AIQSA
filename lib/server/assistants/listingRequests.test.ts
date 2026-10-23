@@ -152,7 +152,6 @@ describe("Assistant listing review rows", () => {
     controls: { policy: "fixed", value: { reasoningEffort: "high" } },
     search: { policy: "adjustable", value: { mode: "model_choice", optionIds: ["web", "private-search"] } },
     tools: { policy: "fixed", value: { mode: "exact", serverIds: ["shared-mcp", "owner-mcp"] } },
-    knowledge: { policy: "fixed", value: { mode: "explicit", baseIds: ["shared-kb", "owner-kb"], sourceIds: ["owner-source"] } },
     skills: { policy: "adjustable", value: { mode: "auto", links: [{ skillId: "listed-skill", delivery: "always" }, { skillId: "draft-skill", delivery: "on_demand" }] } }
   };
   const reviewer = (models: string[] = []): ListingReviewer => ({
@@ -162,13 +161,10 @@ describe("Assistant listing review rows", () => {
       modelById: new Map(models.map((id) => [id, { displayName: `Model ${id}`, modelId: id } as CatalogWireModel]))
     },
     names: {
-      knowledgeBases: new Map([["shared-kb", "Company handbook"]]),
-      knowledgeSources: new Map(),
       mcpServers: new Map([["shared-mcp", "Docs search"], ["admin-mcp", "Admin tools"]]),
       searchOptions: new Map([["web", "Web"], ["unused", "Unused option"]]),
       skills: new Map([["listed-skill", "Style guide"]])
-    },
-    visibleKnowledge: { baseIds: ["shared-kb"], sourceIds: [] }
+    }
   });
 
   it("identifies and names only what the administrator can use and counts the rest", () => {
@@ -178,28 +174,25 @@ describe("Assistant listing review rows", () => {
       controls: { policy: "fixed", value: { reasoningEffort: "high" } },
       search: { policy: "adjustable", value: { mode: "model_choice", optionIds: ["web"], hiddenCount: 1 } },
       tools: { policy: "fixed", value: { mode: "exact", serverIds: ["shared-mcp"], hiddenCount: 1 } },
-      knowledge: { policy: "fixed", value: { mode: "explicit", baseIds: ["shared-kb"], sourceIds: [], hiddenCount: 2 } },
       skills: { policy: "adjustable", value: { mode: "auto", links: [{ skillId: "listed-skill", delivery: "always" }], hiddenCount: 1 } }
     });
     expect(review.names).toEqual({
-      knowledgeBases: [{ id: "shared-kb", name: "Company handbook" }], knowledgeSources: [],
       mcpServers: [{ id: "shared-mcp", name: "Docs search" }], models: [],
       searchOptions: [{ id: "web", name: "Web" }], skills: [{ id: "listed-skill", name: "Style guide" }]
     });
-    expect(JSON.stringify(review)).not.toMatch(/owner-model|private-search|owner-mcp|owner-kb|owner-source|draft-skill|Admin tools|Unused option/u);
+    expect(JSON.stringify(review)).not.toMatch(/owner-model|private-search|owner-mcp|draft-skill|Admin tools|Unused option/u);
     expect(reviewRowsFor(storedRows, reviewer(["owner-model"])).names.models).toEqual([{ id: "owner-model", name: "Model owner-model" }]);
   });
 
-  it("keeps inherit, Off and None distinct and names nothing for them", () => {
+  it("keeps inherit and Off distinct and names nothing for them", () => {
     const review = reviewRowsFor({ ...storedRows,
       model: { policy: "adjustable", value: { mode: "inherit" } },
       controls: { policy: "adjustable", value: {} },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       tools: { policy: "fixed", value: { mode: "off" } },
-      knowledge: { policy: "fixed", value: { mode: "none" } },
       skills: { policy: "fixed", value: { mode: "off", links: [] } } }, reviewer(["owner-model"]));
     expect(review.rows).toMatchObject({ model: { value: { mode: "inherit" } }, search: { value: { mode: "inherit" } },
-      tools: { value: { mode: "off" } }, knowledge: { value: { mode: "none" } }, skills: { value: { mode: "off", links: [] } } });
+      tools: { value: { mode: "off" } }, skills: { value: { mode: "off", links: [] } } });
     expect(Object.values(review.names).flat()).toEqual([]);
   });
 });
@@ -209,8 +202,8 @@ describe("Assistant listing request detail", () => {
     version, archivedAt, owner: { displayName: "Camila" } });
   const definitionRecord = { version: 2, name: "Writing editor", description: "Edits drafts", category: null, avatar: {}, systemPrompt: "Be brief.",
     answerRules: null, responseReminder: "", starterPrompts: ["Tighten this"], modelPolicy: "fixed", controlsPolicy: "adjustable",
-    searchPolicy: "fixed", toolsPolicy: "fixed", knowledgePolicy: "fixed", skillsPolicy: "fixed", mcpMode: "off", mcpServerIds: [],
-    searchPlan: { mode: "off" }, knowledgeSelection: { mode: "explicit", baseIds: ["owner-kb"], sourceIds: [], version: 1 },
+    searchPolicy: "fixed", toolsPolicy: "fixed", skillsPolicy: "fixed", mcpMode: "off", mcpServerIds: [],
+    searchPlan: { mode: "off" },
     skillsMode: "auto", providerModelId: "owner-model", runControls: {}, skillLinks: [] };
 
   function detailFixture(assistant: ReturnType<typeof assistantRecord>) {
@@ -222,8 +215,7 @@ describe("Assistant listing request detail", () => {
     };
     const loadReviewer = vi.fn(async (): Promise<ListingReviewer> => ({
       catalog: { accessibleMcpServerIds: new Set(), entitledSearchOptionIds: new Set(), modelById: new Map() },
-      names: { knowledgeBases: new Map(), knowledgeSources: new Map(), mcpServers: new Map(), searchOptions: new Map(), skills: new Map() },
-      visibleKnowledge: { baseIds: [], sourceIds: [] }
+      names: { mcpServers: new Map(), searchOptions: new Map(), skills: new Map() }
     }));
     const service = createAssistantListingService({ $transaction: (write: (client: unknown) => unknown) => write(tx) } as unknown as PrismaClient,
       { loadReviewer });
@@ -233,12 +225,11 @@ describe("Assistant listing request detail", () => {
   it("projects the rows for the administrator as the viewer", async () => {
     const f = detailFixture(assistantRecord(2));
     const detail = await f.service.detail("admin", "request");
-    expect(f.loadReviewer).toHaveBeenCalledWith(f.tx, "admin", expect.objectContaining({ knowledge: expect.anything() }));
+    expect(f.loadReviewer).toHaveBeenCalledWith(f.tx, "admin", expect.objectContaining({ model: expect.anything() }));
     expect(detail.definition).toMatchObject({ version: 2, instructions: "Be brief.", rows: {
-      model: { policy: "fixed", value: { mode: "model", modelId: null } },
-      knowledge: { policy: "fixed", value: { mode: "explicit", baseIds: [], sourceIds: [], hiddenCount: 1 } }
+      model: { policy: "fixed", value: { mode: "model", modelId: null } }
     } });
-    expect(JSON.stringify(detail)).not.toMatch(/owner-kb|owner-model/u);
+    expect(JSON.stringify(detail)).not.toMatch(/owner-model/u);
   });
 
   it.each([["outdated", assistantRecord(3)], ["archived", assistantRecord(2, new Date())]])("returns no definition or rows for an %s request", async (_state, assistant) => {

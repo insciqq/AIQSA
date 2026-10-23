@@ -72,7 +72,6 @@ export async function installMatrixCatalogFixture(
   );
   const fixtureDefaults = fixtureCatalog.defaults as Record<string, unknown>;
   const chatDefaults = decodeOptionalChatDefaults({
-    knowledgePlan: fixtureDefaults.knowledgePlan,
     mcpMode: fixtureDefaults.mcpMode,
     sendWithEnter: fixtureDefaults.sendWithEnter
   }) ?? INSTALLATION_CHAT_DEFAULTS;
@@ -81,7 +80,6 @@ export async function installMatrixCatalogFixture(
     // Off unless a spec opts in, so the permission banner never shifts fixture layouts.
     browserNotificationsEnabled: fixtureDefaults.browserNotificationsEnabled === true,
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
-    defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
     hasPersonalModelDefault: fixtureCatalog.defaults.hasPersonalModelDefault,
     modelPreferenceSource: fixtureCatalog.defaults.modelPreferenceSource,

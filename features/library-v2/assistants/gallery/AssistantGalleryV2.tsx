@@ -22,7 +22,7 @@ import "../assistants.css";
 
 /** PRD 5.2: one sentence that tells an Assistant apart from Instructions and Skills. */
 export const ASSISTANTS_DESCRIPTION =
-  "An Assistant is a saved chat setup: its own instructions, model, tools and knowledge. Pick one for a chat; your Chat defaults fill whatever it leaves open.";
+  "An Assistant is a saved chat setup: its own instructions, model and tools. Pick one for a chat; your Chat defaults fill whatever it leaves open.";
 
 const filterLabels: Readonly<Record<AssistantGalleryFilter, string>> = {
   all: "All",

@@ -35,7 +35,7 @@ function draft(overrides: Partial<AssistantDraft> = {}): AssistantDraft {
     answerRules: null, avatar: assistantAvatarRecipeFromBytes(new Uint8Array(ASSISTANT_AVATAR_RECIPE_MIN_BYTES)), category: null, description: "Reviews code",
     name: "Reviewer", responseReminder: "", starterPrompts: ["Review my MR"], systemPrompt: "Review the code.\nBe brief.\n",
     rows: {
-      controls: { policy: "adjustable", value: {} }, knowledge: { policy: "adjustable", value: { mode: "none" } },
+      controls: { policy: "adjustable", value: {} },
       model: { policy: "fixed", value: { mode: "model", modelId: "codex-lb:gpt-5.5" } },
       search: { policy: "adjustable", value: { mode: "inherit" } }, skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
       tools: { policy: "adjustable", value: { mode: "inherit" } }
@@ -57,7 +57,7 @@ function service(overrides: Partial<AgentAssistantService> = {}) {
       return { kind: "changed", result: result(written), value: written };
     }),
     deletionConsequences: vi.fn<AgentAssistantService["deletionConsequences"]>(async () => ({ audiences: { groupNames: ["Backend"], installation: false },
-      chatCount: 4, hiddenProjectCount: 0, pendingListingRequest: false, projects: [], version: 3 })),
+      chatCount: 4, pendingListingRequest: false, version: 3 })),
     get: vi.fn<AgentAssistantService["get"]>(async (id) => id === "asst_1" ? reviewer : null),
     linkableSkills: vi.fn<AgentAssistantService["linkableSkills"]>(async () => [{ name: "Report writer", own: true, skillId: "skill-report" },
       { name: "Notes", own: true, skillId: "skill-notes" }]),
@@ -111,7 +111,7 @@ describe("manage_assistant", () => {
     expect(written).toMatchObject({ name: "Reporter", starterPrompts: ["Monday report"], systemPrompt: "Write weekly reports.", rows: {
       model: { policy: "fixed", value: { mode: "model", modelId: "codex-lb:gpt-5.5" } }, search: { policy: "adjustable", value: { mode: "off" } },
       skills: { value: { links: [{ delivery: "always", skillId: "skill-report" }, { delivery: "on_demand", skillId: "skill-notes" }], mode: "auto" } },
-      tools: { value: { mode: "exact", serverIds: ["srv_gitlab"] } }, knowledge: { value: { mode: "none" } } } });
+      tools: { value: { mode: "exact", serverIds: ["srv_gitlab"] } } } });
     expect(decodeAssistantDraft(written).ok).toBe(true);
     expect(json(result)).toMatchObject({ action: "created", assistant: { assistantId: "asst_new", name: "Reporter", version: 1 }, chat: "/assistant/asst_new", saved: true });
     expect(card(result)).toEqual({ action: "created", assistantId: "asst_new", audience: null, changes: [], consequences: null, definitionVersion: 1,
@@ -195,8 +195,8 @@ describe("manage_assistant", () => {
     const long = "Platform & infrastructure guild ".repeat(10).trim();
     const astral: AgentAssistant = { ...reviewer, draft: { ...reviewer.draft, name: "𝔸".repeat(80) } };
     const fake = service({ get: vi.fn(async () => astral),
-      deletionConsequences: vi.fn(async () => ({ audiences: { groupNames: [long], installation: false }, chatCount: 0, hiddenProjectCount: 0,
-        pendingListingRequest: false, projects: [], version: 3 })) });
+      deletionConsequences: vi.fn(async () => ({ audiences: { groupNames: [long], installation: false }, chatCount: 0,
+        pendingListingRequest: false, version: 3 })) });
     const first = card(await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context));
     const second = card(await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context));
     expect(first).toMatchObject({ consequences: { groupNames: [`${long.slice(0, 199)}…`] }, name: `${"𝔸".repeat(39)}…`, proposalId: expect.any(String) });

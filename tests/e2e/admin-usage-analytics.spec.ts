@@ -9,7 +9,9 @@ import { textMessageContent } from "../../lib/domain/content";
  * users and groups, a few models, daily chat and scheduled runs over two
  * months (so the previous window has data) and system work beside them: chat
  * titles and Memory processing with known prices, Memory search and Knowledge
- * indexing embeddings without one. Screenshots cover every layout and theme.
+ * indexing embeddings without one (Knowledge indexing is history from before
+ * Knowledge was removed, which keeps its label). Screenshots cover every
+ * layout and theme.
  */
 const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial", timeout: 300_000 });

@@ -18,7 +18,6 @@ import {
   composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
   pendingSendHasNewerInput,
-  projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore,
   type ComposerOperationRecovery,
@@ -77,7 +76,6 @@ import type { SearchPlanMode } from "@/lib/domain/search";
 import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
 import {
   boundComposerAssistant,
-  type ComposerKnowledgePlanSource,
   type ComposerMcpSelection
 } from "@/components/app-shell/composerControlStore";
 import {
@@ -93,7 +91,6 @@ import {
   mcpApprovalContinuationText,
   type McpApprovalContinuationOutcome
 } from "@/lib/contracts/mcpApprovals";
-import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
 type MutableRef<T> = { current: T };
 
@@ -118,8 +115,6 @@ type MessageRunControlSnapshot = {
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
   modelId: string;
-  knowledgeSelection: KnowledgeSelection;
-  knowledgePlanSource: ComposerKnowledgePlanSource;
   mcpSelection: ComposerMcpSelection;
   skillsMode: "auto" | "off";
   params: Record<string, unknown>;
@@ -166,7 +161,6 @@ type MessageRunActionsInput = {
     chatId: string | null,
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ): Promise<ChatDetail | null>;
-  refreshProjectWorkspace?(): Promise<boolean>;
   resolveCatalog?(): Catalog | null;
   /**
    * Whether the installation offers Workspace now (loaded, enabled, runner
@@ -338,7 +332,6 @@ export function useMessageRunActions({
   persistActiveLeaf,
   primeAnswerSound,
   refreshActiveChat,
-  refreshProjectWorkspace,
   resolveCatalog,
   resolveWorkspaceInstallationAvailable,
   refreshWorkspaceAvailability,
@@ -376,12 +369,10 @@ export function useMessageRunActions({
   ): MessageRunControlSnapshot {
     const controls = useComposerControlStore.getState();
     const {
-      knowledgeSelection,
       selectedModelId,
       selectedProvider,
       selectedSearchOptionIds,
       searchPlanMode,
-      knowledgePlanSource,
       mcpSelection,
       selectedSkills
     } = controls;
@@ -458,12 +449,6 @@ export function useMessageRunActions({
           }
         : null,
       controlDefaults: { ...buildControlDraft() },
-      knowledgeSelection: {
-        ...knowledgeSelection,
-        baseIds: [...knowledgeSelection.baseIds],
-        sourceIds: [...knowledgeSelection.sourceIds]
-      },
-      knowledgePlanSource,
       mcpSelection: { ...mcpSelection },
       skillsMode: controls.skillsMode,
       model,
@@ -542,13 +527,9 @@ export function useMessageRunActions({
    * the chat's binding: the request names the Assistant only when the chat
    * is created, and carries the ordinary keys only for rows changed for this
    * chat. Regenerate, edit-and-branch and starters follow the same rule.
-   * The first message of a new Project chat always names its Assistant,
-   * `null` without one, so the server never applies the Project default
-   * implicitly.
    */
   function runControlPayload(
     snapshot: MessageRunControlSnapshot,
-    projectScoped: boolean,
     newChat = false
   ) {
     const effectiveSearchPlan = reconcileModelSearchPlan(
@@ -563,7 +544,6 @@ export function useMessageRunActions({
       const changed = new Set(snapshot.assistant.changedRows);
       return {
         ...(newChat && snapshot.assistant.id ? { assistantId: snapshot.assistant.id } : {}),
-        ...(changed.has("knowledge") ? { knowledgePlan: snapshot.knowledgeSelection } : {}),
         ...(changed.has("tools") && snapshot.mcpSelection.mode !== "exact"
           ? { mcp: { mode: snapshot.mcpSelection.mode } }
           : {}),
@@ -580,12 +560,8 @@ export function useMessageRunActions({
     }
 
     return {
-      ...(newChat && projectScoped ? { assistantId: null } : {}),
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
-      ...(snapshot.knowledgePlanSource === "explicit"
-        ? { knowledgePlan: snapshot.knowledgeSelection }
-        : {}),
       params: snapshot.params,
       ...(snapshot.mcpSelection.mode === "auto" || snapshot.mcpSelection.mode === "exact"
         ? {}
@@ -593,7 +569,7 @@ export function useMessageRunActions({
       ...(snapshot.skillsMode === "off" ? { skills: { mode: "off" } } : {}),
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,
-      ...(!projectScoped && snapshot.searchPreferenceSource
+      ...(snapshot.searchPreferenceSource
         ? {
             searchPreferencePlan: snapshot.searchPreferencePlan,
             searchPreferenceSource: snapshot.searchPreferenceSource
@@ -744,7 +720,7 @@ export function useMessageRunActions({
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
             admissionId,
-            ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId)),
+            ...runControlPayload(runControlSnapshot),
             ...answerReviewPayload(runControlSnapshot)
           }),
           headers: {
@@ -999,7 +975,6 @@ export function useMessageRunActions({
       return;
     }
     const artifactBlockReason = artifactUnavailableReason({
-      project: Boolean(activeChat?.projectId || projectIdFromComposerSessionKey(sourceSessionKey)),
       temporary: (activeChat?.pendingInitialMemoryMode ?? activeChat?.memoryMode ?? composerSessionModeFromKey(sourceSessionKey)) === "TEMPORARY"
     });
     if ((sourceSession.artifactCreate || sourceSession.artifactEdit) && artifactBlockReason) {
@@ -1032,11 +1007,10 @@ export function useMessageRunActions({
         text: `Sent without web search: ${optionName} is not available for ${modelForSend.displayName}.`
       });
     }
-    // The composer's server-owned PDF route preview for exactly this model and
-    // Project; unknown (null) keeps the local readiness checks.
+    // The composer's server-owned PDF route preview for exactly this model;
+    // unknown (null) keeps the local readiness checks.
     const pdfRoute = sourceSession.attachments.some((attachment) => attachment.kind === "pdf")
       ? latestChatPdfRouteAvailability({
-          projectId: activeChat?.projectId ?? projectIdFromComposerSessionKey(sourceSessionKey) ?? null,
           providerConnectionId: modelForSend.provider,
           providerModelId: modelForSend.modelId
         })
@@ -1176,15 +1150,9 @@ export function useMessageRunActions({
         currentChatSummary = chat;
         parentLeafForSend = chat.activeLeafMessageId;
       }
-      const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
       const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
-      startedFromBlankWorkspace = startedFromBlankWorkspace || Boolean(projectDraftForSend);
       const sendControlPayload = {
-        ...runControlPayload(
-          runControlSnapshot,
-          Boolean(currentChatSummary?.projectId),
-          Boolean(personalDraftForSend || projectDraftForSend)
-        ),
+        ...runControlPayload(runControlSnapshot, Boolean(personalDraftForSend)),
         ...answerReviewPayload(runControlSnapshot)
       };
 
@@ -1302,7 +1270,6 @@ export function useMessageRunActions({
                 versionId: sendToken.artifactEdit.versionId
               } } : {}),
               ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
-              ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
               ...sendControlPayload
             }),
@@ -1313,15 +1280,9 @@ export function useMessageRunActions({
             signal
           });
           signal.throwIfAborted();
-          if (response.ok && (projectDraftForSend || personalDraftForSend)) {
+          if (response.ok && personalDraftForSend) {
             useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
-              chat.id === chatIdForSend
-                ? {
-                    ...chat,
-                    ...(personalDraftForSend ? { pendingPersonalDraft: undefined } : {}),
-                    ...(projectDraftForSend ? { pendingProjectDraft: undefined } : {})
-                  }
-                : chat
+              chat.id === chatIdForSend ? { ...chat, pendingPersonalDraft: undefined } : chat
             ));
           }
           return response;
@@ -1368,18 +1329,6 @@ export function useMessageRunActions({
           ...(attachmentsSendableWithoutWorkspace(sendToken.attachments, modelForSend, pdfRoute)
             ? ["send_without_workspace" as const] : [])
         ];
-      }
-      if (
-        refreshProjectWorkspace &&
-        (result.failureCode === "project_setup_required" ||
-          result.failureCode === "project_default_model_unavailable")
-      ) {
-        try {
-          await refreshProjectWorkspace();
-        } catch {
-          // The typed admission failure remains authoritative when canonical
-          // readiness resynchronization is temporarily unavailable.
-        }
       }
       if (result.failureCode === "memory_intent_confirmation_required") {
         sendFailureHandled = true;
@@ -1496,13 +1445,8 @@ export function useMessageRunActions({
         currentChatSummary = chat;
         parentLeafForSend = chat.activeLeafMessageId;
       }
-      const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
       const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
-      const starterControlPayload = runControlPayload(
-        runControlSnapshot,
-        Boolean(currentChatSummary?.projectId),
-        Boolean(personalDraftForSend || projectDraftForSend)
-      );
+      const starterControlPayload = runControlPayload(runControlSnapshot, Boolean(personalDraftForSend));
 
       const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
       if (activeSend && !activeSend.answerComplete) {
@@ -1595,7 +1539,6 @@ export function useMessageRunActions({
               content: { blocks: contentBlocks },
               expectedActiveLeafId: parentLeafForSend,
               ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
-              ...(projectDraftForSend ? { projectDraft: projectDraftForSend } : {}),
               ...initialMemoryPayload,
               ...starterControlPayload
             }),
@@ -1604,15 +1547,9 @@ export function useMessageRunActions({
             signal
           });
           signal.throwIfAborted();
-          if (response.ok && (projectDraftForSend || personalDraftForSend)) {
+          if (response.ok && personalDraftForSend) {
             useWorkspaceStore.getState().updateChats((current) => current.map((chat) =>
-              chat.id === chatIdForSend
-                ? {
-                    ...chat,
-                    ...(personalDraftForSend ? { pendingPersonalDraft: undefined } : {}),
-                    ...(projectDraftForSend ? { pendingProjectDraft: undefined } : {})
-                  }
-                : chat
+              chat.id === chatIdForSend ? { ...chat, pendingPersonalDraft: undefined } : chat
             ));
           }
           return response;
@@ -1719,7 +1656,7 @@ export function useMessageRunActions({
     updateStreamChatActiveLeaf(chatId, assistantId);
     if (activeChatIdRef.current === chatId) resetThreadToLatest();
     const admissionId = randomUUID();
-    const controls = runControlPayload(runControlSnapshot, Boolean(chatSummary?.projectId));
+    const controls = runControlPayload(runControlSnapshot);
     const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
@@ -1885,7 +1822,7 @@ export function useMessageRunActions({
       provider: _provider,
       tools: _tools,
       ...controls
-    } = runControlPayload(runControlSnapshot, Boolean(chatSummary?.projectId)) as Record<string, unknown>;
+    } = runControlPayload(runControlSnapshot) as Record<string, unknown>;
     const stepControls = {
       ...controls,
       searchPlan: reconcileModelSearchPlan(stepModel, runControlSnapshot.searchPreferencePlan.optionIds,
@@ -2082,10 +2019,7 @@ export function useMessageRunActions({
       message.id === regenerationParentMessageId)?.systemTurnKind;
     const reviewedSnapshot = regeneratesUserSpeech ? runControlSnapshot : { ...runControlSnapshot, answerReview: null };
     const regenerateControlPayload = {
-      ...runControlPayload(
-        runControlSnapshot,
-        Boolean(activeChat?.projectId)
-      ),
+      ...runControlPayload(runControlSnapshot),
       ...answerReviewPayload(reviewedSnapshot)
     };
     const retryPdfPreparation = original.pdfPreparation?.some(({ phase }) => phase === "failed" || phase === "cancelled") === true;

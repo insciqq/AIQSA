@@ -10,9 +10,7 @@ import type { LibraryTabIdV2 } from "./contracts";
 import { useEffect, useRef, useState } from "react";
 import { AnswerReviewSettingsDialogV2 } from "@/features/answer-review-v2/AnswerReviewSettingsDialogV2";
 
-type ChatDefaultsView = Pick<ShellComposerView, "catalog" | "chatDefaults" | "makeModelDefault" | "useOrganizationModelDefault"> & {
-  knowledge: Pick<ShellComposerView["knowledge"], "bases">;
-};
+type ChatDefaultsView = Pick<ShellComposerView, "catalog" | "chatDefaults" | "makeModelDefault" | "useOrganizationModelDefault">;
 
 export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
   composer: ChatDefaultsView;
@@ -25,11 +23,10 @@ export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
     {defaults?.assistant ? <SettingsDefaultAssistantRowV2 assistant={defaults.assistant} /> : null}
     {defaults ? <ChatDefaultsRowsV2
       imageModel={defaults.imageModel}
-      knowledgeBases={composer.knowledge.bases}
-      knowledgePlan={defaults.knowledgePlan} mcpMode={defaults.mcpMode} skillsMode={defaults.skillsMode}
+      mcpMode={defaults.mcpMode} skillsMode={defaults.skillsMode}
       onSkillsMode={defaults.setSkillsMode} searchPlan={defaults.searchPlan}
       searchStrategies={composer.catalog?.searchStrategies ?? []}
-      onKnowledgePlan={defaults.setKnowledgePlan} onMcpMode={defaults.setMcpMode} onSearchPlan={defaults.setSearchPlan}
+      onMcpMode={defaults.setMcpMode} onSearchPlan={defaults.setSearchPlan}
       onResetSearchPlan={defaults.resetSearchPlan} searchPreferenceSource={defaults.searchPreferenceSource}
       onOpenMcp={() => onNavigate("mcp")} onOpenSkills={() => onNavigate("skills")}
     /> : <p className="v2-settings-note" role="status">Defaults are unavailable until the model catalog loads.</p>}
@@ -138,7 +135,7 @@ function SettingsDefaultAssistantRowV2({ assistant }: Readonly<{ assistant: Defa
     : assistants.find((candidate) => candidate.id === assistantId)?.name ?? "Unavailable Assistant";
   return (
     <SettingsRowV2
-      description="Starts every new personal chat. Projects use their own."
+      description="Starts every new personal chat."
       testId="settings-default-assistant"
       title="Assistant"
     >

@@ -16,9 +16,6 @@ import { parseWorkspaceOperation, type WorkspaceOperation } from "./operationFen
 import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceRuntime, WorkspaceOutputStream } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
-import { resolveProjectAccess } from "@/lib/server/projects/access";
-import { ProjectsDisabledError } from "@/lib/server/projects/disabled";
-import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { activeModelRunStatuses } from "@/lib/server/runs/prismaRepositoryShared";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
 
@@ -26,7 +23,6 @@ type LockedChat = Readonly<{
   archived: boolean;
   id: string;
   permanentDeletionAt: Date | null;
-  projectId: string | null;
   userId: string | null;
 }>;
 
@@ -46,7 +42,6 @@ function operationFor(session: MutableSession): WorkspaceOperation {
 }
 
 type AuthorizedScope = Readonly<{
-  projectId: string | null;
   userId: string;
 }>;
 
@@ -109,7 +104,7 @@ export type WorkspaceLifecycleService = Readonly<{
 }>;
 
 function storageOwner(scope: AuthorizedScope): string {
-  return scope.projectId ? `projects/${scope.projectId}` : scope.userId;
+  return scope.userId;
 }
 
 function validArchive(output: WorkspaceOutputStream, config: WorkspaceConfig): boolean {
@@ -143,26 +138,9 @@ export function createWorkspaceLifecycleService(input: Readonly<{
   runtime: WorkspaceRuntime;
   storage: StorageAdapter;
 }>): WorkspaceLifecycleService {
-  async function authorizedScope(
-    tx: Prisma.TransactionClient,
-    chat: LockedChat,
-    userId: string,
-    mutable: boolean
-  ): Promise<AuthorizedScope | null> {
+  function authorizedScope(chat: LockedChat, userId: string): AuthorizedScope | null {
     if (chat.permanentDeletionAt || chat.archived) return null;
-    if (chat.userId) {
-      return chat.userId === userId ? { projectId: null, userId } : null;
-    }
-    if (!chat.projectId) return null;
-    const access = await resolveProjectAccess(tx, {
-      minimumRole: mutable ? "CONTRIBUTOR" : "VIEWER",
-      projectId: chat.projectId,
-      requireActive: mutable,
-      userId
-    });
-    // Projects are disabled: a Project chat's Workspace is neither archived nor reset.
-    if (access && mutable && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
-    return access ? { projectId: chat.projectId, userId } : null;
+    return chat.userId === userId ? { userId } : null;
   }
 
   async function lockChat(
@@ -170,7 +148,7 @@ export function createWorkspaceLifecycleService(input: Readonly<{
     chatId: string
   ): Promise<LockedChat | null> {
     const rows = await tx.$queryRaw<LockedChat[]>(Prisma.sql`
-      SELECT "id", "userId", "projectId", "archived", "permanentDeletionAt"
+      SELECT "id", "userId", "archived", "permanentDeletionAt"
       FROM "Chat"
       WHERE "id" = ${chatId}
       FOR UPDATE
@@ -187,7 +165,7 @@ export function createWorkspaceLifecycleService(input: Readonly<{
   ): Promise<ExclusiveClaim | null> {
     return input.prisma.$transaction(async (tx) => {
       const chat = await lockChat(tx, request.chatId);
-      const scope = chat && await authorizedScope(tx, chat, request.userId, true);
+      const scope = chat && authorizedScope(chat, request.userId);
       if (!chat || !scope) {
         throw new WorkspaceLifecycleError(
           operation === "reset" ? "workspace_reset_conflict" : "workspace_not_started",
@@ -318,7 +296,6 @@ export function createWorkspaceLifecycleService(input: Readonly<{
           }
         },
         permanentDeletionAt: true,
-        projectId: true,
         userId: true,
         workspaceEnabled: true,
         receivedWorkspaceSeeds: { select: { status: true, failureCode: true }, take: 1 },
@@ -331,13 +308,7 @@ export function createWorkspaceLifecycleService(input: Readonly<{
     if (!access || access.archived || access.permanentDeletionAt) {
       throw new WorkspaceLifecycleError("workspace_not_started", 404);
     }
-    const authorized = access.userId === request.userId ||
-      access.userId === null && access.projectId !== null &&
-        await resolveProjectAccess(input.prisma, {
-          projectId: access.projectId,
-          userId: request.userId
-        });
-    if (!authorized) throw new WorkspaceLifecycleError("workspace_not_started", 404);
+    if (access.userId !== request.userId) throw new WorkspaceLifecycleError("workspace_not_started", 404);
     const snapshot = await input.availability.snapshot();
     return input.availability.project(snapshot, {
       enabled: access.workspaceEnabled,
@@ -403,10 +374,8 @@ export function createWorkspaceLifecycleService(input: Readonly<{
           await input.runtime.retireSessionOperation({ operation, runtimeSandboxId, sessionId: session.id });
           await input.prisma.$transaction(async (tx) => {
             const chat = await lockChat(tx, request.chatId);
-            const currentScope = chat && await authorizedScope(tx, chat, request.userId, true);
-            if (!chat || !currentScope ||
-              currentScope.projectId !== scope.projectId ||
-              currentScope.userId !== scope.userId) {
+            const currentScope = chat && authorizedScope(chat, request.userId);
+            if (!chat || !currentScope || currentScope.userId !== scope.userId) {
               throw new WorkspaceLifecycleError("workspace_not_started", 404);
             }
             await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "id" = ${session.id} FOR UPDATE`;
@@ -417,15 +386,6 @@ export function createWorkspaceLifecycleService(input: Readonly<{
             if (!currentSession || currentSession.id !== session.id ||
               currentSession.state !== "CREATING") {
               throw new WorkspaceLifecycleError("workspace_busy");
-            }
-            const projectUploader = scope.projectId
-              ? await tx.user.findUnique({
-                  select: { displayName: true },
-                  where: { id: request.userId }
-                })
-              : null;
-            if (scope.projectId && !projectUploader) {
-              throw new WorkspaceLifecycleError("workspace_not_started", 404);
             }
             await tx.attachment.create({
               data: {
@@ -440,13 +400,7 @@ export function createWorkspaceLifecycleService(input: Readonly<{
                 mimeType: output.mimeType,
                 origin: "WORKSPACE_EXPORT",
                 processingErrorCode: null,
-                ...(scope.projectId
-                  ? {
-                      projectId: scope.projectId,
-                      uploaderDisplayName: projectUploader!.displayName,
-                      uploaderUserId: request.userId
-                    }
-                  : { userId: request.userId }),
+                userId: request.userId,
                 status: "ready",
                 storageKey
               }
