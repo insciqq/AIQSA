@@ -53,6 +53,13 @@ describe("shell error formatting", () => {
       .toBe("Agent mode was removed. Reload the page and send again (agent_mode_removed)");
   });
 
+  it("names the recovery when the chosen model cannot run the agent", async () => {
+    expect(await responseErrorMessage(Response.json({ error: "model_tool_calling_required" }, { status: 409 }), "send_failed_409"))
+      .toBe("This model cannot use tools, which chats need. Choose a model with tool support (model_tool_calling_required)");
+    expect(await responseErrorMessage(Response.json({ error: "model_adapter_unsupported" }, { status: 409 }), "regenerate_failed_409"))
+      .toBe("This model cannot answer in chats. Choose another model (model_adapter_unsupported)");
+  });
+
   it("explains a message deletion conflict with a recovery action", async () => {
     expect(await responseErrorMessage(Response.json({ error: "message_delete_conflict" }, { status: 409 }), "message_delete_failed_409"))
       .toBe("This message is still in use by another operation. Wait for it to finish, then try deleting again (message_delete_conflict)");
