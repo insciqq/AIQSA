@@ -54,7 +54,8 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
     loadRuns: vi.fn(async () => new Map()),
     nativeRunsForAnswers: vi.fn(async () => new Map()),
-    nextSequence: vi.fn(async () => transcriptRows.length)
+    nextSequence: vi.fn(async () => transcriptRows.length),
+    runLive: vi.fn(async () => true)
   } satisfies TranscriptRepository;
   const toolCalls = {
     begin: vi.fn(async (input): Promise<ToolCallBeginResult> => {
@@ -70,6 +71,7 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     settle: vi.fn(async () => true)
   } satisfies ToolCallStore;
   const runs = {
+    appendCompactionStatus: vi.fn(async () => true),
     applyUsageTotals: vi.fn(async () => { order.push("usage-totals"); }),
     complete: vi.fn(async () => { order.push("complete"); return true; }),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { order.push("publish"); published = input.text; return true; }),
