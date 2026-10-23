@@ -24,11 +24,7 @@ const diagnosticCodes = new Set([
   "memory_run_utility_binding_changed", "memory_run_utility_binding_invalid", "memory_run_utility_cancelled",
   "memory_run_utility_outcome_unknown", "memory_run_utility_output_invalid", "memory_run_utility_provider_failed",
   "memory_run_utility_settle_failed", "memory_run_utility_start_failed", "memory_run_utility_unavailable", "memory_utility_input_blocked",
-  "memory_lexical_lane_unavailable", "memory_lexical_projection_not_ready", "memory_lexical_shadow_capacity",
-  "memory_lexical_settle_timeout", "memory_opensearch_authentication_failed", "memory_opensearch_canonical_guard",
-  "memory_opensearch_circuit_open", "memory_opensearch_connection_failed", "memory_opensearch_index_incompatible",
-  "memory_opensearch_index_missing", "memory_opensearch_rate_limited", "memory_opensearch_response_invalid",
-  "memory_opensearch_response_too_large", "memory_opensearch_scope_too_large", "memory_opensearch_timeout", "memory_opensearch_unavailable"
+  "memory_lexical_lane_unavailable", "memory_lexical_settle_timeout"
 ]);
 function diagnosticCode(value: unknown, fallback: string): string {
   const budget = memoryReadBudgetFailureCode(value);

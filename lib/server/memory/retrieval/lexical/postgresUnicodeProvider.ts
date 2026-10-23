@@ -142,8 +142,6 @@ function postgresUnicodeNgramSql(request: MemoryLexicalSearchRequest): Prisma.Sq
 
 export class PostgresUnicodeMemoryLexicalCandidateProvider implements
 MemoryLexicalCandidateProvider {
-  readonly backend = "POSTGRES" as const;
-
   constructor(
     private readonly client: PrismaClient,
     readonly lane: PostgresUnicodeMemoryLexicalLane
