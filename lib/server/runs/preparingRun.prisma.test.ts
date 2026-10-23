@@ -8,9 +8,6 @@ import {
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memory";
 import type { MemoryActionIntent } from "../../contracts/memoryActionIntent";
-import {
-  calculateContextBudgetLimits
-} from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
   MEMORY_DECAY_POLICY_VERSION,
@@ -84,7 +81,7 @@ import {
 import { loadMemoryRunSources } from "../memory/sources/runProjection";
 import { applyMemoryScopeTargetDeletion } from "../memory/scopeLifecycle";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { applyProviderRequestContextBudget, providerRequestTokenEstimate } from "./runContextBudget";
+import { applyProviderRequestContextBudget } from "./requestContextBudget";
 import {
   MemoryPreparingRunConflictError,
   dormantMemoryAttemptResult
@@ -2430,16 +2427,8 @@ describe("PREPARING run orchestration", () => {
       const text = queued ? "ordinary-answer-canary" : "/memory ordinary-answer-canary";
       const expectedAnswerResult = queued ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT;
       const initialRequest = normalizedRequest(chat.id, text);
-      const requiredTokens = providerRequestTokenEstimate({
-        ...initialRequest,
-        attachments: [],
-        prompt: { ...initialRequest.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT }
-      });
-      let contextWindow = 1;
-      while (calculateContextBudgetLimits({ contextWindow }).budgetTokens < requiredTokens) {
-        contextWindow += 1;
-      }
-      const reservedRequest: NormalizedRunRequest = {
+      // The smallest window that fits the request with its answer contract: any addition overflows it.
+      const reserved = (contextWindow: number): NormalizedRunRequest => ({
         ...initialRequest,
         modelCapabilities: {
           ...initialRequest.modelCapabilities,
@@ -2450,7 +2439,12 @@ describe("PREPARING run orchestration", () => {
           ...initialRequest.prompt,
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
         }
-      };
+      });
+      let contextWindow = 1;
+      while (!applyProviderRequestContextBudget({ request: { ...reserved(contextWindow), attachments: [] } }).ok) {
+        contextWindow += 1;
+      }
+      const reservedRequest = reserved(contextWindow);
       const initiallyBudgeted = applyProviderRequestContextBudget({
         request: { ...reservedRequest, attachments: [] }
       });

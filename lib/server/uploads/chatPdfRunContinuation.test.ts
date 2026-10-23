@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createRunExecutionResponse } from "../runs/runExecution";
+import { nativeRunResponse } from "../engine/handlerSupport";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { createChatPdfRunContinuation, createChatPdfRunFailure, chatPdfRunSnapshot } from "./chatPdfRunContinuation";
 import { CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE, ChatPdfPreparationError, encodeChatPdfArtifact } from "./chatPdfCore";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 
-vi.mock("../runs/runExecution", () => ({ createRunExecutionResponse: vi.fn(() => new Response("done")) }));
+vi.mock("../engine/handlerSupport", () => ({ nativeRunResponse: vi.fn(() => new Response("done")), nativeRunServices: () => ({}) }));
+
+/** What the continuation handed the agent engine. */
+const started = (index = 0) => vi.mocked(nativeRunResponse).mock.calls[index]![1];
 
 describe("terminal PDF Workspace ownership", () => {
   it.each(["preparing", "cancelled", "error", "streaming", "complete"] as const)(
@@ -54,11 +57,12 @@ function fixture(workspace = false) {
     providerAdmissionPlan: {}, sourceKind: "send" } as unknown as MaterializedPreparedRunData;
   const created = { assistantMessageId: "assistant", runId: "run", userMessageId: "user" };
   const loaded = { snapshot: chatPdfRunSnapshot(prepared), admissionResult: created, state: "preparing",
-    modelRun: { chatId: "chat", status: "preparing", normalizedRequest: null,
+    modelRun: { chatId: "chat", engine: "native", status: "preparing", normalizedRequest: null,
       workspaceRunBinding: workspace ? { modelRunId: "run" } : null,
       chatPdfAttachments: [{ attachmentId: "file", sourceChecksum, sourceByteSize: 8, state: "ready",
         pageCount: 2, route: "local_text", documentArtifactId: "document" }] } };
   const deps = {
+    nativeEngine: { kind: "nativeEngine" },
     pdfRepository: { readArtifact: vi.fn(async () => ({ kind: "document", preparationGeneration: "run", sourceChecksum,
       route: "local_text", pageCount: 2, storageKey: "private/document", byteSize: encoded.body.length, checksum: encoded.checksum })),
       markAnswerDispatched: vi.fn(async () => true) },
@@ -81,17 +85,17 @@ describe("accepted PDF answer continuation", () => {
   it("materializes the owned document before the Memory gate and starts the frozen answer exactly once", async () => {
     const h = fixture(); await h.run();
     expect(h.deps.repository.continuePdfPreparedRun).toHaveBeenCalledOnce();
-    const continuation = vi.mocked(createRunExecutionResponse).mock.calls[0]![0];
+    const continuation = started();
     expect(continuation.prepared.normalizedRequest.modelId).toBe("frozen-answer");
     expect(continuation.prepared.providerRequest.attachments[0]?.extractedText).toContain("revenue is 42");
     expect(h.deps.repository.continuePdfPreparedRun.mock.invocationCallOrder[0])
       .toBeLessThan(h.deps.pdfRepository.markAnswerDispatched.mock.invocationCallOrder[0]!);
     expect(h.input.releaseRegistry.mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(createRunExecutionResponse).mock.invocationCallOrder[0]!);
+      .toBeLessThan(vi.mocked(nativeRunResponse).mock.invocationCallOrder[0]!);
     expect(JSON.stringify(continuation.prepared.providerRequest)).not.toContain("private/document");
     h.deps.pdfRepository.markAnswerDispatched.mockResolvedValue(false);
     await expect(h.run()).rejects.toThrow("pdf_preparation_unavailable");
-    expect(createRunExecutionResponse).toHaveBeenCalledOnce();
+    expect(nativeRunResponse).toHaveBeenCalledOnce();
   });
 
   it.each(["system_pdf", "system_vision"])("preserves %s text delivery when the answer can read native PDFs", async (route) => {
@@ -101,7 +105,7 @@ describe("accepted PDF answer continuation", () => {
     const artifact = await h.deps.pdfRepository.readArtifact();
     h.deps.pdfRepository.readArtifact.mockResolvedValue({ ...artifact, route });
     await h.run();
-    const prepared = vi.mocked(createRunExecutionResponse).mock.calls[0]![0].prepared;
+    const prepared = started().prepared;
     expect(prepared.providerRequest.attachments[0]).toMatchObject({ kind: "pdf", pdfDelivery: "prepared_text" });
     expect(prepared.providerRequest.attachments[0]?.base64Data).toBeUndefined();
     expect(prepared.normalizedRequest.modelId).toBe("frozen-answer");
@@ -114,7 +118,7 @@ describe("accepted PDF answer continuation", () => {
     Object.assign(h.loaded.modelRun, { status: "streaming", normalizedRequest: h.normalized });
     await h.run();
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
-    expect(createRunExecutionResponse).toHaveBeenCalledOnce();
+    expect(nativeRunResponse).toHaveBeenCalledOnce();
   });
 
   it.each(["preparing", "streaming"])("hands the run's admission time to execution only when it was not resumed (%s)", async (status) => {
@@ -126,7 +130,7 @@ describe("accepted PDF answer continuation", () => {
       Object.assign(h.loaded.modelRun, { status, normalizedRequest: h.normalized });
     }
     await h.run();
-    const { created } = vi.mocked(createRunExecutionResponse).mock.calls[0]![0];
+    const { created } = started();
     expect(created.acceptedAt).toEqual(status === "preparing" ? createdAt : undefined);
   });
 
@@ -138,7 +142,7 @@ describe("accepted PDF answer continuation", () => {
       Object.assign(h.loaded.modelRun, { status, normalizedRequest: h.normalized });
     }
     await h.run();
-    const continuation = vi.mocked(createRunExecutionResponse).mock.calls[0]![0];
+    const continuation = started();
     expect(continuation.prepared.providerRequest.attachments[0]?.extractedText).toBe(CHAT_PDF_WORKSPACE_ORIGINAL_NOTICE);
     expect(h.deps.pdfRepository.readArtifact).not.toHaveBeenCalled();
     expect(h.deps.storage.getObject).not.toHaveBeenCalled();
@@ -151,7 +155,7 @@ describe("accepted PDF answer continuation", () => {
     h.loaded.modelRun.workspaceRunBinding = null;
     await expect(h.run()).rejects.toThrow("pdf_preparation_invalid");
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
-    expect(createRunExecutionResponse).not.toHaveBeenCalled();
+    expect(nativeRunResponse).not.toHaveBeenCalled();
   });
 
   it("rejects generation substitution before Memory or answer dispatch", async () => {
@@ -161,22 +165,22 @@ describe("accepted PDF answer continuation", () => {
     await expect(h.run()).rejects.toThrow("pdf_preparation_invalid");
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
     expect(h.deps.pdfRepository.markAnswerDispatched).not.toHaveBeenCalled();
-    expect(createRunExecutionResponse).not.toHaveBeenCalled();
+    expect(nativeRunResponse).not.toHaveBeenCalled();
   });
 
-  it("ends a snapshot accepted under the retired context policy before any budget or answer side effect", async () => {
+  it("ends a run the old core admitted before the upgrade without starting it", async () => {
     const h = fixture();
-    delete (h.prepared.normalizedRequest as { contextCompactionPolicy?: unknown }).contextCompactionPolicy;
-    await expect(h.run()).rejects.toThrow("context_compaction_policy_retired");
+    Object.assign(h.loaded.modelRun, { engine: "v1" });
+    await expect(h.run()).rejects.toThrow("pdf_preparation_unavailable");
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
-    expect(createRunExecutionResponse).not.toHaveBeenCalled();
-    const repository = { settlePreparingRunFailure: vi.fn(async () => true), getRunControlForRecovery: vi.fn(),
-      hasPendingPdfPreparation: vi.fn(), failRun: vi.fn() };
-    await createChatPdfRunFailure({ repository })({ claimToken: "claim", runId: "run", userId: "owner" },
-      new ChatPdfPreparationError("context_compaction_policy_retired"));
-    expect(repository.settlePreparingRunFailure).toHaveBeenCalledWith(expect.objectContaining({
-      errorCode: "context_compaction_policy_retired", retryable: false,
-      message: "This answer was interrupted by an application update. Regenerate to try again." }));
+    expect(h.deps.pdfRepository.markAnswerDispatched).not.toHaveBeenCalled();
+    expect(nativeRunResponse).not.toHaveBeenCalled();
+  });
+
+  it("starts the frozen answer on the agent engine, with the document's own deps", async () => {
+    const h = fixture(); await h.run();
+    expect(vi.mocked(nativeRunResponse).mock.calls[0]![0]).toBe(h.deps.nativeEngine);
+    expect(started()).toMatchObject({ created: { runId: "run" }, userId: "owner" });
   });
 
   it("stops before any answer side effect when the final document context does not fit", async () => {
@@ -185,6 +189,6 @@ describe("accepted PDF answer continuation", () => {
     h.prepared.normalizedRequest.modelCapabilities.contextWindow = 10;
     await expect(h.run()).rejects.toThrow("pdf_preparation_context_limit");
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
-    expect(createRunExecutionResponse).not.toHaveBeenCalled();
+    expect(nativeRunResponse).not.toHaveBeenCalled();
   });
 });

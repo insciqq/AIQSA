@@ -2,13 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_APPROVAL_REQUIRED, MCP_APPROVAL_REQUIRED_MESSAGE, mcpApprovalAdmission } from "../mcp/writeApproval";
 import { mcpApprovalGated, mcpApprovalRequestForCall, mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
-import { stalledToolRound, toolSynthesisDecision, toolSynthesisInstruction } from "./providerToolLoop";
-import { repeatBlockedToolCallResult, ToolCallRepeatHistory, toolRoundCall } from "./toolCallRepeatGuard";
+import { ToolCallRepeatHistory } from "./toolCallRepeatGuard";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
-
-/** The live and recovered verdict on a round of these rows, before any correction was spent. */
-const roundAwaitsApproval = (rows: readonly PersistedToolLoopCall[]) =>
-  stalledToolRound(rows.map(entry => toolRoundCall(entry)), false) === "approval_required";
 
 const snapshot: McpRunPlanSnapshot = {
   servers: [{ fingerprint: "f".repeat(64), revisionId: "revision-1", serverId: "server-1", serverName: "Records" }],
@@ -54,29 +49,6 @@ describe("tool-loop MCP approval gate", () => {
     expect(mcpApprovalGated(row("call-1", { ...gated as object, status: "complete" }))).toBe(false);
     expect(mcpApprovalGated(row("call-1", { callId: "call-1", name: "mcp_records_delete", status: "error",
       content: [{ type: "text", text: MCP_APPROVAL_REQUIRED }] }))).toBe(false);
-  });
-
-  it("ends a round of only gated calls and blocked repeats in synthesis that names the approval", () => {
-    const gated = row("call-1", mcpApprovalRequiredToolCallResult({ providerCallId: "call-1", toolName: "mcp_records_delete" }));
-    const blocked = row("call-2", repeatBlockedToolCallResult({ providerCallId: "call-2", repeatOf: [1, 2], toolName: "mcp_records_read" }),
-      { roundIndex: 3, toolName: "mcp_records_read" });
-    const ran = row("call-3", null, { state: "complete", startedAt: "2026-10-08T00:00:00.000Z" });
-    expect(roundAwaitsApproval([gated])).toBe(true);
-    expect(roundAwaitsApproval([gated, { ...blocked, roundIndex: 3 }].map(entry => ({ ...entry, roundIndex: 3 })))).toBe(true);
-    expect(roundAwaitsApproval([blocked])).toBe(false);
-    expect(roundAwaitsApproval([gated, ran])).toBe(false);
-    expect(roundAwaitsApproval([])).toBe(false);
-    const decision = toolSynthesisDecision({ approvalRequired: true, budgets: { maxToolCalls: 10, maxToolRounds: 10 },
-      continuation: {}, initialToolChoice: "auto", noProgress: false, progress: { toolCalls: 1, toolRounds: 1 } });
-    expect(decision).toEqual({ budget: null, reason: "approval_required" });
-    expect(toolSynthesisInstruction("approval_required")).toBe(
-      "Tool use is now disabled for this run: a tool call waits for the user's approval in the chat. Some planned tool calls were not executed. Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.");
-    // A refused batch over the budget still wins; a tool-free run is never synthesis.
-    expect(toolSynthesisDecision({ approvalRequired: true, budgets: { maxToolCalls: 10, maxToolRounds: 10 },
-      continuation: { finalSynthesis: "budget_exhausted" }, initialToolChoice: "auto", noProgress: false,
-      progress: { toolCalls: 1, toolRounds: 1 } })?.reason).toBe("budget_exhausted");
-    expect(toolSynthesisDecision({ approvalRequired: true, budgets: { maxToolCalls: 10, maxToolRounds: 10 },
-      continuation: {}, initialToolChoice: "none", noProgress: false, progress: { toolCalls: 1, toolRounds: 1 } })).toBeNull();
   });
 
   it("never lets a gated call count as one that may have changed what a repeated read returns", () => {

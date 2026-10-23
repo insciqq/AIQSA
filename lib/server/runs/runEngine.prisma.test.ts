@@ -5,10 +5,10 @@ import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createChatPdfRepository } from "../uploads/chatPdfPersistence";
-import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
+import { createNativeOrphanFinder } from "../engine/recovery";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { endRetiredEngineRuns } from "./retiredEngineRuns";
 import { ActiveRunConflictError, type RunRepository } from "./runRepositoryContract";
-import { reconcileStaleRuns } from "./runRecovery";
 import { createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
 
 // Long before any other fixture, so installation-wide recovery bounded by the
@@ -53,7 +53,7 @@ function sendInput(chatId: string, userId: string, expectedActiveLeafId: string 
   };
 }
 
-/** A run the old core accepts today: its admission names no engine. */
+/** A run the old core accepted: its admission named no engine. */
 async function oldCoreRun(userId: string): Promise<AcceptedRun> {
   const { id: chatId } = await chat(userId, "Old-core chat");
   const created = await repository.createRun(sendInput(chatId, userId));
@@ -193,50 +193,40 @@ afterEach(async () => {
 });
 afterAll(() => prisma.$disconnect());
 
-describe("the old run core beside the native engine on one database", () => {
-  it("gives a previous release's run the old core's engine and settles only old-core runs at boot", async () => {
+describe("the old run core's rows beside the agent engine on one database", () => {
+  it("ends the old core's runs left active at upgrade, interrupted with Continue, and leaves the engine's own runs alone", async () => {
     const userId = await owner();
     const oldCore = await oldCoreRun(userId);
     const native = await nativeRun(userId);
     const previous = await previousReleaseRun(userId);
     const runIds = [oldCore.runId, native.runId, previous.runId];
-    await backdate(runIds);
     const nativeAnswer = await messageStatus(native.assistantMessageId);
 
-    await expect(repository.sweepBootOrphanedRuns({ createdBefore: BOUNDARY, liveRunIds: [] })).resolves.toBe(2);
+    // Other files' old-core rows may end in the same pass; only this file's are checked.
+    for (let pass = 0; pass < 20 && (await endRetiredEngineRuns({ client: prisma, repository })).found > 0; pass += 1) { /* next batch */ }
 
     await expect(runStates(runIds)).resolves.toEqual({
-      [oldCore.runId]: { code: "run_orphaned_on_boot", engine: "v1", status: "error" },
+      [oldCore.runId]: { code: "run_interrupted", engine: "v1", status: "error" },
       [native.runId]: { code: null, engine: "native", status: "streaming" },
-      [previous.runId]: { code: "run_orphaned_on_boot", engine: "v1", status: "error" }
+      [previous.runId]: { code: "run_interrupted", engine: "v1", status: "error" }
     });
     await expect(messageStatus(native.assistantMessageId)).resolves.toBe(nativeAnswer);
     await expect(messageStatus(previous.assistantMessageId)).resolves.toBe("error");
   });
 
-  it("finds and settles only old-core runs in stale and installation recovery", async () => {
+  it("gives the engine's recovery only its own cut-off runs, never one whose document is still being read", async () => {
     const userId = await owner();
     const oldCore = await oldCoreRun(userId);
     const native = await nativeRun(userId);
-    const previous = await previousReleaseRun(userId);
-    const runIds = [oldCore.runId, native.runId, previous.runId];
-    await backdate(runIds);
-
-    const stale = await repository.findStaleActiveRunsForUser({ staleBefore: BOUNDARY, userId });
-    expect(stale.map(({ id }) => id).sort()).toEqual([oldCore.runId, previous.runId].sort());
-    const installation = (await repository.findInstallationRecoverableRuns!({
-      bootedBefore: BOUNDARY, limit: 100, staleBefore: BOUNDARY
-    })).map(({ id }) => id);
-    expect(installation).toEqual(expect.arrayContaining([oldCore.runId, previous.runId]));
-    expect(installation).not.toContain(native.runId);
-
-    await reconcileStaleRuns({ providers: {}, registry: activeRunControllerRegistry, repository }, { userId });
-
-    await expect(runStates(runIds)).resolves.toEqual({
-      [oldCore.runId]: { code: "run_orphaned", engine: "v1", status: "error" },
-      [native.runId]: { code: null, engine: "native", status: "streaming" },
-      [previous.runId]: { code: "run_orphaned", engine: "v1", status: "error" }
-    });
+    const reading = await pendingPdfPreparation(userId, "native");
+    await backdate([oldCore.runId, native.runId, reading]);
+    const orphans = await createNativeOrphanFinder(prisma)({ bootedBefore: BOUNDARY, limit: 100, liveRunIds: [],
+      staleBefore: BOUNDARY, userId });
+    expect(orphans.map(({ id }) => id)).toEqual([native.runId]);
+    await expect(createNativeOrphanFinder(prisma)({ bootedBefore: BOUNDARY, chatId: native.chatId, limit: 100, liveRunIds: [],
+      staleBefore: BOUNDARY, userId })).resolves.toHaveLength(1);
+    await expect(createNativeOrphanFinder(prisma)({ bootedBefore: BOUNDARY, chatId: oldCore.chatId, limit: 100, liveRunIds: [],
+      staleBefore: BOUNDARY, userId })).resolves.toEqual([]);
   });
 
   it("keeps one active run per chat across engines and writers", async () => {
@@ -269,7 +259,7 @@ describe("the old run core beside the native engine on one database", () => {
     await expect(prisma.modelRun.count({ where: { chatId: oldCore.chatId } })).resolves.toBe(1);
   });
 
-  it("hands the Workspace follow-up worker successors of either engine, which it starts on their own engine", async () => {
+  it("hands the Workspace follow-up worker successors of either engine; it starts only the engine's own", async () => {
     const userId = await owner();
     const followups = createWorkspaceFollowupRepository(prisma);
     const native = await interruptedFollowup(userId, "native");
@@ -280,13 +270,13 @@ describe("the old run core beside the native engine on one database", () => {
     await expect(followups.claim(new Date(), [])).resolves.toMatchObject({ runId: oldCore, userId });
   });
 
-  it("hands the old core's chat PDF worker only old-core runs", async () => {
+  it("hands the chat PDF worker only the engine's runs", async () => {
     const userId = await owner();
     const pdf = createChatPdfRepository(prisma);
-    await pendingPdfPreparation(userId, "native");
-    const oldCore = await pendingPdfPreparation(userId, "v1");
+    const native = await pendingPdfPreparation(userId, "native");
+    await pendingPdfPreparation(userId, "v1");
 
-    await expect(pdf.claim()).resolves.toMatchObject({ runId: oldCore, userId });
+    await expect(pdf.claim()).resolves.toMatchObject({ runId: native, userId });
     await expect(pdf.claim()).resolves.toBeNull();
   });
 });
