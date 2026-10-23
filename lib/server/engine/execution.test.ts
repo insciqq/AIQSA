@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
@@ -7,7 +8,7 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { engineTestFaults } from "./faults";
-import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
+import { createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
 import type { NativeRunStore } from "./runStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { TranscriptItem } from "./transcript";
@@ -249,7 +250,27 @@ describe("native run execution", () => {
     expect(memory.transcriptRows.at(-1)).toMatchObject({ callId: "call-1", kind: "tool_result", outcome: "error" });
   });
 
+  it("logs one content-free tool_call record for each call a run settles: a completed read and a write held for approval", async () => {
+    const observation = await captureRunObservation();
+    const { adapter } = scriptedAdapter([{ calls: [
+      { arguments: { key: "PRIVATE-1" }, id: "call-1", name: "mcp_jira_get_issue" },
+      { arguments: { summary: "PRIVATE summary" }, id: "call-2", name: "mcp_jira_create_issue" }
+    ], text: "Checking." }]);
+    const memory = memoryEngine();
+    const callTool = vi.fn(async () => ({ isError: false, text: ["PRIVATE result"], unsupportedContentTypes: [] }));
+    await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot, mcpApproval: mcpApprovalAdmission([]) }), repository: repository() as unknown as RunRepository,
+      services: {}, userId: "user" }));
+    const records = observation.records().filter((record) => record.event === "tool_call");
+    expect(records.map((record) => [record.tool_kind, record.outcome, record.code ?? null]).sort()).toEqual([
+      ["mcp", "awaiting_approval", "mcp_approval_required"], ["mcp", "completed", null]
+    ]);
+    expect(JSON.stringify(records)).not.toMatch(/PRIVATE|jira|call-[12]/u);
+  });
+
   it("continues the stopped turn after an Allow: the approved call runs first and its result answers it, with no user turn", async () => {
+    const observation = await captureRunObservation();
     const stopped: TranscriptItem[] = [
       { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "n1", kind: "tool_call", name: "mcp_jira_create_issue",
         origin: { model: "fake-qsa", provider: "connection-1" } },
@@ -282,6 +303,8 @@ describe("native run execution", () => {
     expect(history.at(-1)).toMatchObject({ text: expect.stringMatching(/^<turn_context>/u), type: "user" });
     expect(history.some((item) => item.type === "user" && item.text.includes("approved"))).toBe(false);
     expect(memory.published()).toBe("Created A-2.");
+    // The approved call is recorded once as it runs; the stopped turn's replayed items are not calls again.
+    expect(observation.records().filter((record) => record.event === "tool_call").map((record) => record.outcome)).toEqual(["completed"]);
   });
 
   it("continues from the server's turn text once the user wrote after the stopped turn, so a compaction never orphans the result", async () => {
@@ -428,5 +451,37 @@ describe("native run execution", () => {
     expect(result.at(-1)).toMatchObject({ data: { code: "context_too_large" }, type: "error" });
     expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "context_too_large" }),
       { recoveryTerminal: true });
+  });
+
+  it("records each terminal write, which Admin Health counts settled runs from, and the cause of a failure", async () => {
+    const observation = await captureRunObservation();
+    const memory = memoryEngine();
+    await events(createNativeRunExecutionResponse({ adapter: scriptedAdapter([{ text: "Done." }]).adapter, created, engine: memory.engine,
+      prepared: prepared(), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    const failing = repository();
+    failing.failRun.mockRejectedValueOnce(new Error("database"));
+    // A model that never answers: the run reaches its time limit.
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(_request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        await new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }));
+        throw new Error("unreachable");
+      }
+    };
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-2" }, engine: memoryEngine().engine,
+        prepared: prepared(), repository: failing as unknown as RunRepository, services: {}, userId: "user" }));
+      await vi.advanceTimersByTimeAsync(NATIVE_TURN_LIMITS.turnMs);
+      await reading;
+    } finally {
+      vi.useRealTimers();
+    }
+    const records = observation.records();
+    expect(records.filter((record) => record.event === "run_persistence").map((record) => [record.run_id, record.stage, record.outcome]))
+      .toEqual([["run-1", "complete", "confirmed"], ["run-2", "fail", "unconfirmed"]]);
+    expect(records.find((record) => record.event === "run_execution" && record.outcome === "failed"))
+      .toMatchObject({ abort_source: "unknown", code: "run_time_limit", reason: "deadline", run_id: "run-2",
+        timeout_ms: NATIVE_TURN_LIMITS.turnMs });
   });
 });

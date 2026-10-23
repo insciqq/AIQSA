@@ -25,6 +25,7 @@ import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
 import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
+import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
@@ -210,6 +211,29 @@ function failurePayload(error: unknown, workspaceRun: boolean): Readonly<{ code:
     message: providerHttpFailureMessage(error) ?? (workspaceRun
       ? "The answer could not be completed. Its Workspace files and the answer so far are kept."
       : "The answer could not be completed. The answer so far is kept.")
+  };
+}
+
+/**
+ * The content-free cause of a run's failed or cancelled execution record:
+ * Admin Health reads run deadlines by `reason`, and provider failures by
+ * their status and reviewed error code.
+ */
+function failureCauseFields(input: Readonly<{ cancelled: boolean; failure: unknown; stopped: boolean; timedOut: boolean;
+  turnMs: number; workspaceRun: boolean }>) {
+  if (input.cancelled) return { reason: "cancelled" as const, ...(input.stopped ? { abort_source: "stop" as const } : {}) };
+  if (input.timedOut) {
+    return { abort_source: input.workspaceRun ? "workspace_deadline" as const : "unknown" as const, reason: "deadline" as const,
+      timeout_ms: input.turnMs };
+  }
+  const observed = observedFailure(input.failure);
+  return {
+    reason: observed.reason,
+    ...(observed.httpStatus !== undefined ? { httpStatus: observed.httpStatus } : {}),
+    ...(observed.provider_error_code ? { provider_error_code: observed.provider_error_code } : {}),
+    ...(observed.abort_source === "provider_deadline"
+      ? { abort_source: "provider_deadline" as const, ...(observed.timeout_ms !== undefined ? { timeout_ms: observed.timeout_ms } : {}) }
+      : {})
   };
 }
 
@@ -655,7 +679,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           const handoff = await input.workspace.handoff({ onActivity: onWorkspaceActivity, runId, signal, userId: input.userId, workspace });
           if (handoff.status !== "ready") throw new EngineFailure("workspace_operation_stale", "The Workspace could not hand off this turn.");
         }
-        await engine.runs.complete(scope);
+        // The terminal write's own record: Admin Health counts settled runs from it.
+        const completion = await settleRunWrite(() => engine.runs.complete(scope)).catch((writeError: unknown) => {
+          logRunPersistence(runId, "complete", "unconfirmed", writeError);
+          throw writeError;
+        });
+        logRunPersistence(runId, "complete", completion.value ? "confirmed" : "not_applied", undefined, completion.timing);
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
           duration_ms: Math.max(0, now() - startedAt), outcome: "completed", providerFamily: snapshot.providerFamily,
           providerModelId: snapshot.providerModelId, run_id: runId, stage: "completion" });
@@ -669,7 +698,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, code: cancelled ? "model_run_cancelled" : payload.code,
           connectionId: snapshot.connectionId, duration_ms: Math.max(0, now() - startedAt), error,
           outcome: cancelled ? "cancelled" : "failed", providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
-          run_id: runId, stage: answerPublished ? "completion" : "execution" });
+          run_id: runId, stage: answerPublished ? "completion" : "execution",
+          ...failureCauseFields({ cancelled, failure, stopped: stop.signal.aborted, timedOut: deadline.signal.aborted, turnMs,
+            workspaceRun: Boolean(workspace) }) });
         answer.stop();
         await runContext?.close();
         if (workspace && input.workspace) {
@@ -693,8 +724,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           return;
         }
         await answer.flush();
-        const failed = await input.repository.failRun(runId, scope.assistantMessageId, payload, { recoveryTerminal: true })
-          .catch(() => false);
+        const failed = await settleRunWrite(() => input.repository.failRun(runId, scope.assistantMessageId, payload,
+          { recoveryTerminal: true })).then(({ timing, value }) => {
+          logRunPersistence(runId, "fail", value ? "confirmed" : "not_applied", undefined, timing);
+          return value;
+        }, (writeError: unknown) => {
+          logRunPersistence(runId, "fail", "unconfirmed", writeError);
+          return false;
+        });
         await usage.settle();
         if (failed) sink.send({ data: payload, type: "error" });
         else await chatUpdate();
