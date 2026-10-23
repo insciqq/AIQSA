@@ -9,6 +9,7 @@ import { LOAD_SKILL_TOOL_NAME, READ_SKILL_FILE_TOOL_NAME } from "../../tools/ski
 import { SAVE_SKILL_TOOL_NAME } from "../../tools/skillSave";
 import { namespacedWorkspaceToolName } from "../../workspace/toolCatalog";
 import { charTokens, handleFor, transcriptBuilder } from "./compaction.testFixtures";
+import { toolOutputExcerpt } from "../toolResults";
 import { APPROVAL_PENDING_TEXT } from "./items";
 import {
   buildRetainedContext,
@@ -146,6 +147,16 @@ describe("state block", () => {
     expect(block).toContain(`- ${name} title="Refund 1001" → done (id=T-1001)`);
     expect(block).toContain(`- ${name} title="Refund 1002" (call ${waiting}): waits for the user's approval when this record was made`);
     expect(block).not.toContain("Recent tool errors");
+  });
+
+  it("lists a result the engine saved whole by its handle and whole size", () => {
+    const chat = transcriptBuilder();
+    const handle = handleFor("dump");
+    const whole = "row\n".repeat(10_000);
+    const callId = chat.call("run_sql", { query: "SELECT * FROM ledger" });
+    chat.items.push({ callId, handle, id: "r1", kind: "tool_result", name: "run_sql", outcome: "complete",
+      output: toolOutputExcerpt(whole, { handle }).output });
+    expect(buildStateBlock(chat.items)).toContain(`- ${handle}: run_sql query="SELECT * FROM ledger" (40,000 characters)`);
   });
 
   it("takes a result's saved handle from the item before any handle its text quotes", () => {

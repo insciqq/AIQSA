@@ -1,6 +1,6 @@
 import type { SelectedTranscriptItem } from "../transcript";
 import { itemRules, type CompactionItemRules } from "./items";
-import { defaultResultHandle, type CompactionResultHandle } from "./retained";
+import { defaultResultHandle, resultLength, type CompactionResultHandle } from "./retained";
 
 /**
  * The handoff summary: what a summary call receives and what it must return.
@@ -160,7 +160,7 @@ export function serializeEntries(entries: readonly SelectedTranscriptItem[], opt
         const labels = [
           `Tool result${number !== undefined ? ` #${number}` : ""} ${item.name}`,
           ...(item.outcome !== "complete" ? [item.outcome === "unknown" ? "outcome unknown" : "error"] : []),
-          ...(trimmed ? [`${item.output.length.toLocaleString("en-US")} characters`] : []),
+          ...(trimmed ? [`${resultLength(item.output).toLocaleString("en-US")} characters`] : []),
           ...(trimmed && handle ? [`full result: read_tool_result handle ${handle}`] : [])
         ];
         parts.push(`[${labels.join(", ")}]\n${excerptText(item.output, limit)}`);

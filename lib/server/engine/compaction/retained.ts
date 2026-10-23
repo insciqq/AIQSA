@@ -182,6 +182,14 @@ function errorLine(text: string, chars: number): string {
   return line ? clip(line, chars) : firstLine(text, chars);
 }
 
+/** The whole length an engine excerpt names (`toolOutputExcerpt`), else the text's own. */
+const EXCERPT_NOTE = /\[\d+ of (\d+) characters omitted here/u;
+
+export function resultLength(output: string): number {
+  const whole = Number(EXCERPT_NOTE.exec(output)?.[1]);
+  return Number.isSafeInteger(whole) && whole > output.length ? whole : output.length;
+}
+
 const RESULT_IDENTIFIER = /"((?:[a-z]+_)?id|[a-z]+Id|url|version)"\s*:\s*"([^"\s]{1,100})"/gu;
 
 /** Up to two identifiers a result names first (ids, URLs, versions). */
@@ -335,10 +343,11 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
         break;
     }
     const handle = handleOf(result);
-    if (handle && result.output.length > LISTED_RESULT_CHARS && call.name !== COMPACTION_PRODUCT_TOOLS.readToolResult) {
-      large.push(`- ${handle}: ${identity} (${result.output.length.toLocaleString("en-US")} characters)`);
-    } else if (!handle && result.output.length >= LARGE_RESULT_CHARS && kind !== "skill_load") {
-      large.push(`- (no handle) ${identity} (${result.output.length.toLocaleString("en-US")} characters; only an excerpt survives compaction)`);
+    const length = resultLength(result.output);
+    if (handle && length > LISTED_RESULT_CHARS && call.name !== COMPACTION_PRODUCT_TOOLS.readToolResult) {
+      large.push(`- ${handle}: ${identity} (${length.toLocaleString("en-US")} characters)`);
+    } else if (!handle && length >= LARGE_RESULT_CHARS && kind !== "skill_load") {
+      large.push(`- (no handle) ${identity} (${length.toLocaleString("en-US")} characters; only an excerpt survives compaction)`);
     }
     if (result.outcome === "error") errors.push(`- ${identity} → ${errorLine(result.output, 160)}`);
   }
