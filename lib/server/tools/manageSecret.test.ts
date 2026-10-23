@@ -92,7 +92,7 @@ describe("manage_secret", () => {
     const fake = service({ readAttachment: vi.fn(async () => ({ bytes, fileName: "key.bin", kind: "file" as const, mimeType: "application/octet-stream" })) });
     await executeManageSecret(fake, call({ action: "create", attachmentId: "att_1", kind: "file", name: "Key file" }));
     expect(fake.readAttachment).toHaveBeenCalledWith("att_1", 512 * 1_024);
-    expect(fake.change.mock.calls[0]![0]).toMatchObject({ value: { base64: bytes.toString("base64"), kind: "file", originalName: "key.bin" } });
+    expect(vi.mocked(fake.change).mock.calls[0]![0]).toMatchObject({ value: { base64: bytes.toString("base64"), kind: "file", originalName: "key.bin" } });
     const notText = await executeManageSecret(fake, call({ action: "create", attachmentId: "att_1", kind: "text", name: "Token" }));
     expect(json(notText)).toMatchObject({ code: "secret_attachment_not_text" });
     const missing = await executeManageSecret(service(), call({ action: "create", attachmentId: "att_2", kind: "text", name: "Token" }));
@@ -104,11 +104,11 @@ describe("manage_secret", () => {
   it("renames or replaces a value of the secret named, and says earlier values are not kept", async () => {
     const fake = service();
     const renamed = await executeManageSecret(fake, call({ action: "update", name: "GitLab", newName: "GitLab work" }));
-    expect(fake.change.mock.calls[0]![0]).toEqual({ action: "update", description: null, name: "GitLab work", selector: { name: "GitLab" }, value: null });
+    expect(vi.mocked(fake.change).mock.calls[0]![0]).toEqual({ action: "update", description: null, name: "GitLab work", selector: { name: "GitLab" }, value: null });
     expect(json(renamed)).toMatchObject({ action: "updated", renamedFrom: "GitLab" });
     expect(card(renamed)).toMatchObject({ action: "updated", name: "GitLab work", previousName: "GitLab", valueReplaced: false, versionId: NEXT_VERSION_ID });
     const replaced = await executeManageSecret(fake, call({ action: "update", kind: "text", secretId: SECRET_ID, text: TOKEN }));
-    expect(fake.change.mock.calls[1]![0]).toMatchObject({ selector: { secretId: SECRET_ID }, value: { kind: "text", text: TOKEN } });
+    expect(vi.mocked(fake.change).mock.calls[1]![0]).toMatchObject({ selector: { secretId: SECRET_ID }, value: { kind: "text", text: TOKEN } });
     expect(json(replaced).valueReplaced).toContain("not kept");
     expect(JSON.stringify(replaced)).not.toContain(TOKEN);
     const nothing = await executeManageSecret(fake, call({ action: "update", name: "GitLab" }));

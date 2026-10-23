@@ -60,9 +60,9 @@ describe("manage_skill", () => {
     const fake = service();
     await executeManageSkill(fake, call({ action: "save", files: [{ content: MARKDOWN, path: "SKILL.md" }], removeFiles: ["old.md"],
       target: "report-writer" }), context);
-    expect(fake.save.mock.calls[0]![0]).toMatchObject({ removeFiles: ["old.md"], target: { kind: "frozen", revisionId: "rev-3", skillId: "skill-own" } });
+    expect(vi.mocked(fake.save).mock.calls[0]![0]).toMatchObject({ removeFiles: ["old.md"], target: { kind: "frozen", revisionId: "rev-3", skillId: "skill-own" } });
     await executeManageSkill(fake, call({ action: "save", expectedVersion: 4, files: [{ content: "x", path: "notes.md" }], target: "skill-own" }), context);
-    expect(fake.save.mock.calls[1]![0]).toMatchObject({ target: { expectedVersion: 4, kind: "version", skillId: "skill-own" } });
+    expect(vi.mocked(fake.save).mock.calls[1]![0]).toMatchObject({ target: { expectedVersion: 4, kind: "version", skillId: "skill-own" } });
   });
 
   it("restores or lists versions through the same save", async () => {
@@ -70,7 +70,7 @@ describe("manage_skill", () => {
       currentVersion: 5, more: false, name: "report-writer", skillId: "skill-own",
       versions: [{ changeNote: null, createdAt: "2026-10-01T00:00:00.000Z", current: true, files: 1, restoredFrom: null, revision: 5 }] } } })) });
     const listed = await executeManageSkill(fake, call({ action: "restore", revision: 0, target: "report-writer" }), context);
-    expect(fake.save.mock.calls[0]![0]).toEqual({ changeNote: null, target: { guard: { revisionId: "rev-3" }, kind: "restore", revision: 0, skillId: "skill-own" } });
+    expect(vi.mocked(fake.save).mock.calls[0]![0]).toEqual({ changeNote: null, target: { guard: { revisionId: "rev-3" }, kind: "restore", revision: 0, skillId: "skill-own" } });
     expect(json(listed)).toMatchObject({ currentVersion: 5, saved: false, versions: [{ current: true, revision: 5 }] });
     expect(String(json(listed).message)).toContain("action restore");
   });
