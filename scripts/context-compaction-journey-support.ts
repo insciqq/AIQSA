@@ -17,37 +17,45 @@ export const JOURNEY_ROUTES = ["anthropic", "codex-lb"] as const;
 export type JourneyRoute = (typeof JOURNEY_ROUTES)[number];
 
 export const JOURNEY_LIMITS = Object.freeze({
-  defaultContextWindow: 65_536,
-  /** Below this the engine finds no background cut: its fixed prompt and tools,
-   * kept tail, kept user messages and summary already fill 72 % of the window,
-   * so it compacts only in the foreground at 85 %, which the journey does not
-   * reach (32k: `compaction_not_triggered`; 64k: compacted at 75 %). */
-  minContextWindow: 57_344,
-  /** Above this the byte bounds below cannot reach the trigger in 12 turns. */
-  maxContextWindow: 65_536,
-  defaultMaxTurns: 12,
+  /**
+   * Paid checks run at real windows (operator decision 2026-10-23): models
+   * below 400k tokens are nearly gone, and at small windows the engine's fixed
+   * prompt, tools, kept tail and summary leave no background cut at all. The
+   * minimum still admits the 272k windows Codex LB lists for its older models.
+   */
+  defaultContextWindow: 400_000,
+  minContextWindow: 262_144,
+  /** A codex-lb route is further bounded by the window its listing publishes for the model. */
+  maxContextWindow: 1_000_000,
+  /** At every admitted window the brief and 6 % fillers cross the trigger by about the 15th turn (see the support tests). */
+  defaultMaxTurns: 20,
   /** Brief, two corrections, the rule, one filler and the probe. */
   minTurns: 6,
-  maxTurns: 12,
+  maxTurns: 24,
   answerMaxOutputTokens: 2_048,
-  /** Share of the estimated budget the opening brief occupies. */
-  briefBudgetShare: 0.22,
-  /** Largest filler step, so one turn never jumps far past the trigger. */
-  fillerMaxBudgetShare: 0.12,
-  /** Where a filler aims the next request once the trigger is near. */
-  fillerTargetShare: COMPACTION_THRESHOLDS.background + 0.06,
+  /** Share of the window's composer budget (90 % of it) the opening brief occupies, within `maxMessageBytes`. */
+  briefBudgetShare: 0.18,
+  /**
+   * Largest filler step. A turn that adds more than the 72-85 % band (13 % of
+   * the window) can skip the background compaction and wait in the foreground,
+   * so a filler stays well inside it.
+   */
+  fillerMaxBudgetShare: 0.06,
   fillerMinTokens: 256,
   /** The first compaction belongs to the first turn whose context passes this share of the usable window. */
   triggerShare: COMPACTION_THRESHOLDS.background,
   /**
    * How long a turn past the trigger waits for its background summary before
-   * the next turn: about twice the slowest compaction call measured
-   * (`runContext.ts`, 116 s). One still running then is joined by the next
-   * turn, and its marker is read when it lands on the turn that started it.
+   * the next turn. The slowest compaction call measured at a 64k window took
+   * 116 s (`runContext.ts`); a 400k-window summary reads several times more.
+   * One still running then is joined by the next turn, and its marker is read
+   * when it lands on the turn that started it.
    */
-  summaryWaitMs: 240_000,
-  maxMessageBytes: 160 * 1024,
-  maxRouteRequestBytes: 1024 * 1024
+  summaryWaitMs: 420_000,
+  /** One message's text, below the app's 1 MiB JSON body limit (`lib/server/http/requestBodyConfig.ts`) with room for the envelope. */
+  maxMessageBytes: 896 * 1024,
+  /** All message text one route sends: a 1M window filled to the trigger in Cyrillic prose. */
+  maxRouteRequestBytes: 8 * 1024 * 1024
 });
 
 export type JourneyRatioBand = Readonly<{ max: number; min: number }>;
@@ -224,7 +232,7 @@ export function journeyConfig(env: Env, codexApiRootFallback: () => string | nul
     if (!apiKey) return { route, skipped: "api_key_missing" };
     const rawRoot = envValue(env, "CODEX_LB_BASE_URL") || codexApiRootFallback() || "";
     if (!rawRoot) return { route, skipped: "base_url_missing" };
-    return { apiKey, apiRoot: journeyApiRoot(rawRoot), model: modelSetting(env, "AIQSA_JOURNEY_CODEX_MODEL", "gpt-5.5"), route };
+    return { apiKey, apiRoot: journeyApiRoot(rawRoot), model: modelSetting(env, "AIQSA_JOURNEY_CODEX_MODEL", "gpt-6.1-sol"), route };
   });
   return {
     baseUrl: journeyBaseUrl(envValue(env, "AIQSA_JOURNEY_BASE_URL") || "http://127.0.0.1:3000"),
@@ -335,17 +343,34 @@ export function engineContextTokens(status: Pick<SessionContextStatus, "contextW
   return status.contextWindow === null ? null : Math.max(0, status.contextWindow - status.maxOutputTokens);
 }
 
+const utf8 = new TextEncoder();
+
 /**
- * Estimated tokens of the next filler. Past the trigger without a summary a
- * minimal filler gives the engine one more request boundary: its background
- * compaction starts from its own measure, which can trail the reported one.
+ * The text `build` makes for `tokens`, made smaller until it fits one
+ * message's byte bound; what it leaves out is sent by later turns.
+ */
+export function boundedMessage(build: (tokens: number) => string, tokens: number): string {
+  let target = tokens;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const text = build(target);
+    const bytes = utf8.encode(text).byteLength;
+    if (bytes <= JOURNEY_LIMITS.maxMessageBytes) return text;
+    target = Math.floor(target * (JOURNEY_LIMITS.maxMessageBytes / bytes) * 0.98);
+  }
+  return fail("turn", "request_bytes_bound");
+}
+
+/**
+ * Estimated tokens of the next filler: a full step below the trigger, which
+ * lands the crossing turn below 78 %, inside the background band. Past the
+ * trigger without a summary a minimal filler gives the engine one more request
+ * boundary: its background compaction starts from its own measure, which can
+ * trail the reported one.
  */
 export function nextFillerTokens(input: Readonly<{ approximateInputTokens: number; budgetTokens: number }>): number {
   const { approximateInputTokens, budgetTokens } = input;
   if (approximateInputTokens >= budgetTokens * JOURNEY_LIMITS.triggerShare) return JOURNEY_LIMITS.fillerMinTokens;
-  const step = Math.floor(budgetTokens * JOURNEY_LIMITS.fillerMaxBudgetShare);
-  const toTarget = Math.ceil(budgetTokens * JOURNEY_LIMITS.fillerTargetShare - approximateInputTokens);
-  return Math.max(JOURNEY_LIMITS.fillerMinTokens, Math.min(step, toTarget));
+  return Math.max(JOURNEY_LIMITS.fillerMinTokens, Math.floor(budgetTokens * JOURNEY_LIMITS.fillerMaxBudgetShare));
 }
 
 // Probe answer check (in memory only) -----------------------------------------
@@ -635,6 +660,17 @@ export function contextWindowUpdate(model: JourneyProviderModel, contextWindow: 
     expectedDraftVersion: model.draftVersion,
     expectedUpdatedAt: model.updatedAt
   };
+}
+
+/**
+ * The context window a custom-setup discovery response lists for one model
+ * (`AdminCompatibleDiscoveredModel.capabilities.contextWindow`), or null.
+ */
+export function discoveredContextWindow(discovery: unknown, model: string): number | null {
+  if (!record(discovery) || !Array.isArray(discovery.models)) return null;
+  const entry = discovery.models.find((candidate) => record(candidate) && candidate.id === model);
+  const value = record(entry) && record(entry.capabilities) ? entry.capabilities.contextWindow : undefined;
+  return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : null;
 }
 
 /** The quick-setup candidate naming the requested model, else the policy's first choice. */
