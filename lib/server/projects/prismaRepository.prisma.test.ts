@@ -1,7 +1,7 @@
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaShareRepository } from "../shares/prismaRepository";
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
@@ -12,6 +12,14 @@ import { createPrismaProjectRepository } from "./prismaRepository";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
 import { createSkillSharingService } from "../skills/shareRequests";
 import { estimateApproxTokens } from "../../domain/contextBudget";
+
+// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
+// it keeps the switch on to test the code that still exists.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  PROJECTS_ENABLED: true,
+  KNOWLEDGE_ENABLED: true
+}));
 
 type ProjectFixture = Readonly<{
   ownerId: string;

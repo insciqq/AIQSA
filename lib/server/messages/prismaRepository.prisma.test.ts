@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ModelRunStatus } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { workspaceRunOutputDirectory } from "../../domain/workspace";
@@ -24,6 +24,13 @@ import { ActiveLeafConflictError, type RunRepository } from "../runs/runReposito
 import { createPrismaRetentionRepository } from "../retention/prune";
 import { ActiveMessageMutationConflictError } from "./handlers";
 import { createPrismaMessageBranchRepository } from "./prismaRepository";
+
+// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
+// it keeps the switch on to test the code that still exists.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  PROJECTS_ENABLED: true
+}));
 
 async function withMessageBranchUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
   const userId = `message-branch-test-${randomUUID()}`;

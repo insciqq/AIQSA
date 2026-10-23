@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { prisma } from "../prisma";
 import { accessibleKnowledgeResources, loadUserAccessibleMcpServerIdsWith, usableSkillIds } from "./prismaRepository";
 import { loadPersonalAssistantRowInputs, personalAssistantRowDefaults } from "./rowContext";
+
+// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
+// it keeps the switch on to test the code that still exists.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
 
 type Selection = Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>;
 
