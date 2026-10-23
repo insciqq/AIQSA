@@ -228,6 +228,19 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     expect(onStartAssistantChat).toHaveBeenCalledExactlyOnceWith("asst_1");
   });
 
+  it("opens Studio links through the shell, so the address keeps naming the shown chat", () => {
+    respond({});
+    const onOpenLibrary = vi.fn();
+    render(<AnswerOutputsV2 artifact={{ citations: [], reasoningText: [], sources: [],
+      resourceChanges: [fresh(assistant), fresh(secret)] }} live
+      onOpenLibrary={onOpenLibrary} />);
+    expect(fireEvent.click(screen.getByRole("link", { name: "Open in Studio" }))).toBe(false);
+    expect(fireEvent.click(screen.getByRole("link", { name: "Open Secrets" }))).toBe(false);
+    expect(onOpenLibrary.mock.calls).toEqual([["/?library=assistants&assistant=asst_1"], ["/?library=secrets"]]);
+    expect(fireEvent.click(screen.getByRole("link", { name: "Open in Studio" }), { metaKey: true })).toBe(true);
+    expect(onOpenLibrary).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps a later change instead of undoing it", async () => {
     respond({ "PATCH /api/me/assistants/asst_1": error("assistant_version_conflict", 409) });
     render(<ResourceChangeCardsV2 cards={[fresh(assistant)]} live />);

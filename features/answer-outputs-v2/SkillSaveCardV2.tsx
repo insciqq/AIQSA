@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
 import {
@@ -11,6 +10,7 @@ import {
   type SkillSaveUndoState
 } from "@/lib/contracts/skillSaves";
 import { readSavedSkillFile, readSkillSaveUndoState, undoSkillSave } from "./skillSaveApi";
+import { shellLinkClick } from "./shellLinkClick";
 
 const CHANGE_LABELS = { added: "Added", changed: "Changed", removed: "Removed", unchanged: "Unchanged" } as const;
 const CHANGE_TONES = { added: "ok", changed: "warn", removed: "danger", unchanged: "neutral" } as const;
@@ -97,7 +97,7 @@ function FileRowV2({ card, diff, file }: Readonly<{ card: SkillSaveCard; diff?: 
   );
 }
 
-function SkillSaveCardV2({ card, live }: Readonly<{ card: SkillSaveCard; live: boolean }>) {
+function SkillSaveCardV2({ card, live, onOpenLibrary }: Readonly<{ card: SkillSaveCard; live: boolean; onOpenLibrary?: (href: string) => void }>) {
   const headingId = useId();
   const statusRef = useRef<HTMLParagraphElement>(null);
   const [undo, setUndo] = useState<SkillSaveUndoState | null>(null);
@@ -171,10 +171,11 @@ function SkillSaveCardV2({ card, live }: Readonly<{ card: SkillSaveCard; live: b
             Undo
           </UiV2Button>
         ) : null}
-        <Link className="v2-skill-save-library v2-focusable" href={SKILL_LIBRARY_PATH}>
+        <a className="v2-skill-save-library v2-focusable" href={SKILL_LIBRARY_PATH}
+          onClick={shellLinkClick(onOpenLibrary ? () => onOpenLibrary(SKILL_LIBRARY_PATH) : undefined)}>
           <UiV2Icon name="library" />
           <span>Open library</span>
-        </Link>
+        </a>
       </div>
       {message ? <p className="v2-skill-save-status" ref={statusRef} tabIndex={-1} role="status">{message}</p> : null}
       {error ? <p className="v2-skill-save-error" role="alert">{error}</p> : null}
@@ -188,11 +189,16 @@ function SkillSaveCardV2({ card, live }: Readonly<{ card: SkillSaveCard; live: b
  * files, the change note, scheduled tasks that use the Skill, Undo and the
  * library. `live`: the answer is still running; the save already happened.
  */
-export function SkillSaveCardsV2({ cards, live = false }: Readonly<{ cards: readonly SkillSaveCard[]; live?: boolean }>) {
+export function SkillSaveCardsV2({ cards, live = false, onOpenLibrary }: Readonly<{
+  cards: readonly SkillSaveCard[];
+  live?: boolean;
+  /** Opens Studio in the shell; see `shellLinkClick`. */
+  onOpenLibrary?(href: string): void;
+}>) {
   if (cards.length === 0) return null;
   return (
     <section className="v2-skill-save-cards" aria-label="Saved Skills">
-      <ul>{cards.map((card) => <SkillSaveCardV2 key={card.saveId} card={card} live={live} />)}</ul>
+      <ul>{cards.map((card) => <SkillSaveCardV2 key={card.saveId} card={card} live={live} onOpenLibrary={onOpenLibrary} />)}</ul>
     </section>
   );
 }
