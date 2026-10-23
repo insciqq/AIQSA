@@ -58,17 +58,16 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
   memorySourceHooks: MemorySourceMutationHooks = defaultMemorySourceMutationHooks) {
   return {
     /**
-     * Records when the answer started, once, and returns the run's work
-     * duration exactly as a reload reads it (answer start minus run creation,
-     * `runWorkDurationMs` in `lib/server/chats/prismaRepository.ts`), so the
-     * live answer shows the same figure. Null when the run is not on record.
+     * The published run's work duration exactly as a reload reads it: run
+     * creation to the published answer (`runWorkDurationMs` in
+     * `lib/server/chats/prismaRepository.ts`), so the live answer shows the
+     * same figure. Null before publication or when the run is not on record.
      */
-    async answerStarted(scope: NativeRunScope, at: Date): Promise<number | null> {
-      const where = { chatId: scope.chatId, id: scope.runId, userId: scope.userId };
-      await client.modelRun.updateMany({ data: { answerStartedAt: at }, where: { ...where, answerStartedAt: null } });
-      const run = await client.modelRun.findFirst({ select: { answerStartedAt: true, createdAt: true }, where });
-      if (!run?.answerStartedAt) return null;
-      const duration = run.answerStartedAt.getTime() - run.createdAt.getTime();
+    async workDurationMs(scope: NativeRunScope): Promise<number | null> {
+      const run = await client.modelRun.findFirst({ select: { answerCompletedAt: true, createdAt: true },
+        where: { chatId: scope.chatId, engine: "native", id: scope.runId, userId: scope.userId } });
+      if (!run?.answerCompletedAt) return null;
+      const duration = run.answerCompletedAt.getTime() - run.createdAt.getTime();
       return Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null;
     },
 

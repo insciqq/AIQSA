@@ -66,6 +66,18 @@ function reasoningEvent(payload: unknown): ModelRunSseEvent {
 }
 
 describe("answer artifact reload round trip", () => {
+  it("measures a native run to its published answer and an old-core run to its first answer token", () => {
+    const createdAt = new Date("2026-10-23T10:00:00.000Z");
+    const run = { answerCompletedAt: new Date("2026-10-23T10:02:07.000Z"), answerStartedAt: new Date("2026-10-23T10:00:21.000Z"),
+      createdAt, events: [], searchRuns: [], status: "complete", toolCalls: [{}], updatedAt: new Date("2026-10-23T10:02:30.000Z") };
+    // A preamble before a 100 s tool call is not the end of the work.
+    expect(summarizeMessageRunArtifacts({ ...run, engine: "native" })?.workDurationMs).toBe(127_000);
+    expect(summarizeMessageRunArtifacts({ ...run, engine: "v1" })?.workDurationMs).toBe(21_000);
+    // A native run that never published an answer ends at its terminal state.
+    expect(summarizeMessageRunArtifacts({ ...run, answerCompletedAt: null, engine: "native", status: "error" })?.workDurationMs)
+      .toBe(150_000);
+  });
+
   it("merges more than 100 streamed thinking deltas into one exact, reloadable entry", () => {
     const deltas = Array.from({ length: 150 }, (_, index) =>
       index % 50 === 49 ? `step ${index}.\n\n` : `step ${index} 思考 😀 `);

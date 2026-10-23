@@ -186,7 +186,10 @@ describe("thread answer outputs", () => {
   });
 
   it("takes a live answer's work duration from the server, the figure its settled summary shows", () => {
+    const announced = [{ data: { artifactType: "work_duration", payload: { workDurationMs: null } }, type: "artifact" as const }];
+    expect(summarizeThreadArtifacts(announced)).toBeNull();
     const live = summarizeThreadArtifacts([
+      ...announced,
       { data: { delta: "Hi" }, type: "token" },
       { data: { artifactType: "work_duration", payload: { workDurationMs: 6_400 } }, type: "artifact" },
       { data: { artifactType: "work_duration", payload: { workDurationMs: -1 } }, type: "artifact" }

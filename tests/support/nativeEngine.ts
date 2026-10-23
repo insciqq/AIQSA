@@ -32,7 +32,7 @@ export function nativeEngineFake(listed: readonly string[], options: Readonly<{ 
       mcpBindingRows: async () => [],
       observations: async () => ({ withReservation: vi.fn() }) as never,
       runs: {
-        answerStarted: async () => null,
+        workDurationMs: async () => null,
         applyUsageTotals: async () => undefined,
         complete: async () => true,
         publishAnswer: async (_scope, input) => { published.push(input.text); return true; },

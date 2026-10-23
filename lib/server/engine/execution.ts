@@ -236,26 +236,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         faults, price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope, store: engine.runs
       });
       let answerPublished = false;
-      // The answer's start, recorded once: at its first streamed text, or at
-      // publication for an answer without text. The work duration a reload
-      // shows is sent live as well, so the steps row reads the same figure.
-      let answerStart: Promise<void> | null = null;
-      const startAnswer = (): Promise<void> => {
-        if (answerStart) return answerStart;
-        const acceptedAt = input.created.acceptedAt;
-        if (acceptedAt) logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
-          duration_ms: Math.max(0, Date.now() - acceptedAt.getTime()), outcome: "completed", providerFamily: snapshot.providerFamily,
-          providerModelId: snapshot.providerModelId, run_id: runId, stage: "first_output" });
-        const at = new Date();
-        // Bookkeeping: its failure never reaches the answer.
-        answerStart = Promise.resolve().then(() => engine.runs.answerStarted(scope, at)).then((workDurationMs) => {
-          if (workDurationMs !== null) sink.send({ data: { artifactType: "work_duration", payload: { workDurationMs } }, type: "artifact" });
-        }).catch(() => undefined);
-        return answerStart;
-      };
+      let firstOutput = true;
       const answer = createAnswerStream({
         onFirstOutput() {
-          void startAnswer();
+          if (!firstOutput) return;
+          firstOutput = false;
+          void input.repository.markRunAnswerStarted({ at: new Date(), runId }).catch(() => undefined);
+          const acceptedAt = input.created.acceptedAt;
+          if (acceptedAt) logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
+            duration_ms: Math.max(0, Date.now() - acceptedAt.getTime()), outcome: "completed", providerFamily: snapshot.providerFamily,
+            providerModelId: snapshot.providerModelId, run_id: runId, stage: "first_output" });
         },
         save: (text) => input.repository.appendAssistantText(scope.assistantMessageId, text, { runId }),
         send: sink.send
@@ -285,6 +275,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         sink.send({ data: { modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, runId, status: "streaming" },
           type: "run_start" });
+        // "Worked for" is the whole run, known once the answer is published:
+        // until then the live answer shows no duration, never a client guess.
+        sink.send({ data: { artifactType: "work_duration", payload: { workDurationMs: null } }, type: "artifact" });
         sink.send({ data: { assistantMessageId: scope.assistantMessageId, userMessageId: input.created.userMessageId },
           type: "message_start" });
         const followupOps = input.prepared.followupAdmission ? input.repository.followups : undefined;
@@ -595,8 +588,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         answerPublished = true;
         sink.send({ data: { assistantMessageId: scope.assistantMessageId, runId }, type: "answer_complete" });
-        // Recorded before the settled projection is read, which takes its duration from it.
-        await startAnswer();
+        // The whole run's duration, read as a reload reads it; bookkeeping that never reaches the answer.
+        const workDurationMs = await Promise.resolve().then(() => engine.runs.workDurationMs(scope)).catch(() => null);
+        if (workDurationMs !== null) sink.send({ data: { artifactType: "work_duration", payload: { workDurationMs } }, type: "artifact" });
         // Answer first: a finished compaction is kept now, a running one goes on detached and never holds the run.
         await context.afterAnswer();
         // The transcript is on record (or given up) before the run completes and the next turn can read it.

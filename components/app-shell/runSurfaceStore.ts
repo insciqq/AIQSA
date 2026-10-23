@@ -46,10 +46,14 @@ export function selectRunSurface(
 /**
  * Live work duration of a run: from the send to the first answer token. It is
  * a client-clock fact for the answer in flight only; the settled value comes
- * from the server's artifact summary.
+ * from the server's artifact summary. A run that reports its own duration
+ * (`work_duration`, the native engine: the whole run, known at its answer)
+ * gets no client figure, which would count only to its first words.
  */
 export function liveWorkDurationMs(surface: RunSurfaceSnapshot): number | null {
   if (surface.startedAt === null || surface.answerStartedAt === null) return null;
+  if (surface.events.some((event) => event.type === "artifact" && typeof event.data === "object" && event.data !== null &&
+    "artifactType" in event.data && event.data.artifactType === "work_duration")) return null;
   const duration = surface.answerStartedAt - surface.startedAt;
   return duration >= 0 ? duration : null;
 }

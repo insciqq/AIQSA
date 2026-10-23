@@ -81,13 +81,14 @@ export function summarizeThreadArtifacts(
       Number.isSafeInteger(payload.skillCatalogOmittedCount) && Number(payload.skillCatalogOmittedCount) > 0
       ? [Number(payload.skillCatalogOmittedCount)] : [];
   }).at(-1);
-  // The server's figure, the one its settled summary shows, replaces the client clock.
+  // The server's figure, the one its settled summary shows; a run that reports
+  // one announces it first with no value (`liveWorkDurationMs`).
   const workDurationMs = events.flatMap((event) => {
     const payload = artifactPayload(event);
     return artifactTypeFromEvent(event) === "work_duration" && isRecord(payload) &&
       Number.isSafeInteger(payload.workDurationMs) && Number(payload.workDurationMs) >= 0
       ? [Number(payload.workDurationMs)] : [];
-  }).at(0);
+  }).at(-1);
   const contextCompaction = contextCompactionFromEvents(events);
   const grounding = events
     .map(groundingDisplayFromEvent)
