@@ -735,7 +735,7 @@ export function scheduledTaskErrorMessage(errorCode: unknown): string {
     case "scheduled_task_time_zone_invalid": return "Choose a valid time zone.";
     case "scheduled_task_once_in_past": return "Choose a time at least a minute from now.";
     case "scheduled_task_chat_mode_invalid": return "Hourly and monitoring tasks always continue in the same chat.";
-    case "scheduled_task_model_unavailable": return "This model is no longer available to you. Choose another model.";
+    case "scheduled_task_model_unavailable": return "This model is not available to you for scheduled tasks. Choose another model.";
     case "scheduled_task_model_cannot_report": return "Monitoring needs a model that can use tools. Choose another model.";
     case "scheduled_task_search_unavailable": return "Web search is not available with this model. Turn it off or choose another model.";
     case "scheduled_task_tools_unavailable": return "This model cannot use tools. Turn tools off or choose another model.";

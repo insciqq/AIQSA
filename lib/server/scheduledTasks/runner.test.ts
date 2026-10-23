@@ -758,13 +758,24 @@ describe("scheduled task runner", () => {
     const refused = h.addTask({ userId: "owner-3" });
     h.setCatalog((userId) => userId === "owner-3" ? {
       models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: false },
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
       searchPlan: { mode: "all_selected", optionIds: [] }, searchStrategies: [] } : null);
     h.setReply(() => ({ error: "credential_revoked", status: 403 }));
     await h.tick();
-    expect(h.sent.at(-1)!.body).toMatchObject({ tools: "none" });
     expect(refused).toMatchObject({ pauseReason: "provider_unavailable", status: "PAUSED" });
+
+    // A model without tool calling cannot run any task: it pauses before a send, even with tools off.
+    const sentBefore = h.sent.length;
+    const toolless = h.addTask({ userId: "owner-4" });
+    h.setCatalog((userId) => userId === "owner-4" ? {
+      models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: false },
+      modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
+      searchPlan: { mode: "all_selected", optionIds: [] }, searchStrategies: [] } : null);
+    await h.tick();
+    expect(h.sent).toHaveLength(sentBefore);
+    expect(toolless).toMatchObject({ pauseReason: "model_unavailable", status: "PAUSED" });
   });
 
   it("pauses after three consecutive failed scheduled runs and resets on success", async () => {

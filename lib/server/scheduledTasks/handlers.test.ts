@@ -116,7 +116,9 @@ describe("scheduled tasks owner API", () => {
       [{ ...draft, kind: "watch" }, "scheduled_task_invalid"],
       [{ ...draft, kind: undefined }, "scheduled_task_invalid"],
       // A monitoring check reports through a tool: its model must call tools.
-      [{ ...draft, kind: "monitoring", chatMode: "same", modelId: "model-plain", searchEnabled: false }, "scheduled_task_model_cannot_report"]
+      [{ ...draft, kind: "monitoring", chatMode: "same", modelId: "model-plain", searchEnabled: false }, "scheduled_task_model_cannot_report"],
+      // Every run is an agent run: a model without tool calling cannot run a task even with tools off.
+      [{ ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false, workspaceEnabled: false }, "scheduled_task_model_unavailable"]
     ];
     for (const [body, error] of cases) {
       const response = await f.handlers.create(json("POST", body));
@@ -126,7 +128,7 @@ describe("scheduled tasks owner API", () => {
     expect(await malformed.json()).toEqual({ error: "scheduled_task_invalid" });
     expect(f.store.create).not.toHaveBeenCalled();
     const accepted = await f.handlers.create(json("POST", {
-      ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false,
+      ...draft, searchEnabled: false, toolsEnabled: false,
       schedule: { kind: "once", date: "2026-10-04", time: "11:02" }
     }));
     expect(accepted.status).toBe(201);

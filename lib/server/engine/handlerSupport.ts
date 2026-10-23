@@ -51,7 +51,8 @@ export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps, dep
   });
 }
 
-/** Answer adapters that render the neutral history (`lib/server/providers/history.ts`). */
+/** Answer adapters that render the neutral history (`lib/server/providers/history.ts`). A new answer adapter
+ * belongs here too, or admission refuses every send on it with `model_adapter_unsupported`. */
 export const NATIVE_ENGINE_ADAPTER_KINDS: ReadonlySet<string> = new Set([
   "anthropic_messages",
   "deepseek_responses_native",

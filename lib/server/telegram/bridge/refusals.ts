@@ -32,7 +32,7 @@ export type TelegramRefusalReply = Readonly<{
 const ACCESS_CODES = new Set(["unauthorized", "forbidden", "user_not_available", "user_not_found"]);
 const MODEL_CODES = new Set([
   "model_unavailable", "model_not_available", "provider_not_available", "provider_unavailable", "provider_admission_changed",
-  "model_cannot_report", "openrouter_routing_unavailable", "openrouter_required_parameters_unavailable"
+  "model_cannot_report", "model_adapter_unsupported", "model_tool_calling_required", "openrouter_routing_unavailable", "openrouter_required_parameters_unavailable"
 ]);
 const CHAT_CODES = new Set(["chat_not_found", "chat_not_created", "personal_draft_invalid", "personal_draft_conflict"]);
 const ATTACHMENT_CODES = new Set(["unsupported_attachment_type", "image_attachment_not_supported"]);
