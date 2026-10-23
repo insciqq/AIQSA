@@ -15,6 +15,7 @@ import {
   chatSendUnderWay,
   isCurrentChatRouteResolution,
   navigateChatRoute,
+  navigateToAssistantEntry,
   navigateToChatAddress,
   resolveChatRoute,
   settleChatRouteResolution,
@@ -420,6 +421,54 @@ describe("navigating to an address the shell cannot activate yet", () => {
     expect(fake.openBlank).not.toHaveBeenCalled();
     expect(fake.showUnavailable).not.toHaveBeenCalled();
     expect(address()).toBe("/c/chat-2");
+  });
+});
+
+describe("starting a chat with an Assistant from inside the shell", () => {
+  it("resolves the entry like a typed address and settles on the new chat as one entry", async () => {
+    window.history.replaceState(null, "", "/c/chat-1");
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+    let shown: ChatRoute = { chatId: "chat-1", projectId: null };
+    let release!: () => void;
+    const assistantResolved = new Promise<void>((resolve) => { release = resolve; });
+    const fake = targets({
+      openAssistant: vi.fn(async () => {
+        await assistantResolved;
+        return "opened" as const;
+      }),
+      openBlank: vi.fn(() => {
+        shown = BLANK;
+        writeChatRoute(BLANK);
+      }),
+      stateRoute: vi.fn(() => shown)
+    });
+    let pending: Promise<ChatRoute | null> | null = null;
+    navigateToAssistantEntry("asst 1", (route, resolution) => {
+      pending = resolveChatRoute(route, resolution, fake);
+    });
+    // The old chat is left at once; the entry address never becomes an entry of its own.
+    expect(fake.openBlank).toHaveBeenCalledOnce();
+    expect(fake.openAssistant).toHaveBeenCalledExactlyOnceWith("asst 1");
+    expect(push).toHaveBeenCalledExactlyOnceWith(null, "", "/");
+    expect(address()).toBe("/");
+    release();
+    await expect(pending).resolves.toEqual(BLANK);
+    expect(push).toHaveBeenCalledOnce();
+    expect(replace.mock.calls.every(([, , href]) => href === "/")).toBe(true);
+    expect(fake.showUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("reports an unavailable Assistant on the new chat, as a typed entry does", async () => {
+    window.history.replaceState(null, "", "/c/chat-1");
+    const fake = targets({ openAssistant: vi.fn(async () => "unavailable" as const) });
+    let pending: Promise<ChatRoute | null> | null = null;
+    navigateToAssistantEntry("asst-gone", (route, resolution) => {
+      pending = resolveChatRoute(route, resolution, fake);
+    });
+    await expect(pending).resolves.toEqual(BLANK);
+    expect(fake.showUnavailable).toHaveBeenCalledExactlyOnceWith("assistant");
+    expect(address()).toBe("/");
   });
 });
 
