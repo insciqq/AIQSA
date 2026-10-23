@@ -644,8 +644,7 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
  */
 export function engineSnapshotMcpBindings(snapshot: McpRunPlanSnapshot | undefined,
   rows: readonly EngineMcpBindingRow[]): Map<string, EngineMcpBinding> {
-  const byFingerprint = new Map(rows.flatMap((row) => row.runtimeGenerationId
-    ? [[row.runtimeGenerationFingerprint, { id: row.id, runtimeGenerationId: row.runtimeGenerationId }] as const] : []));
+  const byFingerprint = acceptedRowsByFingerprint(rows);
   const result = new Map<string, EngineMcpBinding>();
   for (const server of snapshot?.servers ?? []) {
     const row = byFingerprint.get(server.fingerprint);
@@ -654,13 +653,18 @@ export function engineSnapshotMcpBindings(snapshot: McpRunPlanSnapshot | undefin
   return result;
 }
 
+/** The rows of accepted runtime generations, by fingerprint. */
+function acceptedRowsByFingerprint(rows: readonly EngineMcpBindingRow[]): Map<string, Readonly<{ id: string; runtimeGenerationId: string }>> {
+  return new Map(rows.flatMap((row) => row.runtimeGenerationId
+    ? [[row.runtimeGenerationFingerprint, { id: row.id, runtimeGenerationId: row.runtimeGenerationId }] as const] : []));
+}
+
 /** The accepted bindings of a run, by server, from its `McpRunBinding` rows. */
 export function engineMcpBindings(
   bindings: readonly McpRunPlanBinding[],
   rows: readonly EngineMcpBindingRow[]
 ): Map<string, EngineMcpBinding> {
-  const byFingerprint = new Map(rows.flatMap((row) => row.runtimeGenerationId
-    ? [[row.runtimeGenerationFingerprint, { id: row.id, runtimeGenerationId: row.runtimeGenerationId }] as const] : []));
+  const byFingerprint = acceptedRowsByFingerprint(rows);
   const result = new Map<string, EngineMcpBinding>();
   for (const binding of bindings) {
     const row = byFingerprint.get(binding.fingerprint);
