@@ -3,6 +3,7 @@ import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
+import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { logEvent, runWithContext } from "../observability";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderDeadlineExceededError } from "../providers/network";
@@ -153,6 +154,29 @@ function parsedArguments(value: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Which of these earlier user messages of the chat are turns the server
+ * wrote: answer review steps and approval continuations (`systemTurnKind`)
+ * and scheduled task prompts. When they cannot be read, every one counts as
+ * the server's, so no turn the engine cannot tell apart releases an unknown
+ * effect.
+ */
+async function serverWrittenTurns(repository: Pick<RunRepository, "loadScheduledPromptMessageIds" | "loadSystemTurnMessageIds">,
+  input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
+  if (input.messageIds.length === 0) return new Set();
+  try {
+    const [systemTurns, prompts] = await Promise.all([
+      repository.loadSystemTurnMessageIds?.(input) ?? Promise.resolve(new Set<string>()),
+      repository.loadScheduledPromptMessageIds?.(input) ?? Promise.resolve(new Set<string>())
+    ]);
+    return new Set([...systemTurns, ...prompts]);
+  } catch (error) {
+    logEvent("service_operation", { action: "degrade", code: "server_turns_unavailable", error, outcome: "degraded", stage: "read",
+      subsystem: "database" });
+    return new Set(input.messageIds);
+  }
+}
+
 function maxOutputTokens(request: ProviderRunRequest): number {
   const value = request.params.maxOutputTokens ?? request.params.maxTokens ?? request.modelCapabilities.defaultMaxOutputTokens;
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
@@ -263,9 +287,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const nativeRuns = await engine.transcripts.nativeRunsForAnswers({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId });
         const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId, runIds: [...nativeRuns.values()], userId: input.userId });
-        // A scheduled run's flat context takes its previous result's own items, never a compaction of what came before.
+        // A scheduled run's flat context takes only its previous result's own work: never a compaction of what came before
+        // it, nor user input that entered that answer (a follow-up).
         const answerItems = (answer: readonly TranscriptItem[]) => input.scheduled
-          ? answer.filter((item) => item.kind !== "compaction") : answer;
+          ? answer.filter((item) => item.kind !== "compaction" && item.kind !== "user") : answer;
         const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
           answerItems(runItems.get(nativeRunId) ?? [])]));
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
@@ -280,12 +305,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             userId: input.userId });
           const callItem = approved ? [...conversation.items].reverse().find((item) => item.kind === "tool_call" &&
             item.callId === approved.providerCallId && item.name === approved.toolName) : undefined;
-          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call.
-          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id)) {
+          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call. The run sends
+          // the call only with its tool admitted: an Auto run admits no MCP tool and loads it anew (`find_tools`).
+          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id) &&
+            resolveMcpRunTool(input.prepared.providerRequest.mcp, callItem.name)) {
             approvedCall = { arguments: parsedArguments(callItem.arguments), id: callItem.callId, name: callItem.name };
           } else {
-            // The old core stopped that turn, or the user wrote again since: the server's turn is the instruction, and
-            // the call it allows is made again.
+            // The old core stopped that turn, the user wrote again since, or the tool is not loaded yet: the server's turn
+            // is the instruction, and the call it allows is made again.
             conversation = conversationFor("input");
           }
         }
@@ -295,11 +322,20 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         runRecords = writer;
         /** The sequence each compaction recorded after the run took, kept for a repeated write. */
         const detachedSequences = new Map<string, number>();
-        // Effects of the branch's earlier calls that are still unknown; only the user's own words count as them speaking.
-        const serverTurns = new Set([...continuationTurns].map((messageId) => `msg-${messageId}`));
+        // Effects of the branch's earlier calls that are still unknown. Only the user's own words count as them speaking, never
+        // a turn the server wrote: an approval continuation, an answer review step or a scheduled task's prompt.
+        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true ||
+          normalizedRequest.answerReviewStep !== undefined;
+        // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
+        const firstCall = conversation.items.findIndex((item) => item.kind === "tool_call");
+        const laterItems = new Set(firstCall < 0 ? [] : conversation.items.slice(firstCall).map((item) => item.id));
+        const laterTurns = contextMessages.slice(0, -1)
+          .filter((message) => message.role === "user" && laterItems.has(`msg-${message.id}`)).map((message) => message.id);
+        const serverWritten = await serverWrittenTurns(input.repository, { chatId: scope.chatId, messageIds: laterTurns,
+          userId: input.userId });
+        const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
         const unknownEffects = unknownEffectsOf(conversation.items, (item) => item.followup === true ||
-          (item.id === conversation.currentInputId ? !input.approvalContinuation
-            : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
+          (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
@@ -320,7 +356,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const registry = await buildToolRegistry({
           chatId: scope.chatId,
           followupTexts: () => delivered,
-          loadMcpBindings: async () => engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId)),
+          loadMcpBindingRows: () => engine.mcpBindingRows(runId),
           mcpBindings,
           onEvent: (event) => sink.publish(event),
           onUsage: (attribution) => usage.add(attribution),

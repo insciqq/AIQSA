@@ -7118,6 +7118,18 @@ describe("native engine routing of interactive sends", () => {
     expect(toolNames(provider.requests[0])).toEqual(expect.arrayContaining(["read_secret", "manage_assistant", "manage_secret"]));
   });
 
+  it("gives a listed user's Telegram turn no self-service tools, whose cards the bridge cannot show, and keeps read_secret", async () => {
+    const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const provider = recordingProvider();
+    const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository,
+      telegramTurn: true });
+    await response.text();
+    const tools = toolNames(provider.requests[0]);
+    expect(tools).toContain("read_secret");
+    for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant"]) expect(tools).not.toContain(name);
+  });
+
   it("continues a listed user's turn natively after an Allow, naming the approval, as the web and Telegram send it", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
     repository.loadMcpApprovalContinuation = vi.fn(async (input: { approvalId: string }) => input.approvalId === "approval-1"

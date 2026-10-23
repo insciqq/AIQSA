@@ -3,7 +3,9 @@ import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderRunRequest } from "../providers/types";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
-import { buildToolRegistry, engineMcpBindings, type EngineMcpBinding, type ToolRegistryInput } from "./toolRegistry";
+import {
+  buildToolRegistry, engineMcpBindings, engineSnapshotMcpBindings, type EngineMcpBinding, type ToolRegistryInput
+} from "./toolRegistry";
 import { READ_TOOL_RESULT_NAME } from "./toolResults";
 
 const snapshot: McpRunPlanSnapshot = {
@@ -138,5 +140,15 @@ describe("native tool registry", () => {
     [{ id: "binding-1", runtimeGenerationFingerprint: "fp-1", runtimeGenerationId: "gen-1" },
       { id: "binding-2", runtimeGenerationFingerprint: "fp-2", runtimeGenerationId: null }]))
       .toEqual(new Map([["jira", { fingerprint: "fp-1", mcpRunBindingId: "binding-1", runtimeGenerationId: "gen-1" }]]));
+  });
+
+  it("binds the servers Auto loaded from the rows their discovery epoch wrote, matched by fingerprint", () => {
+    const loaded: McpRunPlanSnapshot = { servers: [{ fingerprint: "fp-1", revisionId: "rev-1", serverId: "jira", serverName: "Jira" },
+      { fingerprint: "fp-2", revisionId: "rev-2", serverId: "gitlab", serverName: "GitLab" },
+      { fingerprint: "fp-3", revisionId: "rev-3", serverId: "wiki", serverName: "Wiki" }], tools: [], version: 1 };
+    expect(engineSnapshotMcpBindings(loaded, [{ id: "binding-1", runtimeGenerationFingerprint: "fp-1", runtimeGenerationId: "gen-1" },
+      { id: "binding-2", runtimeGenerationFingerprint: "fp-2", runtimeGenerationId: null }]))
+      .toEqual(new Map([["jira", { fingerprint: "fp-1", mcpRunBindingId: "binding-1", runtimeGenerationId: "gen-1" }]]));
+    expect(engineSnapshotMcpBindings(undefined, [])).toEqual(new Map());
   });
 });
