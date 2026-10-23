@@ -38,7 +38,7 @@ const CHAT_CODES = new Set(["chat_not_found", "chat_not_created", "personal_draf
 const ATTACHMENT_CODES = new Set(["unsupported_attachment_type", "image_attachment_not_supported"]);
 const KNOWLEDGE_CODES = new Set(["sources_processing", "no_retrieval_candidates"]);
 const CONTEXT_CODES = new Set([
-  "context_too_large", "agent_context_too_large", "assistant_instructions_expansion_too_large", "instruction_preset_expansion_too_large"
+  "context_too_large", "assistant_instructions_expansion_too_large", "instruction_preset_expansion_too_large"
 ]);
 
 function reply(text: string, action: TelegramRefusalAction, chatGone = false): TelegramRefusalReply {
@@ -62,8 +62,6 @@ export function telegramRefusalReply(refusal: TelegramSendRefusal): TelegramRefu
   if (code === "workspace_disabled") return reply(COPY.workspaceDisabled, "settings");
   if (code === "workspace_model_tools_required") return reply(COPY.workspaceModel, "model");
   if (code.startsWith("workspace_")) return reply(COPY.workspaceUnavailable, "settings");
-  if (code === "agent_model_unsupported") return reply(COPY.agentModel, "model");
-  if (code.startsWith("agent_")) return reply(COPY.agentUnavailable, "settings");
   // An approval's continuation after its window or its use: only a new request asks again.
   if (code === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) return reply(TELEGRAM_COPY.approvalExpired, "none");
   if (code.startsWith("mcp_")) return reply(COPY.toolsUnavailable, "open");

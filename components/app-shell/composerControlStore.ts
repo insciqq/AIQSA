@@ -461,7 +461,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set, get) =
   },
   setSelectedKnowledgePlan(requested, requestedSource = "explicit", origin = "user") {
     // Knowledge is disabled: a chat's, folder's or saved default never becomes
-    // the composer's selection, so nothing is sent or blocks Agent for it.
+    // the composer's selection, so nothing is sent for it.
     const selection = KNOWLEDGE_ENABLED ? requested : EMPTY_KNOWLEDGE_SELECTION;
     const source = KNOWLEDGE_ENABLED ? requestedSource : "off";
     const decoded = decodeKnowledgePlan(Array.isArray(selection)

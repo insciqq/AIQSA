@@ -53,7 +53,6 @@ export type ComposerGalleryState =
   | "chips-wide-comments"
   | "chips-off"
   | "chips-off-pinned"
-  | "chips-agent"
   | "commands"
   | "default"
   | "error"
@@ -616,7 +615,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   const [comments, setComments] = useState(() => state === "chips-wide-comments"
     ? [1, 2, 3].map(index => ({ id: String(index), quote: `Selected fragment ${index}`, text: `Pending comment ${index}` })) : []);
   const offChips = state === "chips-off" || state === "chips-off-pinned";
-  const chipFixture = wideChips || offChips || state === "chips-agent";
+  const chipFixture = wideChips || offChips;
   const projectFallback = state === "assistant-project-fallback";
   const [config, setConfig] = useState<ComposerConfig>(() => state === "zero"
     ? {
@@ -648,7 +647,6 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
           : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
               wideChips || offChips ? { ...server, enabled: true } : server
             ) });
-  const [agentEnabled, setAgentEnabled] = useState(false);
   const allCapabilities = chipFixture || ["capabilities", "commands"].includes(state);
   // The `/` palette state pins from a small Skill list, as the Skill library would.
   const [palettePins, setPalettePins] = useState<string[]>([]);
@@ -670,11 +668,11 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   const assistantFallback = state === "assistant-fallback" || state === "assistant-project-fallback";
   const [assistantOrigins, setAssistantOrigins] = useState(assistantSetup?.origins ?? {});
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
-  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" || offChips || state === "chips-agent" ||
+  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" || offChips ||
     (assistantSetup && !assistantChanged)
     ? [] : wideChips ? ["web-primary", "research-search"] : ["web-primary"]);
   const [knowledgeSelection, setKnowledgeSelection] = useState<KnowledgeSelection>(() => {
-    if (state === "zero" || offChips || state === "chips-agent") return EMPTY_KNOWLEDGE_SELECTION;
+    if (state === "zero" || offChips) return EMPTY_KNOWLEDGE_SELECTION;
     if (wideChips) return explicitKnowledgeSelection({ baseIds: ["kb-finance", "kb-product"], sourceIds: ["source-7"] });
     // A Project's fallback row runs with the Project's default Knowledge.
     if (projectFallback) return explicitKnowledgeSelection({ baseIds: ["kb-launch"], sourceIds: [] });
@@ -828,10 +826,6 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               retryable={false}
             />
             <ComposerV2
-              agent={allCapabilities ? {
-                enabled: agentEnabled, onToggle: setAgentEnabled,
-                unavailableReason: offChips ? "Agent is unavailable. Ask an administrator to check the Workspace runner." : undefined
-              } : undefined}
               assistant={galleryAssistant}
               attachmentItems={attachmentItems}
               attachmentLimitUsage={state === "attachments" ? attachmentGalleryUsage : null}

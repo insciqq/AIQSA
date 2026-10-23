@@ -103,7 +103,7 @@ async function stopSession(prisma: PrismaClient, sessionId: string, stopReason: 
 /** Send refusals that end the session: the step can never run as it is. */
 function refusalStopReason(status: number, code: string | null): AnswerReviewStopReason | null {
   if (status === 429) return "budget";
-  if (code && ["answer_review_agent_unsupported", "answer_review_assistant_unsupported", "answer_review_knowledge_unsupported",
+  if (code && ["answer_review_assistant_unsupported", "answer_review_knowledge_unsupported",
     "answer_review_model_unsupported", "provider_not_available", "credential_assignment_ambiguous", "model_not_available"].includes(code)) {
     return "error";
   }

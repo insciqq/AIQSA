@@ -12,10 +12,6 @@ import {
   inheritWorkspaceFailureCause, inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode
 } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
-import { agentExecutionId } from "../agents/runtime";
-import { CodexJsonlDecoder, type CodexEvent } from "../agents/codexProtocol";
-import type { CodexManagedProfile } from "../agents/codexProfile";
 import { workspaceSkillPath, type WorkspaceSkillBundles, type WorkspaceSkillPlan } from "../skills/workspaceBundles";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
@@ -1153,25 +1149,6 @@ export type WorkspaceCoordinator = Readonly<{
     userId: string;
     workspace: NormalizedRunWorkspace;
   }>): Promise<string>;
-  /** One native Codex turn. The caller has persisted its dispatch obligation. */
-  executeAgent?(input: Readonly<{
-    modelRunToolCallId: string;
-    onActivity?: WorkspaceActivityListener;
-    onEvent(event: CodexEvent, text: WorkspaceActivityText): Promise<void>;
-    profile: CodexManagedProfile;
-    prompt: string;
-    resumePrompt: string;
-    runId: string;
-    runToken: string;
-    signal: AbortSignal;
-    threadId?: string;
-    previousToolCallId?: string;
-    /** Claims a durable interrupt only at a settled native tool boundary. */
-    shouldInterrupt?(): Promise<boolean>;
-    timeoutSeconds: number | null;
-    userId: string;
-    workspace: NormalizedRunWorkspace;
-  }>): Promise<"interrupted" | void>;
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
   /**
    * Before a scheduled run's first model request: starts the Workspace and
@@ -1794,7 +1771,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // revocation. It must not authorize or redeliver Skill instructions.
         if (purpose === "execution") {
           const skillPlan = input.skills ? await input.skills.plan({ runId: binding.runId, userId: binding.userId })
-            : { agent: false, initial: [], manifestHash: hashCanonicalMcpValue({ version: 1, skills: [] }) };
+            : { initial: [], manifestHash: hashCanonicalMcpValue({ version: 1, skills: [] }) };
           const skillIdentity = { modelRunId: binding.runId, manifestHash: skillPlan.manifestHash,
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal };
           const skillState = await input.runtime.prepareSkillRun({ ...skillIdentity, initial: skillPlan.initial });
@@ -2083,64 +2060,6 @@ export function createWorkspaceCoordinator(input: Readonly<{
         operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal });
       if (installed.workspacePath !== path) throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
       return path;
-    },
-    async executeAgent(request) {
-      if (!input.runtime.startAgent || !input.runtime.pollAgent) {
-        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-      }
-      const initial = await requireBinding(request.runId, request.userId, request.workspace);
-      const cached = initialized.get(request.runId);
-      if (request.previousToolCallId && (!request.threadId || !cached?.runtimeSandboxId ||
-        cached.runtimeSandboxId !== initial.runtimeSandboxId || cached.operationOwner !== initial.operationOwner ||
-        cached.operationGeneration !== initial.operationGeneration)) throw new WorkspaceRuntimeError("workspace_session_lost");
-      const { binding, recreated } = request.previousToolCallId
-        ? { binding: cached!, recreated: false }
-        : await initializeWithLostSessionRecovery(initial, request.workspace, request.signal, request.onActivity);
-      if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
-      const runtimeExecSessionId = agentExecutionId(request.modelRunToolCallId);
-      // Persist before releasing the prompt to Codex. A lost HTTP response or
-      // app restart cannot turn this execution into an unowned guest process.
-      const registered = await input.registry.register({
-        modelRunId: request.runId, modelRunToolCallId: request.modelRunToolCallId,
-        runtimeExecSessionId, operation: ownedOperation(binding), sessionId: binding.sessionId
-      });
-      if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
-      const identity = {
-        modelRunId: request.runId, runtimeExecSessionId, runtimeSandboxId: binding.runtimeSandboxId,
-        operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal
-      };
-      const threadId = recreated ? undefined : request.threadId;
-      await input.runtime.startAgent({ ...identity, profile: request.profile,
-        skillManifestHash: skillPlans.get(request.runId)!.manifestHash,
-        prompt: threadId ? request.resumePrompt : request.prompt, threadId,
-        ...(request.previousToolCallId ? { previousExecSessionId: agentExecutionId(request.previousToolCallId) } : {}),
-        runToken: request.runToken, timeoutSeconds: request.timeoutSeconds });
-      const decoder = new CodexJsonlDecoder();
-      const text = activityTextByRun.get(request.runId)!.withValues([request.runToken]);
-      activityTextByRun.set(request.runId, text);
-      let cursor = 0;
-      let interruptRequestedAt: number | null = null;
-      let interrupted = false;
-      for (;;) {
-        request.signal.throwIfAborted();
-        const page = await input.runtime.pollAgent({ ...identity, cursor });
-        for (const event of decoder.push(Buffer.from(page.stdoutBase64, "base64"))) await request.onEvent(event, text);
-        cursor = page.nextCursor;
-        if (page.done) {
-          const events = interrupted ? decoder.finishInterrupted(page.exitCode) : decoder.finish(page.exitCode);
-          for (const event of events) await request.onEvent(event, text);
-          return interrupted ? "interrupted" : undefined;
-        }
-        if (!interruptRequestedAt && decoder.canInterrupt && await request.shouldInterrupt?.()) {
-          if (!input.runtime.interruptAgent) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-          interruptRequestedAt = Date.now();
-        }
-        if (interruptRequestedAt) {
-          if (!interrupted) interrupted = await input.runtime.interruptAgent!(identity);
-          if (Date.now() - interruptRequestedAt > 10_000) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
-        }
-        if (page.stdoutBase64.length === 0) await sleep(200, undefined, { signal: request.signal });
-      }
     },
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;

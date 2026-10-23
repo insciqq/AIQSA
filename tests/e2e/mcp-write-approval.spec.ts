@@ -17,11 +17,8 @@ import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
  * `[AIQSA_MCP_E2E:<tool>:<id>]` turn makes exactly one call; the oracles are
  * the endpoint's received calls and the persisted rows, never wording.
  *
- * Not covered here: Agent runs (Codex needs a real model provider; the
- * gateway refusal, its pending request and the one-shot consumption are
- * unit-tested in lib/server/agents/mcpGateway.test.ts) and a real process
- * restart (Playwright owns the dev server; a restarted gated round is
- * unit-tested in lib/server/runs/runRecovery.test.ts).
+ * Not covered here: a real process restart (Playwright owns the dev server; a
+ * restarted gated round is unit-tested in lib/server/runs/runRecovery.test.ts).
  */
 
 const prisma = new PrismaClient();

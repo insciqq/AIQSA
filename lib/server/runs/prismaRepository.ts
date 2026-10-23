@@ -3,7 +3,6 @@ import { loadProviderModelCostBasis } from "../usage";
 import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
 import { decodeSearchPlan } from "../../domain/search";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
-import { interruptExpiredAgentRun } from "../agents/store";
 import { AttachmentLinkConflictError } from "./runRepositoryContract";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { assertWorkspaceFollowupClaim } from "./workspaceFollowupPersistence";
@@ -617,7 +616,6 @@ export function createPrismaRunRepository(
             projectRunBinding: null,
             answerCompletedAt: null,
             NOT: [
-              { workspaceRunBinding: { is: { agent: { isNot: null } } } },
               { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
               { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
             ],
@@ -1280,11 +1278,6 @@ export function createPrismaRunRepository(
         take: input.limit,
         where: {
           OR: [
-            { workspaceRunBinding: { is: { agent: { is: { OR: [
-              { leaseExpiresAt: { lte: new Date() } },
-              { revokedAt: { not: null } },
-              { startedAt: null, createdAt: { lte: new Date(Date.now() - 30_000) } }
-            ] } } } } },
             {
               createdAt: { lt: input.bootedBefore },
               OR: [
@@ -1972,7 +1965,12 @@ export function createPrismaRunRepository(
       return passages;
     },
     loadEntitlements: (userId) => loadEntitlementsForUser(userId).catch(retainRunPrismaCode),
-    interruptExpiredAgentRun: (input) => interruptExpiredAgentRun(prismaClient, input),
+    isRetiredAgentRun: async (input) => {
+      const [row] = await prismaClient.$queryRaw<Array<{ agent: boolean | null }>>`
+        SELECT jsonb_typeof("normalizedRequest" -> 'agent') = 'object' AS "agent"
+        FROM "ModelRun" WHERE "id" = ${input.runId} AND "userId" = ${input.userId}`.catch(retainRunPrismaCode);
+      return row?.agent === true;
+    },
     loadModelPricing: async (provider, modelId, providerModelId) => {
       const models = await prismaClient.providerModel.findMany({
         // Answers and Search engines can report the web searches they ran.

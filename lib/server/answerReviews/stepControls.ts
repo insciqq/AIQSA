@@ -2,7 +2,7 @@ import { decodeSearchPlan, type SearchPlan } from "../../contracts/search";
 
 /** The control keys a step takes from the chat; everything else in a send body is the server's. */
 const STEP_CONTROL_KEYS = [
-  "agentEnabled", "knowledgePlan", "mcp", "searchPlan", "searchPreferencePlan", "searchPreferenceSource", "skillIds",
+  "knowledgePlan", "mcp", "searchPlan", "searchPreferencePlan", "searchPreferenceSource", "skillIds",
   "skills", "timeZone", "tools", "workspace"
 ] as const;
 

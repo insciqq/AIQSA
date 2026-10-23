@@ -38,16 +38,6 @@ const boundaryCases = [
     filePath: "lib/server/providers/importBoundaryExample.ts",
     reason: "Provider adapters must not import run orchestration, handlers, or repositories.",
     specifier: "@/lib/server/runs/runExecution"
-  },
-  {
-    filePath: "lib/server/workspace/codeMcpGateway.ts",
-    reason: "The runner gateway and the guest-code MCP path must not depend on the Codex Agent modules.",
-    specifier: "../agents/mcpGateway"
-  },
-  {
-    filePath: "lib/server/workspace/runnerGatewayRelay.ts",
-    reason: "The runner gateway and the guest-code MCP path must not depend on the Codex Agent modules.",
-    specifier: "@/lib/server/agents/config"
   }
 ] as const;
 

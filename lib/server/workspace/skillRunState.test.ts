@@ -21,11 +21,9 @@ describe("durable Workspace Skill preparation", () => {
       await expect(recovered.prepare({ ...identity, operation: { generation: 9, owner: "recovery" },
         initial: [pinned, available] }, reset)).resolves.toEqual({ state: "ready" });
       expect(reset).toHaveBeenCalledTimes(1);
-      await expect(recovered.start(identity, async () => "started")).resolves.toBe("started");
-      await recovered.prepare({ ...identity, runtimeSandboxId: "new-guest", initial: [pinned, available] }, reset);
+      await expect(recovered.prepare({ ...identity, runtimeSandboxId: "new-guest", initial: [pinned, available] }, reset))
+        .resolves.toEqual({ state: "preparing" });
       expect(reset).toHaveBeenCalledTimes(2);
-      await expect(recovered.start({ ...identity, runtimeSandboxId: "new-guest" }, async () => {}))
-        .rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });
       await recovered.removeSession(identity);
       expect(await readdir(directory)).toHaveLength(1);
       await recovered.removeSession({ ...identity, runtimeSandboxId: "new-guest" });
@@ -51,19 +49,12 @@ describe("durable Workspace Skill preparation", () => {
     await expect(state.prepare({ ...identity, manifestHash: "d".repeat(64), initial: [] }, reset)).rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });
   });
 
-  it("serializes Agent start and installs without treating every explicit new load as a replay", async () => {
+  it("installs an explicit new load again without treating it as a replay", async () => {
     const state = new WorkspaceSkillRunState();
     await state.prepare({ ...identity, initial: [] }, async () => {});
     await state.complete(identity, async () => {});
-    let finish!: () => void; let entered!: () => void;
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    const barrier = new Promise<void>(resolve => { finish = resolve; });
-    const start = state.start(identity, async () => { entered(); await barrier; });
-    await started;
     const install = vi.fn(async () => {});
-    const pending = state.install(identity, pinned, install);
-    await Promise.resolve(); expect(install).not.toHaveBeenCalled();
-    finish(); await start; await pending;
+    await state.install(identity, pinned, install);
     await state.install(identity, pinned, install);
     expect(install).toHaveBeenCalledTimes(2);
     await expect(state.install(identity, { ...pinned, revisionId: "retargeted" }, install)).rejects.toMatchObject({ code: "workspace_skills_prepare_failed" });

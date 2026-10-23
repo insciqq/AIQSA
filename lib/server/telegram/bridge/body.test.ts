@@ -4,7 +4,7 @@ import {
 } from "./body";
 import { fakeCatalog, fakeCatalogModel, SEARCH_OPTION } from "@/tests/support/telegramChatBridge";
 
-const SETTINGS: TelegramSendSettings = { agentEnabled: false, searchEnabled: true, workspaceEnabled: false };
+const SETTINGS: TelegramSendSettings = { searchEnabled: true, workspaceEnabled: false };
 const TEXT = [{ text: "Compare X and Y as a table", type: "text" as const }];
 
 describe("Telegram send body", () => {
@@ -72,26 +72,20 @@ describe("Telegram send body", () => {
     expect(off.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
   });
 
-  it("asks a model without tool calling for no tools and no Workspace, and runs Agent only on a model that offers it", () => {
+  it("asks a model without tool calling for no tools and no Workspace, and never sends an Agent turn", () => {
     const plain = fakeCatalogModel({ capabilities: { ...fakeCatalogModel().capabilities, toolCalling: false } });
     expect(buildTelegramSendBody({
       admissionId: "a", catalog: fakeCatalog({ models: [plain] }), content: TEXT, model: plain,
-      settings: { agentEnabled: true, searchEnabled: true, workspaceEnabled: true }, target: { assistantId: null, kind: "new" }
+      settings: { searchEnabled: true, workspaceEnabled: true }, target: { assistantId: null, kind: "new" }
     })).toMatchObject({ tools: "none", workspace: { enabled: false } });
 
-    const agentModel = fakeCatalogModel({ agentAvailable: true });
-    const agent = buildTelegramSendBody({
-      admissionId: "b", catalog: fakeCatalog({ models: [agentModel] }), content: TEXT, model: agentModel,
-      settings: { agentEnabled: true, searchEnabled: true, workspaceEnabled: false }, target: { assistantId: null, kind: "new" }
-    });
-    expect(agent).toMatchObject({ agentEnabled: true, workspace: { enabled: true } });
-    expect(agent).not.toHaveProperty("tools");
-    const noAgent = buildTelegramSendBody({
+    const tooling = buildTelegramSendBody({
       admissionId: "c", catalog: fakeCatalog(), content: TEXT, model: fakeCatalogModel(),
-      settings: { agentEnabled: true, searchEnabled: true, workspaceEnabled: true }, target: { assistantId: null, kind: "new" }
+      settings: { searchEnabled: true, workspaceEnabled: true }, target: { assistantId: null, kind: "new" }
     });
-    expect(noAgent).not.toHaveProperty("agentEnabled");
-    expect(noAgent.workspace).toEqual({ enabled: true });
+    expect(tooling).not.toHaveProperty("agentEnabled");
+    expect(tooling).not.toHaveProperty("tools");
+    expect(tooling.workspace).toEqual({ enabled: true });
   });
 
   it("lets an Assistant govern its rows: only the binding, the Workspace switch and the turn travel", () => {

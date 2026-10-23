@@ -115,7 +115,7 @@ function fixture(overrides: Partial<McpHubServiceDependencies> = {}) {
 
 describe("MCP Hub shared discovery and dispatch", () => {
   it("refuses a prepared call whose personal tool was switched off before dispatch, without recording it", async () => {
-    // The shared policy the Agent gateway also uses; the Hub's own filter keeps personal servers out entirely.
+    // The shared policy the guest-code gateway also uses; the Hub's own filter keeps personal servers out entirely.
     const personal = personalMcpFixture({ toolNames: ["echo", "write"] });
     const plan: McpHubServiceDependencies["inspect"] = async (_userId, tools) =>
       personal.prepare(tools.map(({ namespacedName }) => namespacedName));
@@ -210,7 +210,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
     await expect(test.service.toolIndex({ authority })).resolves.toEqual(index);
   });
 
-  it("keeps Agent gateway results without matches free of the index", async () => {
+  it("keeps guest-code gateway results without matches free of the index", async () => {
     const test = fixture();
     const service = createMcpToolService({ ...test.dependencies, recordDispatch: async () => ({ settle: async () => undefined }) });
     const result = await service.findTools({ authority, query: "weather forecast" });

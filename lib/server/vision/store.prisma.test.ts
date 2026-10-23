@@ -10,11 +10,6 @@ import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { loadChatUsageTotals } from "../chats/usageTotals";
 import { persistCompletedAnswerUsage } from "../runs/prismaRepositoryAnswer";
-import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
-import { agentLimits } from "../agents/config";
-import { agentTokenHash, createAgentRunStore } from "../agents/store";
-import { createAgentBuiltinDispatcher } from "../agents/builtinTools";
-import type { NormalizedRunRequest } from "../providers/types";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import { createVisionAnalysisService } from "./service";
@@ -72,7 +67,7 @@ async function committedFixture(check: (f: Fixture) => Promise<void>) {
     // Only this synthetic aggregate; no global reset or persistent provider mutation.
     await prisma.$transaction(async tx => {
       // Session→chat and binding→session are RESTRICT. Delete this exact
-      // run first (cascading its Agent/Workspace bindings), then its session.
+      // run first (cascading its Workspace binding), then its session.
       await tx.modelRun.deleteMany({ where: { id: f.context.runId, userId: f.context.userId, chatId: f.context.chatId } });
       await tx.workspaceSession.deleteMany({ where: { chatId: f.context.chatId } });
       await tx.chat.deleteMany({ where: { id: f.context.chatId } });
@@ -92,80 +87,6 @@ async function committedFixture(check: (f: Fixture) => Promise<void>) {
 
 const inputs = [{ version: 1, checksum: "b".repeat(64), source: { captureId: "synthetic", relativePath: "project/image.png" } }];
 describe("durable auxiliary Vision accounting", () => {
-  it("dispatches native System Vision through the real Agent claim and hooks, then restores without another charge", async () => committedFixture(async f => {
-    // The ordinary fixture already has a running call. Native delivery must
-    // create its own hash-only pending call through the real Agent store.
-    await f.db.modelRunToolCall.delete({ where: { id: f.context.toolCallId } });
-    const session = await f.db.workspaceSession.create({ data: {
-      chatId: f.context.chatId, sandboxName: `native-vision-${randomUUID()}`, imageRef: "aiqsa-workspace:0.1.31",
-      internetEnabled: false, policyRevision: 1, state: "RUNNING", runtimeSandboxId: "synthetic-capture-runtime",
-      operationOwner: `run:${f.context.runId}`, version: 1, expiresAt: new Date(Date.now() + 600000)
-    } });
-    const outputDirectory = `/workspace/output/${f.context.runId}`;
-    await f.db.workspaceRunBinding.create({ data: { modelRunId: f.context.runId, workspaceSessionId: session.id,
-      imageRef: session.imageRef, internetEnabled: false, policyRevision: 1, runtimeVersion: "0.6.16", mcpVersion: "0.6.16",
-      toolCatalogHash: "a".repeat(64), toolDefinitions: [{ originalName: "sandbox_exec_start",
-        namespacedName: "workspace__sandbox_exec_start", description: "Synthetic native runner", inputSchema: { type: "object" } }], outputDirectory } });
-    const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
-      compatibilityHash: "a".repeat(64), mcpMode: "off" as const };
-    await f.db.agentRunBinding.create({ data: { modelRunId: f.context.runId, configuration,
-      compatibilityHash: configuration.compatibilityHash } });
-    const owner = createAgentRunStore(f.db, { runId: f.context.runId, userId: f.context.userId, configuration });
-    const grant = await owner.arm(null);
-    const agent = createAgentRunStore(f.db, { runId: f.context.runId, userId: f.context.userId,
-      configuration, tokenHash: agentTokenHash(grant.token) });
-    const call = { id: randomUUID(), name: "analyze_image", arguments: {
-      images: [{ path: "/workspace/project/image.png" }], question: "What color is the square?"
-    } };
-    const bytes = await sharp({ create: { width: 2, height: 2, channels: 3, background: "#ff0000" } }).png().toBuffer();
-    const captureId = "c".repeat(32);
-    const captures = {
-      create: vi.fn(async () => ({ id: captureId })),
-      imageSource: vi.fn(async () => ({ captureId, relativePath: "project/image.png", byteSize: bytes.length,
-        checksum: createHash("sha256").update(bytes).digest("hex"), assertAccess: async () => {},
-        open: async () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }) })),
-      release: vi.fn(async () => {})
-    };
-    const execute = vi.fn<ReturnType<typeof createAcceptedProviderRequestExecutor>>().mockImplementation(async () => {
-      // A provider may run only after the actual Agent pending→running hook
-      // and auxiliary dispatch/accounting have committed on PostgreSQL.
-      const tool = await f.db.modelRunToolCall.findFirstOrThrow({ where: { modelRunId: f.context.runId, providerCallId: call.id } });
-      expect(tool).toMatchObject({ state: "running", arguments: { argumentHash: hashCanonicalMcpValue(call.arguments) } });
-      expect(await f.db.visionAnalysisAttempt.findUnique({ where: { toolCallId: tool.id } })).toMatchObject({ state: "dispatched" });
-      expect(await f.db.usageEvent.findUnique({ where: { visionAnalysisAttemptId: tool.id } }))
-        .toMatchObject({ visionAnalysis: true, inputTokens: null });
-      return { finalText: "A red square.", finalProviderResponsePreview: {}, usage: { inputTokens: 7, outputTokens: 2 } };
-    });
-    const beforeDispatch = vi.spyOn(agent, "startBuiltinVision");
-    const dispatchAttempt = vi.spyOn(f.store, "dispatch");
-    const service = createVisionAnalysisService(f.db, captures as unknown as ReturnType<typeof createWorkspaceSelectedCaptures>, { execute, store: f.store });
-    const request = { chatId: f.context.chatId, agent: configuration, visionAnalysis: f.plan,
-      workspace: { outputDirectory }, toolMode: "auto" } as unknown as NormalizedRunRequest;
-    const dispatch = createAgentBuiltinDispatcher({ request, runId: f.context.runId, userId: f.context.userId, store: agent, vision: service });
-    const signal = AbortSignal.timeout(15000);
-    const result = await dispatch(call, signal);
-    expect(beforeDispatch).toHaveBeenCalledOnce();
-    await expect(beforeDispatch.mock.results[0]!.value).resolves.toBeUndefined();
-    expect(dispatchAttempt).toHaveBeenCalledOnce();
-    await expect(dispatchAttempt.mock.results[0]!.value).resolves.toEqual({ result: null });
-    expect(result).toMatchObject({ callId: call.id, name: "analyze_image", status: "complete" });
-    expect(JSON.stringify(result)).toContain("A red square.");
-    expect(execute).toHaveBeenCalledOnce();
-    const tool = await f.db.modelRunToolCall.findFirstOrThrow({ where: { modelRunId: f.context.runId, providerCallId: call.id } });
-    expect(tool.state).toBe("complete");
-    expect(await f.db.visionAnalysisAttempt.findMany({ where: { modelRunId: f.context.runId } }))
-      .toEqual([expect.objectContaining({ toolCallId: tool.id, state: "settled", requestHash: hashCanonicalMcpValue(call.arguments) })]);
-    expect(await f.db.usageEvent.findMany({ where: { modelRunId: f.context.runId } }))
-      .toEqual([expect.objectContaining({ visionAnalysis: true, purpose: "chat_vision", providerModelId: f.plan.authority.providerModelId,
-        inputTokens: 7, outputTokens: 2, totalTokens: 9, usageCompleteness: "COMPLETE" })]);
-    expect(await dispatch(call, signal)).toEqual(result);
-    expect(execute).toHaveBeenCalledOnce();
-    expect(captures.create).toHaveBeenCalledOnce();
-    expect(captures.release).toHaveBeenCalledOnce();
-    expect(await f.db.agentRunBinding.findUnique({ where: { modelRunId: f.context.runId } }))
-      .toMatchObject({ toolCalls: 1, modelCalls: 0 });
-  }));
-
   it("rolls back failed local publication, settles the same receipt once, and detaches accounting on chat deletion", async () => committedFixture(async f => {
     await f.store.dispatch(f.context, f.plan, inputs);
     const usage = { inputTokens: 7, outputTokens: 2 };

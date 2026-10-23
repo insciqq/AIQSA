@@ -17,33 +17,51 @@ describe("runner gateway relay", () => {
     });
     try {
       const relayUrl = `http://127.0.0.1:${(relay.address() as AddressInfo).port}`;
-      for (const path of ["v1/responses", "v1/alpha/search", "mcp"]) {
-        upstream.mockClear();
-        const response = await fetch(`${relayUrl}/${path}`, { method: "POST", body: "{\"probe\":1}", headers: {
-          authorization: `Bearer ${bearer}`, "content-type": "application/json", "mcp-protocol-version": "2025-11-25",
-          [RUNNER_RELAY_PROOF_HEADER]: "v1.1791374400.guest-supplied-proof", cookie: "aiqsa_session=guest",
-          "x-aiqsa-runtime-peer": "v1.guest.guest"
-        } });
-        expect(response.status).toBe(200);
-        expect(upstream).toHaveBeenCalledOnce();
-        const [target, init] = upstream.mock.calls[0]!;
-        expect(target).toBe(`http://app.invalid/api/internal/agent/${path}`);
-        const headers = new Headers(init?.headers);
-        expect([...headers.keys()].sort()).toEqual(
-          ["accept", "authorization", "content-type", "mcp-protocol-version", RUNNER_RELAY_PROOF_HEADER]);
-        const proof = headers.get(RUNNER_RELAY_PROOF_HEADER);
-        expect(verifyRunnerRelayProof(runnerRelayProofKey(runnerToken), proof, { bearer, method: "POST", path })).toBe(true);
-        expect(verifyRunnerRelayProof(runnerRelayProofKey(runnerToken), proof,
-          { bearer, method: "POST", path: path === "mcp" ? "v1/responses" : "mcp" })).toBe(false);
-        expect(await new Response(init?.body).text()).toBe("{\"probe\":1}");
-      }
+      const response = await fetch(`${relayUrl}/mcp`, { method: "POST", body: "{\"probe\":1}", headers: {
+        authorization: `Bearer ${bearer}`, "content-type": "application/json", "mcp-protocol-version": "2025-11-25",
+        [RUNNER_RELAY_PROOF_HEADER]: "v1.1791374400.guest-supplied-proof", cookie: "aiqsa_session=guest",
+        "x-aiqsa-runtime-peer": "v1.guest.guest"
+      } });
+      expect(response.status).toBe(200);
+      expect(upstream).toHaveBeenCalledOnce();
+      const [target, init] = upstream.mock.calls[0]!;
+      expect(target).toBe("http://app.invalid/api/internal/agent/mcp");
+      const headers = new Headers(init?.headers);
+      expect([...headers.keys()].sort()).toEqual(
+        ["accept", "authorization", "content-type", "mcp-protocol-version", RUNNER_RELAY_PROOF_HEADER]);
+      const proof = headers.get(RUNNER_RELAY_PROOF_HEADER);
+      expect(verifyRunnerRelayProof(runnerRelayProofKey(runnerToken), proof, { bearer, method: "POST", path: "mcp" })).toBe(true);
+      expect(verifyRunnerRelayProof(runnerRelayProofKey(runnerToken), proof, { bearer, method: "POST", path: "v1/responses" })).toBe(false);
+      expect(await new Response(init?.body).text()).toBe("{\"probe\":1}");
     } finally {
       relay.closeAllConnections();
       await new Promise<void>((resolve) => relay.close(() => resolve()));
     }
   });
 
-  it("forwards an exact code invocation id to MCP only", async () => {
+  it("answers every path but MCP, including the retired model and Search endpoints, with 404 and never contacts the app", async () => {
+    const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ ok: true }));
+    const relay = createRunnerGatewayRelay("http://app.invalid", runnerToken, upstream);
+    await new Promise<void>((resolve, reject) => {
+      relay.once("error", reject);
+      relay.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const relayUrl = `http://127.0.0.1:${(relay.address() as AddressInfo).port}`;
+      for (const path of ["v1/responses", "v1/alpha/search", "mcp/extra", "api/internal/agent/mcp"]) {
+        const response = await fetch(`${relayUrl}/${path}`, { method: "POST", body: "{}", headers: {
+          authorization: `Bearer ${bearer}`, "content-type": "application/json" } });
+        expect(response.status).toBe(404);
+      }
+      expect((await fetch(`${relayUrl}/mcp`, { headers: { authorization: `Bearer ${bearer}` } })).status).toBe(404);
+      expect(upstream).not.toHaveBeenCalled();
+    } finally {
+      relay.closeAllConnections();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("forwards an exact code invocation id", async () => {
     const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ ok: true }));
     const relay = createRunnerGatewayRelay("http://app.invalid", runnerToken, upstream);
     await new Promise<void>((resolve, reject) => {
@@ -60,7 +78,6 @@ describe("runner gateway relay", () => {
       };
       const invocation = "c".repeat(32);
       expect(await forwarded("mcp", invocation)).toBe(invocation);
-      expect(await forwarded("v1/responses", invocation)).toBeNull();
       for (const malformed of ["C".repeat(32), "c".repeat(31), `${invocation}, ${invocation}`, "../../etc"]) {
         expect(await forwarded("mcp", malformed)).toBeNull();
       }

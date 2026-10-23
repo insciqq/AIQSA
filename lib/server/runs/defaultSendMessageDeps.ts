@@ -1,4 +1,3 @@
-import { agentPolicyRepository } from "../agents/defaultPolicy";
 import { defaultAssistantRepository } from "../assistants/defaultAssistants";
 import { getAuthConfig } from "../auth/config";
 import { isTestModeAllowedEnv } from "../auth/csrf";
@@ -37,7 +36,6 @@ export function createDefaultSendMessageDeps(): Omit<RunHandlerDeps, "resolveAut
     workspaceFollowup: getDefaultWorkspaceFollowup(),
     providers: {},
     repository: createPrismaRunRepository(),
-    agentPolicy: agentPolicyRepository,
     runPolicy: installationToolBudgetPolicy,
     skills: defaultSkillRepository,
     skillCatalogRelevance: defaultSkillCatalogRelevance,

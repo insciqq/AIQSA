@@ -28,7 +28,6 @@ import {
   decodeAnswerReviewAutoConfig,
   type AnswerReviewAutoConfig
 } from "../../contracts/answerReviews";
-import { supportsAgentAdapter } from "../providers/agentResponses";
 
 export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   browserNotificationsEnabled?: boolean;
@@ -148,8 +147,7 @@ export function resolveCurrentUserCatalogSelection(
   );
   const models = input.models
     .filter((model) => canAccessModel(input.entitlements, model.provider, model.modelId))
-    .map((model) => ({ ...buildCatalogModel(model, entitledStrategies),
-      ...(process.env.AIQSA_AGENT_GATEWAY_URL && supportsAgentAdapter(model.adapterKind) ? { agentAvailable: true } : {}) }));
+    .map((model) => buildCatalogModel(model, entitledStrategies));
   const personalModelId = input.settings.defaultProviderModelId;
   const personalModel = personalModelId
     ? models.find((model) => model.modelId === personalModelId) ?? null

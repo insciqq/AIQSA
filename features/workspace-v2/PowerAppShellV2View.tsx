@@ -1226,7 +1226,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectSkillsMode={mode => useComposerControlStore.getState().setSkillsMode(mode)}
       artifactEdit={composerArtifactEdit}
       artifactCreate={Boolean(composerArtifactCreate)}
-      artifactUnavailableReason={artifactUnavailableReason({ agent: Boolean(composer.agent?.enabled), project: projectContext, temporary: composer.memory.mode === "TEMPORARY" })}
+      artifactUnavailableReason={artifactUnavailableReason({ project: projectContext, temporary: composer.memory.mode === "TEMPORARY" })}
       onCreateArtifact={() => {
         const store = useComposerSessionStore.getState();
         store.updateSession(store.activeSessionKey, { artifactCreate: { intent: "create" }, artifactEdit: null });
@@ -1318,7 +1318,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedSkillIds={selectedSkills.map((skill) => skill.id)}
       selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
       sharedProject={projectContext}
-      agent={composer.agent ? { ...composer.agent, onToggle: composer.agent.setEnabled } : undefined}
       uploading={composer.uploading}
       uploadLimitHint={composer.uploadLimitHint}
     />
@@ -1470,7 +1469,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const candidates = answerReviewReviewerCandidatesV2(reviewModels, authorModels);
     const availability = answerReviewAvailabilityV2({
       activeRun: thread.activeChatStreaming || Boolean(autoReviewGroup),
-      agentEnabled: composer.agent?.enabled === true,
       answer,
       assistantChat: composer.assistant.current?.state === "bound",
       authorModels,
@@ -1775,7 +1773,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             </>}
         anchorId={source.id}
         artifact={artifact}
-        onPinSkill={composer.agent?.enabled ? undefined : pinLoadedSkill}
+        onPinSkill={pinLoadedSkill}
         pinnedSkillIds={pinnedSkillIds}
         content={messageText(source)}
         knowledgeReference={knowledgeReference}

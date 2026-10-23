@@ -190,7 +190,7 @@ describe("provider transport observations", () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
-  it("labels a provider request outside a provider operation (the Agent gateway's stream) as provider transport", async () => {
+  it("labels a provider request outside a provider operation as provider transport", async () => {
     const records = capture();
     const fetchFn = createProviderSafeFetch({
       configuration: { allowPrivateNetwork: false, apiRoot: "https://provider.example.test", authenticationMode: "bearer", responseTimeoutMs: 300_000 },

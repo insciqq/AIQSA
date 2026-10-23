@@ -27,7 +27,7 @@ export type NativeEngineHandlerDeps = Readonly<{
 
 /**
  * Whether a run takes the self-service tools: an interactive run of a
- * personal or temporary chat in the web. Project, Assistant, Agent and review
+ * personal or temporary chat in the web. Project, Assistant and review
  * runs, scheduled occurrences and Telegram turns (the bridge cannot show
  * their confirmation cards or Undo) never take them, and every change fences
  * its run again as it commits (`selfServiceRunAllowedInTransaction`).
@@ -36,7 +36,7 @@ export function selfServiceChat(prepared: MaterializedPreparedRunData,
   options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): boolean {
   const request = prepared.normalizedRequest;
   return options.scheduled !== true && options.telegram !== true && !prepared.project && !prepared.assistant &&
-    !prepared.chatAssistant && !request.agent && !request.answerReviewStep && !request.monitoringVerdictTool;
+    !prepared.chatAssistant && !request.answerReviewStep && !request.monitoringVerdictTool;
 }
 
 /** Before a user's admission: their native runs no execution owns end interrupted, so the chat is free. */

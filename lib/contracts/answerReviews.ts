@@ -234,7 +234,6 @@ export const ANSWER_REVIEW_REFUSALS = [
   "answer_review_unavailable",
   "answer_review_not_latest",
   "answer_review_assistant_unsupported",
-  "answer_review_agent_unsupported",
   "answer_review_knowledge_unsupported",
   "answer_review_image_unsupported",
   "answer_review_model_unsupported",
@@ -249,7 +248,6 @@ export type AnswerReviewRefusal = (typeof ANSWER_REVIEW_REFUSALS)[number];
 export const ANSWER_REVIEW_NOT_INITIATOR_COPY = "Only the member who started this review can continue it.";
 
 const REFUSAL_COPY: Readonly<Record<AnswerReviewRefusal, string>> = {
-  answer_review_agent_unsupported: "Review isn't available while Agent is on. Turn Agent off to review this answer.",
   answer_review_assistant_unsupported: "Review isn't available in Assistant chats yet: the Assistant fixes the model.",
   answer_review_ended: "This review has ended. Use Review… on the latest answer to start a new round.",
   answer_review_image_unsupported: "Answers with generated images can't be reviewed.",

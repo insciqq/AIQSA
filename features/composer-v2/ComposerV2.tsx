@@ -152,8 +152,6 @@ const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
   perplexity: "Perplexity"
 };
 
-const AGENT_HELP = "Codex carries out your task in Workspace. Uses the selected model, Skills, MCP mode and saved Workspace secrets. Can create artifacts and use the configured image model. Available while this Workspace exists. Personal Memory and Knowledge are unavailable.";
-
 function CapabilityChipContent({ label, icon, count = 0, signal, description, descriptionId }: Readonly<{
   label: string;
   icon: UiV2IconName;
@@ -336,7 +334,6 @@ const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
 export type ComposerV2Props = Readonly<{
   /** Scopes transient notices without remounting the draft or its controls. */
   sessionKey?: string;
-  agent?: Readonly<{ enabled: boolean; unavailableReason?: string; onToggle(value: boolean): void }>;
   activeRun?: boolean;
   /**
    * The chat's automatic answer review, configured from the model picker's
@@ -570,7 +567,6 @@ function CapabilityRow({
 
 export function ComposerV2({
   sessionKey = "composer",
-  agent,
   activeRun = false,
   answerReview = null,
   stopUnavailableReason = null,
@@ -662,7 +658,6 @@ export function ComposerV2({
     sources: readonly ComposerConfigKnowledgeSource[];
   }> | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [agentNotice, setAgentNotice] = useState<{ sessionKey: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -700,10 +695,6 @@ export function ComposerV2({
     ? boundAssistant.rows.tools.value
     : mcpSelection;
   const includedSkills = boundAssistant?.includedSkills ?? [];
-  const agentReason = agent?.unavailableReason ??
-    ((selectedKnowledgeSelection && selectedKnowledgeSelection.mode !== "none") || selectedKnowledgeBaseIds.length > 0
-      ? "Turn off Knowledge to use Agent." : null);
-  const agentBlockReason = agent?.enabled ? agentReason : null;
   const artifactReason = artifactUnavailableReason ?? (sharedProject ? "Not available in projects" : null);
   const artifactBlockReason = artifactCreate || artifactEdit ? artifactReason : null;
   const followupMode = activeRun && Boolean(onFollowup) && Boolean(runId);
@@ -728,14 +719,14 @@ export function ComposerV2({
   const builtText = buildComposerMessage(draft, comments);
   const followupTooLong = builtText.length > RUN_FOLLOWUP_MAX_CHARS;
   const sendDisabled = followupMode ? Boolean(followupSending || stopping || inputDisabled || !builtText.trim() || followupTooLong) : Boolean(
-    sending || inputDisabled || artifactBlockReason || agentBlockReason || attachmentBlockReason || (!builtText.trim() && !readyAttachment)
+    sending || inputDisabled || artifactBlockReason || attachmentBlockReason || (!builtText.trim() && !readyAttachment)
   );
   const sendDisabledReason = followupMode
     ? followupSending ? "Sending follow-up…" : bootstrapReason ?? (followupTooLong
       ? `Keep the follow-up under ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters. Shorten the draft or edit or delete a comment.` : !builtText.trim() ? "Type a follow-up." : null)
     : sending
     ? "Sending message…"
-    : bootstrapReason ?? artifactBlockReason ?? agentBlockReason ?? attachmentBlockReason ??
+    : bootstrapReason ?? artifactBlockReason ?? attachmentBlockReason ??
       (!builtText.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
@@ -1350,14 +1341,6 @@ export function ComposerV2({
       Override for this chat
     </button>
   ) : null;
-  const agentDisabledReason = activeRun ? "A response is running." : !agent?.enabled ? agentReason : null;
-  const agentExplanation = activeRun ? "A response is running." : agentReason;
-  const agentDescription = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ? `${agentExplanation} ` : ""}${AGENT_HELP}`;
-  /* The hover tooltip stays short so a blocking reason reads first; the full
-     help remains the chip's accessible description. */
-  const agentTooltip = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ?? "Codex carries out your task in Workspace."}`;
-  // Only a blocked click speaks: a mode change shows on the chip itself.
-  const agentStatus = agentNotice && agentNotice.sessionKey === sessionKey && agent ? agentDisabledReason : null;
   // Reasoning effort: how the model thinks, not which tools it has. The
   // Assistant's parameters row governs it only while the Assistant's own
   // model is in use, as in the Parameters dialog; it speaks for the level
@@ -1380,7 +1363,7 @@ export function ComposerV2({
     : "";
   // A labelled row holds six chips: the level as the seventh (or later) chip
   // turns every capability into its icon instead of adding a second row.
-  const otherChipCount = (comments.length > 0 ? 1 : 0) + (agent ? 1 : 0) +
+  const otherChipCount = (comments.length > 0 ? 1 : 0) +
     (searchChipVisible ? 1 : 0) + (knowledgeChipVisible ? 1 : 0) + 2;
   const compactChipLabels = Boolean(reasoningChip) && otherChipCount >= 6;
   // A refreshed model without a reasoning control takes the level away with
@@ -1464,15 +1447,6 @@ export function ComposerV2({
         detail: "No web search in your next messages",
         disabledReason: searchFixed ? assistantRowNoticeText(searchProvenance) ?? "Fixed by the Assistant" : null,
         run: () => onSelectSearchOptionIds([])
-      } : null,
-      agent: agent ? {
-        detail: "Codex carries out your task in Workspace",
-        disabledReason: agentDisabledReason,
-        enabled: agent.enabled,
-        run: () => {
-          setAgentNotice(null);
-          agent.onToggle(!agent.enabled);
-        }
       } : null
     },
     models: onSelectModel ? {
@@ -1601,7 +1575,6 @@ export function ComposerV2({
             ) : null}
           </div>
         ) : null}
-        {agentStatus ? <p className="v2-composer-status" role="status">{agentStatus}</p> : null}
         {dictationUi.status}
         <div className="v2-composer-entry">
           <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
@@ -1654,20 +1627,6 @@ export function ComposerV2({
             <div className="v2-composer-indicators" aria-label="Active capabilities"
               data-compact-labels={compactChipLabels || undefined}>
               <ComposerCommentsV2 key={sessionKey} comments={comments} onUpdate={onUpdateComment} onRemove={onRemoveComment} />
-              {agent ? (
-                <button type="button" className="v2-composer-indicator v2-focusable"
-                  data-glyph="bot" data-quiet={agent.enabled ? undefined : ""}
-                  data-tooltip={agentTooltip} data-tooltip-side="top"
-                  aria-label="Agent" aria-pressed={agent.enabled}
-                  aria-describedby={`${layerId}-agent-reason`} aria-disabled={Boolean(agentDisabledReason)}
-                  onClick={() => {
-                    if (agentDisabledReason) { setAgentNotice({ sessionKey }); return; }
-                    setAgentNotice(null);
-                    agent.onToggle(!agent.enabled);
-                  }}>
-                  <CapabilityChipContent label="Agent" icon="bot" description={agentDescription} descriptionId={`${layerId}-agent-reason`} />
-                </button>
-              ) : null}
               {searchChipVisible ? (
                 <button ref={searchTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
                   data-quiet={searchActive ? undefined : ""} data-glyph="globe"

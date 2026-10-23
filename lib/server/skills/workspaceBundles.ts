@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import type { PrismaClient } from "@prisma/client";
-import { validNormalizedAgent } from "../agents/config";
 import { SKILL_BUNDLE_MAX_BYTES, SKILL_FILE_MAX_BYTES, SKILL_MAX_FILES, SKILL_TEXT_FILE_MAX_BYTES } from "../../contracts/skills";
 import { skillTarPath, skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { tarEndBlocks, tarEntryBlocks } from "../chats/tarArchive";
@@ -16,7 +15,6 @@ import { decodeFrozenSkillManifest, type FrozenSkillManifest, type FrozenSkillRe
 
 type RunIdentity = Readonly<{ runId: string; userId: string }>;
 export type WorkspaceSkillPlan = Readonly<{
-  agent: boolean;
   manifestHash: string;
   initial: readonly WorkspaceSkillBundleRef[];
 }>;
@@ -116,8 +114,7 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
     const request = run.normalizedRequest;
     if (!request || typeof request !== "object" || Array.isArray(request)) return invalid();
     const workspace = request.workspace;
-    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace) || workspace.enabled !== true ||
-      (request.agent !== undefined && !validNormalizedAgent(request.agent))) return invalid();
+    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace) || workspace.enabled !== true) return invalid();
     const manifest = decodeFrozenSkillManifest(request.skills);
     if (!manifest) return invalid();
     const all = references(manifest);
@@ -130,35 +127,33 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
     for (const reference of manifest.pinned) {
       if (!run.skillRunBindings.some(binding => binding.skillId === reference.skillId && binding.revisionId === reference.revisionId && binding.mode === "pinned")) return invalid();
     }
-    const agent = request.agent !== undefined;
-    return { run, manifest, agent, manifestHash: hashCanonicalMcpValue({
-      version: 1, agent, manifest
-    }) };
+    // The hash input keeps `agent: false` from the removed Codex Agent, so a
+    // guest prepared for a run before the upgrade still matches that run.
+    return { run, manifest, manifestHash: hashCanonicalMcpValue({ version: 1, agent: false, manifest }) };
   }
 
   return {
     async plan(input) {
-      const { run, manifest, agent, manifestHash } = await accepted(input);
-      const wanted = [...manifest.pinned, ...manifest.available.filter(reference => agent ||
+      const { run, manifest, manifestHash } = await accepted(input);
+      const wanted = [...manifest.pinned, ...manifest.available.filter(reference =>
         run.skillRunBindings.some(binding => binding.skillId === reference.skillId && binding.mode === "loaded"))];
       const rows = wanted.length ? await db.skillRevision.findMany({ where: { id: { in: wanted.map(item => item.revisionId) }, bundleReady: true },
         select: { id: true, skillId: true, bundleDigest: true } }) : [];
       const initial = wanted.map(reference => {
         const row = rows.find(item => item.id === reference.revisionId && item.skillId === reference.skillId);
         if (!row || !/^[a-f0-9]{64}$/u.test(row.bundleDigest)) return invalid();
-        return { alias: reference.alias, revisionId: reference.revisionId, bundleDigest: row.bundleDigest,
-          discover: agent && manifest.available.some(item => item.skillId === reference.skillId) };
+        return { alias: reference.alias, revisionId: reference.revisionId, bundleDigest: row.bundleDigest, discover: false };
       });
-      return { agent, manifestHash, initial };
+      return { manifestHash, initial };
     },
     async archive(input) {
       input.signal?.throwIfAborted();
       workspaceSkillPath(input.alias);
-      const { run, manifest, agent } = await accepted(input);
+      const { run, manifest } = await accepted(input);
       const reference = references(manifest).find(item => item.alias === input.alias);
       if (!reference) return invalid();
       const available = manifest.available.some(item => item.skillId === reference.skillId);
-      if (input.currentAccess || agent && available) {
+      if (input.currentAccess) {
         if (!await createSkillCatalogRepository(db).resolveFrozen({ userId: input.userId,
           ...(run.chat.projectId ? { projectId: run.chat.projectId } : {}), skillId: reference.skillId, revisionId: reference.revisionId })) {
           throw new SkillBundleError({ code: "skill_not_available" });
@@ -169,7 +164,7 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
       if (!revision) return invalid();
       const bytes = await assembleWorkspaceSkillArchive(revision, storage, input.signal);
       return { bundle: { alias: reference.alias, revisionId: reference.revisionId, bundleDigest: revision.bundleDigest,
-        discover: agent && available }, byteSize: bytes.byteLength, checksum: sha256(bytes),
+        discover: false }, byteSize: bytes.byteLength, checksum: sha256(bytes),
         archive: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
     }
   };

@@ -5,12 +5,12 @@ import type { TelegramBotSession } from "../dispatcher";
 /**
  * What the bridge observes of a run started from Telegram, as typed events,
  * and the process-wide subscriptions later features use (MCP approvals and
- * Agent status, generated files): they follow a run without parsing its
+ * Workspace status, generated files): they follow a run without parsing its
  * stream or touching the bridge.
  *
  * Stream events: `answerDelta` (answer text as it arrives), `answerReset`
  * (the text so far is replaced, e.g. after a follow-up), `approvalRequested`
- * (an MCP approval card), `workspaceActivity` (a projected Workspace or Agent
+ * (an MCP approval card), `workspaceActivity` (a projected Workspace
  * activity entry), `preparing` (a deferred admission the run waits in),
  * `done` (`complete` or `cancelled`) and `failed`. After the terminal event
  * the bridge delivers the final answer, then publishes `delivered`, from the

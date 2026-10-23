@@ -185,7 +185,7 @@ const approvalCards: McpApprovalCard[] = [
   { approvalId: "approval-member", serverName: "Shared tracker", source: "model", state: "pending", toolName: "close_issue" },
   { approvalId: "approval-once", serverName: "Records vault", source: "model", state: "allowed_once", toolName: "update_record" },
   // An Allow whose continuation started no run: the latest answer offers Continue.
-  { approvalId: "approval-server", canContinue: true, serverName: "Calendar", source: "agent", state: "allowed_server",
+  { approvalId: "approval-server", canContinue: true, serverName: "Calendar", source: "model", state: "allowed_server",
     toolName: "create_event" },
   { approvalId: "approval-denied", serverName: "Records vault", source: "model", state: "denied", toolName: "purge_records" }
 ];

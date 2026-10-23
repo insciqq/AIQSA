@@ -1,7 +1,6 @@
 /**
  * Opt-in, paid, bounded qualification of the prod-1018 sweep on a DISPOSABLE
- * stand (real KVM Workspace runner for the Agent cases). Never a default
- * lane: it runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE, and each case
+ * stand. Never a default lane: it runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE, and each case
  * skips with a reason when its own keys or stand facilities are absent:
  *
  * Paid requests per case are bounded as noted ("probe" = one capability
@@ -13,18 +12,7 @@
  *    ending in `/backend-api/codex`; AIQSA_FEATURES_CODEX_MODEL picks the
  *    model): one short ordinary answer completes with provider usage.
  *    Bound: 1 answer request.
- * 2. codex-lb Agent run in Workspace (+ AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE):
- *    a trivial task writes one file to the run's output and completes.
- *    Bound: one Agent run (Codex, a few rounds), codex-lb only.
- * 3. Agent/Workspace Vision (same keys): the model links the attached PNG
- *    with a symlink, `analyze_image` on the link fails with
- *    `workspace_capture_source_invalid` and its copy hint, and the analysis of
- *    the `cp` copy succeeds through the installation Vision Model (a second
- *    codex-lb deployment with image input; the previous assignment is
- *    restored). Bound: that deployment's setup check and image-input check,
- *    one Agent run and at most 2 Vision requests (the refusal buys none),
- *    codex-lb only.
- * 4. MCP oversized call isolation (codex keys + the stand's app running with
+ * 2. MCP oversized call isolation (codex keys + the stand's app running with
  *    AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES lowered to 4096..65536, as
  *    mcp-oversized-result-paid.spec.ts needs): in one run, the over-bound
  *    `tools/call` fails with `mcp_call_result_too_large` and the hint, and
@@ -33,7 +21,7 @@
  *    the synthetic peer. The deterministic two-turn version is
  *    mcp-oversized-call-isolation.spec.ts. Bound: one answer of about three
  *    model rounds, codex-lb only.
- * 5. OpenRouter DeepSeek V4.1 Flash 1017 (OPENROUTER_API_KEY): never Quick
+ * 3. OpenRouter DeepSeek V4.1 Flash 1017 (OPENROUTER_API_KEY): never Quick
  *    Setup (which adds and probes every OpenRouter candidate). A new
  *    connection is made through the ordinary admin connection API with only
  *    the 1017 model (`oneModelConnection`); the model's first capability
@@ -43,7 +31,7 @@
  *    probes of the 1017 model (model access, structured output, tool calling,
  *    forced tool call, parallel tool calls, vision, PDF, streaming) and 1
  *    answer request.
- * 6. Built-in DeepSeek Search API (DEEPSEEK_API_KEY + codex keys) on the
+ * 4. Built-in DeepSeek Search API (DEEPSEEK_API_KEY + codex keys) on the
  *    fresh stand: Admin Search lists it as a built-in source needing setup;
  *    DeepSeek Quick Setup with the key enables it without "Add source"; one
  *    codex-lb answer with only that source leaves exactly one billed
@@ -51,7 +39,7 @@
  *    desktop, tablet and phone. Bound on DeepSeek: Quick Setup's checks of
  *    its 2 candidates, its hosted Search check, 1 probe search of the API
  *    and 1 search in the answer; on codex-lb about 2 answer rounds.
- * 7. DeepSeek Search API (DEEPSEEK_API_KEY + codex keys): a keyed native
+ * 5. DeepSeek Search API (DEEPSEEK_API_KEY + codex keys): a keyed native
  *    DeepSeek connection with an enabled model is reused (no probe), else
  *    one is made the same way with only DeepSeek V4.1 Flash (at most 8
  *    probes of that model, no Quick Setup), whose setup adds the source after
@@ -61,7 +49,7 @@
  *    leaves exactly one billed `web_search` row. Bound on DeepSeek: at most
  *    8 model probes (new connection only), 1 probe search in setup or on
  *    Save and 1 search in the answer; on codex-lb about 2 answer rounds.
- * 8. DeepSeek Search API unbilled paths (DEEPSEEK_API_KEY): straight through
+ * 6. DeepSeek Search API unbilled paths (DEEPSEEK_API_KEY): straight through
  *    the product adapter, one query whose site cannot exist answers as an
  *    unbilled no-results result, and one request with an unknown key is the
  *    free `provider_auth_rejected` (HTTP 401). Bound: 2 requests, none billed
@@ -77,23 +65,19 @@
  */
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { PrismaClient, type ModelRun, type ModelRunToolCall } from "@prisma/client";
+import { PrismaClient, type ModelRun } from "@prisma/client";
 import { expect, test, type APIRequestContext, type APIResponse, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
-import sharp from "sharp";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import { mcpOversizedResponseMessage, mcpToolFailureMessage } from "../../lib/contracts/mcpToolFailure";
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../lib/contracts/adminSearch";
-import type { AdminSystemModelPolicyResponse } from "../../lib/contracts/adminSystemModelPolicy";
-import type { CatalogModel } from "../../lib/contracts/catalog";
 import type { ContentBlock } from "../../lib/domain/content";
 import type { ValidatedSearchQuery } from "../../lib/domain/search";
 import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient, DEEPSEEK_SEARCH_API_STRATEGY_ID } from "../../lib/server/providers/deepSeekSearchApi";
 import { ProviderSearchExecutionError } from "../../lib/server/providers/types";
 import { providerModelTemplateId } from "../../lib/domain/providerTemplates";
-import { agentMaxOutputTokensLimit } from "../../lib/domain/runParams";
 import {
-  codexLbSetupBody, journeyRunParams, modelInConnection, readConnections, type JourneyConnection, type JourneyProviderModel
+  journeyRunParams, modelInConnection, readConnections, type JourneyConnection, type JourneyProviderModel
 } from "../../scripts/context-compaction-journey-support";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { authenticateWithLocalToken } from "./support/localAuth";
@@ -103,12 +87,9 @@ import {
   waitForCatalogModel,
   type PaidAnswerModel
 } from "./support/paidProviders";
-import { disableMemoryRecall, openLastActivity } from "./support/workspace";
-import { cleanupWorkspaceFixtureChat } from "./support/workspaceFixture";
 
 const enabled = process.env.AIQSA_FEATURES_PAID_E2E === "DISPOSABLE";
 const codexConfigured = Boolean(paidEnv("CODEX_LB_API_KEY") && paidEnv("CODEX_LB_BASE_URL"));
-const workspaceLive = process.env.AIQSA_WORKSPACE_LIVE_E2E === "DISPOSABLE";
 const mcpLimit = Number(paidEnv("AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES") ?? Number.NaN);
 const mcpLimitLowered = Number.isSafeInteger(mcpLimit) && mcpLimit >= 4_096 && mcpLimit <= 65_536;
 
@@ -121,8 +102,6 @@ const db = (): PrismaClient => prismaClient ??= new PrismaClient();
 test.afterAll(async () => { await prismaClient?.$disconnect(); });
 
 const WARMUP_TIMEOUT_MS = 300_000;
-/** An Agent turn boots a guest and runs Codex; several minutes is ordinary. */
-const AGENT_TURN_TIMEOUT_MS = 20 * 60_000;
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
 const FLASH_1017 = "deepseek/deepseek-v4.1-flash-1017";
 const DEEPSEEK_SEARCH_API_MODEL = "deepseek-search-api";
@@ -149,7 +128,6 @@ function runErrorCode(run: ModelRun | null): string | null {
 }
 
 type TurnInput = Readonly<{
-  agent?: boolean;
   blocks: readonly ContentBlock[];
   mcp?: "load_all" | "off";
   params?: Record<string, unknown>;
@@ -160,13 +138,12 @@ type TurnInput = Readonly<{
 
 /**
  * One API turn as the composer would send it, then the settled run (unasserted).
- * Skills are off; MCP, Search, Workspace and Agent only as asked.
+ * Skills are off; MCP, Search and Workspace only as asked.
  */
 async function apiTurn(request: APIRequestContext, chatId: string, model: PaidAnswerModel, input: TurnInput): Promise<ModelRun> {
   const before = await db().modelRun.count({ where: { chatId } });
   const chat = await db().chat.findUniqueOrThrow({ where: { id: chatId }, select: { activeLeafMessageId: true } });
   const response = await request.post(`/api/chats/${chatId}/messages`, { timeout: PAID_TURN_TIMEOUT_MS, data: {
-    ...(input.agent ? { agentEnabled: true } : {}),
     content: { blocks: input.blocks }, expectedActiveLeafId: chat.activeLeafMessageId, mcp: { mode: input.mcp ?? "off" },
     modelId: model.modelId, params: input.params ?? model.params, provider: model.connectionId,
     searchPlan: { mode: "all_selected", optionIds: [...(input.searchOptionIds ?? [])] }, skills: { mode: "off" }, timeZone: "UTC",
@@ -187,10 +164,6 @@ async function answerUsage(runId: string) {
   const rows = await db().usageEvent.findMany({ where: { modelRunId: runId, purpose: "chat_answer" } });
   return { rows: rows.length, inputTokens: rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0),
     outputTokens: rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0) };
-}
-
-async function catalogModelOf(request: APIRequestContext, model: PaidAnswerModel): Promise<CatalogModel> {
-  return waitForCatalogModel(request, model.connectionId, (candidate) => candidate.modelId === model.modelId);
 }
 
 test.beforeEach(async ({ request }) => { await authenticateWithLocalToken(request); });
@@ -218,116 +191,7 @@ test("codex-lb: a short ordinary answer completes with provider usage", async ({
   }
 });
 
-// ------------------------------------------------------ Agent prerequisites ---
-
-/** The Workspace and model facts an Agent turn needs, asserted with stable reasons. */
-async function agentParams(request: APIRequestContext, model: PaidAnswerModel): Promise<Record<string, unknown>> {
-  const workspace = (await (await request.get("/api/workspace")).json() as {
-    workspace?: { agentAvailable?: boolean; available?: boolean; internetEnabled?: boolean | null };
-  }).workspace;
-  expect(workspace?.available, "workspace_unavailable").toBe(true);
-  expect(workspace?.agentAvailable, "agent_runtime_unavailable").toBe(true);
-  expect(workspace?.internetEnabled, "agent_internet_required").toBe(true);
-  const catalog = await catalogModelOf(request, model);
-  expect(catalog.agentAvailable, "agent_model_unavailable").toBe(true);
-  // Within the Agent output cap, with room for a few tool rounds.
-  return journeyRunParams(catalog, Math.min(4_096, agentMaxOutputTokensLimit(catalog.contextWindow)));
-}
-
-/** Retires the chat's Workspace (cancelling owned work) and deletes the chat. */
-async function cleanupAgentChat(page: Page, chatId: string): Promise<void> {
-  if (await db().workspaceSession.count({ where: { chatId } }).catch(() => 0) > 0) {
-    await cleanupWorkspaceFixtureChat(db(), page, chatId).catch(() => undefined);
-  }
-  await deleteOwnedChatPermanently(page.request, chatId, { timeout: 60_000 }).catch(() => undefined);
-}
-
-/** Workspace outputs the run exported; export follows the run, so this waits for `accept`. */
-async function runOutputs(runId: string, accept: (names: readonly string[]) => boolean, timeoutMs = 300_000) {
-  return pollUntil(timeoutMs, async () => {
-    const rows = await db().attachment.findMany({ select: { byteSize: true, fileName: true },
-      where: { origin: "WORKSPACE_OUTPUT", producerModelRunId: runId } });
-    return accept(rows.map((row) => row.fileName)) ? rows : null;
-  }, "prod_1018_workspace_output_timeout");
-}
-
-// ------------------------------------------------------- 2. Agent run ---
-
-test("codex-lb Agent run in Workspace writes a file and completes", async ({ page }, testInfo) => {
-  test.skip(!codexConfigured, "paid: requires CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
-  test.skip(!workspaceLive, "requires an explicitly disposable KVM Microsandbox topology (AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE)");
-  test.setTimeout(45 * 60_000);
-  const summary: Record<string, unknown> = {};
-  let chatId: string | null = null;
-  const fileName = "prod-1018-agent.txt";
-  try {
-    await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
-    await authenticateWithLocalToken(page.request);
-    await disableMemoryRecall(page);
-    const model = await codexAnswerModel(page.request);
-    summary.model = model.upstreamModelId;
-    const params = await agentParams(page.request, model);
-    chatId = await newExcludedChat(page.request, `Prod 1018 Agent ${randomUUID().slice(0, 8)}`);
-    const run = await apiTurn(page.request, chatId, model, { agent: true, params, timeoutMs: AGENT_TURN_TIMEOUT_MS, workspace: true,
-      blocks: [{ type: "text", text: `With one shell command, write the single line PROD-1018 to a file named ${fileName} in your ` +
-        "current output directory. Do not run anything else. Then reply with exactly: AGENT-DONE" }] });
-    Object.assign(summary, { status: run.status, code: runErrorCode(run),
-      frozenAgent: Boolean((run.normalizedRequest as { agent?: unknown } | null)?.agent) });
-    expect(run.status, `the Agent run completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
-    expect(summary.frozenAgent, "the run was an Agent run").toBe(true);
-    const outputs = await runOutputs(run.id, (names) => names.includes(fileName));
-    const output = outputs.find((row) => row.fileName === fileName)!;
-    summary.outputs = outputs.length;
-    summary.outputBytes = output.byteSize;
-    expect(output.byteSize, "the written file is not empty").toBeGreaterThan(0);
-  } finally {
-    if (chatId) await cleanupAgentChat(page, chatId);
-    await report(testInfo, "prod_1018_agent_summary", summary);
-  }
-});
-
-test("codex-lb Agent run that leaves links in its output folder completes, exports the file and says the links were skipped", async ({ page }, testInfo) => {
-  test.skip(!codexConfigured, "paid: requires CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
-  test.skip(!workspaceLive, "requires an explicitly disposable KVM Microsandbox topology (AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE)");
-  test.setTimeout(45 * 60_000);
-  const summary: Record<string, unknown> = {};
-  let chatId: string | null = null;
-  try {
-    await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
-    await authenticateWithLocalToken(page.request);
-    await disableMemoryRecall(page);
-    const model = await codexAnswerModel(page.request);
-    summary.model = model.upstreamModelId;
-    const params = await agentParams(page.request, model);
-    chatId = await newExcludedChat(page.request, `Prod 1018 Agent links ${randomUUID().slice(0, 8)}`);
-    const run = await apiTurn(page.request, chatId, model, { agent: true, params, timeoutMs: AGENT_TURN_TIMEOUT_MS, workspace: true,
-      blocks: [{ type: "text", text: "In your current output directory run exactly this one shell command (the line between the " +
-        "backticks, nothing more):\n`printf 'PROD-1018\\n' > report.txt && ln -s report.txt report-link.txt && ln -s /workspace/project project-link`\n" +
-        "Do not run anything else and do not remove the links. Then reply with exactly: AGENT-DONE" }] });
-    Object.assign(summary, { status: run.status, code: runErrorCode(run) });
-    expect(run.status, `the Agent run completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
-    const outputs = await runOutputs(run.id, (names) => names.includes("report.txt"));
-    summary.outputs = outputs.map((row) => row.fileName === "report.txt" ? "report.txt" : "other");
-    expect(outputs.map((row) => row.fileName), "only the regular file is exported").toEqual(["report.txt"]);
-
-    await page.goto(`/c/${chatId}`, { timeout: WARMUP_TIMEOUT_MS });
-    const activity = await openLastActivity(page);
-    await expect(activity).toContainText("Exported 1 file", { timeout: 60_000 });
-    const note = activity.getByRole("note").filter({ hasText: "2 links not exported" });
-    await expect(note, "the run's Workspace activity says the links were skipped").toBeVisible();
-    summary.noteVisible = true;
-    await page.screenshot({ path: testInfo.outputPath("agent-output-links-skipped-1440x900.png") });
-    await page.setViewportSize({ height: 844, width: 390 });
-    await note.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: testInfo.outputPath("agent-output-links-skipped-390x844.png") });
-  } finally {
-    if (chatId) await cleanupAgentChat(page, chatId);
-    await report(testInfo, "prod_1018_agent_output_links_summary", summary);
-  }
-});
-
-// ------------------------------------------------ 3. Agent Vision capture ---
-
+/** A provider connection once its checks settled. */
 async function connection(request: APIRequestContext, connectionId: string): Promise<JourneyConnection> {
   return pollUntil(PAID_SETUP_TIMEOUT_MS, async () => {
     const found = readConnections(await (await request.get("/api/admin/providers")).json())?.find((candidate) => candidate.id === connectionId);
@@ -335,137 +199,7 @@ async function connection(request: APIRequestContext, connectionId: string): Pro
   }, "prod_1018_checks_timeout");
 }
 
-/** A second codex-lb deployment of `upstream` that declares image input (as the compaction/Vision paid spec makes it). */
-async function codexVisionModel(request: APIRequestContext, upstream: string): Promise<string> {
-  const apiRoot = paidEnv("CODEX_LB_BASE_URL")!.replace(/\/+$/u, "");
-  const secret = paidEnv("CODEX_LB_API_KEY")!;
-  const discovered = await request.post("/api/admin/providers/custom-setup/discover", { timeout: PAID_SETUP_TIMEOUT_MS,
-    data: { allowPrivateNetwork: true, apiRoot, authenticationMode: "bearer", responseTimeoutSeconds: 180, secret } });
-  const discovery = discovered.ok() ? await discovered.json() as { catalogProof?: unknown; models?: Array<{ id?: unknown }> } : null;
-  const listed = new Set((discovery?.models ?? []).map((model) => model.id));
-  const catalogProof = typeof discovery?.catalogProof === "string" && listed.has(upstream) ? discovery.catalogProof : undefined;
-  const tag = randomUUID().slice(0, 8);
-  const body = codexLbSetupBody({ apiRoot, ...(catalogProof ? { catalogProof } : {}), contextWindow: 65_536, model: upstream, secret,
-    connectionDisplayName: `Prod 1018 Vision ${tag}` });
-  const setup = await request.post("/api/admin/providers/custom-setup", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
-    ...body, capabilities: { ...body.capabilities as Record<string, unknown>, vision: true }, modelDisplayName: `Prod 1018 Vision model ${tag}`
-  } });
-  expect(setup.ok(), `codex-lb Vision setup is accepted (${setup.status()})`).toBe(true);
-  const outcome = await setup.json() as { connectionId?: unknown; outcome?: unknown };
-  expect(["ready", "partial"]).toContain(outcome.outcome);
-  const model = modelInConnection(await connection(request, String(outcome.connectionId)), upstream);
-  expect(model, "the Vision deployment is on its connection").toBeTruthy();
-  return model!.id;
-}
-
-type VisionAssignment = Readonly<{ providerModelId: string | null; reasoningEffort: string | null }>;
-
-async function systemModelPolicy(request: APIRequestContext): Promise<AdminSystemModelPolicyResponse["systemModelPolicy"]> {
-  const response = await request.get("/api/admin/providers/system-model-policy");
-  expect(response.ok(), `the system model policy is readable (${response.status()})`).toBe(true);
-  return (await response.json() as AdminSystemModelPolicyResponse).systemModelPolicy;
-}
-
-async function assignVision(request: APIRequestContext, assignment: VisionAssignment): Promise<void> {
-  const { version } = (await systemModelPolicy(request)).policy;
-  const response = await request.patch("/api/admin/providers/system-model-policy", { data: {
-    expectedVersion: version, visionProviderModelId: assignment.providerModelId, visionReasoningEffort: assignment.reasoningEffort
-  } });
-  expect(response.ok(), `the Vision Model assignment is saved (${response.status()})`).toBe(true);
-}
-
-type ToolValue = Readonly<{ error?: unknown; hint?: unknown }>;
-
-/** The JSON part of a persisted tool result, as the Vision tool writes it. */
-function toolValue(call: Pick<ModelRunToolCall, "result">): ToolValue | null {
-  const content = (call.result as { content?: Array<{ type?: unknown; value?: unknown }> } | null)?.content ?? [];
-  const value = content.find((part) => part.type === "json")?.value;
-  return value && typeof value === "object" ? value as ToolValue : null;
-}
-
-const SYMLINK_PROMPT = "This is a test of image analysis in the Workspace. Run exactly these steps: " +
-  "1) With one shell command, create a symbolic link /workspace/project/linked-image.png that points to " +
-  "the attached image file in /workspace/inbox/messages (use mkdir -p and ln -s; not in the output directory). " +
-  "2) Call analyze_image once on the absolute path of linked-image.png, asking which colour fills the image. " +
-  "3) If that call fails, follow the hint in its error exactly: copy the image with cp into your current output directory as " +
-  "copied-image.png and call analyze_image once on the copy's absolute path. " +
-  "Do not run anything else and do not call analyze_image more than twice. Then answer in one short sentence.";
-
-test("Agent Vision: a symlinked image gets the capture refusal with its copy hint, and the copy is analyzed", async ({ page }, testInfo) => {
-  test.skip(!codexConfigured, "paid: requires CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
-  test.skip(!workspaceLive, "requires an explicitly disposable KVM Microsandbox topology (AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE)");
-  test.setTimeout(60 * 60_000);
-  const summary: Record<string, unknown> = {};
-  let chatId: string | null = null;
-  let previous: VisionAssignment | null = null;
-  try {
-    await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
-    await authenticateWithLocalToken(page.request);
-    await disableMemoryRecall(page);
-    const request = page.request;
-    const model = await codexAnswerModel(request);
-    summary.model = model.upstreamModelId;
-    const params = await agentParams(request, model);
-
-    // Agent images go through the installation Vision Model only.
-    const visionModelId = await codexVisionModel(request, model.upstreamModelId);
-    const verified = await request.post("/api/admin/providers/system-model-policy", { timeout: PAID_SETUP_TIMEOUT_MS,
-      data: { role: "vision", providerModelId: visionModelId } });
-    expect(verified.ok(), `the Vision deployment verifies image input (${verified.status()})`).toBe(true);
-    const catalog = await systemModelPolicy(request);
-    previous = { providerModelId: catalog.policy.visionModel?.id ?? null,
-      reasoningEffort: catalog.policy.visionModel ? catalog.policy.visionReasoningEffort ?? null : null };
-    const candidate = [...catalog.verificationCandidates, ...catalog.candidates].find((entry) => entry.id === visionModelId);
-    await assignVision(request, { providerModelId: visionModelId,
-      reasoningEffort: candidate?.reasoningEfforts[0] ?? candidate?.defaultReasoningEffort ?? null });
-
-    const png = await sharp({ create: { width: 96, height: 64, channels: 3, background: "#e8590c" } }).png().toBuffer();
-    const upload = await request.post("/api/uploads", { timeout: PAID_TURN_TIMEOUT_MS,
-      multipart: { file: { name: "orange-square.png", mimeType: "image/png", buffer: png } } });
-    expect(upload.ok(), `the PNG upload is accepted (${upload.status()})`).toBe(true);
-    const attachmentId = (await upload.json() as { attachment: { id: string } }).attachment.id;
-    chatId = await newExcludedChat(request, `Prod 1018 Vision ${randomUUID().slice(0, 8)}`);
-    const run = await apiTurn(request, chatId, model, { agent: true, params, timeoutMs: AGENT_TURN_TIMEOUT_MS, workspace: true,
-      blocks: [{ attachmentId, type: "image" }, { text: SYMLINK_PROMPT, type: "text" }] });
-    const calls = await db().modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-      select: { arguments: true, id: true, result: true, state: true }, where: { modelRunId: run.id, toolName: "analyze_image" } });
-    const attempts = await db().visionAnalysisAttempt.findMany({ where: { modelRunId: run.id } });
-    const receipts = await db().usageEvent.findMany({ where: { visionAnalysisAttemptId: { in: attempts.map((attempt) => attempt.toolCallId) } } });
-    const refusal = calls.findIndex((call) => toolValue(call)?.error === "workspace_capture_source_invalid");
-    const refusalHint = refusal >= 0 ? toolValue(calls[refusal]!)?.hint : null;
-    const later = calls.slice(refusal + 1).find((call) => call.state === "complete");
-    const laterAttempt = later ? attempts.find((attempt) => attempt.toolCallId === later.id) : undefined;
-    const laterReceipt = laterAttempt ? receipts.find((receipt) => receipt.visionAnalysisAttemptId === laterAttempt.toolCallId) : undefined;
-    // Recorded before the assertions, so a failing run still leaves its evidence.
-    Object.assign(summary, {
-      status: run.status, code: runErrorCode(run),
-      analyzeCalls: calls.map((call) => ({ state: call.state, error: typeof toolValue(call)?.error === "string" ? toolValue(call)!.error : null,
-        // Synthetic test paths only: which file each call named.
-        paths: JSON.stringify(call.arguments).match(/\/workspace\/[A-Za-z0-9_./-]+/gu) ?? [] })),
-      refusalHasCopyHint: typeof refusalHint === "string" && refusalHint.includes("Copy it with `cp` into /workspace/output"),
-      visionAttempts: attempts.map((attempt) => ({ state: attempt.state, failureCode: attempt.failureCode })),
-      laterUsage: laterReceipt ? { inputTokens: laterReceipt.inputTokens, outputTokens: laterReceipt.outputTokens } : null
-    });
-    expect(run.status, `the Agent run completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
-    expect(refusal, "one analyze_image on the symlink failed with workspace_capture_source_invalid").toBeGreaterThanOrEqual(0);
-    expect(calls[refusal]!.state).toBe("error");
-    expect(summary.refusalHasCopyHint, "the refusal carries the copy hint").toBe(true);
-    // The refusal is before dispatch: no Vision request was bought for it.
-    expect(attempts.some((attempt) => attempt.toolCallId === calls[refusal]!.id), "the refusal dispatched nothing").toBe(false);
-    expect(later, "a later analyze_image (on the copy) succeeded").toBeTruthy();
-    expect(laterAttempt?.state, "its Vision attempt settled").toBe("settled");
-    expect(laterAttempt?.failureCode ?? null, "its Vision attempt succeeded").toBeNull();
-    expect(laterReceipt?.inputTokens ?? 0, "the Vision request carries provider-reported input usage").toBeGreaterThan(0);
-    expect(laterReceipt?.outputTokens ?? 0, "the Vision request carries provider-reported output usage").toBeGreaterThan(0);
-    expect(calls.length, "the model kept to a few analyze_image calls").toBeLessThanOrEqual(4);
-  } finally {
-    if (chatId) await cleanupAgentChat(page, chatId);
-    if (previous) await assignVision(page.request, previous).catch(() => { summary.visionRestore = "failed"; });
-    await report(testInfo, "prod_1018_agent_vision_summary", summary);
-  }
-});
-
-// -------------------------------------------- 4. MCP oversized isolation ---
+// -------------------------------------------- 2. MCP oversized isolation ---
 
 const MCP_BIG_TOOL = "read_thread";
 const MCP_SMALL_TOOL = "read_message";
@@ -673,7 +407,7 @@ async function oneModelConnection(request: APIRequestContext, input: Readonly<{
   return { connection: settled, model: model!, run };
 }
 
-// ------------------------------------------ 5. OpenRouter Flash 1017 ---
+// ------------------------------------------ 3. OpenRouter Flash 1017 ---
 
 test("OpenRouter DeepSeek V4.1 Flash 1017: the model Check verifies tools and structured output, and it answers", async ({ request }, testInfo) => {
   const secret = paidEnv("OPENROUTER_API_KEY");
@@ -717,7 +451,7 @@ test("OpenRouter DeepSeek V4.1 Flash 1017: the model Check verifies tools and st
   }
 });
 
-// ------------------------------------- 6. DeepSeek Search API built in ---
+// ------------------------------------- 4. DeepSeek Search API built in ---
 
 const BUILT_IN_SEARCH_API = "deepseek-search-api";
 
@@ -820,7 +554,7 @@ test("DeepSeek Search API built in: setup with the key enables it without Add so
   }
 });
 
-// ---------------------------------------------- 7. DeepSeek Search API ---
+// ---------------------------------------------- 5. DeepSeek Search API ---
 
 async function searchCatalog(request: APIRequestContext): Promise<AdminSearchCatalog> {
   const response = await request.get("/api/admin/search");
@@ -940,7 +674,7 @@ test("DeepSeek Search API: one search through the new source, cited sources, one
   }
 });
 
-// ------------------------------- 8. DeepSeek Search API: unbilled real paths ---
+// ------------------------------- 6. DeepSeek Search API: unbilled real paths ---
 
 /** One real request straight through the product adapter and client: the shapes DeepSeek really answers. */
 function directSearchApiRequest(apiKey: string, query: string) {

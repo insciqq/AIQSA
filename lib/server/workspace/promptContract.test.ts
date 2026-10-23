@@ -13,7 +13,7 @@ const workspace: WorkspaceRunAdmissionPlan = {
     outputDirectory: "/workspace/output/current", projectDirectory: "/workspace/project", runtimeVersion: "fixture", sessionId: "session",
     syncToolTimeoutSeconds: 60, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 600 }
 };
-const base = { workspace, agent: false, currentAttachmentCount: 0, hasIndexedFiles: false,
+const base = { workspace, currentAttachmentCount: 0, hasIndexedFiles: false,
   hasEarlierExports: false, searchEnabled: false, fileContext: "owned file references" };
 const render = (input: Parameters<typeof workspacePromptContract>[0]) => {
   const contract = workspacePromptContract(input);
@@ -47,13 +47,13 @@ describe("Workspace capability contract", () => {
     expect(text).not.toContain("Web search is available");
   });
 
-  it.each([false, true])("includes file, export, attachment and Search fragments only for admitted facts (agent=%s)", agent => {
+  it("includes file, export, attachment and Search fragments only for admitted facts", () => {
     for (const enabled of [false, true]) {
-      const text = render({ ...base, agent, hasIndexedFiles: enabled, hasEarlierExports: enabled,
+      const text = render({ ...base, hasIndexedFiles: enabled, hasEarlierExports: enabled,
         currentAttachmentCount: enabled ? 1 : 0, searchEnabled: enabled });
       expect(text.includes("owned file references")).toBe(enabled);
       expect(text.includes("earlier completed exports")).toBe(enabled);
-      expect(text.includes(agent ? "Read messageManifestPath" : "Current message manifest")).toBe(enabled);
+      expect(text.includes("Current message manifest")).toBe(enabled);
       expect(text.includes("Web search is available in this chat as its own tool.")).toBe(enabled);
       expect(text).toContain("Internet inside the workspace: disabled.");
       expect(text).toContain("Links and special files in the output directory are not exported;");
@@ -73,36 +73,25 @@ describe("Workspace capability contract", () => {
     expect(second.stable).not.toContain("owned file references");
   });
 
-  it.each([false, true])("renders admission lines before chat facts so a PDF retry can replace them in a frozen turn (agent=%s)", agent => {
-    const neutral = workspacePromptContract({ ...base, agent, currentAttachmentCount: 1 });
-    const facts = workspacePromptContract({ ...base, agent, currentAttachmentCount: 1, hasIndexedFiles: true,
+  it("renders admission lines before chat facts so a PDF retry can replace them in a frozen turn", () => {
+    const neutral = workspacePromptContract({ ...base, currentAttachmentCount: 1 });
+    const facts = workspacePromptContract({ ...base, currentAttachmentCount: 1, hasIndexedFiles: true,
       hasEarlierExports: true, searchEnabled: true });
     expect(facts.stable).toBe(neutral.stable);
     expect(facts.turn.startsWith(`${neutral.turn}\n`)).toBe(true);
   });
 
-  it.each([false, true])("gives every run the no-replay sentence in the stable part, with or without files (agent=%s)", agent => {
+  it("gives every run the no-replay sentence in the stable part, with or without files", () => {
     for (const hasIndexedFiles of [false, true]) {
-      const contract = workspacePromptContract({ ...base, agent, hasIndexedFiles, currentAttachmentCount: hasIndexedFiles ? 1 : 0 });
+      const contract = workspacePromptContract({ ...base, hasIndexedFiles, currentAttachmentCount: hasIndexedFiles ? 1 : 0 });
       expect(contract.stable.split(WORKSPACE_NO_REPLAY_SAFETY)).toHaveLength(2);
       expect(contract.turn).not.toContain(WORKSPACE_NO_REPLAY_SAFETY);
       expect(contract.stable.indexOf(WORKSPACE_NO_REPLAY_SAFETY)).toBeGreaterThan(contract.stable.indexOf(WORKSPACE_WEBSITE_ACTION_SAFETY));
     }
   });
 
-  it("keeps Agent inside its Workspace and takes turn paths from the refreshed user prompt", () => {
-    const text = render({ ...base, agent: true });
-    expect(text).toContain("You are working inside this chat's Workspace");
-    expect(text).toContain("native Codex equivalents");
-    expect(text).toContain("Read outputDirectory from the current AIQSA turn workspace paths.");
-    expect(text).not.toContain("Answer directly"); expect(text).not.toContain("Try to answer directly");
-    expect(text).not.toContain("It starts on first use");
-    expect(text).not.toContain(workspace.normalized.outputDirectory);
-    expect(text).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
-  });
-
-  it.each([false, true])("always names the real browser-session path and no invented login buttons (agent=%s)", agent => {
-    const contract = workspacePromptContract({ ...base, agent });
+  it("always names the real browser-session path and no invented login buttons", () => {
+    const contract = workspacePromptContract(base);
     expect(contract.stable.split(WORKSPACE_BROWSER_SESSION_USER_PATH)).toHaveLength(2);
     expect(contract.stable).toContain("Studio → Secrets");
     expect(`${contract.stable}\n${contract.turn}`.replace(WORKSPACE_BROWSER_SESSION_USER_PATH, ""))

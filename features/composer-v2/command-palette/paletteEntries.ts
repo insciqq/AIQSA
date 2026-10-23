@@ -51,8 +51,6 @@ export type ComposerPaletteActionsInput = Readonly<{
   /** The Search chip (its layer) and its "Turn off search". */
   search: PaletteAction | null;
   searchOff: PaletteAction | null;
-  /** The Agent chip's toggle. */
-  agent: (PaletteAction & Readonly<{ enabled: boolean }>) | null;
 }>;
 
 export type ComposerPaletteModelsInput = Readonly<{
@@ -139,9 +137,6 @@ function actionEntries(input: ComposerPaletteActionsInput): ComposerPaletteEntry
   add("mcp", "MCP tools…", "tool", input.mcp, ["mcp", "tools", "servers"]);
   if (input.search) add("search", "Web search…", "globe", input.search, ["web", "search", "internet"]);
   if (input.searchOff) add("search-off", "Turn off web search", "globe", input.searchOff, ["web", "search"]);
-  if (input.agent) {
-    add("agent", input.agent.enabled ? "Turn off Agent" : "Turn on Agent", "bot", input.agent, ["agent", "codex"]);
-  }
   add("artifact", "Create artifact", "artifact", input.artifact, ["artifact", "page", "slides", "game", "chart"]);
   add("attach", "Attach files", "attach", input.attach, ["attach", "files", "upload"]);
   if (input.skillLibrary) add("skill-library", "Skills…", "wand", input.skillLibrary, ["skills", "library", "pin"]);

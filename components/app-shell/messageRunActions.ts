@@ -98,7 +98,6 @@ import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
-  agentEnabled: boolean;
   /**
    * The chat's automatic answer review for this send, when it is on and can
    * run: each reviewer with the Search reconciled for its model, as a manual
@@ -289,8 +288,7 @@ const MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY =
  * (a busy or failed session, unreadable or oversized saved secrets, an
  * incompatible runtime) or showed too late. Workspace is ambient, so each
  * would refuse every send of the chat: the refused message may go once
- * without Workspace. `workspace_model_tools_required` and the Agent codes are
- * left out, as Agent needs Workspace.
+ * without Workspace. `workspace_model_tools_required` is left out.
  */
 const WORKSPACE_ADMISSION_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "workspace_busy",
@@ -388,7 +386,6 @@ export function useMessageRunActions({
       selectedSkills
     } = controls;
     const sessionKey = useComposerSessionStore.getState().activeSessionKey;
-    const session = selectComposerSession(useComposerSessionStore.getState(), sessionKey);
     const chat = useWorkspaceStore.getState().chats.find((candidate) =>
       candidate.id === chatIdFromComposerSessionKey(sessionKey));
     const catalog = resolveCatalog
@@ -450,10 +447,8 @@ export function useMessageRunActions({
         ? { maxRounds: review.maxRounds, reviewers }
         : null,
       contextConfigurationKey: composerContextConfigurationKey(controls, {
-        agentEnabled: session.agentEnabled,
         memoryMode: chat?.pendingInitialMemoryMode ?? chat?.memoryMode ?? composerSessionModeFromKey(sessionKey), workspaceEnabled
       }),
-      agentEnabled: session.agentEnabled === true,
       assistant: controls.assistant
         ? {
             blockReason: composerAssistantSendBlockReason(controls),
@@ -567,7 +562,6 @@ export function useMessageRunActions({
     if (snapshot.assistant) {
       const changed = new Set(snapshot.assistant.changedRows);
       return {
-        ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
         ...(newChat && snapshot.assistant.id ? { assistantId: snapshot.assistant.id } : {}),
         ...(changed.has("knowledge") ? { knowledgePlan: snapshot.knowledgeSelection } : {}),
         ...(changed.has("tools") && snapshot.mcpSelection.mode !== "exact"
@@ -586,7 +580,6 @@ export function useMessageRunActions({
     }
 
     return {
-      ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
       ...(newChat && projectScoped ? { assistantId: null } : {}),
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
@@ -1006,7 +999,6 @@ export function useMessageRunActions({
       return;
     }
     const artifactBlockReason = artifactUnavailableReason({
-      agent: runControlSnapshot.agentEnabled,
       project: Boolean(activeChat?.projectId || projectIdFromComposerSessionKey(sourceSessionKey)),
       temporary: (activeChat?.pendingInitialMemoryMode ?? activeChat?.memoryMode ?? composerSessionModeFromKey(sourceSessionKey)) === "TEMPORARY"
     });
@@ -1373,8 +1365,7 @@ export function useMessageRunActions({
         if (sessionFailed) sendRejectionMessage = WORKSPACE_SESSION_FAILED_COPY;
         sendRecoveries = [
           ...(sessionFailed ? ["reset_workspace" as const] : []),
-          ...(!runControlSnapshot.agentEnabled &&
-            attachmentsSendableWithoutWorkspace(sendToken.attachments, modelForSend, pdfRoute)
+          ...(attachmentsSendableWithoutWorkspace(sendToken.attachments, modelForSend, pdfRoute)
             ? ["send_without_workspace" as const] : [])
         ];
       }

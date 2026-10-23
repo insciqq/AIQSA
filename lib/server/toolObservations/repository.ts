@@ -31,16 +31,11 @@ function refusal(error: unknown): boolean {
 }
 
 /**
- * The recall authority of one live run of the actor: active run, active user,
- * mutable chat access (Project Contributor) and, for Agent, an unexpired,
- * unrevoked grant. The saved-result and call readers share it.
- * `unarmedAgent` also accepts the run's own Agent binding before its executor
- * armed it (no start, lease or token yet, and never revoked, completed,
- * failed or interrupted): only the server's projection for that run's first
- * prompt reads then; every guest-reachable read needs the live lease.
+ * The recall authority of one live run of the actor: active run, active user
+ * and mutable chat access (Project Contributor). The saved-result and call
+ * readers share it.
  */
-export async function observationRunAuthority(tx: Prisma.TransactionClient, actor: ObservationActor, lock = false,
-  options: Readonly<{ unarmedAgent?: boolean }> = {}) {
+export async function observationRunAuthority(tx: Prisma.TransactionClient, actor: ObservationActor, lock = false) {
   if (lock) {
     await lockRunSettlementScope(tx, actor.runId);
     await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${actor.runId} FOR UPDATE`;
@@ -53,15 +48,6 @@ export async function observationRunAuthority(tx: Prisma.TransactionClient, acto
     run.chat.archived || run.chat.permanentDeletionAt ||
     !await tx.user.findFirst({ where: { id: actor.userId, status: "active" }, select: { id: true } }) ||
     !await resolveChatAccess(tx, { chatId: run.chatId, userId: actor.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })) throw unavailable();
-  const agent = await tx.agentRunBinding.findUnique({ where: { modelRunId: run.id }, select: {
-    revokedAt: true, completedAt: true, failureCode: true, followupInterruptAt: true, expiresAt: true, leaseExpiresAt: true,
-    startedAt: true, tokenHash: true
-  } });
-  const now = new Date();
-  const leased = agent?.leaseExpiresAt ? agent.leaseExpiresAt > now : false;
-  const unarmed = options.unarmedAgent === true && agent ? !agent.startedAt && !agent.leaseExpiresAt && !agent.tokenHash : false;
-  if (agent && (agent.revokedAt || agent.completedAt || agent.failureCode || agent.followupInterruptAt ||
-    !(leased || unarmed) || agent.expiresAt && agent.expiresAt <= now)) throw unavailable();
   return run as typeof run & { assistantMessageId: string };
 }
 

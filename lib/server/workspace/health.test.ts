@@ -4,16 +4,14 @@ import { createWorkspaceHealthService, sanitizeWorkspaceRuntimeHealth } from "./
 
 describe("Workspace runtime health", () => {
   it.each([
-    [true, true, true],
-    [true, false, false],
-    [false, true, false],
-    [undefined, true, false],
-    ["true", true, false]
-  ])("requires explicit Agent readiness and runtime methods (%s, %s)", async (agentReady, methods, expected) => {
+    [true, true],
+    [false, false],
+    [undefined, false],
+    ["true", false]
+  ])("requires the runner's explicit gateway readiness (%s)", async (agentReady, expected) => {
     const runtime = {
       health: async () => ({ agentReady, imageReady: true, mcpVersion: "0.6.16",
-        runtimeVersion: "0.6.16", state: "ready", virtualizationReady: true }),
-      ...(methods ? { startAgent: vi.fn(), pollAgent: vi.fn() } : {})
+        runtimeVersion: "0.6.16", state: "ready", virtualizationReady: true })
     } as unknown as WorkspaceRuntime;
     const health = await createWorkspaceHealthService({ runtime }).read();
     expect(health.state).toBe("ready");

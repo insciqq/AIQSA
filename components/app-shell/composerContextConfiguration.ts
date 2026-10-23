@@ -9,10 +9,9 @@ export function useComposerContextConfigurationKey(chat: Parameters<typeof compo
  * Neither this key nor the control summaries are sent back as server authority. */
 export function composerContextConfigurationKey(
   controls: ComposerControlSnapshot,
-  chat: Readonly<{ memoryMode: string; workspaceEnabled: boolean; agentEnabled?: boolean }>
+  chat: Readonly<{ memoryMode: string; workspaceEnabled: boolean }>
 ): string {
   return JSON.stringify({
-    ...(chat.agentEnabled ? { agentEnabled: true } : {}),
     assistant: controls.assistant?.state === "bound"
       ? { id: controls.assistant.id, promptCharacterCount: controls.assistant.promptCharacterCount }
       : controls.assistant ? { state: controls.assistant.state } : null,

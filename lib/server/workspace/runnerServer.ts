@@ -21,23 +21,12 @@ import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } fr
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
-import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
-import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES, renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
-import { CODEX_OUTPUT_LIMITS } from "../agents/codexProtocol";
-import { AgentExecutionError } from "../agents/failures";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
 import { workspaceToolErrorWire, workspaceToolResultWire } from "./toolObservability";
 import { parseSkillBundleRef, parseSkillInitial, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity } from "./skillBundles";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
-/**
- * The admitted prompt and server instructions arrive as JSON strings, where
- * one UTF-8 byte escapes to at most six bytes (`\u0001`). Both are bounded by
- * the application before dispatch, so a valid start always fits.
- */
-export const AGENT_START_BODY_MAX_BYTES =
-  6 * (AGENT_PROMPT_MAX_BYTES + CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES) + 64 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
 /**
  * Output handles live in batches. A batch stays valid while the application
@@ -79,12 +68,7 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 }
 
 function errorCode(error: unknown): string {
-  return error instanceof WorkspaceRuntimeError
-    ? error.code
-    // A rejected Agent profile is the turn's settings, not this runner.
-    : error instanceof AgentExecutionError && error.code === "agent_profile_invalid"
-      ? error.code
-      : "workspace_runtime_unavailable";
+  return error instanceof WorkspaceRuntimeError ? error.code : "workspace_runtime_unavailable";
 }
 
 function header(request: IncomingMessage, name: string): string | null {
@@ -453,42 +437,6 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId, signal
         })));
-        return;
-      }
-
-      if (request.method === "POST" && ["/agent/start", "/agent/poll", "/agent/interrupt"].includes(suffix)) {
-        stage = "dispatch";
-        const body = await readJson(request, suffix === "/agent/start" ? AGENT_START_BODY_MAX_BYTES : JSON_BODY_MAX_BYTES);
-        const identity = {
-          modelRunId: requiredString(body.modelRunId, 128),
-          runtimeExecSessionId: requiredString(body.runtimeExecSessionId, 128),
-          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId
-        };
-        if (suffix === "/agent/start") {
-          if (!input.runtime.startAgent || !isRecord(body.profile) || typeof body.prompt !== "string" ||
-            Buffer.byteLength(body.prompt) > AGENT_PROMPT_MAX_BYTES) throw new Error("field_invalid");
-          const profile = body.profile as CodexManagedProfile;
-          renderCodexManagedProfile(profile);
-          await execute(body.operation, (signal) => input.runtime.startAgent!({
-            ...identity, signal, profile, prompt: body.prompt as string,
-            skillManifestHash: requiredString(body.skillManifestHash, 64),
-            runToken: requiredString(body.runToken, 128),
-            threadId: body.threadId === undefined ? undefined : requiredString(body.threadId, 36),
-            previousExecSessionId: body.previousExecSessionId === undefined ? undefined : requiredString(body.previousExecSessionId, 128),
-            timeoutSeconds: body.timeoutSeconds === null ? null : integer(body.timeoutSeconds, 1, 7200)
-          }));
-          sendJson(response, 200, { started: true });
-        } else if (suffix === "/agent/interrupt") {
-          if (!input.runtime.interruptAgent) throw new Error("field_invalid");
-          sendJson(response, 200, { interrupted: await execute(body.operation, signal => input.runtime.interruptAgent!({ ...identity, signal })) });
-        } else {
-          if (!input.runtime.pollAgent) throw new Error("field_invalid");
-          sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.pollAgent!({
-            // The execution buffer accepts output up to this same total ceiling.
-            ...identity, signal, cursor: integer(body.cursor, 0, CODEX_OUTPUT_LIMITS.totalBytes)
-          })));
-        }
         return;
       }
 

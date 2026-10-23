@@ -10,13 +10,11 @@ import {
   type ComposerV2Assistant
 } from "@/features/composer-v2/AssistantRowProvenanceV2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
-import { agentMaxOutputTokensLimit } from "@/lib/domain/runParams";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 
 export type RunSetupComposerV2 = Pick<
   ShellComposerView,
-  | "agent"
   | "backgroundMode"
   | "changeBackgroundMode"
   | "changeMaxOutputTokens"
@@ -40,8 +38,6 @@ export type RunSetupComposerV2 = Pick<
   /** The chat's Assistant; its parameters row governs the fields while its model is in use. */
   assistant?: ComposerV2Assistant | null;
 };
-
-const tokenCount = new Intl.NumberFormat("en-US");
 
 function RunSetupSwitchV2({
   checked,
@@ -88,17 +84,6 @@ export function RunSetupV2({ composer, onClose, restoreFocus }: Readonly<{
   const notice = provenance?.kind === "adjustable"
     ? assistantRowNoticeText(provenance)
     : provenance?.kind === "own" && provenance.changed ? "Changed for this chat" : null;
-  // Agent leaves half of the model's context window to input. A value typed
-  // here stops at that limit; one already saved above it stays as it is and
-  // is refused at send until the user lowers it.
-  const agentLimit = composer.agent?.enabled === true
-    ? agentMaxOutputTokensLimit(composer.currentModel?.contextWindow) : undefined;
-  const maxValue = controls.maxOutputTokens.maxValue;
-  const effectiveMax = agentLimit === undefined ? maxValue : Math.min(maxValue ?? agentLimit, agentLimit);
-  const selectedMax = Number(composer.maxOutputTokens);
-  const overAgentLimit = agentLimit !== undefined && Number.isFinite(selectedMax) && selectedMax > agentLimit;
-  // The model default is clamped for Agent at send; only a chosen value is refused.
-  const agentDefault = overAgentLimit && selectedMax === controls.maxOutputTokens.defaultValue;
   const {
     dialogRef,
     initialFocusRef,
@@ -175,41 +160,15 @@ export function RunSetupV2({ composer, onClose, restoreFocus }: Readonly<{
           <label>
             <span>Max output tokens</span>
             <input
-              aria-describedby={overAgentLimit ? "run-setup-agent-output-limit" : undefined}
-              aria-invalid={overAgentLimit && !agentDefault ? true : undefined}
-              max={effectiveMax}
+              max={controls.maxOutputTokens.maxValue}
               min="1"
               step="1"
               type="number"
               disabled={fixed}
               value={composer.maxOutputTokens}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                composer.changeMaxOutputTokens(agentLimit !== undefined && Number.isFinite(next) && next > agentLimit
-                  ? String(agentLimit) : event.target.value);
-              }}
+              onChange={(event) => composer.changeMaxOutputTokens(event.target.value)}
             />
           </label>
-          {overAgentLimit && agentLimit !== undefined ? (
-            <div
-              className="v2-run-setup-limit"
-              data-kind={agentDefault ? "info" : "warn"}
-              data-testid="run-setup-agent-output-limit"
-              id="run-setup-agent-output-limit"
-              role={agentDefault ? undefined : "alert"}
-            >
-              <p>
-                {agentDefault
-                  ? `Agent answers with this model use at most ${tokenCount.format(agentLimit)} output tokens.`
-                  : `Agent allows at most ${tokenCount.format(agentLimit)} output tokens with this model (half of its context window). Lower the value or reset output settings to send.`}
-              </p>
-              {agentDefault ? null : (
-                <UiV2Button disabled={fixed} onClick={() => composer.changeMaxOutputTokens(String(agentLimit))}>
-                  {`Use ${tokenCount.format(agentLimit)}`}
-                </UiV2Button>
-              )}
-            </div>
-          ) : null}
           {controls.reasoningEffort.supported ? (
             <label>
               <span>Reasoning effort</span>

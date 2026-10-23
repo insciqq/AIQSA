@@ -1,8 +1,6 @@
 import { retainFailureCause } from "../observability/failureFacts.cjs";
 import type { WorkspaceOperation } from "./operationFence";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
-import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
-import type { AgentExecutionOutputPage } from "../agents/executionOutput";
 import type { WorkspaceFileSelection } from "./outputManifest";
 import type { WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
 import type { WorkspaceOutputSkips } from "@/lib/contracts/workspace";
@@ -12,6 +10,7 @@ import type {
 } from "@/lib/domain/workspace";
 
 export type WorkspaceRuntimeHealth = Readonly<{
+  /** The runner gateway guest code reaches MCP through is configured and the image is loaded. */
   agentReady?: boolean;
   imageReady?: boolean;
   mcpVersion?: string;
@@ -162,7 +161,8 @@ export type WorkspaceSkillBundleRef = Readonly<{
   alias: string;
   revisionId: string;
   bundleDigest: string;
-  /** Only accepted available Skills in Agent mode enter native discovery. */
+  /** Always false: native discovery served the removed Codex Agent. Guest
+   * skill state written by earlier releases still carries the field. */
   discover: boolean;
 }>;
 
@@ -182,10 +182,6 @@ export interface WorkspaceRuntime {
   prepareSkillRun(input: WorkspaceSkillRunPreparation): Promise<Readonly<{ state: "preparing" | "ready" }>>;
   installSkillBundle(input: WorkspaceSkillBundleInstall): Promise<Readonly<{ workspacePath: string }>>;
   completeSkillRunPreparation(input: WorkspaceSkillRunIdentity): Promise<void>;
-  /** Private raw byte transport; never a model-visible Workspace MCP tool. */
-  startAgent?(input: WorkspaceAgentStart): Promise<void>;
-  pollAgent?(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>): Promise<AgentExecutionOutputPage>;
-  interruptAgent?(input: WorkspaceAgentIdentity): Promise<boolean>;
   claimSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   retireSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   health(signal?: AbortSignal): Promise<WorkspaceRuntimeHealth>;
@@ -351,7 +347,6 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_capture_source_busy"
     | "workspace_capture_source_invalid"
     | "workspace_capture_unsupported"
-    | "workspace_agent_output_invalid"
     | "workspace_attachment_timeout"
     | "workspace_attachment_unavailable"
     | "workspace_storage_full"
