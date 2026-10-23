@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { MCP_APPROVAL_CONTINUATION_KIND } from "../../contracts/mcpApprovals";
 import { json } from "../runs/prismaRepositoryShared";
 import { decodeTranscriptItem, encodeTranscriptItem } from "./transcriptCodec";
@@ -30,7 +30,11 @@ export function createTranscriptRepository(client: TranscriptClient) {
       return last ? last.sequence + 1 : 0;
     },
 
-    /** Appends items in order from sequence `from`; a taken sequence refuses the whole batch. */
+    /**
+     * Appends items in order from sequence `from`; a taken sequence refuses the
+     * whole batch. Repeating a batch that committed already (its outcome was
+     * lost) finds exactly its own rows and succeeds without a second copy.
+     */
     async append(scope: TranscriptRunScope, from: number, items: readonly TranscriptItem[]): Promise<void> {
       if (items.length === 0) return;
       if (!Number.isSafeInteger(from) || from < 0) throw new Error("transcript_sequence_invalid");
@@ -47,7 +51,14 @@ export function createTranscriptRepository(client: TranscriptClient) {
           userId: scope.userId
         };
       });
-      await client.runTranscriptItem.createMany({ data: rows });
+      try {
+        await client.runTranscriptItem.createMany({ data: rows });
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
+        const written = await client.runTranscriptItem.count({ where: { chatId: scope.chatId, modelRunId: scope.runId,
+          OR: rows.map((row) => ({ id: row.id, sequence: row.sequence })), userId: scope.userId } });
+        if (written !== rows.length) throw error;
+      }
     },
 
     /** The items of these runs of one chat and owner, by run, each in sequence order. */
