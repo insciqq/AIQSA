@@ -161,7 +161,8 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     const tool = deps.registry.resolve(call.name);
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
-      return { kind: "refuse", output: UNKNOWN_TOOL_CALL_MESSAGE, toolName,
+      // An older tool the run replaced names its replacement; the record keeps the plain unknown form.
+      return { kind: "refuse", output: deps.registry.replacement?.(call.name) ?? UNKNOWN_TOOL_CALL_MESSAGE, toolName,
         result: unknownToolCallResult({ providerCallId: call.id, requested: requestedToolNameExcerpt(call.name), toolName }) };
     }
     if (hasInvalidProviderToolArguments(call.arguments)) {
