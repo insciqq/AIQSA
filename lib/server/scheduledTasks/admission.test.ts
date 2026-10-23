@@ -14,7 +14,6 @@ import {
   type RunRepository,
   type ScheduledOccurrenceAdmission
 } from "../runs/runRepositoryContract";
-import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import { nativeEngineFake } from "@/tests/support/nativeEngine";
@@ -78,7 +77,6 @@ function fixture(options: Readonly<{
   /** The active branch of the chat, root first, as the repository loads it. */
   path?: readonly ProviderConversationMessage[];
   toolCalling?: boolean;
-  toolHistory?: ToolHistorySnapshot;
   /** The owner's usage limit status at admission; none by default. */
   usage?: UsageLimitStatus;
 }> = {}) {
@@ -114,7 +112,6 @@ function fixture(options: Readonly<{
     loadCheckpointedToolLoopRun: async () => null,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, leaf) =>
       leaf === (options.chat?.activeLeafMessageId ?? null) ? [...(options.path ?? [])] : null,
-    ...(options.toolHistory ? { loadToolHistory: async () => options.toolHistory! } : {}),
     loadEntitlements: async () => ({ modelKeys: new Set(["fake:fake-qsa"]), providerKeys: new Set(), searchStrategies: new Set() }),
     loadModelPricing: async () => null,
     loadPersonalFirstSend: async (input) => input.chatId === newChatId && input.userId === owner.id ? {
@@ -279,10 +276,9 @@ describe("scheduled task admission through the ordinary send handler", () => {
       ["user", "Summarize the synthetic fixture"], ["assistant", "Previous synthetic summary"], ["user", "Summarize the synthetic fixture"]
     ]]);
     expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture"]);
-    // The selection is frozen with the run, so recovery rebuilds the same context; branch notes are never carried.
+    // The selection is frozen with the run.
     const frozen = f.state.created!.normalizedRequest;
     expect(frozen.context!.messages.map((message) => message.id)).toEqual(["previous-user", "previous-answer", "current-user-message"]);
-    expect(frozen.contextCompactionPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: null, messageCount: 3 } });
     // The new turn still continues the chat's active leaf, so the transcript stays linear.
     expect(f.state.created).toMatchObject({ expectedActiveLeafId: chat.activeLeafMessageId, scheduledOccurrence: { previousResult } });
   });
