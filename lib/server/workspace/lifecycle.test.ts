@@ -9,13 +9,8 @@ import { createWorkspaceLifecycleService } from "./lifecycle";
 import { createWorkspaceLifecycleHandlers } from "./lifecycleHandlers";
 import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceRuntime } from "./runtime";
-import { ProjectsDisabledError } from "@/lib/server/projects/disabled";
 
 vi.mock("./executionRegistry", () => ({ acknowledgeWorkspaceCommandsStopped: vi.fn(async () => undefined) }));
-// Only the Project chat test reaches Project access; personal chats resolve before it.
-vi.mock("@/lib/server/projects/access", () => ({
-  resolveProjectAccess: vi.fn(async () => ({ projectId: "project-1", role: "CONTRIBUTOR" }))
-}));
 vi.mock("./sessionOperation", async (importOriginal) => ({
   ...await importOriginal<typeof import("./sessionOperation")>(),
   failWorkspaceExportsForLostDisk: vi.fn(async () => undefined)
@@ -55,7 +50,7 @@ function fakeDatabase(input: Readonly<{
   seeds?: Row[];
   session?: Row | null;
 }>) {
-  const chat = { archived: false, id: "chat-1", permanentDeletionAt: null, projectId: null, userId: "owner-1" };
+  const chat = { archived: false, id: "chat-1", permanentDeletionAt: null, userId: "owner-1" as string | null };
   const session: Row | null = input.session ? {
     id: "session-1", chatId: chat.id, imageRef: "image", internetEnabled: true, operationOwner: null,
     operationExpiresAt: null, runtimeSandboxId: null, sandboxName: "aiqsa-ws-session-1", state: "FAILED", version: 3,
@@ -274,15 +269,15 @@ describe("Workspace reset with a carried project that was never restored", () =>
   });
 });
 
-describe("Project chat Workspace while Projects are disabled", () => {
-  it("neither resets nor archives it, and answers with projects_disabled", async () => {
+describe("Workspace of a chat left from a removed Project", () => {
+  it("is neither reset nor archived by a former member, who is answered as for a chat they cannot see", async () => {
     const database = fakeDatabase({ seeds: [carriedSeed], session: { state: "STOPPED" } });
-    Object.assign(database.chat, { projectId: "project-1", userId: null });
+    database.chat.userId = null;
     const { lifecycle, runtime } = lifecycleFor(database);
     const member = { chatId: "chat-1", userId: "member-1" };
 
-    await expect(lifecycle.reset(member)).rejects.toBeInstanceOf(ProjectsDisabledError);
-    await expect(lifecycle.archive(member)).rejects.toBeInstanceOf(ProjectsDisabledError);
+    await expect(lifecycle.reset(member)).rejects.toMatchObject({ code: "workspace_reset_conflict", status: 404 });
+    await expect(lifecycle.archive(member)).rejects.toMatchObject({ code: "workspace_not_started", status: 404 });
     expect(runtime.claimSessionOperation).not.toHaveBeenCalled();
     expect(runtime.removeSession).not.toHaveBeenCalled();
     expect(database.seedWrites).toEqual([]);
@@ -294,7 +289,7 @@ describe("Project chat Workspace while Projects are disabled", () => {
     });
     const response = await handlers.reset(new Request("http://app.local/api/chats/chat-1/workspace/reset", { method: "POST" }),
       { params: { chatId: "chat-1" } });
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "workspace_reset_conflict" });
   });
 });

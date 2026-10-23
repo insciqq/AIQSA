@@ -22,9 +22,9 @@ async function prepare(page: Page) {
   await authenticateWithLocalToken(page.request);
   const timestamp = "2026-09-21T10:00:00.000Z";
   await installMatrixCatalogFixture(page, { folders: [], chats: [{
-    id: "migration-chat", title: "Migration destination", folderId: null, projectId: null,
+    id: "migration-chat", title: "Migration destination", folderId: null,
     activeLeafMessageId: null, createdAt: timestamp, updatedAt: timestamp, messageCount: 0,
-    defaultKnowledgePlan: null, defaultModelId: "gpt-5.5", defaultProvider: "openai", messages: []
+    defaultModelId: "gpt-5.5", defaultProvider: "openai", messages: []
   }] });
   await page.route("**/api/chats/compact?*", route => route.fulfill({ json: { chats: [{
     id: "migration-chat", title: "Migration destination", folderId: null, activeRun: false, updatedAt: timestamp,
@@ -73,7 +73,7 @@ for (const width of [1440, 390]) {
     const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
     const drawer = page.getByRole("complementary", { name: "Chat navigation" });
     for (const resource of resources) {
-      for (const destination of ["tab", "back", "new", "shortcut", "projects", width === 1440 ? "chats" : "chat"]) {
+      for (const destination of ["tab", "back", "new", "shortcut", width === 1440 ? "chats" : "chat"]) {
         const input = await openDraft(page, resource);
         const draft = await input.inputValue();
         if (destination === "tab") {
@@ -93,7 +93,7 @@ for (const width of [1440, 390]) {
             if (width === 390 && !await drawer.isVisible()) await page.getByRole("button", { name: "Open sidebar" }).click();
             if (destination === "chat") await drawer.getByRole("treeitem", { name: "Migration destination", exact: true }).click();
             else await (width === 390 ? drawer : rail).getByRole("button", {
-              name: destination === "new" ? "New chat" : destination === "chats" ? "Chats" : "Projects", exact: true
+              name: destination === "new" ? "New chat" : "Chats", exact: true
             }).click();
           }
         };
@@ -138,7 +138,7 @@ test("pending migrated mutations block exits, then preserve the draft on failure
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
     const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    for (const name of ["Chats", "New chat", "Projects", "Studio"]) await expect(rail.getByRole("button", { name, exact: true })).toBeDisabled();
+    for (const name of ["Chats", "New chat", "Studio"]) await expect(rail.getByRole("button", { name, exact: true })).toBeDisabled();
     await page.keyboard.press("Control+Shift+O");
     await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
     await page.screenshot({ path: info.outputPath(`${resource}-busy.png`) });

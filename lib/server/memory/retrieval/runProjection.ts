@@ -29,7 +29,7 @@ export async function loadMemoryRunPresentationStatuses(
       where: {
         chat: {
           memoryMode: { not: "TEMPORARY" },
-          projectId: null
+          userId: input.userId
         },
         id: { in: runIds },
         userId: input.userId

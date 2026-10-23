@@ -8,23 +8,11 @@ import {
   isDocumentParserError,
   type ParsedDocument
 } from "../lib/server/parsing";
-import { chunkKnowledgeDocument } from "../lib/server/knowledge/chunking";
-import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "../lib/server/knowledge/indexProfile";
-import { KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER } from "../lib/server/knowledge/tokenizer/knowledgeTokenCounter";
-import { getKnowledgeExtractionConfig } from "../lib/server/knowledge/knowledgeExtractionConfig";
-import {
-  decodeKnowledgeNormalizedDocument,
-  encodeKnowledgeNormalizedDocument
-} from "../lib/server/knowledge/normalizedDocument";
 import {
   AttachmentProcessingError,
   createAttachmentProcessor,
   type AttachmentProcessingRecord
 } from "../lib/server/uploads/processing";
-import {
-  createKnowledgeOcrFixtures,
-  knowledgeOcrTextEvidence
-} from "./knowledge-ocr-fixtures";
 
 const PDF_MARKER = "AIQSA PDF parser fixture";
 const DOCX_MARKER = "AIQSA DOCX parser fixture";
@@ -313,15 +301,6 @@ async function fallbackSmoke(): Promise<void> {
 async function availableSmoke(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "aiqsa-parser-smoke-"));
   try {
-    smokeStage = "ocr-fixture-generation";
-    const ocrFixtures = await createKnowledgeOcrFixtures({
-      directory,
-      includeJpeg: true,
-      includeWebp: true,
-      pageCount: 1
-    });
-    assert(ocrFixtures.jpeg);
-    assert(ocrFixtures.webp);
     const fixtures = [
       {
         bytes: pdfFixture(),
@@ -370,123 +349,6 @@ async function availableSmoke(): Promise<void> {
         markerPresent: true,
         pageAnchorsValid: true,
         pageCount: result.pageCount
-      };
-    }
-
-    // OCR-capable inputs should use Docling while it produces a complete,
-    // useful result. The same boundary may fall back later when that primary
-    // result is unavailable or unusable; fallback mode is smoked separately.
-    const knowledgeBoundary = createDocumentParserBoundary();
-    const knowledgeExtractionConfig = getKnowledgeExtractionConfig({});
-    const ocrInputs = [
-      {
-        bytes: ocrFixtures.imageOnlyPdf,
-        evidenceKey: "ocrImageOnlyPdf",
-        fileName: "knowledge-ocr-scan.pdf",
-        mimeType: "application/pdf"
-      },
-      {
-        bytes: ocrFixtures.png,
-        evidenceKey: "ocrPng",
-        fileName: "knowledge-ocr-scan.png",
-        mimeType: "image/png"
-      },
-      {
-        bytes: ocrFixtures.jpeg,
-        evidenceKey: "ocrJpeg",
-        fileName: "knowledge-ocr-scan.jpg",
-        mimeType: "image/jpeg"
-      },
-      {
-        bytes: ocrFixtures.webp,
-        evidenceKey: "ocrWebp",
-        fileName: "knowledge-ocr-scan.webp",
-        mimeType: "image/webp"
-      }
-    ];
-
-    for (const fixture of ocrInputs) {
-      smokeStage = fixture.evidenceKey;
-      const result = await knowledgeBoundary.parse({
-        bytes: fixture.bytes,
-        fileName: fixture.fileName,
-        mimeType: fixture.mimeType
-      });
-      const textEvidence = knowledgeOcrTextEvidence(result.text);
-      if (result.engine !== "docling") smokeStage = `${fixture.evidenceKey}-engine`;
-      assert.equal(result.engine, "docling");
-      if (result.pageCount !== 1) smokeStage = `${fixture.evidenceKey}-page-count`;
-      assert.equal(result.pageCount, 1);
-      if (result.blocks.length === 0) smokeStage = `${fixture.evidenceKey}-empty-blocks`;
-      assert(result.blocks.length > 0);
-      if (!result.blocks.every((block) => block.page === 1)) {
-        smokeStage = `${fixture.evidenceKey}-page-anchors`;
-      }
-      assert(result.blocks.every((block) => block.page === 1));
-      if (!textEvidence.useful) {
-        const missing = [
-          ...(textEvidence.russianTokenCount >= 2 ? [] : ["russian"]),
-          ...(textEvidence.englishTokenCount >= 2 ? [] : ["english"]),
-          ...(textEvidence.numberMarkerPresent ? [] : ["number"]),
-          ...(textEvidence.tableEvidence.russianHeadersPresent ? [] : ["table-ru"]),
-          ...(textEvidence.tableEvidence.englishHeadersPresent ? [] : ["table-en"]),
-          ...(textEvidence.tableEvidence.numericValuesPresent ? [] : ["table-number"])
-        ];
-        smokeStage = `${fixture.evidenceKey}-evidence-${missing.join("-")}`;
-      }
-      assert.equal(textEvidence.useful, true);
-      const encodedDocument = encodeKnowledgeNormalizedDocument(
-        result,
-        knowledgeExtractionConfig,
-        {
-          layoutAwareTables: true,
-          sourceDisplayName: "Synthetic parser smoke",
-          sourceMediaType: fixture.mimeType
-        }
-      );
-      const normalizedDocument = decodeKnowledgeNormalizedDocument(
-        encodedDocument.body,
-        knowledgeExtractionConfig
-      );
-      if (normalizedDocument.schemaVersion !== 4) {
-        smokeStage = `${fixture.evidenceKey}-normalized-schema`;
-      }
-      assert.equal(normalizedDocument.schemaVersion, 4);
-      if (normalizedDocument.fieldGroups.length !== result.fieldGroups.length) {
-        smokeStage = `${fixture.evidenceKey}-field-groups`;
-      }
-      assert.equal(normalizedDocument.fieldGroups.length, result.fieldGroups.length);
-      const structuredTableBlocks = normalizedDocument.blocks.filter(
-        (block) => block.table !== null
-      ).length;
-      if (structuredTableBlocks === 0) {
-        smokeStage = `${fixture.evidenceKey}-structured-table`;
-      }
-      assert(structuredTableBlocks > 0);
-      const chunks = chunkKnowledgeDocument({
-        document: normalizedDocument,
-        maxChunks: knowledgeExtractionConfig.maxChunksPerDocument,
-        profileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
-        tokenCounter: KNOWLEDGE_GENERIC_ESTIMATOR_COUNTER
-      });
-      const tableRowContextCount = chunks.filter(
-        (chunk) => chunk.documentContext?.locator.kind === "table_row"
-      ).length;
-      if (tableRowContextCount === 0) {
-        smokeStage = `${fixture.evidenceKey}-table-row-context`;
-      }
-      assert(tableRowContextCount > 0);
-      evidence[fixture.evidenceKey] = {
-        blocks: result.blocks.length,
-        chunkProfileVersion: KNOWLEDGE_CHUNKING_PROFILE_VERSION,
-        engine: result.engine,
-        normalizedFieldGroups: normalizedDocument.fieldGroups.length,
-        normalizedSchemaVersion: normalizedDocument.schemaVersion,
-        pageAnchorsValid: true,
-        pageCount: result.pageCount,
-        structuredTableBlocks,
-        tableRowContextCount,
-        ...textEvidence
       };
     }
 

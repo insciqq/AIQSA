@@ -1,16 +1,12 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AssistantDeletionConsequences } from "../../contracts/assistantDeletion";
 import { CHAT_ASSISTANT_DELETED_MARKER } from "../../contracts/chats";
-import { decodeProjectDefaults } from "../../contracts/projects";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { prisma } from "../prisma";
-import { resolveProjectAccess } from "../projects/access";
-import { notifyProjectEvent } from "../projects/events";
-import { revokeOwnedProjectResourcePublicationInTransaction } from "../projects/prismaRepository";
 import { isPrismaSerializationConflict } from "../runs/prismaRepositoryShared";
 
 export type AssistantDeleteResult =
@@ -20,22 +16,13 @@ export type AssistantDeleteResult =
 
 export type PrismaAssistantDeletionRepositoryOptions = Readonly<{
   memorySourceHooks?: MemorySourceMutationHooks;
-  notifyProjectEvent?(projectId: string): void;
 }>;
-
-class AssistantDeleteRefusedError extends Error {
-  constructor() {
-    super("assistant_delete_refused");
-    this.name = "AssistantDeleteRefusedError";
-  }
-}
 
 export function createPrismaAssistantDeletionRepository(
   client: PrismaClient = prisma,
   options: PrismaAssistantDeletionRepositoryOptions = {}
 ) {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
-  const notify = options.notifyProjectEvent ?? notifyProjectEvent;
 
   return {
     /** Owner-only preview of {@link delete}. Invisible and missing definitions
@@ -48,10 +35,6 @@ export function createPrismaAssistantDeletionRepository(
         const definition = await tx.assistantDefinition.findFirst({
           select: {
             listingRequests: { select: { id: true }, where: { state: "pending" } },
-            projectBindings: {
-              orderBy: { projectId: "asc" },
-              select: { project: { select: { defaults: true, name: true } }, projectId: true }
-            },
             publications: { select: { group: { select: { name: true } }, scope: true } },
             version: true
           },
@@ -59,20 +42,6 @@ export function createPrismaAssistantDeletionRepository(
         });
         if (!definition) return null;
 
-        const projects: Array<{ isDefault: boolean; name: string }> = [];
-        let hiddenProjectCount = 0;
-        for (const binding of definition.projectBindings) {
-          const access = await resolveProjectAccess(tx, { projectId: binding.projectId, userId });
-          if (!access) {
-            hiddenProjectCount += 1;
-            continue;
-          }
-          const defaults = decodeProjectDefaults(binding.project.defaults);
-          projects.push({
-            isDefault: defaults.ok && defaults.defaults.assistantId === assistantId,
-            name: binding.project.name
-          });
-        }
         // Chats already awaiting permanent deletion are gone for their users.
         const chatCount = await tx.chat.count({
           where: { assistantId, permanentDeletionAt: null }
@@ -86,9 +55,7 @@ export function createPrismaAssistantDeletionRepository(
             installation: definition.publications.some((publication) => publication.scope === "installation")
           },
           chatCount,
-          hiddenProjectCount,
           pendingListingRequest: definition.listingRequests.length > 0,
-          projects: projects.sort((left, right) => left.name.localeCompare(right.name)),
           version: definition.version
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
@@ -111,8 +78,8 @@ export function createPrismaAssistantDeletionRepository(
             // The deletion hook later locks this owner's Memory settings.
             await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
             // The exclusive row lock also blocks every new reference: inserting
-            // a run, chat binding, pin or Project binding takes a key-share
-            // lock on this row, so the sets read below can only shrink.
+            // a run, chat binding or pin takes a key-share lock on this row, so
+            // the sets read below can only shrink.
             const locked = await tx.$queryRaw<Array<{ version: number }>>`
               SELECT "version"
               FROM "AssistantDefinition"
@@ -120,36 +87,17 @@ export function createPrismaAssistantDeletionRepository(
               FOR UPDATE
             `;
             const definition = locked[0];
-            if (!definition) return { kind: "not_found" as const, projectIds: [] };
+            if (!definition) return { kind: "not_found" as const };
             if (definition.version !== expectedVersion) {
-              return { kind: "version_conflict" as const, projectIds: [] };
+              return { kind: "version_conflict" as const };
             }
 
             await tx.assistantListingRequest.deleteMany({ where: { assistantId } });
             await tx.assistantPublication.deleteMany({ where: { assistantId } });
-
-            const bindings = await tx.projectAssistantBinding.findMany({
-              orderBy: [{ projectId: "asc" }, { id: "asc" }],
-              select: { id: true, projectId: true },
-              where: { assistantId }
-            });
-            const projectIds: string[] = [];
-            for (const binding of bindings) {
-              if (await revokeOwnedProjectResourcePublicationInTransaction(tx, {
-                bindingId: binding.id,
-                projectId: binding.projectId,
-                resourceId: assistantId,
-                type: "assistant",
-                userId
-              })) {
-                projectIds.push(binding.projectId);
-              }
-            }
-            // A revoke refuses only an owner who is no longer active; the whole
-            // deletion then rolls back, as for any other unauthorized caller.
-            if (await tx.projectAssistantBinding.count({ where: { assistantId } }) > 0) {
-              throw new AssistantDeleteRefusedError();
-            }
+            // Projects were removed (operator decision 2026-10-23); a binding a
+            // retired Project still holds restricts the definition until the
+            // Project's own deletion removes it, so it goes first.
+            await tx.projectAssistantBinding.deleteMany({ where: { assistantId } });
 
             await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
               kind: "ASSISTANT_DELETE",
@@ -176,12 +124,10 @@ export function createPrismaAssistantDeletionRepository(
               where: { id: assistantId, ownerUserId: userId }
             });
             if (deleted.count !== 1) throw new Error("assistant_delete_invariant");
-            return { kind: "deleted" as const, projectIds };
+            return { kind: "deleted" as const };
           }, { maxWait: 10_000, timeout: 30_000 });
-          for (const projectId of result.projectIds) notify(projectId);
-          return { kind: result.kind };
+          return result;
         } catch (error) {
-          if (error instanceof AssistantDeleteRefusedError) return { kind: "not_found" };
           if (!isPrismaSerializationConflict(error)) throw error;
         }
       }

@@ -17,7 +17,6 @@ import { mcpObservationMaximumBytes, observationFailure, TOOL_OBSERVATION_LIMITS
 import { createToolObservationService } from "./service";
 import { createObservationAdmission } from "./admission";
 import { createObservationSourceOwners } from "./sourceOwners";
-import { knowledgeObservationOwner } from "../knowledge/observationOwner";
 import { captureMcpObservation, captureOwnedObservation, captureSearchObservation, wholeDeliveryAllowance } from "./sourceAdapters";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 import { namespacedMcpToolName } from "../mcp/runPlan";
@@ -163,7 +162,7 @@ describe("durable tool observation ownership", () => {
     const name = namespacedMcpToolName(server.namespace, "records");
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { toolName: name, mcpRunBindingId: binding.id } });
     const service = createToolObservationService({ repository: createToolObservationRepository({ prisma,
-      ...createObservationSourceOwners(knowledgeObservationOwner) }), storage: f.storage });
+      ...createObservationSourceOwners() }), storage: f.storage });
     const business = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["exact accepted MCP bytes"], unsupportedContentTypes: [] }));
     const result = await captureMcpObservation({ service, producer }, { id: "provider-call", name, arguments: {} },
       { version: 1, source: "mcp", serverId: server.id, originalName: "records", revisionId: revision.id, fingerprint: runtime.fingerprint }, business);
@@ -199,7 +198,7 @@ describe("durable tool observation ownership", () => {
     const producer = await f.call(run.actor);
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { toolName: "load_skill", arguments: { skill: "procedure" } } });
     const service = createToolObservationService({ repository: createToolObservationRepository({ prisma,
-      ...createObservationSourceOwners(knowledgeObservationOwner) }), storage: f.storage });
+      ...createObservationSourceOwners() }), storage: f.storage });
     const call = await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: producer.toolCallId } });
     const original: ToolExecutionResult = { callId: call.providerCallId, name: "load_skill", status: "complete",
       content: [{ type: "text", text: "Keep the original instructions." }] };
@@ -246,7 +245,7 @@ describe("durable tool observation ownership", () => {
     const run = await f.makeRun(f.run.assistantMessageId, { searchPlan: { options: sources } });
     const producer = await f.call(run.actor);
     const service = createToolObservationService({ repository: createToolObservationRepository({ prisma,
-      ...createObservationSourceOwners(knowledgeObservationOwner) }), storage: f.storage });
+      ...createObservationSourceOwners() }), storage: f.storage });
     const execution: SearchExecutionEvidence = { ...sources[0]!, displayName: "Synthetic search", invocationId: producer.toolCallId, provider: "fake",
       modelId: "synthetic-search", status: "complete", findings: "x".repeat(20000),
       sources: [{ title: "Synthetic source", url: "https://example.com/synthetic", rank: 1, snippet: "Accepted snippet" }],

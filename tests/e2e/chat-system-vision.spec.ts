@@ -85,12 +85,10 @@ async function installVisionProviderFixture() {
   const connectionId = randomUUID(), credentialId = randomUUID(), credentialVersionId = randomUUID();
   const ids = { chat: randomUUID(), visual: randomUUID(), analyst: randomUUID(), image: randomUUID() };
   const chatIds: string[] = [];
-  const projectIds: string[] = [];
   let priorChat: ModelPolicy | null = null;
   let priorRoles: SystemModelPolicy | null = null;
   /** Removes everything this fixture created and restores the roles it changed, also after a partial setup. */
   async function cleanup(page?: Page) {
-    if (page) for (const projectId of projectIds) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
     const runs = await prisma.modelRun.findMany({ where: { providerRunBindings: { some: { connectionId } } }, select: { chatId: true } });
     const allChats = [...new Set([...runs.map((row) => row.chatId), ...chatIds])];
     const outputs = await prisma.attachment.findMany({ where: { chatId: { in: allChats } }, select: { storageKey: true } });
@@ -114,8 +112,6 @@ async function installVisionProviderFixture() {
     await prisma.userSettings.updateMany({ where: { imageProviderModelId: ids.image }, data: { imageProviderModelId: null } });
     await prisma.publishedImageModel.deleteMany({ where: { providerModelId: ids.image } });
     await prisma.providerConnection.updateMany({ where: { id: connectionId }, data: { defaultCredentialId: null } });
-    // A Project deletion may still be pending; its model bindings restrict model removal.
-    await prisma.projectModelBinding.deleteMany({ where: { providerModelId: { in: Object.values(ids) } } });
     await prisma.providerModel.deleteMany({ where: { connectionId } });
     await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });
     await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
@@ -170,7 +166,7 @@ async function installVisionProviderFixture() {
     throw error;
   }
   return {
-    chatIds, connectionId, ids, projectIds, state, cleanup,
+    chatIds, connectionId, ids, state, cleanup,
     /** Without an image default image generation is off; the publication stays until cleanup. */
     async roles(roles: { vision: boolean; image: boolean }) {
       await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { visionProviderModelId: roles.vision ? ids.analyst : null,
@@ -244,19 +240,6 @@ test("a model without vision answers from a System Vision analysis of an uploade
     await page.reload();
     await expect(page.getByText("Answer based on VISION_ANALYSIS_MARKER.")).toBeVisible({ timeout: 30_000 });
 
-    // A Knowledge answer with no route to describe an image refuses it: the refusal is shown, the draft kept.
-    await attach(page, { name: "knowledge-photo.png", mimeType: "image/png", buffer: syntheticPng() });
-    await expect(page.getByRole("region", { name: "Attachments" })).toContainText("Ready");
-    await page.route(`**/api/chats/${chatId}/messages`, (route) => route.request().method() === "POST"
-      ? route.fulfill({ status: 400, json: { error: "knowledge_image_not_supported",
-        message: "This model can't read images and no Vision Model is available to describe them for the Knowledge answer." } })
-      : route.fallback(), { times: 1 });
-    await send(page, "Answer from the Knowledge base about this photo");
-    // The refused send keeps the text and the image with the reason and recovery.
-    await expect(page.locator(".v2-live-composer-error")).toContainText("no Vision Model is available to describe them");
-    await expect(page.locator(".v2-live-composer-error")).toContainText("Remove the image");
-    await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Answer from the Knowledge base about this photo");
-    await expect(page.getByRole("region", { name: "Attachments" })).toContainText("knowledge-photo.png");
     expect(fixture.state.visionCalls).toHaveLength(1);
   } finally {
     await fixture.cleanup(page);
@@ -283,48 +266,6 @@ test("a vision-capable model sees images itself and causes no Vision dispatch", 
     expect(fixture.state.answerCalls).toEqual([{ model: "vision-browser-visual", pixels: true, analyzeTool: false }]);
     expect(fixture.state.visionCalls).toEqual([]);
     expect(await prisma.usageEvent.count({ where: { chatId, visionAnalysis: true } })).toBe(0);
-  } finally {
-    await fixture.cleanup(page);
-  }
-});
-
-test("a Project composer admits an image exactly when admission would", async ({ page }) => {
-  test.setTimeout(180_000);
-  page.setDefaultTimeout(15_000);
-  const fixture = await installVisionProviderFixture();
-  try {
-    await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
-    await signInWithLocalToken(page);
-    // Vision absent, administrator image editing available.
-    await fixture.roles({ vision: false, image: true });
-    const created = await page.request.post("/api/projects", { data: { name: `Vision Project ${randomUUID().slice(0, 8)}`,
-      preferredModelId: fixture.ids.chat } });
-    expect(created.status()).toBe(201);
-    const projectId = (await created.json()).project.id as string;
-    fixture.projectIds.push(projectId);
-    const chat = await page.request.post(`/api/projects/${projectId}/chats`, { data: { title: "Vision Project chat" } });
-    expect(chat.status()).toBe(201);
-    const chatId = (await chat.json()).chat.id as string;
-    fixture.chatIds.push(chatId);
-    await page.goto(`/p/${projectId}/c/${chatId}`);
-    await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled({ timeout: 30_000 });
-    // Attach only once the Project composer resolved its own model.
-    await expect(page.getByRole("button", { name: "Vision Browser Chat", exact: true }).first()).toBeVisible({ timeout: 30_000 });
-    await attach(page, { name: "project-photo.png", mimeType: "image/png", buffer: syntheticPng() });
-    await expect(page.getByRole("region", { name: "Attachments" })).toContainText("project-photo.png");
-    await expect(page.locator(".v2-live-composer-error")).toHaveCount(0);
-
-    // Neither Vision nor image editing: the same composer explains the refusal.
-    await fixture.roles({ vision: false, image: false });
-    await page.reload();
-    await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled({ timeout: 30_000 });
-    // Attach only once the Project composer resolved its own model.
-    await expect(page.getByRole("button", { name: "Vision Browser Chat", exact: true }).first()).toBeVisible({ timeout: 30_000 });
-    await attach(page, { name: "refused-photo.png", mimeType: "image/png", buffer: syntheticPng() });
-    const refusal = page.locator(".v2-live-composer-error");
-    await expect(refusal).toContainText("can't read images, and no Vision Model is available to analyze them");
-    await expect(refusal).toContainText("ask an administrator to assign the Vision Model");
-    await expect(page.getByRole("listitem").filter({ hasText: "refused-photo.png" })).toHaveCount(0);
   } finally {
     await fixture.cleanup(page);
   }

@@ -1,4 +1,3 @@
-import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import type {
   AdminProviderConnection,
@@ -30,7 +29,6 @@ export type ProviderKeyState = Readonly<{
 }>;
 
 export type ProviderUsageSources = Readonly<{
-  knowledge: AdminKnowledgeSettings | null;
   modelPolicy: AdminModelPolicyCatalog | null;
   search: AdminSearchCatalog | null;
   systemModelPolicy: AdminSystemModelPolicyCatalog | null;
@@ -302,9 +300,7 @@ const ROLE_TAGS = new Set([
   "Vision Model",
   IMAGE_GENERATION_TAG,
   IMAGE_GENERATION_OFF_TAG,
-  "Reranker",
-  "Knowledge docs",
-  "Knowledge embeddings"
+  "Reranker"
 ]);
 
 /** Tags shown inline plus the `+N` overflow count. */
@@ -317,8 +313,8 @@ export function visibleUsageTags(
 
 /**
  * `Used as` per connection: the installation default chat model, the system
- * roles, the Knowledge processing destinations and every enabled Search
- * source that runs through the connection. Missing sources add nothing.
+ * roles and every enabled Search source that runs through the connection.
+ * Missing sources add nothing.
  */
 export function deriveProviderUsage(
   connections: readonly AdminProviderConnection[],
@@ -346,9 +342,6 @@ export function deriveProviderUsage(
   add(roles?.rerankerModel?.connectionId, "Reranker");
   for (const model of roles?.imageModels ?? []) add(model.connectionId, imageGenerationTag(sources));
   for (const entry of roles?.rerankerRoute?.entries ?? []) add(entry.connectionId, "Reranker");
-  const revision = sources.knowledge?.profile.activeRevision;
-  add(modelOwner.get(revision?.pdfProcessing.destination?.deploymentId ?? ""), "Knowledge docs");
-  add(modelOwner.get(revision?.destination.deploymentId ?? ""), "Knowledge embeddings");
   for (const integration of sources.search?.integrations ?? []) {
     if (integration.archivedAt || !integration.enabled) continue;
     add(integration.providerModel?.connectionId, integration.displayName);

@@ -22,9 +22,6 @@ vi.mock("../artifacts/defaultArtifacts", () => ({ artifactServiceForStorage: moc
 vi.mock("../images/defaultImages", () => ({ imageGenerationForStorage: mocks.images }));
 vi.mock("../vision/defaultVision", () => ({ visionAnalysisForStorage: mocks.vision }));
 vi.mock("../skills/defaultSkillTools", () => ({ defaultSkillTools: mocks.skillTools }));
-vi.mock("../knowledge/defaultEvidenceDispatch", () => ({ knowledgeProviderDispatchLifecycle: { kind: "knowledgeProviderDispatch" } }));
-vi.mock("../knowledge/defaultRetrieval", () => ({ knowledgeToolExecutor: { kind: "knowledgeExecutor" } }));
-vi.mock("../knowledge/runAdmission", () => ({ knowledgeRunAdmissionService: { kind: "knowledgeAdmission" } }));
 vi.mock("../mcp/defaultRuntime", () => ({ defaultMcpRunPlan: { kind: "mcp" } }));
 vi.mock("../memory/search/runtime", () => ({ createPrismaMemorySearchService: () => ({ kind: "memorySearch" }) }));
 vi.mock("../memory/search/admission", () => ({ admitMemorySearch: vi.fn() }));
@@ -73,9 +70,6 @@ describe("default run recovery scheduler", () => {
       images: { kind: "images", storage: mocks.storage },
       skillTools: mocks.skillTools,
       vision: { kind: "vision", storage: mocks.storage },
-      knowledgeAdmission: { kind: "knowledgeAdmission" },
-      knowledgeExecutor: { kind: "knowledgeExecutor" },
-      knowledgeProviderDispatch: { kind: "knowledgeProviderDispatch" },
       memoryEgress: { kind: "memoryEgress" },
       memorySearch: { kind: "memorySearch" },
       mcp: { kind: "mcp" },

@@ -259,36 +259,6 @@ html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversa
   overflow-wrap: anywhere;
 }
 
-/* Knowledge citation mark (PRD §4.4): an 18px rounded tile, a neutral fill
-   with secondary text; colour stays reserved for state. */
-.knowledge-citation-control {
-  display: inline-flex;
-  height: 1.125rem;
-  min-width: 1.125rem;
-  align-items: center;
-  justify-content: center;
-  margin: 0 0.15em;
-  padding: 0 0.3em;
-  border: 0;
-  border-radius: 0.375rem;
-  color: var(--v2-color-text2);
-  background: var(--v2-color-active);
-  cursor: pointer;
-  font: 600 0.6875rem/1 var(--font-sans), sans-serif;
-  vertical-align: 0.15em;
-  user-select: text;
-}
-
-.knowledge-citation-control:hover {
-  color: var(--v2-color-text);
-  background: var(--v2-color-border2);
-}
-
-.knowledge-citation-control:focus-visible {
-  outline: 2px solid var(--v2-color-text);
-  outline-offset: 2px;
-}
-
 .v2-conversation-markdown h2,
 .v2-conversation-markdown h3,
 .v2-conversation-markdown h4,

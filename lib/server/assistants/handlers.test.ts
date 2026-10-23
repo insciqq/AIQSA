@@ -127,11 +127,11 @@ function catalogData(): CatalogData {
 
 /** A rows draft from compact flat row fields, every row fixed as the first release wrote them. */
 function draftBody(value: Record<string, unknown>): Record<string, unknown> {
-  const { knowledgeSelection, mcpServerIds, providerModelId, runControls, searchPlan, skillIds, ...fields } = value;
+  const { mcpServerIds, providerModelId, runControls, searchPlan, skillIds, ...fields } = value;
   return {
     ...fields,
     rows: assistantRowsFromLegacyFields({
-      knowledgeSelection, mcpServerIds, providerModelId, runControls, searchPlan, skillIds: skillIds ?? []
+      mcpServerIds, providerModelId, runControls, searchPlan, skillIds: skillIds ?? []
     } as AssistantLegacyRowFields)
   };
 }
@@ -143,7 +143,6 @@ function contentRow(overrides: Partial<AssistantContentRow> = {}): AssistantCont
     category: "coding",
     description: "Reviews changes.",
     id: "assistant-1",
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: "Code Reviewer",
     providerModelId: "model-1",
@@ -155,7 +154,6 @@ function contentRow(overrides: Partial<AssistantContentRow> = {}): AssistantCont
     ...overrides
   };
   const rows = overrides.rows ?? assistantRowsFromLegacyFields({
-    knowledgeSelection: content.knowledgeSelection,
     mcpServerIds: content.mcpServerIds,
     providerModelId: content.providerModelId ?? "",
     runControls: content.runControls as AssistantRunControls,
@@ -186,7 +184,7 @@ function accessEntry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAc
     pinned: false,
     published: true,
     content: contentRow(),
-    dependencyAvailability: { knowledge: "ready", skills: true },
+    dependencyAvailability: { skills: true },
     updatedAt: new Date("2026-08-06T00:00:00.000Z"),
     version: 3,
     ...overrides
@@ -248,38 +246,19 @@ function handlerDeps(
 }
 
 describe("Assistant dependency availability projection", () => {
-  it.each(["not_ready", "unavailable"] as const)("projects Knowledge %s consistently in list and detail", async (knowledge) => {
+  it("rechecks Skills for list/detail and keeps shared failures neutral", async () => {
     const entry = accessEntry({
-      dependencyAvailability: { knowledge, skills: true },
-      content: contentRow({ knowledgeSelection: { mode: "explicit", version: 1, baseIds: ["hidden-base"], sourceIds: [] } })
+      dependencyAvailability: { skills: false },
+      content: contentRow({ skillIds: ["hidden-skill"], skillSummaries: [] })
     });
     const deps = handlerDeps({ listForUser: vi.fn(async () => [entry]), getDetail: vi.fn(async () => ({ ...entry, publications: null })) });
     const listed = await (await createListAssistantsHandler(deps)(new Request("http://test/api/me/assistants"))).json();
     const detail = await (await createGetAssistantHandler(deps)(new Request("http://test/api/me/assistants/assistant-1"),
       { params: { assistantId: "assistant-1" } })).json();
-    expect(listed.assistants[0].availability).toEqual({ ok: false, reason: `knowledge_${knowledge}` });
+    expect(listed.assistants[0].availability).toEqual({ ok: false, reason: "skills_access" });
     expect(detail.assistant.availability).toEqual(listed.assistants[0].availability);
-    expect(JSON.stringify({ listed, detail })).not.toContain("hidden-base");
-  });
-
-  it.each(["skills", "knowledge"] as const)("rechecks %s for list/detail and keeps shared failures neutral", async (kind) => {
-    const entry = accessEntry({
-      dependencyAvailability: { knowledge: kind === "knowledge" ? "access_denied" : "ready", skills: kind !== "skills" },
-      content: contentRow({
-        skillIds: kind === "skills" ? ["hidden-skill"] : [], skillSummaries: [],
-        knowledgeSelection: kind === "knowledge"
-          ? { mode: "explicit", version: 1, baseIds: ["hidden-base"], sourceIds: [] }
-          : { mode: "none", version: 1, baseIds: [], sourceIds: [] }
-      })
-    });
-    const deps = handlerDeps({ listForUser: vi.fn(async () => [entry]), getDetail: vi.fn(async () => ({ ...entry, publications: null })) });
-    const listed = await (await createListAssistantsHandler(deps)(new Request("http://test/api/me/assistants"))).json();
-    const detail = await (await createGetAssistantHandler(deps)(new Request("http://test/api/me/assistants/assistant-1"),
-      { params: { assistantId: "assistant-1" } })).json();
-    expect(listed.assistants[0].availability).toEqual({ ok: false, reason: `${kind}_access` });
-    expect(detail.assistant.availability).toEqual(listed.assistants[0].availability);
-    expect(JSON.stringify({ listed, detail })).not.toMatch(/hidden-skill|hidden-base/);
-    entry.dependencyAvailability = { knowledge: "ready", skills: true };
+    expect(JSON.stringify({ listed, detail })).not.toMatch(/hidden-skill/);
+    entry.dependencyAvailability = { skills: true };
     const restored = await (await createListAssistantsHandler(deps)(new Request("http://test/api/me/assistants"))).json();
     expect(restored.assistants[0].availability).toEqual({ ok: true });
   });
@@ -289,16 +268,7 @@ describe("assistant list handler", () => {
   it("projects runner-safe summaries with availability and fingerprint", async () => {
     const deps = handlerDeps({
       listForUser: vi.fn(async () => [
-        accessEntry({
-          content: contentRow({
-            knowledgeSelection: {
-              baseIds: ["hidden-base"],
-              mode: "explicit",
-              sourceIds: ["hidden-source"],
-              version: 1
-            }
-          })
-        }),
+        accessEntry(),
         accessEntry({
           id: "assistant-2",
           content: contentRow({ id: "assistant-2", mcpServerIds: ["hidden-server"], name: "Ops" })
@@ -321,8 +291,6 @@ describe("assistant list handler", () => {
     expect(first).toMatchObject({
       availability: { ok: true },
       fingerprint: {
-        knowledgeLabel: "Knowledge · 2",
-        knowledgeResourceCount: 2,
         mcpServerCount: 0,
         modelLabel: "Luna",
         reasoningEffort: "high",
@@ -489,12 +457,6 @@ describe("assistant detail handler", () => {
         ...accessEntry({
           content: contentRow({
             mcpServerIds: ["granted-server", "hidden-server"],
-            knowledgeSelection: {
-              baseIds: ["hidden-base"],
-              mode: "explicit",
-              sourceIds: ["hidden-source"],
-              version: 1
-            },
             providerModelId: "hidden-model",
             searchPlan: {
               mode: "all_selected",
@@ -519,13 +481,7 @@ describe("assistant detail handler", () => {
     const content = body.assistant.content as Record<string, unknown>;
 
     expect(content.systemPrompt).toBe("You review code.");
-    expect(content.knowledgeSelection).toEqual({
-      baseIds: [],
-      inheritedFrom: "assistant",
-      mode: "inherited",
-      sourceIds: [],
-      version: 1
-    });
+    expect(content).not.toHaveProperty("knowledgeSelection");
     expect(content.providerModelId).toBeNull();
     expect(content.mcpServerIds).toEqual(["granted-server"]);
     expect(content.searchPlan).toEqual({
@@ -539,7 +495,7 @@ describe("assistant detail handler", () => {
     ]);
     expect(body.assistant.publications).toBeUndefined();
     expect(body.assistant.version).toBeUndefined();
-    expect(JSON.stringify(body)).not.toMatch(/hidden-base|hidden-source/u);
+    expect(JSON.stringify(body)).not.toMatch(/hidden-(model|search|server)/u);
   });
 
   it("returns one privacy-neutral not-found for invisible assistants", async () => {
@@ -592,7 +548,6 @@ describe("assistant create handler", () => {
           avatar,
           category: null,
           description: "",
-          knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
           mcpServerIds: overrides.mcpServerIds ?? [],
           name: "Reviewer",
           providerModelId: "model-1",
@@ -663,7 +618,6 @@ describe("assistant create handler", () => {
           avatar,
           category: null,
           description: "",
-          knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
           mcpServerIds: [record.serverId],
           name: "Reviewer",
           providerModelId: "model-1",
@@ -693,7 +647,6 @@ describe("assistant create handler", () => {
           avatar,
           category: null,
           description: "",
-          knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
           mcpServerIds: [],
           name: "Reviewer",
           providerModelId: "model-1",
@@ -742,7 +695,6 @@ describe("assistant update handler", () => {
             avatar,
             category: null,
             description: "",
-            knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "not-in-catalog",
@@ -799,7 +751,6 @@ describe("assistant update handler", () => {
             avatar,
             category: null,
             description: "",
-            knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "model-1",
@@ -834,7 +785,6 @@ describe("assistant update handler", () => {
             avatar,
             category: null,
             description: "",
-            knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             mcpServerIds: overrides.mcpServerIds,
             name: "Reviewer",
             providerModelId: "model-1",
@@ -885,7 +835,6 @@ describe("assistant update handler", () => {
             avatar,
             category: null,
             description: "",
-            knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "model-1",
@@ -914,7 +863,6 @@ describe("assistant update handler", () => {
             avatar,
             category: null,
             description: "",
-            knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "model-1",
@@ -1090,7 +1038,6 @@ describe("Assistants v2 wire emission", () => {
     name: "Analyst",
     rows: {
       controls: { policy: "adjustable", value: {} },
-      knowledge: { policy: "adjustable", value: { mode: "none" } },
       model: { policy: "adjustable", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "off" } },
       skills: { policy: "fixed", value: { links: [], mode: "auto" } },
@@ -1150,7 +1097,6 @@ describe("Assistants v2 wire emission", () => {
   it("redacts consumer rows to counts and keeps owner rows, answer rules and Featured position", async () => {
     const content = contentRow({
       answerRules: "Answer in bullet points.",
-      knowledgeSelection: { baseIds: ["hidden-base"], mode: "explicit", sourceIds: ["hidden-source"], version: 1 },
       mcpServerIds: ["granted-server", "hidden-server"],
       providerModelId: "hidden-model",
       searchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search", "hidden-search"] },
@@ -1167,14 +1113,13 @@ describe("Assistants v2 wire emission", () => {
     expect(consumer.assistant.content).not.toHaveProperty("developerPrompt");
     expect(consumer.assistant.content.rows).toEqual({
       controls: { policy: "fixed", value: { reasoningEffort: "high" } },
-      knowledge: { policy: "fixed", value: { baseIds: [], hiddenCount: 2, mode: "explicit", sourceIds: [] } },
       model: { policy: "fixed", value: { mode: "model", modelId: null } },
       search: { policy: "fixed", value: { hiddenCount: 1, mode: "all_selected", optionIds: ["openai-native-web-search"] } },
       skills: { policy: "fixed", value: { hiddenCount: 1, links: [{ delivery: "always", skillId: "skill-visible" }], mode: "auto" } },
       tools: { policy: "fixed", value: { hiddenCount: 1, mode: "exact", serverIds: ["granted-server"] } }
     });
     expect(consumer.assistant).not.toHaveProperty("featuredOrder");
-    expect(JSON.stringify(consumer)).not.toMatch(/hidden-(base|source|server|model|search|skill)/u);
+    expect(JSON.stringify(consumer)).not.toMatch(/hidden-(server|model|search|skill)/u);
     expect(decodeAssistantDetailResponse(consumer)).not.toBeNull();
 
     const ownerDeps = handlerDeps({
@@ -1192,7 +1137,6 @@ describe("Assistants v2 wire emission", () => {
 
   const defaultRows: AssistantRows = {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -1237,21 +1181,6 @@ describe("Assistants v2 wire emission", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("refuses selected Knowledge while Knowledge is disabled, before persistence", async () => {
-    const create = vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const }));
-    const response = await createCreateAssistantHandler(handlerDeps({ create }))(new Request("http://test/api/me/assistants", {
-      body: JSON.stringify({ ...rowsDraft, rows: {
-        ...defaultRows, knowledge: { policy: "adjustable", value: { baseIds: ["base-1"], mode: "explicit", sourceIds: [] } }
-      } }),
-      headers: { "content-type": "application/json" },
-      method: "POST"
-    }));
-
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ error: "knowledge_disabled", row: "knowledge" });
-    expect(create).not.toHaveBeenCalled();
-  });
-
   it("makes an unusable adjustable model a row deviation and a fixed one a neutral unavailability", async () => {
     const entry = (policy: "adjustable" | "fixed", owned: boolean) => accessEntry({
       content: contentRow({
@@ -1280,23 +1209,20 @@ describe("Assistants v2 wire emission", () => {
     expect(fixedOwner.availability).toEqual({ dependencies: [{ kind: "model", name: "Orion" }], ok: false, reason: "model_access" });
   });
 
-  it("keeps unusable adjustable Search, tools and Knowledge out of availability; Skills and archive always count", async () => {
+  it("keeps unusable adjustable Search and tools out of availability; Skills and archive always count", async () => {
     const rows: AssistantRows = {
       ...defaultRows,
-      knowledge: { policy: "adjustable", value: { baseIds: ["hidden-base"], mode: "explicit", sourceIds: [] } },
       search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["hidden-search"] } },
       tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["hidden-server"] } }
     };
     const adjustable = accessEntry({
-      content: contentRow({ mcpServerIds: ["hidden-server"], providerModelId: null, rows,
-        knowledgeSelection: { baseIds: ["hidden-base"], mode: "explicit", sourceIds: [], version: 1 } }),
-      dependencyAvailability: { knowledge: "access_denied", skills: true }
+      content: contentRow({ mcpServerIds: ["hidden-server"], providerModelId: null, rows })
     });
     const skillLinked = accessEntry({
       id: "assistant-2",
       content: contentRow({ id: "assistant-2", providerModelId: null, skillIds: ["skill-hidden"],
         rows: { ...defaultRows, skills: { policy: "adjustable", value: { links: [{ delivery: "on_demand", skillId: "skill-hidden" }], mode: "auto" } } } }),
-      dependencyAvailability: { knowledge: "ready", skills: false }
+      dependencyAvailability: { skills: false }
     });
     const archived = accessEntry({ archived: true, id: "assistant-3", owned: true,
       content: contentRow({ id: "assistant-3", providerModelId: null, rows: defaultRows }) });
@@ -1305,11 +1231,11 @@ describe("Assistants v2 wire emission", () => {
     }))(new Request("http://test/api/me/assistants"))).json();
     expect(body.assistants[0]).toMatchObject({
       availability: { ok: true },
-      rowAvailability: { knowledge: { reason: "knowledge_access" }, search: { reason: "search_access" }, tools: { reason: "tools_access" } }
+      rowAvailability: { search: { reason: "search_access" }, tools: { reason: "tools_access" } }
     });
     expect(body.assistants[1].availability).toEqual({ ok: false, reason: "skills_access" });
     expect(body.assistants[2].availability).toEqual({ ok: false, reason: "archived" });
-    expect(JSON.stringify(body)).not.toMatch(/hidden-(base|search|server|skill)/u);
+    expect(JSON.stringify(body)).not.toMatch(/hidden-(search|server|skill)/u);
     expect(decodeAssistantListResponse(body)).not.toBeNull();
   });
 
@@ -1325,7 +1251,7 @@ describe("Assistants v2 wire emission", () => {
     expect(decodeAssistantListResponse(body)).not.toBeNull();
   });
 
-  it("emits owner-only listing, Projects and chat counts and names the consumer's visible Knowledge", async () => {
+  it("emits the listing request and chat count to the owner only", async () => {
     const listingRequest = {
       canRequest: false,
       canWithdraw: true,
@@ -1335,23 +1261,18 @@ describe("Assistants v2 wire emission", () => {
     };
     const owner = await (await createGetAssistantHandler(handlerDeps({
       getDetail: vi.fn(async () => ({ ...accessEntry({ owned: true, content: contentRow({ skillSummaries: [] }) }),
-        listingRequest, projects: { otherProjectCount: 1, projects: [{ id: "project-1", name: "Support" }] },
-        publications: [], recentChatCount: 4 }))
+        listingRequest, publications: [], recentChatCount: 4 }))
     }))(new Request("http://test/api/me/assistants/assistant-1"), { params: { assistantId: "assistant-1" } })).json();
-    expect(owner.assistant).toMatchObject({ listingRequest, projects: { otherProjectCount: 1 }, recentChatCount: 4 });
+    expect(owner.assistant).toMatchObject({ listingRequest, recentChatCount: 4 });
+    expect(owner.assistant).not.toHaveProperty("projects");
     expect(decodeAssistantDetailResponse(owner)).not.toBeNull();
 
-    const knowledgeSelection = { baseIds: ["visible-base", "hidden-base"], mode: "explicit" as const, sourceIds: ["hidden-source"], version: 1 as const };
     const consumer = await (await createGetAssistantHandler(handlerDeps({
-      getDetail: vi.fn(async () => ({ ...accessEntry({ content: contentRow({ knowledgeSelection }) }),
-        publications: null, visibleKnowledge: { baseIds: ["visible-base"], sourceIds: [] } }))
+      getDetail: vi.fn(async () => ({ ...accessEntry(), publications: null }))
     }))(new Request("http://test/api/me/assistants/assistant-1"), { params: { assistantId: "assistant-1" } })).json();
-    expect(consumer.assistant.content.rows.knowledge).toEqual({
-      policy: "fixed", value: { baseIds: ["visible-base"], hiddenCount: 2, mode: "explicit", sourceIds: [] }
-    });
     expect(consumer.assistant.content.systemPrompt).toBe("You review code.");
     expect(consumer.assistant).not.toHaveProperty("listingRequest");
-    expect(JSON.stringify(consumer)).not.toMatch(/hidden-(base|source)/u);
+    expect(consumer.assistant).not.toHaveProperty("recentChatCount");
     expect(decodeAssistantDetailResponse(consumer)).not.toBeNull();
   });
 
@@ -1376,16 +1297,16 @@ describe("Assistants v2 wire emission", () => {
     const owner = await detail(accessEntry({ audience, content: contentRow({ skillSummaries: [] }), owned: true }));
     expect(owner.assistant).toMatchObject({ audience, scope: { kind: "owner" }, updatedAt: "2026-08-06T00:00:00.000Z" });
     expect(decodeAssistantDetailResponse(owner)).not.toBeNull();
-    const member = await detail(accessEntry({ audience, memberGroupNames: [], projectName: "Support" }));
+    const member = await detail(accessEntry({ audience, installationScope: true, memberGroupNames: [] }));
     expect(member.assistant).toMatchObject({
-      audience: null, scope: { kind: "project", projectName: "Support" }, updatedAt: "2026-08-06T00:00:00.000Z"
+      audience: null, scope: { kind: "installation" }, updatedAt: "2026-08-06T00:00:00.000Z"
     });
     expect(JSON.stringify(member)).not.toContain("Design");
     expect(decodeAssistantDetailResponse(member)).not.toBeNull();
   });
 
   it("returns the copy with the report of downgraded rows", async () => {
-    const report = { downgradedRows: ["model", "knowledge"] as AssistantRowKey[], droppedSkillCount: 2 };
+    const report = { downgradedRows: ["model", "search"] as AssistantRowKey[], droppedSkillCount: 2 };
     const deps = handlerDeps({
       duplicate: vi.fn(async () => ({ assistantId: "assistant-copy", kind: "ok" as const, report })),
       getDetail: vi.fn(async () => ({ ...accessEntry({ id: "assistant-copy", owned: true }), publications: [] }))

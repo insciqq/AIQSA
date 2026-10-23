@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 
 /** Callers establish current chat authority; this is the common inbox rule. */
 export function workspaceInboxAttachmentWhere(input: Readonly<{
-  chatId: string; userId: string; projectId?: string | null;
+  chatId: string; userId: string;
   ancestorMessageIds: readonly string[]; imageIds: readonly string[]; runId?: string;
 }>): Prisma.AttachmentWhereInput {
   return {
@@ -20,7 +20,7 @@ export function workspaceInboxAttachmentWhere(input: Readonly<{
         { id: { in: [...input.imageIds] } }, ...(input.runId ? [{ producerModelRunId: input.runId }] : [])
       ] }
     ],
-    ...(input.projectId ? { projectId: input.projectId } : { projectId: null, userId: input.userId })
+    userId: input.userId
   };
 }
 

@@ -1,7 +1,6 @@
 import { decodeChatContinuationRequest, type ChatContinuationRequest, type ChatContinuationResult } from "../../contracts/chatContinuation";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
-import { ProjectsDisabledError, projectsDisabledResponse } from "../projects/disabled";
 import { ChatContinuationError } from "./continuation";
 
 type RouteContext = { params: Promise<{ chatId: string }> };
@@ -36,7 +35,6 @@ export function createChatContinuationHandler(deps: Readonly<{
       const result = await deps.continueChat({ ...body, chatId, userId: session.userId, signal: request.signal });
       return Response.json(result, { status: result.status === "running" ? 202 : 200, headers: { "Cache-Control": "no-store" } });
     } catch (error) {
-      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
       const failure = error instanceof ChatContinuationError ? error : new ChatContinuationError("chat_summary_failed", 502);
       return Response.json({ error: failure.code }, { status: failure.status });
     }

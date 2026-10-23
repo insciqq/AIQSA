@@ -1,6 +1,4 @@
 import { prisma } from "../prisma";
-import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
-import { sameProviderAdmissionPlan } from "../providerRuntime/admission";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -26,19 +24,7 @@ function createDefaultChatPdf() {
     registry: activeRunControllerRegistry, repository: pdfRepository, storage,
     async authorize(claim) {
       const loaded = await pdfRepository.load(claim);
-      const prepared = (loaded.snapshot as unknown as ChatPdfRunSnapshot).prepared;
-      if (!prepared) return false;
-      if (prepared.project && !await repository.isProjectRunAccessCurrent?.({ ...prepared.project, userId: claim.userId })) return false;
-      if (!prepared.project) return true;
-      const expected = prepared.providerAdmissionPlan;
-      try {
-        const current = await providerAdmissionService.load({ ...expected.selection,
-          ...(prepared.project ? { executionScope: "project" as const } : {}),
-          requiresClientToolCoexistence: expected.requiresClientToolCoexistence,
-          requiresClientSearchRoutes: expected.requiresClientSearchRoutes,
-          searchPlan: expected.requestedSearchPlan, userId: claim.userId });
-        return sameProviderAdmissionPlan(current, expected);
-      } catch { return false; }
+      return Boolean((loaded.snapshot as unknown as ChatPdfRunSnapshot).prepared);
     },
     continueRun: createChatPdfRunContinuation({
       ...defaultRunServices(storage),

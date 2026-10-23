@@ -126,7 +126,7 @@ export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDele
     return {
       canDelete: true,
       reason: null,
-      summary: `${purgeableOwnedDataCount} private Memory, Knowledge or personal MCP record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
+      summary: `${purgeableOwnedDataCount} private Memory or personal MCP record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
     };
   }
 
@@ -151,6 +151,7 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
     group.mcpGrants.filter((grant) => grant.canUse).length;
   const credentialAssignmentCount = group._count.providerCredentialAssignments ?? 0;
   const assistantPublicationCount = group._count.assistantPublications ?? 0;
+  // Publications of removed Knowledge bases still guard their foreign key until retirement deletes them.
   const knowledgeBasePublicationCount = group._count.knowledgeBasePublications ?? 0;
   const skillPublicationCount = group._count.skillPublications ?? 0;
   const block = adminGroupDeletionBlock({
@@ -182,9 +183,6 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
       assistantPublicationCount
         ? `${assistantPublicationCount} assistant publication${assistantPublicationCount === 1 ? "" : "s"}`
         : null,
-      knowledgeBasePublicationCount
-        ? `${knowledgeBasePublicationCount} Knowledge Base publication${knowledgeBasePublicationCount === 1 ? "" : "s"}`
-        : null,
       skillPublicationCount
         ? `${skillPublicationCount} Skill publication${skillPublicationCount === 1 ? "" : "s"}`
         : null
@@ -192,14 +190,16 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
     return {
       canDelete: false,
       reason: "group_has_grants",
-      summary: `Remove ${accessSummary} before deleting this group.`
+      summary: accessSummary
+        ? `Remove ${accessSummary} before deleting this group.`
+        : "Publications of removed Knowledge bases are still being deleted; try again later."
     };
   }
 
   return {
     canDelete: true,
     reason: null,
-    summary: "No members, active grants, provider credential assignments, Assistant, Skill, or Knowledge Base publications; this group can be deleted."
+    summary: "No members, active grants, provider credential assignments, Assistant or Skill publications; this group can be deleted."
   };
 }
 

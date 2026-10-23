@@ -97,7 +97,6 @@ export type SkillListResponse = {
 
 export type SkillAudience =
   | { id: string; kind: "everyone"; name: "Everyone" }
-  | { id: string; kind: "project"; name: "Project publication" }
   | { id: string; kind: "workspace"; name: string; workspaceId: string };
 
 export const SKILL_REVIEW_NOTE_MAX_LENGTH = 4_000;

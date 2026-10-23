@@ -10,10 +10,6 @@ import {
   isUsageLimitRefusalCode,
   type UsageLimitRefusalResponse
 } from "@/lib/contracts/usageLimits";
-import {
-  KNOWLEDGE_DISABLED_CODE,
-  PROJECTS_DISABLED_CODE
-} from "@/lib/domain/disabledAreas";
 import { AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE } from "@/lib/domain/runParams";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
@@ -120,26 +116,8 @@ export function humanizeErrorCode(code: string): string {
       "The enabled MCP tools exceed the per-run limit. Disable some servers and try again",
     mcp_selection_invalid: "Choose Auto, Load all, or Off for MCP tools and try again",
     mcp_tool_calling_not_supported: "Choose a model with tool calling to use MCP",
-    knowledge_answer_contract_failed:
-      "The Knowledge answer could not be safely accepted. Try again or choose another model",
-    knowledge_answer_failed:
-      "The model could not complete the Knowledge answer. Try again",
-    knowledge_citation_contract_failed:
-      "The Knowledge answer cited evidence that was not supplied. Try again or choose another model",
-    knowledge_retrieval_failed:
-      "The selected documents could not be retrieved. Try again",
-    knowledge_image_not_supported:
-      "This model can't read images and no Vision Model is available to describe them for the Knowledge answer. Remove the image, choose a model that supports images, ask an administrator to assign the Vision Model, or ask without Knowledge",
-    knowledge_image_limit_exceeded:
-      "A Knowledge answer can use at most 8 images from one message. Remove some images and try again",
-    knowledge_image_observation_failed:
-      "The attached image could not be described for the Knowledge answer. Try again, or remove the image",
-    knowledge_image_observation_outcome_unknown:
-      "The attached image may already have been described, so the description was not repeated. Regenerate to try again",
     image_attachment_not_supported:
       "This model can't use images here. Remove the image, choose a model that supports images, or ask an administrator to assign the Vision Model",
-    no_retrieval_candidates:
-      "No matching passages were found in the ready documents. Rephrase the question or change the selection",
     provider_not_available: "Provider is not available",
     provider_unavailable: "Provider is unavailable. Try again",
     openrouter_required_parameters_unavailable:
@@ -148,14 +126,6 @@ export function humanizeErrorCode(code: string): string {
       "OpenRouter could not route the answer request. Ask an administrator to review the selected model's routing settings before retrying",
     [CHAT_PDF_ROUTE_UNAVAILABLE_CODE]:
       `${CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE} Remove the PDF, choose a model that can read PDFs, or ask an administrator`,
-    [PROJECTS_DISABLED_CODE]:
-      "Projects are turned off. Shared chats stay readable, but nothing new can be sent or changed in them",
-    [KNOWLEDGE_DISABLED_CODE]:
-      "Knowledge is turned off. Send without Knowledge, or remove Knowledge from the Assistant",
-    project_default_model_unavailable:
-      "The Project default model is unavailable. Review Project resources and choose an available default",
-    project_setup_required:
-      "Choose an available Project default model before starting a shared chat",
     run_malformed: "Run response was malformed",
     search_provider_not_available: "Search provider is not available",
     settings_malformed: "Settings response was malformed",
@@ -167,8 +137,6 @@ export function humanizeErrorCode(code: string): string {
     context_too_large: "This message does not fit the selected model's context window beside its instructions and tools. " +
       "Shorten the message or remove attachments, or choose a model with a larger context window",
     skills_budget_exceeded: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window",
-    sources_processing:
-      "The selected documents are still processing. Try again when they are ready",
     structured_output_not_supported:
       "The selected System Model does not have verified structured output",
     unsupported_attachment_type: "Attachment is not supported by this model",
@@ -182,7 +150,6 @@ export function humanizeErrorCode(code: string): string {
     agent_selection_invalid: "Refresh the Agent selection and try again",
     agent_workspace_required: "Turn on Workspace to use Agent",
     agent_personal_chat_required: "Agent is available in personal chats without an Assistant",
-    agent_knowledge_unsupported: "Turn Knowledge off to use Agent",
     agent_model_unsupported: "Choose an Agent-compatible model",
     agent_unavailable: "Agent is unavailable. Ask an administrator to check the Workspace runner and model gateway",
     agent_internet_required: "Agent requires Workspace Internet access enabled by the administrator",
@@ -227,7 +194,6 @@ function actionLabel(action: string): string {
     chat_delete: "Chat deletion",
     chat_detail: "Chat detail load",
     chat_update: "Chat update",
-    default_knowledge: "Default Knowledge",
     edit: "Message edit",
     folder_create: "Folder creation",
     folder_delete: "Folder deletion",

@@ -31,7 +31,7 @@ function plural(count: number, noun: string, nouns = `${noun}s`): string {
 
 /**
  * The audience segment of the card's and the detail header's meta line, one
- * of Everyone, "{n} group(s)", Only you or Project “X”. The owner reads the
+ * of Everyone, "{n} group(s)" or Only you. The owner reads the
  * audience: Everyone when listed for everyone, whatever groups it also has;
  * any other viewer how the Assistant reaches them. Group names belong to the
  * Sharing section, where they cannot read as a second owner or a category.
@@ -46,7 +46,6 @@ export function assistantAudienceSegment(
   }
   if (!scope || scope.kind === "owner") return "Only you";
   if (scope.kind === "installation") return "Everyone";
-  if (scope.kind === "project") return `Project “${scope.projectName}”`;
   return plural(scope.groupNames.length, "group");
 }
 
@@ -77,8 +76,8 @@ export function assistantCardMeta(assistant: AssistantSummary): { audience: stri
 
 export type AssistantCapabilityItem = {
   count: number;
-  icon: "book" | "globe" | "plug" | "wand";
-  key: "knowledge" | "search" | "skills" | "tools";
+  icon: "globe" | "plug" | "wand";
+  key: "search" | "skills" | "tools";
   label: string;
 };
 
@@ -86,7 +85,6 @@ export type AssistantCapabilityItem = {
 export function assistantCapabilityItems(capabilities: Readonly<Record<AssistantCapabilityItem["key"], number>>): AssistantCapabilityItem[] {
   const items: AssistantCapabilityItem[] = [
     { count: capabilities.tools, icon: "plug", key: "tools", label: plural(capabilities.tools, "MCP server") },
-    { count: capabilities.knowledge, icon: "book", key: "knowledge", label: plural(capabilities.knowledge, "Knowledge base or document", "Knowledge bases or documents") },
     { count: capabilities.search, icon: "globe", key: "search", label: plural(capabilities.search, "Search source") },
     { count: capabilities.skills, icon: "wand", key: "skills", label: plural(capabilities.skills, "linked Skill") }
   ];
@@ -202,20 +200,6 @@ export function assistantDetailRowValue(
         owned
       });
     }
-    case "knowledge": {
-      const value = rows.knowledge.value;
-      if (value.mode === "inherit") return "Your default";
-      if (value.mode === "none") return "None";
-      const bases = namedIds(value.baseIds, names.knowledgeBases, (base) => base.name);
-      const sources = namedIds(value.sourceIds, names.knowledgeSources, (source) => source.name);
-      return resourceList({
-        hiddenCount: value.hiddenCount ?? 0,
-        names: [...bases.names, ...sources.names],
-        noun: ["base or document", "bases or documents"],
-        owned,
-        unnamed: bases.unnamed + sources.unnamed
-      });
-    }
     case "skills": {
       const value = rows.skills.value;
       const skillNames = new Map((detail.skills ?? []).map((skill) => [skill.id, skill.name]));
@@ -325,17 +309,6 @@ export function assistantListingStatusText(detail: AssistantDetail): string | nu
   return null;
 }
 
-/** "Used by Projects: Support, Sales" with the Projects the owner cannot open counted. */
-export function assistantProjectsText(detail: AssistantDetail): string | null {
-  const projects = detail.projects;
-  if (!projects || projects.projects.length + projects.otherProjectCount === 0) return null;
-  const named = projects.projects.map((project) => project.name);
-  if (projects.otherProjectCount > 0) {
-    named.push(plural(projects.otherProjectCount, named.length > 0 ? "other Project" : "Project"));
-  }
-  return `Used by Projects: ${named.join(", ")}`;
-}
-
 /** Each consequence of deleting, in the order the owner reads them. */
 export function assistantDeletionConsequenceLines(consequences: AssistantDeletionConsequences): string[] {
   const lines: string[] = [];
@@ -345,19 +318,11 @@ export function assistantDeletionConsequenceLines(consequences: AssistantDeletio
     lines.push(`It is unshared from ${groupNames.length === 1 ? "the group" : "the groups"} ${groupNames.join(", ")}.`);
   }
   if (consequences.pendingListingRequest) lines.push("The pending request to list it for everyone is withdrawn.");
-  const projects = consequences.projects.map((project) =>
-    project.isDefault ? `${project.name} (its default Assistant)` : project.name);
-  if (consequences.hiddenProjectCount > 0) {
-    projects.push(projects.length > 0
-      ? plural(consequences.hiddenProjectCount, "other Project")
-      : plural(consequences.hiddenProjectCount, "Project you can't open", "Projects you can't open"));
-  }
-  if (projects.length > 0) lines.push(`Projects stop using it: ${projects.join(", ")}.`);
   if (consequences.chatCount > 0) {
     lines.push(consequences.chatCount === 1
       ? "1 chat keeps its messages and shows that the Assistant was deleted."
       : `${consequences.chatCount} chats keep their messages and show that the Assistant was deleted.`);
   }
-  if (lines.length === 0) lines.push("It isn't shared, used by a Project or bound to a chat.");
+  if (lines.length === 0) lines.push("It isn't shared or bound to a chat.");
   return lines;
 }

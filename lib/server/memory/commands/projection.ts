@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { decodeMemoryCommandFeedback, type MemoryCommandFeedback, type MemoryCommandListResponse } from "../../../contracts/memoryCommand";
-import { resolveChatAccess } from "../../projects/access";
+import { resolveChatAccess } from "../../chats/access";
 import { memorySha256 } from "../persistence/lexical";
 
 type CommandProjectionRow = Readonly<{
@@ -32,16 +32,16 @@ function projectCommand(userId: string, job: CommandProjectionRow): MemoryComman
 
 /** Chat access is rechecked at every poll. Status never reads source content,
  * targets or classifier checkpoints and never updates immutable run artifacts.
- * A chat the user can open whose turns never reach personal Memory (a Project,
+ * A chat the user can open whose turns never reach personal Memory (an
  * Excluded or Temporary chat) has no commands: an empty list, so a poll racing
  * the chat's mode is not a missing resource. Inaccessible chats stay `null`. */
 export async function listChatMemoryCommands(
-  client: Pick<PrismaClient, "chat" | "memoryJob" | "project" | "user">,
+  client: Pick<PrismaClient, "chat" | "memoryJob">,
   input: Readonly<{ userId: string; chatId: string }>
 ): Promise<MemoryCommandListResponse | null> {
   const chat = await client.chat.findFirst({
     select: { id: true },
-    where: { id: input.chatId, userId: input.userId, projectId: null,
+    where: { id: input.chatId, userId: input.userId,
       memoryMode: "NORMAL", permanentDeletionAt: null }
   });
   if (!chat) return await resolveChatAccess(client, input) ? { commands: [] } : null;

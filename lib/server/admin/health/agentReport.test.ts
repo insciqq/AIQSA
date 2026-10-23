@@ -223,6 +223,7 @@ const fixtureCounters: Counter[] = [
   // Runs: settled once each by their terminal write; execution records do not count.
   counter("run_accepted", "info", { kind: "send" }, 5),
   counter("run_accepted", "info", { kind: "regenerate" }, 2),
+  // A run of a removed Project accepted before the upgrade still counts in the total.
   counter("run_accepted", "info", { kind: "project" }, 1),
   counter("run_persistence", "info", { stage: "complete", outcome: "confirmed" }, 4),
   counter("run_persistence", "info", { stage: "fail", outcome: "confirmed" }, 1),
@@ -304,7 +305,7 @@ describe("full agent report", () => {
       previousPeriod: { from: "2026-09-24T00:00:00.000Z", to: "2026-10-01T00:00:00.000Z" } });
 
     expect(full.runs).toEqual({
-      accepted: 8, acceptedByKind: { send: 5, regenerate: 2, project: 1 }, completed: 4, failed: 3, failedInPreparation: 1,
+      accepted: 8, acceptedByKind: { send: 5, regenerate: 2 }, completed: 4, failed: 3, failedInPreparation: 1,
       failedInRecovery: 1, cancelled: 1, unconfirmed: 1, failureRate: 3 / 8, cancelRate: 1 / 8, stopRequests: 2,
       previous: expect.objectContaining({ accepted: 6, completed: 6, failed: 0, failureRate: 0, stopRequests: 0 })
     });
@@ -602,7 +603,7 @@ describe("full agent report text", () => {
     expect(text).toContain("  password · 9 failures · within 1 min 0 s · hour 2026-10-06 10:00\n" +
       "      first 2026-10-06 10:00:00 · last 2026-10-06 10:01:00 · invalid_credentials ×9\n");
     expect(text).toContain("  mozilla · failed · code push_delivery_failed · transport network_unreachable\n");
-    expect(text).toContain("  accepted 8: send 5 · regenerate 2 · project 1\n" +
+    expect(text).toContain("  accepted 8: send 5 · regenerate 2\n" +
       "  completed 4 · failed 3 (37.5%) · cancelled 1 (12.5%) · stop requests 2\n");
     expect(text).toContain("  run duration      4 measured · p50 ≤ 2.5 s · p95 ≤ 25.0 s · max 25.0 s\n");
     expect(text).toContain("  WARN   nested_abort · stage delivery · openai · operation answer\n");

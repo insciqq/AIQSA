@@ -169,7 +169,6 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         await assertChatPdfClaim(tx, claim);
         return tx.chatPdfRunPreparation.findUniqueOrThrow({
           where: { modelRunId: claim.runId }, include: { modelRun: { include: {
-            chat: { select: { projectId: true } },
             workspaceRunBinding: { select: { modelRunId: true } },
             chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], include: {
               attachment: { select: { storageKey: true } }

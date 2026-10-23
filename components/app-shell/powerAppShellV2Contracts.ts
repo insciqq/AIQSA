@@ -5,11 +5,9 @@ import type { ComposerOperationRecovery, ComposerSessionKey } from "@/components
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
-import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
 import type {
   ComposerAssistantRow,
-  ComposerAssistantSkill,
-  ComposerKnowledgePlanSource
+  ComposerAssistantSkill
 } from "@/components/app-shell/composerControlStore";
 import type {
   AssistantAvailability,
@@ -22,11 +20,6 @@ import type {
   ChatAssistantRowValues,
   ChatUsageStats
 } from "@/lib/contracts/chats";
-import type {
-  ComposerConfigKnowledgeBase,
-  ComposerConfigKnowledgeSource
-} from "@/lib/contracts/composerConfig";
-import type { KnowledgeBaseSummary, KnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
@@ -54,7 +47,6 @@ import type {
   ThreadGeneratedFile,
   WorkspaceUnavailableReason
 } from "@/lib/contracts/workspace";
-import type { ProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 
 export type ShellSessionView = {
   accountId: string;
@@ -70,7 +62,6 @@ export type ShellSessionView = {
   connectEntryVisible?: boolean;
   /** Settings → Connections shows the Telegram block. */
   telegramAvailable?: boolean;
-  copyProjectChatLink(): Promise<void> | void;
   dismissNotice(): void;
   notice: Notice | null;
   shareActiveBranch(): Promise<void> | void;
@@ -121,7 +112,6 @@ export type ShellWorkspacePaneActions = {
    * that contains it, with earlier pages loaded until it shows.
    */
   openSearchMatch(chatId: string, messageId: string): void;
-  openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
   saveChatTitle(chat: WorkspaceChatSummary): Promise<NameSaveResult>;
   saveFolder(folder: FolderSummary): Promise<NameSaveResult>;
@@ -145,18 +135,6 @@ export type ShellWorkspaceView = {
     onRestored(chatId: string): Promise<void> | void;
   };
   pane: ShellWorkspacePaneView;
-  projects: ProjectWorkspaceController;
-  projectSettings: {
-    changeKnowledgeBaseIds(value: string[]): void;
-    close(): void;
-    folder: FolderSummary | null;
-    knowledgeBaseIds: string[];
-    knowledgeBases: KnowledgeBaseSummary[];
-    knowledgeDataError: string | null;
-    knowledgeDataState: "error" | "loading" | "ready";
-    retryKnowledge(): void;
-    save(folder: FolderSummary): Promise<void> | void;
-  };
 };
 
 export type ShellThreadView = {
@@ -290,13 +268,6 @@ export type ShellComposerAssistant =
       name: string;
       owned: boolean;
       ownerDisplayName: string;
-      /**
-       * True in a Project chat: the Assistant is the Project's, and inherit
-       * and fallback rows use the Project's defaults, never personal ones.
-       */
-      project?: true;
-      /** In a Project chat, the Project's name when known: the Assistant's byline. */
-      projectName?: string;
       rows: { [Key in AssistantRowKey]: ShellComposerAssistantRow<Key> };
       scope: "chat" | "composer";
       starterPrompts: string[];
@@ -353,16 +324,16 @@ export type ShellComposerView = {
   composerContextStats: ComposerContextStats | null;
   composerDisabledHint: string | null;
   assistant: {
-    /** Personal: pinned, Featured, Yours, Shared; Project: the Project's Assistants. */
+    /** Pinned, Featured, Yours, Shared. */
     pickerItems: AssistantSummary[];
     pickerLoading: boolean;
-    /** Loads the personal list once when nothing has loaded it yet (the composer's `/` palette); absent in a Project. */
+    /** Loads the list once when nothing has loaded it yet (the composer's `/` palette). */
     loadPickerItems?(): void;
     /** Assistants of the latest personal chats, newest first (from the list response). */
     recentIds: string[];
     /**
-     * The blank personal chat's strip: pinned (up to five), then Featured, all
-     * usable now. Empty inside a Project and until the list has loaded.
+     * The blank chat's strip: pinned (up to five), then Featured, all usable
+     * now. Empty until the list has loaded.
      */
     stripItems: readonly AssistantSummary[];
     /** The chat's Assistant; null without one. */
@@ -384,7 +355,7 @@ export type ShellComposerView = {
     remove(): void;
     /** "Reset to Assistant" for one adjustable row. */
     resetRow(row: AssistantRowKey): void;
-    /** Owner: restores an archived Assistant and re-reads it; absent inside a Project. */
+    /** Owner: restores an archived Assistant and re-reads it. */
     restore?(assistantId: string): void;
     /** "Save chat setup to Assistant" (owner). */
     saveChatSetup(): void;
@@ -394,7 +365,7 @@ export type ShellComposerView = {
     setRow<Key extends AssistantRowKey>(row: Key, value: ChatAssistantOverrideValues[Key]): boolean;
     startFromCurrentSetup(): void;
   };
-  /** Personal Chat defaults in Studio; absent inside a Project. */
+  /** Personal Chat defaults in Studio. */
   chatDefaults?: {
     /** The automatic answer review new personal chats start with. */
     answerReview?: {
@@ -414,7 +385,7 @@ export type ShellComposerView = {
       /** A saved default that is no longer available; it is never applied. */
       unavailable: boolean;
     };
-    /** The user's one image model for personal chats; Projects keep the organization default. */
+    /** The user's one image model for personal chats. */
     imageModel?: {
       /** Null until the published list first loads. */
       settings: UserImageModelSettings | null;
@@ -426,11 +397,9 @@ export type ShellComposerView = {
       /** A published model, or null to follow the organization default. */
       select(providerModelId: string | null): void;
     };
-    knowledgePlan: KnowledgeSelection | null;
     mcpMode: ChatDefaultMcpMode;
     skillsMode?: "auto" | "off";
     searchPlan: SearchPlan;
-    setKnowledgePlan(plan: KnowledgeSelection | null): void;
     setMcpMode(mode: ChatDefaultMcpMode): void;
     setSkillsMode?(mode: "auto" | "off"): void;
     setSearchPlan(plan: SearchPlan): void;
@@ -440,16 +409,6 @@ export type ShellComposerView = {
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;
   draft: string;
-  knowledge: {
-    bases: readonly ComposerConfigKnowledgeBase[];
-    documentTotal: number | null;
-    override(): void;
-    planSource: ComposerKnowledgePlanSource;
-    searchSources?(query: string): Promise<readonly ComposerConfigKnowledgeSource[]>;
-    select(selection: KnowledgeSelection): void;
-    selection: KnowledgeSelection;
-    sources: readonly ComposerConfigKnowledgeSource[];
-  };
   maxOutputTokens: string;
   memory: {
     canToggleTemporary: boolean;
@@ -535,14 +494,12 @@ export type ShellSettingsView = {
   closeMemory(): void;
   closeSettings(): void;
   dismissNotice(): void;
-  knowledge: KnowledgeLibraryView | null;
   library: AssistantLibraryView | null;
   memory: {
     open: boolean;
   };
   notice: Notice | null;
   open(): void;
-  openKnowledge(): void;
   openLibrary(): void;
   openMemory(): void;
   openMcp(): void;

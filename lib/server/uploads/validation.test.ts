@@ -311,12 +311,12 @@ describe("upload validation", () => {
     }
   });
 
-  it("admits every canonical Knowledge format with matching bounded content evidence", () => {
-    const knowledgeFormats = UPLOAD_FORMAT_REGISTRY.filter((format) =>
-      format.scopes.includes("knowledge")
+  it("admits every canonical Workspace format with matching bounded content evidence", () => {
+    const workspaceFormats = UPLOAD_FORMAT_REGISTRY.filter((format) =>
+      format.scopes.includes("workspace")
     );
 
-    for (const format of knowledgeFormats) {
+    for (const format of workspaceFormats) {
       const bytes = contentFixture(format.contentEvidence);
       expect(validateUpload({
         byteSize: bytes.byteLength,
@@ -324,25 +324,13 @@ describe("upload validation", () => {
         fileName: `fixture${format.extensions[0]}`,
         maxBytes: 1024,
         mimeType: format.canonicalMimeType,
-        scope: "knowledge"
+        scope: "workspace"
       }), format.id).toEqual({
         kind: format.kind,
         mimeType: format.canonicalMimeType,
         ok: true
       });
     }
-  });
-
-  it("keeps attachment-only formats out of Knowledge admission", () => {
-    const bytes = contentFixture("gif");
-    expect(validateUpload({
-      byteSize: bytes.byteLength,
-      bytes,
-      fileName: "fixture.gif",
-      maxBytes: 1024,
-      mimeType: "image/gif",
-      scope: "knowledge"
-    })).toEqual({ code: "unsupported_type", ok: false });
   });
 
   it("derives canonical MIME types from the validated extension", () => {
@@ -397,7 +385,7 @@ describe("upload validation", () => {
       maxBytes: 50_000_000,
       mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       sample: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-      scope: "knowledge"
+      scope: "workspace"
     })).toEqual({
       kind: "document",
       mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -424,7 +412,7 @@ describe("upload validation", () => {
       ...input,
       foundNeedles: ["[Content_Types].xml", main.slice(0, main.indexOf("/") + 1), inner.slice(0, inner.indexOf("/") + 1)],
       sample: zip,
-      scope: "knowledge"
+      scope: "workspace"
     })).toEqual(admitted);
   });
 
@@ -442,7 +430,7 @@ describe("upload validation", () => {
       ...input,
       foundNeedles: ["[Content_Types].xml", "ppt/"],
       sample: bytes.subarray(0, 4),
-      scope: "knowledge"
+      scope: "workspace"
     })).toEqual({ code: "unsupported_type", ok: false });
   });
 
@@ -450,7 +438,7 @@ describe("upload validation", () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
     const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
     const webp = Buffer.from("RIFF\x00\x00\x00\x00WEBP", "binary");
-    const raster = (bytes: Buffer, fileName: string, mimeType: string, scope: "attachment" | "workspace" | "knowledge" = "attachment") =>
+    const raster = (bytes: Buffer, fileName: string, mimeType: string, scope: "attachment" | "workspace" = "attachment") =>
       validateUpload({ byteSize: bytes.byteLength, bytes, fileName, maxBytes: 1024, mimeType, scope });
 
     it.each(["image/jpeg", "image/png", "", "application/octet-stream"])(
@@ -486,8 +474,6 @@ describe("upload validation", () => {
       }
       expect(raster(png, "synthetic.gif", "image/gif")).toEqual({ code: "unsupported_type", ok: false });
       expect(raster(png, "synthetic.jpeg", "image/svg+xml")).toEqual({ code: "unsupported_type", ok: false });
-      expect(raster(png, "synthetic.jpeg", "image/png", "knowledge")).toEqual({ code: "unsupported_type", ok: false });
-      expect(raster(png, "synthetic.jpeg", "image/jpeg", "knowledge")).toEqual({ code: "unsupported_type", ok: false });
     });
 
     it("refuses an image beyond the decode limit early only when it must be decoded", () => {

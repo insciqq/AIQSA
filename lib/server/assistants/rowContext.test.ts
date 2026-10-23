@@ -1,19 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { defaultProviderModels } from "../../domain/catalog";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
 import type { ChatAssistantOverrides } from "../../contracts/chats";
 import { nextChatAssistantOverrides } from "../chats/assistantOverrides";
-import { personalAssistantRowDefaults, projectAssistantRowDefaults, storedOverridesInEffect } from "./rowContext";
-
-// Knowledge defaults stay tested as they worked; one test below turns Knowledge off.
-const areas = vi.hoisted(() => ({ knowledge: true }));
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  get KNOWLEDGE_ENABLED() {
-    return areas.knowledge;
-  }
-}));
+import { personalAssistantRowDefaults, storedOverridesInEffect } from "./rowContext";
 
 const key = "openai:gpt-5.5";
 
@@ -53,30 +44,14 @@ describe("personal Assistant row defaults", () => {
   it("reads the user's Chat defaults and saved values in chain vocabulary", () => {
     const { defaults } = personalAssistantRowDefaults(catalogData({
       defaultControlValues: { [key]: { maxOutputTokens: "1000", temperature: "0.5" } },
-      defaultKnowledgePlan: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 },
       defaultMcpMode: "load_all",
       defaultProviderModelId: "gpt-5.5"
     }));
 
     expect(defaults.modelId).toBe("gpt-5.5");
     expect(defaults.controlsForModel("gpt-5.5")).toEqual({ maxOutputTokens: 1000, temperature: 0.5 });
-    expect(defaults.knowledge).toEqual({ baseIds: ["base-1"], mode: "explicit", sourceIds: [] });
     expect(defaults.tools).toEqual({ mode: "load_all" });
     expect(defaults.search).toEqual({ mode: "off" });
-  });
-
-  it("inherits no Knowledge from a saved Chat default while Knowledge is disabled", () => {
-    areas.knowledge = false;
-    try {
-      const { defaults } = personalAssistantRowDefaults(catalogData({
-        defaultKnowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 },
-        defaultProviderModelId: "gpt-5.5"
-      }));
-
-      expect(defaults.knowledge).toEqual({ mode: "none" });
-    } finally {
-      areas.knowledge = true;
-    }
   });
 
   it("reads undecodable saved values and unusable models as none", () => {
@@ -89,7 +64,6 @@ describe("personal Assistant row defaults", () => {
     expect(modelIds.size).toBe(0);
     expect(defaults.modelId).toBe("");
     expect(defaults.controlsForModel("gpt-5.5")).toEqual({});
-    expect(defaults.knowledge).toEqual({ mode: "none" });
     expect(defaults.tools).toEqual({ mode: "auto" });
 
     const invalid = personalAssistantRowDefaults(catalogData({
@@ -100,47 +74,8 @@ describe("personal Assistant row defaults", () => {
   });
 });
 
-describe("Project Assistant row defaults", () => {
-  it("reads the Project's own defaults and saved values in chain vocabulary", () => {
-    const defaults = projectAssistantRowDefaults({
-      assistantId: "assistant-1",
-      controlValues: { maxOutputTokens: "2048", reasoningEffort: "low" },
-      knowledgePlan: { baseIds: ["project-base"], mode: "explicit", sourceIds: ["project-document"], version: 1 },
-      mcpMode: "load_all",
-      providerModelId: "project-model",
-      searchPlan: { mode: "all_selected", optionIds: ["project-search"] }
-    });
-
-    expect(defaults.modelId).toBe("project-model");
-    // The Project's saved values apply to whichever model runs, as in an ordinary Project chat.
-    expect(defaults.controlsForModel("project-model")).toEqual({ maxOutputTokens: 2048, reasoningEffort: "low" });
-    expect(defaults.controlsForModel("other-model")).toEqual({ maxOutputTokens: 2048, reasoningEffort: "low" });
-    expect(defaults.knowledge).toEqual({ baseIds: ["project-base"], mode: "explicit", sourceIds: ["project-document"] });
-    expect(defaults.search).toEqual({ mode: "all_selected", optionIds: ["project-search"] });
-    expect(defaults.tools).toEqual({ mode: "load_all" });
-  });
-
-  it("reads a Project without a default model, Search or saved values as none", () => {
-    const defaults = projectAssistantRowDefaults({
-      assistantId: null,
-      controlValues: { unknownControl: "1" },
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      mcpMode: "off",
-      providerModelId: null,
-      searchPlan: { mode: "all_selected", optionIds: [] }
-    });
-
-    expect(defaults.modelId).toBe("");
-    expect(defaults.controlsForModel("any-model")).toEqual({});
-    expect(defaults.knowledge).toEqual({ mode: "none" });
-    expect(defaults.search).toEqual({ mode: "off" });
-    expect(defaults.tools).toEqual({ mode: "off" });
-  });
-});
-
 describe("stored overrides in effect", () => {
   const legacy = assistantRowsFromLegacyFields({
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [], providerModelId: "model-a", runControls: {},
     searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: []
   });

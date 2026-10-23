@@ -75,10 +75,7 @@ import {
   type ProviderStructuredOutputAdapter,
   type ProviderStructuredOutputRequest
 } from "../providers/structuredOutput";
-import {
-  sameProviderAdmissionPlan,
-  type ProviderAdmissionPlan
-} from "../providerRuntime/admission";
+import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
@@ -256,7 +253,6 @@ import { normalizeProviderToolCallName, unknownToolCall } from "./unknownToolCal
 import { executeCodexTurn } from "../agents/executor";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
-import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
@@ -313,7 +309,6 @@ export type RunExecutionRepository = Pick<
   | "groundKnowledgeAnswerV5"
   | "groundKnowledgeAnswerV21"
   | "groundKnowledgeEvidenceAnswer"
-  | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
   | "loadCheckpointedToolLoopRun"
@@ -369,16 +364,12 @@ export type RunExecutionInput = Readonly<{
   structuredOutputAdapter?: ProviderStructuredOutputAdapter;
   knowledgeAdmission?: Readonly<{
     authorizeSnapshot?(input: {
-      executionScope?: "project";
-      projectId?: string;
       snapshot: KnowledgeRunAdmissionAuthorizationSnapshot;
       userId: string;
     }): Promise<boolean>;
     load(input: {
-      executionScope?: "project";
       knowledgePlan: ProviderRunRequest["knowledgePlan"];
       preferredProfileRevisionId?: string;
-      projectId?: string;
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
@@ -386,7 +377,6 @@ export type RunExecutionInput = Readonly<{
   memorySearch?: import("../memory/search/runtime").MemorySearchService;
   providerAdmission?: Readonly<{
     load(input: {
-      executionScope?: "project";
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
@@ -408,7 +398,6 @@ export type RunExecutionInput = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
-    prepareProject?(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>): Promise<import("../mcp/runPlan").McpRunPlanResult>;
   }>;
   mcpRuntime?: Readonly<{
     callTool(input: {
@@ -472,7 +461,6 @@ export function serializeChatUpdate(
       id: update.chat.id,
       messageCount: update.chat.messageCount,
       pinned: update.chat.pinned,
-      ...(update.chat.projectId !== undefined ? { projectId: update.chat.projectId } : {}),
       title: update.chat.title,
       ...(update.chat.titlePending ? { titlePending: true } : {}),
       updatedAt: iso(update.chat.updatedAt),
@@ -483,7 +471,6 @@ export function serializeChatUpdate(
       ...(message.followups ? { followups: message.followups } : {}),
       artifactSummary: message.artifactSummary ?? null,
       assistantIdentity: message.assistantIdentity ?? null,
-      ...(message.author !== undefined ? { author: message.author } : {}),
       citationMessageId: message.citationMessageId ?? null,
       content: message.content,
       createdAt: iso(message.createdAt),
@@ -707,7 +694,7 @@ async function persistPlanSearchExecution(input: Readonly<{
 }
 
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
-  // The run's own user (a Project run's initiator) names its records, whoever's request carries it.
+  // The run's own user names its records, whoever's request carries it.
   return runWithContext({ run_id: input.created.runId, user_id: input.userId }, () => createBoundRunExecutionResponse(input));
 }
 
@@ -770,7 +757,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         emitTransient(controller, encoder, event);
       });
       const artifactGeneration = createArtifactGeneration(runId, async data => {
-        await assertProjectRunAccessCurrent(true);
         emitTransient(controller, encoder, { type: "artifact_generation", data });
       });
       // MCP calls refused for the initiator's approval (tool loop, guest code,
@@ -838,9 +824,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       };
       const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
-        ...(input.prepared.project
-          ? { onPersist: () => notifyProjectEvent(input.prepared.project!.projectId) }
-          : {}),
         repository: input.repository,
         runId
       });
@@ -860,9 +843,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       };
       let knowledgeAnswerAttempted = groundedKnowledgeAnswer;
       let lastSessionRequest = input.prepared.providerRequest;
-      let projectAccessCheck: Promise<boolean> | null = null;
-      let projectAccessRevoked = false;
-      let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
       const usageAccountedToolCallIds = new Set<string>();
       // Server-minted observations of this run's settled calls: the only
@@ -956,60 +936,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             }
           }) : null;
 
-      async function assertProjectRunAccessCurrent(force = false): Promise<void> {
-        const project = input.prepared.project;
-        if (!project) return;
-        if (projectAccessRevoked) {
-          throw new RunPipelineError(
-            "project_access_changed",
-            "Project access changed during the run"
-          );
-        }
-        const validate = input.repository.isProjectRunAccessCurrent;
-        if (!validate) {
-          if (process.env.NODE_ENV === "production") {
-            throw new RunPipelineError(
-              "project_access_revalidation_unavailable",
-              "Project access could not be revalidated"
-            );
-          }
-          return;
-        }
-        const now = Date.now();
-        if (!projectAccessCheck && !force && now - projectAccessValidatedAt < 250) return;
-        if (!projectAccessCheck) {
-          projectAccessValidatedAt = now;
-          projectAccessCheck = validate({
-            accessRevision: project.accessRevision,
-            instructionsRevision: project.instructionsRevision,
-            memoryRevision: project.memoryRevision,
-            policyRevision: project.policyRevision,
-            projectId: project.projectId,
-            userId: input.userId
-          });
-        }
-        let current: boolean;
-        try {
-          current = await projectAccessCheck;
-        } catch {
-          throw new RunPipelineError(
-            "project_access_revalidation_failed",
-            "Project access could not be revalidated"
-          );
-        } finally {
-          projectAccessCheck = null;
-        }
-        if (current) return;
-        projectAccessRevoked = true;
-        if (persistedProviderResponseId) {
-          await input.adapter.cancel?.(persistedProviderResponseId).catch(() => undefined);
-        }
-        throw new RunPipelineError(
-          "project_access_changed",
-          "Project access changed during the run"
-        );
-      }
-
       /** One answer call's usage; the charge its provider reported, when it
        * did, settles the call's cost. */
       function rememberReportedUsage(
@@ -1077,7 +1003,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // Capacity is minted by the server, never by provider output.
         if (event.type === "artifact" &&
           (event.data.artifactType === "context_status" || event.data.artifactType === "context_compaction" || event.data.artifactType === "tool_budget")) return;
-        await assertProjectRunAccessCurrent();
         const includeTokenEvents = options.includeTokenEvents ?? true;
         const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
 
@@ -1166,9 +1091,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function currentSearchDispatchAllowed(): Promise<boolean> {
         const optionIds = normalizedRequest.searchPlan.options.map((option) => option.optionId);
-        if (input.prepared.project?.executionScope === "project") {
-          return currentProjectProviderDispatchAllowed();
-        }
         const selection = input.prepared.providerAdmissionPlan.selection;
         const [entitlements, enabled] = await Promise.all([
           input.repository.loadEntitlements(input.userId),
@@ -1188,38 +1110,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function currentAnswerDispatchAllowed(): Promise<boolean> {
-        if (input.prepared.project?.executionScope === "project") {
-          return currentProjectProviderDispatchAllowed();
-        }
         const entitlements = await input.repository.loadEntitlements(input.userId);
         const selection = input.prepared.providerAdmissionPlan.selection;
         return validateRunAccess(entitlements, {
           modelId: selection.providerModelId,
           provider: selection.providerConnectionId
         }).ok;
-      }
-
-      async function currentProjectProviderDispatchAllowed(): Promise<boolean> {
-        const project = input.prepared.project;
-        if (project?.executionScope !== "project") return true;
-        if (!input.providerAdmission) return process.env.NODE_ENV !== "production";
-        const expected = input.prepared.providerAdmissionPlan;
-        try {
-          const current = await input.providerAdmission.load({
-            executionScope: "project",
-            providerConnectionId: expected.selection.providerConnectionId,
-            providerModelId: expected.selection.providerModelId,
-            ...(expected.requiresClientToolCoexistence
-              ? { requiresClientToolCoexistence: true }
-              : {}),
-            ...(expected.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true } : {}),
-            searchPlan: expected.requestedSearchPlan,
-            userId: input.userId
-          });
-          return sameProviderAdmissionPlan(current, expected);
-        } catch {
-          return false;
-        }
       }
 
       async function currentKnowledgeDispatchAllowed(): Promise<boolean> {
@@ -1232,8 +1128,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           const snapshot = await loadScope({ runId, userId: input.userId });
           if (!snapshot) return false;
           return await authorizeSnapshot({
-            ...(input.prepared.project ? { executionScope: "project" as const } : {}),
-            ...(input.prepared.project ? { projectId: input.prepared.project.projectId } : {}),
             snapshot,
             userId: input.userId
           });
@@ -1432,7 +1326,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           if (preflightResult) {
             result = preflightResult;
           } else {
-            await assertProjectRunAccessCurrent(true);
             if (!(await currentKnowledgeDispatchAllowed())) {
               throw new RunPipelineError(
                 "memory_egress_destination_revoked",
@@ -1580,7 +1473,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function authorizeKnowledgeAnswerOperation(): Promise<void> {
-        await assertProjectRunAccessCurrent(true);
         if (!(await currentAnswerDispatchAllowed())) {
           throw new RunPipelineError(
             "model_not_available",
@@ -1720,13 +1612,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         if (!plan) return undefined;
         const failure = KNOWLEDGE_IMAGE_OBSERVATION_FAILURES;
         if (!input.vision) throw new RunPipelineError(failure.failed.code, failure.failed.message);
-        // Lost Project access fails with its own reason, before any image is read.
-        await assertProjectRunAccessCurrent(true);
         const budget = normalizedRequest.knowledgeGenerationBudget;
         const outcome = await input.vision.observeKnowledgeImages({
           plan, question: textFromContentBlocks(normalizedRequest.content), chatId: normalizedRequest.chatId, runId, userId: input.userId,
           async authorize() {
-            await assertProjectRunAccessCurrent(true);
             return plan.route === "system_vision" || await currentAnswerDispatchAllowed();
           },
           ...(plan.route === "answer_model" && budget
@@ -1942,11 +1831,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // Revalidate this accepted tool without loading the server's entire
           // inventory into a model-facing plan and applying its 128-tool cap.
           const selection = { allowedToolNames: [route.tool.namespacedName] };
-          const current = input.prepared.project?.executionScope === "project" && input.mcp.prepareProject
-            ? await input.mcp.prepareProject(input.userId, [route.serverId], selection)
-            : input.prepared.project?.executionScope === "project"
-              ? null
-              : await input.mcp.prepare(input.userId, { allowedServerIds: [route.serverId], ...selection });
+          const current = await input.mcp.prepare(input.userId, { allowedServerIds: [route.serverId], ...selection });
           return currentMcpDispatchFailure(current, route, generationId);
         } catch {
           return "mcp_runtime_unavailable";
@@ -2013,7 +1898,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const answerSnapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
         return prepareCompactedProviderRequest({
           async authorize() {
-            await assertProjectRunAccessCurrent(true);
             if (!(await currentAnswerDispatchAllowed())) {
               throw new RunPipelineError("model_not_available", "The selected model is no longer available");
             }
@@ -2092,7 +1976,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               providerToolBridges[request.provider as keyof typeof providerToolBridges],
             service: input.memorySearch, runId, userId: input.userId });
           request = memoryDispatch.request;
-          await assertProjectRunAccessCurrent(true);
           if (!(await currentAnswerDispatchAllowed())) {
             throw new RunPipelineError(
               "model_not_available",
@@ -2144,7 +2027,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 userId: input.userId
               })
             : null;
-          await assertProjectRunAccessCurrent(true);
           if (!internal) await publishRequestContext(request);
           const wireRequest = request.workspaceImageView
             ? await (await defaultWorkspaceImageViewer()).materialize(request, runId, input.userId, dispatchSignal) : request;
@@ -2499,7 +2381,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               settled.result.status === "complete" ? [settled.result.value] : []))) {
               settledObservations.set(entry.callId, entry);
             }
-            await assertProjectRunAccessCurrent(true);
             for (const settled of results) {
               const call = modelToolCall(settled.call);
               const result = settled.result.status === "complete"
@@ -2560,7 +2441,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             await persistReportedUsageForIncompleteRun();
           },
           beforeProviderRound: async ({ continuation, request: roundRequest, round }) => {
-            await assertProjectRunAccessCurrent(true);
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
                 ...(!normalizedRequest.agent && normalizedRequest.contextCompactionPolicy
@@ -2658,9 +2538,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (fetchSession && isFetchCall(call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
                 // A page request that may have left is never sent again: an
-                // interrupted call settles as interrupted. A new one rechecks
-                // the run's authority before it leaves.
-                if (claim.kind === "claimed") await assertProjectRunAccessCurrent(true);
+                // interrupted call settles as interrupted.
                 const result = claim.kind === "ambiguous"
                   ? fetchUrlInterruptedResult(call)
                   : await fetchSession.execute(call, { persistedToolCallId: persisted.id, signal: context.signal });
@@ -2856,8 +2734,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     };
               }
 
-              await assertProjectRunAccessCurrent(true);
-
               let result: ToolExecutionResult;
               let fatalToolError: Readonly<{
                 code: string;
@@ -3048,8 +2924,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   result = preflightResult;
                 } else if (isSkillCall(call.name)) {
                   if (!input.skillTools) throw new Error("skill_tool_unavailable");
-                  const execute = () => input.skillTools!.execute(call, { ...executionContext,
-                    ...(input.prepared.project ? { projectId: input.prepared.project.projectId } : {}) });
+                  const execute = () => input.skillTools!.execute(call, executionContext);
                   const manifest = decodeFrozenSkillManifest(normalizedRequest.skills);
                   const skill = manifest && [...manifest.pinned, ...manifest.available].find(skill => skill.alias === call.arguments.skill);
                   result = normalizedRequest.toolObservationVersion === 1 && skill
@@ -3614,7 +3489,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
       try {
         throwIfAborted(signal);
-        await assertProjectRunAccessCurrent(true);
         const dispatchControl = await input.repository.getRunControlForUser(
           runId,
           input.userId
@@ -3821,7 +3695,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
         await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
         throwIfAborted(signal);
-        await assertProjectRunAccessCurrent(true);
         if (normalizedRequest.workspace && !input.workspace) {
           throw new RunPipelineError("workspace_runtime_unavailable", "Workspace execution is unavailable");
         }
@@ -3870,7 +3743,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             }).catch((error: unknown) => { throw signal.aborted ? error : new WorkspaceHandoffFailure(error); });
             if (handoff.status !== "ready") throw new WorkspaceHandoffFailure(new WorkspaceRuntimeError("workspace_operation_stale"));
             throwIfAborted(signal);
-            await assertProjectRunAccessCurrent(true);
           } } : {}),
           outputEvents: [contextStatusEvent],
           ...(knowledgeAnswerExecution
@@ -4104,7 +3976,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         await artifactGeneration.stop(signal.aborted ? "cancelled" : "failed").catch(() => undefined);
         if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);
         if (workspaceSoftDeadlineTimer) clearTimeout(workspaceSoftDeadlineTimer);
-        if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);
         }

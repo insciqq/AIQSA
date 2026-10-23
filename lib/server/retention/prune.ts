@@ -7,16 +7,17 @@ import {
   drainKnowledgeDeletionJobs,
   type KnowledgeDeletionDrainSummary
 } from "@/lib/server/knowledge/deletionProcessor";
-import { DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS } from "@/lib/server/knowledge/lifecyclePolicy";
 import { createMcpHubOperationStore, type McpHubMaintenanceResult } from "../mcp/hubOperations";
 import { WORKSPACE_ACTIVITY_RECEIPT } from "../runs/workspaceActivityPersistence";
 
 export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 export const DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS = 7;
 export const DEFAULT_AUTH_RETENTION_DAYS = 30;
+// Knowledge was removed (lib/server/knowledge/retirement.ts deletes what is
+// left); these retire leftover Knowledge rows until its tables are dropped.
 export const DEFAULT_KNOWLEDGE_PAYLOAD_RETENTION_DAYS = 30;
 export const DEFAULT_KNOWLEDGE_UPLOAD_SESSION_RETENTION_DAYS = 7;
-export { DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS };
+export const DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS = 30;
 export const DEFAULT_PRUNE_BATCH_SIZE = 1000;
 export const DEFAULT_DELETION_JOB_LEASE_MINUTES = 15;
 

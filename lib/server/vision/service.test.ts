@@ -375,31 +375,29 @@ describe("shared System Vision boundary", () => {
   });
 });
 
-type ChatImageRow = { id: string; mimeType: string; bytes: Buffer; userId?: string | null; projectId?: string | null;
+type ChatImageRow = { id: string; mimeType: string; bytes: Buffer; userId?: string | null;
   origin?: "USER_UPLOAD" | "IMAGE_OUTPUT"; producerModelRunId?: string | null; chatId?: string | null };
-type AttachmentWhere = { id: { in: string[] }; kind: string; status: string; savedAt: null; userId?: string; projectId?: string;
+type AttachmentWhere = { id: { in: string[] }; kind: string; status: string; savedAt: null; userId?: string;
   OR: Array<{ id: { in: string[] } } | { origin: string; producerModelRunId: string; chatId: string }> };
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 /** A chat whose attachment query honours the service's authority filter. */
-async function chatFixture(rows: ChatImageRow[], options: { references?: string[]; project?: boolean } = {}) {
+async function chatFixture(rows: ChatImageRow[], options: { references?: string[]; chatOwner?: string | null } = {}) {
   const storage = createMemoryStorageAdapter();
   for (const row of rows) await storage.putObject({ storageKey: `private/${row.id}`, contentType: row.mimeType, body: row.bytes });
-  const stored = rows.map((row) => ({ kind: "image", status: "ready", savedAt: null, userId: options.project ? null : "user",
-    projectId: options.project ? "project" : null, origin: "USER_UPLOAD", producerModelRunId: null, chatId: "chat", ...row,
+  const stored = rows.map((row) => ({ kind: "image", status: "ready", savedAt: null, userId: "user",
+    origin: "USER_UPLOAD", producerModelRunId: null, chatId: "chat", ...row,
     storageKey: `private/${row.id}`, byteSize: row.bytes.byteLength, checksum: sha256(row.bytes) }));
   const findMany = vi.fn(async ({ where }: { where: AttachmentWhere }) => stored.filter((row) =>
     where.id.in.includes(row.id) && row.kind === where.kind && row.status === where.status && row.savedAt === null &&
-    (where.userId === undefined || row.userId === where.userId) && (where.projectId === undefined || row.projectId === where.projectId) &&
+    (where.userId === undefined || row.userId === where.userId) &&
     where.OR.some((match) => "id" in match ? match.id.in.includes(row.id)
       : row.origin === match.origin && row.producerModelRunId === match.producerModelRunId && row.chatId === match.chatId)
   ).map(({ id, storageKey, byteSize, checksum, mimeType }) => ({ id, storageKey, byteSize, checksum, mimeType })));
   const db = {
     chat: { findUnique: vi.fn(async () => ({ archived: false, permanentDeletionAt: null,
-      projectId: options.project ? "project" : null, userId: options.project ? null : "user" })) },
+      userId: options.chatOwner === undefined ? "user" : options.chatOwner })) },
     user: { findFirst: vi.fn(async () => ({ id: "user", groups: [] })) },
-    project: { findUnique: vi.fn(async () => ({ accessRevision: 1, id: "project", instructionsRevision: 1, memoryRevision: 1,
-      policyRevision: 1, status: "ACTIVE", grants: [{ userId: "user", role: "CONTRIBUTOR", groupId: null, group: null }] })) },
     attachment: { findMany }
   };
   type Store = ReturnType<typeof createVisionAnalysisStore>;
@@ -495,12 +493,15 @@ describe("chat System Vision over conversation images", () => {
     expect(f.execute).toHaveBeenCalledOnce();
   });
 
-  it("reads a Project chat's images only under the Project's attachment authority", async () => {
+  it("reads no image of a chat the user does not own, such as one left from a removed Project", async () => {
     const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: "#654321" } }).png().toBuffer();
-    const f = await chatFixture([{ id: "shared", mimeType: "image/png", bytes: png }], { project: true });
-    expect((await f.service.execute(f.call(["shared"]), f.context)).status).toBe("complete");
-    expect(f.db.attachment.findMany.mock.calls[0]![0].where).toMatchObject({ projectId: "project" });
-    expect(f.db.attachment.findMany.mock.calls[0]![0].where).not.toHaveProperty("userId");
+    for (const chatOwner of [null, "someone-else"]) {
+      const f = await chatFixture([{ id: "shared", mimeType: "image/png", bytes: png }], { chatOwner });
+      const result = await f.service.execute(f.call(["shared"]), f.context);
+      expect(errorOf(result).error).toBe("vision_analysis_access_denied");
+      expect(f.db.attachment.findMany).not.toHaveBeenCalled();
+      expect(f.store.dispatch).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled();
+    }
   });
 
   it("rechecks authority right before dispatch and never sends a removed image", async () => {

@@ -8,7 +8,7 @@ import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell"
 import { AdminAttentionDot } from "./AdminAttentionDot";
 import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 
-export type RailSectionV2 = "chats" | "library" | "projects";
+export type RailSectionV2 = "chats" | "library";
 
 function RailButton({
   active = false,
@@ -63,8 +63,6 @@ export function RailV2({
   onChats,
   onLibrary,
   onNewChat,
-  onAccountSettings,
-  onProjects,
   onSettings
 }: Readonly<{
   accountId?: string | null;
@@ -77,10 +75,7 @@ export function RailV2({
   onChats(): void;
   onLibrary?(): void;
   onNewChat(): void;
-  onProjects?(): void;
   onSettings?(): void;
-  /** The account menu's Settings; defaults to `onSettings`. */
-  onAccountSettings?(): void;
 }>) {
   // Control Center returns to the chat it was opened from.
   const controlCenterHref = useControlCenterHref();
@@ -90,9 +85,6 @@ export function RailV2({
       <RailButton disabled={navigationBusy} className="v2-rail-brand" icon="brand" label="New chat" onClick={onNewChat} />
       <div className="v2-rail-group">
         <RailButton disabled={navigationBusy} active={active === "chats"} icon="chat" label="Chats" onClick={onChats} />
-        {onProjects ? (
-          <RailButton disabled={navigationBusy} active={active === "projects"} icon="layers" label="Projects" onClick={onProjects} />
-        ) : null}
         {onLibrary ? (
           <RailButton disabled={navigationBusy} active={active === "library"} icon="studio" label="Studio" onClick={onLibrary} />
         ) : null}
@@ -127,7 +119,7 @@ export function RailV2({
           accountId={accountId}
           accountLabel={accountLabel}
           adminEntryVisible={adminEntryVisible}
-          onSettings={onAccountSettings ?? onSettings}
+          onSettings={onSettings}
           variant="avatar"
         />
       </div>

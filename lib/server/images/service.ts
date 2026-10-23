@@ -5,7 +5,7 @@ import { createImageModelRoleResolver, type AcceptedImageGenerationPlan } from "
 import { createImageGenerationAdapter, ImageGenerationError, validateImageReference, type ImageGenerationInput, type ImageGenerationUsage } from "../providers/imageGeneration";
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../secrets/envelope";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
@@ -92,8 +92,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       const historyLimit = currentImages > 0 ? 1 : 4;
       const imageLimit = Math.min(historyLimit, Math.max(0, (request.modelCapabilities.imageInputLimits?.imageCount ?? 20) - currentImages));
       const ids = imageLimit ? [...new Set(references.map((reference) => reference.attachmentId))].filter((id) => !attached.has(id)).slice(-imageLimit) : [];
-      const rows = await prisma.attachment.findMany({ where: { id: { in: ids }, kind: "image", status: "ready", savedAt: null,
-        ...(access.kind === "project" ? { projectId: access.project.projectId } : { userId }) } });
+      const rows = await prisma.attachment.findMany({ where: { id: { in: ids }, kind: "image", status: "ready", savedAt: null, userId } });
       let remaining = Math.min(IMAGE_MAX_BYTES, request.modelCapabilities.imageInputLimits?.payloadBytes ?? Infinity) - request.attachments.reduce((sum, attachment) => sum + (attachment.base64Data || attachment.dataUrl ? attachment.byteSize : 0), 0);
       const extra: ProviderAttachment[] = [];
       let reading = false;
@@ -184,7 +183,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         const run = await prisma.modelRun.findFirst({ where: { id: runId, userId, chatId: request.chatId },
           select: { assistantMessageId: true, status: true } });
         if (!run?.assistantMessageId || !["streaming", "in_progress"].includes(run.status)) throw new Error("image_run_inactive");
-        const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" });
+        const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId });
         if (!access) throw new Error("image_access_revoked");
         const tool = await prisma.modelRunToolCall.findFirst({ where: { id: toolCallId, modelRunId: runId,
           state: execution?.beforeDispatch ? "pending" : "running", toolName: call.name } });
@@ -195,8 +194,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         stage = "references";
         const admitted = new Set(request.imageReferences?.map((reference) => reference.attachmentId) ?? []);
         const rows = ids.length ? await prisma.attachment.findMany({ where: {
-          id: { in: ids }, status: "ready", savedAt: null,
-          ...(access.kind === "project" ? { projectId: access.project.projectId } : { userId }),
+          id: { in: ids }, status: "ready", savedAt: null, userId,
           OR: [{ id: { in: [...admitted] } }, { origin: "IMAGE_OUTPUT", producerModelRunId: runId, chatId: request.chatId }]
         } }) : [];
         for (const id of ids) {
@@ -263,8 +261,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
           const tokens = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens };
           return prisma.usageEvent.create({ data: {
             imageGeneration: true, imageToolCallId: toolCallId, purpose: "image_generation",
-            modelRunId: runId, userId, chatId: request.chatId,
-            projectId: access.project?.projectId, provider: snapshot.providerFamily,
+            modelRunId: runId, userId, chatId: request.chatId, provider: snapshot.providerFamily,
             providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
             ...storedTokenUsage(tokens),
             estimatedCostMicros: providerModelUsageCostMicros({ basis: costBasis, reportedCostUsd: usage.costUsd ?? null,
@@ -313,14 +310,12 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
             const jobs = await tx.$queryRaw<Array<{ claimToken: string | null }>>`SELECT "claimToken" FROM "AttachmentDeletionJob" WHERE "storageKey" = ${storageKey} FOR UPDATE`;
             if (jobs[0]?.claimToken !== token) throw new Error("image_publication_stale");
-            const currentAccess = await resolveChatAccess(tx, { chatId: request.chatId, userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" });
-            if (!currentAccess || currentAccess.kind !== access.kind || currentAccess.project?.projectId !== access.project?.projectId) throw new Error("image_access_revoked");
-            const uploader = access.kind === "project" ? await tx.user.findUnique({ where: { id: userId }, select: { displayName: true } }) : null;
+            if (!await resolveChatAccess(tx, { chatId: request.chatId, userId })) throw new Error("image_access_revoked");
             await tx.attachment.create({ data: {
               id: attachmentId, imageToolCallId: toolCallId, producerModelRunId: runId, chatId: request.chatId,
               messageId: run.assistantMessageId, origin: "IMAGE_OUTPUT", status: "ready", kind: "image",
               fileName: image.fileName, mimeType: image.mimeType, byteSize: image.byteSize, storageKey, checksum: hash(generated.bytes),
-              ...(access.kind === "project" ? { projectId: access.project.projectId, uploaderUserId: userId, uploaderDisplayName: uploader?.displayName } : { userId }),
+              userId,
               metadata: { image, providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId, parameters } as Prisma.InputJsonValue
             } });
             await tx.attachmentDeletionJob.delete({ where: { storageKey } });

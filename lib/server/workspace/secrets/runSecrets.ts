@@ -26,7 +26,6 @@ export type RunSecretScope = Readonly<{ runId: string; userId: string }>;
  * - A run whose admission bound secret revisions (a Workspace-enabled run)
  *   reads exactly those revisions, the ones its guest receives.
  * - A run without a Workspace binding reads the owner's current revisions.
- * - Project runs never receive personal secrets.
  * The run must belong to the caller and the caller must be active. Only the
  * value that is read is decrypted.
  */
@@ -44,11 +43,10 @@ export function createRunSecretSource(prisma: RunSecretsPrisma, key: () => Buffe
     const owner = await prisma.user.findFirst({ select: { id: true }, where: { id: scope.userId, status: "active" } });
     if (!owner) throw new WorkspaceSecretError("workspace_secret_unavailable");
     const run = await prisma.modelRun.findFirst({
-      select: { chat: { select: { projectId: true, userId: true } }, workspaceRunBinding: { select: { modelRunId: true } } },
+      select: { chat: { select: { userId: true } }, workspaceRunBinding: { select: { modelRunId: true } } },
       where: { id: scope.runId, userId: scope.userId }
     });
     if (!run || run.chat.userId !== scope.userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
-    if (run.chat.projectId) return [];
     // A bound run lists its revisions in the order the Workspace receives them (`personalSecrets`).
     const rows: readonly Readonly<{ value: Readonly<{ byteSize: number; description: string; envNames: string[]; id: string; kind: string; name: string }> }>[] = run.workspaceRunBinding
       ? await prisma.workspaceRunSecret.findMany({ select: { value: { select: entrySelect } }, where: { modelRunId: scope.runId }, orderBy: { secretId: "asc" } })

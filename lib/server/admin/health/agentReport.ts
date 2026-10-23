@@ -93,7 +93,7 @@ export type HealthDurationStats = {
 export type HealthRunTotals = {
   /** Runs admitted (`run_accepted`). */
   accepted: number;
-  acceptedByKind: { send: number; regenerate: number; project: number };
+  acceptedByKind: { send: number; regenerate: number };
   /** Runs settled once each: the single confirmed terminal write per run. */
   completed: number;
   /** Failed runs: live failures, failures during preparation and failures settled by recovery. */
@@ -642,7 +642,7 @@ function runTotals(rows: readonly TelemetryCounterGroup[]): HealthRunTotals {
   const settled = completed + failed + cancelled;
   return {
     accepted: count((row) => row.group.event === "run_accepted"),
-    acceptedByKind: { send: accepted("send"), regenerate: accepted("regenerate"), project: accepted("project") },
+    acceptedByKind: { send: accepted("send"), regenerate: accepted("regenerate") },
     completed,
     failed,
     failedInPreparation,

@@ -13,9 +13,6 @@ export const ASSISTANT_SEND_GATE_HINT = "Nothing is sent until you choose.";
 const UNNAMED_DEPENDENCIES = new Set(["Required MCP tools", "Saved model"]);
 
 const OWNER_REASON_HEADLINES: Readonly<Record<Exclude<AssistantAvailabilityReason, "archived">, string>> = {
-  knowledge_access: "The Assistant's Knowledge isn't available.",
-  knowledge_not_ready: "The Assistant's Knowledge has no ready documents yet.",
-  knowledge_unavailable: "The Assistant's Knowledge can't be checked right now.",
   model_access: "The Assistant's model isn't available.",
   search_access: "The Assistant's Search isn't available.",
   skills_access: "The Assistant's Skills aren't available.",
@@ -71,7 +68,7 @@ type AssistantBindingNoticePropsV2 = Readonly<{
   current: ShellComposerAssistant | null;
   onChooseAnother(): void;
   onContinueWithout(): void;
-  /** Absent where Studio is not the owner's repair route (inside a Project). */
+  /** Absent where Studio is not the owner's repair route. */
   onOpenInStudio?: ((assistantId: string) => void) | null;
   onRestore?: ((assistantId: string) => void) | null;
   pending: boolean;

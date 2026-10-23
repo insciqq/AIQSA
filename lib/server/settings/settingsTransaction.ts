@@ -29,7 +29,6 @@ function serializeSettings(settings: {
   defaultAnswerReview: unknown;
   defaultAssistantId: string | null;
   defaultControlValues: unknown;
-  defaultKnowledgePlan: unknown;
   defaultMcpMode: string;
   defaultSkillsMode: string;
   defaultWorkspaceEnabled: boolean;
@@ -47,7 +46,6 @@ function serializeSettings(settings: {
     defaultAnswerReview: settings.defaultAnswerReview,
     defaultAssistantId: settings.defaultAssistantId,
     defaultControlValues: settings.defaultControlValues,
-    defaultKnowledgePlan: settings.defaultKnowledgePlan,
     defaultMcpMode: settings.defaultMcpMode,
     defaultSkillsMode: settings.defaultSkillsMode,
     defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled,
@@ -70,14 +68,12 @@ function settingsUpdateData(
     defaultAnswerReview,
     defaultAssistantId,
     defaultControlValues,
-    defaultKnowledgePlan,
     defaultProviderModelId,
     defaultSearchPlan,
     ...rest
   } = update;
   const updatesSearchPlan = Object.prototype.hasOwnProperty.call(update, "defaultSearchPlan");
   const normalizedSearchPlan = updatesSearchPlan ? defaultSearchPlan : undefined;
-  const updatesKnowledgePlan = Object.prototype.hasOwnProperty.call(update, "defaultKnowledgePlan");
   const data: Prisma.UserSettingsUpdateInput = {
     ...rest,
     ...(defaultAnswerReview !== undefined ? { defaultAnswerReview: {
@@ -89,13 +85,6 @@ function settingsUpdateData(
       ? { defaultSearchPlan: Prisma.DbNull }
       : normalizedSearchPlan !== undefined
       ? { defaultSearchPlan: normalizedSearchPlan as Prisma.InputJsonObject }
-      : {}),
-    ...(updatesKnowledgePlan
-      ? {
-          defaultKnowledgePlan: defaultKnowledgePlan
-            ? (defaultKnowledgePlan as unknown as Prisma.InputJsonObject)
-            : Prisma.DbNull
-        }
       : {}),
     ...(typeof defaultProviderModelId !== "undefined"
       ? {
@@ -222,7 +211,6 @@ export async function applySettingsUpdateInTransaction(
       defaultAnswerReview: true,
       defaultAssistantId: true,
       defaultControlValues: true,
-      defaultKnowledgePlan: true,
       defaultMcpMode: true,
       defaultSkillsMode: true,
       defaultWorkspaceEnabled: true,

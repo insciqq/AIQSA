@@ -328,12 +328,10 @@ export type AssistantSharingActions = ReturnType<typeof createAssistantSharingAc
 
 /** The owner's own catalogs: an id outside them is counted, never named. */
 function ownerResourceNames(
-  input: Pick<AssistantLibraryControllerInput, "catalog" | "knowledgeBases" | "knowledgeSources">,
+  input: Pick<AssistantLibraryControllerInput, "catalog">,
   snapshot: AssistantLibrarySnapshot
 ): AssistantResourceNames {
   return {
-    knowledgeBases: input.knowledgeBases,
-    knowledgeSources: input.knowledgeSources,
     mcpServers: snapshot.mcpOptions,
     models: (input.catalog?.models ?? []).map((model) => ({ id: model.modelId, label: model.displayName })),
     searchOptions: (input.catalog?.searchStrategies ?? [])
@@ -343,7 +341,7 @@ function ownerResourceNames(
 }
 
 export function buildAssistantSharingSheetView(
-  input: Pick<AssistantLibraryControllerInput, "catalog" | "knowledgeBases" | "knowledgeSources">,
+  input: Pick<AssistantLibraryControllerInput, "catalog">,
   actions: AssistantSharingActions,
   snapshot: AssistantLibrarySnapshot
 ): AssistantSharingSheetView | null {

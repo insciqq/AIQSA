@@ -2,7 +2,7 @@ import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, type 
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type ToolObservation } from "@prisma/client";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { activeToolLoopRun, activeToolLoopRunSql, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { admitsToolObservationReservation, decodeToolObservationSourceBinding, ObservationStoreError, TOOL_OBSERVATION_LIMITS,
   type ToolObservationBudgetUsage, type ToolObservationSource, type ToolObservationSourceBinding } from "./contract";
@@ -32,7 +32,7 @@ function refusal(error: unknown): boolean {
 
 /**
  * The recall authority of one live run of the actor: active run, active user,
- * mutable chat access (Project Contributor) and, for Agent, an unexpired,
+ * the actor's own chat and, for Agent, an unexpired,
  * unrevoked grant. The saved-result and call readers share it.
  * `unarmedAgent` also accepts the run's own Agent binding before its executor
  * armed it (no start, lease or token yet, and never revoked, completed,
@@ -47,12 +47,12 @@ export async function observationRunAuthority(tx: Prisma.TransactionClient, acto
   }
   const run = await tx.modelRun.findFirst({ where: { id: actor.runId, userId: actor.userId }, select: {
     id: true, chatId: true, assistantMessageId: true, userMessageId: true, status: true, errorPayload: true,
-    chat: { select: { archived: true, permanentDeletionAt: true, projectId: true } }
+    chat: { select: { archived: true, permanentDeletionAt: true } }
   } });
   if (!run || !run.assistantMessageId || !activeToolLoopRun(run) ||
     run.chat.archived || run.chat.permanentDeletionAt ||
     !await tx.user.findFirst({ where: { id: actor.userId, status: "active" }, select: { id: true } }) ||
-    !await resolveChatAccess(tx, { chatId: run.chatId, userId: actor.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })) throw unavailable();
+    !await resolveChatAccess(tx, { chatId: run.chatId, userId: actor.userId })) throw unavailable();
   const agent = await tx.agentRunBinding.findUnique({ where: { modelRunId: run.id }, select: {
     revokedAt: true, completedAt: true, failureCode: true, followupInterruptAt: true, expiresAt: true, leaseExpiresAt: true,
     startedAt: true, tokenHash: true

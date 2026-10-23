@@ -691,7 +691,6 @@ async function resolveFact(
         INNER JOIN "Chat" AS evidence_chat
           ON evidence_chat."userId" = support."userId"
           AND evidence_chat."id" = support."chatId"
-          AND evidence_chat."projectId" IS NULL
           AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
         INNER JOIN "Message" AS evidence_message
           ON evidence_message."chatId" = support."chatId"
@@ -853,7 +852,6 @@ async function resolveChunkRow(
       AND ${compatibleActiveGenerationPredicate()}
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = chunk."userId" AND source_chat."id" = chunk."chatId"
-      AND source_chat."projectId" IS NULL
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId" AND checkpoint."chatId" = chunk."chatId"
     WHERE chunk."userId" = ${authority.userId}
@@ -1022,7 +1020,6 @@ async function resolveRoundRow(
           ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION})
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = round."userId" AND source_chat."id" = round."chatId"
-      AND source_chat."projectId" IS NULL
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = round."userId" AND checkpoint."chatId" = round."chatId"
     WHERE round."userId" = ${authority.userId}
@@ -1152,7 +1149,6 @@ async function resolveRoundSegmentRow(
         ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = round."userId" AND source_chat."id" = round."chatId"
-      AND source_chat."projectId" IS NULL
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = round."userId" AND checkpoint."chatId" = round."chatId"
     WHERE segment."userId" = ${authority.userId}
@@ -1426,7 +1422,6 @@ async function resolveToolEventRow(
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = tool_event."userId"
       AND source_chat."id" = tool_event."chatId"
-      AND source_chat."projectId" IS NULL
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND source_chat."permanentDeletionAt" IS NULL
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint

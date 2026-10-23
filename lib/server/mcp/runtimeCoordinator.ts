@@ -41,7 +41,7 @@ export type McpRuntimeLaunch = {
   url?: string;
 };
 
-/** A member's or shared Project runtime generation launch: what its immutable revision published. */
+/** A member's runtime generation launch: what its immutable revision published. */
 export type McpRuntimeGenerationLaunch = McpRuntimeLaunch & {
   publishedTools: McpPublishedToolDefinitions;
 };
@@ -113,17 +113,6 @@ export type McpRuntimeCoordinatorRepository = {
     onDemand?: boolean;
     serverIds?: readonly string[];
     userId?: string;
-  }): Promise<McpRuntimeGenerationLaunch[]>;
-  /**
-   * Installation-owned runtimes that Project runs use. On demand it creates
-   * or selects the requested servers' shared generations; otherwise it keeps
-   * those with recent Project demand. It never reads or changes a member's
-   * McpUserServer.
-   */
-  synchronizeShared(input: {
-    now: Date;
-    onDemand?: boolean;
-    serverIds?: readonly string[];
   }): Promise<McpRuntimeGenerationLaunch[]>;
   touchLastUsed(generationId: string, now: Date): Promise<void>;
 };
@@ -526,28 +515,6 @@ export class McpRuntimeCoordinator {
     void this.#requestDrain();
   }
 
-  /**
-   * Starts, or refreshes a stale inventory of, the shared generations Project
-   * runs use for these servers. A cold process or an idle member therefore
-   * never leaves Project MCP unavailable, and no member row changes.
-   */
-  async ensureSharedServersReady(serverIds: readonly string[], signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const uniqueServerIds = [...new Set(serverIds)];
-    if (uniqueServerIds.length === 0) return;
-    const launches = await this.#repository.synchronizeShared({
-      now: this.#now(),
-      onDemand: true,
-      serverIds: uniqueServerIds
-    });
-    signal?.throwIfAborted();
-    await this.#reconcileLaunches(launches, signal);
-    signal?.throwIfAborted();
-    // Housekeeping can wait on other users' runtimes; the caller's own
-    // launches are already reconciled.
-    void this.#requestDrain();
-  }
-
   async callTool(input: {
     arguments: Record<string, unknown>;
     beforeDispatch?(): Promise<void>;
@@ -807,10 +774,7 @@ export class McpRuntimeCoordinator {
       now,
       ...(userId ? { userId } : {})
     });
-    // Only the installation-wide pass keeps shared Project runtimes current;
-    // a member-scoped kick never touches them.
-    const shared = userId ? [] : await this.#repository.synchronizeShared({ now });
-    await this.#reconcileLaunches([...personal, ...shared]);
+    await this.#reconcileLaunches(personal);
     await this.#requestDrain();
     for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
   }

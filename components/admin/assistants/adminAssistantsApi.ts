@@ -61,7 +61,7 @@ function requestSummary(value: unknown): AdminAssistantListingRequestSummary | n
     ownerDisplayName: value.ownerDisplayName, updatedAt: value.updatedAt, canReview: value.canReview };
 }
 
-const REVIEW_NAME_KINDS = ["knowledgeBases", "knowledgeSources", "mcpServers", "models", "searchOptions", "skills"] as const;
+const REVIEW_NAME_KINDS = ["mcpServers", "models", "searchOptions", "skills"] as const;
 
 function resourceNames(value: unknown): AdminAssistantResourceName[] | null {
   if (!Array.isArray(value)) return null;

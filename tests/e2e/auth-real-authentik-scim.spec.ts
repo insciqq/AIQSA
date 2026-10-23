@@ -72,7 +72,6 @@ let userIdsBefore: string[] = [];
 let groupIdsBefore: string[] = [];
 let scimToken = "";
 let preCreatedGroupId = "";
-const projectIds: string[] = [];
 
 // Authentik's API (2026.8): admin bootstrap token, JSON, DRF pagination.
 
@@ -202,7 +201,6 @@ test.afterAll(async ({ browser }) => {
     await restoreOidc?.();
     await restoreScim?.();
     await prisma.authScimToken.deleteMany({ where: { id: { notIn: tokenIdsBefore } } });
-    await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
     await deleteSyntheticMcpServers(prisma, servers);
     // What SCIM pushed or the spec created on this stand: users and groups that were not here before.
     const newUsers = (await prisma.user.findMany({ select: { id: true }, where: { id: { notIn: userIdsBefore } } })).map((row) => row.id);
@@ -356,7 +354,7 @@ test("a pushed user signs in through Authentik OIDC and links by email although 
   await attachEvidence(testInfo, "scim-oidc-link", { emailVerified: false, linkedToPushedAccount: true });
 });
 
-test("deactivation in Authentik revokes sessions at once; a sole Project Owner waits for an ownership transfer; reactivation", async ({ browser }, testInfo) => {
+test("deactivation in Authentik revokes sessions at once; reactivation", async ({ browser }, testInfo) => {
   test.setTimeout(480_000);
   // Alex: a live OIDC session in a browser.
   const alexSession = await authentikSignIn(browser, people.alex);
@@ -369,41 +367,6 @@ test("deactivation in Authentik revokes sessions at once; a sole Project Owner w
   expect(alexDisabled.status).toBe("disabled");
   await alexSession.context.close();
 
-  // Bea alone owns a Project: AIQSA answers 409, revokes her session and marks the deactivation pending.
-  const bea = (await pushedUser(people.bea))!;
-  const project = await prisma.project.create({
-    data: { createdByDisplayName: "Authentik owner", createdByUserId: bea.id, grants: { create: [{ role: "OWNER", userId: bea.id }] }, name: `Owned by ${run}` }
-  });
-  projectIds.push(project.id);
-  const sessionToken = randomUUID();
-  await prisma.authSession.create({ data: { expiresAt: new Date(Date.now() + 86_400_000), signInMethod: "oidc", tokenHash: hashToken(sessionToken), userId: bea.id } });
-  const beaBrowser = await standContext(browser);
-  await beaBrowser.addCookies([{ domain: "127.0.0.1", name: SESSION_COOKIE_NAME, path: "/", value: sessionToken }]);
-  expect((await beaBrowser.request.get("/api/me")).status()).toBe(200);
-  const admin = await adminSession(browser);
-  await authentik("PATCH", `/core/users/${created.userPks.get(people.bea.username)}/`, { is_active: false });
-  await nudgeSync("user", created.userPks.get(people.bea.username)!);
-  const pending = await poll(async () => {
-    const row = await prisma.user.findUniqueOrThrow({ select: { scimDeactivatedAt: true, status: true }, where: { id: bea.id } });
-    return row.scimDeactivatedAt ? row : null;
-  }, "scim_pending_not_marked");
-  expect(pending.status).toBe("active");
-  const beaSessionAfter = (await beaBrowser.request.get("/api/me")).status();
-  await beaBrowser.close();
-  expect(beaSessionAfter).toBe(401);
-  await admin.page.goto(`/admin?section=users&resource=${encodeURIComponent(bea.id)}`);
-  await expect(admin.page.getByTestId("admin-user-scim-pending")).toContainText("SCIM deactivation pending: 1 Project needs a new Owner");
-  await admin.page.screenshot({ path: testInfo.outputPath("scim-authentik-pending-desktop.png") });
-
-  // After the transfer, Authentik's retry disables her.
-  const successor = await prisma.user.create({ data: { displayName: `Successor ${run}`, email: `successor-${run}@local.aiqsa.test`, status: "active" } });
-  await prisma.projectGrant.create({ data: { projectId: project.id, role: "OWNER", userId: successor.id } });
-  await authentik("PATCH", `/core/users/${created.userPks.get(people.bea.username)}/`, { name: `${people.bea.username} retry` });
-  await nudgeSync("user", created.userPks.get(people.bea.username)!);
-  await poll(async () => (await prisma.user.findUniqueOrThrow({ select: { status: true }, where: { id: bea.id } })).status === "disabled", "scim_retry_not_applied");
-  await admin.page.reload();
-  await expect(admin.page.getByTestId("admin-user-scim-pending")).toHaveCount(0);
-
   // Reactivation in Authentik re-enables the account SCIM disabled.
   await authentik("PATCH", `/core/users/${created.userPks.get(people.alex.username)}/`, { is_active: true });
   await nudgeSync("user", created.userPks.get(people.alex.username)!);
@@ -414,12 +377,8 @@ test("deactivation in Authentik revokes sessions at once; a sole Project Owner w
   const again = await authentikSignIn(browser, people.alex);
   await expect(again.page.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
   await again.context.close();
-  await admin.context.close();
   await attachEvidence(testInfo, "scim-lifecycle", {
     alexDisabled: alexDisabled.status === "disabled",
-    beaPendingStatus: pending.status,
-    beaSessionAfterPending: beaSessionAfter,
-    reactivated: reactivated.status === "active",
-    retryDisabled: true
+    reactivated: reactivated.status === "active"
   });
 });

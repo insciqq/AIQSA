@@ -66,7 +66,7 @@ export async function loadMemoryMaintenanceContext(client: Pick<PrismaClient, "$
     WITH RECURSIVE context_message AS (
       SELECT message.id, message."chatId", message."parentMessageId", message.role, message.content, message."updatedAt", message."createdAt", 0 AS depth, TRUE AS eligible, FALSE AS transparent
       FROM "Message" message JOIN "Chat" chat ON chat.id = message."chatId"
-      WHERE chat."userId" = ${userId} AND chat."projectId" IS NULL AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+      WHERE chat."userId" = ${userId} AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
         AND chat."permanentDeletionAt" IS NULL AND message.id IN (${Prisma.join(messageIds)}) AND message.status = 'complete'
         AND aiqsa_memory_message_dependency_valid(${userId}, message.id, message."updatedAt")
       UNION ALL

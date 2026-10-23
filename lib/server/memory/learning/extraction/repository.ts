@@ -228,7 +228,6 @@ async function loadBoundSource(
     // inverse chat->settings lock order used by source mutations while still
     // revalidating the complete active path in this transaction snapshot.
     lock: "NONE",
-    personalOnly: true,
     userId: job.userId
   });
   if (

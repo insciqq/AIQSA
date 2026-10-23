@@ -24,7 +24,7 @@ export function runAttributionUsageWhere(runId: string): Prisma.UsageEventWhereI
 
 /** Row data for a run's attributions, written after the run's previous attribution rows were deleted. */
 export function runAttributionUsageRows(
-  scope: Readonly<{ chatId: string; projectId?: string | null; runId: string; userId: string }>,
+  scope: Readonly<{ chatId: string; runId: string; userId: string }>,
   attributions: readonly RunUsageAttribution[]
 ): Prisma.UsageEventCreateManyInput[] {
   return attributions.map((attribution) => {
@@ -42,7 +42,7 @@ export function runAttributionUsageRows(
         usage.completeness === "partial" ? "PARTIAL" as const : "UNAVAILABLE" as const,
       // The rewrite re-reads its rows: the count keeps the search fee and round subtraction exact.
       webSearchCount: usage.webSearchCount ?? null,
-      ...(scope.projectId ? { projectId: scope.projectId } : {}), userId: scope.userId
+      userId: scope.userId
     };
   });
 }

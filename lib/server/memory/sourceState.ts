@@ -45,8 +45,6 @@ export type LockedMemorySourceChat = Readonly<{
   memoryBranchGeneration: number;
   memoryMode: MemoryChatMode;
   memorySourceRevision: number;
-  /** Populated by the canonical source loader; legacy raw callers may omit it. */
-  projectId?: string | null;
   temporaryRetentionDeadline: Date | null;
   temporaryRetentionPolicyVersion: string | null;
   userId: string;
@@ -188,7 +186,6 @@ export async function lockMemorySourceChat(
   input: Readonly<{
     chatId: string;
     lock: "SHARE" | "UPDATE";
-    personalOnly?: boolean;
     userId: string;
   }>
 ): Promise<LockedMemorySourceChat | null> {
@@ -200,7 +197,6 @@ async function readMemorySourceChat(
   input: Readonly<{
     chatId: string;
     lock: "NONE" | "SHARE" | "UPDATE";
-    personalOnly?: boolean;
     userId: string;
   }>
 ): Promise<LockedMemorySourceChat | null> {
@@ -211,14 +207,13 @@ async function readMemorySourceChat(
       : Prisma.empty;
   const rows = await tx.$queryRaw<LockedMemorySourceChat[]>(Prisma.sql`
     SELECT
-      "id", "userId", "projectId", "activeLeafMessageId", "folderId", "archived",
+      "id", "userId", "activeLeafMessageId", "folderId", "archived",
       "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
       "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
     FROM "Chat"
     WHERE "id" = ${input.chatId}
       AND "userId" = ${input.userId}
       AND "permanentDeletionAt" IS NULL
-      ${input.personalOnly ? Prisma.sql`AND "projectId" IS NULL` : Prisma.empty}
     ${lock}
   `);
   return rows[0] ?? null;
@@ -309,14 +304,12 @@ export async function loadMemorySourceSnapshot(
   input: Readonly<{
     chatId: string;
     lock?: "NONE" | "SHARE" | "UPDATE";
-    personalOnly?: boolean;
     userId: string;
   }>
 ): Promise<MemorySourceSnapshot | null> {
   const chat = await readMemorySourceChat(tx, {
     chatId: input.chatId,
     lock: input.lock ?? "SHARE",
-    personalOnly: input.personalOnly,
     userId: input.userId
   });
   if (!chat) return null;
@@ -600,7 +593,6 @@ export async function memorySourceJobSnapshotMatches(
     const snapshot = await loadMemorySourceSnapshot(tx, {
       chatId: job.chatId,
       lock: "NONE",
-      personalOnly: true,
       userId: job.userId
     });
     return Boolean(
@@ -618,7 +610,6 @@ export async function memorySourceJobSnapshotMatches(
   const snapshot = await loadMemorySourceSnapshot(tx, {
     chatId: job.chatId,
     lock: "SHARE",
-    personalOnly: true,
     userId: job.userId
   });
   return Boolean(

@@ -35,15 +35,14 @@ import {
  * Effective values in the vocabulary admission executes. Tools: `exact` is the
  * exact server allowlist with Load all semantics, `auto` and `load_all` are an
  * ordinary chat over the runner's own servers, `off` exposes no MCP. Search:
- * `off` resolves no source; a plan always names at least one source.
- * Knowledge: `all_my_knowledge`, `none` or an explicit selection. Skills: the
- * Assistant's links are always included; the caller adds manual pins on top.
- * Controls: a partial set over the model's built-ins. Every value is also a
- * valid `ChatAssistantRowValues` effective value of the chat projection.
+ * `off` resolves no source; a plan always names at least one source. Skills:
+ * the Assistant's links are always included; the caller adds manual pins on
+ * top. Controls: a partial set over the model's built-ins. Every value is
+ * also a valid `ChatAssistantRowValues` effective value of the chat
+ * projection.
  */
 export type ResolvedAssistantRowValues = {
   controls: AssistantRunControls;
-  knowledge: ChatAssistantOverrideValues["knowledge"];
   model: ChatAssistantOverrideValues["model"];
   search: ChatAssistantOverrideValues["search"];
   skills: { links: AssistantSkillLink[]; mode: SkillsMode };
@@ -51,14 +50,12 @@ export type ResolvedAssistantRowValues = {
 };
 
 /**
- * What inherit means in the chat's context: the user's Chat defaults for a
- * personal chat, the Project's defaults for a Project chat. Skills have no
- * inherit, so no Skills default is needed.
+ * What inherit means in the chat's context: the user's Chat defaults. Skills
+ * have no inherit, so no Skills default is needed.
  */
 export type AssistantRowContextDefaults = {
   /** The context's saved control values for a model; `{}` when none are saved. */
   controlsForModel: (modelId: string) => AssistantRunControls;
-  knowledge: ChatAssistantOverrideValues["knowledge"];
   /** The model a chat without a choice uses; the caller resolves it as an ordinary chat does. */
   modelId: string;
   /** A plan without sources reads as Off. */
@@ -71,10 +68,6 @@ export type AssistantRowContextDefaults = {
  * only the ids the rows, overrides and request values name.
  */
 export type AssistantRowAvailableResources = {
-  /** False where "All my knowledge" cannot run, such as a Project chat. */
-  allMyKnowledge: boolean;
-  knowledgeBaseIds: ReadonlySet<string>;
-  knowledgeSourceIds: ReadonlySet<string>;
   mcpServerIds: ReadonlySet<string>;
   modelIds: ReadonlySet<string>;
   searchOptionIds: ReadonlySet<string>;
@@ -147,7 +140,7 @@ export type AssistantRowResolutionFailure = {
   row: AssistantRowKey;
 };
 
-type ResourceRowKey = "knowledge" | "model" | "search" | "tools";
+type ResourceRowKey = "model" | "search" | "tools";
 
 type Availability = { available: boolean; missing: string[] };
 
@@ -175,15 +168,8 @@ export function assistantValueAvailability(
     const value = rows.search.value;
     return "optionIds" in value ? missingOf(value.optionIds, available.searchOptionIds, value.hiddenCount) : usable();
   }
-  if (key === "tools") {
-    const value = rows.tools.value;
-    return value.mode === "exact" ? missingOf(value.serverIds, available.mcpServerIds, value.hiddenCount) : usable();
-  }
-  const value = rows.knowledge.value;
-  if (value.mode !== "explicit") return usable();
-  const bases = missingOf(value.baseIds, available.knowledgeBaseIds);
-  const sources = missingOf(value.sourceIds, available.knowledgeSourceIds, value.hiddenCount);
-  return { available: bases.available && sources.available, missing: [...bases.missing, ...sources.missing] };
+  const value = rows.tools.value;
+  return value.mode === "exact" ? missingOf(value.serverIds, available.mcpServerIds, value.hiddenCount) : usable();
 }
 
 function overrideAvailable(
@@ -197,12 +183,7 @@ function overrideAvailable(
     return !("optionIds" in value) || value.optionIds.every((id) => available.searchOptionIds.has(id));
   }
   // Chat tools use the ordinary modes over the runner's own servers.
-  if (key === "tools") return true;
-  const value = overrides.knowledge!;
-  if (value.mode === "all_my_knowledge") return available.allMyKnowledge;
-  return value.mode === "none" ||
-    (value.baseIds.every((id) => available.knowledgeBaseIds.has(id)) &&
-      value.sourceIds.every((id) => available.knowledgeSourceIds.has(id)));
+  return true;
 }
 
 function searchValue(value: AssistantRowContextDefaults["search"]): ResolvedAssistantRowValues["search"] {
@@ -213,11 +194,6 @@ function searchValue(value: AssistantRowContextDefaults["search"]): ResolvedAssi
 function copyOverride<Key extends ResourceRowKey>(key: Key, value: ChatAssistantOverrideValues[Key]):
   ResolvedAssistantRowValues[Key] {
   if (key === "search") return searchValue(value as ChatAssistantOverrideValues["search"]) as ResolvedAssistantRowValues[Key];
-  if (key === "knowledge" && value.mode === "explicit") {
-    const knowledge = value as Extract<ChatAssistantOverrideValues["knowledge"], { mode: "explicit" }>;
-    return { baseIds: [...knowledge.baseIds], mode: "explicit", sourceIds: [...knowledge.sourceIds] } as
-      ResolvedAssistantRowValues[Key];
-  }
   return { ...value } as ResolvedAssistantRowValues[Key];
 }
 
@@ -226,8 +202,7 @@ function defaultValue<Key extends ResourceRowKey>(key: Key, defaults: AssistantR
   const value: ResolvedAssistantRowValues[ResourceRowKey] =
     key === "model" ? { mode: "model", modelId: defaults.modelId }
       : key === "search" ? searchValue(defaults.search)
-        : key === "tools" ? { mode: defaults.tools.mode }
-          : copyOverride("knowledge", defaults.knowledge);
+        : { mode: defaults.tools.mode };
   return value as ResolvedAssistantRowValues[Key];
 }
 
@@ -238,14 +213,9 @@ function assistantValue<Key extends ResourceRowKey>(key: Key, rows: AssistantRow
     value = { mode: "model", modelId: (rows.model.value as { modelId: string }).modelId };
   } else if (key === "search") {
     value = searchValue(rows.search.value as ChatAssistantOverrideValues["search"]);
-  } else if (key === "tools") {
+  } else {
     const tools = rows.tools.value;
     value = tools.mode === "exact" ? { mode: "exact", serverIds: [...tools.serverIds] } : { mode: "off" };
-  } else {
-    const knowledge = rows.knowledge.value;
-    value = knowledge.mode === "explicit"
-      ? { baseIds: [...knowledge.baseIds], mode: "explicit", sourceIds: [...knowledge.sourceIds] }
-      : { mode: "none" };
   }
   return value as ResolvedAssistantRowValues[Key];
 }
@@ -405,7 +375,6 @@ export function resolveAssistantRows(
       : null;
   const outcomes = {
     controls: model.ok ? resolveControlsRow(input, model.row, patch) : controlsWithoutModel,
-    knowledge: resolveResourceRow("knowledge", input, patch),
     model,
     search: resolveResourceRow("search", input, patch),
     skills: resolveSkillsRow(input, patch),
@@ -431,7 +400,6 @@ export function assistantRunRowProvenance(resolution: AssistantRowResolution): A
   const { rows } = resolution;
   return {
     controls: rows.controls.provenance,
-    knowledge: rows.knowledge.provenance,
     model: rows.model.provenance,
     search: rows.search.provenance,
     skills: rows.skills.provenance,

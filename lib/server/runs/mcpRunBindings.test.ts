@@ -43,13 +43,11 @@ function ownerFence({ strings, values }: SqlCall) {
 
 describe("MCP admission owner fences", () => {
   const binding = bindings[0]!;
+  const expected = { installationOnly: false, ownerBinding: "user-1", ownerComparisons: 2 };
 
-  it.each([
-    ["Project", { projectId: "project-1" }, { installationOnly: true, ownerBinding: undefined, ownerComparisons: 1 }],
-    ["personal", {}, { installationOnly: false, ownerBinding: "user-1", ownerComparisons: 2 }]
-  ] as const)("binds accepted %s runs only to servers that runner may use", async (_label, scope, expected) => {
+  it("binds accepted runs only to servers that runner may use", async () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
-    await insertAcceptedMcpRunBindings(transaction(executeRaw), { ...scope, bindings: [binding], runId: "run-1", tools: [], userId: "user-1" });
+    await insertAcceptedMcpRunBindings(transaction(executeRaw), { bindings: [binding], runId: "run-1", tools: [], userId: "user-1" });
     const [first, ...rest] = executeRaw.mock.calls[0]!;
     const call: SqlCall = "strings" in (first as object)
       ? first as unknown as SqlCall
@@ -57,16 +55,13 @@ describe("MCP admission owner fences", () => {
     expect(ownerFence(call)).toEqual(expected);
   });
 
-  it.each([
-    ["Project", { projectId: "project-1" }, { installationOnly: true, ownerBinding: undefined, ownerComparisons: 1 }],
-    ["personal", {}, { installationOnly: false, ownerBinding: "user-1", ownerComparisons: 2 }]
-  ] as const)("rechecks the same fence for %s runs at finalization and refuses a missing row", async (_label, scope, expected) => {
+  it("rechecks the same fence at finalization and refuses a missing row", async () => {
     const queryRaw = vi.fn(async (_query: SqlCall): Promise<Array<{ id: string }>> => [{ id: binding.runtimeGenerationId }]);
     const tx = {
       $queryRaw: queryRaw,
       mcpRunBinding: { findMany: async () => [{ runtimeGenerationFingerprint: binding.fingerprint, runtimeGenerationId: binding.runtimeGenerationId }] }
     } as unknown as Prisma.TransactionClient;
-    const input = { ...scope, bindings: [binding], runId: "run-1", tools: [], userId: "user-1" };
+    const input = { bindings: [binding], runId: "run-1", tools: [], userId: "user-1" };
 
     await assertCurrentMcpAdmission(tx, input);
     expect(queryRaw).toHaveBeenCalledTimes(1);
@@ -78,40 +73,6 @@ describe("MCP admission owner fences", () => {
 });
 
 describe("atomic MCP run bindings", () => {
-  it("uses Project authority and shared-current runtime fences without a personal grant", async () => {
-    const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
-
-    await insertAcceptedMcpRunBindings(transaction(executeRaw), {
-      tools: [],
-      bindings: [bindings[0]!],
-      projectId: "project-1",
-      runId: "run-1",
-      userId: "contributor-without-grant"
-    });
-
-    expect(executeRaw).toHaveBeenCalledTimes(1);
-    const query = executeRaw.mock.calls[0]![0] as unknown as {
-      join?: (separator: string) => string;
-      strings?: readonly string[];
-    };
-    const sql = query.strings?.join(" ") ?? query.join?.(" ") ?? "";
-    expect(sql).toContain('INNER JOIN "ProjectMcpBinding"');
-    // Only the server's installation-owned shared runtime, never a member's generation.
-    expect(sql).toContain('shared."desiredRuntimeGenerationId" = generation."id"');
-    expect(sql).toContain('shared."serverId" = generation."sharedServerId"');
-    expect(sql).toContain('generation."userServerId" IS NULL');
-    expect(sql).not.toContain('"McpUserServer"');
-    expect(sql).toContain('generation."oauthConnectionId" IS NULL');
-    expect(sql).toContain("ARRAY['oauth', 'personal']");
-    expect(sql).not.toContain('FROM "McpGrant"');
-    expect((query as { values?: readonly unknown[] }).values).toEqual(expect.arrayContaining([
-      "project-1",
-      "server-1",
-      "generation-1",
-      "fingerprint-1"
-    ]));
-  });
-
   it("uses one guarded INSERT SELECT for every exact prepared binding", async () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
 

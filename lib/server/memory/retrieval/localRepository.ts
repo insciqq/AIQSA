@@ -1496,7 +1496,6 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
         SELECT 1 FROM "Chat" AS standing_chat
         WHERE standing_chat."id" = ${snapshot.chatId}
           AND standing_chat."userId" = ${snapshot.userId}
-          AND standing_chat."projectId" IS NULL
           -- Still read as the snapshot read it: an ordinary chat, or the
           -- excluded chat of a scheduled task's own read.
           AND standing_chat."memoryMode" = ${snapshot.chatMemoryMode === "EXCLUDED"
@@ -1744,7 +1743,6 @@ function historyChunkEligibleSelect(
         'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND source_chat."projectId" IS NULL
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
       AND ${memoryHistoryChunkSourceAuthorityPredicate({
@@ -1850,7 +1848,6 @@ function historyLegacyRoundEligibleSelect(
       AND parent_chunk."sourceProjectionVersion" =
         ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND source_chat."projectId" IS NULL
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
       AND ${memoryHistoryRoundSourceAuthorityPredicate({
@@ -1971,7 +1968,6 @@ function historySegmentRoundEligibleSelect(
       AND parent_chunk."sourceProjectionVersion" =
         ${MEMORY_HISTORY_SOURCE_PROJECTION_VERSION}
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND source_chat."projectId" IS NULL
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
       AND ${memoryHistoryRoundSourceAuthorityPredicate({
@@ -2105,7 +2101,6 @@ function toolEventEligibleSelect(
         'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND source_chat."projectId" IS NULL
       AND source_chat."permanentDeletionAt" IS NULL
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
       AND checkpoint."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}

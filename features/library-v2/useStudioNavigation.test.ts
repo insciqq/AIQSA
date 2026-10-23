@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useStudioNavigation } from "./useStudioNavigation";
 import { initialStudioSection, rememberStudioSection, storedStudioSection } from "@/components/app-shell/shellStorage";
 
-const available = ["assistants", "knowledge", "files"] as const;
+const available = ["assistants", "memory", "files"] as const;
 
 describe("Studio navigation", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); });
@@ -12,8 +12,8 @@ describe("Studio navigation", () => {
     expect(initialStudioSection(available)).toBe("assistants");
     rememberStudioSection("files");
     expect(initialStudioSection(available)).toBe("files");
-    expect(initialStudioSection(available, "knowledge")).toBe("knowledge");
-    expect(initialStudioSection(["knowledge"])).toBe("knowledge");
+    expect(initialStudioSection(available, "memory")).toBe("memory");
+    expect(initialStudioSection(["memory"])).toBe("memory");
     expect(initialStudioSection([])).toBeUndefined();
     window.localStorage.setItem("aiqsa.studio.section", "broken");
     expect(initialStudioSection(available)).toBe("assistants");
@@ -34,13 +34,13 @@ describe("Studio navigation", () => {
     const guard = vi.fn((proceed: () => void) => { pending = proceed; });
     const { result } = renderHook(() => useStudioNavigation({ available, onSelect, onExit }));
     act(() => result.current.registerGuard(guard, false));
-    act(() => result.current.open("knowledge"));
+    act(() => result.current.open("memory"));
     expect(onSelect).not.toHaveBeenCalled();
     expect(storedStudioSection(available)).toBeNull();
     expect(result.current.tab).toBe("assistants");
     act(() => pending?.());
-    expect(result.current.tab).toBe("knowledge");
-    expect(storedStudioSection(available)).toBe("knowledge");
+    expect(result.current.tab).toBe("memory");
+    expect(storedStudioSection(available)).toBe("memory");
     act(() => result.current.open("assistants", editAssistant));
     expect(editAssistant).not.toHaveBeenCalled();
     act(() => pending?.());

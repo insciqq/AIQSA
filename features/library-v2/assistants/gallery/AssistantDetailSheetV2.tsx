@@ -20,8 +20,7 @@ import {
   assistantDetailRows,
   assistantInstructionsFirstLine,
   assistantInstructionsPreview,
-  assistantListingStatusText,
-  assistantProjectsText
+  assistantListingStatusText
 } from "./assistantDetailCopy";
 import "../assistants.css";
 
@@ -30,7 +29,6 @@ export const ASSISTANT_NOT_AVAILABLE_TEXT = "This Assistant isn't available to y
 
 const rowIcons: Readonly<Record<AssistantRowKey, UiV2IconName>> = {
   controls: "sliders",
-  knowledge: "book",
   model: "layers",
   search: "globe",
   skills: "wand",
@@ -57,8 +55,8 @@ function Section({ children, title }: Readonly<{ children: ReactNode; title: str
 
 /**
  * The Sharing section's audience line, from the same detail fields as the
- * header: the owner reads every audience, any other viewer (a Project member
- * included) only how the Assistant reaches them.
+ * header: the owner reads every audience, any other viewer only how the
+ * Assistant reaches them.
  */
 function sharingAudience(detail: Pick<AssistantDetail, "audience" | "owned" | "scope">): string | null {
   if (detail.owned) {
@@ -71,7 +69,6 @@ function sharingAudience(detail: Pick<AssistantDetail, "audience" | "owned" | "s
   const scope = detail.scope;
   if (scope.kind === "installation") return "Everyone in this installation";
   if (scope.kind === "group") return `Shared with ${scope.groupNames.join(", ")}`;
-  if (scope.kind === "project") return `Project “${scope.projectName}”`;
   return null;
 }
 
@@ -127,7 +124,7 @@ function DetailBody({
   detail: AssistantDetail;
   gallery: AssistantGalleryView;
   initialPreviewOpen: boolean;
-  /** In the viewer's list: pin and duplicate work; a Project member's read has neither. */
+  /** In the viewer's list: pin and duplicate work; a read outside the list has neither. */
   listed: boolean;
   names: AssistantDetailSheetView["names"];
   onCopied(copied: boolean): void;
@@ -142,7 +139,6 @@ function DetailBody({
   const rows = assistantDetailRows(detail, names, summary?.fingerprint.modelLabel ?? null);
   const audience = sharingAudience(detail);
   const listing = detail.owned ? assistantListingStatusText(detail) : null;
-  const projects = detail.owned ? assistantProjectsText(detail) : null;
   const meta = assistantDetailMeta(detail);
   return (
     <div className="v2-assistants-detail" data-testid="assistant-detail">
@@ -258,7 +254,6 @@ function DetailBody({
             </p>
           ) : null}
           {listing ? <p>{listing}</p> : null}
-          {projects ? <p>{projects}</p> : null}
           <div className="v2-assistants-sharing-actions">
             <UiV2Button icon="link" onClick={() => void gallery.onCopyLink(detail.id).then(onCopied)}>Copy link</UiV2Button>
             {detail.owned ? (

@@ -128,17 +128,14 @@ export function useChatContinuation(input: Readonly<{
         const detailResponse = await shellFetch(`/api/chats/${encodeURIComponent(result.chatId)}`, { signal: controller.signal });
         const detail = detailResponse.ok ? decodeChatDetailResponse(await detailResponse.json()) : null;
         if (!owns() || owner.cancelRequested) return;
-        if (!detail || detail.id !== result.chatId || (detail.projectId ?? null) !== result.projectId) {
+        if (!detail || detail.id !== result.chatId) {
           throw new Error("The summary was saved, but the new chat could not be opened. Try again to open it.");
         }
         const summary = chatDetailFromApi(detail);
-        if (result.projectId) summary.memoryMode = "EXCLUDED";
-        else {
-          const memory = await loadChatMemoryState(result.chatId, controller.signal);
-          if (!owns() || owner.cancelRequested) return;
-          summary.memoryMode = memory.mode;
-          summary.temporaryRetentionDeadline = memory.temporaryRetentionDeadline;
-        }
+        const memory = await loadChatMemoryState(result.chatId, controller.signal);
+        if (!owns() || owner.cancelRequested) return;
+        summary.memoryMode = memory.mode;
+        summary.temporaryRetentionDeadline = memory.temporaryRetentionDeadline;
         await current.current.onOpen(summary, sourceSessionKey);
         return;
       }

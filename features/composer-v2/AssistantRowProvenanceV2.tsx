@@ -3,7 +3,6 @@
 import type { ShellComposerAssistant } from "@/components/app-shell/powerAppShellV2Contracts";
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import type { AssistantRowKey, AssistantRowValues } from "@/lib/contracts/assistants";
-import type { ReactNode } from "react";
 
 /** What the composer controls need of the chat's Assistant (`composer.assistant` in the shell). */
 export type ComposerV2Assistant = Readonly<{
@@ -17,8 +16,7 @@ export type BoundComposerAssistantV2 = Extract<ShellComposerAssistant, { state: 
  * The Assistant's part in one row, as every control shows it:
  * - `fixed`: the Assistant's value; the control's options are disabled.
  * - `adjustable`: the Assistant's value, or the user's own after a change for this chat.
- * - `fallback`: the Assistant's value is unavailable to the user; their default (in a
- *   Project chat, the Project's) applies.
+ * - `fallback`: the Assistant's value is unavailable to the user; their default applies.
  * - `own`: the Assistant leaves the row to the user's defaults (inherit).
  */
 export type AssistantRowProvenanceV2 = Readonly<{
@@ -30,14 +28,11 @@ export type AssistantRowProvenanceV2 = Readonly<{
   kind: "adjustable" | "fallback" | "fixed" | "own";
   /** The quiet dot: the effective value is the Assistant's. */
   marker: boolean;
-  /** A Project chat: a fallback row uses the Project's default. */
-  project?: boolean;
   row: AssistantRowKey;
 }>;
 
 const FALLBACK_VALUES: Readonly<Record<AssistantRowKey, string>> = {
   controls: "parameters",
-  knowledge: "Knowledge",
   model: "recommended model",
   search: "web search",
   skills: "Skills",
@@ -78,7 +73,6 @@ export function assistantRowProvenance(
     fallbackValue,
     kind,
     marker: state.origin === "assistant",
-    ...(assistant.project ? { project: true } : {}),
     row
   };
 }
@@ -104,9 +98,7 @@ export function assistantRowNoticeText(
       return `From ${provenance.assistantName} · adjustable for this chat`;
     case "fallback": {
       const unavailable = `${provenance.assistantName}'s ${provenance.fallbackValue} ${provenance.fallbackPlural ? "aren't" : "isn't"}`;
-      return provenance.project
-        ? `${unavailable} available in this Project; using the Project default`
-        : `${unavailable} available to you; using your default`;
+      return `${unavailable} available to you; using your default`;
     }
     default:
       return null;
@@ -139,11 +131,9 @@ const NOTICE_ICONS: Readonly<Record<AssistantRowProvenanceV2["kind"], UiV2IconNa
 
 /** The first line of a control that shows the Assistant's part in its row. */
 export function AssistantRowNoticeV2({
-  action,
   kind,
   text
 }: Readonly<{
-  action?: ReactNode;
   kind: AssistantRowProvenanceV2["kind"];
   text: string;
 }>) {
@@ -151,7 +141,6 @@ export function AssistantRowNoticeV2({
     <div className="v2-composer-provenance" data-kind={kind} data-testid="assistant-row-provenance">
       <UiV2Icon name={NOTICE_ICONS[kind]} />
       <span>{text}</span>
-      {action}
     </div>
   );
 }

@@ -13,8 +13,7 @@ export type SignInSessionInput = Omit<CreateAuthSessionInput, "signInMethod" | "
 /**
  * How a verified first factor ends. `second_factor_required` carries the factor state the
  * challenge binds to, so a challenge goes stale once that state changes. `refused` creates
- * nothing: SCIM deactivated the account and the deactivation waits for a Project ownership
- * transfer.
+ * nothing: SCIM recorded a deactivation of the account.
  */
 export type SessionIssuanceDecision =
   | { kind: "refused" }

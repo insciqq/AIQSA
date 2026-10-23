@@ -100,7 +100,7 @@ export function createKnowledgeImageObservationStore(prisma: PrismaClient) {
         await tx.knowledgeImageObservation.create({ data: { modelRunId: c.runId, providerBindingKey: destination.bindingKey,
           requestHash: c.requestHash, images } });
         await tx.usageEvent.create({ data: { visionAnalysis: true, knowledgeImageObservationRunId: c.runId, purpose: "knowledge_indexing",
-          userId: c.userId, chatId: c.chatId, modelRunId: c.runId, projectId: authority.projectId,
+          userId: c.userId, chatId: c.chatId, modelRunId: c.runId,
           provider: destination.snapshot.providerFamily, providerModelId: destination.authority.providerModelId,
           modelId: destination.snapshot.model.upstreamModelId } });
         return null;
@@ -140,7 +140,7 @@ export type KnowledgeImageObservationInput = Readonly<{
   runId: string;
   userId: string;
   chatId: string;
-  /** The caller's current run authority (answer entitlement, Project access); false refuses before any image is read. */
+  /** The caller's current run authority (answer entitlement, chat access); false refuses before any image is read. */
   authorize(): Promise<boolean>;
   /** Optional dispatch journal around the one provider request. */
   onDispatch?(request: ProviderRunRequest, destination: Readonly<{ provider: string; modelId: string }>): Promise<((ok: boolean, code: string | null) => Promise<void>) | null>;

@@ -10,7 +10,6 @@ export async function requireMemorySearchActiveBranch(tx: MemoryTransaction, use
     SELECT run.id FROM "ModelRun" run JOIN "Chat" chat ON chat.id = run."chatId"
       JOIN "Message" prompt ON prompt.id = run."userMessageId" AND prompt."chatId" = chat.id
     WHERE run.id = ${runId} AND run."userId" = ${userId} AND chat."userId" = ${userId}
-      AND chat."projectId" IS NULL
       AND (chat."memoryMode" = 'NORMAL' OR (chat."memoryMode" = 'EXCLUDED' AND prompt."scheduledTaskPrompt"))
       AND chat."permanentDeletionAt" IS NULL
       AND run."status" IN ('queued', 'streaming', 'in_progress')

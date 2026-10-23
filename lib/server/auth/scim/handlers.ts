@@ -51,7 +51,6 @@ export type ScimOutcomeCode =
   | "admin_disabled"
   | "invalid_request"
   | "last_admin"
-  | "owner_transfer_required"
   | "request_failed"
   | "token_invalid"
   | "uniqueness";
@@ -110,11 +109,6 @@ function userWriteOutcome(result: ScimUserWriteResult, success: (userId: string)
       };
     case "last_admin":
       return { code: "last_admin", response: scimError(409, "AIQSA keeps at least one active administrator.") };
-    case "owner_transfer_required":
-      return {
-        code: "owner_transfer_required",
-        response: scimError(409, "Transfer Project ownership first; the account's access is already revoked.")
-      };
   }
 }
 

@@ -1,15 +1,10 @@
 "use client";
 
 import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
-import {
-  adminActionErrorMessage,
-  adminSoleOwnedProjects,
-  type AdminActionResult
-} from "@/components/admin/adminApi";
+import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminActionRequest, AdminDashboard, AdminGroupGrantChange, AdminUserRecord, AdminUserRole } from "@/lib/contracts/admin";
-import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { useCallback, useMemo } from "react";
 
 export type UseAdminUsersControllerOptions = Readonly<{
@@ -46,17 +41,6 @@ export type AdminUsersController = Readonly<{
 
 function userLabel(user: AdminUserActionTarget): string {
   return user.email ?? user.displayName;
-}
-
-function soleOwnedProjectsLabel(result: AdminActionResult): string {
-  const conflict = adminSoleOwnedProjects(result);
-  if (!conflict || conflict.projects.length === 0) return "one or more Projects";
-  const names = conflict.projects
-    .map(({ name, status }) => `“${name}”${status === "ARCHIVED" ? " (archived)" : ""}`)
-    .join(", ");
-  const unnamed = conflict.projectCount - conflict.projects.length;
-  const noun = conflict.projectCount === 1 ? "Project" : "Projects";
-  return `${conflict.projectCount} ${noun}: ${names}${unnamed > 0 ? ` and ${unnamed} more` : ""}`;
 }
 
 /**
@@ -107,7 +91,7 @@ export function useAdminUsersController({
       icon: "trash",
       message: "Account deletion accepted.",
       onSuccess,
-      prompt: `Delete ${userLabel(user)}? Personal Memory, Knowledge and MCP connections are fenced and durably purged before the stale account and auth records are removed. Shared Project data remains. This cannot be undone.`,
+      prompt: `Delete ${userLabel(user)}? Personal Memory and MCP connections are fenced and durably purged before the stale account and auth records are removed. This cannot be undone.`,
       testId: "admin-confirm-delete-user",
       title: "Delete stale user?"
     });
@@ -175,27 +159,6 @@ export function useAdminUsersController({
       confirmLabel: "Disable user",
       dialogLabel: `Disable ${userLabel(user)}`,
       message: "User disabled.",
-      // Disable waits for an in-Project ownership transfer; the security step must not.
-      onFailure(result) {
-        if (result.error !== "project_owner_required") return;
-        requestConfirmedAction({
-          body: { action: "revoke_user_sessions", userId: user.id },
-          confirmLabel: "Revoke sessions",
-          dialogLabel: `Revoke sessions for ${userLabel(user)}`,
-          icon: "x",
-          message: PROJECTS_ENABLED
-            ? "User sessions and connected apps revoked. The account stays active until Project ownership is transferred."
-            : "User sessions and connected apps revoked. The account stays active while it is a Project's only Owner.",
-          prompt: `${userLabel(user)} was not disabled: they are the only active Owner of ${soleOwnedProjectsLabel(result)}. ` +
-            (PROJECTS_ENABLED
-              ? "Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. "
-              : "Projects are turned off, so ownership cannot move. ") +
-            "Revoke their sessions and connected apps now? They will need to sign in again and reconnect Telegram.",
-          testId: "admin-confirm-revoke-sessions-after-owner-conflict",
-          title: "Revoke sessions instead?",
-          tone: "warning"
-        });
-      },
       prompt: `Disable ${userLabel(user)}? Existing sessions are revoked and future sign-in is blocked.`,
       testId: "admin-confirm-disable-user",
       title: "Disable active user?"
@@ -212,7 +175,7 @@ export function useAdminUsersController({
           icon: "check",
           message: "Administrator rights granted.",
           prompt: `Make ${label} an administrator? Administrators can manage users, providers, models, MCP and installation settings. ` +
-            "This does not give access to other users' private chats, Assistants or Knowledge. The change applies from their next request.",
+            "This does not give access to other users' private chats or Assistants. The change applies from their next request.",
           testId: "admin-confirm-grant-admin-role",
           title: "Make administrator?",
           tone: "warning"
@@ -224,7 +187,7 @@ export function useAdminUsersController({
           icon: "x",
           message: "Administrator rights removed.",
           prompt: `Remove administrator rights from ${label}? They lose access to the admin console and admin actions from their next request. ` +
-            "Their own chats, Assistants, Knowledge and group access stay unchanged.",
+            "Their own chats, Assistants and group access stay unchanged.",
           testId: "admin-confirm-revoke-admin-role",
           title: "Remove administrator rights?",
           tone: "warning"

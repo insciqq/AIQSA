@@ -82,8 +82,6 @@ function summary(overrides: Partial<AssistantSummary> & Pick<AssistantSummary, "
     featured: false,
     featuredOrder: null,
     fingerprint: {
-      knowledgeLabel: null,
-      knowledgeResourceCount: 0,
       mcpServerCount: 0,
       modelLabel: null,
       reasoningEffort: null,
@@ -104,8 +102,6 @@ function summary(overrides: Partial<AssistantSummary> & Pick<AssistantSummary, "
 
 function fingerprint(overrides: Partial<AssistantSummary["fingerprint"]>): AssistantSummary["fingerprint"] {
   return {
-    knowledgeLabel: null,
-    knowledgeResourceCount: 0,
     mcpServerCount: 0,
     modelLabel: null,
     reasoningEffort: null,
@@ -124,7 +120,7 @@ export const ASSISTANT_FIXTURE_SUMMARIES: readonly AssistantSummary[] = [
     description: "Answers questions about policies, benefits and time off from the HR handbook. Never searches the web.",
     featured: true,
     featuredOrder: 0,
-    fingerprint: fingerprint({ knowledgeResourceCount: 2, modelLabel: "Gemini 3.8 Flash" }),
+    fingerprint: fingerprint({ modelLabel: "Gemini 3.8 Flash" }),
     id: "hr-helper",
     name: "HR Helper",
     pinned: true,
@@ -163,7 +159,7 @@ export const ASSISTANT_FIXTURE_SUMMARIES: readonly AssistantSummary[] = [
     avatar: avatar("plum", "triangle"),
     category: "research",
     description: "Compares sources, states confidence and cites everything. Web search stays on for this one.",
-    fingerprint: fingerprint({ knowledgeResourceCount: 1, searchOptionCount: 1 }),
+    fingerprint: fingerprint({ searchOptionCount: 1 }),
     id: "research-analyst",
     name: "Research analyst",
     pinned: true,
@@ -211,7 +207,7 @@ export const ASSISTANT_FIXTURE_SUMMARIES: readonly AssistantSummary[] = [
     avatar: avatar("ocean", "circle"),
     category: "analysis",
     description: "Drafts account briefs from CRM notes and the pricing base.",
-    fingerprint: fingerprint({ knowledgeResourceCount: 2, mcpServerCount: 1, modelLabel: "Gemini 3.8 Flash" }),
+    fingerprint: fingerprint({ mcpServerCount: 1, modelLabel: "Gemini 3.8 Flash" }),
     id: "sales-brief",
     name: "Sales brief",
     owned: false,
@@ -241,7 +237,7 @@ export const ASSISTANT_FIXTURE_SUMMARIES: readonly AssistantSummary[] = [
     avatar: avatar("sand", "square"),
     category: "analysis",
     description: "Reads every renewal in the queue, compares it with the framework agreement, flags price increases above the indexation cap, missing service levels and auto-renewal clauses, and drafts a short memo for the category manager with the clauses quoted verbatim.",
-    fingerprint: fingerprint({ knowledgeResourceCount: 12, mcpServerCount: 4, modelLabel: "Claude Sonnet 5", searchOptionCount: 2 }),
+    fingerprint: fingerprint({ mcpServerCount: 4, modelLabel: "Claude Sonnet 5", searchOptionCount: 2 }),
     id: "procurement-reviewer",
     name: LONG_NAME,
     published: true,
@@ -261,8 +257,6 @@ export const ASSISTANT_FIXTURE_SUMMARIES: readonly AssistantSummary[] = [
 ];
 
 const names: AssistantResourceNames = {
-  knowledgeBases: [{ id: "base-hr", name: "HR handbook" }, { id: "base-pricing", name: "Pricing base" }],
-  knowledgeSources: [{ id: "source-benefits", name: "Benefits FAQ" }],
   mcpServers: [{ id: "mcp-jira", name: "Jira" }, { id: "mcp-confluence", name: "Confluence" }],
   models: [{ id: "model-flash", label: "Gemini 3.8 Flash" }],
   searchOptions: [{ id: "web", label: "Web Search" }]
@@ -278,7 +272,6 @@ function baseContent(assistant: AssistantSummary, rows: AssistantRows, overrides
     avatar: assistant.avatar,
     category: assistant.category,
     description: assistant.description,
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: [],
     name: assistant.name,
     providerModelId: null,
@@ -297,7 +290,6 @@ function baseContent(assistant: AssistantSummary, rows: AssistantRows, overrides
 function plainRows(): AssistantRows {
   return {
     controls: { policy: "adjustable", value: {} },
-    knowledge: { policy: "adjustable", value: { mode: "none" } },
     model: { policy: "adjustable", value: { mode: "inherit" } },
     search: { policy: "adjustable", value: { mode: "inherit" } },
     skills: { policy: "adjustable", value: { links: [], mode: "auto" } },
@@ -323,7 +315,6 @@ function detailFor(assistant: AssistantSummary): AssistantDetail {
       ? {
           featuredOrder: assistant.featuredOrder,
           listingRequest: { canRequest: true, canWithdraw: false, listed: assistant.featured, request: null },
-          projects: { otherProjectCount: 0, projects: [] },
           publications: [],
           recentChatCount: 3,
           version: 2
@@ -335,7 +326,6 @@ function detailFor(assistant: AssistantSummary): AssistantDetail {
       ...base,
       content: baseContent(assistant, {
         controls: { policy: "adjustable", value: { reasoningEffort: "medium", temperature: 0.4 } },
-        knowledge: { policy: "fixed", value: { baseIds: ["base-hr"], mode: "explicit", sourceIds: ["source-benefits"] } },
         model: { policy: "adjustable", value: { mode: "model", modelId: "model-flash" } },
         search: { policy: "fixed", value: { mode: "off" } },
         skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-citations" }], mode: "auto" } },
@@ -352,7 +342,6 @@ function detailFor(assistant: AssistantSummary): AssistantDetail {
         listed: true,
         request: null
       },
-      projects: { otherProjectCount: 1, projects: [{ id: "project-people", name: "People Ops" }] },
       publications: [
         { groupId: null, groupName: null, id: "publication-everyone", scope: "installation", updatedAt: "2026-09-10T09:00:00.000Z" },
         { groupId: "group-support", groupName: "Support team", id: "publication-support", scope: "group", updatedAt: "2026-09-10T09:00:00.000Z" }
@@ -368,7 +357,6 @@ function detailFor(assistant: AssistantSummary): AssistantDetail {
       ...base,
       content: baseContent(assistant, {
         controls: { policy: "fixed", value: { reasoningEffort: "low" } },
-        knowledge: { policy: "fixed", value: { baseIds: ["base-pricing"], hiddenCount: 1, mode: "explicit", sourceIds: [] } },
         model: { policy: "adjustable", value: { mode: "model", modelId: null } },
         search: { policy: "adjustable", value: { mode: "inherit" } },
         skills: { policy: "adjustable", value: { hiddenCount: 1, links: [], mode: "auto" } },
@@ -386,9 +374,7 @@ function detailFor(assistant: AssistantSummary): AssistantDetail {
 const hrConsequences: AssistantDeletionConsequences = {
   audiences: { groupNames: ["Support team"], installation: true },
   chatCount: 38,
-  hiddenProjectCount: 1,
   pendingListingRequest: false,
-  projects: [{ isDefault: true, name: "People Ops" }],
   version: 4
 };
 
@@ -484,7 +470,7 @@ export function AssistantsGalleryFixtureV2({ onClose, onFromCurrentChat, onNewAs
           ? null
           : deletion.assistantId === "hr-helper"
             ? hrConsequences
-            : { ...hrConsequences, audiences: { groupNames: [], installation: false }, chatCount: 0, hiddenProjectCount: 0, projects: [] },
+            : { ...hrConsequences, audiences: { groupNames: [], installation: false }, chatCount: 0 },
         error: null,
         name: deletionTarget.name,
         onCancel: () => setDeletion(null),

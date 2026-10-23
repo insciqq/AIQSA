@@ -489,7 +489,6 @@ async function currentHistoryProjectionIsComplete(
         AND leaf."status" = 'complete'::"MessageStatus"
       WHERE chat."userId" = ${settings.userId}
         AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-        AND chat."projectId" IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM "MemoryPauseInterval" AS pause
           WHERE pause."userId" = chat."userId"
@@ -612,7 +611,6 @@ async function eligibleChunks(
     FROM "MemoryRecallChunk" AS chunk
     INNER JOIN "Chat" AS chat
       ON chat."userId" = chunk."userId" AND chat."id" = chunk."chatId"
-      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = chunk."userId" AND checkpoint."chatId" = chunk."chatId"
@@ -877,7 +875,6 @@ async function eligibleRounds(
       AND parent."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
     INNER JOIN "Chat" AS chat
       ON chat."userId" = round."userId" AND chat."id" = round."chatId"
-      AND chat."projectId" IS NULL
       AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
     INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
       ON checkpoint."userId" = round."userId" AND checkpoint."chatId" = round."chatId"
@@ -1081,7 +1078,6 @@ async function eligibleToolEvents(
     INNER JOIN "Chat" AS source_chat
       ON source_chat."userId" = tool_event."userId"
       AND source_chat."id" = tool_event."chatId"
-      AND source_chat."projectId" IS NULL
       AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
       AND source_chat."permanentDeletionAt" IS NULL
       AND source_chat."memoryBranchGeneration" = tool_event."branchGeneration"

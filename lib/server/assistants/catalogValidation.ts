@@ -38,7 +38,7 @@ export type AssistantCatalogValidationFailure =
 
 export type AssistantMcpRunnability = "accessible" | "exact" | "startable";
 
-/** The rows checked against a catalog; Knowledge and Skills have their own readers. */
+/** The rows checked against a catalog; Skills have their own reader. */
 export type AssistantCatalogRowValues = Pick<AssistantRowValues, "controls" | "model" | "search" | "tools">;
 
 /** Rows whose concrete value the viewer cannot use; an absent key is usable. */
@@ -178,15 +178,15 @@ export function emptyAssistantCatalogView(now: Date): AssistantCatalogView {
 
 /**
  * Rows for a copy owned by `view`'s user: a row whose resources the copier
- * cannot use becomes an adjustable inherit (None for Knowledge), controls
- * reset with the model they belong to, and unusable Skill links are dropped.
+ * cannot use becomes an adjustable inherit, controls reset with the model
+ * they belong to, and unusable Skill links are dropped.
  * Rows are reset one at a time, model first, because a usable model or tools
  * row can make a Search plan valid again.
  */
 export function assistantRowsForCopier(
   rows: AssistantRows,
   view: AssistantCatalogView,
-  usable: Readonly<{ knowledge: boolean; skillIds: ReadonlySet<string> }>
+  usable: Readonly<{ skillIds: ReadonlySet<string> }>
 ): { report: AssistantDuplicateReport; rows: AssistantRows } {
   const next: AssistantRows = { ...rows };
   const downgraded = new Set<AssistantRowKey>();
@@ -217,10 +217,6 @@ export function assistantRowsForCopier(
     } else {
       break;
     }
-  }
-  if (next.knowledge.value.mode === "explicit" && !usable.knowledge) {
-    next.knowledge = { policy: "adjustable", value: { mode: "none" } };
-    downgraded.add("knowledge");
   }
   const links = next.skills.value.links.filter((link) => usable.skillIds.has(link.skillId));
   const droppedSkillCount = next.skills.value.links.length - links.length;

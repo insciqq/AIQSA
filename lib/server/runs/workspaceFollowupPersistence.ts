@@ -145,9 +145,11 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
       return updated.count === 1;
     },
     async load(claim: WorkspaceFollowupClaim) {
+      // Personal chats only: a follow-up left in a legacy Project chat never
+      // continues, and its claim fails as unavailable.
       return prisma.workspaceFollowup.findFirst({ where: {
         modelRunId: claim.runId, claimToken: claim.claimToken, state: "preparing",
-        leaseExpiresAt: { gt: new Date() }, modelRun: { userId: claim.userId }
+        leaseExpiresAt: { gt: new Date() }, modelRun: { userId: claim.userId, chat: { userId: claim.userId } }
       }, include: {
         predecessor: { select: { status: true } },
         modelRun: { select: { chatId: true, createdAt: true, engine: true, status: true, normalizedRequest: true,

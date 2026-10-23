@@ -7,7 +7,7 @@ import {
   type McpApprovalState,
   type McpToolConsentWire
 } from "@/lib/contracts/mcpApprovals";
-import { resolveChatAccess } from "../projects/access";
+import { resolveChatAccess } from "../chats/access";
 import { MCP_APPROVAL_TTL_MS, type McpApprovalCallKey, type McpApprovalRequest } from "./writeApproval";
 
 /**
@@ -187,9 +187,8 @@ function continuable(row: McpApprovalCardRow, now: Date): boolean {
 
 /**
  * The cards of one run as a reader sees them. Only the initiator may decide,
- * continue after an Allow and expand the refused call's redacted request;
- * Project members see the card read-only. A branch copy of an answer shows
- * them read-only too.
+ * continue after an Allow and expand the refused call's redacted request; a
+ * branch copy of an answer shows them read-only.
  */
 export function projectMcpApprovalCards(
   rows: readonly McpApprovalCardRow[],
@@ -244,8 +243,7 @@ export async function decideMcpApproval(
         serverId: true },
       where: { id: input.approvalId }
     });
-    const access = await resolveChatAccess(tx, { chatId: row.chatId, minimumProjectRole: "CONTRIBUTOR",
-      requireMutable: true, userId: input.userId });
+    const access = await resolveChatAccess(tx, { chatId: row.chatId, userId: input.userId });
     if (!access) return { kind: "not_found" as const };
     const card = (current: McpApprovalCardRow) => projectMcpApprovalCards([current], { initiator: true, now })[0]!;
     if (row.decision !== null) {

@@ -24,7 +24,7 @@ import {
   requireActiveAdmin,
   runListingTransaction
 } from "./listingShared";
-import { createPrismaAssistantRepository, openableKnowledgeResources, unreachedPublicationSkillNames } from "./prismaRepository";
+import { createPrismaAssistantRepository, unreachedPublicationSkillNames } from "./prismaRepository";
 import { assistantRowsFromStoredColumns } from "./storedContent";
 
 type LockedDefinition = { archivedAt: Date | null; id: string; ownerUserId: string; version: number };
@@ -83,7 +83,7 @@ function adminSummary(row: SummaryRecord): AdminAssistantListingRequestSummary {
 const reviewSelect = {
   version: true, name: true, description: true, category: true, avatar: true, systemPrompt: true, answerRules: true,
   responseReminder: true, starterPrompts: true, modelPolicy: true, controlsPolicy: true, searchPolicy: true, toolsPolicy: true,
-  knowledgePolicy: true, skillsPolicy: true, mcpMode: true, mcpServerIds: true, searchPlan: true, knowledgeSelection: true,
+  skillsPolicy: true, mcpMode: true, mcpServerIds: true, searchPlan: true,
   skillsMode: true, providerModelId: true, runControls: true,
   skillLinks: { orderBy: { ordinal: "asc" as const }, select: { skillId: true, mode: true } }
 } satisfies Prisma.AssistantDefinitionSelect;
@@ -95,19 +95,11 @@ type ReviewRecord = Prisma.AssistantDefinitionGetPayload<{ select: typeof review
  */
 export type ListingReviewer = {
   catalog: Pick<AssistantCatalogView, "accessibleMcpServerIds" | "entitledSearchOptionIds" | "modelById">;
-  names: Readonly<Record<"knowledgeBases" | "knowledgeSources" | "mcpServers" | "searchOptions" | "skills", ReadonlyMap<string, string>>>;
-  visibleKnowledge: Readonly<{ baseIds: readonly string[]; sourceIds: readonly string[] }>;
+  names: Readonly<Record<"mcpServers" | "searchOptions" | "skills", ReadonlyMap<string, string>>>;
 };
 export type ListingReviewerLoader = (tx: Prisma.TransactionClient, userId: string, rows: AssistantRows) => Promise<ListingReviewer>;
 
-/** The Knowledge resources of the definition's explicit selection the user may open, with names. */
-async function openableKnowledge(tx: Prisma.TransactionClient, userId: string, rows: AssistantRows) {
-  const value = rows.knowledge.value;
-  if (value.mode !== "explicit") return { bases: new Map<string, string>(), sources: new Map<string, string>() };
-  return openableKnowledgeResources(tx, userId, value);
-}
-
-/** Loads the reviewer from the administrator's own catalog, MCP grants, Knowledge and Skills. */
+/** Loads the reviewer from the administrator's own catalog, MCP grants and Skills. */
 export function createListingReviewerLoader(db: PrismaClient): ListingReviewerLoader {
   let assistants: ReturnType<typeof createPrismaAssistantRepository> | undefined;
   return async (tx, userId, rows) => {
@@ -121,7 +113,6 @@ export function createListingReviewerLoader(db: PrismaClient): ListingReviewerLo
     const serverIds = tools.mode === "exact" ? tools.serverIds.filter((id) => accessibleMcpServerIds.has(id)) : [];
     const skillIds = rows.skills.value.links.map((link) => link.skillId);
     // One interactive transaction runs its queries one at a time.
-    const knowledge = await openableKnowledge(tx, userId, rows);
     const servers = serverIds.length > 0
       ? await tx.mcpServer.findMany({ select: { id: true, displayName: true }, where: { id: { in: serverIds } } })
       : [];
@@ -139,16 +130,13 @@ export function createListingReviewerLoader(db: PrismaClient): ListingReviewerLo
         modelById: new Map((selection?.models ?? []).map((model) => [model.modelId, model]))
       },
       names: {
-        knowledgeBases: knowledge.bases,
-        knowledgeSources: knowledge.sources,
         mcpServers: new Map(servers.map((server) => [server.id, server.displayName])),
         searchOptions: new Map(strategies.map((strategy) => [strategy.strategyId, strategy.displayName])),
         skills: new Map(skills.flatMap((skill) => {
           const revision = skill.ownerUserId === userId ? skill.currentRevision : skill.sharedRevision;
           return revision ? [[skill.id, revision.name] as const] : [];
         }))
-      },
-      visibleKnowledge: { baseIds: [...knowledge.bases.keys()], sourceIds: [...knowledge.sources.keys()] }
+      }
     };
   };
 }
@@ -159,16 +147,14 @@ export function createListingReviewerLoader(db: PrismaClient): ListingReviewerLo
  */
 export function reviewRowsFor(rows: AssistantRows, reviewer: ListingReviewer): Pick<AdminAssistantDefinitionReview, "names" | "rows"> {
   const projected = viewerRows({ rows, skillSummaries: [...reviewer.names.skills].map(([id, name]) => ({ id, name })) },
-    reviewer.catalog, { owned: false, visibleKnowledge: reviewer.visibleKnowledge });
+    reviewer.catalog, { owned: false });
   const named = (ids: readonly string[], names: (id: string) => string | undefined): AdminAssistantResourceName[] =>
     ids.flatMap((id) => { const name = names(id); return name === undefined ? [] : [{ id, name }]; });
-  const knowledge = projected.knowledge.value, model = projected.model.value, search = projected.search.value;
+  const model = projected.model.value, search = projected.search.value;
   const skills = projected.skills.value, tools = projected.tools.value;
   return {
     rows: projected,
     names: {
-      knowledgeBases: knowledge.mode === "explicit" ? named(knowledge.baseIds, (id) => reviewer.names.knowledgeBases.get(id)) : [],
-      knowledgeSources: knowledge.mode === "explicit" ? named(knowledge.sourceIds, (id) => reviewer.names.knowledgeSources.get(id)) : [],
       mcpServers: tools.mode === "exact" ? named(tools.serverIds, (id) => reviewer.names.mcpServers.get(id)) : [],
       models: model.mode === "model" && model.modelId !== null
         ? named([model.modelId], (id) => reviewer.catalog.modelById.get(id)?.displayName) : [],

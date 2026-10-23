@@ -137,7 +137,7 @@ async function assertActiveExecutionOwner(
     await requireMemorySearchActiveBranch(tx, userId, owner.modelRunId);
     const call = await tx.modelRunToolCall.findFirst({
       select: { state: true, toolName: true, modelRun: { select: { status: true, normalizedRequest: true,
-        chat: { select: { memoryMode: true, projectId: true, permanentDeletionAt: true } } } } },
+        chat: { select: { memoryMode: true, permanentDeletionAt: true } } } } },
       where: { id: owner.modelRunToolCallId, modelRunId: owner.modelRunId, modelRun: { userId } }
     });
     const request = call?.modelRun.normalizedRequest;
@@ -145,7 +145,7 @@ async function assertActiveExecutionOwner(
       ? decodeMemorySearchSnapshot(request.memorySearch) : null;
     if (!call || call.state !== "running" || call.toolName !== MEMORY_SEARCH_TOOL_NAME || !snapshot ||
       !["queued", "streaming", "in_progress"].includes(call.modelRun.status) ||
-      call.modelRun.chat.projectId !== null || call.modelRun.chat.memoryMode !== "NORMAL" ||
+      call.modelRun.chat.memoryMode !== "NORMAL" ||
       call.modelRun.chat.permanentDeletionAt !== null) {
       return memoryExecutionFailure("memory_execution_state_conflict");
     }

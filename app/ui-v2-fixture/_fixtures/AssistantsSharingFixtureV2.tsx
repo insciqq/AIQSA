@@ -52,8 +52,6 @@ const groups: AssistantPublishableGroup[] = [
 ];
 
 const names: AssistantResourceNames = {
-  knowledgeBases: [{ id: "base-runbooks", name: "Platform runbooks" }],
-  knowledgeSources: [],
   mcpServers: [{ id: "mcp-jira", name: "Jira" }, { id: "mcp-confluence", name: "Confluence" }],
   models: [{ id: "model-flash", label: "Gemini 3.8 Flash" }],
   searchOptions: [{ id: "web", label: "Web Search" }]
@@ -65,13 +63,11 @@ function content(): AssistantContent {
     avatar,
     category: "productivity",
     description: "Creates, searches and summarizes Jira issues for the platform team.",
-    knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     mcpServerIds: ["mcp-jira", "mcp-confluence"],
     name: "Jira desk",
     providerModelId: "model-flash",
     rows: {
       controls: { policy: "adjustable", value: { reasoningEffort: "medium" } },
-      knowledge: { policy: "adjustable", value: { mode: "inherit" } },
       model: { policy: "adjustable", value: { mode: "model", modelId: "model-flash" } },
       search: { policy: "adjustable", value: { mode: "inherit" } },
       skills: { policy: "adjustable", value: { links: [{ delivery: "always", skillId: "skill-jira-format" }], mode: "auto" } },
@@ -206,7 +202,6 @@ function detailFor(scenario: Scenario): AssistantDetail {
     owned: true,
     ownerDisplayName: "Lena Ortiz",
     pinned: false,
-    projects: { otherProjectCount: 1, projects: [{ id: "project-ops", name: "Platform ops" }, { id: "project-incidents", name: "Incident room" }] },
     publications: [],
     recentChatCount: 42,
     rowAvailability: {},

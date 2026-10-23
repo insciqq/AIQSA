@@ -86,7 +86,6 @@ import { activeRunControllersForTest } from "@/tests/support/runExecution";
 import type { MaterializedPreparedRunData } from "./runPreparation";
 import type {
   FocusedKnowledgeRecoveryScope,
-  ProjectRunAdmission,
   RunChatUpdateRecord,
   RunRepository
 } from "./runRepositoryContract";
@@ -162,7 +161,6 @@ type FailedRun = {
   options?: Readonly<{ recoveryTerminal?: boolean }>;
   runId: string;
 };
-type ProjectAccessCheck = Parameters<NonNullable<RunRepository["isProjectRunAccessCurrent"]>>[0];
 
 type RepositoryOptions = Readonly<{
   chatUpdate?: RunChatUpdateRecord | null;
@@ -171,7 +169,6 @@ type RepositoryOptions = Readonly<{
   failureWins?: boolean;
   groundingError?: Error;
   groundingResult?: KnowledgeGroundingResult | null;
-  projectAccessCurrent?: boolean | (() => boolean);
   runStatus?: string;
   searchStrategyEnabled?: boolean;
   responseIdPublication?: "cancelled" | "published" | "terminal";
@@ -286,35 +283,6 @@ const CURRENT_KNOWLEDGE_OPERATION_NAMES = [
   KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V22,
   KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION_V3
 ] as const;
-
-function projectAdmission(): ProjectRunAdmission {
-  return {
-    accessRevision: 3,
-    assistantBindings: [],
-    defaults: {
-      assistantId: null,
-      controlValues: {},
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      mcpMode: "off",
-      providerModelId: "fake-qsa",
-      searchPlan: { mode: "all_selected", optionIds: [] }
-    },
-    instructions: "Shared instructions",
-    instructionsRevision: 2,
-    knowledgeBaseIds: [],
-    mcpServerIds: [],
-    memoryEnabled: false,
-    memoryItems: [],
-    memoryRevision: 1,
-    modelIds: ["fake-qsa"],
-    policy: { externalToolsEnabled: true },
-    policyRevision: 4,
-    projectId: "project-1",
-    executionScope: "project",
-    role: "CONTRIBUTOR",
-    searchOptionIds: []
-  };
-}
 
 function knowledgeEvidence(): KnowledgeRetrievalEvidence {
   const draft: KnowledgeRetrievalEvidence = {
@@ -591,7 +559,6 @@ function preparedData(input: Readonly<{
   mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
-  project?: ProjectRunAdmission;
   provider?: string;
   searchPlan?: NormalizedRunRequest["searchPlan"];
   toolMode?: "auto" | "none";
@@ -711,7 +678,6 @@ function preparedData(input: Readonly<{
       attachments: []
     },
     providerRequestPreview: {},
-    ...(input.project ? { project: input.project } : {}),
     sourceKind: "send"
   };
 }
@@ -737,9 +703,7 @@ function focusedKnowledgePreparedData(): MaterializedPreparedRunData {
   };
 }
 
-function focusedCanonicalSourcePreparedData(
-  executionScope: "personal" | "project"
-): MaterializedPreparedRunData {
+function focusedCanonicalSourcePreparedData(): MaterializedPreparedRunData {
   const prepared = focusedKnowledgePreparedData();
   const knowledgePlan = {
     baseIds: [],
@@ -766,7 +730,7 @@ function focusedCanonicalSourcePreparedData(
       authority: {
         knowledgeBaseIds: [],
         owner: false,
-        projectId: executionScope === "project" ? "project-1" : null
+        projectId: null
       },
       baseProvenance: [],
       directSelected: true,
@@ -784,10 +748,7 @@ function focusedCanonicalSourcePreparedData(
       sourceId: "source-1",
       sourceVersionId: "version-1",
       sourceVersionNumber: 1
-    }],
-    ...(executionScope === "project"
-      ? { executionScope: "project" as const, projectId: "project-1" }
-      : {})
+    }]
   };
   return {
     ...prepared,
@@ -799,13 +760,12 @@ function focusedCanonicalSourcePreparedData(
     providerRequest: {
       ...prepared.providerRequest,
       knowledgePlan
-    },
-    ...(executionScope === "project" ? { project: projectAdmission() } : {})
+    }
   };
 }
 
 function fullContextKnowledgePreparedData(): MaterializedPreparedRunData {
-  const prepared = focusedCanonicalSourcePreparedData("personal");
+  const prepared = focusedCanonicalSourcePreparedData();
   const admission = {
     ...prepared.knowledgeAdmissionPlan!,
     answerPolicy: {
@@ -988,7 +948,6 @@ function createRepository(options: RepositoryOptions = {}) {
   const persistedEvents: { event: ModelRunSseEvent; runId: string; sequence: number }[] = [];
   const providerResponseIds: string[] = [];
   const providerRequestPreviews: Record<string, unknown>[] = [];
-  const projectAccessChecks: ProjectAccessCheck[] = [];
   const recordedRunUsageEvents: RecordRunUsageEventsInput[] = [];
   const searchRuns: CreateSearchRunInput[] = [];
   const toolCalls = new Map<string, PersistedToolLoopCall>();
@@ -1137,12 +1096,6 @@ function createRepository(options: RepositoryOptions = {}) {
       }
       return knowledgeFinalizationEnvelope(options.groundingResult);
     },
-    async isProjectRunAccessCurrent(input) {
-      projectAccessChecks.push(input);
-      return typeof options.projectAccessCurrent === "function"
-        ? options.projectAccessCurrent()
-        : options.projectAccessCurrent ?? true;
-    },
     async isSearchStrategyEnabled() {
       return options.searchStrategyEnabled ?? true;
     },
@@ -1285,7 +1238,6 @@ function createRepository(options: RepositoryOptions = {}) {
       return chatUpdateLoads;
     },
     persistedEvents,
-    projectAccessChecks,
     providerRequestPreviews,
     providerResponseIds,
     recordedRunUsageEvents,
@@ -3108,112 +3060,6 @@ describe("run execution", () => {
     }
   );
 
-  it("fails stale Project access before provider I/O or streaming starts", async () => {
-    const repository = createRepository({ projectAccessCurrent: false });
-    let providerCalls = 0;
-    const adapter = createAdapter(async function* () {
-      providerCalls += 1;
-      return providerResult();
-    });
-
-    const events = parseSse(await createRunExecutionResponse(executionInput({
-      adapter,
-      prepared: preparedData({ project: projectAdmission() }),
-      repository: repository.repository
-    })).text());
-
-    expect(providerCalls).toBe(0);
-    expect(repository.projectAccessChecks).toEqual([{
-      accessRevision: 3,
-      instructionsRevision: 2,
-      memoryRevision: 1,
-      policyRevision: 4,
-      projectId: "project-1",
-      userId: "user-1"
-    }]);
-    expect(repository.completeRuns).toHaveLength(0);
-    expect(repository.persistedEvents.some(({ event }) => event.type === "run_start"))
-      .toBe(false);
-    expect(repository.failedRuns).toEqual([{
-      assistantMessageId: "assistant-1",
-      error: {
-        code: "project_access_changed",
-        message: "Project access changed during the run"
-      },
-      runId: "run-1"
-    }]);
-    expect(events.at(-1)).toMatchObject({
-      data: { code: "project_access_changed" },
-      type: "error"
-    });
-  });
-
-  it("stops Project stream output when access changes during the provider response", async () => {
-    let accessCurrent = true;
-    let now = 1_000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const repository = createRepository({ projectAccessCurrent: () => accessCurrent });
-    const adapter = createAdapter(async function* () {
-      yield { data: { delta: "Visible" }, type: "token" };
-      accessCurrent = false;
-      now += 300;
-      yield { data: { delta: "Hidden" }, type: "token" };
-      return providerResult({ finalText: "VisibleHidden" });
-    });
-
-    const events = parseSse(await createRunExecutionResponse(executionInput({
-      adapter,
-      prepared: preparedData({ project: projectAdmission() }),
-      repository: repository.repository
-    })).text());
-
-    expect(events.filter((event) => event.type === "token")).toEqual([
-      { data: { delta: "Visible" }, type: "token" }
-    ]);
-    expect(repository.assistantTexts).toEqual(["Visible"]);
-    expect(repository.completeRuns).toHaveLength(0);
-    expect(repository.failedRuns.at(-1)?.error.code).toBe("project_access_changed");
-    expect(events.at(-1)).toMatchObject({
-      data: { code: "project_access_changed" },
-      type: "error"
-    });
-  });
-
-  it("fails Project provider authority drift before outbound provider I/O", async () => {
-    const repository = createRepository();
-    const prepared = preparedData({ project: projectAdmission() });
-    const load = vi.fn(async () => ({
-      ...prepared.providerAdmissionPlan,
-      fingerprint: "0".repeat(64)
-    }));
-    let providerCalls = 0;
-    const adapter = createAdapter(async function* () {
-      providerCalls += 1;
-      return providerResult();
-    });
-
-    const events = parseSse(await createRunExecutionResponse(executionInput({
-      adapter,
-      prepared,
-      providerAdmission: { load },
-      repository: repository.repository
-    })).text());
-
-    expect(load).toHaveBeenCalledWith({
-      executionScope: "project",
-      providerConnectionId: "fake",
-      providerModelId: "fake-qsa",
-      searchPlan: { mode: "all_selected", optionIds: [] },
-      userId: "user-1"
-    });
-    expect(providerCalls).toBe(0);
-    expect(repository.failedRuns.at(-1)?.error.code).toBe("model_not_available");
-    expect(events.at(-1)).toMatchObject({
-      data: { code: "model_not_available" },
-      type: "error"
-    });
-  });
-
   it("rechecks search enablement immediately before dispatch and fails without calling the provider", async () => {
     const repository = createRepository({ searchStrategyEnabled: false });
     let providerCalls = 0;
@@ -4647,14 +4493,13 @@ describe("run execution", () => {
 
   it.each([
     ["Base authority", "base"],
-    ["direct Source publication", "direct"],
-    ["Project Source binding", "project"]
+    ["direct Source publication", "direct"]
   ] as const)(
     "blocks answer-provider egress when %s is revoked after the focused manifest is prepared",
     async (_label, scope) => {
       const prepared = scope === "base"
         ? focusedKnowledgePreparedData()
-        : focusedCanonicalSourcePreparedData(scope === "project" ? "project" : "personal");
+        : focusedCanonicalSourcePreparedData();
       const admitted = prepared.knowledgeAdmissionPlan!;
       const order: string[] = [];
       const { execute, executor } = focusedKnowledgeExecutor(
@@ -4678,9 +4523,6 @@ describe("run execution", () => {
             ? "authorize-retrieval"
             : "authorize-answer");
           expect(request).toEqual({
-            ...(scope === "project"
-              ? { executionScope: "project", projectId: "project-1" }
-              : {}),
             snapshot: persistedScope,
             userId: "user-1"
           });
@@ -7096,7 +6938,7 @@ describe("run execution", () => {
     expect(events.some((event) => event.type === "done")).toBe(true);
   });
 
-  it.each([false, true])("dispatches the selected tool from a 1024-tool inventory (Project: %s)", async (projectScope) => {
+  it("dispatches the selected tool from a 1024-tool inventory", async () => {
     const fingerprint = "large-inventory-fingerprint";
     const record: McpRunPlanRecord = {
       credentialSources: [], enabled: true, errorCode: null, externalAccountLabel: null,
@@ -7115,8 +6957,6 @@ describe("run execution", () => {
     if (!accepted.ok) throw new Error("large_inventory_fixture_invalid");
     const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async (_user, options) =>
       currentPlan(options?.allowedToolNames));
-    const prepareProject = vi.fn<NonNullable<NonNullable<RunExecutionInput["mcp"]>["prepareProject"]>>(
-      async (_user, _servers, options) => currentPlan(options?.allowedToolNames));
     const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
       await beforeDispatch?.();
       return { isError: false, structuredContent: null, text: ["LATE_TOOL_RESULT"], unsupportedContentTypes: [] };
@@ -7130,21 +6970,14 @@ describe("run execution", () => {
       return providerResult({ finalText: "Late tool succeeded" });
     });
     const repository = createRepository();
-    const prepared = preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai",
-      ...(projectScope ? { project: { ...projectAdmission(), mcpServerIds: [record.serverId], modelIds: ["gpt-tool-model"] } } : {}) });
+    const prepared = preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" });
     await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
-      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
+      mcp: { filterTools: allowMcpTools, prepare },
       mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true } })).text();
     expect(callTool).toHaveBeenCalledOnce();
     expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: `tool_${MCP_SERVER_TOOL_LIMIT}` }));
     expect(repository.completeRuns[0]?.finalText).toBe("Late tool succeeded");
-    if (projectScope) {
-      expect(prepare).not.toHaveBeenCalled();
-      expect(prepareProject).toHaveBeenCalledWith("user-1", [record.serverId], { allowedToolNames: [namespacedName] });
-    } else {
-      expect(prepareProject).not.toHaveBeenCalled();
-      expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
-    }
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
   });
 
   it("keeps an accepted personal tool through an unrelated switch, refuses it while switched off and dispatches it once on", async () => {

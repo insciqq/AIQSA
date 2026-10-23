@@ -6,7 +6,7 @@ const report = vi.hoisted(() => vi.fn());
 vi.mock("../lib/server/observability/http.cjs", () => ({ reportNextRequestError: report }));
 const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
-  recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(), knowledge: vi.fn(),
+  recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(),
   activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn(),
   scheduledTasks: vi.fn(), push: vi.fn(), answerReview: vi.fn(), usageAlerts: vi.fn(), objectDeletion: vi.fn(),
   telemetry: vi.fn(), telegram: vi.fn()
@@ -23,7 +23,6 @@ vi.mock("../lib/server/uploads/defaultProcessing", () => ({ getDefaultAttachment
 vi.mock("../lib/server/uploads/defaultWorkspaceUploads", () => ({ getWorkspaceUploadService: startup.uploads }));
 vi.mock("../lib/server/retention/defaultObjectDeletion", () => ({ startDefaultObjectDeletionWorker: startup.objectDeletion }));
 vi.mock("../lib/server/telemetry/defaultRecorder", () => ({ startDefaultTelemetryRecorder: startup.telemetry }));
-vi.mock("../lib/server/knowledge/defaultIngestion", () => ({ getDefaultKnowledgeIngestionCoordinator: startup.knowledge }));
 vi.mock("../lib/server/mcp/defaultActivation", () => ({ getDefaultMcpActivationCoordinator: startup.activation }));
 vi.mock("../lib/server/mcp/defaultRuntime", () => ({ getDefaultMcpRuntimeCoordinator: startup.mcp }));
 vi.mock("../lib/server/memory/coordinator/startup", () => ({ startDefaultMemoryCoordinatorFeatureLocally: startup.memory }));
@@ -49,7 +48,6 @@ describe("optional subsystem startup", () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     vi.stubEnv("NODE_ENV", "development");
     startup.attachments.mockImplementationOnce(() => { throw new Error("private-attachment-canary"); });
-    startup.knowledge.mockImplementationOnce(() => { throw new Error("private-knowledge-canary"); });
     startup.mcp.mockImplementationOnce(() => { throw new Error("private-mcp-canary"); });
     startup.scheduledTasks.mockImplementationOnce(() => { throw new Error("private-scheduled-canary"); });
     startup.push.mockImplementationOnce(() => { throw new Error("private-push-canary"); });
@@ -72,13 +70,12 @@ describe("optional subsystem startup", () => {
       { error: expect.any(Error), subsystem: "usage_alerts", stage: "startup", code: "usage_alert_startup_failed", action: "degrade" },
       { error: expect.any(Error), subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" },
       { error: expect.any(Error), subsystem: "object_storage", stage: "startup", code: "object_deletion_startup_failed", action: "degrade" },
-      { error: expect.any(Error), subsystem: "knowledge", stage: "startup", code: "knowledge_ingestion_startup_failed", action: "degrade" },
       { error: expect.any(Error), subsystem: "mcp", stage: "startup", code: "mcp_runtime_startup_failed", action: "degrade" }
     ]);
     await register();
     expect(startup.objectDeletion).toHaveBeenCalledTimes(2);
     expect(startup.telegram).toHaveBeenCalledTimes(2);
-    for (const subsystem of ["scheduled_tasks", "telegram", "answer_review", "usage_alerts", "attachments", "object_storage", "knowledge", "mcp"]) {
+    for (const subsystem of ["scheduled_tasks", "telegram", "answer_review", "usage_alerts", "attachments", "object_storage", "mcp"]) {
       expect(startup.healthy).toHaveBeenCalledWith(subsystem, "startup");
     }
     expect(JSON.stringify(startup.failed.mock.calls)).not.toContain("canary");
@@ -89,7 +86,6 @@ describe("optional subsystem startup", () => {
     startup.uploads.mockImplementationOnce(() => { throw new Error("private-upload-canary"); });
     await expect(register()).resolves.toBeUndefined();
     expect(startup.attachments).toHaveBeenCalledOnce();
-    expect(startup.knowledge).toHaveBeenCalledOnce();
     expect(startup.failed).toHaveBeenCalledWith({ error: expect.any(Error), subsystem: "attachments", stage: "startup", code: "workspace_upload_startup_failed", action: "degrade" });
     await register();
     expect(startup.uploads).toHaveBeenCalledTimes(2);

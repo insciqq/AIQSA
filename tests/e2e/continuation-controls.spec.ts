@@ -161,7 +161,7 @@ for (const width of [1440, 390]) {
     await page.route("**/api/chats/source/continue", async (route) => {
       selected = route.request().postDataJSON().modelSelection;
       await summaryGate;
-      await route.fulfill({ json: { status: "complete", chatId: target.id, projectId: null } });
+      await route.fulfill({ json: { status: "complete", chatId: target.id } });
     });
     await signInWithLocalToken(page, "/c/source");
     const composer = page.getByRole("textbox", { name: "Message" });

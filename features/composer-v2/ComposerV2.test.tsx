@@ -1843,21 +1843,15 @@ describe("the composer's reasoning effort chip", () => {
       .toBeEnabled();
   });
 
-  it("sits after the tools and turns labels into icons only as the seventh chip", () => {
+  it("sits after the tools", () => {
     const agent = { enabled: false, onToggle: vi.fn() };
-    // Pending comments count as a chip.
-    const six = { agent, comments: [{ id: "one", quote: "Fragment", text: "Comment" }] };
-    const { rerender } = render(<ComposerV2 {...props({ ...six, reasoningEffort: reasoning() })} />);
-    const row = screen.getByLabelText("Active capabilities");
-    const buttons = within(row).getAllByRole("button");
+    render(<ComposerV2 {...props({
+      agent,
+      comments: [{ id: "one", quote: "Fragment", text: "Comment" }],
+      reasoningEffort: reasoning()
+    })} />);
+    const buttons = within(screen.getByLabelText("Active capabilities")).getAllByRole("button");
     expect(buttons.at(-1)).toBe(chip());
     expect(buttons.at(-2)).toBe(screen.getByRole("button", { name: "Change Skills mode" }));
-    expect(row).toHaveAttribute("data-compact-labels", "true");
-
-    // Five capabilities and the level keep their labels; so do six without it.
-    rerender(<ComposerV2 {...props({ agent, reasoningEffort: reasoning() })} />);
-    expect(row).not.toHaveAttribute("data-compact-labels");
-    rerender(<ComposerV2 {...props({ ...six, reasoningEffort: null })} />);
-    expect(row).not.toHaveAttribute("data-compact-labels");
   });
 });

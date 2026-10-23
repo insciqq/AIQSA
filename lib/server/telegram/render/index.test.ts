@@ -85,13 +85,12 @@ describe("renderTelegramAnswer", () => {
   });
 
   it("resolves artifact search citations by their actual indices, and handles by exact identity", () => {
-    const artifact: Pick<ThreadArtifactSummary, 'citations' | 'sources' | 'knowledgeCitations'> = {
+    const artifact: Pick<ThreadArtifactSummary, 'citations' | 'sources'> = {
       citations: [{ index: 9, title: 'Ninth', url: 'https://example.com/9' }, { index: 2, title: 'Second', url: 'https://example.com/2' }],
-      sources: [{ rank: 1, title: 'Ninth', url: 'https://example.com/9' }],
-      knowledgeCitations: [{ handle: 'K9' }, { handle: 'K2', deleted: true }]
+      sources: [{ rank: 1, title: 'Ninth', url: 'https://example.com/9' }]
     };
     const result = valid('[9] then [2] again [9]. [K9] [K2] [K3] [99]', {
-      citations: [...artifact.citations, ...artifact.knowledgeCitations!], sources: artifact.sources
+      citations: [...artifact.citations, { handle: 'K9' }, { handle: 'K2', deleted: true }], sources: artifact.sources
     });
     expect(result.plainFallback.join('')).toBe('[1] then [2] again [1]. [3] [K2] [K3] [99]\n\nSources\n[1] Ninth (https://example.com/9)\n[2] Second (https://example.com/2)\n[3] Source K9');
   });
@@ -105,7 +104,7 @@ describe("renderTelegramAnswer", () => {
     ] });
   });
 
-  it("does not resolve coded, escaped or linked Knowledge citations", () => {
+  it("does not resolve coded, escaped or linked handle citations", () => {
     const result = valid('`[K1]` \\[K1] [[K1]](https://example.com) [K1.2]', {
       citations: [{ handle: 'K1' }, { handle: 'K1.2', title: 'Passage' }]
     });

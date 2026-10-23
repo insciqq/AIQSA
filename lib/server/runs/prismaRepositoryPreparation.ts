@@ -145,15 +145,13 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
-  ScheduledOccurrenceConflictError,
   SkillRunConflictError,
   WorkspaceRunConflictError,
   type PreparingRunAdmissionInput,
   type PreparingRunAdmissionResult,
   type PreparingRunFinalizationInput,
   type PreparingRunMaterializedRequest,
-  type PreparingRunRecoveryResult,
-  type ProjectRunAdmission
+  type PreparingRunRecoveryResult
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
 import {
@@ -170,13 +168,10 @@ import {
   WORKSPACE_POLICY_ID,
   workspaceRunOutputDirectory
 } from "../../domain/workspace";
-import { resolveProjectAccess } from "../projects/access";
 import { acceptWorkspaceBrowserSequence, bindWorkspaceSecrets, lockWorkspaceSecretOwner } from "../workspace/secrets/store";
-import { notifyProjectEvent } from "../projects/events";
 import {
   applyAcceptedChatAssistant,
   assertAssistantRunProvenance,
-  assertProjectAssistantRunProvenance,
   assertCurrentSkillRunBindings,
   insertAcceptedKnowledgeRunBindings,
   insertAcceptedMcpRunBindings,
@@ -387,7 +382,7 @@ export async function insertAcceptedWorkspaceRunBinding(
   await bindWorkspaceSecrets(tx, { runId: ids.runId, userId: input.userId, chatId: input.chatId });
   if (input.normalizedRequest.agent) {
     const agent = input.normalizedRequest.agent;
-    if (input.project || input.assistant || agent.version !== 2 || !/^[a-f0-9]{64}$/u.test(agent.compatibilityHash)) {
+    if (input.assistant || agent.version !== 2 || !/^[a-f0-9]{64}$/u.test(agent.compatibilityHash)) {
       throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
     }
     await tx.agentRunBinding.create({ data: {
@@ -889,8 +884,6 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
     (input.admissionKind === "REGENERATE" && initialMode !== undefined) ||
     (input.admissionKind === "NORMAL_SEND" && input.personalChat !== undefined && (
       input.expectedActiveLeafId !== null ||
-      input.project !== undefined ||
-      input.projectChat !== undefined ||
       (input.personalChat.memoryMode === "TEMPORARY") !==
         (initialMode?.chatMode === "TEMPORARY")
     )) ||
@@ -899,379 +892,6 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
   ) {
     throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
   }
-}
-
-/**
- * Project runs deliberately bypass the personal Memory preparing pipeline.
- * Admission is still transactional: the project revisions, membership, DAG
- * leaf, attachments, provider bindings, and immutable ProjectRunBinding are
- * fenced before any provider request is allowed to start.
- */
-export async function admitProjectRunWithClient(
-  prismaClient: PrismaClient,
-  input: PreparingRunAdmissionInput
-): Promise<PreparingRunAdmissionResult> {
-  if (!input.project) throw new Error("project_admission_context_required");
-  assertPreparingAdmissionInput(input);
-  const project = input.project;
-  const result = await mapActiveRunConflict(() =>
-    repeatableReadTransaction(prismaClient, async (tx) => {
-      await tx.$queryRaw(Prisma.sql`
-        SELECT "id" FROM "Project"
-        WHERE "id" = ${project.projectId}
-        FOR UPDATE
-      `);
-      const access = await resolveProjectAccess(tx, {
-        minimumRole: "CONTRIBUTOR",
-        projectId: project.projectId,
-        requireActive: true,
-        userId: input.userId
-      });
-      if (!access || access.accessRevision !== project.accessRevision) {
-        throw new ActiveLeafConflictError();
-      }
-      const currentProject = await tx.project.findUnique({
-        select: {
-          accessRevision: true,
-          instructionsRevision: true,
-          memoryRevision: true,
-          policyRevision: true,
-          status: true
-        },
-        where: { id: project.projectId }
-      });
-      if (!currentProject || currentProject.status !== "ACTIVE" ||
-        currentProject.accessRevision !== project.accessRevision ||
-        currentProject.instructionsRevision !== project.instructionsRevision ||
-        currentProject.policyRevision !== project.policyRevision ||
-        currentProject.memoryRevision !== project.memoryRevision) {
-        throw new ActiveLeafConflictError();
-      }
-      if (input.assistant) {
-        await assertProjectAssistantRunProvenance(tx, {
-          assistantId: input.assistant.assistantId,
-          projectId: project.projectId,
-          definitionVersion: input.assistant.definitionVersion,
-        });
-      }
-      const firstProjectSend = input.admissionKind === "NORMAL_SEND"
-        ? input.projectChat
-        : undefined;
-      if (firstProjectSend && input.admissionKind === "NORMAL_SEND") {
-        if (input.expectedActiveLeafId !== null ||
-          (firstProjectSend.folderId && !(await tx.projectFolder.findUnique({
-            select: { id: true },
-            where: {
-              projectId_id: {
-                id: firstProjectSend.folderId,
-                projectId: project.projectId
-              }
-            }
-          })))) {
-          throw new ActiveLeafConflictError();
-        }
-        const creator = await tx.user.findUnique({
-          select: { displayName: true },
-          where: { id: input.userId }
-        });
-        if (!creator || !project.defaults.providerModelId ||
-          !project.modelIds.includes(project.defaults.providerModelId)) {
-          throw new ActiveLeafConflictError();
-        }
-        await tx.chat.create({
-          data: {
-            createdByDisplayName: creator.displayName,
-            createdByUserId: input.userId,
-            defaultKnowledgePlan: json(project.defaults.knowledgePlan),
-            defaultProviderModelId: project.defaults.providerModelId,
-            defaultSearchPlan: json(input.providerAdmissionPlan?.requestedSearchPlan ?? { mode: "all_selected", optionIds: [] }),
-            id: input.chatId,
-            memoryMode: "EXCLUDED",
-            projectFolderId: firstProjectSend.folderId,
-            projectId: project.projectId,
-            title: "New Chat",
-            userId: null,
-            workspaceEnabled: input.workspaceEnabled === true,
-            // A first message with an Assistant, the Project's default
-            // included, creates the chat bound.
-            ...(input.chatAssistant?.bind ? { assistantId: input.chatAssistant.assistantId } : {})
-          }
-        });
-        await tx.projectAuditEvent.create({
-          data: {
-            actorDisplayName: creator.displayName,
-            actorUserId: input.userId,
-            eventType: "project_chat_created",
-            metadata: { chatId: input.chatId },
-            projectId: project.projectId
-          }
-        });
-      }
-      const lockedChats = await tx.$queryRaw<Array<{
-        activeLeafMessageId: string | null;
-        archived: boolean;
-        id: string;
-        projectFolderId: string | null;
-        projectId: string | null;
-      }>>(Prisma.sql`
-        SELECT "id", "projectId", "projectFolderId", "activeLeafMessageId", "archived"
-        FROM "Chat"
-        WHERE "id" = ${input.chatId}
-          AND "projectId" = ${project.projectId}
-          AND "userId" IS NULL
-          AND "memoryMode" = 'EXCLUDED'::"MemoryChatMode"
-          AND "permanentDeletionAt" IS NULL
-        FOR UPDATE
-      `);
-      const lockedChat = lockedChats[0];
-      if (!lockedChat || lockedChat.archived) throw new ActiveLeafConflictError();
-      if (input.chatAssistant) await applyAcceptedChatAssistant(tx, input.chatId, input.chatAssistant);
-      const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, false);
-      const answerReviewStep = input.admissionKind === "NORMAL_SEND" ? input.answerReviewStep : undefined;
-
-      let assistantMessageId: string;
-      let userMessageId: string;
-      if (input.admissionKind === "NORMAL_SEND") {
-        if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
-          throw new ActiveLeafConflictError();
-        }
-        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, step: answerReviewStep, userId: input.userId });
-        const count = await tx.message.count({ where: { chatId: input.chatId } });
-        const user = await tx.user.findUnique({ select: { displayName: true }, where: { id: input.userId } });
-        if (!user) throw new ActiveLeafConflictError();
-        const userMessage = await createClaimingMessage(answerReviewStep, () => tx.message.create({
-          data: {
-            authorDisplayName: user.displayName,
-            authorProjectRole: access.effectiveRole,
-            authorUserId: input.userId,
-            chatId: input.chatId,
-            content: json(input.content),
-            ...(input.workspaceAdmissionPlan
-              ? { id: input.workspaceAdmissionPlan.userMessageId }
-              : {}),
-            modelId: input.modelId,
-            parentMessageId: input.expectedActiveLeafId,
-            provider: input.provider,
-            role: "user",
-            ...(input.admissionKind === "NORMAL_SEND" && input.systemTurnKind ? { systemTurnKind: input.systemTurnKind } : {}),
-            ...answerReviewMessageFields(answerReviewStep, "user"),
-            status: "complete"
-          }
-        }));
-        const assistantMessage = await tx.message.create({
-          data: {
-            chatId: input.chatId,
-            content: json(textMessageContent("")),
-            ...(input.workspaceAdmissionPlan
-              ? { id: input.workspaceAdmissionPlan.assistantMessageId }
-              : {}),
-            modelId: input.modelId,
-            parentMessageId: userMessage.id,
-            provider: input.provider,
-            role: "assistant",
-            ...answerReviewMessageFields(answerReviewStep, "assistant"),
-            status: "streaming"
-          }
-        });
-        const attachmentIds = unique(input.normalizedRequest.attachmentIds);
-        if (attachmentIds.length > 0) {
-          const linked = await tx.attachment.updateMany({
-            data: { chatId: input.chatId, messageId: userMessage.id },
-            where: {
-              ...attachmentLinkReadinessWhere(input),
-              chatId: null,
-              id: { in: attachmentIds },
-              messageId: null,
-              savedAt: null,
-              projectId: project.projectId
-            }
-          });
-          if (linked.count !== attachmentIds.length) throw new AttachmentLinkConflictError();
-        }
-        assistantMessageId = assistantMessage.id;
-        userMessageId = userMessage.id;
-        await tx.chat.update({
-          data: { activeLeafMessageId: assistantMessage.id },
-          where: { id: input.chatId }
-        });
-        if (count === 0) {
-          await tx.chat.updateMany({
-            data: { title: titleFromMessageContent(input.content) },
-            where: { id: input.chatId, title: { in: ["New Chat", "Untitled QSA"] } }
-          });
-        }
-      } else {
-        const sourceLeaf = input.preSendAssistantMessageId ?? input.userMessageId;
-        if (!sourceLeaf || lockedChat.activeLeafMessageId !== sourceLeaf) {
-          throw new ActiveLeafConflictError();
-        }
-        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, userId: input.userId });
-        const source = await tx.message.findFirst({
-          select: { parentMessageId: true, role: true },
-          where: { chatId: input.chatId, id: sourceLeaf }
-        });
-        if (!source || (input.preSendAssistantMessageId && source.role !== "assistant")) {
-          throw new ActiveLeafConflictError();
-        }
-        const assistantMessage = await tx.message.create({
-          data: {
-            chatId: input.chatId,
-            content: json(textMessageContent("")),
-            ...(input.workspaceAdmissionPlan
-              ? { id: input.workspaceAdmissionPlan.assistantMessageId }
-              : {}),
-            modelId: input.modelId,
-            parentMessageId: input.userMessageId,
-            provider: input.provider,
-            role: "assistant",
-            status: "streaming"
-          }
-        });
-        assistantMessageId = assistantMessage.id;
-        userMessageId = input.userMessageId;
-        await tx.chat.update({
-          data: { activeLeafMessageId: assistantMessage.id },
-          where: { id: input.chatId }
-        });
-      }
-
-      await assertCurrentProviderAdmission(tx, { plan: input.providerAdmissionPlan, userId: input.userId });
-      await assertCurrentKnowledgeAdmission(tx, { plan: input.knowledgeAdmissionPlan, userId: input.userId });
-      if (input.mcpBindings?.some((binding) => !project.mcpServerIds.includes(binding.serverId))) {
-        throw new McpRunPlanConflictError();
-      }
-      if (!project.policy.externalToolsEnabled && input.mcpBindings?.length) {
-        throw new McpRunPlanConflictError();
-      }
-      if (input.mcpBindings?.length) {
-        // A member's personal generation never serves a Project run, whatever
-        // its credentials: Project runs use the server's shared runtime.
-        const forbiddenCredentials = await tx.mcpRuntimeGeneration.count({
-          where: {
-            id: { in: input.mcpBindings.map((binding) => binding.runtimeGenerationId) },
-            OR: [
-              { credentialSources: { hasSome: ["oauth", "personal"] } },
-              { oauthConnectionId: { not: null } },
-              { userServerId: { not: null } }
-            ]
-          }
-        });
-        if (forbiddenCredentials > 0) throw new McpRunPlanConflictError();
-      }
-      if (input.skillBindings?.some((binding) => !project.skillIds?.includes(binding.skillId))) {
-        throw new SkillRunConflictError();
-      }
-      if (!input.providerAdmissionPlan) {
-        throw new ProviderAdmissionConflictError();
-      }
-      const run = await tx.modelRun.create({
-        data: {
-          ...admittedFollowupFields(input),
-          assistantMessageId,
-          ...(input.assistant
-            ? { assistantId: input.assistant.assistantId, assistantIdentity: input.assistant.identity as unknown as Prisma.InputJsonValue }
-            : {}),
-          chatId: input.chatId,
-          ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
-          modelId: input.modelId,
-          ...(input.deferredPdf || workspaceFollowup ? {} : { normalizedRequest: json(input.normalizedRequest) }),
-          provider: input.provider,
-          status: input.deferredPdf || workspaceFollowup ? "preparing" : "streaming",
-          workspaceWaitPending: Boolean(workspaceFollowup),
-          userId: input.userId,
-          userMessageId
-        }
-      });
-      // Project turns are always interactive (scheduled tasks post only into
-      // personal chats); a review step's server-written turn is not a message.
-      if (!answerReviewStep) await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
-      await createAutoAnswerReviewSession(tx, { auto: input.answerReviewAuto, chatId: input.chatId,
-        sourceAssistantMessageId: assistantMessageId, userId: input.userId, userMessageId });
-      await insertAdmittedRunFollowups(tx, input, run.id);
-      await insertAcceptedWorkspaceRunBinding(tx, input, {
-        assistantMessageId,
-        runId: run.id,
-        userMessageId
-      }, Boolean(workspaceFollowup));
-      await insertAcceptedKnowledgeRunBindings(tx, {
-        plan: input.knowledgeAdmissionPlan,
-        runId: run.id,
-        userId: input.userId
-      });
-      await insertAcceptedMcpRunBindings(tx, {
-        bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
-        tools: input.normalizedRequest.mcp?.tools ?? [],
-        projectId: project.projectId,
-        runId: run.id,
-        userId: input.userId
-      });
-      await insertAcceptedProviderRunBindings(tx, {
-        imagePlan: input.normalizedRequest.imagePlan,
-        imageScope: "project",
-        visionAnalysis: input.normalizedRequest.visionAnalysis ?? knowledgeImageObservationVision(input.normalizedRequest),
-        nativeBackgroundRequested: input.normalizedRequest.params.background === true,
-        plan: input.providerAdmissionPlan,
-        runId: run.id,
-        userId: input.userId
-      });
-      await insertRunPdfAdmissions(tx, input, run.id);
-      await insertAcceptedSkillRunBindings(tx, {
-        bindings: input.skillBindings,
-        projectId: project.projectId,
-        runId: run.id,
-        userId: input.userId
-      });
-      await tx.projectRunBinding.create({
-        data: {
-          accessRevision: project.accessRevision,
-          acceptedRole: access.effectiveRole,
-          initiatorUserId: input.userId,
-          instructionsRevision: project.instructionsRevision,
-          memoryRevision: project.memoryRevision,
-          modelRunId: run.id,
-          personalMemoryDisabled: true,
-          policyRevision: project.policyRevision,
-          projectId: project.projectId,
-          providerAdmissionFingerprint: input.providerAdmissionPlan.fingerprint,
-          providerConnectionId: input.providerAdmissionPlan.selection.providerConnectionId,
-          providerModelId: input.providerAdmissionPlan.selection.providerModelId,
-          providerRequiresClientTools:
-            input.providerAdmissionPlan.requiresClientToolCoexistence === true,
-          providerSearchPlan: json(input.providerAdmissionPlan.requestedSearchPlan),
-          sharedCredentialVersionIds: [...new Set([
-            input.providerAdmissionPlan?.answer.snapshot.credentialVersionId,
-            ...(input.providerAdmissionPlan?.searches.flatMap((search) =>
-              search.role?.snapshot.credentialVersionId ? [search.role.snapshot.credentialVersionId] : []) ?? []),
-            ...(input.knowledgeAdmissionPlan?.bindings.flatMap((binding) =>
-              binding.embeddingExecutionSnapshot.credentialVersionId
-                ? [binding.embeddingExecutionSnapshot.credentialVersionId]
-                : []) ?? [])
-          ].filter((value): value is string => Boolean(value)))]
-        }
-      });
-      // Project Memory is intentionally dormant for Personal Memory v1.
-      // Existing facts and run-item rows remain intact for compatibility, but
-      // new Project runs neither read their text nor create run-item bindings.
-      const admitted = {
-        ...(input.deferredPdf ? { deferredPdf: true as const } : {}),
-        ...(workspaceFollowup ? { deferredWorkspace: true as const } : {}),
-        assistantMessageId,
-        attemptId: "",
-        chatMemoryMode: "EXCLUDED" as const,
-        folderId: lockedChat.projectFolderId,
-        memoryGeneration: 0,
-        memoryRevision: project.memoryRevision,
-        runId: run.id,
-        settingsSnapshot: memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS),
-        userMessageId
-      };
-      if (input.deferredPdf) await storeChatPdfAdmissionResult(tx, run.id, admitted);
-      if (workspaceFollowup) await storeWorkspaceFollowupAdmission(tx, workspaceFollowup, input.chatId, admitted);
-      return admitted;
-    })
-  );
-  notifyProjectEvent(project.projectId);
-  return result;
 }
 
 async function enqueuePreparingMemoryCommand(
@@ -1287,7 +907,7 @@ async function enqueuePreparingMemoryCommand(
   }>
 ): Promise<boolean> {
   // A turn the server wrote for the user is never a Memory command.
-  if (input.admissionKind !== "NORMAL_SEND" || input.project || input.scheduledOccurrence || input.systemTurnKind ||
+  if (input.admissionKind !== "NORMAL_SEND" || input.scheduledOccurrence || input.systemTurnKind ||
     input.normalizedRequest.agent || source.chatMemoryMode !== "NORMAL" ||
     !settings.useMemoryFacts ||
     admitMemoryAction(textFromContentBlocks(input.content)).state !== "SEMANTIC_CANDIDATE") {
@@ -1796,7 +1416,6 @@ export async function admitPreparingRunWithClient(
       });
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
-        imageScope: input.project ? "project" : "personal",
         visionAnalysis: input.normalizedRequest.visionAnalysis ?? knowledgeImageObservationVision(input.normalizedRequest),
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
@@ -2746,7 +2365,6 @@ export async function assertCurrentMcpAdmission(
   input: Readonly<{
     bindings: readonly McpRunPlanBinding[] | undefined;
     tools: readonly import("../mcp/toolAccess").McpToolIdentity[];
-    projectId?: string;
     runId: string;
     userId: string;
   }>
@@ -2769,42 +2387,7 @@ export async function assertCurrentMcpAdmission(
     throw new McpRunPlanConflictError();
   }
   for (const binding of expected) {
-    const rows = await tx.$queryRaw<Array<{ id: string }>>(input.projectId
-      ? Prisma.sql`
-      SELECT generation."id"
-      FROM "McpRuntimeGeneration" AS generation
-      INNER JOIN "McpSharedRuntime" AS shared
-        ON shared."serverId" = generation."sharedServerId"
-       AND shared."desiredRuntimeGenerationId" = generation."id"
-      INNER JOIN "McpServer" AS server
-        ON server."id" = shared."serverId"
-      INNER JOIN "McpRevision" AS revision
-        ON revision."id" = generation."revisionId"
-      INNER JOIN "ProjectMcpBinding" AS project_binding
-        ON project_binding."serverId" = server."id"
-       AND project_binding."projectId" = ${input.projectId}
-      WHERE server."id" = ${binding.serverId}
-        AND server."enabled" = true
-        AND server."archivedAt" IS NULL
-        AND server."ownerUserId" IS NULL
-        AND server."activeRevisionId" = generation."revisionId"
-        AND revision."id" = generation."revisionId"
-        AND (
-          server."sharedConfigEnvelope" IS NOT NULL
-          OR revision."configuration" #>> '{auth,mode}' = 'none'
-        )
-        AND generation."userServerId" IS NULL
-        AND generation."oauthConnectionId" IS NULL
-        AND generation."id" = ${binding.runtimeGenerationId}
-        AND generation."fingerprint" = ${binding.fingerprint}
-        AND generation."state" = 'ready'
-        AND generation."inventory" IS NOT NULL
-        AND generation."inventoryUpdatedAt" IS NOT NULL
-        AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
-        AND NOT (generation."credentialSources" && ARRAY['oauth', 'personal']::TEXT[])
-      FOR SHARE OF generation, shared, server
-    `
-      : Prisma.sql`
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT generation."id"
       FROM "McpRuntimeGeneration" AS generation
       INNER JOIN "McpUserServer" AS preference
@@ -3515,7 +3098,6 @@ export async function finalizePreparingRunWithClient(
     await assertCurrentMcpAdmission(tx, {
       bindings: input.mcpBindings,
       tools: input.normalizedRequest.mcp?.tools ?? [],
-      ...(input.project?.projectId ? { projectId: input.project.projectId } : {}),
       runId: input.runId,
       userId: input.userId
     });
@@ -3939,11 +3521,12 @@ export async function settleTerminalMemorySource(
   memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<void> {
   const ownership = await tx.chat.findUnique({
-    select: { projectId: true, userId: true },
+    select: { userId: true },
     where: { id: input.chatId }
   });
-  if (ownership?.projectId && ownership.userId === null) {
-    // Project chats never enter the personal Memory source state machine.
+  if (ownership && ownership.userId === null) {
+    // A legacy Project chat has no personal owner and never enters the
+    // personal Memory source state machine; its runs still settle.
     return;
   }
   const chat = await lockMemorySourceChat(tx, {
@@ -4110,15 +3693,6 @@ export async function createDormantPreparingRun(
   acceptedAt: Date;
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
-  if (admission.project) {
-    // Scheduled tasks post only into personal chats.
-    if (admission.admissionKind === "NORMAL_SEND" && admission.scheduledOccurrence) {
-      throw new ScheduledOccurrenceConflictError();
-    }
-    const created = await admitProjectRunWithClient(prismaClient, admission);
-    logEvent("run_accepted", { run_id: created.runId, kind: "project", preparation: created.deferredPdf ? "pdf" : "ready" });
-    return { ...created, acceptedAt: new Date() };
-  }
   const memoryAdmissionDeadlineAtMs =
     Date.now() + (admission.normalizedRequest.memoryStandingVersion === 1
       ? MEMORY_STANDING_PREPARATION_TIMEOUT_MS : boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs));
@@ -4490,7 +4064,6 @@ async function continuePreparingRunWithClient(
             ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
             : {}),
           ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
-          ...(admission.project ? { project: admission.project } : {}),
           ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
           deadlineAtMs: memoryAdmissionDeadlineAtMs -
             finalizationReserveMs,
@@ -4655,7 +4228,6 @@ async function continueDeferredPreparedRunWithClient(
     : new WorkspaceFollowupError(kind === "ambiguous" ? "workspace_followup_interrupted" :
       kind === "invalid" ? "workspace_followup_invalid" : "workspace_followup_unavailable");
   const admitted = await repeatableReadTransaction(prismaClient, async (tx) => {
-    if (admission.project) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${admission.project.projectId} FOR UPDATE`;
     if (!(await lockPreparingMemoryOwner(tx, admission.userId))) {
       throw failure("unavailable");
     }
@@ -4674,10 +4246,9 @@ async function continueDeferredPreparedRunWithClient(
       chat.activeLeafMessageId !== created.assistantMessageId) {
       throw failure("unavailable");
     }
-    if (admission.project || created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent) {
+    if (created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent) {
       // These scopes never create or read Personal Memory attempts.
-      if (admission.project ? chat.projectId !== admission.project.projectId
-        : admission.normalizedRequest.agent ? chat.userId !== admission.userId || Boolean(chat.projectId) : chat.memoryMode !== "TEMPORARY") {
+      if (admission.normalizedRequest.agent ? chat.userId !== admission.userId : chat.memoryMode !== "TEMPORARY") {
         throw failure("unavailable");
       }
       await tx.modelRun.update({ where: { id: created.runId }, data: {
@@ -4686,7 +4257,7 @@ async function continueDeferredPreparedRunWithClient(
       return { created, ready: null, interrupted: false, complete: true };
     }
     const source = gate === "pdf" ? created.pdfMemorySource : created.workspaceMemorySource;
-    if (!source || chat.userId !== admission.userId || chat.projectId ||
+    if (!source || chat.userId !== admission.userId ||
       chat.memoryMode !== created.chatMemoryMode || chat.folderId !== created.folderId ||
       chat.memoryBranchGeneration !== source.memoryBranchGeneration ||
       chat.memorySourceRevision !== source.memorySourceRevision) {
@@ -4871,17 +4442,6 @@ export async function activateWorkspaceFollowupWithClient(
 ): Promise<PreparingRunAdmissionResult> {
   const { admission } = input;
   return repeatableReadTransaction(prismaClient, async (tx) => {
-    if (admission.project) {
-      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${admission.project.projectId} FOR UPDATE`;
-      const access = await resolveProjectAccess(tx, { projectId: admission.project.projectId,
-        userId: admission.userId, requireActive: true, minimumRole: "CONTRIBUTOR" });
-      if (!access || access.accessRevision !== admission.project.accessRevision ||
-        access.instructionsRevision !== admission.project.instructionsRevision ||
-        access.memoryRevision !== admission.project.memoryRevision ||
-        access.policyRevision !== admission.project.policyRevision) {
-        throw new WorkspaceFollowupError("workspace_followup_unavailable");
-      }
-    }
     if (!await lockPreparingMemoryOwner(tx, admission.userId)) throw new WorkspaceFollowupError("workspace_followup_unavailable");
     await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${admission.chatId} FOR UPDATE`;
     const run = await lockPreparingRun(tx, input.created.runId, admission.userId);
@@ -4898,14 +4458,14 @@ export async function activateWorkspaceFollowupWithClient(
     if (job.predecessor.status !== "complete") throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
     const chat = await tx.chat.findUniqueOrThrow({ where: { id: admission.chatId } });
     if (chat.activeLeafMessageId !== created.assistantMessageId ||
-      (admission.project ? chat.projectId !== admission.project.projectId : chat.userId !== admission.userId) ||
+      chat.userId !== admission.userId ||
       chat.memoryMode !== created.chatMemoryMode ||
-      (admission.project ? chat.projectFolderId : chat.folderId) !== created.folderId) {
+      chat.folderId !== created.folderId) {
       throw new WorkspaceFollowupError("workspace_followup_unavailable");
     }
     const source = created.workspaceMemorySource;
     const adjusted = source ? { ...source, memorySourceRevision: source.memorySourceRevision + job.sourceRevisionAdvance } : undefined;
-    if (!admission.project && created.chatMemoryMode !== "TEMPORARY" &&
+    if (created.chatMemoryMode !== "TEMPORARY" &&
       (!adjusted || chat.memoryBranchGeneration !== adjusted.memoryBranchGeneration ||
         chat.memorySourceRevision !== adjusted.memorySourceRevision)) {
       throw new WorkspaceFollowupError("workspace_followup_unavailable");

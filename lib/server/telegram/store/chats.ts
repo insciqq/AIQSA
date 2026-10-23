@@ -22,7 +22,7 @@ export function createPrismaTelegramChatListStore(prisma: Pick<PrismaClient, "ch
         orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
         select: { id: true, title: true },
         take: TELEGRAM_RECENT_CHATS_LIMIT,
-        where: { archived: false, memoryMode: { not: "TEMPORARY" }, permanentDeletionAt: null, projectId: null, userId }
+        where: { archived: false, memoryMode: { not: "TEMPORARY" }, permanentDeletionAt: null, userId }
       }).catch(retainDatabaseFailure);
     }
   });

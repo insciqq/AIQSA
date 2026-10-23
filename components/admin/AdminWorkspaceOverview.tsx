@@ -130,10 +130,10 @@ export function AdminWorkspaceOverview() {
             <li className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" key={row.id}>
               <div className="min-w-0">
                 <p className="break-words text-sm text-ink [overflow-wrap:anywhere]">
-                  {row.context === "project" ? "Created by " : ""}{row.user ?? (row.context ? "Deleted user" : "Unassigned environment")}
+                  {row.user ?? (row.context ? "Deleted user" : "Unassigned environment")}
                 </p>
                 <p className="mt-1 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">
-                  {row.context === "project" ? "Project" : row.context === "personal" ? "Personal" : "Owner unavailable"}
+                  {row.context === "personal" ? "Personal" : "Owner unavailable"}
                   {" · "}<span className="font-mono">{row.id}</span>
                 </p>
               </div>

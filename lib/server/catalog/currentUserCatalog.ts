@@ -15,14 +15,12 @@ import {
   type ResolvedEntitlements
 } from "../auth/entitlements";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
-import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   decodeChatDefaultMcpMode,
   INSTALLATION_CHAT_DEFAULTS,
   type ChatDefaultAssistant,
   type ChatDefaults
 } from "../../contracts/chatDefaults";
-import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import {
   ANSWER_REVIEW_AUTO_DEFAULT,
   decodeAnswerReviewAutoConfig,
@@ -39,8 +37,6 @@ export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   /** Whether the saved default Assistant is available to the user now; absent means not checked. */
   defaultAssistantAvailable?: boolean;
   defaultControlValues: unknown;
-  /** Persisted knowledge selection for new chats; absent or invalid means none. */
-  defaultKnowledgePlan?: unknown;
   defaultMcpMode?: string | null;
   defaultSkillsMode?: string | null;
   defaultWorkspaceEnabled?: boolean;
@@ -60,19 +56,9 @@ export function resolveAnswerReviewDefault(settings: Pick<CatalogSettingsRecord,
 
 /** Personal chat defaults from the settings row; unreadable values fall back to the installation defaults. */
 export function resolveChatDefaults(
-  settings: Pick<CatalogSettingsRecord, "defaultKnowledgePlan" | "defaultMcpMode" | "defaultSkillsMode" | "sendWithEnter">
+  settings: Pick<CatalogSettingsRecord, "defaultMcpMode" | "defaultSkillsMode" | "sendWithEnter">
 ): ChatDefaults {
-  const decodedPlan = settings.defaultKnowledgePlan === null || settings.defaultKnowledgePlan === undefined
-    ? null
-    : decodeKnowledgePlan(settings.defaultKnowledgePlan);
-  // Knowledge is disabled: a saved Knowledge default stays stored but is not
-  // offered to new chats or inherited by Assistants.
-  const knowledgePlan = KNOWLEDGE_ENABLED && decodedPlan?.ok && decodedPlan.plan.mode !== "none" &&
-    decodedPlan.plan.mode !== "inherited"
-    ? decodedPlan.plan
-    : null;
   return {
-    knowledgePlan,
     mcpMode: decodeChatDefaultMcpMode(settings.defaultMcpMode) ?? INSTALLATION_CHAT_DEFAULTS.mcpMode,
     skillsMode: settings.defaultSkillsMode === "off" ? "off" : "auto",
     sendWithEnter: settings.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter

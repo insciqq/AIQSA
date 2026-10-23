@@ -31,7 +31,6 @@ type BoundAssistant = Extract<ShellComposerAssistant, { state: "bound" }>;
 
 const ROW_LABELS: Readonly<Record<AssistantRowKey, string>> = {
   controls: "parameters",
-  knowledge: "Knowledge",
   model: "model",
   search: "Search",
   skills: "Skills",
@@ -234,9 +233,7 @@ export function headerModelProvenanceV2(
       return {
         fromAssistant: false,
         locked: false,
-        title: current.project
-          ? `${current.name}'s model isn't available in this Project; using the Project default`
-          : `${current.name}'s model isn't available to you; using your default`
+        title: `${current.name}'s model isn't available to you; using your default`
       };
     default:
       return fallback;
@@ -274,15 +271,12 @@ export function HeaderAssistantSelectorV2({
   const current = assistant.current;
   const blockedLabel = current ? blockedAssistantLabelV2(current) : null;
   const bound = current?.state === "bound" ? current : null;
-  // A Project's Assistant is managed in Project settings; its entry link
-  // would open a personal chat.
-  const owned = Boolean(bound?.owned && !bound.project);
+  const owned = Boolean(bound?.owned);
   const headText = !bound
     ? blockedLabel
     : `${bound.name} · ${assistantBylineV2({
       owned: bound.owned,
-      ownerDisplayName: bound.ownerDisplayName,
-      projectName: bound.project ? bound.projectName ?? null : undefined
+      ownerDisplayName: bound.ownerDisplayName
     })}`;
   const label = !current
     ? "Choose an Assistant"
@@ -399,7 +393,7 @@ export function HeaderAssistantSelectorV2({
               Save chat setup to Assistant
             </UiV2MenuItem>
           ) : null}
-          {bound && !bound.project && !blockedLabel ? (
+          {bound && !blockedLabel ? (
             <UiV2MenuItem icon="link" onClick={() => runAction(() => assistant.copyLink(bound.id))}>
               Copy link
             </UiV2MenuItem>

@@ -44,7 +44,6 @@ import {
   getStoredObjectStream,
   type StorageAdapter
 } from "@/lib/server/uploads/storage";
-import { resolveProjectAccess } from "@/lib/server/projects/access";
 import type { WorkspaceConfig } from "./config";
 import { outputIdentities, parseOutputCapture, sameOutputIdentities, type WorkspaceOutputCapture, type WorkspaceOutputIdentity } from "./outputManifest";
 import {
@@ -109,7 +108,6 @@ export type WorkspaceExecutionBinding = Readonly<{
   operationOwner: string | null;
   operationGeneration: number;
   policyRevision: number;
-  projectId: string | null;
   runId: string;
   runtimeSandboxId: string | null;
   runtimeVersion: string;
@@ -388,7 +386,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
     const run = await prisma.modelRun.findUnique({
       select: {
         assistantMessageId: true,
-        chat: { select: { projectId: true, userId: true } },
+        chat: { select: { userId: true } },
         chatId: true,
         id: true,
         scheduledTaskId: true,
@@ -421,18 +419,8 @@ export function createPrismaWorkspaceCoordinatorRepository(
       },
       where: { id: runId }
     });
-    if (!run || run.userId !== userId || !run.assistantMessageId || !run.workspaceRunBinding) {
-      return null;
-    }
-    if (run.chat.projectId) {
-      const access = await resolveProjectAccess(prisma, {
-        minimumRole: "CONTRIBUTOR",
-        projectId: run.chat.projectId,
-        requireActive: true,
-        userId
-      });
-      if (!access) return null;
-    } else if (run.chat.userId !== userId) {
+    if (!run || run.userId !== userId || !run.assistantMessageId || !run.workspaceRunBinding ||
+      run.chat.userId !== userId) {
       return null;
     }
     const definitions = toolDefinitions(run.workspaceRunBinding.toolDefinitions);
@@ -453,7 +441,6 @@ export function createPrismaWorkspaceCoordinatorRepository(
       operationOwner: session.operationOwner,
       operationGeneration: session.version,
       policyRevision: run.workspaceRunBinding.policyRevision,
-      projectId: run.chat.projectId,
       runId: run.id,
       runtimeSandboxId: session.runtimeSandboxId,
       runtimeVersion: run.workspaceRunBinding.runtimeVersion,
@@ -484,7 +471,6 @@ export function createPrismaWorkspaceCoordinatorRepository(
       if (!current || current.operationOwner !== binding.operationOwner || current.operationGeneration !== binding.operationGeneration) {
         throw new WorkspaceRuntimeError("workspace_operation_stale");
       }
-      if (current.projectId) return [];
       const owner = await prisma.user.findFirst({ select: { id: true }, where: { id: binding.userId, status: "active" } });
       if (!owner) throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
       const bound = await prisma.workspaceRunSecret.findMany({
@@ -624,7 +610,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
           origin: true,
           storageKey: true
         },
-        where: workspaceInboxAttachmentWhere({ chatId: binding.chatId, userId: binding.userId, projectId: binding.projectId,
+        where: workspaceInboxAttachmentWhere({ chatId: binding.chatId, userId: binding.userId,
           ancestorMessageIds: ancestors, imageIds, runId: binding.runId })
       });
       return rows.flatMap((row) =>
@@ -963,15 +949,6 @@ export function createPrismaWorkspaceCoordinatorRepository(
         const jobs = await tx.$queryRaw<Array<{ claimToken: string | null }>>`
           SELECT "claimToken" FROM "AttachmentDeletionJob" WHERE "storageKey" = ${storageKey} FOR UPDATE`;
         if (jobs[0]?.claimToken !== token) throw new WorkspaceRuntimeError("workspace_operation_stale");
-        const projectUploader = binding.projectId
-          ? await tx.user.findUnique({
-              select: { displayName: true },
-              where: { id: binding.userId }
-            })
-          : null;
-        if (binding.projectId && !projectUploader) {
-          throw new WorkspaceRuntimeError("workspace_output_export_failed");
-        }
         const fileName = output.relativePath.split("/").at(-1)!;
         const attachment = await tx.attachment.create({
           data: {
@@ -987,13 +964,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
             origin: "WORKSPACE_OUTPUT",
             processingErrorCode: null,
             producerModelRunId: binding.runId,
-            ...(binding.projectId
-              ? {
-                  projectId: binding.projectId,
-                  uploaderDisplayName: projectUploader!.displayName,
-                  uploaderUserId: binding.userId
-                }
-              : { userId: binding.userId }),
+            userId: binding.userId,
             status: "ready",
             storageKey
           }
@@ -1284,8 +1255,7 @@ function exactBinding(
 
 function outputStorageKey(binding: WorkspaceExecutionBinding, output: WorkspaceOutputStream, token: string): string {
   const pathHash = createHash("sha256").update(output.relativePath).digest("hex");
-  const owner = binding.projectId ? `projects/${binding.projectId}` : binding.userId;
-  return `${owner}/workspace-outputs/${binding.runId}/${token}/${pathHash}-${output.checksum}`;
+  return `${binding.userId}/workspace-outputs/${binding.runId}/${token}/${pathHash}-${output.checksum}`;
 }
 
 async function objectMatches(
@@ -1769,8 +1739,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         try {
           const secrets = await input.repository.personalSecrets(binding);
           // Only an execution initialization of the run itself mints guest-code
-          // MCP authority. It travels in the same run-bound managed environment
-          // (also for Project runs, which receive no personal secrets). Saved
+          // MCP authority. It travels in the same run-bound managed environment. Saved
           // secret values are not masked (operator decision 2026-10-22,
           // `agent_docs/SECURITY.md`); this run-scoped bearer is an AIQSA
           // credential, so its exact value stays masked in output and activity.
@@ -1960,7 +1929,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   async function persistBrowserSessions(binding: WorkspaceExecutionBinding, signal: AbortSignal, handoffToken?: string): Promise<void> {
-    if (binding.projectId || !binding.runtimeSandboxId || !binding.operationOwner) return;
+    if (!binding.runtimeSandboxId || !binding.operationOwner) return;
     let collection: Awaited<ReturnType<WorkspaceRuntime["collectBrowserSessions"]>> | null = null;
     try {
       try {

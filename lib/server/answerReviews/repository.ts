@@ -62,7 +62,7 @@ export type AnswerReviewStepRecord = AnswerReviewStepFacts & Readonly<{
 export type AnswerReviewSourceRecord = AnswerReviewSourceFacts & Readonly<{ runId: string | null; runTerminal: boolean }>;
 
 export type AnswerReviewSessionSnapshot = Readonly<{
-  chat: Readonly<{ activeLeafMessageId: string | null; assistantId: string | null; projectId: string | null }>;
+  chat: Readonly<{ activeLeafMessageId: string | null; assistantId: string | null }>;
   /** The session's newest message: its latest step's answer (or turn), else the source answer. */
   lastMessageId: string;
   /** The group's latest version: the newest complete revision answer, else the source answer. */
@@ -113,8 +113,8 @@ export function decodeAnswerReviewSessionRow(row: SessionRow): AnswerReviewSessi
 /**
  * Whether `userId` may act on a session: its initiator, who alone starts its
  * steps, or (to start a new round, taking the session over) any member once
- * the initiator's account is gone and the session has ended. Chat access and
- * the Project role are checked where the round starts.
+ * the initiator's account is gone and the session has ended. Chat access is
+ * checked where the round starts.
  */
 export function canActOnAnswerReviewSession(
   session: Pick<AnswerReviewSessionRecord, "state" | "userId">,
@@ -250,7 +250,7 @@ export async function loadAnswerReviewSessionSnapshot(
   const session = row ? decodeAnswerReviewSessionRow(row) : null;
   if (!session) return null;
   const chat = await db.chat.findFirst({
-    select: { activeLeafMessageId: true, assistantId: true, projectId: true },
+    select: { activeLeafMessageId: true, assistantId: true },
     where: { archived: false, id: session.chatId, permanentDeletionAt: null }
   });
   if (!chat) return null;

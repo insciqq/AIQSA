@@ -45,7 +45,6 @@ type FrozenRow = {
   agent: boolean;
   catalogTools: boolean;
   planTools: boolean;
-  project: boolean;
   workspace: Prisma.JsonValue | null;
 };
 
@@ -69,17 +68,14 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
               THEN run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}' ELSE '[]'::jsonb END) AS server
           ), false) AS "catalogTools",
           CASE WHEN jsonb_typeof(run."normalizedRequest" #> '{mcp,tools}') = 'array'
-            THEN jsonb_array_length(run."normalizedRequest" #> '{mcp,tools}') > 0 ELSE false END AS "planTools",
-          chat."projectId" IS NOT NULL AS "project"
+            THEN jsonb_array_length(run."normalizedRequest" #> '{mcp,tools}') > 0 ELSE false END AS "planTools"
         FROM "ModelRun" AS run
-        JOIN "Chat" AS chat ON chat."id" = run."chatId"
         WHERE run."id" = ${binding.runId} AND run."userId" = ${binding.userId}
           AND run."status" IN ('queued'::"ModelRunStatus", 'in_progress'::"ModelRunStatus", 'streaming'::"ModelRunStatus")
       `);
       if (!frozen) return { environment: {} };
       const eligibility = workspaceCodeMcpEligibility({
         ...(frozen.agent ? { agent: true } : {}),
-        project: frozen.project,
         workspace: frozen.workspace && typeof frozen.workspace === "object" && !Array.isArray(frozen.workspace)
           ? frozen.workspace as Record<string, unknown> : null,
         mcp: { tools: frozen.planTools ? [true] : [] },
@@ -194,7 +190,7 @@ export type WorkspaceCodeAuthority =
   | Readonly<{ kind: "catalog"; catalog: McpCapabilityCatalog }>
   | Readonly<{ kind: "plan"; snapshot: McpRunPlanSnapshot }>;
 
-/** A personal run's code authority: Project runs never hold a code bearer. */
+/** A personal run's code authority. */
 export type WorkspaceCodeGatewayGrant = Readonly<{
   /** The run's frozen MCP write-approval marker; absent for a scheduled task's run. */
   approval?: McpApprovalAdmission;
@@ -267,7 +263,6 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         catalog: Prisma.JsonValue | null;
         chatId: string;
         mcp: Prisma.JsonValue | null;
-        project: boolean;
         runId: string;
         sessionId: string;
         status: string;
@@ -275,7 +270,7 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         workspace: Prisma.JsonValue | null;
       }>>(Prisma.sql`
         SELECT code_grant."modelRunId" AS "runId", code_grant."workspaceSessionId" AS "sessionId",
-          run."userId", run."chatId", run."status"::text AS "status", chat."projectId" IS NOT NULL AS "project",
+          run."userId", run."chatId", run."status"::text AS "status",
           (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
           run."normalizedRequest" -> 'workspace' AS "workspace",
           run."normalizedRequest" -> 'mcp' AS "mcp",
@@ -283,13 +278,12 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
           run."normalizedRequest" -> 'mcpApproval' AS "approval"
         FROM "WorkspaceCodeGrant" AS code_grant
         JOIN "ModelRun" AS run ON run."id" = code_grant."modelRunId"
-        JOIN "Chat" AS chat ON chat."id" = run."chatId"
         WHERE code_grant."tokenHash" = ${tokenHash} AND code_grant."revokedAt" IS NULL
       `);
       if (!row || !(ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status)) return null;
       const workspace = record(row.workspace);
       const authority = decodeAuthority(row.mcp, row.catalog);
-      const eligibility = workspaceCodeMcpEligibility({ ...(row.agent ? { agent: true } : {}), project: row.project, workspace,
+      const eligibility = workspaceCodeMcpEligibility({ ...(row.agent ? { agent: true } : {}), workspace,
         mcp: authority?.kind === "plan" ? authority.snapshot : null,
         mcpDiscovery: authority?.kind === "catalog" ? { catalog: authority.catalog } : null });
       if (eligibility.kind !== "eligible" || !authority) return null;

@@ -66,17 +66,7 @@ const avatar: AssistantAvatarRecipe = {
   rotations: [0, 2]
 };
 
-const editorOptions: Omit<AssistantEditorOptions, "onRetryKnowledge"> = {
-  knowledgeBases: [
-    { available: true, id: "base-api", name: "API contracts" },
-    { available: true, id: "base-hr", name: "HR handbook" }
-  ],
-  knowledgeDataError: null,
-  knowledgeDataState: "ready",
-  knowledgeSources: [
-    { available: true, id: "source-auth", name: "Authentication guide" },
-    { available: false, id: "source-draft", name: "Rate limits draft" }
-  ],
+const editorOptions: AssistantEditorOptions = {
   mcpServers: [
     { enabled: true, id: "mcp-jira", name: "Jira", readiness: "ready" },
     { enabled: true, id: "mcp-confluence", name: "Confluence", readiness: "idle" },
@@ -194,7 +184,7 @@ function initialDraft(state: EditorFixtureState, prefill: AssistantTemplatePrefi
       name: "",
       rows: {
         ...draft.rows,
-        knowledge: { policy: "fixed", value: { mode: "inherit" } },
+        model: { policy: "fixed", value: { mode: "inherit" } },
         tools: { policy: "fixed", value: { mode: "exact", serverIds: [] } }
       }
     };
@@ -338,7 +328,6 @@ function EditorFixture({ expandedRow, initialSharing, onClose, onTry, prefill, s
     onUseInChat: null,
     options: {
       ...editorOptions,
-      onRetryKnowledge: () => undefined,
       searchOptions: state === "editor"
         ? editorOptions.searchOptions.filter((option) => option.id !== "news")
         : editorOptions.searchOptions

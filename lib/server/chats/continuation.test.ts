@@ -13,12 +13,12 @@ function model(contextWindow = 32000): SystemModelRoleResolution {
       connection: { responseTimeoutMs: 300000 } } } as unknown as ProviderAdmissionRole };
 }
 function fixture(transcript = "USER: Plan a trip.\nASSISTANT: Budget is 500.") {
-  const source = { chatId: "source", userId: "owner", leafMessageId: "answer", projectId: null, updatedAt: new Date(), transcript, workspaceEnabled: false };
+  const source = { chatId: "source", userId: "owner", leafMessageId: "answer", updatedAt: new Date(), transcript, workspaceEnabled: false };
   const repository = {
     loadSource: vi.fn(async () => source),
     claim: vi.fn<ContinuationRepository["claim"]>(async () => ({ kind: "claimed", claim: { id: "operation", attemptId: "attempt" } })),
     assertCurrent: vi.fn(async () => {}),
-    complete: vi.fn<ContinuationRepository["complete"]>(async () => ({ status: "complete", chatId: "new", projectId: null })),
+    complete: vi.fn<ContinuationRepository["complete"]>(async () => ({ status: "complete", chatId: "new" })),
     fail: vi.fn(async () => {}), recordUsage: vi.fn(async () => {})
   } satisfies ContinuationRepository;
   const execute = vi.fn<Parameters<typeof createChatContinuationService>[0]["execute"]>(async (_role, _request, options) => {

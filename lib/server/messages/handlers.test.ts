@@ -15,7 +15,6 @@ import {
   type MessageBranchRepository
 } from "./handlers";
 import { createPrismaMessageBranchRepository } from "./prismaRepository";
-import { ProjectsDisabledError } from "../projects/disabled";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -81,12 +80,6 @@ function createMemoryRepository() {
       state.branchedChat = {
         activeLeafMessageId: clonedMessages.at(-1)?.id ?? null,
         createdAt: "2026-06-07T09:00:00.000Z",
-        defaultKnowledgePlan: {
-          baseIds: ["base-policies"],
-          mode: "explicit",
-          sourceIds: ["source-handbook"],
-          version: 1
-        },
         defaultModelId: "fake-qsa",
         defaultProvider: "fake",
         folderId: null,
@@ -367,12 +360,6 @@ describe("message branch route handlers", () => {
     expect(body).toMatchObject({
       chat: {
         activeLeafMessageId: "branch-message-2",
-        defaultKnowledgePlan: {
-          baseIds: ["base-policies"],
-          mode: "explicit",
-          sourceIds: ["source-handbook"],
-          version: 1
-        },
         id: "chat-branch-1",
         messageCount: 2,
         pinned: false,
@@ -397,29 +384,6 @@ describe("message branch route handlers", () => {
     );
     expect(response.status).toBe(201);
     expect(decodeChatSummaryResponse(await response.json())).toMatchObject({ importSource: "CHATGPT", importSourceModel: "gpt-4o" });
-  });
-
-  it("answers an edit or a branch in a Project chat with projects_disabled", async () => {
-    const { repository } = createMemoryRepository();
-    repository.createEditedMessageBranch = async () => { throw new ProjectsDisabledError(); };
-    repository.createChatBranchFromMessage = async () => { throw new ProjectsDisabledError(); };
-    const request = (url: string, method: string, body?: unknown) => new Request(url, {
-      ...(body ? { body: JSON.stringify(body) } : {}), headers: { cookie: authCookie() }, method
-    });
-
-    const edit = await createEditMessageBranchHandler({ repository, resolveAuth: auth.resolveAuth })(
-      request("http://app.local/api/messages/user-1", "PATCH", { text: "Edited question" }),
-      { params: { messageId: "user-1" } }
-    );
-    const branch = await createBranchChatFromMessageHandler({ repository, resolveAuth: auth.resolveAuth })(
-      request("http://app.local/api/messages/assistant-1/branch-chat", "POST"),
-      { params: { messageId: "assistant-1" } }
-    );
-
-    for (const response of [edit, branch]) {
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
-    }
   });
 
   it("returns a conflict when branching while the source chat has an active run", async () => {

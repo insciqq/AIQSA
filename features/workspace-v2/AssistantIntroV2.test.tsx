@@ -27,14 +27,6 @@ describe("Assistant intro v2", () => {
     render(<AssistantIntroV2 {...hr} owned={false} ownerDisplayName="Local Operator" />);
     expect(screen.getByText("HR Helper for the chat header fixture.")).toHaveAttribute("title", "HR Helper for the chat header fixture.");
   });
-
-  it("reads a Project's Assistant as the Project's", () => {
-    const { rerender } = render(<AssistantIntroV2 {...hr} owned={false} ownerDisplayName="Project" projectName="Launch plan" />);
-    expect(screen.getByTestId("assistant-blank-intro")).toHaveTextContent("Project “Launch plan”");
-    expect(screen.getByTestId("assistant-blank-intro")).not.toHaveTextContent("By Project");
-    rerender(<AssistantIntroV2 {...hr} owned={false} ownerDisplayName="Project" projectName={null} />);
-    expect(screen.getByTestId("assistant-blank-intro").querySelector(".v2-live-assistant-by")).toHaveTextContent(/^Project$/u);
-  });
 });
 
 describe("Assistant intro v2 clamped at a word", () => {

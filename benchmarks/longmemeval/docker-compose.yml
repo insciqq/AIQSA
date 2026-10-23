@@ -34,9 +34,6 @@ services:
       DATABASE_URL: postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@postgres:5432/aiqsa_memory_benchmark?schema=public
     cpus: 1.0
 
-  knowledge-search-worker:
-    profiles: ["benchmark-disabled"]
-
   opensearch:
     container_name: aiqsa-memory-benchmark-second-opensearch
     ports: !override

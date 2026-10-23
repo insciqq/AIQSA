@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { IMAGE_MAX_BYTES } from "@/lib/contracts/imageGeneration";
 import type { WorkspaceUploadConfigWire, WorkspaceUploadWire } from "@/lib/contracts/workspaceUploads";
-import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { getRequestBodyConfig } from "../http/requestBodyConfig";
 import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
 import { runInBackground, reportSubsystemFailure } from "../observability";
@@ -12,8 +11,9 @@ import { WORKSPACE_UPLOAD_PART_BYTES, WORKSPACE_UPLOAD_REQUEST_MS, workspaceUplo
 import { type WorkspaceUploadRepository, WorkspaceUploadError, workspaceUploadProjection } from "./workspaceUploadRepository";
 import { joinedUploadParts, meteredUploadBody, WorkspaceUploadStreamError } from "./workspaceUploadStreams";
 
-type CreateInput = { byteSize: number; fileName: string; mimeType: string; projectId: string | null; idempotencyKey: string };
+type CreateInput = { byteSize: number; fileName: string; mimeType: string; idempotencyKey: string };
 
+/** A `projectId` of null from clients older than the removal of Projects is ignored. */
 export function decodeWorkspaceUploadCreate(value: unknown): CreateInput | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
@@ -21,9 +21,9 @@ export function decodeWorkspaceUploadCreate(value: unknown): CreateInput | null 
     typeof v.byteSize !== "number" || !Number.isSafeInteger(v.byteSize) || v.byteSize < 1 ||
     typeof v.fileName !== "string" || v.fileName.length < 1 || v.fileName.length > 512 ||
     typeof v.mimeType !== "string" || v.mimeType.length > 255 || /[\u0000-\u001f\u007f]/u.test(v.mimeType) ||
-    !(v.projectId === null || typeof v.projectId === "string" && /^[a-zA-Z0-9-]{1,128}$/u.test(v.projectId)) ||
+    (v.projectId !== undefined && v.projectId !== null) ||
     typeof v.idempotencyKey !== "string" || !/^[a-zA-Z0-9-]{16,64}$/u.test(v.idempotencyKey)) return null;
-  return v as CreateInput;
+  return { byteSize: v.byteSize, fileName: v.fileName, idempotencyKey: v.idempotencyKey, mimeType: v.mimeType };
 }
 
 function refusalStatus(code: string): 400 | 413 {
@@ -60,8 +60,6 @@ export class WorkspaceUploadService {
       partBytes: WORKSPACE_UPLOAD_PART_BYTES, available: await this.deps.available() };
   }
   async create(input: CreateInput, userId: string): Promise<WorkspaceUploadWire> {
-    // Projects are disabled: nothing is uploaded into a Project.
-    if (input.projectId !== null && !PROJECTS_ENABLED) throw new WorkspaceUploadError(PROJECTS_DISABLED_CODE, 409);
     const validation = validateUpload({ ...input, maxBytes: this.#maxBytes(), scope: "workspace" });
     if (!validation.ok) throw new WorkspaceUploadError(validation.code, refusalStatus(validation.code));
     await this.#available();

@@ -404,27 +404,6 @@
   min-height: 2.375rem;
 }
 
-/* One Project per line; the ones the owner can't open are counted last. */
-.v2-assistant-sharing-projects {
-  display: grid;
-  min-width: 0;
-  gap: 0.25rem;
-  margin: 0;
-  padding: 0;
-  color: var(--v2-color-text);
-  line-height: 1.45;
-  list-style: none;
-}
-
-.v2-assistant-sharing-projects > li {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.v2-assistant-sharing-projects > .v2-assistant-sharing-projects-rest {
-  color: var(--v2-color-text2);
-}
-
 /*
  * Opened from the detail sheet, the Sharing sheet replaces it as the top
  * layer: the detail sheet stays mounted under it, holding the control that

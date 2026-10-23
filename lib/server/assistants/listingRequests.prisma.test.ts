@@ -18,8 +18,8 @@ async function fixture() {
   const group = await prisma.group.create({ data: { name: `Listing ${suffix}` } });
   await prisma.userGroup.createMany({ data: [owner, peer].map((userId) => ({ userId, groupId: group.id })) });
   const repository = createPrismaAssistantRepository(prisma);
-  const skillIds: string[] = [], knowledgeBaseIds: string[] = [];
-  return { owner, peer, admin, group, repository, skillIds, knowledgeBaseIds,
+  const skillIds: string[] = [];
+  return { owner, peer, admin, group, repository, skillIds,
     requests: createAssistantListingService(prisma), listed: createListedAssistantService(prisma, repository),
     async assistant(name = "Listing reviewer") {
       return prisma.assistantDefinition.create({ data: { ownerUserId: owner, name, avatar, systemPrompt: "Private review instructions",
@@ -40,8 +40,6 @@ async function fixture() {
       await prisma.skillRevisionFile.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillRevision.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillDefinition.deleteMany({ where: { id: { in: skillIds } } });
-      await prisma.knowledgeBasePublication.deleteMany({ where: { knowledgeBaseId: { in: knowledgeBaseIds } } });
-      await prisma.knowledgeBase.deleteMany({ where: { id: { in: knowledgeBaseIds } } });
       await prisma.userGroup.deleteMany({ where: { groupId: group.id } });
       await prisma.group.delete({ where: { id: group.id } });
       await prisma.user.deleteMany({ where: { id: { in: [owner, peer, admin] } } });
@@ -65,7 +63,7 @@ describe("Assistant listing persistence", () => {
       expect(review).toMatchObject({ canReview: true, outdated: false, definition: {
         version: 1, instructions: "Private review instructions", answerRules: "Cite every source.", rows: {
           model: { policy: "adjustable", value: { mode: "inherit" } }, search: { policy: "fixed", value: { mode: "off" } },
-          tools: { policy: "fixed", value: { mode: "off" } }, knowledge: { policy: "fixed", value: { mode: "none" } } } } });
+          tools: { policy: "fixed", value: { mode: "off" } } } } });
       expect(JSON.stringify(review)).not.toMatch(/requestedByUserId|ownerUserId|listing-owner/);
       expect(await f.requests.status(f.owner, assistant.id, false)).toMatchObject({ canRequest: false, canWithdraw: true, request: { state: "pending", outdated: false } });
 
@@ -119,32 +117,26 @@ describe("Assistant listing persistence", () => {
     } finally { await f.cleanup(); }
   });
 
-  it("names in the review only the Knowledge the administrator can open", async () => {
+  it("ignores a Knowledge selection stored before Knowledge was removed", async () => {
     const f = await fixture();
     try {
-      const [ownerOnly, teamOnly, everyone] = await Promise.all(["Owner private notes", "Team only handbook", "Company handbook"]
-        .map((name) => prisma.knowledgeBase.create({ data: { ownerUserId: f.owner, name } })));
-      f.knowledgeBaseIds.push(ownerOnly!.id, teamOnly!.id, everyone!.id);
-      await prisma.knowledgeBasePublication.createMany({ data: [
-        { knowledgeBaseId: teamOnly!.id, scope: "group", groupId: f.group.id, publishedByUserId: f.owner },
-        { knowledgeBaseId: everyone!.id, scope: "installation", publishedByUserId: f.admin }
-      ] });
+      const retiredBaseId = randomUUID();
       const assistant = await prisma.assistantDefinition.create({ data: { ownerUserId: f.owner, name: "Handbook helper", avatar,
         systemPrompt: "Answer from the handbook.", modelPolicy: "adjustable", providerModelId: null,
         searchPolicy: "adjustable", searchPlan: { mode: "inherit" }, toolsPolicy: "adjustable", mcpMode: "inherit", knowledgePolicy: "fixed",
-        knowledgeSelection: { mode: "explicit", baseIds: [ownerOnly!.id, teamOnly!.id, everyone!.id], sourceIds: [], version: 1 } } });
+        knowledgeSelection: { mode: "explicit", baseIds: [retiredBaseId], sourceIds: [], version: 1 } } });
       await f.requests.request(f.owner, assistant.id, 1);
       const review = await f.requests.detail(f.admin, (await f.pending(assistant.id)).id);
       expect(review.definition).toMatchObject({
         rows: {
           model: { policy: "adjustable", value: { mode: "inherit" } },
           search: { policy: "adjustable", value: { mode: "inherit" } },
-          tools: { policy: "adjustable", value: { mode: "inherit" } },
-          knowledge: { policy: "fixed", value: { mode: "explicit", baseIds: [everyone!.id], sourceIds: [], hiddenCount: 2 } }
+          tools: { policy: "adjustable", value: { mode: "inherit" } }
         },
-        names: { knowledgeBases: [{ id: everyone!.id, name: "Company handbook" }], knowledgeSources: [], models: [] }
+        names: { models: [] }
       });
-      expect(JSON.stringify(review)).not.toMatch(new RegExp(`${ownerOnly!.id}|${teamOnly!.id}|Owner private notes|Team only handbook`, "u"));
+      expect(review.definition?.rows).not.toHaveProperty("knowledge");
+      expect(JSON.stringify(review)).not.toContain(retiredBaseId);
     } finally { await f.cleanup(); }
   });
 

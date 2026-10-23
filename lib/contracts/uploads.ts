@@ -78,7 +78,6 @@ type UploadCodeOnlyErrorCode =
   | "file_required"
   | "image_invalid"
   | "image_limit_exceeded"
-  | "project_not_found"
   | "unauthorized"
   | "unsupported_type"
   | "upload_busy"
@@ -88,7 +87,6 @@ const UPLOAD_CODE_ONLY_ERROR_CODES: ReadonlySet<unknown> = new Set<UploadCodeOnl
   "file_required",
   "image_invalid",
   "image_limit_exceeded",
-  "project_not_found",
   "unauthorized",
   "unsupported_type",
   "upload_busy",

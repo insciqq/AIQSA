@@ -4,15 +4,14 @@ import { resolveAnswerReviewAuto } from "./autoAdmission";
 type Prepared = Parameters<typeof resolveAnswerReviewAuto>[1]["prepared"];
 
 function prepared(overrides: Readonly<{
-  agent?: boolean; assistant?: boolean; knowledge?: boolean; projectModelIds?: readonly string[]; toolCalling?: boolean;
+  agent?: boolean; assistant?: boolean; toolCalling?: boolean;
 }> = {}): Prepared {
   return {
     ...(overrides.assistant ? { assistant: { assistantId: "assistant-1" } } : {}),
     normalizedRequest: {
       ...(overrides.agent ? { agent: { version: 2 } } : {}),
-      knowledgePlan: { mode: overrides.knowledge ? "explicit" : "none" }
+      knowledgePlan: { mode: "none" }
     },
-    ...(overrides.projectModelIds ? { project: { modelIds: [...overrides.projectModelIds], projectId: "project-1" } } : {}),
     providerAdmissionPlan: {
       answer: {
         modelConfiguration: { capabilities: { toolCalling: overrides.toolCalling ?? true } },
@@ -25,7 +24,7 @@ function prepared(overrides: Readonly<{
 
 function admission(models: Record<string, Readonly<{ name: string; toolCalling: boolean }>>) {
   return {
-    load: vi.fn(async (input: { providerModelId: string; executionScope?: string }) => {
+    load: vi.fn(async (input: { providerModelId: string }) => {
       const model = models[input.providerModelId];
       if (!model) {
         const error = new Error("model_not_available");
@@ -84,7 +83,6 @@ describe("automatic review admission", () => {
     for (const [overrides, code] of [
       [{ assistant: true }, "answer_review_assistant_unsupported"],
       [{ agent: true }, "answer_review_agent_unsupported"],
-      [{ knowledge: true }, "answer_review_knowledge_unsupported"],
       [{ toolCalling: false }, "answer_review_model_unsupported"]
     ] as const) {
       expect(await resolveAnswerReviewAuto(deps, { body: request, prepared: prepared(overrides), userId: "user-1" }), code)
@@ -94,30 +92,19 @@ describe("automatic review admission", () => {
       .toMatchObject({ code: "answer_review_model_unsupported" });
   });
 
-  it("never lets the answer's own model, a model without tools, an unavailable one or a non-Project one review", async () => {
+  it("never lets the answer's own model, a model without tools or an unavailable one review", async () => {
     const deps = { providerAdmission: admission({
       "model-b": { name: "GPT-5", toolCalling: true }, "model-text": { name: "Text only", toolCalling: false }
     }) as never };
-    for (const [entry, overrides] of [
-      [{ modelId: "model-a", provider: "connection-a" }, {}],
-      [{ modelId: "model-text", provider: "connection-t" }, {}],
-      [{ modelId: "model-gone", provider: "connection-g" }, {}],
-      [{ modelId: "model-b", provider: "connection-b" }, { projectModelIds: ["model-a"] }]
+    for (const entry of [
+      { modelId: "model-a", provider: "connection-a" },
+      { modelId: "model-text", provider: "connection-t" },
+      { modelId: "model-gone", provider: "connection-g" }
     ] as const) {
       expect(await resolveAnswerReviewAuto(deps, {
-        body: body({ maxRounds: 1, reviewers: reviewers(entry) }), prepared: prepared(overrides), userId: "user-1"
+        body: body({ maxRounds: 1, reviewers: reviewers(entry) }), prepared: prepared(), userId: "user-1"
       }), entry.modelId).toEqual({ code: "answer_review_reviewer_unavailable", ok: false, status: 409 });
     }
-  });
-
-  it("admits a Project's reviewers with the Project's shared authority", async () => {
-    const providerAdmission = admission({ "model-b": { name: "GPT-5", toolCalling: true } });
-    const resolved = await resolveAnswerReviewAuto({ providerAdmission: providerAdmission as never }, {
-      body: body({ maxRounds: 1, reviewers: reviewers({ modelId: "model-b", provider: "connection-b" }) }),
-      prepared: prepared({ projectModelIds: ["model-a", "model-b"] }), userId: "user-1"
-    });
-    expect(resolved.ok).toBe(true);
-    expect(providerAdmission.load).toHaveBeenCalledWith(expect.objectContaining({ executionScope: "project" }));
   });
 
   it("refuses a malformed request", async () => {

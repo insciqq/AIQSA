@@ -202,7 +202,7 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubvi
       {messages}
       <details className="v2-instructions-reminder my-3">
         <summary className="v2-focusable cursor-pointer text-sm font-medium text-ink">AIQSA standard answer rules</summary>
-        <p className="my-2 text-xs leading-5 text-ink-muted">Used in chats, Projects and Assistants. A personal preset can replace these rules for personal chats in its Answer rules section.</p>
+        <p className="my-2 text-xs leading-5 text-ink-muted">Used in chats and Assistants. A personal preset can replace these rules for personal chats in its Answer rules section.</p>
         <p className="whitespace-pre-wrap text-sm leading-6 text-ink-secondary">{VISIBLE_ANSWER_CONTRACT}</p>
       </details>
       {atLimit ? <p id={`${panelId}-limit`} className="my-3 text-sm text-ink-muted">{instructionPresetErrorMessage("instruction_preset_limit")}</p> : null}
@@ -227,7 +227,7 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubvi
         </div>)}
       </div>
       <p className="mt-3 text-xs text-ink-muted">{state?.presets.length ?? 0} of {INSTRUCTION_PRESET_MAX_COUNT} presets.</p>
-      <p className="mt-2 text-xs leading-5 text-ink-muted">Applies from the next reply, including existing and temporary personal chats. Assistants use their own instructions. Projects use Project instructions.</p>
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Applies from the next reply, including existing and temporary personal chats. Assistants use their own instructions.</p>
     </>}
   </section>;
 }

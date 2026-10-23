@@ -14,7 +14,7 @@ import { runAttributionUsageRows, runAttributionUsageWhere } from "./prismaRepos
 /** The caller owns the run lock and invokes this only for the first answer
  * publication (or ordinary terminal completion without earlier publication). */
 export async function persistCompletedAnswerUsage(
-  tx: Prisma.TransactionClient, input: RunCompletionInput, projectId: string | null
+  tx: Prisma.TransactionClient, input: RunCompletionInput
 ): Promise<void> {
   const usage = normalizeTokenUsage(input.usage);
   const attributions = input.usageAttributions?.length ? input.usageAttributions : [{
@@ -24,7 +24,7 @@ export async function persistCompletedAnswerUsage(
   // Only the run's own attribution rows are rewritten; every other purpose
   // linked to the run keeps its receipt.
   await tx.usageEvent.deleteMany({ where: runAttributionUsageWhere(input.runId) });
-  await tx.usageEvent.createMany({ data: runAttributionUsageRows({ chatId: input.chatId, projectId,
+  await tx.usageEvent.createMany({ data: runAttributionUsageRows({ chatId: input.chatId,
     runId: input.runId, userId: input.userId }, attributions) });
   await tx.chat.update({ where: { id: input.chatId }, data: {
     totalInputTokens: { increment: usage.inputTokens ?? 0 },
@@ -46,13 +46,12 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
         assistantMessageId: string | null;
         chatId: string;
         modelId: string;
-        projectId: string | null;
         provider: string;
         status: ModelRunStatus;
       }>>(Prisma.sql`
         SELECT run."answerCompletedAt", run."followupMode", run."assistantMessageId", run."chatId", run."modelId",
-          run."provider", run."status", chat."projectId"
-        FROM "ModelRun" AS run INNER JOIN "Chat" AS chat ON chat."id" = run."chatId"
+          run."provider", run."status"
+        FROM "ModelRun" AS run
         WHERE run."id" = ${input.runId} AND run."userId" = ${input.userId}
         FOR UPDATE OF run
       `);
@@ -73,7 +72,7 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
       if (message.count !== 1) throw new Error("run_answer_publication_conflict");
       if (input.knowledgeGrounding) await settleKnowledgeGrounding(tx, input.knowledgeGrounding);
       await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
-      await persistCompletedAnswerUsage(tx, input, run.projectId);
+      await persistCompletedAnswerUsage(tx, input);
       const usage = normalizeTokenUsage(input.usage);
       await tx.modelRun.update({ where: { id: input.runId }, data: {
         cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens,

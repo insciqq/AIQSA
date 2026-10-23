@@ -14,7 +14,6 @@ const excludedRootSessionKey = "blank:excluded:root" as const;
 const excludedFolderSessionPrefix = "blank:excluded:folder:";
 const temporaryRootSessionKey = "blank:temporary:root" as const;
 const temporaryFolderSessionPrefix = "blank:temporary:folder:";
-const projectBlankSessionPrefix = "blank:project:";
 const savedChatSessionPrefix = "chat:";
 
 export type ComposerBlankMemoryMode = "EXCLUDED" | "NORMAL" | "TEMPORARY";
@@ -26,8 +25,6 @@ export type ComposerSessionKey =
   | `blank:excluded:folder:${string}`
   | typeof temporaryRootSessionKey
   | `blank:temporary:folder:${string}`
-  | `blank:project:${string}:root`
-  | `blank:project:${string}:folder:${string}`
   | `chat:${string}`;
 
 export type ComposerPendingEdit = {
@@ -265,30 +262,6 @@ export function composerSessionKey(
   return folderId ? `${blankFolderSessionPrefix}${encodeURIComponent(folderId)}` : blankRootSessionKey;
 }
 
-/**
- * A blank Project is local until first-send admission, but its draft and
- * attachments already belong to that Project. Keep it separate from every
- * personal blank composer so leaving the Project cannot leak either scope.
- */
-export function projectComposerSessionKey(
-  projectId: string,
-  folderId: string | null = null
-): ComposerSessionKey {
-  const encodedProjectId = encodeURIComponent(projectId);
-  return folderId
-    ? `${projectBlankSessionPrefix}${encodedProjectId}:folder:${encodeURIComponent(folderId)}`
-    : `${projectBlankSessionPrefix}${encodedProjectId}:root`;
-}
-
-export function projectIdFromComposerSessionKey(key: ComposerSessionKey): string | null {
-  if (!key.startsWith(projectBlankSessionPrefix)) return null;
-  const remainder = key.slice(projectBlankSessionPrefix.length);
-  const boundary = remainder.endsWith(":root")
-    ? remainder.length - ":root".length
-    : remainder.indexOf(":folder:");
-  return boundary >= 0 ? decodeKeySegment(remainder.slice(0, boundary)) : null;
-}
-
 export function composerSessionModeFromKey(key: ComposerSessionKey): ComposerBlankMemoryMode {
   if (key === temporaryRootSessionKey || key.startsWith(temporaryFolderSessionPrefix)) {
     return "TEMPORARY";
@@ -305,12 +278,6 @@ export function chatIdFromComposerSessionKey(key: ComposerSessionKey): string | 
 }
 
 export function folderIdFromComposerSessionKey(key: ComposerSessionKey): string | null {
-  if (key.startsWith(projectBlankSessionPrefix)) {
-    const folderBoundary = key.indexOf(":folder:", projectBlankSessionPrefix.length);
-    return folderBoundary >= 0
-      ? decodeKeySegment(key.slice(folderBoundary + ":folder:".length))
-      : null;
-  }
   if (key.startsWith(temporaryFolderSessionPrefix)) {
     return decodeKeySegment(key.slice(temporaryFolderSessionPrefix.length));
   }

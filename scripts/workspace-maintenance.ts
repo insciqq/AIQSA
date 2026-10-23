@@ -24,7 +24,15 @@ async function main(): Promise<void> {
         claimed_count: summary.cleanupClaimed, completed_count: summary.cleanupCompleted,
         failed_count: summary.cleanupFailed + summary.idleFailed });
     }
+    // Projects were removed: the fenced ones left by the upgrade are deleted here.
     const projectDeletions = await runProjectDeletionMaintenance({ prisma, runtime });
+    if (projectDeletions.completed > 0 || projectDeletions.failed > 0) {
+      logEvent("runtime_lifecycle", { subsystem: "projects", stage: "delete",
+        outcome: projectDeletions.failed > 0 ? "failed" : "completed",
+        completed_count: projectDeletions.completed, failed_count: projectDeletions.failed,
+        pending_count: projectDeletions.pending,
+        ...(projectDeletions.failed > 0 ? { action: "retry" as const, code: "project_deletion_failed" } : {}) });
+    }
     if (once) {
       console.log(JSON.stringify({ ...summary, projectDeletions }));
       return;

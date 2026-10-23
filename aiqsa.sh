@@ -634,7 +634,7 @@ doctor_memory() {
     if (( kib < MEMORY_FAIL_KIB )); then
       check FAIL memory "$gib; at least 8 GB is required (each Workspace session runs in a 4 GB virtual machine)"
     elif (( kib < MEMORY_WARN_KIB )); then
-      check WARN memory "$gib; 16 GB is recommended for several Workspace sessions, Knowledge ingestion and OCR"
+      check WARN memory "$gib; 16 GB is recommended for several Workspace sessions and OCR"
     else
       check PASS memory "$gib"
     fi
@@ -998,6 +998,7 @@ doctor_stack() {
   doctor_storage
   doctor_host_probe
   doctor_toolhive_leftovers
+  doctor_knowledge_worker_leftover
   local usage="" entry
   while IFS= read -r entry; do
     [[ -n $entry ]] && usage+="${usage:+; }$entry"
@@ -1026,6 +1027,17 @@ doctor_toolhive_leftovers() {
   (( ${#lines[@]} )) || return 0
   check WARN toolhive-leftovers "local MCP servers were removed; the old ToolHive runtime left Docker state behind" \
     "Once this release works, remove it with:" "${lines[@]/#/  }"
+}
+
+# Knowledge was removed with its knowledge-search-worker service; a plain
+# `docker compose up -d` keeps the orphaned container running the old image.
+doctor_knowledge_worker_leftover() {
+  load_project_name
+  [[ -n $PROJECT_NAME ]] || return 0
+  [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
+    --filter label=com.docker.compose.service=knowledge-search-worker 2>/dev/null) ]] || return 0
+  check WARN knowledge-worker-leftover "Knowledge was removed; the old knowledge-search-worker container is still there" \
+    "Remove it with:" "  docker compose up -d --remove-orphans"
 }
 
 doctor_runner() {
@@ -2223,7 +2235,7 @@ cmd_restore() {
   say "Restoring PostgreSQL."
   pg_tool rc pg_restore --no-owner --exit-on-error -U "$(pg_user)" -d "$(pg_db)" <"$dir/postgres.dump" >"$log" 2>&1 \
     || restore_step_failed "pg_restore failed" "$log"
-  for script in memory:restore:reconcile knowledge:restore:reconcile; do
+  for script in memory:restore:reconcile; do
     say "Reconciling: $script."
     if ! rc run --rm --no-deps -T -e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES \
       -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio \
@@ -2237,9 +2249,9 @@ cmd_restore() {
   RESTORE_PHASE=started
   FAIL_COUNT=0 WARN_COUNT=0 PASS_COUNT=0
   up_stack none
-  # The reconciliation reset both search projections to pending; the running
-  # search workers recreate the indexes and project everything from PostgreSQL.
-  say "Memory and Knowledge search indexes are being rebuilt from PostgreSQL by the search workers."
+  # The reconciliation reset the Memory search projection to pending; the running
+  # search worker recreates the index and projects everything from PostgreSQL.
+  say "The Memory search index is being rebuilt from PostgreSQL by the search worker."
   post_start_check
   say "Restore complete."
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { decodeAssistantDetailResponse } from "../../contracts/assistants";
 import { defaultProviderModels } from "../../domain/catalog";
 import { textMessageContent } from "../../domain/content";
@@ -13,13 +13,6 @@ import { createPrismaAdoptChatSetup } from "./adoptChatSetup";
 import { createAdoptChatSetupHandler } from "./handlers";
 import { createPrismaAssistantRepository } from "./prismaRepository";
 
-// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
-// it keeps the switch on to test the code that still exists.
-vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
-  KNOWLEDGE_ENABLED: true
-}));
-
 const avatar = {
   accents: [0, 4],
   backgroundShape: "circle",
@@ -30,7 +23,7 @@ const avatar = {
   rotations: [0, 2]
 };
 
-/** The seeded Fake QSA model under its database id; Chat defaults: Load all, no Knowledge. */
+/** The seeded Fake QSA model under its database id; Chat defaults: Load all. */
 function stubCatalog(): Promise<CatalogData> {
   const fake = defaultProviderModels.find((model) => model.provider === "fake")!;
   return Promise.resolve({
@@ -39,7 +32,6 @@ function stubCatalog(): Promise<CatalogData> {
     searchStrategies: [],
     settings: {
       defaultControlValues: {},
-      defaultKnowledgePlan: null,
       defaultMcpMode: "load_all",
       defaultProviderModelId: providerTemplateIds.fakeModel,
       defaultSearchPlan: null,
@@ -84,7 +76,6 @@ async function withAdoptFixture<T>(run: (fixture: AdoptFixture) => Promise<T>): 
     const created = await prisma.assistantDefinition.create({
       data: {
         avatar,
-        knowledgePolicy: "adjustable",
         modelPolicy: "adjustable",
         name,
         ownerUserId: userId,
@@ -142,7 +133,7 @@ function adopt(userId: string, assistantId: string, body: unknown, role: "admin"
 async function state(assistantId: string, chatId: string) {
   const [definition, chat] = await Promise.all([
     prisma.assistantDefinition.findUniqueOrThrow({
-      select: { knowledgeSelection: true, mcpMode: true, skillsMode: true, skillsPolicy: true, toolsPolicy: true, version: true },
+      select: { mcpMode: true, skillsMode: true, skillsPolicy: true, toolsPolicy: true, version: true },
       where: { id: assistantId }
     }),
     prisma.chat.findUniqueOrThrow({ select: { assistantOverrides: true }, where: { id: chatId } })
@@ -186,12 +177,13 @@ describe("adopt chat setup", () => {
       await prisma.assistantDefinition.update({ data: { toolsPolicy: "adjustable" }, where: { id: assistantId } });
       const { version } = await prisma.assistantDefinition.findUniqueOrThrow({ select: { version: true }, where: { id: assistantId } });
 
-      const unexpressible = await boundChat(userId, assistantId, { knowledge: { mode: "all_my_knowledge" } });
+      // Auto is not what inherit means for this owner (Load all), so it has no definition value.
+      const unexpressible = await boundChat(userId, assistantId, { tools: { mode: "auto" } });
       const refused = await adopt(userId, assistantId, { chatId: unexpressible, expectedVersion: version });
       expect(refused.status).toBe(400);
-      expect(await refused.json()).toEqual({ error: "assistant_knowledge_bases_invalid", row: "knowledge" });
+      expect(await refused.json()).toEqual({ error: "assistant_mcp_servers_invalid", row: "tools" });
       await expect(state(assistantId, unexpressible)).resolves.toMatchObject({
-        chat: { assistantOverrides: { knowledge: { mode: "all_my_knowledge" } } },
+        chat: { assistantOverrides: { tools: { mode: "auto" } } },
         definition: { version }
       });
 

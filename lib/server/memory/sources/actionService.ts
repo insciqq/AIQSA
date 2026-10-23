@@ -173,7 +173,6 @@ export function createPrismaMemoryRecallSourceMutationRepository(
           FROM "Chat" AS chat
           WHERE chat."userId" = ${userId}
             AND chat."id" = ${mutation.chatId}
-            AND chat."projectId" IS NULL
             AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
             AND chat."permanentDeletionAt" IS NULL
           FOR UPDATE OF chat
@@ -513,7 +512,6 @@ export function createMemorySourceActionService(input: Readonly<{
               id: ref.target.sourceChatId,
               memoryMode: "NORMAL",
               permanentDeletionAt: null,
-              projectId: null,
               userId
             }
           }),
@@ -613,7 +611,6 @@ export function createMemorySourceActionService(input: Readonly<{
           where: {
             id: ref.target.sourceChatId,
             permanentDeletionAt: null,
-            projectId: null,
             userId
           }
         }),
@@ -795,7 +792,6 @@ export function createMemorySourceActionService(input: Readonly<{
         where: {
           id: ref.target.sourceChatId,
           permanentDeletionAt: null,
-          projectId: null,
           userId
         }
       }),
@@ -987,7 +983,6 @@ export function createMemorySourceActionService(input: Readonly<{
               ON chat."userId" = run."userId" AND chat."id" = run."chatId"
             WHERE run."userId" = ${userId}
               AND run."id" = ${ref.originatingRunId}
-              AND chat."projectId" IS NULL
               AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
               AND chat."permanentDeletionAt" IS NULL
             FOR UPDATE OF chat

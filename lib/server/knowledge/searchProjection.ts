@@ -891,7 +891,9 @@ export async function deleteKnowledgeSearchArtifacts(input: Readonly<{
   search?: AiqsaOpenSearchTransport;
 }>): Promise<void> {
   const search = input.search ?? createKnowledgeOpenSearchTransport();
-  await search.ensureKnowledgeIndex();
+  // Knowledge was removed: a missing index holds nothing to delete and is
+  // never created again.
+  if (!await search.knowledgeIndexExists()) return;
   for (const indexArtifactId of [...new Set(input.indexArtifactIds)].sort()) {
     await search.deleteKnowledgeArtifact(indexArtifactId);
   }
