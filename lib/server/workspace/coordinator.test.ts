@@ -14,9 +14,8 @@ import { createMemoryStorageAdapter, createPooledStorageAdapter } from "@/tests/
 import { WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS } from "./attachmentAcquisition";
 import { getWorkspaceConfig } from "./config";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
+import { databaseFailureKind } from "../observability/databaseFailure";
 import { measureTransaction, transactionTimingOf } from "../observability/transactionTiming";
-import { WorkspaceHandoffFailure } from "../runs/settlementFailure";
 import {
   createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator,
@@ -2052,8 +2051,6 @@ describe("Workspace coordinator export database retries", () => {
     // Only the content-free facts are retained, never the database error itself.
     expect((caught as Error).cause).toBeUndefined();
     expect(describeFailureFacts(caught)).toMatchObject({ prisma_code: "P2002" });
-    // The run's terminal record names the database cause.
-    expect(databaseFailureCode(new WorkspaceHandoffFailure(caught))).toBe("P2002");
     expect(records).toEqual([expect.objectContaining({ work_stage: "seal", outcome: "failed", code: "workspace_output_export_failed",
       prisma_code: "P2002", action: "fail" })]);
     expect(records[0]).not.toHaveProperty("db_failure");

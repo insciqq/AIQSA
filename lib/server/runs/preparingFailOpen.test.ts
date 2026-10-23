@@ -16,7 +16,6 @@ import {
 import { MemoryPreparingRunConflictError } from "./preparingRun";
 import {
   AssistantRunConflictError,
-  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   SkillRunConflictError
@@ -67,7 +66,6 @@ describe("Memory preparation fail-open classification", () => {
 
   it("row 17: non-Memory authority conflicts keep their own code and stay fail-closed", () => {
     for (const [error, code] of [
-      [new KnowledgeRunPlanConflictError(), "knowledge_base_not_available"],
       [new McpRunPlanConflictError(), "mcp_not_ready"],
       [new McpToolAccessDeniedError(), "mcp_tool_access_denied"],
       [new SkillRunConflictError(), "skill_not_available"],
@@ -79,8 +77,8 @@ describe("Memory preparation fail-open classification", () => {
       }
     }
     // Recognized by name too, as at the HTTP boundary.
-    const renamed = Object.assign(new Error("x"), { name: "KnowledgeRunPlanConflictError" });
-    expect(decide(renamed, "finalize")).toEqual({ code: "knowledge_base_not_available", kind: "fail" });
+    const renamed = Object.assign(new Error("x"), { name: "McpRunPlanConflictError" });
+    expect(decide(renamed, "finalize")).toEqual({ code: "mcp_not_ready", kind: "fail" });
   });
 
   it.each([

@@ -37,7 +37,7 @@ const boundaryCases = [
   {
     filePath: "lib/server/providers/importBoundaryExample.ts",
     reason: "Provider adapters must not import run orchestration, handlers, or repositories.",
-    specifier: "@/lib/server/runs/runExecution"
+    specifier: "@/lib/server/runs/handlers"
   }
 ] as const;
 

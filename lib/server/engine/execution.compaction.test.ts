@@ -139,7 +139,6 @@ function prepared(contextWindow: number, chatId = `chat-${randomUUID()}`, defaul
       { content: { blocks: [] }, id: "answer-0", role: "assistant" as const },
       { content: text("Next step, please."), id: "current-user-message", role: "user" as const }
     ], mode: "branch_path" as const },
-    knowledgePlan: { baseIds: [], mode: "none" as const, sourceIds: [], version: 1 as const },
     modelCapabilities: { contextWindow, defaultMaxOutputTokens, nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system: "Be brief." }, provider: "fake",

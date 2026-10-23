@@ -10,7 +10,6 @@ function request(stream: boolean): ProviderRunRequest {
     attachments: [],
     chatId: "chat-1",
     content: { blocks: [{ text: "hello", type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,

@@ -5,7 +5,6 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { normalizeTokenUsage } from "../../../domain/usage";
-import { databaseFailureKind } from "../../observability/databaseFailure";
 import { prisma } from "../../prisma";
 import { createPrismaRunRepository } from "../../runs/prismaRepository";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
@@ -29,6 +28,7 @@ import { parseMemoryRebuildJobFingerprint } from "./contract";
 import { createMemoryRebuildHandler } from "./handler";
 import { createPrismaMemoryRebuildRepository } from "./repository";
 import { wakeCurrentMemoryShadowRebuildInTransaction } from "./wake";
+import { createNativeRunStore } from "../../engine/runStore";
 
 // Production (2026-10-08): an owner's re-embedding rebuild held the owner row
 // for up to 20 s per catch-up pass, so usage settlement, uploads and the GET
@@ -141,7 +141,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
       const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
       const evidence: Array<Readonly<{ maintenance: boolean }>> = [];
       const fixtures: Array<{ failed: { assistantMessageId: string; runId: string };
-        usage: { chatId: string; runId: string } }> = [];
+        usage: { assistantMessageId: string; chatId: string; runId: string } }> = [];
       for (let pass = 0; pass < 30; pass += 1) {
         const job = await prisma.memoryJob.findUniqueOrThrow({ where: { id: admitted.jobId } });
         const generation = await prisma.memoryIndexGeneration.findUniqueOrThrow({ where: { id: identity.generationId } });
@@ -176,8 +176,8 @@ describe("Memory background commits and the owner's foreground writes", () => {
         }), origin);
         await held;
         const [recorded, uploaded, failed] = await Promise.all([
-          settled(runs.recordRunUsageEvents({ chatId: fixture.usage.chatId, runId: fixture.usage.runId, userId,
-            usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] }), origin),
+          settled(createNativeRunStore(prisma).writeUsageRows({ ...fixture.usage, userId }, [{ key: "0",
+            attribution: { modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage } }]).then(() => true), origin),
           settled(POST(contentionUploadRequest()).then((response) => response.status), origin),
           // The GET chat reconcile ends an orphaned run through this write.
           settled(runs.failRun(fixture.failed.runId, fixture.failed.assistantMessageId,
@@ -256,13 +256,12 @@ describe("Memory background commits and the owner's foreground writes", () => {
     }
   }, 60_000);
 
-  it("yields a background commit's owner wait to a foreground holder and retries a usage write past one", async () => {
+  it("yields a background commit's owner wait to a foreground holder while a usage write waits past it", async () => {
     const userId = await createContentionOwner("yield");
     const writer = vi.spyOn(process.stdout, "write");
     try {
       const runs = createPrismaRunRepository(prisma);
       const usageRun = await createForegroundRun(runs, userId, "Usage behind a long owner lock");
-      const exhaustedRun = await createForegroundRun(runs, userId, "Usage behind a longer owner lock");
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       const job = await prisma.memoryJob.create({ data: {
         idempotencyFingerprint: `memory-contention-yield-${randomUUID()}`, kind: "RECLASSIFY_FACTS",
@@ -288,8 +287,9 @@ describe("Memory background commits and the owner's foreground writes", () => {
       const [committed, recorded] = await Promise.all([
         createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({ acceptedResultHash: "c".repeat(64), claim,
           now: new Date(), stage: "contention_settled" }),
-        runs.recordRunUsageEvents({ chatId: usageRun.chatId, runId: usageRun.runId, userId,
-          usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] })
+        // The agent engine writes usage after the answer, unbounded: it waits out the holder.
+        createNativeRunStore(prisma).writeUsageRows({ ...usageRun, userId }, [{ key: "0",
+          attribution: { modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage } }]).then(() => true)
       ]);
       await first.holder;
       expect([committed, recorded]).toEqual([true, true]);
@@ -299,18 +299,6 @@ describe("Memory background commits and the owner's foreground writes", () => {
       expect(records).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "complete",
         action: "retry", prisma_code: "P2010", db_failure: "lock_timeout" }));
       await expect(prisma.usageEvent.count({ where: { modelRunId: usageRun.runId } })).resolves.toBe(1);
-
-      // Past three bounded waits the rolled-back write ends with its lock
-      // timeout instead of an expired transaction, and writes nothing.
-      const second = holdOwner(7_500);
-      await second.held;
-      const exhausted = await runs.recordRunUsageEvents({ chatId: exhaustedRun.chatId, runId: exhaustedRun.runId,
-        userId, usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] })
-        .catch((error: unknown) => error);
-      await second.holder;
-      expect(exhausted).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
-      expect(databaseFailureKind(exhausted)).toBe("lock_timeout");
-      await expect(prisma.usageEvent.count({ where: { modelRunId: exhaustedRun.runId } })).resolves.toBe(0);
     } finally {
       writer.mockRestore();
       await cleanupContentionOwner(userId);

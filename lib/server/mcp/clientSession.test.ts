@@ -29,7 +29,6 @@ import {
   type McpRuntimeGenerationLaunch
 } from "./runtimeCoordinator";
 import { McpSafeFetchError } from "./safeFetch";
-import { mcpResponseOverflowToolExecutionResult } from "../runs/mcpOverflowToolResult";
 
 type FixtureOptions = Readonly<{
   callTool?: (input: Readonly<{
@@ -1059,15 +1058,6 @@ describe("McpClientSession", () => {
       expect(error).toBeInstanceOf(McpClientSessionError);
       expect(error).toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 1_024, operation: "call_tool", retryable: false });
       expect(JSON.stringify(error)).not.toContain(privateMarker);
-      // What the model reads: the bound reached and how to ask for less.
-      const [content] = mcpResponseOverflowToolExecutionResult({ arguments: {}, id: "call-1", name: "whole_thread" }, error)
-        ?.content ?? [];
-      const text = content?.type === "text" ? content.text : undefined;
-      expect(text).toContain("larger than 1 KiB and was not read");
-      expect(text).toContain("Request less data");
-      expect(text).toContain("a single item instead of a whole collection or thread");
-      expect(text).not.toContain(privateMarker);
-
       // Only that request failed: no fatal cause, the session stays ready.
       expect(session.isClosed()).toBe(false);
       expect(session.fatalResponseErrorCode()).toBeNull();

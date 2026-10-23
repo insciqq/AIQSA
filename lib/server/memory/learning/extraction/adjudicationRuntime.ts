@@ -45,7 +45,6 @@ function providerRequest(
       blocks: [{ text: memorySemanticAdjudicationPromptPayload(input), type: "text" }]
     },
     forceNonStreaming: true,
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,
     parallelToolCalls: false,

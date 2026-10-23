@@ -7,7 +7,7 @@ import { createAdminSystemModelPolicyService } from "./systemModelPolicyService"
 // Exercise adoption after consumer qualification, independently of which
 // consumers are enabled in a particular product release.
 vi.mock("../../../domain/decisionModels", async (original) => ({
-  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["knowledgeRelevance"]
+  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["skillSuggestions"]
 }));
 
 function fixture() {
@@ -34,9 +34,9 @@ describe("optional decision role policy", () => {
 
   it("merges an independent feature choice without erasing existing opt-outs", async () => {
     const f = fixture();
-    await f.service.update({ expectedVersion: 4, userId: "admin", decisionFeatures: { knowledgeRelevance: true } });
+    await f.service.update({ expectedVersion: 4, userId: "admin", decisionFeatures: { skillCatalogRelevance: true } });
     expect(f.update).toHaveBeenCalledWith({ where: { id: "installation" }, data: {
-      decisionFeaturesJson: { skillSuggestions: false, knowledgeRelevance: true }, updatedByUserId: "admin", version: { increment: 1 }
+      decisionFeaturesJson: { skillSuggestions: false, skillCatalogRelevance: true }, updatedByUserId: "admin", version: { increment: 1 }
     } });
     expect(f.loadDecisionRole).not.toHaveBeenCalled();
   });

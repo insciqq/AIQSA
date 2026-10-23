@@ -4,7 +4,8 @@ import { createAcceptedProviderRequestExecutor } from "../providerRuntime/accept
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { defaultRunServices } from "../runs/defaultRunServices";
 import { serializeRunOutcome } from "../runs/runOutcome";
-import { activeRunControllerRegistry } from "../runs/runExecution";
+import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { defaultNativeEngineHandlerDeps } from "../engine/defaultEngine";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { createPrismaChatTitleGenerator } from "../chats/titleGeneration";
 import { createChatPdfRouteResolver } from "./chatPdfAdmission";
@@ -31,7 +32,7 @@ function createDefaultChatPdf() {
     continueRun: createChatPdfRunContinuation({
       ...defaultRunServices(storage),
       chatTitleGenerator: createPrismaChatTitleGenerator(),
-      pdfRepository, repository, workspace
+      nativeEngine: defaultNativeEngineHandlerDeps(storage), pdfRepository, repository, workspace
     }),
     fail: createChatPdfRunFailure({ repository, workspace })
   });

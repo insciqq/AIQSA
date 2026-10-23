@@ -39,8 +39,7 @@ function repository() {
       providerKeys: new Set<string>(),
       searchStrategies: new Set<string>()
     })),
-    loadSearchStrategyConfiguration: vi.fn(async () => null),
-    isSearchStrategyEnabled: vi.fn(async () => true)
+    loadSearchStrategyConfiguration: vi.fn(async () => null)
   };
 }
 

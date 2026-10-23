@@ -147,7 +147,6 @@ describe("direct PDF input probe", () => {
         mimeType: "application/pdf"
       }],
       forceNonStreaming: true,
-      knowledgePlan: { mode: "none" },
       params: {
         background: false,
         maxOutputTokens: 512,

@@ -129,7 +129,6 @@ export function nativePrepared(extra: Partial<ProviderRunRequest> = {}, data: Pa
   const request = {
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text: "Check the release page", type: "text" }] },
     context: { messages: [nativeSay("current-user-message", "user", "Check the release page")], mode: "branch_path" as const },
-    knowledgePlan: { baseIds: [], mode: "none" as const, sourceIds: [], version: 1 as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
     searchPlan: { mode: "all_selected" as const, options: [] }, toolMode: "auto" as const, ...extra

@@ -4,13 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderModelCapabilities } from "../providers/types";
 import { StoredObjectTooLargeError } from "../uploads/storage";
 import type { RunAttachmentLimits } from "./attachmentLimits";
-import {
-  attachmentIdsFromContentBlocks,
-  enforceAttachmentReferenceLimit,
-  loadProviderAttachments,
-  MAX_RUN_CONTENT_BLOCKS,
-  validatePersistedAttachmentReferences
-} from "./runAttachmentMaterialization";
+import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
 
 const baseCapabilities: ProviderModelCapabilities = {
@@ -339,50 +333,6 @@ describe("run attachment materialization", () => {
       code: "attachment_reference_invalid"
     });
     expect(getObject).not.toHaveBeenCalled();
-  });
-
-  it("bounds content blocks and rejects duplicate references as malformed", () => {
-    expect(() => attachmentIdsFromContentBlocks(
-      Array.from({ length: MAX_RUN_CONTENT_BLOCKS + 1 }, () => ({ text: "x", type: "text" }))
-    )).toThrow(expect.objectContaining({
-      code: "content_block_limit_exceeded",
-      status: 400
-    }));
-    expect(() => attachmentIdsFromContentBlocks([
-      { attachmentId: "same", type: "file" },
-      { attachmentId: "same", type: "file" }
-    ])).toThrow(expect.objectContaining({
-      code: "attachment_reference_invalid",
-      status: 400
-    }));
-    expect(() => attachmentIdsFromContentBlocks([
-      { attachmentId: "hidden", type: "text" }
-    ])).toThrow(expect.objectContaining({
-      code: "attachment_reference_invalid",
-      status: 400
-    }));
-    expect(() => enforceAttachmentReferenceLimit(["one", "two"], limits({ maxCount: 1 })))
-      .toThrow(expect.objectContaining({
-        actual: { count: 2 },
-        code: "attachment_count_limit_exceeded",
-        limits: { maxCount: 1 },
-        status: 413
-      }));
-    expect(() => enforceAttachmentReferenceLimit(["one", "two"], limits({ maxCount: 2 })))
-      .not.toThrow();
-    expect(validatePersistedAttachmentReferences(
-      [{ attachmentId: "one", type: "file" }],
-      ["one"],
-      limits()
-    )).toEqual(["one"]);
-    expect(() => validatePersistedAttachmentReferences(
-      [{ attachmentId: "one", type: "file" }],
-      ["other"],
-      limits()
-    )).toThrow(expect.objectContaining({
-      code: "attachment_reference_invalid",
-      status: 400
-    }));
   });
 
   it("rejects metadata source and encoded estimates before any object read", async () => {

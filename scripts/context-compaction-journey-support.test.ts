@@ -124,9 +124,10 @@ describe("journey text", () => {
 
   it("steps fillers toward the trigger without jumping past the pass window", () => {
     expect(nextFillerTokens({ approximateInputTokens: 5_000, budgetTokens: 28_000 })).toBe(3_360);
-    expect(nextFillerTokens({ approximateInputTokens: 21_000, budgetTokens: 28_000 })).toBe(3_080);
-    expect(nextFillerTokens({ approximateInputTokens: 22_399, budgetTokens: 28_000 })).toBe(1_681);
-    expect(nextFillerTokens({ approximateInputTokens: 22_400, budgetTokens: 28_000 })).toBeNull();
+    // The engine's background compaction starts at 72% of the window; fillers aim at 78%.
+    expect(nextFillerTokens({ approximateInputTokens: 19_000, budgetTokens: 28_000 })).toBe(2_840);
+    expect(nextFillerTokens({ approximateInputTokens: 20_159, budgetTokens: 28_000 })).toBe(1_681);
+    expect(nextFillerTokens({ approximateInputTokens: 20_160, budgetTokens: 28_000 })).toBeNull();
     // A tiny budget still sends a meaningful filler rather than an empty one.
     expect(nextFillerTokens({ approximateInputTokens: 700, budgetTokens: 1_000 })).toBe(JOURNEY_LIMITS.fillerMinTokens);
   });
@@ -492,19 +493,19 @@ describe("round evidence and verdict", () => {
     const band = JOURNEY_RATIO_BANDS["codex-lb"]!;
     expect(band).toEqual({ max: 1, min: 0.85 });
     expect(JOURNEY_RATIO_BANDS.anthropic).toBeUndefined();
-    const journey = (ratio = 0.97) => [round({ budgetShare: 0.62, ratio: 0.98 }), round({ budgetShare: 0.79, ratio, turn: 2 }),
-      round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.84, summaryBought: true, turn: 3 }),
-      round({ budgetShare: 0.41, compactionOutcome: "summary_applied", ratio: 0.99, summaryAtBudgetShare: 0.86, turn: 4 })];
+    const journey = (ratio = 0.97) => [round({ budgetShare: 0.55, ratio: 0.98 }), round({ budgetShare: 0.7, ratio, turn: 2 }),
+      round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.76, summaryBought: true, turn: 3 }),
+      round({ budgetShare: 0.41, compactionOutcome: "summary_applied", ratio: 0.99, summaryAtBudgetShare: 0.78, turn: 4 })];
     // The request that bought the summary never reached the provider: its reported share uses the latest ratio before it.
-    expect(journeyVerdict(journey(), true, band)).toEqual({ code: null, compactionTriggered: true, firstSummaryAtBudgetShare: 0.84,
-      firstSummaryAtReportedBudgetShare: 0.815, passed: true });
+    expect(journeyVerdict(journey(), true, band)).toEqual({ code: null, compactionTriggered: true, firstSummaryAtBudgetShare: 0.76,
+      firstSummaryAtReportedBudgetShare: 0.737, passed: true });
     expect(journeyVerdict(journey(), false, band).code).toBe("probe_answer_missing_corrections");
     expect(journeyVerdict([round({})], true).code).toBe("compaction_not_triggered");
     expect(journeyVerdict([round({ compactionOutcome: "summary_failed", summaryBought: true })], true).code).toBe("summary_not_bought");
     // Bought at or below the trigger, or after an earlier turn already crossed it.
-    expect(journeyVerdict([round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.8 })], true).code)
+    expect(journeyVerdict([round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.72 })], true).code)
       .toBe("summary_before_trigger");
-    expect(journeyVerdict([round({ budgetShare: 0.81 }), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.9,
+    expect(journeyVerdict([round({ budgetShare: 0.73 }), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.9,
       turn: 2 })], true).code).toBe("trigger_crossed_without_summary");
     // A ratio outside the band fails a route that has one, and a route without a band only reports it.
     for (const ratio of [0.6, 1.08]) {

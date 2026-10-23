@@ -20,7 +20,6 @@ function requestWithMessages(messages: ProviderConversationMessage[]): ProviderR
       messages,
       mode: "branch_path"
     },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
@@ -100,32 +99,4 @@ describe("provider context helpers", () => {
     ]);
   });
 
-  it("redacts private Knowledge evidence from previews while retaining it for provider execution", () => {
-    const runRequest = requestWithMessages([
-      {
-        content: { blocks: [{ text: "PRIVATE_KNOWLEDGE_CANARY", type: "text" }] },
-        id: "knowledge-evidence:v1",
-        purpose: "knowledge_evidence",
-        role: "user"
-      },
-      {
-        content: { blocks: [{ text: "Current question", type: "text" }] },
-        id: "current",
-        role: "user"
-      }
-    ]);
-
-    expect(textConversationForRequest(runRequest)[0]).toMatchObject({
-      content: "PRIVATE_KNOWLEDGE_CANARY",
-      purpose: "knowledge_evidence"
-    });
-    expect(conversationPreview(runRequest)).toEqual([
-      {
-        id: "knowledge-evidence:v1",
-        role: "user",
-        text: "[private Knowledge evidence omitted]"
-      },
-      { id: "current", role: "user", text: "Current question" }
-    ]);
-  });
 });

@@ -54,7 +54,6 @@ function workChat(turns: number, size: number) {
 function request(items: readonly TranscriptItem[], target: TranscriptTarget = TARGET): ProviderRunRequest {
   return {
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [] }, history: projectTranscript(items, target),
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: {}, prompt: PROMPT, provider: "fake", searchPlan: { mode: "all_selected", options: [] },
     toolChoice: "auto", toolMode: "auto", tools: []

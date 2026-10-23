@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
 import { createRunFollowupHandler } from "./runFollowupHandler";
 import type { RunFollowupOperations } from "./runFollowups";
-import { subscribeRunFollowup } from "./runFollowupRegistry";
 
 const auth = createTestAuth();
 const input = { chatId: "chat", assistantMessageId: "answer", nonce: "nonce", text: "Clarification" };
@@ -18,18 +17,6 @@ describe("Follow-up acceptance route", () => {
     expect((await handler(request({ ...input, tools: "all" }), context)).status).toBe(400);
     expect((await handler(request({ ...input, text: " " }), context)).status).toBe(400);
     expect(accept).not.toHaveBeenCalled();
-  });
-  it("acknowledges only the durable entry and signals the existing executor", async () => {
-    const entry = { id: "f", ordinal: 1, text: "Clarification", author: "Author", createdAt: new Date().toISOString(), delivery: "accepted" as const };
-    const accept = vi.fn<RunFollowupOperations["accept"]>(async () => ({ kind: "accepted", entry }));
-    const notified = vi.fn(), release = subscribeRunFollowup("run", notified);
-    try {
-      const response = await createRunFollowupHandler({ resolveAuth: auth.resolveAuth, followups: { accept } })(request(), context);
-      expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(await response.json()).toEqual({ followup: entry });
-      expect(accept).toHaveBeenCalledWith({ ...input, runId: "run", userId: auth.session.userId });
-      expect(notified).toHaveBeenCalledOnce();
-    } finally { release(); }
   });
   it.each([ ["not_found", 404], ["closed", 409], ["conflict", 409], ["context_full", 400] ] as const)("returns the stable %s outcome", async (kind, status) => {
     const response = await createRunFollowupHandler({ resolveAuth: auth.resolveAuth, followups: { accept: async () => ({ kind }) } })(request(), context);

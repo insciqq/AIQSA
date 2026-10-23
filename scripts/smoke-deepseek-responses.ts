@@ -21,8 +21,7 @@ import type {
   ProviderRunRequest,
   ProviderRunResult
 } from "../lib/server/providers/types";
-import { runProviderToolLoop } from "../lib/server/runs/providerToolLoop";
-import { deepSeekResponsesToolBridge } from "../lib/server/tools/bridges";
+import type { ProviderHistoryItem } from "../lib/server/providers/history";
 
 const officialModels = Object.freeze([
   "deepseek-flash",
@@ -103,7 +102,6 @@ function request(input: Readonly<{
     }] : [],
     chatId: "deepseek-smoke",
     content: { blocks: [{ text: input.text, type: "text" }] },
-    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: {
       ...capabilities,
       vision: Boolean(attachment)
@@ -211,8 +209,6 @@ async function main(): Promise<void> {
     if (!checks.structuredOutput) throw new Error("deepseek_smoke_structured_output_mismatch");
 
     stage = "tool_loop";
-    let toolExecutions = 0;
-    let toolArgumentsMatched = false;
     const tool = {
       capability: "mcp" as const,
       description: "Return the fixed AIQSA DeepSeek smoke marker.",
@@ -225,47 +221,30 @@ async function main(): Promise<void> {
       name: "aiqsa_deepseek_smoke_marker",
       strict: true
     };
+    const toolText = "Call aiqsa_deepseek_smoke_marker once with marker AIQSA_TOOL_OK, then reply exactly AIQSA_TOOL_OK.";
     const toolRequest = {
       ...request({
         maxOutputTokens: 256,
         modelId: "deepseek-v4-pro",
-        text: "Call aiqsa_deepseek_smoke_marker once with marker AIQSA_TOOL_OK, then reply exactly AIQSA_TOOL_OK."
+        text: toolText
       }),
       toolChoice: "required" as const,
       tools: [tool]
     };
-    const toolOutcome = await runProviderToolLoop({
-      adapter,
-      bridge: deepSeekResponsesToolBridge,
-      budgets: {
-        maxConcurrency: 1,
-        maxToolCalls: 1,
-        maxToolRounds: 1,
-        providerRoundTimeoutMs: connection.responseTimeoutMs,
-        toolCallTimeoutMs: 5_000
-      },
-      async executeTool(call) {
-        toolExecutions += 1;
-        toolArgumentsMatched = call.name === tool.name &&
-          call.arguments.marker === "AIQSA_TOOL_OK";
-        return {
-          status: "complete",
-          value: {
-            callId: call.id,
-            content: [{ text: "AIQSA_TOOL_OK", type: "text" }],
-            name: call.name,
-            status: "complete"
-          }
-        };
-      },
-      initialRequest: toolRequest,
-      parallelToolCalls: false,
-      tools: [tool]
-    });
-    checks.toolLoop = toolOutcome.status === "complete" &&
-      toolExecutions === 1 && toolArgumentsMatched &&
-      toolOutcome.final.finalText.trim() === "AIQSA_TOOL_OK";
-    if (toolOutcome.status === "complete") aggregateTokens += tokenCount(toolOutcome.final);
+    // The agent engine's tool round: the conversation as neutral history, the
+    // call answered with its result, then the model's final text.
+    const question: ProviderHistoryItem = { currentInput: true, text: toolText, type: "user" };
+    const first = await complete(adapter, { ...toolRequest, history: [question], parallelToolCalls: false });
+    aggregateTokens += tokenCount(first);
+    const calls = first.toolCalls ?? [];
+    const call = calls[0];
+    const toolArgumentsMatched = calls.length === 1 && call?.name === tool.name && call.arguments.marker === "AIQSA_TOOL_OK";
+    const history: ProviderHistoryItem[] = [question, ...(first.history ?? []),
+      ...(call ? [{ callId: call.id, name: call.name, output: "AIQSA_TOOL_OK", type: "tool_result" as const }] : [])];
+    const final = call ? await complete(adapter, { ...toolRequest, history, parallelToolCalls: false, toolChoice: "auto" }) : null;
+    if (final) aggregateTokens += tokenCount(final);
+    checks.toolLoop = toolArgumentsMatched && (final?.toolCalls?.length ?? 0) === 0 &&
+      final?.finalText.trim() === "AIQSA_TOOL_OK";
     if (!checks.toolLoop) throw new Error("deepseek_smoke_tool_loop_mismatch");
 
     stage = "vision";

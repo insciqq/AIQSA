@@ -760,7 +760,8 @@ describe("message run actions", () => {
 
     it.each([
       "workspace_model_tools_required",
-      "agent_mode_removed"
+      "agent_mode_removed",
+      "model_tool_calling_required"
     ])("offers no send without Workspace for %s", async (error) => {
       vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error }, { status: 409 })));
       const actions = useMessageRunActionsForTest({

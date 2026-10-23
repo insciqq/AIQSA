@@ -244,7 +244,7 @@ describe("chat PDF adaptive preparation", () => {
     ]);
     const work = await core.page({ admission: admitted, bytes, ...planned, page: 1 });
     expect(work.request).toMatchObject({ forceNonStreaming: true, toolChoice: "none", toolMode: "none",
-      tools: [], searchPlan: { options: [] }, knowledgePlan: { mode: "none" } });
+      tools: [], searchPlan: { options: [] } });
     expect(work.request.attachments).toHaveLength(1);
     expect(work.request.attachments[0]!.byteSize).toBeLessThanOrEqual(planned.plan.limits.imageBytes);
     expect(work.request.modelId).toBe(admitted.snapshot!.model.upstreamModelId);

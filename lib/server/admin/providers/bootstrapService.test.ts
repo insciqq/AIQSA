@@ -9,7 +9,7 @@ import { adminProviderModelConfiguration } from "./adminConfiguration";
 import { jevModelConfiguration } from "../../../domain/decisionModels";
 
 vi.mock("../../../domain/decisionModels", async (original) => ({
-  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["knowledgeRelevance"]
+  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["skillSuggestions"]
 }));
 
 function fixture() {

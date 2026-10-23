@@ -11,8 +11,8 @@ import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { createPrismaRunFollowupOperations, messageFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectMessageFollowups } from "./runFollowups";
-import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import type { CreateRunInput, CreatedRun } from "./runRepositoryContract";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 const repository = createPrismaRunRepository(prisma);
 const followups = createPrismaRunFollowupOperations(prisma);
@@ -40,7 +40,6 @@ async function fixture<T>(execute: (fixture: {
         searchPlan: { mode: "all_selected", optionIds: [] } }),
       followupAdmission: { budgetTokens: 4_096 },
       normalizedRequest: { attachmentIds: [], chatId: chat.id, content, toolMode: "auto",
-        knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
         modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
         modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
         followupContextReserveTokens: 4_096, searchPlan: { mode: "all_selected", options: [] } } };
@@ -59,16 +58,6 @@ function completion(f: { chatId: string; userId: string }, run: CreatedRun, revi
     usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, completeness: "complete" as const } };
 }
 
-async function pendingToolBatch(userId: string, runId: string) {
-  expect(await repository.beginToolLoopProviderRound({ userId, runId, roundIndex: 1, providerContinuation: null })).toBe("started");
-  const batch = await repository.persistToolLoopCallBatch({ userId, runId, roundIndex: 1,
-    providerContinuation: null, calls: ["first", "second"].map((id, ordinal) => ({
-      arguments: {}, ordinal, providerCallId: id, toolName: "synthetic_effect"
-    })) });
-  if (batch.kind !== "persisted") throw new Error("followup_tool_fixture_failed");
-  return batch.calls;
-}
-
 describe("durable in-run Follow-up", () => {
   afterAll(() => prisma.$disconnect());
 
@@ -76,7 +65,7 @@ describe("durable in-run Follow-up", () => {
     const run = await repository.admitPreparingRun({ ...f.input, admissionKind: "NORMAL_SEND" });
     const accepted = await followups.accept(submission(f, run));
     expect(accepted).toMatchObject({ kind: "accepted", entry: { ordinal: 1, delivery: "accepted" } });
-    expect(await repository.completeRun(completion(f, run))).toBe(false);
+    expect(await completeNativeRun(prisma, completion(f, run))).toBe(false);
     expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "", budgetTokens: 2_000 })).toBe(true);
     expect(await followups.load({ runId: run.runId, userId: f.userId })).toMatchObject({ revision: 1, entries: [{ delivery: "delivered" }] });
     await repository.cancelRun({ runId: run.runId, userId: f.userId, payload: cancelPayload });
@@ -90,14 +79,14 @@ describe("durable in-run Follow-up", () => {
     expect(await followups.accept({ ...input, text: "Changed text" })).toEqual({ kind: "conflict" });
     expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "Old partial", budgetTokens: 2_000 })).toBe(true);
     expect(await followups.close({ runId: run.runId, userId: f.userId, revision: 1 })).toBe(true);
-    expect(await repository.completeRun(completion(f, run, 1))).toBe(true);
+    expect(await completeNativeRun(prisma, completion(f, run, 1))).toBe(true);
     expect(await followups.accept(input)).toMatchObject({ kind: "accepted", entry: { delivery: "delivered", precedingText: "Old partial" } });
     expect(await followups.accept(submission(f, run))).toEqual({ kind: "closed" });
   }));
 
   it("gives clarification and completion exactly one winner", async () => fixture(async f => {
     const run = await f.create();
-    const [accepted, completed] = await Promise.all([followups.accept(submission(f, run)), repository.completeRun(completion(f, run))]);
+    const [accepted, completed] = await Promise.all([followups.accept(submission(f, run)), completeNativeRun(prisma, completion(f, run))]);
     expect(Number(accepted.kind === "accepted") + Number(completed)).toBe(1);
     if (!completed) {
       expect(await followups.close({ runId: run.runId, userId: f.userId, revision: 0 })).toBe(false);
@@ -111,7 +100,7 @@ describe("durable in-run Follow-up", () => {
     const [accepted] = await Promise.all([followups.accept(submission(f, run)), repository.cancelRun({ runId: run.runId, userId: f.userId, payload: cancelPayload })]);
     expect(["accepted", "closed"]).toContain(accepted.kind);
     expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "", budgetTokens: 1_000 })).toBe(false);
-    expect(await repository.completeRun(completion(f, run, 1))).toBe(false);
+    expect(await completeNativeRun(prisma, completion(f, run, 1))).toBe(false);
     const state = await followups.load({ runId: run.runId, userId: f.userId });
     expect(state?.entries.every(entry => entry.delivery === "undelivered")).toBe(true);
   }));
@@ -146,69 +135,19 @@ describe("durable in-run Follow-up", () => {
     }
   }));
 
-  it("settles outdated pending decisions without dispatch even when the local notification is missed", async () => fixture(async f => {
-    const run = await f.create(), calls = await pendingToolBatch(f.userId, run.runId);
-    await followups.accept(submission(f, run));
-    for (const call of calls) {
-      const claim = await repository.claimToolLoopCall({ callId: call.id, runId: run.runId, userId: f.userId, followupRevision: 0 });
-      expect(claim).toMatchObject({ kind: "settled", call: { state: "error", startedAt: null } });
-      if (claim.kind !== "settled") throw new Error("expected_superseded_decision");
-      expect(parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, claim.call.result))
-        .toMatchObject({ status: "error", content: [{ type: "text", text: expect.stringContaining("Not dispatched") }] });
-    }
-    expect(await repository.advanceToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 1 })).toBe("advanced");
-    expect(await followups.load({ runId: run.runId, userId: f.userId })).toMatchObject({ entries: [{ delivery: "accepted" }] });
-    expect(await repository.completeRun(completion(f, run, 1))).toBe(false);
-  }));
-
-  it("keeps a dispatched effect ambiguous until settlement while skipping only the remaining old plan", async () => fixture(async f => {
-    const run = await f.create(), calls = await pendingToolBatch(f.userId, run.runId);
-    const first = { callId: calls[0]!.id, runId: run.runId, userId: f.userId, followupRevision: 0 };
-    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "claimed" });
-    await followups.accept(submission(f, run));
-    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "ambiguous", call: { state: "running" } });
-    const result = { callId: "first", name: "synthetic_effect", status: "complete", content: [{ type: "text", text: "marker count = 1" }] };
-    expect(await repository.settleToolLoopCall({ ...first, state: "complete", result })).toBe("settled");
-    expect(await repository.claimToolLoopCall(first)).toMatchObject({ kind: "settled", call: { state: "complete", result } });
-    expect(await repository.claimToolLoopCall({ ...first, callId: calls[1]!.id })).toMatchObject({
-      kind: "settled", call: { state: "error", startedAt: null }
-    });
-    expect(await repository.advanceToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 1 })).toBe("advanced");
-    expect(await repository.beginToolLoopProviderRound({ userId: f.userId, runId: run.runId, roundIndex: 2,
-      providerContinuation: null })).toBe("reused");
-    const next = await repository.persistToolLoopCallBatch({ userId: f.userId, runId: run.runId, roundIndex: 2,
-      providerContinuation: null, calls: [{ arguments: {}, ordinal: 0, providerCallId: "reconsidered", toolName: "synthetic_effect" }] });
-    if (next.kind !== "persisted") throw new Error("expected_reconsidered_batch");
-    expect(await repository.claimToolLoopCall({ ...first, callId: next.calls[0]!.id, followupRevision: 1 })).toMatchObject({ kind: "claimed" });
-  }));
-
-  it("serializes a clarification racing a dispatch claim without reclassifying an already started effect", async () => fixture(async f => {
-    const run = await f.create(), calls = await pendingToolBatch(f.userId, run.runId);
-    const request = { callId: calls[0]!.id, runId: run.runId, userId: f.userId, followupRevision: 0 };
-    const [accepted, claim] = await Promise.all([followups.accept(submission(f, run)), repository.claimToolLoopCall(request)]);
-    expect(accepted.kind).toBe("accepted");
-    expect(["claimed", "settled"]).toContain(claim.kind);
-    const repeated = await repository.claimToolLoopCall(request);
-    expect(repeated).toMatchObject(claim.kind === "claimed"
-      ? { kind: "ambiguous", call: { state: "running", startedAt: expect.any(String) } }
-      : { kind: "settled", call: { state: "error", startedAt: null } });
-    expect(await repository.claimToolLoopCall({ ...request, callId: calls[1]!.id })).toMatchObject({
-      kind: "settled", call: { state: "error", startedAt: null }
-    });
-  }));
 
   it("preserves branch history after source deletion and projects readable immutable shares", async () => fixture(async f => {
     const run = await f.create();
     await followups.accept(submission(f, run, "private-nonce", "Clarified question"));
     await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "Previous partial", budgetTokens: 1_000 });
     await followups.close({ runId: run.runId, userId: f.userId, revision: 1 });
-    expect(await repository.completeRun(completion(f, run, 1))).toBe(true);
+    expect(await completeNativeRun(prisma, completion(f, run, 1))).toBe(true);
     const branch = await createPrismaMessageBranchRepository(prisma).createChatBranchFromMessage({ sourceMessageId: run.assistantMessageId, userId: f.userId });
     expect(branch?.activeLeafMessageId).toBeTruthy();
     await prisma.chat.delete({ where: { id: f.chatId } });
     const message = await prisma.message.findUniqueOrThrow({ where: { id: branch!.activeLeafMessageId! }, select: messageFollowupSelect });
     expect(projectMessageFollowups(message)).toMatchObject({ available: false, entries: [{ text: "Clarified question", precedingText: "Previous partial" }] });
-    const context = await repository.loadConversationContext(branch!.id, f.userId);
+    const context = (await repository.loadConversationContextForExpectedLeaf(branch!.id, f.userId, branch!.activeLeafMessageId!))!;
     expect(context.map(item => textFromContentBlocks(item.content))).toEqual(["Original question",
       "Partial answer before follow-up:\nPrevious partial", "Follow-up:\nClarified question", "Updated answer"]);
     const source = await repository.findRegenerationSource(branch!.activeLeafMessageId!, f.userId);
@@ -228,7 +167,7 @@ describe("durable in-run Follow-up", () => {
     await followups.accept(submission(f, first));
     await followups.deliver({ runId: first.runId, userId: f.userId, revision: 1, precedingText: "Partial", budgetTokens: 1_000 });
     await followups.close({ runId: first.runId, userId: f.userId, revision: 1 });
-    expect(await repository.completeRun(completion(f, first, 1))).toBe(true);
+    expect(await completeNativeRun(prisma, completion(f, first, 1))).toBe(true);
     const next = await repository.createRegenerationRun({ ...f.input, workspaceFollowup: undefined, userMessageId: first.userMessageId,
       preSendAssistantMessageId: first.assistantMessageId,
       followupAdmission: { budgetTokens: 4_096, inherited: { messageId: first.assistantMessageId, revision: 1 } } });
@@ -236,7 +175,7 @@ describe("durable in-run Follow-up", () => {
     const cloned = await prisma.runFollowup.findFirstOrThrow({ where: { modelRunId: next.runId } });
     expect(cloned.precedingText).toBeNull();
     expect(cloned.deliveredAt).toBeNull();
-    expect(await repository.completeRun(completion(f, next, 0))).toBe(false);
+    expect(await completeNativeRun(prisma, completion(f, next, 0))).toBe(false);
     expect(await prisma.runFollowup.count({ where: { modelRunId: first.runId } })).toBe(1);
   }));
 

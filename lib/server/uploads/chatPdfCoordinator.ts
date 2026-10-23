@@ -10,7 +10,7 @@ import { DocumentParserError } from "../parsing/errors";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { isRetryableProviderHttpStatus, isRetryableProviderNetworkError } from "../providers/providerRetry";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
-import type { ActiveRunControllerRegistry } from "../runs/runExecution";
+import type { ActiveRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import { type createChatPdfAttempts } from "./chatPdfAttempts";
 import {
   ChatPdfPreparationError, createChatPdfCore, decodeChatPdfArtifact, decodeChatPdfPage,

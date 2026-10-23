@@ -60,24 +60,6 @@ export type ContextBudgetLimits = {
   safetyMarginTokens: number;
 };
 
-export type ContextBudgetResult =
-  | {
-      approxFinalTokens: number;
-      budgetTokens: number;
-      messages: ContextBudgetMessage[];
-      ok: true;
-    }
-  | {
-      approxCurrentTokens: number;
-      approxPromptTokens: number;
-      budgetTokens: number;
-      code: "context_too_large";
-      contextWindow: number;
-      maxOutputTokens: number;
-      ok: false;
-      safetyMarginTokens: number;
-    };
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -265,57 +247,6 @@ export function calculateContextBudgetLimits({
     budgetTokens: Math.max(0, normalizedContextWindow - normalizedMaxOutputTokens - safetyMarginTokens),
     contextWindow: normalizedContextWindow,
     maxOutputTokens: normalizedMaxOutputTokens,
-    safetyMarginTokens
-  };
-}
-
-function extraTokensForMessage(input: ContextBudgetInput, message: ContextBudgetMessage): number {
-  const value = input.messageExtraTokens?.[message.id] ?? 0;
-
-  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
-}
-
-function messageTokens(input: ContextBudgetInput, message: ContextBudgetMessage): number {
-  return (input.estimateTokens ?? estimateApproxTokens)(message.content) + extraTokensForMessage(input, message);
-}
-
-function promptTokens(input: ContextBudgetInput): number {
-  const estimate = input.estimateTokens ?? estimateApproxTokens;
-  return estimate(input.prompt?.system ?? "") + estimate(input.prompt?.developer ?? "");
-}
-
-function sum(values: number[]): number {
-  return values.reduce((total, value) => total + value, 0);
-}
-
-/** The exact fit check of a prompt and its messages. It never removes a
- * message: history leaves a request only after context notes cover it, which
- * the run planner owns. */
-export function applyContextBudget(input: ContextBudgetInput): ContextBudgetResult {
-  if (!Number.isFinite(input.contextWindow) || input.contextWindow <= 0 || input.messages.length === 0) {
-    return {
-      approxFinalTokens: 0,
-      budgetTokens: Number.POSITIVE_INFINITY,
-      messages: input.messages,
-      ok: true
-    };
-  }
-
-  const { budgetTokens, contextWindow, maxOutputTokens, safetyMarginTokens } = calculateContextBudgetLimits(input);
-  const estimatedPromptTokens = promptTokens(input);
-  const messageTokenTotal = sum(input.messages.map((message) => messageTokens(input, message)));
-  const approxFinalTokens = estimatedPromptTokens + messageTokenTotal;
-  if (approxFinalTokens <= budgetTokens) {
-    return { approxFinalTokens, budgetTokens, messages: input.messages, ok: true };
-  }
-  return {
-    approxCurrentTokens: messageTokenTotal,
-    approxPromptTokens: estimatedPromptTokens,
-    budgetTokens,
-    code: "context_too_large",
-    contextWindow,
-    maxOutputTokens,
-    ok: false,
     safetyMarginTokens
   };
 }

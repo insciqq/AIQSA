@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  parsePersistedToolExecutionResult,
-  settleableToolExecutionResult,
-  snapshotToolExecutionResult
-} from "./toolExecutionPersistence";
+import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import {
   snapshotToolLoopJson,
   toolLoopPersistenceLimits
@@ -14,15 +10,6 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
-import type { ToolExecutionResult } from "../tools/types";
-import {
-  KNOWLEDGE_RESULT_VERSION,
-  type KnowledgeRetrievalEvidence
-} from "../knowledge/retrievalTypes";
-import {
-  knowledgeToolResultContent,
-  knowledgeToolResultText
-} from "../knowledge/toolResult";
 
 const call = { id: "call-1", name: "search_engine_1" };
 
@@ -158,55 +145,6 @@ describe("persisted tool execution result codec", () => {
     expect(parsePersistedToolExecutionResult(call, presentationTrace)).toBeNull();
   });
 
-  it("round-trips a durable Knowledge search outage with error status", () => {
-    const draft: KnowledgeRetrievalEvidence = {
-      bases: [],
-      candidateCount: 0,
-      candidateLimit: 64,
-      durationMs: 3,
-      embeddingExecutions: [],
-      failureCode: "knowledge_search_backend_unavailable",
-      fusion: "weighted_rrf_v2",
-      invocationOrdinal: 1,
-      operation: "automatic_search",
-      outcome: "search_unavailable",
-      providerText: "pending",
-      query: "knowledge_search_unavailable",
-      resultLimit: 16,
-      results: [],
-      version: KNOWLEDGE_RESULT_VERSION
-    };
-    const evidence = { ...draft, providerText: knowledgeToolResultText(draft) };
-    const knowledgeCall = { id: "knowledge-call-1", name: "search_knowledge" };
-    const result = {
-      callId: knowledgeCall.id,
-      content: knowledgeToolResultContent(evidence),
-      name: knowledgeCall.name,
-      rawPreview: {
-        knowledgeResultVersion: evidence.version,
-        knowledgeRetrieval: evidence,
-        providerCall: true
-      },
-      status: "error" as const,
-      usage: { cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "unavailable" as const, inputTokens: null, outputTokens: null, reasoningTokens: null, totalTokens: null }
-    };
-
-    const snapshot = snapshotToolExecutionResult(
-      result,
-      toolLoopPersistenceLimits.resultBytes
-    );
-
-    expect(snapshot).not.toBeNull();
-    expect(snapshot).toMatchObject({
-      content: [{
-        type: "json",
-        value: { aiqsaType: "knowledge_result", version: KNOWLEDGE_RESULT_VERSION }
-      }],
-      status: "error"
-    });
-    expect(parsePersistedToolExecutionResult(knowledgeCall, snapshot)).toEqual(result);
-  });
-
   it("enforces the complete serialized result boundary one byte below, at, and above", () => {
     const resultAtBytes = (targetBytes: number) => {
       const base = {
@@ -272,67 +210,5 @@ describe("persisted tool execution result codec", () => {
     const snapshot = snapshotToolExecutionResult(result, 32_000);
     expect(snapshot).not.toBeNull();
     expect(parsePersistedToolExecutionResult(call, snapshot)).toEqual(result);
-  });
-});
-
-describe("settleable tool execution result", () => {
-  const mcpCall = { id: "call-1", name: "mcp_synthetic_records" };
-  const marker = "rare-tail-271828";
-
-  it("keeps a result that has a durable snapshot unchanged", () => {
-    const result = { callId: mcpCall.id, name: mcpCall.name, status: "complete" as const,
-      content: [{ type: "text" as const, text: "bounded" }] };
-    const settleable = settleableToolExecutionResult(result, 8192);
-    expect(settleable).toEqual({ failure: null, result, snapshot: snapshotToolExecutionResult(result, 8192) });
-  });
-
-  it.each<[string, string, Pick<ToolExecutionResult, "content" | "rawPreview" | "status">]>([
-    ["size", "tool_result_too_large", { status: "complete",
-      content: [{ type: "text", text: `${"x".repeat(9000)} ${marker}` }] }],
-    ["serialization", "tool_result_unpersistable", { status: "complete",
-      content: [{ type: "json", value: { marker, count: 1n } }] }],
-    ["validation", "tool_result_unpersistable", { status: "complete", content: [] }],
-    ["projection", "tool_result_unpersistable", { status: "complete",
-      content: [{ type: "text", text: marker }], rawPreview: { searchResultVersion: -1 } }]
-  ])("settles an executed result refused at %s as a bounded, content-free error", (stage, code, shape) => {
-    const settleable = settleableToolExecutionResult({ callId: mcpCall.id, name: mcpCall.name, ...shape,
-      usage: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } }, 8192);
-    expect(settleable?.failure).toEqual({ code, stage, limitBytes: 8192,
-      observedBytes: stage === "size" ? expect.any(Number) : stage === "validation" ? expect.any(Number) : null });
-    if (stage === "size") expect(settleable!.failure!.observedBytes).toBeGreaterThan(8192);
-    expect(settleable?.result).toMatchObject({ callId: mcpCall.id, name: mcpCall.name, status: "error",
-      usage: expect.objectContaining({ totalTokens: 3 }) });
-    expect(parsePersistedToolExecutionResult(mcpCall, settleable!.snapshot)).toEqual({ ...settleable!.result,
-      usage: expect.objectContaining({ totalTokens: 3 }) });
-    const text = JSON.stringify(settleable);
-    expect(text).not.toContain(marker);
-    expect(text).toContain(code);
-    expect(JSON.parse((settleable!.result.content[0] as { text: string }).text)).toMatchObject({ ok: false,
-      error: { code, stage, limitBytes: 8192, message: expect.stringContaining("do not repeat the same call") } });
-  });
-
-  it("keeps a Workspace result's settled activity entry and runtime metadata in the bounded error", () => {
-    const activity = { type: "artifact" as const, data: { artifactType: "workspace_activity" as const, payload: {
-      id: "activity-1", kind: "tool", status: "settled", title: "run_command" } } };
-    const settleable = settleableToolExecutionResult({ callId: "workspace-call", name: "workspace_run_command",
-      artifacts: [activity], rawPreview: { exitCode: 0, truncated: false },
-      status: "complete", content: [{ type: "text", text: `${"x".repeat(9000)} ${marker}` }] }, 8192);
-    expect(settleable?.failure).toMatchObject({ code: "tool_result_too_large", stage: "size" });
-    expect(settleable?.result).toMatchObject({ status: "error", artifacts: [activity],
-      rawPreview: { exitCode: 0, truncated: false, finalProviderResponsePreview: { error: { code: "tool_result_too_large" } } } });
-    expect(parsePersistedToolExecutionResult({ id: "workspace-call", name: "workspace_run_command" }, settleable!.snapshot))
-      .toEqual(settleable!.result);
-    expect(JSON.stringify(settleable)).not.toContain(marker);
-    // Output events that cannot be kept either are dropped, never the bounded error itself.
-    const invalid = settleableToolExecutionResult({ callId: "workspace-call", name: "workspace_run_command",
-      artifacts: [{ type: "artifact", data: { artifactType: "not_an_artifact", payload: {} } } as never],
-      status: "complete", content: [{ type: "text", text: "x".repeat(9000) }] }, 8192);
-    expect(invalid?.result).toMatchObject({ status: "error" });
-    expect(invalid?.result).not.toHaveProperty("artifacts");
-  });
-
-  it("refuses to settle only when even the bounded error cannot be kept", () => {
-    expect(settleableToolExecutionResult({ callId: mcpCall.id, name: mcpCall.name, status: "complete",
-      content: [{ type: "text", text: "x".repeat(2048) }] }, 64)).toBeNull();
   });
 });

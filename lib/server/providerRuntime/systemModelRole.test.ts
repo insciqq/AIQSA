@@ -148,7 +148,6 @@ describe("system model role resolver", () => {
       attachments: [],
       chatId: "memory-role",
       content: { blocks: [{ text: "Classify.", type: "text" }] },
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       modelCapabilities: snapshot.model.capabilities,
       modelId: snapshot.model.upstreamModelId,
       params: { ...snapshot.model.defaultParams, stream: false },

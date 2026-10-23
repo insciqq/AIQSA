@@ -11,7 +11,7 @@ import type { ChatDetailWire, ChatMessageWire } from "../lib/contracts/chats";
 import type { ContextCompactionStatus } from "../lib/contracts/contextCompaction";
 import { sessionContextCapacity, type SessionContextStatus } from "../lib/contracts/sessionStatus";
 import { textFromContentBlocks } from "../lib/domain/modelRunEvents";
-import { CONTEXT_COMPACTION_LIMITS } from "../lib/server/runs/contextCompactionContract";
+import { COMPACTION_THRESHOLDS } from "../lib/server/engine/compaction/policy";
 
 export const JOURNEY_ROUTES = ["anthropic", "codex-lb"] as const;
 export type JourneyRoute = (typeof JOURNEY_ROUTES)[number];
@@ -32,10 +32,10 @@ export const JOURNEY_LIMITS = Object.freeze({
   /** Largest filler step, so one turn never jumps far past the trigger. */
   fillerMaxBudgetShare: 0.12,
   /** Where a filler aims the next request once the trigger is near. */
-  fillerTargetShare: 0.86,
+  fillerTargetShare: COMPACTION_THRESHOLDS.background + 0.06,
   fillerMinTokens: 256,
-  /** The first summary belongs to the first turn whose dispatched estimate exceeds this share. */
-  triggerShare: CONTEXT_COMPACTION_LIMITS.triggerRatio,
+  /** The first compaction belongs to the first turn whose context passes this share of the usable window. */
+  triggerShare: COMPACTION_THRESHOLDS.background,
   maxMessageBytes: 160 * 1024,
   maxRouteRequestBytes: 1024 * 1024
 });

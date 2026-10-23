@@ -25,6 +25,7 @@ import {
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import { createMemoryHistoryIndexHandler } from "./handler";
 import { createPrismaMemoryHistoryIndexRepository } from "./repository";
+import { createNativeRunStore } from "../../engine/runStore";
 
 // Production (2026-10-09): the first INDEX_HISTORY commit of a long chat held
 // the owner row and the chat FOR SHARE for about 6 s, so the chat's Workspace
@@ -160,7 +161,7 @@ describe("INDEX_HISTORY commits and the owner's and the chat's foreground writes
       const POST = contentionUploadHandler(userId, storage);
       const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
       const fixtures: Array<{ failed: { assistantMessageId: string; runId: string };
-        usage: { chatId: string; runId: string } }> = [];
+        usage: { assistantMessageId: string; chatId: string; runId: string } }> = [];
       let cursor = -1;
       let passes = 0;
       for (;;) {
@@ -199,8 +200,8 @@ describe("INDEX_HISTORY commits and the owner's and the chat's foreground writes
           // The GET chat reconcile ends an orphaned run through this write.
           settled(runs.failRun(fixture.failed.runId, fixture.failed.assistantMessageId,
             { code: "run_orphaned", message: "Run stopped reporting progress and was marked failed." }), origin),
-          settled(runs.recordRunUsageEvents({ chatId: fixture.usage.chatId, runId: fixture.usage.runId, userId,
-            usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] }), origin),
+          settled(createNativeRunStore(prisma).writeUsageRows({ ...fixture.usage, userId }, [{ key: "0",
+            attribution: { modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage } }]).then(() => true), origin),
           settled(POST(contentionUploadRequest()).then((response) => response.status), origin)
         ]);
         const memory = await commit;

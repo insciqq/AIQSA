@@ -17,7 +17,6 @@ Environment variables, secrets and key rotation, and Compose topology selection.
 - Each container role gets only the authority it uses: parsers have no data or provider credentials, the runner only its internal token and runtime policy, maintenance no object or provider credentials, restore review no provider credentials. Keep it that way when editing Compose files.
 - Test authentication, fake providers, demo credentials and the deterministic runtime turn on only when every disposable, non-production gate is set, and never against persistent data. Telegram's test update route and the loopback-only `AIQSA_TELEGRAM_API_ORIGIN` are such fakes.
 - Accepted risk: each host added to `AIQSA_ARTIFACT_LIBRARY_HOSTS` or `AIQSA_ARTIFACT_IMAGE_HOSTS` widens model-controlled URL egress (`lib/server/artifacts/resourcePolicy.ts`); the operator accepts that disclosure.
-- `AIQSA_NATIVE_ENGINE_USERS` is the native agent engine's allowlist (operator decision 2026-10-23): the runs of listed users that the engine can run use it, from every entry point (`lib/server/engine/routing.ts`); `*` is everyone, the switch. Startup logs only its mode and size.
 
 ## Secrets and rotation
 

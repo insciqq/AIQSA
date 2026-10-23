@@ -34,8 +34,7 @@ function request(seed: Seed, provider = "openai_compatible", streaming = true): 
   return {
     attachmentIds: [], attachments: [], chatId: "same-synthetic-chat",
     content: { blocks: [{ type: "text", text: JSON.stringify(seed) }] },
-    forceNonStreaming: !streaming, knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-    modelCapabilities: capabilities, modelId: "synthetic-model", params: { background: false, store: false, stream: streaming },
+    forceNonStreaming: !streaming, modelCapabilities: capabilities, modelId: "synthetic-model", params: { background: false, store: false, stream: streaming },
     prompt: { developer: null, system: null }, provider, searchPlan: { mode: "all_selected", options: [] },
     toolChoice: "required", toolMode: "auto", tools: [{ capability: "mcp", name: seed.name, strict: true,
       description: "Return this request's synthetic nonce.", inputSchema: { type: "object", additionalProperties: false,

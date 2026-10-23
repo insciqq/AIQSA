@@ -13,10 +13,14 @@ import {
 import { applyProviderReasoningRequestMapping } from "./reasoningRequestMapping";
 import { isOpenAIChatRecord as isRecord } from "./openaiChatCompletions";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
+import { assertProviderHistoryRequest, chatMessagesFromHistory, providerHistoryPreview } from "./history";
 
 export type OpenAICompatibleChatMessage = {
   content?: null | string | Record<string, unknown>[];
   name?: string;
+  /** Reasoning the endpoint returned with its own assistant message, sent back to it unchanged. */
+  reasoning?: string;
+  reasoning_details?: unknown[];
   role: "assistant" | "system" | "tool" | "user";
   tool_call_id?: string;
   tool_calls?: unknown[];
@@ -164,19 +168,59 @@ function providerToolPreviewMessages(
   });
 }
 
+function contentParts(content: string | Record<string, unknown>[]): Record<string, unknown>[] {
+  return typeof content === "string" ? [{ text: content, type: "text" }] : [...content];
+}
+
+/**
+ * Consecutive user turns of the agent's conversation (its run context before
+ * the input, a turn the server wrote) become one message, as some Chat
+ * Completions servers refuse two user messages in a row.
+ */
+function mergeAdjacentUserMessages(messages: OpenAICompatibleChatMessage[]): OpenAICompatibleChatMessage[] {
+  const merged: OpenAICompatibleChatMessage[] = [];
+  for (const message of messages) {
+    const previous = merged.at(-1);
+    if (previous?.role === "user" && message.role === "user" && previous.content != null && message.content != null) {
+      previous.content = typeof previous.content === "string" && typeof message.content === "string"
+        ? [previous.content, message.content].filter((part) => part.trim()).join("\n\n")
+        : [...contentParts(previous.content), ...contentParts(message.content)];
+      continue;
+    }
+    merged.push({ ...message, ...(Array.isArray(message.content) ? { content: [...message.content] } : {}) });
+  }
+  return merged;
+}
+
 function buildMessages(
   request: ProviderRunRequest,
   options: PrivateBuildOptions
 ): OpenAICompatibleChatMessage[] {
   const messages: OpenAICompatibleChatMessage[] = [];
   const instructions = combineInstructions(request, options.preview);
-  const conversation = textConversationForRequest(request, {
-    redactSkillContext: options.preview
-  });
 
   if (instructions) {
     messages.push({ content: instructions, role: "system" });
   }
+
+  if (request.history) {
+    // The agent engine's neutral history; its current input takes this run's
+    // attachments and response reminder.
+    messages.push(...chatMessagesFromHistory(assertProviderHistoryRequest(request), {
+      currentInput: (text) => withResponseReminder(
+        request,
+        currentUserContent({ ...request, content: { blocks: [{ text, type: "text" }] } }, options),
+        (reminder) => ({ text: reminder, type: "text" as const }),
+        options.preview
+      ),
+      preview: options.preview
+    }));
+    return mergeAdjacentUserMessages(messages);
+  }
+
+  const conversation = textConversationForRequest(request, {
+    redactSkillContext: options.preview
+  });
 
   conversation.forEach((message, index) => {
     const isLatestUser = index === conversation.length - 1 && message.role === "user";
@@ -273,6 +317,6 @@ export function buildOpenAICompatibleChatRequestPreview(
       "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ],
-    replayedContext: conversationPreview(request)
+    replayedContext: request.history ? providerHistoryPreview(request.history) : conversationPreview(request)
   };
 }

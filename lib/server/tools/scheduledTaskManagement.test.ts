@@ -2,7 +2,6 @@ import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { describe, expect, it, vi } from "vitest";
 import type { ScheduledTask, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import { logEvent } from "../observability";
-import { readOnlyRunTool } from "../runs/toolReadOnly";
 import type { ScheduledTaskCallManagement } from "../runs/runRepositoryContract";
 import {
   MANAGE_SCHEDULED_TASK_TOOL_NAME,
@@ -72,8 +71,6 @@ describe("manage_scheduled_task tool", () => {
     expect(isScheduledTaskManageCall(request, MANAGE_SCHEDULED_TASK_TOOL_NAME)).toBe(true);
     expect(isScheduledTaskManageCall({}, MANAGE_SCHEDULED_TASK_TOOL_NAME)).toBe(false);
     expect(isScheduledTaskManageCall(request, "create_scheduled_task")).toBe(false);
-    // Changes state: repeated identical calls are never treated as reads.
-    expect(readOnlyRunTool({ tools: [tool] })(MANAGE_SCHEDULED_TASK_TOOL_NAME)).toBe(false);
   });
 
   it("names a task chat's own task only as a delimited data block", () => {

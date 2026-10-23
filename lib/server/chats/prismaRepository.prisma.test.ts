@@ -862,7 +862,6 @@ describe("Prisma-backed chat repository", () => {
             attachmentIds: [],
             chatId: chat.id,
             content,
-            knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             toolMode: "auto",
             modelCapabilities: {
               nativePdfInput: false,
@@ -971,7 +970,6 @@ describe("Prisma-backed chat repository", () => {
             attachmentIds: [],
             chatId: chat.id,
             content,
-            knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
             toolMode: "auto",
             modelCapabilities: {
               nativePdfInput: false,

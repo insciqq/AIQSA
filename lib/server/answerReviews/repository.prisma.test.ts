@@ -12,6 +12,7 @@ import type { RunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { loadAnswerReviewProjection, loadAnswerReviewSessionSnapshot } from "./repository";
 import { startAnswerReviewRound, type AnswerReviewServiceDeps } from "./service";
 import { answerReviewSnapshotProgress, reconcileAnswerReviewSession } from "./stepStart";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 /**
  * Answer review storage on the disposable database: sessions, the step claim
@@ -70,15 +71,14 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
       const content = textMessageContent(text);
       return repository.createRun({
         chatId: chat.id, content, modelId: "fake-qsa", provider: "fake", providerAdmissionPlan: plan, providerRequestPreview: {}, userId,
-        normalizedRequest: { attachmentIds: [], chatId: chat.id, content, knowledgePlan: { baseIds: [], mode: "none", sourceIds: [],
-          version: 1 }, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true,
+        normalizedRequest: { attachmentIds: [], chatId: chat.id, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true,
           vision: false }, modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
           searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto" },
         ...overrides
       } as CreateRunInput);
     };
     const complete = async (run: CreatedRun, text: string, outputEvents: RunOutputArtifactEvent[] = []) => {
-      expect(await repository.completeRun({ assistantMessageId: run.assistantMessageId, chatId: chat.id, estimatedCostMicros: 0,
+      expect(await completeNativeRun(prisma, { assistantMessageId: run.assistantMessageId, chatId: chat.id, estimatedCostMicros: 0,
         finalText: text, modelId: "fake-qsa", outputEvents, provider: "fake", runId: run.runId, usage, userId })).toBe(true);
     };
     return await execute({

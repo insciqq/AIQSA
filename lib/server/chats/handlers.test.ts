@@ -17,8 +17,7 @@ import {
 } from "./handlers";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { ChatAssistantUpdateError } from "./assistantUpdateError";
-import { RecoveryStateInvalidError } from "../runs/recoveryStateInvalid";
-import { reconcileStaleRuns, type RunRecoveryRegistry, type RunRecoveryRepository } from "../runs/runRecovery";
+import { reconcileNativeRuns, type NativeRecoveryDeps } from "../engine/recovery";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { captureRunObservation } from "@/tests/support/runObservation";
 
@@ -282,32 +281,25 @@ describe("chat route handlers", () => {
     expect(body.chats[0]).not.toHaveProperty("usageStats");
   });
 
-  it("returns the chat history while its stale runs cannot be recovered", async () => {
-    const stale = ["run-unavailable", "run-unreadable"].map((id) => ({
-      assistantMessageId: `assistant-${id}`, chatId: "chat-1", id, modelId: "model-1", provider: "provider-1",
-      providerResponseId: null, status: "streaming", updatedAt: new Date(0)
+  it("ends the chat's runs a restart cut off before returning its history, and keeps going past one it cannot end", async () => {
+    const orphans = ["run-unavailable", "run-cut-off"].map((id) => ({
+      answerCompletedAt: null, assistantMessageId: `assistant-${id}`, chatId: "chat-1", id, normalizedRequest: {},
+      userId: config.bootstrapUserId
     }));
     const failed: string[] = [];
-    const recoveryRepository = {
-      findStaleActiveRunsForUser: async (input: { chatId?: string; userId: string }) =>
-        input.userId === config.bootstrapUserId && input.chatId === "chat-1" ? stale : [],
-      getRunControlForUser: async (runId: string) => stale.find((run) => run.id === runId) ?? null,
-      loadCheckpointedToolLoopRun: async ({ runId }: { runId: string }) => {
-        if (runId === "run-unreadable") throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
-        throw new Error("synthetic database timeout");
-      },
-      loadRunUsageAttributions: async () => [],
-      settleRecoveredRunError: async (input: { error: { code: string }; runId: string }) => {
-        failed.push(`${input.runId}:${input.error.code}`);
+    const recovery: NativeRecoveryDeps = {
+      bootedAt: new Date(),
+      findOrphans: async (input) => input.userId === config.bootstrapUserId && input.chatId === "chat-1" ? orphans : [],
+      liveRunIds: () => [],
+      repository: { failRun: async (runId, _assistantMessageId, error) => {
+        if (runId === "run-unavailable") throw new Error("synthetic database timeout");
+        failed.push(`${runId}:${error.code}`);
         return true;
-      }
-    } as unknown as RunRecoveryRepository;
-    const registry: RunRecoveryRegistry = {
-      has: () => false, ids: () => [],
-      register: () => ({ release: () => undefined, signal: new AbortController().signal })
+      } },
+      runs: { complete: async () => true }
     };
     const GET = createGetChatHandler({
-      reconcileRuns: (input) => reconcileStaleRuns({ providers: {}, registry, repository: recoveryRepository }, input),
+      reconcileRuns: async (input) => { await reconcileNativeRuns(recovery, input); },
       repository: {
         ...historyRepositoryMethods,
         archiveChat: async () => false,
@@ -365,7 +357,7 @@ describe("chat route handlers", () => {
     await expect(response.json()).resolves.toMatchObject({
       chat: { id: "chat-1", messages: [{ content: { blocks: [{ text: "Saved question", type: "text" }] }, id: "user-message-1" }] }
     });
-    expect(failed).toEqual(["run-unreadable:tool_loop_checkpoint_invalid_in_storage"]);
+    expect(failed).toEqual(["run-cut-off:run_interrupted"]);
   });
 
   it("opens the chat and logs content-free when the stale-run sweep itself fails", async () => {
@@ -374,13 +366,10 @@ describe("chat route handlers", () => {
     rememberDatabaseFailure(sweepError, "P2028");
     const reads: string[] = [];
     const GET = createGetChatHandler({
-      reconcileRuns: (input) => reconcileStaleRuns({
-        providers: {},
-        registry: { has: () => false, ids: () => [], register: () => ({ release: () => undefined, signal: new AbortController().signal }) },
-        repository: {
-          findStaleActiveRunsForUser: async () => { throw sweepError; }
-        } as unknown as RunRecoveryRepository
-      }, input),
+      reconcileRuns: async (input) => {
+        await reconcileNativeRuns({ bootedAt: new Date(), findOrphans: async () => { throw sweepError; }, liveRunIds: () => [],
+          repository: { failRun: async () => false }, runs: { complete: async () => false } }, input);
+      },
       repository: {
         ...historyRepositoryMethods,
         archiveChat: async () => false,

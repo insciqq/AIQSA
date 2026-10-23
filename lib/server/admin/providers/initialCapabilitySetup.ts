@@ -1,12 +1,12 @@
 import { hasVerifiedDecisions } from "../../providers/decisionEvidence";
 import {
   ADMIN_PROVIDER_CAPABILITY_CHECKS,
+  RETIRED_ADMIN_PROVIDER_CAPABILITY_CHECKS,
   decodeAdminProviderCapabilityAttempts,
   type AdminProviderCapabilitySetupEvidence,
   type AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
 import type { ProviderConnectionConfiguration, ProviderModelConfiguration } from "../../providers/providerConfiguration";
-import { decodeCodexWebSearchEvidence, shouldProbeCodexWebSearch } from "../../providers/codexWebSearch";
 import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
@@ -42,7 +42,7 @@ export function decodeCapabilitySetupEvidence(value: unknown): AdminProviderCapa
     !candidate.checks || typeof candidate.checks !== "object" || Array.isArray(candidate.checks) ||
     Object.keys(candidate).some((key) => !["policyVersion", "checks", "attempts", "activation"].includes(key)) ||
     candidate.activation !== undefined && candidate.activation !== "initial" && candidate.activation !== "preserve") return null;
-  const entries = Object.entries(candidate.checks);
+  const entries = Object.entries(candidate.checks).filter(([key]) => !RETIRED_ADMIN_PROVIDER_CAPABILITY_CHECKS.includes(key));
   if (!entries.length || entries.some(([key, status]) =>
     !(ADMIN_PROVIDER_CAPABILITY_CHECKS as readonly string[]).includes(key) ||
     typeof status !== "string" || !["verified", "rejected", "unsupported", "incomplete", "not_checked"].includes(status))) return null;
@@ -74,7 +74,7 @@ export function initiallyVerifiedModelConfiguration(
 }
 
 const RECHECK_ENABLED_CAPABILITIES = ["toolCalling", "parallelToolCalls", "nativePdfInput", "vision",
-  "codexStandaloneWebSearch", "nativeSearch", "streaming", "imageGeneration", "imageEditing"] as const;
+  "nativeSearch", "streaming", "imageGeneration", "imageEditing"] as const;
 
 /** A later check turns on what its evidence verified and never turns a capability off:
  * a failed or skipped probe may be transient. */
@@ -110,9 +110,6 @@ function verifiedModelConfiguration(
       matching(decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls)),
     nativePdfInput: setup.checks.directPdf === "verified" && matching(decodePdfInputVerificationEvidence(evidence.pdfInput)),
     vision: setup.checks.vision === "verified" && matching(decodeVisionInputVerificationEvidence(evidence.visionInput)),
-    ...(setup.checks.codexWebSearch !== undefined ? {
-      codexStandaloneWebSearch: setup.checks.codexWebSearch === "verified" && matching(decodeCodexWebSearchEvidence(evidence.codexWebSearch))
-    } : {}),
     ...(setup.checks.hostedSearch !== undefined ? {
       nativeSearch: setup.checks.hostedSearch === "verified" && matching(decodeHostedSearchVerificationEvidence(evidence.hostedSearch))
     } : {}),
@@ -158,12 +155,8 @@ export function reusableCapabilitySetupEvidence(
     checks.hostedSearch === "unsupported" && setup.attempts?.hostedSearch?.reason === "adapter_unsupported")) {
     checks.hostedSearch = "not_checked";
   }
-  if (shouldProbeCodexWebSearch(model, connection?.apiRoot ? { apiRoot: connection.apiRoot } : undefined) && checks.codexWebSearch === undefined) checks.codexWebSearch = "not_checked";
-  const codexWebSearch = decodeCodexWebSearchEvidence(evidence.codexWebSearch);
-  if (!codexWebSearch || codexWebSearch.adapterKind !== model.adapterKind || codexWebSearch.upstreamModelId !== model.upstreamModelId) {
-    if (checks.codexWebSearch === "verified") checks.codexWebSearch = "not_checked";
-    delete retained.codexWebSearch;
-  }
+  // A removed capability's proof is never carried forward.
+  delete (retained as { codexWebSearch?: unknown }).codexWebSearch;
   const hostedSearch = decodeHostedSearchVerificationEvidence(evidence.hostedSearch);
   if (!hostedSearch || hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId) {
     if (checks.hostedSearch === "verified") checks.hostedSearch = "not_checked";

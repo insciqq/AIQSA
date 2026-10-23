@@ -13,6 +13,8 @@ import { createChatPdfAttempts } from "./chatPdfAttempts";
 import { createChatPdfRepository, chatPdfJson, chatPdfAdmissionFromRow } from "./chatPdfPersistence";
 import { chatPdfCompatibilityKey, createChatPdfCore, encodeChatPdfArtifact, type ChatPdfWorkPlan } from "./chatPdfCore";
 import type { ChatPdfAttachmentAdmission } from "./chatPdfAdmission";
+import { runAttributionUsageWhere } from "../runs/prismaRepositoryUsage";
+import { completeNativeRun } from "../../../tests/support/nativeRunCompletion";
 
 let previousPdfPolicy: Awaited<ReturnType<typeof prisma.systemModelPolicy.findUnique>> | null = null;
 const owners: string[] = [];
@@ -74,7 +76,7 @@ async function fixture(vision = false, temporary = false, workspace = false, nat
     await tx.attachment.create({ data: { id: attachmentId, userId, chatId: chat.id, messageId: message.id,
       kind: "pdf", mimeType: "application/pdf", fileName: "fixture.pdf", storageKey: `test/${attachmentId}`,
       checksum: sourceChecksum, byteSize: 10, metadata: {} } });
-    const run = await tx.modelRun.create({ data: { userId, chatId: chat.id, userMessageId: message.id,
+    const run = await tx.modelRun.create({ data: { userId, chatId: chat.id, userMessageId: message.id, engine: "native",
       assistantMessageId: assistant.id, modelId: "fixture", provider: "openai_compatible", status: "preparing" } });
     if (workspace) {
       const session = await tx.workspaceSession.create({ data: { chatId: chat.id,
@@ -382,14 +384,13 @@ describe("chat PDF database lifecycle", () => {
     await repository.publishDocument(h.claim, h.preparationId, (await h.artifact("document")).id);
     const run = await prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } });
     expect(await repository.markAnswerDispatched(h.claim)).toBe(true);
-    const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
-    expect(await runs.completeRun({ runId: h.runId, assistantMessageId: run.assistantMessageId!, chatId: h.chatId,
+    expect(await completeNativeRun(prisma, { runId: h.runId, assistantMessageId: run.assistantMessageId!, chatId: h.chatId,
       estimatedCostMicros: null, userId: h.userId, provider: run.provider, modelId: run.modelId,
       finalText: "The answer", usage: { inputTokens: 20, outputTokens: 3, reasoningTokens: 0 } })).toBe(true);
     const receipts = await prisma.usageEvent.findMany({ where: { modelRunId: h.runId } });
     expect(receipts.filter(({ chatPdfPreparation }) => chatPdfPreparation)).toHaveLength(2);
     expect(receipts.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0)).toBe(40);
-    expect(await runs.loadRunUsageAttributions!({ runId: h.runId, userId: h.userId })).toHaveLength(1);
+    expect(await prisma.usageEvent.count({ where: runAttributionUsageWhere(h.runId) })).toBe(1);
     expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: h.runId } })).toBe(0);
   });
 
@@ -408,7 +409,7 @@ describe("chat PDF database lifecycle", () => {
       const old = await tx.modelRun.findUniqueOrThrow({ where: { id: h.runId } });
       const assistant = await tx.message.create({ data: { chatId: h.chatId,
         parentMessageId: old.userMessageId, role: "assistant", status: "queued", content: { blocks: [] } } });
-      const run = await tx.modelRun.create({ data: { chatId: h.chatId, userId: h.userId,
+      const run = await tx.modelRun.create({ data: { chatId: h.chatId, userId: h.userId, engine: "native",
         assistantMessageId: assistant.id, userMessageId: old.userMessageId,
         provider: old.provider, modelId: old.modelId, status: "preparing" } });
       const { id: _bindingId, modelRunId: _oldRunId, ...binding } = await tx.providerRunBinding.findFirstOrThrow({ where: { modelRunId: h.runId } });

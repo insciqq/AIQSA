@@ -14,11 +14,9 @@ import {
   type RunRepository,
   type ScheduledOccurrenceAdmission
 } from "../runs/runRepositoryContract";
-import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import { nativeEngineFake } from "@/tests/support/nativeEngine";
-import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import {
   createScheduledTaskSend,
   scheduledTaskOwnerAuth,
@@ -79,15 +77,14 @@ function fixture(options: Readonly<{
   /** The active branch of the chat, root first, as the repository loads it. */
   path?: readonly ProviderConversationMessage[];
   toolCalling?: boolean;
-  toolHistory?: ToolHistorySnapshot;
   /** The owner's usage limit status at admission; none by default. */
   usage?: UsageLimitStatus;
 }> = {}) {
   const state: {
-    completedText: string | null; created: CreateRunInput | null; createRun?: (input: CreateRunInput) => void; failedCode: string | null;
+    created: CreateRunInput | null; createRun?: (input: CreateRunInput) => void; failedCode: string | null;
     /** Every request the answer model received. */
     requests: ProviderRunRequest[];
-  } = { completedText: null, created: null, failedCode: null, requests: [] };
+  } = { created: null, failedCode: null, requests: [] };
   const capabilities: ProviderModelCapabilities = {
     nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true,
     toolCalling: options.toolCalling ?? true, vision: false
@@ -95,8 +92,6 @@ function fixture(options: Readonly<{
   const implemented: Partial<RunRepository> = {
     appendAssistantText: async () => undefined,
     appendRunOutputEvent: async (_runId, event) => event,
-    beginToolLoopProviderRound: async () => "started",
-    completeRun: async (input) => { state.completedText = input.finalText; return true; },
     createRun: async (input) => {
       state.createRun?.(input);
       state.created = input;
@@ -105,30 +100,22 @@ function fixture(options: Readonly<{
     failRun: async (_runId, _assistantMessageId, error) => { state.failedCode = error.code; return true; },
     findOwnedChat: async (chatId, userId) => userId === owner.id && options.chat?.id === chatId ? options.chat : null,
     findRecentActiveRunForChat: async () => null,
-    findStaleActiveRunsForUser: async () => [],
     getChatUpdateForRun: async () => null,
     getRunControlForUser: async (runId, userId) => runId === "run-1" && userId === owner.id && state.created ? {
       assistantMessageId: "assistant-message-1", chatId: state.created.chatId, id: runId, modelId: state.created.modelId,
       provider: state.created.provider, providerResponseId: null,
-      status: state.completedText !== null ? "complete" : state.failedCode ? "error" : "streaming"
+      status: state.failedCode ? "error" : "streaming"
     } : null,
-    loadCheckpointedToolLoopRun: async () => null,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, leaf) =>
       leaf === (options.chat?.activeLeafMessageId ?? null) ? [...(options.path ?? [])] : null,
-    ...(options.toolHistory ? { loadToolHistory: async () => options.toolHistory! } : {}),
     loadEntitlements: async () => ({ modelKeys: new Set(["fake:fake-qsa"]), providerKeys: new Set(), searchStrategies: new Set() }),
     loadModelPricing: async () => null,
     loadPersonalFirstSend: async (input) => input.chatId === newChatId && input.userId === owner.id ? {
       activeLeafMessageId: null, defaultModelId: "fake-qsa", defaultProvider: "fake", folderId: input.folderId, id: input.chatId,
       memoryMode: input.memoryMode, messageCount: 0, projectMemory: null, title: "New Chat", workspaceEnabled: false
     } : null,
-    loadRunUsageAttributions: async () => [],
     loadWorkspaceFileFacts: async () => ({ hasEarlierExports: false, hasFiles: false }),
     markRunAnswerStarted: async () => undefined,
-    persistToolLoopCallBatch: async () => { throw new Error("tool_calls_not_expected"); },
-    recordRunUsageEvents: async () => true,
-    sweepBootOrphanedRuns: async () => 0,
-    updateRunProviderResponseId: async () => "published"
   };
   // Everything else is absent, like the optional operations of a minimal repository;
   // a required operation the path needs would fail the run visibly.
@@ -138,8 +125,10 @@ function fixture(options: Readonly<{
     state.requests.push(request);
     return fake.stream(request, streamOptions);
   } };
+  const native = nativeEngineFake();
   const sendDeps: Omit<RunHandlerDeps, "resolveAuth" | "scheduledOccurrence"> = {
     allowFakeProvider: true,
+    nativeEngine: native.deps,
     getConfig: () => config,
     providerAdmission: { load: async (input) => admissionPlan(input, capabilities) },
     providerRuntime: { resolve: async () => ({ adapter, responseTimeoutMs: 300_000 }) } as unknown as RunHandlerDeps["providerRuntime"],
@@ -148,7 +137,7 @@ function fixture(options: Readonly<{
     usageLimits: { loadUsageLimitStatus: async () => options.usage ?? NO_USAGE_LIMITS }
   };
   const loadOwner = vi.fn(async () => owner as AuthenticatedUser | null);
-  return { loadOwner, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
+  return { loadOwner, native, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
 }
 
 function body(target: ScheduledTaskSendTarget, toolCalling = true, tools: Readonly<{
@@ -230,7 +219,6 @@ async function sendIntoChat(path: readonly ProviderConversationMessage[], origin
 
 describe("scheduled task admission through the ordinary send handler", () => {
   it("admits the first run as a Memory-excluded personal first send bound to its occurrence", async () => {
-    resetBootOrphanSweepForTest();
     const f = fixture();
     const response = await f.send({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence, userId: owner.id });
     expect(response.status).toBe(200);
@@ -249,7 +237,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
     });
     const request = f.state.created!.normalizedRequest;
     expect(request).toMatchObject({
-      knowledgePlan: { mode: "none" },
       prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow" } },
       searchPlan: { options: [] },
       skills: { mode: "off" },
@@ -260,7 +247,7 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(request.workspace).toBeUndefined();
     expect(request.memoryStandingVersion).toBeUndefined();
     expect(f.state.failedCode).toBeNull();
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
+    expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture"]);
     expect(f.loadOwner).toHaveBeenCalledWith({ taskId: "task-1", userId: owner.id });
     // A new chat's run is a first send: its model sees the prompt alone.
     expect(f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
@@ -278,11 +265,10 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(f.state.requests.map(conversation)).toEqual([[
       ["user", "Summarize the synthetic fixture"], ["assistant", "Previous synthetic summary"], ["user", "Summarize the synthetic fixture"]
     ]]);
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture");
-    // The selection is frozen with the run, so recovery rebuilds the same context; branch notes are never carried.
+    expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture"]);
+    // The selection is frozen with the run.
     const frozen = f.state.created!.normalizedRequest;
     expect(frozen.context!.messages.map((message) => message.id)).toEqual(["previous-user", "previous-answer", "current-user-message"]);
-    expect(frozen.contextCompactionPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: null, messageCount: 3 } });
     // The new turn still continues the chat's active leaf, so the transcript stays linear.
     expect(f.state.created).toMatchObject({ expectedActiveLeafId: chat.activeLeafMessageId, scheduledOccurrence: { previousResult } });
   });
@@ -339,16 +325,16 @@ describe("scheduled task admission through the ordinary send handler", () => {
     await response.text();
     expect(f.state.created).toMatchObject({ chatId: "chat-task", expectedActiveLeafId: "assistant-message-0", scheduledOccurrence: occurrence });
     expect(f.state.created!.personalChat).toBeUndefined();
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
+    expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture"]);
   });
 
-  it("asks a model without tool calling for no tools, as the composer does", async () => {
+  it("refuses a saved model without tool calling visibly, before any run", async () => {
     const f = fixture({ toolCalling: false });
     const response = await f.send({ body: body({ chatId: newChatId, kind: "new" }, false), chatId: newChatId, occurrence, userId: owner.id });
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(f.state.created!.normalizedRequest.toolMode).toBe("none");
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "model_tool_calling_required" });
+    expect(f.state.created).toBeNull();
+    expect(f.native.published).toEqual([]);
   });
 
   it("refuses without an active owner before any run", async () => {
@@ -388,7 +374,7 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(created.normalizedRequest.workspace).toMatchObject({ enabled: true, sessionId: "ws-scheduled" });
     expect(created).toMatchObject({ personalChat: { memoryMode: "EXCLUDED" }, workspaceEnabled: true });
     expect(created.workspaceAdmissionPlan).toBeDefined();
-    expect(created.normalizedRequest.knowledgePlan).toMatchObject({ mode: "none" });
+    expect(created.normalizedRequest).not.toHaveProperty("knowledgePlan");
     // The lapsed server the previous result relied on: named to the model and frozen with the occurrence.
     expect(created.scheduledUnavailableSources).toEqual([
       { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }
@@ -447,7 +433,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
   });
 
   it("applies budgets to a scheduled send but never the owner's message limits", async () => {
-    resetBootOrphanSweepForTest();
     const messagesUsedUp: UsageLimitStatus = {
       ...NO_USAGE_LIMITS,
       effective: { ...NO_USAGE_LIMITS.effective, messagesPerDay: { source: { kind: "installation" }, value: 1 } },
@@ -498,24 +483,23 @@ describe("scheduled task admission through the ordinary send handler", () => {
   });
 });
 
-describe("scheduled task admission on the native engine", () => {
+describe("scheduled task admission on the agent engine", () => {
   const nativeSend = (f: ReturnType<typeof fixture>, native: ReturnType<typeof nativeEngineFake>) =>
     createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, nativeEngine: native.deps } });
 
-  it("runs a listed owner's same-chat occurrence natively, from the flat context alone", async () => {
-    resetBootOrphanSweepForTest();
+  it("runs a same-chat occurrence, from the flat context alone", async () => {
     const path = [...ownerTurns("before", 3), say("previous-user", "user", "Summarize the synthetic fixture"),
       say("previous-answer", "assistant", "Previous synthetic summary"), ...ownerTurns("after", 3)];
     const chat: RunOwnedChatRecord = { ...taskChat, activeLeafMessageId: path.at(-1)!.id };
     const f = fixture({ chat, path });
-    const native = nativeEngineFake([owner.email!]);
+    const native = nativeEngineFake();
     const response = await nativeSend(f, native)({
       body: body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" }), chatId: chat.id,
       occurrence: { ...occurrence, previousResult }, userId: owner.id
     });
     expect(response.status).toBe(200);
     await response.text();
-    expect(f.state.created).toMatchObject({ engine: "native", scheduledOccurrence: { previousResult } });
+    expect(f.state.created).toMatchObject({ scheduledOccurrence: { previousResult } });
     // The owner's own turns before and after the previous result stay out.
     expect(f.state.requests).toHaveLength(1);
     expect(f.state.requests[0]!.history!.map((item) => [item.type, "text" in item ? item.text : null])).toEqual([
@@ -524,21 +508,19 @@ describe("scheduled task admission on the native engine", () => {
       ["user", expect.stringMatching(/^<turn_context>/u)], ["user", "Summarize the synthetic fixture"]
     ]);
     expect(native.published).toHaveLength(1);
-    expect(f.state.completedText).toBeNull();
     expect(f.state.failedCode).toBeNull();
   });
 
-  it("offers a listed owner's monitoring check its verdict tool and saved secrets, never a self-service tool", async () => {
-    resetBootOrphanSweepForTest();
+  it("offers a monitoring check its verdict tool and saved secrets, never a self-service tool", async () => {
     const f = fixture();
-    const native = nativeEngineFake([owner.id], { tools: true });
+    const native = nativeEngineFake({ tools: true });
     const response = await nativeSend(f, native)({
       body: body({ chatId: newChatId, kind: "new" }, true, { toolsEnabled: true, workspaceEnabled: false }), chatId: newChatId,
       occurrence: { ...occurrence, monitoring: true }, userId: owner.id
     });
     expect(response.status).toBe(200);
     await response.text();
-    expect(f.state.created).toMatchObject({ engine: "native", scheduledOccurrence: { monitoring: true } });
+    expect(f.state.created).toMatchObject({ scheduledOccurrence: { monitoring: true } });
     expect(f.state.created!.normalizedRequest.monitoringVerdictTool).toBe(true);
     // Standing authority: a scheduled run never asks for a per-run write approval.
     expect(f.state.created!.normalizedRequest.mcpApproval).toBeUndefined();
@@ -546,18 +528,6 @@ describe("scheduled task admission on the native engine", () => {
     expect(tools).toEqual(expect.arrayContaining(["report_monitoring_result", "read_secret"]));
     expect(tools.some((name) => name.startsWith("manage_") || name === "create_scheduled_task")).toBe(false);
     expect(f.state.requests[0]!.prompt.system).toContain("scheduled monitoring check");
-  });
-
-  it("keeps an unlisted owner's occurrence on the old core", async () => {
-    resetBootOrphanSweepForTest();
-    const f = fixture();
-    const native = nativeEngineFake(["someone-else@example.test"]);
-    const response = await nativeSend(f, native)({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence,
-      userId: owner.id });
-    await response.text();
-    expect(f.state.created?.engine).toBeUndefined();
-    expect(native.published).toEqual([]);
-    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
   });
 });
 

@@ -16,7 +16,7 @@ import { createToolObservationService, type ToolObservationRepository } from "./
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
   observationReadBudget, observationRestoreRefused, observationWholeDeliveryBatches, restoreObservedResult, wholeDeliveryAllowance } from "./sourceAdapters";
 import { executeReadToolResult, readToolResultError } from "../tools/readToolResult";
-import { settleableToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, boundedSearchToolResultText, LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
   type SearchExecutionEvidence } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
@@ -707,13 +707,6 @@ describe("accepted observation source adapters", () => {
     const restored = await restoreObservedResult({ service: f.service(), producer }, call).then(() => null, (error: unknown) => error);
     expect(observationRestoreRefused(restored)).toBe(true);
     expect(execute).toHaveBeenCalledOnce();
-    const large = fixture();
-    large.exhaust();
-    const oversized = { isError: false, structuredContent: null, text: ["m".repeat(300 * 1024)], unsupportedContentTypes: [] };
-    const bounded = await captureMcpObservation({ service: large.service(), producer }, call, binding, async () => oversized);
-    const settled = settleableToolExecutionResult(bounded, 256 * 1024);
-    expect(settled).toEqual(settleableToolExecutionResult(mcpToolExecutionResult(call, oversized), 256 * 1024));
-    expect(settled?.failure?.code).toBe("tool_result_too_large");
   });
 
   it("delivers Off's Workspace result with artifacts and runtime metadata beyond the retained-bytes budget", async () => {

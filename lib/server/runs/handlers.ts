@@ -41,14 +41,12 @@ import type {
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
-import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
-import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDispatchLifecycle";
-import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
-import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
+import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import {
-  nativeRunResponse, nativeRunServices, recoverUserNativeRuns, routeRun, type NativeEngineHandlerDeps
+  engineAdmissionRefusal, nativeRunResponse, nativeRunServices, recoverUserNativeRuns, type NativeEngineHandlerDeps
 } from "../engine/handlerSupport";
+import { NATIVE_RUN_STALE_MS } from "../engine/recovery";
 import { resolveAnswerReviewAuto } from "../answerReviews/autoAdmission";
 import {
   materializePreparedRunData,
@@ -60,17 +58,11 @@ import {
   type RunPreparationFailure
 } from "./runPreparation";
 import {
-  activeRunStaleMs,
-  reconcileStaleRuns,
-  sweepBootOrphanedRunsOnce
-} from "./runRecovery";
-import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
-  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   ScheduledOccurrenceConflictError,
@@ -95,8 +87,7 @@ export type {
   RunAttachmentRecord,
   RunChatUpdateRecord,
   RunControlRecord,
-  RunRepository,
-  StaleRunControlRecord
+  RunRepository
 } from "./runRepositoryContract";
 
 /**
@@ -137,19 +128,13 @@ export type RunHandlerDeps = {
   }>;
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
-  /** The old core's own Knowledge execution reads it; admission never admits Knowledge. */
-  knowledgeAdmission?: import("./runExecution").RunExecutionInput["knowledgeAdmission"];
-  knowledgeExecutor?: KnowledgeToolExecutor;
-  knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
-  memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunPreparationDeps["mcp"];
   /**
-   * The native agent engine (`createDefaultSendMessageDeps` gives it to the
-   * chat routes, the scheduled task runner, Telegram and answer review): it
-   * takes the runs `routeRun` names (the pilot's allowlist); every other run,
-   * and every entry point without it, stays on the old core.
+   * The agent engine every admitted run executes on
+   * (`createDefaultSendMessageDeps` gives it to the chat routes, the
+   * scheduled task runner, Telegram and answer review).
    */
-  nativeEngine?: NativeEngineHandlerDeps;
+  nativeEngine: NativeEngineHandlerDeps;
   providerAdmission?: RunPreparationDeps["providerAdmission"];
   providerRuntime?: ProviderRuntimeResolver;
   providers: Record<string, ProviderAdapter>;
@@ -178,7 +163,7 @@ export type RunHandlerDeps = {
   workspaceCoordinator?: WorkspaceCoordinator;
 };
 
-const activeRunGateWindowMs = activeRunStaleMs;
+const activeRunGateWindowMs = NATIVE_RUN_STALE_MS;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function personalDraftFromBody(body: Record<string, unknown> | null):
@@ -349,56 +334,6 @@ function modelRunJson(data: RunOutcomeResponse, init?: ResponseInit): Response {
   return privateModelRunJson(data, init);
 }
 
-function recoveryDeps(
-  deps: Pick<
-    RunHandlerDeps,
-    | "getAttachmentLimits"
-    | "knowledgeAdmission"
-    | "knowledgeExecutor"
-    | "knowledgeProviderDispatch"
-    | "artifacts"
-    | "skillTools"
-    | "observations"
-    | "vision"
-    | "images"
-    | "memoryEgress"
-    | "memorySearch"
-    | "mcp"
-    | "providerAdmission"
-    | "providerRuntime"
-    | "providers"
-    | "repository"
-    | "searchProviders"
-    | "storage"
-    | "workspaceCoordinator"
-  >
-) {
-  return {
-    ...(deps.getAttachmentLimits ? { getAttachmentLimits: deps.getAttachmentLimits } : {}),
-    ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
-    ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
-    ...(deps.knowledgeProviderDispatch
-      ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
-      : {}),
-    ...(deps.images ? { images: deps.images } : {}),
-    ...(deps.vision ? { vision: deps.vision } : {}),
-    ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
-    ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
-    ...(deps.observations ? { observations: deps.observations } : {}),
-    ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
-    ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
-    ...(deps.mcp ? { mcp: deps.mcp } : {}),
-    ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
-    ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
-    providers: deps.providers,
-    registry: activeRunControllerRegistry,
-    repository: deps.repository,
-    ...(deps.searchProviders ? { searchProviders: deps.searchProviders } : {}),
-    ...(deps.storage ? { storage: deps.storage } : {}),
-    ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
-  };
-}
-
 function isActiveRunConflictError(error: unknown): error is ActiveRunConflictError {
   return error instanceof ActiveRunConflictError || (error instanceof Error && error.name === "ActiveRunConflictError");
 }
@@ -414,13 +349,6 @@ function isAttachmentLinkConflictError(error: unknown): error is AttachmentLinkC
 function isMcpRunPlanConflictError(error: unknown): error is McpRunPlanConflictError {
   return error instanceof McpRunPlanConflictError ||
     (error instanceof Error && error.name === "McpRunPlanConflictError");
-}
-
-function isKnowledgeRunPlanConflictError(
-  error: unknown
-): error is KnowledgeRunPlanConflictError {
-  return error instanceof KnowledgeRunPlanConflictError ||
-    (error instanceof Error && error.name === "KnowledgeRunPlanConflictError");
 }
 
 function isProviderAdmissionConflictError(
@@ -479,8 +407,6 @@ async function acceptedRuntimeBinding(
 ): Promise<{
   adapter: ProviderAdapter;
   searchRuntimes: Record<string, ProviderRuntimeBinding>;
-  structuredOutputAdapter?: ProviderRuntimeBinding["structuredOutputAdapter"];
-  toolBridge?: ProviderToolBridge;
 } | null> {
   return runWithContext({ run_id: runId }, async () => {
     try {
@@ -501,14 +427,7 @@ async function acceptedRuntimeBinding(
         }
       }
 
-      return {
-        adapter: answer.adapter,
-        searchRuntimes,
-        ...(answer.structuredOutputAdapter
-          ? { structuredOutputAdapter: answer.structuredOutputAdapter }
-          : {}),
-        ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
-      };
+      return { adapter: answer.adapter, searchRuntimes };
     } catch (error) {
       const failure = observedFailure(error);
       logEvent("run_execution", { error, run_id: runId, stage: "dispatch", outcome: "failed",
@@ -616,12 +535,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return bodyError;
     }
 
-    const recovery = recoveryDeps(deps);
-    await sweepBootOrphanedRunsOnce(recovery);
-    await reconcileStaleRuns(recovery, {
-      userId: auth.userId
-    });
-    // Each engine recovers only its own runs.
     await recoverUserNativeRuns(deps.nativeEngine, deps, auth.userId);
 
     const params = await context.params;
@@ -750,18 +663,18 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ? { ok: true as const }
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
-    const route = routeRun(deps.nativeEngine, { prepared: preparedData, user: { email: auth.user.email, id: auth.userId } });
+    const engineRefusal = engineAdmissionRefusal(preparedData);
+    if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
     const systemTurn = continuationBody && body?.systemTurn && typeof body.systemTurn === "object"
       ? body.systemTurn as Record<string, unknown> : null;
     const approvalId = typeof systemTurn?.approvalId === "string" ? systemTurn.approvalId : undefined;
-    // A send behind the previous answer's Workspace hand-off waits for it on either engine; a native run keeps the
-    // entry facts its execution needs when the follow-up starts it.
-    const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), ...(route.engine === "native" ? { native: {
-      ...(approvalId ? { approvalId } : {}), ...(deps.telegramTurn ? { telegram: true as const } : {}) } } : {}) });
+    // A send behind the previous answer's Workspace hand-off waits for it, keeping the entry facts its execution needs
+    // when the follow-up starts it.
+    const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), native: {
+      ...(approvalId ? { approvalId } : {}), ...(deps.telegramTurn ? { telegram: true as const } : {}) } });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
-        ...(route.engine === "native" ? { engine: "native" as const } : {}),
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: followupSnapshot()
@@ -782,9 +695,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         expectedActiveLeafId: preparedData.expectedActiveLeafId,
         ...(preparedData.initialChatMode
           ? { initialChatMode: preparedData.initialChatMode }
-          : {}),
-        ...(preparedData.knowledgeAdmissionPlan
-          ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
@@ -851,10 +761,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
       }
 
-      if (isKnowledgeRunPlanConflictError(error)) {
-        return Response.json({ error: "knowledge_base_not_available" }, { status: 409 });
-      }
-
       if (isProviderAdmissionConflictError(error)) {
         return Response.json({ error: "provider_admission_changed" }, { status: 409 });
       }
@@ -895,46 +801,16 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       created.runId,
       preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
-    if (route.engine === "native" && deps.nativeEngine) {
-      return nativeRunResponse(deps.nativeEngine, {
-        adapter: runtime?.adapter ?? preparation.adapter,
-        ...(approvalId ? { approvalId } : {}),
-        ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
-        created, prepared: preparedData, repository: deps.repository,
-        ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
-        ...(deps.telegramTurn ? { telegram: true } : {}),
-        ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-        services: nativeRunServices(deps), userId: auth.userId,
-        ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
-      });
-    }
-    return createRunExecutionResponse({
+    return nativeRunResponse(deps.nativeEngine, {
       adapter: runtime?.adapter ?? preparation.adapter,
-      created,
-      prepared: preparedData,
-      repository: deps.repository,
-      ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
-      ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
-      ...(deps.knowledgeProviderDispatch
-        ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
-        : {}),
+      ...(approvalId ? { approvalId } : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
-      ...(deps.images ? { images: deps.images } : {}),
-      ...(deps.vision ? { vision: deps.vision } : {}),
-      ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
-      ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
-      ...(deps.observations ? { observations: deps.observations } : {}),
-      ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
-      ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
-      ...(deps.mcp ? { mcp: deps.mcp } : {}),
-      ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
+      created, prepared: preparedData, repository: deps.repository,
+      ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
+      ...(deps.telegramTurn ? { telegram: true } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-      ...(runtime?.structuredOutputAdapter
-        ? { structuredOutputAdapter: runtime.structuredOutputAdapter }
-        : {}),
-      ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}),
-      toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
-      userId: auth.userId
+      services: nativeRunServices(deps), userId: auth.userId,
+      ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
     });
   });
 }
@@ -960,12 +836,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       return bodyError;
     }
 
-    const recovery = recoveryDeps(deps);
-    await sweepBootOrphanedRunsOnce(recovery);
-    await reconcileStaleRuns(recovery, {
-      userId: auth.userId
-    });
-    // Each engine recovers only its own runs.
     await recoverUserNativeRuns(deps.nativeEngine, deps, auth.userId);
 
     const params = await context.params;
@@ -1042,13 +912,12 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const answerReview = retry ? { ok: true as const }
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
-    // A document retry keeps the old core's frozen preparation.
-    const route = retry ? { engine: "v1" as const } : routeRun(deps.nativeEngine, { prepared: preparedData,
-      user: { email: auth.user.email, id: auth.userId } });
+    // A document retry runs its frozen preparation again, so the model it froze must still be one the agent can run.
+    const engineRefusal = engineAdmissionRefusal(preparedData);
+    if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
-        ...(route.engine === "native" ? { engine: "native" as const } : {}),
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
@@ -1061,9 +930,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
                 controlDefaults: { ...preparedData.defaults.controlDefaults }
               }
             }
-          : {}),
-        ...(preparedData.knowledgeAdmissionPlan
-          ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
@@ -1108,10 +974,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
       }
 
-      if (isKnowledgeRunPlanConflictError(error)) {
-        return Response.json({ error: "knowledge_base_not_available" }, { status: 409 });
-      }
-
       if (isProviderAdmissionConflictError(error)) {
         return Response.json({ error: "provider_admission_changed" }, { status: 409 });
       }
@@ -1150,71 +1012,19 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       created.runId,
       preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
-    if (route.engine === "native" && deps.nativeEngine) {
-      return nativeRunResponse(deps.nativeEngine, {
-        adapter: runtime?.adapter ?? preparation.adapter,
-        ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
-        created, prepared: preparedData, repository: deps.repository,
-        ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-        services: nativeRunServices(deps), userId: auth.userId,
-        ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
-      });
-    }
-    return createRunExecutionResponse({
+    return nativeRunResponse(deps.nativeEngine, {
       adapter: runtime?.adapter ?? preparation.adapter,
-      created,
-      prepared: preparedData,
-      repository: deps.repository,
-      ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
-      ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
-      ...(deps.knowledgeProviderDispatch
-        ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
-        : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
-      ...(deps.images ? { images: deps.images } : {}),
-      ...(deps.vision ? { vision: deps.vision } : {}),
-      ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
-      ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
-      ...(deps.observations ? { observations: deps.observations } : {}),
-      ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
-      ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
-      ...(deps.mcp ? { mcp: deps.mcp } : {}),
-      ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
+      created, prepared: preparedData, repository: deps.repository,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-      ...(runtime?.structuredOutputAdapter
-        ? { structuredOutputAdapter: runtime.structuredOutputAdapter }
-        : {}),
-      ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}),
-      toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
-      userId: auth.userId
+      services: nativeRunServices(deps), userId: auth.userId,
+      ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
     });
   });
 }
 
 export function createGetModelRunHandler(
-  deps: Pick<
-    RunHandlerDeps,
-    | "getConfig"
-    | "getAttachmentLimits"
-    | "knowledgeAdmission"
-    | "knowledgeExecutor"
-    | "knowledgeProviderDispatch"
-    | "artifacts"
-    | "skillTools"
-    | "observations"
-    | "vision"
-    | "images"
-    | "memoryEgress"
-    | "memorySearch"
-    | "mcp"
-    | "providerAdmission"
-    | "providerRuntime"
-    | "providers"
-    | "repository"
-    | "resolveAuth"
-    | "searchProviders"
-    | "storage"
-  >
+  deps: Pick<RunHandlerDeps, "getConfig" | "repository" | "resolveAuth">
 ) {
   return async function GET(
     request: Request,
@@ -1231,16 +1041,6 @@ export function createGetModelRunHandler(
     }
 
     const params = await context.params;
-    // The installation scheduler is the primary recovery owner. A GET may assist
-    // only through the same guarded stale-run boundary; eagerly recovering a fresh
-    // run can create a second owner when route runtimes do not share process state.
-    if (deps.providerRuntime || deps.searchProviders || deps.knowledgeExecutor) {
-      const recovery = recoveryDeps(deps);
-      await reconcileStaleRuns(recovery, {
-        runId: params.runId,
-        userId: auth.userId
-      }).catch(() => undefined);
-    }
     const run = await deps.repository.getRunOutcomeForUser(params.runId, auth.userId);
 
     if (!run) {
@@ -1251,7 +1051,7 @@ export function createGetModelRunHandler(
   };
 }
 
-export function createCancelModelRunHandler(deps: Omit<RunHandlerDeps, "usageLimits">) {
+export function createCancelModelRunHandler(deps: Omit<RunHandlerDeps, "nativeEngine" | "usageLimits">) {
   return protectRunHandler("cancel", async function POST(
     request: Request,
     context: { params: Promise<{ runId: string }> | { runId: string } }
