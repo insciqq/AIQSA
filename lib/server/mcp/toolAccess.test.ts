@@ -75,4 +75,3 @@ describe("optional MCP tool access", () => {
     }
   });
 });
-
