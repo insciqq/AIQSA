@@ -105,6 +105,9 @@ describe("manage_skill", () => {
     expect(fake.proposeDelete).toHaveBeenCalledWith("skill-own");
     expect(fake.save).not.toHaveBeenCalled();
     expect(json(result)).toMatchObject({ deleted: false, deletionProposed: true, skill: "report-writer" });
+    // The answer places the card: the model is told not to say where it is.
+    expect(json(result).note).toContain("without saying where it appears");
+    expect(json(result).note).not.toMatch(/above|below/u);
     expect(decodeResourceChangeCard((result.artifacts?.[0] as { data: { payload: unknown } }).data.payload))
       .toMatchObject({ action: "delete_proposed", assistantCount: 2, resource: "skill", shared: true, skillId: "skill-own" });
     // A card the answer could not show proposes nothing: the model is told so instead of the user seeing no question.

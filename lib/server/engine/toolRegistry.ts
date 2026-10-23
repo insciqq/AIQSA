@@ -45,6 +45,7 @@ import {
   isScheduledTaskManageCall,
   scheduledTaskManagementToolsForRequest
 } from "../tools/scheduledTaskManagement";
+import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
 import {
   SELF_SERVICE_TOOLS,
   createToolCallSelfServiceStore,
@@ -52,7 +53,7 @@ import {
   type SelfServiceRunDeps
 } from "../tools/selfServiceTools";
 import { acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
-import { executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
+import { SAVE_SKILL_TOOL_NAME, executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/updatePlan";
 import type { ToolObservationSource } from "../toolObservations/contract";
@@ -124,8 +125,24 @@ export type EngineTool = Readonly<{
 
 export type ToolRegistry = Readonly<{
   definitions(): readonly RunTool[];
+  /**
+   * For a call of an older tool this run does not offer because a newer one
+   * replaces it (a name the model may know from a Workspace guide or an
+   * earlier turn), what to call instead: the refusal the model reads.
+   */
+  replacement?(name: string): string | undefined;
   resolve(name: string): EngineTool | undefined;
 }>;
+
+/**
+ * Older tools a newer one of this registry replaces, and how to do the same
+ * with it. The old core keeps offering them; a native run offers only the
+ * newer one, so the model never chooses between two ways of doing one thing.
+ */
+const SUPERSEDED_TOOLS: ReadonlyMap<string, Readonly<{ by: string; how: string }>> = new Map([
+  [SAVE_SKILL_TOOL_NAME, { by: MANAGE_SKILL_TOOL_NAME, how: "action \"save\", target \"new\" or the Skill's alias, and files with each " +
+    "file's path and text content, SKILL.md first. For a folder built in the Workspace, read its files and pass them" }]
+]);
 
 /** One accepted MCP runtime of the run: the generation its calls use and their binding row. */
 export type EngineMcpBinding = Readonly<{ fingerprint: string; mcpRunBindingId: string; runtimeGenerationId: string }>;
@@ -323,7 +340,9 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   // The self-service tools: the user's own resources through their owners, each call settled
   // with its change and card in one transaction, which fences the run once more.
   const selfService = input.services.selfService;
-  if (clientTools && selfService && secrets && !request.agent && !request.answerReviewStep && !request.monitoringVerdictTool) {
+  const selfServiceOffered = clientTools && selfService !== undefined && secrets !== undefined && !request.agent &&
+    !request.answerReviewStep && !request.monitoringVerdictTool;
+  if (selfServiceOffered && selfService && secrets) {
     const deps: SelfServiceRunDeps = { ...selfService, attachmentIds: admittedAttachmentIds(request), request: { skills: request.skills },
       run: { chatId: input.chatId, runId: input.runId, userId: input.userId }, secretSource: secrets };
     for (const descriptor of SELF_SERVICE_TOOLS) {
@@ -350,7 +369,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       execute: (execution) => executeManageScheduledTask(execution.call, context(execution), manage) });
   }
   for (const definition of skillSaveToolsForRequest(request)) {
-    if (!isSkillSaveCall(request, definition.name)) continue;
+    // `manage_skill` saves Skills in any chat and supersedes the Workspace folder save (`SUPERSEDED_TOOLS`).
+    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered) continue;
     add({ activity: named(definition, "Skills"), definition, effects: "local", observationSource: "workspace",
       execute: (execution) => executeSaveSkill(execution.call, context(execution), {
         commit: runSkillSaveCommitter(input.services.repository, { callId: execution.persistedToolCallId, ...owner }),
@@ -422,6 +442,12 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   return {
     definitions: () => [...tools.values()].map((tool) => tool.definition),
+    replacement: (name) => {
+      const superseded = SUPERSEDED_TOOLS.get(name);
+      return superseded && tools.has(superseded.by) && !tools.has(name)
+        ? `${name} is not available in this chat, so nothing was executed. Use ${superseded.by} instead: ${superseded.how}.`
+        : undefined;
+    },
     resolve: (name) => tools.get(name)
   };
 }
