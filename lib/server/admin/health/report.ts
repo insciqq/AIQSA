@@ -182,7 +182,9 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
     sources.findings(),
     sources.connections(),
     sources.health.incidents(incidentFilters(range, null)),
-    sources.failedRuns({ ...span, perCode: HEALTH_REPORT_FAILED_RUN_REFERENCES, groupLimit: HEALTH_REPORT_FAILED_RUN_CODE_LIMIT }),
+    // Answers the upgrade interrupted are left out here too, so the report agrees with the attention item.
+    sources.failedRuns({ ...span, perCode: HEALTH_REPORT_FAILED_RUN_REFERENCES, groupLimit: HEALTH_REPORT_FAILED_RUN_CODE_LIMIT,
+      withoutRetiredEngineEnds: true }),
     sources.slowTransactions(span),
     sources.failureStreaks({ ...span, limit: HEALTH_REPORT_STREAK_LIMIT, runsPerStreak: HEALTH_REPORT_STREAK_REFERENCES })
   ]);

@@ -722,7 +722,8 @@ function toolFamilies(rows: readonly TelemetryCounterGroup[]): HealthToolFamilyR
     const outcome = (name: string) => group.filter((row) => row.group.outcome === name).reduce((total, row) => total + row.count, 0);
     return {
       toolKind: text(group[0]!.group.tool_kind),
-      calls: group.reduce((total, row) => total + row.count, 0),
+      // Calls sent: a call held for approval is recorded again once it runs after the Allow.
+      calls: group.reduce((total, row) => total + row.count, 0) - outcome("awaiting_approval"),
       failed: outcome("failed"),
       timedOut: outcome("timeout"),
       cancelled: outcome("cancelled"),
@@ -894,7 +895,8 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     read(() => readNewestIncidents(store, span, HEALTH_NEWEST_INCIDENT_LIMIT)),
     read(() => store.readFirstIncidentPerKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
     read(() => store.countIncidentReachByKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
-    read(() => sources.failedRunGroups({ ...span, perCode: HEALTH_FULL_FAILED_RUNS_PER_CODE, groupLimit: HEALTH_FULL_FAILED_RUN_CODE_LIMIT })),
+    read(() => sources.failedRunGroups({ ...span, perCode: HEALTH_FULL_FAILED_RUNS_PER_CODE, groupLimit: HEALTH_FULL_FAILED_RUN_CODE_LIMIT,
+      withoutRetiredEngineEnds: true })),
     counters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY }),
     read(() => sources.modelRuns({ ...span, limit: HEALTH_FULL_MODEL_LIMIT, codesPerModel: HEALTH_FULL_MODEL_CODES })),
     read(() => sources.failureStreaks({ ...span, limit: HEALTH_FULL_STREAK_LIMIT, runsPerStreak: HEALTH_FULL_STREAK_RUNS })),
