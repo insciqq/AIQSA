@@ -151,6 +151,9 @@ const SUPERSEDED_TOOLS: ReadonlyMap<string, Readonly<{ by: string; how: string }
 /** One accepted MCP runtime of the run: the generation its calls use and their binding row. */
 export type EngineMcpBinding = Readonly<{ fingerprint: string; mcpRunBindingId: string; runtimeGenerationId: string }>;
 
+/** One `McpRunBinding` row of the run: an accepted runtime generation, by its fingerprint. */
+export type EngineMcpBindingRow = Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>;
+
 export type ToolRegistryServices = Readonly<{
   artifacts?: Pick<ArtifactService, "execute">;
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
@@ -188,8 +191,11 @@ export type ToolRegistryInput = Readonly<{
   followupTexts(): readonly string[];
   /** The run's accepted MCP runtimes, by server; discovery adds to it. */
   mcpBindings: Map<string, EngineMcpBinding>;
-  /** Loads the binding rows discovery just accepted. */
-  loadMcpBindings?(): Promise<ReadonlyMap<string, EngineMcpBinding>>;
+  /**
+   * The run's `McpRunBinding` rows, read after every discovery epoch: the
+   * epoch writes the rows of the servers it loaded (Auto admits none).
+   */
+  loadMcpBindingRows?(): Promise<readonly EngineMcpBindingRow[]>;
   onEvent(event: ModelRunSseEvent): Promise<void>;
   onUsage(attribution: RunUsageAttribution): void;
   onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>;
@@ -614,9 +620,11 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
         });
         snapshot = executed.snapshot;
         discovery = executed.discovery;
-        // The accepted bindings of newly loaded servers, then their tools.
-        if (input.loadMcpBindings) {
-          for (const [serverId, binding] of await input.loadMcpBindings()) input.mcpBindings.set(serverId, binding);
+        // The accepted bindings of newly loaded servers (their rows, written with the epoch), then their tools.
+        if (input.loadMcpBindingRows) {
+          for (const [serverId, binding] of engineSnapshotMcpBindings(snapshot, await input.loadMcpBindingRows())) {
+            input.mcpBindings.set(serverId, binding);
+          }
         }
         for (const definition of mcpRunTools(snapshot)) if (!tools.has(definition.name)) addTool(definition);
         return executed.toolResult;
@@ -628,10 +636,28 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void, 
   });
 }
 
+/**
+ * The bindings of a snapshot's servers, by server, from the run's rows: the
+ * row of the runtime generation whose fingerprint is the server's. Admission
+ * and every discovery epoch write those rows with the run, so a server Auto
+ * loaded mid-run is bound like one admission bound.
+ */
+export function engineSnapshotMcpBindings(snapshot: McpRunPlanSnapshot | undefined,
+  rows: readonly EngineMcpBindingRow[]): Map<string, EngineMcpBinding> {
+  const byFingerprint = new Map(rows.flatMap((row) => row.runtimeGenerationId
+    ? [[row.runtimeGenerationFingerprint, { id: row.id, runtimeGenerationId: row.runtimeGenerationId }] as const] : []));
+  const result = new Map<string, EngineMcpBinding>();
+  for (const server of snapshot?.servers ?? []) {
+    const row = byFingerprint.get(server.fingerprint);
+    if (row) result.set(server.serverId, { fingerprint: server.fingerprint, mcpRunBindingId: row.id, runtimeGenerationId: row.runtimeGenerationId });
+  }
+  return result;
+}
+
 /** The accepted bindings of a run, by server, from its `McpRunBinding` rows. */
 export function engineMcpBindings(
   bindings: readonly McpRunPlanBinding[],
-  rows: readonly Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>[]
+  rows: readonly EngineMcpBindingRow[]
 ): Map<string, EngineMcpBinding> {
   const byFingerprint = new Map(rows.flatMap((row) => row.runtimeGenerationId
     ? [[row.runtimeGenerationFingerprint, { id: row.id, runtimeGenerationId: row.runtimeGenerationId }] as const] : []));

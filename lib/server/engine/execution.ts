@@ -3,6 +3,7 @@ import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
+import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { logEvent, runWithContext } from "../observability";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderDeadlineExceededError } from "../providers/network";
@@ -280,12 +281,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             userId: input.userId });
           const callItem = approved ? [...conversation.items].reverse().find((item) => item.kind === "tool_call" &&
             item.callId === approved.providerCallId && item.name === approved.toolName) : undefined;
-          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call.
-          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id)) {
+          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call. The run sends
+          // the call only with its tool admitted: an Auto run admits no MCP tool and loads it anew (`find_tools`).
+          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id) &&
+            resolveMcpRunTool(input.prepared.providerRequest.mcp, callItem.name)) {
             approvedCall = { arguments: parsedArguments(callItem.arguments), id: callItem.callId, name: callItem.name };
           } else {
-            // The old core stopped that turn, or the user wrote again since: the server's turn is the instruction, and
-            // the call it allows is made again.
+            // The old core stopped that turn, the user wrote again since, or the tool is not loaded yet: the server's turn
+            // is the instruction, and the call it allows is made again.
             conversation = conversationFor("input");
           }
         }
@@ -320,7 +323,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const registry = await buildToolRegistry({
           chatId: scope.chatId,
           followupTexts: () => delivered,
-          loadMcpBindings: async () => engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId)),
+          loadMcpBindingRows: () => engine.mcpBindingRows(runId),
           mcpBindings,
           onEvent: (event) => sink.publish(event),
           onUsage: (attribution) => usage.add(attribution),
