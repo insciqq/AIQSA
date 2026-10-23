@@ -54,7 +54,7 @@
  * - ANTHROPIC_API_KEY, AIQSA_JOURNEY_ANTHROPIC_MODEL (default claude-sonnet-5)
  * - CODEX_LB_API_KEY, CODEX_LB_BASE_URL (compatible endpoint root; falls back
  *   to the codex-lb route of ~/.codex/config.toml), AIQSA_JOURNEY_CODEX_MODEL (default gpt-5.5)
- * - AIQSA_JOURNEY_CONTEXT_WINDOW (default 32768, 16384..65536)
+ * - AIQSA_JOURNEY_CONTEXT_WINDOW (default 65536, 57344..65536)
  * - AIQSA_JOURNEY_MAX_TURNS (default 12, 6..12)
  * - AIQSA_JOURNEY_CLEANUP_PROVIDERS=1
  * - AIQSA_JOURNEY_MEMORY=1: the journey chat stays in Memory (not EXCLUDED), so

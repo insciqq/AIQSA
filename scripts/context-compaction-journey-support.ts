@@ -17,9 +17,12 @@ export const JOURNEY_ROUTES = ["anthropic", "codex-lb"] as const;
 export type JourneyRoute = (typeof JOURNEY_ROUTES)[number];
 
 export const JOURNEY_LIMITS = Object.freeze({
-  defaultContextWindow: 32_768,
-  /** Below this the fixed request overhead leaves too little journey room. */
-  minContextWindow: 16_384,
+  defaultContextWindow: 65_536,
+  /** Below this the engine finds no background cut: its fixed prompt and tools,
+   * kept tail, kept user messages and summary already fill 72 % of the window,
+   * so it compacts only in the foreground at 85 %, which the journey does not
+   * reach (32k: `compaction_not_triggered`; 64k: compacted at 75 %). */
+  minContextWindow: 57_344,
   /** Above this the byte bounds below cannot reach the trigger in 12 turns. */
   maxContextWindow: 65_536,
   defaultMaxTurns: 12,
