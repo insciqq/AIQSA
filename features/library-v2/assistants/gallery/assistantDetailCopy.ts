@@ -207,7 +207,10 @@ export function assistantDetailRowValue(
       const onDemand = value.links.length - always.length;
       const alwaysNames = always.flatMap((link) => skillNames.get(link.skillId) ?? []);
       // The mode words only when there is something they apply to.
-      if (value.links.length === 0 && !value.hiddenCount) return "No Skills linked";
+      // Without links Auto offers the viewer's own enabled Skills, as a regular chat does.
+      if (value.links.length === 0 && !value.hiddenCount) {
+        return value.mode === "auto" ? "Your enabled Skills, like a regular chat" : "No Skills linked";
+      }
       const parts = [value.mode === "auto" ? "Loads on demand" : "Off"];
       if (always.length > 0) {
         parts.push(alwaysNames.length === always.length && always.length <= 2

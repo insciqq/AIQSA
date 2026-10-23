@@ -102,7 +102,7 @@ import type {
 } from "../skills/runMaterialization";
 import { withSelectedSkillContext } from "../skills/userContext";
 import { freezeSkillManifest } from "../skills/runManifest";
-import { skillCatalogAuthorization } from "../skills/catalogRelevanceAuthority";
+import { skillCatalogAuthorization, usesPersonalSkillCatalog } from "../skills/catalogRelevanceAuthority";
 import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
 import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
@@ -1425,7 +1425,7 @@ export async function prepareRun(
     return failure("model_cannot_report", 409, "This model cannot report the outcome of a monitoring check.");
   }
   const skillCatalogSupported = skillToolsSupported;
-  if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && deps.skills?.listEnabledForRun) {
+  if (skillsMode === "auto" && skillCatalogSupported && usesPersonalSkillCatalog(assistantRun) && deps.skills?.listEnabledForRun) {
     availableSkillRuns = (await deps.skills.listEnabledForRun(input.userId)).filter((skill) => !effectiveSkillIds.includes(skill.skillId));
   }
   if (skillsMode === "auto" && skillCatalogSupported && availableSkillRuns.length > SKILL_MAX_AVAILABLE) {
