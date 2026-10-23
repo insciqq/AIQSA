@@ -13,7 +13,6 @@ import {
   type AdminProviderQuickSetupSelectionRequiredResult,
   type AdminProviderQuickSetupSnapshot
 } from "@/lib/contracts/adminProviderQuickSetup";
-import { NATIVE_ANTHROPIC_DISABLED_CODE, offeredProviderFamilies } from "@/lib/domain/disabledAreas";
 
 export type AdminProviderQuickSetupId = AdminProviderQuickSetupProviderId;
 export type AdminProviderQuickSetupModel = AdminProviderQuickSetupModelDisplay;
@@ -38,9 +37,9 @@ export type AdminProviderQuickSetupClientResult<T> =
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** The families setup offers; a disabled one (native Anthropic) is left out by the server too. */
-const offeredProviders = offeredProviderFamilies(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS);
-const providerIds = new Set<AdminProviderQuickSetupId>(offeredProviders);
+const providerIds = new Set<AdminProviderQuickSetupId>(
+  ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS
+);
 
 
 const forbiddenResponseKeys = new Set([
@@ -146,14 +145,14 @@ function snapshot(value: unknown): AdminProviderQuickSetupSnapshot | null {
   if (!record(value) || containsForbiddenMaterial(value) ||
     !exactKeys(value, ["providers"]) ||
     !Array.isArray(value.providers) ||
-    value.providers.length !== offeredProviders.length) {
+    value.providers.length !== ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.length) {
     return null;
   }
   const providers = value.providers.map(provider);
   if (providers.some((entry) => entry === null)) return null;
   const ids = providers.map((entry) => entry!.provider);
   if (new Set(ids).size !== providers.length ||
-    !offeredProviders.every(
+    !ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.every(
       (id) => ids.includes(id as AdminProviderQuickSetupId)
     )) {
     return null;
@@ -289,7 +288,6 @@ export function adminProviderQuickSetupErrorMessage(
     provider_quick_setup_response_invalid: "The provider setup API returned an unexpected response. Close this sheet and try again.",
     provider_quick_setup_selection_invalid: "That model choice is no longer available. Test the key again.",
     provider_quick_setup_unsupported_catalog: "This key has no access to a model AIQSA can set up for this provider.",
-    [NATIVE_ANTHROPIC_DISABLED_CODE]: "The Anthropic provider is turned off. Connect Claude models through OpenRouter instead.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   return messages[error.code] ?? messages.provider_admin_action_failed!;

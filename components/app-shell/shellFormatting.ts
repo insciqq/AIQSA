@@ -12,7 +12,6 @@ import {
 } from "@/lib/contracts/usageLimits";
 import {
   KNOWLEDGE_DISABLED_CODE,
-  NATIVE_ANTHROPIC_DISABLED_CODE,
   PROJECTS_DISABLED_CODE
 } from "@/lib/domain/disabledAreas";
 import { AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE } from "@/lib/domain/runParams";
@@ -153,8 +152,6 @@ export function humanizeErrorCode(code: string): string {
       "Projects are turned off. Shared chats stay readable, but nothing new can be sent or changed in them",
     [KNOWLEDGE_DISABLED_CODE]:
       "Knowledge is turned off. Send without Knowledge, or remove Knowledge from the Assistant",
-    [NATIVE_ANTHROPIC_DISABLED_CODE]:
-      "The Anthropic provider is turned off. Choose another model",
     project_default_model_unavailable:
       "The Project default model is unavailable. Review Project resources and choose an available default",
     project_setup_required:
