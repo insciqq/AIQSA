@@ -639,3 +639,34 @@ describe("a native run interrupted before any answer text", () => {
     expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.not.objectContaining({ approval: expect.anything() }));
   });
 });
+
+// Regression: a native answer's delivered follow-up and the text before it reached later turns twice, as the context's
+// follow-up messages and in the answer's own items.
+describe("a native answer that took follow-ups", () => {
+  it("reaches the next turn's model with each delivered follow-up once and the undelivered one kept", async () => {
+    const messages = [...conversationMessagesFromPathRows([
+      { chatId: "chat", messageContent: textMessageContent("Write a poem"), messageId: "user-1", messageRole: "user",
+        messageStatus: "complete" },
+      { chatId: "chat", messageContent: textMessageContent("Roses are red, violets are blue."), messageId: "answer-1",
+        messageParentId: "user-1", messageRole: "assistant", messageStatus: "complete", followups: [
+          { delivered: true, id: "f1", ordinal: 1, precedingText: "Roses are red", text: "Make it rhyme" },
+          { delivered: false, id: "f2", ordinal: 2, precedingText: null, text: "Add a title" }
+        ] }
+    ]), nativeSay("current-user-message", "user", "Shorter")];
+    const { adapter, requests } = scriptedNativeAdapter([{ text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-1", "run-0"]]));
+    memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", [
+      { id: "a1", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "Roses are red" },
+      { followup: true, id: "u1", kind: "user", text: "Make it rhyme" },
+      { id: "a2", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "Roses are red, violets are blue." }
+    ] satisfies TranscriptItem[]]]));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2",
+      userMessageId: "user-2" }, engine: memory.engine, prepared: nativePrepared({ context: { messages, mode: "branch_path" } }),
+    repository: asRepository(nativeRunRepository()), services: {}, userId: "owner" }));
+    const sent = JSON.stringify(requests[0]!.history);
+    expect(sent.split("Make it rhyme")).toHaveLength(2);
+    expect(sent).not.toContain("Partial answer before follow-up");
+    expect(sent).toContain("Follow-up not delivered to the previous answer:\\nAdd a title");
+  });
+});

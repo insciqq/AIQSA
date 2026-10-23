@@ -6,9 +6,12 @@ import type { TranscriptItem } from "./transcript";
  * The conversation a native run starts from, as transcript items: the
  * branch admission froze (earlier turns, the run's internal context such as
  * the Skills index, then the run's own message), with every earlier answer of
- * a native run replaced by that run's own items. Earlier answers of the old
- * core, and a native answer stopped before its first round completed, enter
- * as their saved text; old-core tool steps are not fed again. A native answer
+ * a native run replaced by that run's own items, which hold the follow-ups
+ * delivered to it, so the context's copies of those (and of the partial
+ * answer before each) are left out; an undelivered follow-up stays. Earlier
+ * answers of the old core, and a native answer stopped before its first round
+ * completed, enter as their saved text with all their follow-ups; old-core
+ * tool steps are not fed again. A native answer
  * that stopped without text enters as its run's items too, once
  * `withStoppedNativeAnswers` has put it back on the branch. A turn the
  * server wrote after an approval that a native run continued is no user
@@ -44,7 +47,11 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
   const messages = source.messages;
   const last = messages.at(-1);
   if (!last || last.role !== "user" || last.purpose !== undefined) throw new Error("conversation_current_message_missing");
-  for (let index = 0; index < messages.length - 1; index += 1) {
+  const earlier = messages.slice(0, -1);
+  // Answers that enter as their run's items, which hold the follow-ups delivered to them and the text before each.
+  const replaced = new Set(earlier.filter((message) => message.role === "assistant" && message.purpose === undefined &&
+    (source.nativeAnswers.get(message.id)?.length ?? 0) > 0).map((message) => message.id));
+  for (let index = 0; index < earlier.length; index += 1) {
     const message = messages[index]!;
     const text = textFromContentBlocks(message.content);
     if (message.purpose !== undefined) {
@@ -52,8 +59,11 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
       if (text.trim()) items.push({ id: `ctx-${index}`, kind: "user", runContext: true, text });
       continue;
     }
+    // An undelivered follow-up never reached its answer, so only the context has it.
+    if (message.followupOf?.delivered && replaced.has(message.followupOf.answerId)) continue;
     if (message.role === "user") {
-      const next = messages[index + 1];
+      // The turn's answer comes after the follow-ups the context puts before it.
+      const next = messages.slice(index + 1).find((candidate) => candidate.followupOf === undefined);
       const continued = next?.role === "assistant" && source.nativeAnswers.has(next.id);
       if (source.continuationTurns.has(message.id) && continued) continue;
       if (text.trim()) items.push({ id: `msg-${message.id}`, kind: "user", text });
