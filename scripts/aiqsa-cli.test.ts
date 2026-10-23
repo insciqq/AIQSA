@@ -1207,6 +1207,24 @@ describe("backup", () => {
     expect(existsSync(fixture.file("target/env"))).toBe(false);
   });
 
+  it("leaves a container of a removed service running and backs up the rest", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv({ AIQSA_MEMORY_FINGERPRINT_KEYRING: keyring });
+    backupFixture(fixture);
+    // A plain `docker compose up -d` after the docling removal keeps its container running.
+    fixture.rules.unshift(
+      { match: " ps -a --format \\{\\{\\.Service\\}\\}\\|", stdout: `${runningRows}docling|running|healthy|0|c10\n` },
+      { match: " config --services", stdout: "app\nmemory-worker\nmigrate-bootstrap\nstorage-init\npostgres\nseaweedfs\nminio\ntika\n" },
+      { match: " (stop|up -d) .*docling", exit: 1, stderr: "no such service: docling\n" }
+    );
+    const result = fixture.run(["backup"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("Leaving containers of removed services untouched: docling");
+    expectOrdered(fixture.dockerLog, [/ stop app memory-worker$/u, / stop minio seaweedfs$/u,
+      new RegExp(` up -d --no-recreate --wait --wait-timeout 600 ${restartSet}$`, "u")]);
+    expect(fixture.dockerLog).not.toMatch(/docling/u);
+  });
+
   it("backs up only PostgreSQL and .env with external object storage and says so", () => {
     const fixture = new Fixture();
     const body = fixture.writeEnv({ AIQSA_S3_ENDPOINT: "https://s3.example.com" });
