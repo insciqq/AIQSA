@@ -48,12 +48,13 @@ import { randomUUID } from "node:crypto";
 import { PrismaClient, type ModelRun } from "@prisma/client";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
+import type { AssistantDetailResponse } from "../../lib/contracts/assistants";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import type { TelegramAdminCommand, TelegramAdminState, TelegramLinkCodeResponse } from "../../lib/contracts/telegram";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
 import { TELEGRAM_COPY, telegramConnectedText } from "../../lib/server/telegram/copy";
 import { createFakeTelegramBotApi, type FakeTelegramMessage, type FakeTelegramUser } from "../support/fakeTelegramBotApi";
-import { createAssistantFixture } from "./support/assistants";
+import { createAssistantFixture, e2eAssistantAvatar, e2eAssistantRows } from "./support/assistants";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
@@ -162,13 +163,17 @@ test("an Assistant chat runs on the native engine under the Assistant's own inst
   try {
     await withRolloutStand(page, testInfo, "native-rollout-assistant", async (stand) => {
       const token = codeWord("ADA-");
-      const assistant = await assistants.create(page.request, {
-        name: "Native rollout Ada",
-        rows: { model: { policy: "fixed", value: { mode: "model", modelId: stand.model.modelId } } },
+      // The codex-lb model fixed, every other row the product's default for a new Assistant (tools, Search and Knowledge off).
+      const created = await page.request.post("/api/me/assistants", { data: {
+        answerRules: null, avatar: e2eAssistantAvatar(), category: null, description: "", name: `Native rollout Ada ${assistants.suffix}`,
+        responseReminder: "", rows: e2eAssistantRows(stand.model.modelId), starterPrompts: [],
         systemPrompt: `You are Ada, a synthetic assistant for an end-to-end test. End every answer with the exact line ${token} ` +
           "and write nothing after it."
-      });
-      const chatId = await assistants.createChat(page.request, { assistant: { assistantId: assistant.id } });
+      } });
+      expect(created.status(), await created.text()).toBe(201);
+      const assistantId = (await created.json() as AssistantDetailResponse).assistant.id;
+      assistants.track(assistantId);
+      const chatId = await assistants.createChat(page.request, { assistant: { assistantId } });
       const response = await page.request.post(`/api/chats/${chatId}/messages`, { timeout: TURN_TIMEOUT_MS, data: {
         content: { blocks: [{ text: "Name one primary colour in a single short sentence.", type: "text" }] }, expectedActiveLeafId: null,
         timeZone: "UTC", workspace: { enabled: false }
