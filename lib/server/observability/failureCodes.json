@@ -1479,5 +1479,13 @@
   "retired_engine_runs_unavailable",
   "retired_engine_runs_unsettled",
   "model_tool_calling_required",
-  "model_adapter_unsupported"
+  "model_adapter_unsupported",
+  "tool_arguments_invalid",
+  "tool_call_limit_reached",
+  "tool_execution_failed",
+  "tool_outcome_unknown_repeat",
+  "tool_binding_unavailable",
+  "mcp_approved_tool_unavailable",
+  "mcp_call_not_sent",
+  "mcp_run_binding_unavailable"
 ]

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { NATIVE_RUN_INTERRUPTED, reconcileNativeRuns, type NativeOrphanRun, type NativeRecoveryDeps } from "./recovery";
 
 const workspace = { enabled: true, sessionId: "session-1" };
@@ -47,5 +48,17 @@ describe("native run recovery", () => {
     const recovery = deps([orphan("run-4"), orphan("run-5")]);
     recovery.repository.failRun.mockRejectedValueOnce(new Error("database"));
     await expect(reconcileNativeRuns(recovery)).resolves.toBe(1);
+  });
+
+  it("records each terminal write it makes, which Admin Health counts as a run recovery failed", async () => {
+    const observation = await captureRunObservation();
+    const recovery = deps([orphan("run-6"), orphan("run-7"), orphan("run-8", { answerCompletedAt: new Date() })]);
+    recovery.repository.failRun.mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("database"));
+    await reconcileNativeRuns(recovery);
+    expect(observation.records().filter((record) => record.event === "job_persistence")
+      .map((record) => [record.run_id, record.subsystem, record.stage, record.outcome])).toEqual([
+      ["run-6", "run_recovery", "fail", "confirmed"], ["run-7", "run_recovery", "fail", "unconfirmed"],
+      ["run-8", "run_recovery", "complete", "confirmed"]
+    ]);
   });
 });
