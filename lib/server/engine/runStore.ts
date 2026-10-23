@@ -51,7 +51,7 @@ export function nativeUsageRowId(runId: string, key: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "usageEvent">,
+export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "usageEvent">,
   memorySourceHooks: MemorySourceMutationHooks = defaultMemorySourceMutationHooks) {
   return {
     /**
@@ -72,6 +72,20 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
         await tx.modelRun.update({ data: { answerCompletedAt: new Date() }, where: { id: scope.runId } });
         return true;
       });
+    },
+
+    /**
+     * The text a stopped run's answer keeps: Stop settles the run and its
+     * answer first, so the text streamed since the last save is written here,
+     * only to the cancelled answer of this cancelled native run.
+     */
+    async saveStoppedText(scope: NativeRunScope, text: string): Promise<boolean> {
+      const saved = await client.message.updateMany({
+        data: { content: json(textMessageContent(text)) },
+        where: { assistantModelRuns: { some: { chatId: scope.chatId, engine: "native", id: scope.runId, status: "cancelled",
+          userId: scope.userId } }, chatId: scope.chatId, id: scope.assistantMessageId, role: "assistant", status: "cancelled" }
+      });
+      return saved.count === 1;
     },
 
     /** Completes a run whose answer is published; its open calls keep an unknown outcome. */

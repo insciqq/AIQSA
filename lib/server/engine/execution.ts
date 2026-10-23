@@ -42,6 +42,8 @@ import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from 
 import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
 import { modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptTarget, type TranscriptUserItem } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
+import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
+import { unknownEffectsOf } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 
 /**
@@ -216,6 +218,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
       };
       logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "started" });
+      let runRecords: TranscriptWriter | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
@@ -257,7 +260,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           }
         }
         const items: TranscriptItem[] = [...conversation.items];
-        let sequence = await engine.transcripts.nextSequence(scope);
+        const writer = createTranscriptWriter({ append: (from, added) => engine.transcripts.append(scope, from, added),
+          firstSequence: await engine.transcripts.nextSequence(scope), runId });
+        runRecords = writer;
+        // Effects of the branch's earlier calls that are still unknown; only the user's own words count as them speaking.
+        const serverTurns = new Set([...continuationTurns].map((messageId) => `msg-${messageId}`));
+        const unknownEffects = unknownEffectsOf(conversation.items, (item) => item.followup === true ||
+          (item.id.startsWith("msg-") && !serverTurns.has(item.id)) ||
+          (item.id === input.created.userMessageId && !input.approvalContinuation));
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
@@ -284,12 +294,19 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspace: input.workspace },
           userId: input.userId
         });
-        // The run reads its items whole; the transcript keeps what later turns may read.
+        // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.
+        const record = (added: readonly TranscriptItem[]) => writer.record(added.map((item) => transcriptRecord(registry, item)));
         const append = async (added: readonly TranscriptItem[]) => {
           if (added.length === 0) return;
           items.push(...added);
-          await engine.transcripts.append(scope, sequence, added.map((item) => transcriptRecord(registry, item)));
-          sequence += added.length;
+          // Bookkeeping: the writer retries and logs, and the turn goes on with its items.
+          void record(added).catch(() => undefined);
+        };
+        // A response's tool calls are on record before any of them is sent.
+        const appendCalls = async (added: readonly TranscriptItem[]) => {
+          if (added.length === 0) return;
+          items.push(...added);
+          await record(added);
         };
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState = { calls: 0 };
@@ -306,11 +323,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             signal: save.signal, source: save.source, text: save.text }),
           signal,
           store: engine.toolCalls,
+          unknownEffects,
           userId: input.userId
         };
 
-        if (approvedCall) {
-          const batch = await runToolBatch(batchDeps, toolState, { calls: [approvedCall], round: 0 });
+        if (approvedCall && input.approvalContinuation) {
+          const batch = await runToolBatch(batchDeps, toolState, {
+            approved: { approvalId: input.approvalContinuation.approvalId, callId: approvedCall.id }, calls: [approvedCall], round: 0
+          });
           await append(batch.results);
           if (batch.approvals.length > 0) await emitApprovalCards();
         }
@@ -325,6 +345,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         let followupRevision = 0;
         const outcome = await runAgentLoop({
           append,
+          appendCalls,
           callModel: (request) => callModel({
             adapter: input.adapter,
             deadlineAt: startedAt + turnMs,
@@ -365,6 +386,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               userId: input.userId })) return [];
             followupRevision = batch.revision;
             delivered.push(...accepted.map((entry) => entry.text));
+            unknownEffects.userSpoke();
             // The answer starts over after the user's follow-up, as the delivered record shows.
             answer.restart();
             sink.send({ data: { round: batch.revision }, type: "message_reset" });
@@ -428,6 +450,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         answerPublished = true;
         sink.send({ data: { assistantMessageId: scope.assistantMessageId, runId }, type: "answer_complete" });
+        // The transcript is on record (or given up) before the run completes and the next turn can read it.
+        await writer.flush();
         if (input.chatTitleGenerator && answer.text) {
           await input.chatTitleGenerator.schedule({ answerText: answer.text, chatId: scope.chatId, runId, userId: input.userId,
             userMessageId: input.created.userMessageId }).catch(() => undefined);
@@ -457,8 +481,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             outcome: cancelled ? "cancelled" : deadline.signal.aborted ? "timed_out" : "failed", runId, userId: input.userId, workspace })
             .catch(() => undefined);
         }
+        // What the turn did stays on record for Continue and later turns.
+        await runRecords?.flush();
         if (cancelled) {
-          // Stop already settled the run; its text so far stays with the answer.
+          // Stop settled the run before its last streamed text was saved: the answer keeps what the user saw.
+          if (!answerPublished && answer.text) {
+            await engine.runs.saveStoppedText(scope, answer.text).catch((saveError: unknown) => {
+              logEvent("service_operation", { action: "degrade", code: "answer_text_unsaved", error: saveError, outcome: "degraded",
+                run_id: runId, stage: "write", subsystem: "database" });
+            });
+          }
           await usage.settle();
           await chatUpdate();
           sink.send({ data: { runId, status: "cancelled" }, type: "done" });

@@ -53,6 +53,25 @@ describe("native tool registry", () => {
     expect(registry.resolve(READ_TOOL_RESULT_NAME)?.runScopedResult).toBeUndefined();
   });
 
+  it("reports a write refused before it was sent as not sent, and leaves a failure after dispatch unknown to the batch", async () => {
+    const mcpBindings = new Map([["jira", { fingerprint: "fp-1", mcpRunBindingId: "binding-1", runtimeGenerationId: "gen-1" }]]);
+    const services = (runtime: unknown) => ({ mcpRuntime: (() => runtime) as never, repository: { createSearchRun: vi.fn() } as never,
+      savedResults: { read: vi.fn(async () => null) } });
+    const execution = { call: { arguments: { summary: "x" }, id: "c1", name: "mcp_jira_create_issue" }, ordinal: 0,
+      persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal };
+    const refusing = await buildToolRegistry(input({ mcpBindings, request: request({ mcp: snapshot }),
+      services: services({ callTool: vi.fn(), ensureAcceptedGeneration: async () => false }) }));
+    await expect(refusing.resolve("mcp_jira_create_issue")!.execute(execution)).resolves.toMatchObject({ status: "error",
+      content: [{ type: "json", value: { error: "mcp_runtime_unavailable", message: "Nothing was sent." } }] });
+    const callTool = vi.fn(async (call: { beforeDispatch(): Promise<void> }) => {
+      await call.beforeDispatch();
+      throw new TypeError("fetch failed");
+    });
+    const failing = await buildToolRegistry(input({ mcpBindings, request: request({ mcp: snapshot }),
+      services: services({ callTool, ensureAcceptedGeneration: async () => true }) }));
+    await expect(failing.resolve("mcp_jira_create_issue")!.execute(execution)).rejects.toThrow("fetch failed");
+  });
+
   it("declares MCP effects from annotations and asks approval only for a tool that may change data", async () => {
     const registry = await buildToolRegistry(input({
       mcpBindings: new Map([["jira", { fingerprint: "fp-1", mcpRunBindingId: "binding-1", runtimeGenerationId: "gen-1" }]]),
