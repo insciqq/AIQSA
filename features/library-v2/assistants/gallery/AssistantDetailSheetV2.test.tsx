@@ -228,11 +228,15 @@ describe("Assistant detail sheet", () => {
     expect(within(dialog).getByRole("row", { name: /^Model/u })).toHaveTextContent(/^ModelA model you can't useFixed$/u);
   });
 
-  it("says No Skills linked without the mode words when there is nothing they apply to", () => {
-    renderSheet(sheet({
+  it("says an Auto Assistant without links uses the viewer's enabled Skills, and Off without links names no mode", () => {
+    const withSkills = (mode: "auto" | "off") => sheet({
       ...ownerDetail,
-      content: { ...ownerDetail.content, rows: { ...ownerDetail.content.rows, skills: { policy: "adjustable", value: { links: [], mode: "auto" } } } }
-    }));
+      content: { ...ownerDetail.content, rows: { ...ownerDetail.content.rows, skills: { policy: "adjustable", value: { links: [], mode } } } }
+    });
+    renderSheet(withSkills("auto"));
+    expect(screen.getByRole("row", { name: /^Skills/u })).toHaveTextContent("SkillsYour enabled Skills, like a regular chatAdjustable");
+    cleanup();
+    renderSheet(withSkills("off"));
     expect(screen.getByRole("row", { name: /^Skills/u })).toHaveTextContent("SkillsNo Skills linkedAdjustable");
   });
 
