@@ -385,9 +385,11 @@ async function recoverEligibleMemoryJobs(
  * A Memory command waits until the run of its message settles, so that what
  * the agent saved in that run (a secret, `../persistence/savedSecrets.ts`) is
  * in place before the command writes, and its notice may follow the answer.
- * A run that never settles holds it at most this long after acceptance.
+ * A longer run holds it at most this long after acceptance, short of the
+ * administrators' stalled-work threshold; a secret saved later still removes
+ * its value from Memory (`../savedSecretScrub.ts`).
  */
-export const MEMORY_COMMAND_RUN_SETTLEMENT_WAIT_MS = 15 * 60_000;
+export const MEMORY_COMMAND_RUN_SETTLEMENT_WAIT_MS = 10 * 60_000;
 
 function jobEligibility(
   kinds: readonly MemoryJobKind[],
