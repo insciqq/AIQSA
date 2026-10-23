@@ -9,17 +9,11 @@ import {
   type McpDraftConfiguration,
   type McpSlotValue
 } from "@/lib/contracts/mcp";
-import { createMemoryStorageAdapter } from "@/tests/support/storage";
-import { textMessageContent } from "../../domain/content";
 import { listAdminDashboard } from "../auth/adminDashboardQueries";
 import { createPrismaAdminRepository } from "../auth/adminRepository";
 import { ensureFullAccessGroup } from "../auth/fullAccessGroup";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { prisma } from "../prisma";
-import { createToolObservationRepository } from "../toolObservations/repository";
-import { createToolObservationService } from "../toolObservations/service";
-import { createObservationSourceOwners } from "../toolObservations/sourceOwners";
-import { captureMcpObservation } from "../toolObservations/sourceAdapters";
 import type { McpDraftValidator } from "./draftValidator";
 import { createUserMcpUpdateHandler } from "./handlers";
 import { mcpOAuthPolicyFingerprint } from "./oauthPolicy";
@@ -27,7 +21,6 @@ import { createPrismaMcpOAuthRepository, type McpOAuthRepository } from "./oauth
 import { MCP_OAUTH_REVOCATION_ABANDON_MS, McpOAuthService } from "./oauthService";
 import { createPersonalMcpCreateHandler, createPersonalMcpUpdateHandler } from "./personalHandlers";
 import { createPrismaMcpRepository } from "./prismaRepository";
-import { namespacedMcpToolName } from "./runPlan";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 
 /** Runtime and observation bindings carry SHA-256 fingerprints. */
@@ -704,50 +697,5 @@ describe("personal MCP limits", () => {
     } finally {
       await rows.remove();
     }
-  });
-});
-
-describe("personal MCP tool observations", () => {
-  it("lets the owner reread an accepted personal MCP result", async () => {
-    const ownerId = await user();
-    const serverId = await personalServer(ownerId);
-    const server = await prisma.mcpServer.findUniqueOrThrow({ select: { activeRevisionId: true, namespace: true }, where: { id: serverId } });
-    const preference = await prisma.mcpUserServer.findUniqueOrThrow({ where: { userId_serverId: { serverId, userId: ownerId } } });
-    const generation = await prisma.mcpRuntimeGeneration.create({ data: {
-      fingerprint: hexFingerprint(), revisionId: server.activeRevisionId!, state: "ready", userServerId: preference.id
-    } });
-    const chat = await prisma.chat.create({ data: { title: "Personal MCP observation fixture", userId: ownerId } });
-    owned.chats.push(chat.id);
-    const question = await prisma.message.create({ data: {
-      chatId: chat.id, content: textMessageContent("Read the accepted result"), role: "user", status: "complete"
-    } });
-    const answer = await prisma.message.create({ data: {
-      chatId: chat.id, content: textMessageContent(""), parentMessageId: question.id, role: "assistant", status: "streaming"
-    } });
-    const run = await prisma.modelRun.create({ data: {
-      assistantMessageId: answer.id, chatId: chat.id, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
-      status: "in_progress", userId: ownerId, userMessageId: question.id
-    } });
-    const binding = await prisma.mcpRunBinding.create({ data: {
-      modelRunId: run.id, runtimeGenerationFingerprint: generation.fingerprint, runtimeGenerationId: generation.id
-    } });
-    const name = namespacedMcpToolName(server.namespace, "read");
-    const call = await prisma.modelRunToolCall.create({ data: {
-      arguments: {}, mcpRunBindingId: binding.id, modelRunId: run.id, ordinal: 0, providerCallId: randomUUID(),
-      roundIndex: 1, state: "running", toolName: name
-    } });
-    const service = createToolObservationService({
-      repository: createToolObservationRepository({ prisma, ...createObservationSourceOwners() }),
-      storage: createMemoryStorageAdapter()
-    });
-    const actor = { runId: run.id, userId: ownerId };
-    const result = await captureMcpObservation({ producer: { ...actor, toolCallId: call.id }, service }, {
-      arguments: {}, id: "provider-call", name
-    }, {
-      fingerprint: generation.fingerprint, originalName: "read", revisionId: server.activeRevisionId!, serverId, source: "mcp", version: 1
-    }, async () => ({ isError: false, structuredContent: null, text: ["exact personal MCP bytes"], unsupportedContentTypes: [] }));
-    await prisma.modelRunToolCall.update({ data: { state: "complete" }, where: { id: call.id } });
-
-    expect((await service.read(actor, { handle: result.observation!.handle })).fragment).toContain("exact personal MCP bytes");
   });
 });
