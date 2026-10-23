@@ -8,8 +8,9 @@ import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
 import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import type { RunTool } from "../tools/types";
+import { workspaceSecretVariables } from "../workspace/secrets/manifest";
 import type { RunSecretScope, RunSecretSource } from "../workspace/secrets/runSecrets";
-import { systemPromptFor } from "./prompts";
+import { systemPromptFor, type SavedSecretFact } from "./prompts";
 
 /**
  * The system prompt of a native run's requests (`systemPromptFor`): the
@@ -17,7 +18,8 @@ import { systemPromptFor } from "./prompts";
  * admission froze into `prompt.system` for this run (the Workspace contract,
  * the MCP tool index, artifact context, image guidance, an Assistant's own
  * instructions), then the environment: date and time in the admitted zone and
- * the names of the saved secrets `read_secret` reads. The baseline sentence
+ * the saved secrets `read_secret` reads, each with the environment variables
+ * its Workspace commands get. The baseline sentence
  * admission rendered for the old core ("You are a helpful AI assistant. Today
  * is ...") gives way: the family prompt is the persona and the environment
  * carries the date. Personal instructions, the answer rules and Memory stay
@@ -53,7 +55,7 @@ export type NativeSystemPromptInput = Readonly<{
   /** The request admission froze. */
   request: ProviderRunRequest;
   scope: RunSecretScope;
-  /** The saved secrets `read_secret` reads; their names go into the environment when the tool is offered. */
+  /** The saved secrets `read_secret` reads; they go into the environment when the tool is offered. */
   secrets?: RunSecretSource;
   /** The admitted answer route, which picks the family prompt. */
   snapshot: Pick<ProviderExecutionSnapshot, "providerFamily"> & Readonly<{ model: Readonly<{ upstreamModelId: string }> }>;
@@ -61,10 +63,13 @@ export type NativeSystemPromptInput = Readonly<{
   tools: readonly Pick<RunTool, "name">[];
 }>;
 
-async function secretNames(input: NativeSystemPromptInput, offered: ReadonlySet<string>): Promise<readonly string[] | undefined> {
+async function savedSecrets(input: NativeSystemPromptInput, offered: ReadonlySet<string>): Promise<readonly SavedSecretFact[] | undefined> {
   if (!input.secrets || !offered.has(READ_SECRET_TOOL_NAME)) return undefined;
   try {
-    return (await input.secrets.list(input.scope)).map((entry) => entry.name);
+    const entries = await input.secrets.list(input.scope);
+    // A Workspace run lists its admitted revisions, so these are the variables its guest derives from them.
+    const variables = input.request.workspace?.enabled === true ? workspaceSecretVariables(entries) : null;
+    return entries.map((entry, index) => ({ kind: entry.kind, name: entry.name, variables: variables?.[index] ?? [] }));
   } catch (error) {
     // The prompt goes without the names; `read_secret` itself says what it cannot read.
     logEvent("service_operation", { action: "degrade", code: "secret_unreadable", error, outcome: "degraded", run_id: input.scope.runId,
@@ -77,11 +82,11 @@ async function secretNames(input: NativeSystemPromptInput, offered: ReadonlySet<
 export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Promise<ProviderRunRequest> {
   const { request } = input;
   const tools = input.tools.map((tool) => tool.name);
-  const names = await secretNames(input, new Set(tools));
+  const secrets = await savedSecrets(input, new Set(tools));
   const prompt = systemPromptFor({ modelId: request.modelId, provider: input.snapshot.providerFamily,
     upstreamModelId: input.snapshot.model.upstreamModelId }, {
     environment: { now: input.now, timeZone: request.prompt.baseline?.timeZone ?? STANDARD_CHAT_FALLBACK_TIME_ZONE,
-      ...(names ? { secretNames: names } : {}) },
+      ...(secrets ? { secrets } : {}) },
     tools,
     workspace: request.workspace?.enabled === true
   });

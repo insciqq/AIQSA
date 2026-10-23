@@ -14,7 +14,7 @@ const row = {
   name: "GitLab", originalName: null, payloadEnvelope: encryptSecretEnvelope({ entries: [{ name: "GITLAB_TOKEN", value: "glpat-synthetic" }], kind: "env" },
     KEY, { ownerId: USER, purpose: "workspace-user-secret", valueId: VALUE_ID }), secretId: SECRET_ID, sshProtected: false, userId: USER
 };
-const entryValue = { description: "Work", envNames: ["GITLAB_TOKEN"], id: VALUE_ID, kind: "env", name: "GitLab" };
+const entryValue = { byteSize: 10, description: "Work", envNames: ["GITLAB_TOKEN"], id: VALUE_ID, kind: "env", name: "GitLab" };
 
 function prisma(input: { active?: boolean; bound?: boolean; chatUserId?: string; projectId?: string | null; run?: boolean } = {}) {
   return {
@@ -35,7 +35,7 @@ describe("run secret source", () => {
   it("lists the run's bound revisions when admission bound them, and decrypts only the value read", async () => {
     const db = prisma({ bound: true });
     const source = createRunSecretSource(db as never, () => KEY);
-    await expect(source.list(scope)).resolves.toEqual([{ description: "Work", envNames: ["GITLAB_TOKEN"], kind: "env", name: "GitLab", valueId: VALUE_ID }]);
+    await expect(source.list(scope)).resolves.toEqual([{ byteSize: 10, description: "Work", envNames: ["GITLAB_TOKEN"], kind: "env", name: "GitLab", valueId: VALUE_ID }]);
     expect(db.workspaceRunSecret.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { modelRunId: "run_1" } }));
     expect(db.workspaceSecret.findMany).not.toHaveBeenCalled();
     expect(db.workspaceSecretValue.findUnique).not.toHaveBeenCalled();

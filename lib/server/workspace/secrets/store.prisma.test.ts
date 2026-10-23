@@ -10,6 +10,10 @@ import type { PreparingRunAdmissionInput } from "@/lib/server/runs/runRepository
 import { getWorkspaceConfig } from "../config";
 import { createPrismaWorkspaceCoordinatorRepository } from "../coordinator";
 import { namespacedWorkspaceToolName } from "../toolCatalog";
+import type { SelfServiceCallStore } from "../../tools/selfServiceCall";
+import { createAgentSecretService } from "./agentSecrets";
+import { workspaceSecretEnvironment, workspaceSecretVariables } from "./manifest";
+import { createRunSecretSource } from "./runSecrets";
 import { bindWorkspaceSecrets, createWorkspaceSecretStore, decryptWorkspaceSecret, lockWorkspaceSecretOwner } from "./store";
 import { saveWorkspaceBrowserSessions, type WorkspaceBrowserSaveInput } from "./browserStore";
 import {
@@ -416,6 +420,31 @@ describe("persisted personal Workspace secrets", () => {
     expect(JSON.stringify(run.normalizedRequest)).not.toMatch(/old synthetic token|payloadEnvelope|versionId/);
     await expect(prisma.workspaceSecretValue.update({ where: { id: before!.versionId }, data: { name: "retarget" } })).rejects.toThrow();
     await expect(prisma.workspaceRunSecret.update({ where: { modelRunId_secretId: { modelRunId: first.runId, secretId: before!.id } }, data: { valueId: current!.versionId } })).rejects.toThrow();
+  });
+
+  it("binds a secret the agent saved during one run to the next run's admission, whose Workspace gets its variable", async () => {
+    const userId = await owner();
+    const earlier = await admitPreparingRunWithClient(prisma, await plan(userId));
+    // `manage_secret`'s own service, committing with a call the store lets through.
+    const calls: SelfServiceCallStore = { claim: vi.fn(async () => ({ kind: "open" as const })), settle: vi.fn(async () => undefined) };
+    const service = createAgentSecretService({ db: prisma, key: () => key, store: calls,
+      scope: { callId: "synthetic-call", chatId: "synthetic-chat", runId: earlier.runId, userId } });
+    const outcome = await service.change({ action: "create", description: "", name: "DEMO_API_TOKEN", value: { kind: "text", text: "synthetic-demo-token" } },
+      (done) => ({ callId: "provider-call", content: [{ type: "json", value: { saved: true, secretId: done.secret.id } }], name: "manage_secret", status: "complete" }));
+    expect(outcome.kind).toBe("changed");
+    expect(calls.settle).toHaveBeenCalledOnce();
+    const next = await admitPreparingRunWithClient(prisma, await plan(userId));
+    const bound = async (runId: string) => (await prisma.workspaceRunSecret.findMany({ where: { modelRunId: runId }, include: { value: true } }))
+      .map(({ value }) => decryptWorkspaceSecret(value, userId, key));
+    // The run that saved it keeps what its own admission froze; the next one receives the secret.
+    expect(await bound(earlier.runId)).toEqual([]);
+    const admitted = await bound(next.runId);
+    expect(admitted).toEqual([expect.objectContaining({ name: "DEMO_API_TOKEN", value: { kind: "text", text: "synthetic-demo-token" } })]);
+    expect(workspaceSecretEnvironment(admitted)).toEqual({ DEMO_API_TOKEN: "synthetic-demo-token" });
+    // The native prompt derives the same variable from the run's admitted list and the sizes the store recorded.
+    const listed = await createRunSecretSource(prisma, () => key).list({ runId: next.runId, userId });
+    expect(listed).toEqual([expect.objectContaining({ kind: "text", name: "DEMO_API_TOKEN" })]);
+    expect(workspaceSecretVariables(listed)).toEqual([["DEMO_API_TOKEN"]]);
   });
 
   it("retries a repeatable-read admission racing with revision cleanup under the owner lock", async () => {
