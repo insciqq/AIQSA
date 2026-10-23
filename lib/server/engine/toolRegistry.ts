@@ -290,7 +290,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   if (clientTools) addMcpTools(input, add, tools);
 
-  if (request.workspace && input.services.workspace) {
+  if (clientTools && request.workspace && input.services.workspace) {
     const workspace = request.workspace;
     const coordinator = input.services.workspace;
     for (const definition of await coordinator.tools({ runId: input.runId, userId: input.userId, workspace })) {

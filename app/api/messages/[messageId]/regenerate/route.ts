@@ -6,6 +6,7 @@ import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssis
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
+import { defaultNativeEngineHandlerDeps } from "@/lib/server/engine/defaultEngine";
 import { defaultRunServices } from "@/lib/server/runs/defaultRunServices";
 import { createRegenerateModelRunHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
@@ -30,6 +31,8 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunH
   getConfig: () => getAuthConfig(),
   ...defaultRunServices(storage),
   chatPdf: getDefaultChatPdf(),
+  // The native engine takes the pilot's runs (`AIQSA_NATIVE_ENGINE_USERS`).
+  nativeEngine: defaultNativeEngineHandlerDeps(storage),
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,

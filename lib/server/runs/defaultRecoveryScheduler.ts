@@ -9,6 +9,8 @@ import { createPrismaRunRepository } from "./prismaRepository";
 import { reconcileInstallationRuns } from "./runRecovery";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
 import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
+import { defaultNativeRecoveryDeps } from "../engine/defaultEngine";
+import { reconcileNativeRuns } from "../engine/recovery";
 
 const globalForRecoveryScheduler = globalThis as unknown as {
   __aiqsaRunRecoveryScheduler?: RunRecoveryScheduler;
@@ -29,12 +31,18 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       repository: createPrismaRunRepository(),
       workspace: workspaceCoordinatorForStorage(storage)
     };
+    // Each engine recovers only its own runs.
+    const native = defaultNativeRecoveryDeps({ repository: deps.repository, workspace: deps.workspace });
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
       recoverChatTitles: (signal) => titles.reconcile(signal),
       reconcile: async () => {
         getDefaultChatPdf().kick();
         getDefaultWorkspaceFollowup().kick();
-        await reconcileInstallationRuns(deps);
+        try {
+          await reconcileInstallationRuns(deps);
+        } finally {
+          await reconcileNativeRuns(native);
+        }
       },
       recoverWorkspaceExports: async (signal) => {
         await (await defaultWorkspaceCheckpoints()).recover(signal);

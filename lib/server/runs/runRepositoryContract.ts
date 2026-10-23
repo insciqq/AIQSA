@@ -597,6 +597,8 @@ export type RunCompletionInput = {
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
 export type CreateRunInput = {
+  /** The native agent engine executes the run; absent, the old core does (`ModelRun.engine`). */
+  engine?: "native";
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: Readonly<{ admissionKey: string; predecessorRunId: string; snapshot: unknown }>;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
@@ -655,6 +657,8 @@ export type CreateRunInput = {
 export type CreateRegenerationRunInput = {
   /** Automatic answer review of the new answer (never of a turn the server wrote). */
   answerReviewAuto?: AnswerReviewAutoAdmission;
+  /** The native agent engine executes the run; absent, the old core does (`ModelRun.engine`). */
+  engine?: "native";
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: never;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
