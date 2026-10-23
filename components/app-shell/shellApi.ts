@@ -249,7 +249,6 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ...(message.answerReview ? { answerReview: message.answerReview } : {}),
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
-    author: message.author ?? null,
     citationMessageId: message.citationMessageId ?? null,
     ...(message.status === "error" && message.errorMessage ? { errorMessage: message.errorMessage } : {}),
     content:

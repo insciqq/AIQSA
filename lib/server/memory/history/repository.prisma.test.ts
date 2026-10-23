@@ -658,7 +658,6 @@ describe("Memory lexical history index persistence", () => {
       const source = await loadMemorySourceSnapshot(prisma, {
         chatId: chat.id,
         lock: "NONE",
-        personalOnly: true,
         userId
       });
       if (!source?.activeLeafMessageId) {
@@ -2037,7 +2036,6 @@ describe("Memory lexical history index persistence", () => {
       });
       const initialSource = await loadMemorySourceSnapshot(prisma, {
         chatId: chat.id,
-        personalOnly: true,
         userId
       });
       if (!initialSource?.activeLeafMessageId) {
@@ -2208,7 +2206,6 @@ describe("Memory lexical history index persistence", () => {
       });
       const currentSource = await loadMemorySourceSnapshot(prisma, {
         chatId: updatedChat.id,
-        personalOnly: true,
         userId
       });
       if (!currentSource?.activeLeafMessageId) {
@@ -2621,7 +2618,6 @@ describe("Memory lexical history index persistence", () => {
       });
       const source = await loadMemorySourceSnapshot(prisma, {
         chatId: chat.id,
-        personalOnly: true,
         userId
       });
       if (!source?.activeLeafMessageId) throw new Error("memory_path_ceiling_source_missing");

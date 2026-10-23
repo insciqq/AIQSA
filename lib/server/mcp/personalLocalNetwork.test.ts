@@ -266,7 +266,6 @@ function runtimeRepository(...launches: McpRuntimeGenerationLaunch[]) {
     markReady: vi.fn(async () => true),
     markStarting: vi.fn(async () => true),
     synchronizeDesired: vi.fn(async () => launches),
-    synchronizeShared: vi.fn(async () => []),
     touchLastUsed: vi.fn(async () => undefined)
   };
   return { failures, repository };

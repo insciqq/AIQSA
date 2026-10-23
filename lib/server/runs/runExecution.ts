@@ -163,6 +163,7 @@ import {
   type ModelToolCall,
   type ProviderToolBridge,
   type RunTool,
+  toolActivityOrigin,
   type ToolExecutionResult
 } from "../tools/types";
 import { measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
@@ -3370,7 +3371,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   ...skillToolActivityFacts(normalizedRequest, call.name, call.arguments),
                   ...(isFetchCall(call.name) ? fetchUrlActivityFacts(call.name, call.arguments) : {}),
                   origin: route ? "mcp" : registeredTool
-                    ? call.name === "find_tools" ? "discovery" : registeredTool.capability
+                    ? call.name === "find_tools" ? "discovery" : toolActivityOrigin(registeredTool.capability)
                     : "tool",
                   round,
                   ...(route ? {

@@ -2292,7 +2292,6 @@ async function assertCurrentProviderAdmission(
     current = await loadProviderAdmissionPlan(tx, {
       providerConnectionId: input.plan.selection.providerConnectionId,
       providerModelId: input.plan.selection.providerModelId,
-      ...(input.plan.executionScope ? { executionScope: input.plan.executionScope } : {}),
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),

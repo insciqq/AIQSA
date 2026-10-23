@@ -82,7 +82,7 @@ describe("completed answer usage", () => {
     await persistCompletedAnswerUsage(tx, { ...input, usageAttributions: [
       { modelId: "answer", provider: "openai", purpose: "chat_answer", usage },
       { modelId: "embed", provider: "openai", purpose: "knowledge_retrieval", usage: normalizeTokenUsage({ inputTokens: 8 }) }
-    ] }, null);
+    ] });
     expect(deleteMany).toHaveBeenCalledWith({ where: runAttributionUsageWhere("run-1") });
     expect(createMany).toHaveBeenCalledWith({ data: [
       expect.objectContaining({ modelId: "answer", purpose: "chat_answer" }),

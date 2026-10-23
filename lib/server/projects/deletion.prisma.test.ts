@@ -31,7 +31,7 @@ async function fixture() {
     authorDisplayName: "Retirement fixture", authorProjectRole: "OWNER", content: { blocks: [{ type: "text", text: "PRIVATE_TEXT" }] } } });
   const storageKey = `projects/retirement-${suffix}`;
   const attachment = await prisma.attachment.create({ data: { byteSize: 4, chatId: chat.id, fileName: "private.txt", kind: "file",
-    messageId: message.id, mimeType: "text/plain", projectId, storageKey, uploaderDisplayName: "Retirement fixture", uploaderUserId: ownerId } });
+    messageId: message.id, metadata: {}, mimeType: "text/plain", projectId, storageKey, uploaderDisplayName: "Retirement fixture", uploaderUserId: ownerId } });
   const share = await prisma.sharedChatSnapshot.create({ data: { chatId: chat.id, createdByDisplayName: "Retirement fixture",
     projectId, revokedAt: new Date(), slugHash: randomBytes(32).toString("hex"), snapshot: {}, title: "Synthetic share" } });
   const personal = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Personal chat", userId: ownerId } });
