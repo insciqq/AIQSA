@@ -11,7 +11,7 @@ function health(overrides: Partial<AdminHealth> = {}): AdminHealth {
     range: "24h", interval: "hour", from: "2026-10-06T13:00:00.000Z", to: "2026-10-07T13:00:00.000Z",
     generatedAt: "2026-10-07T12:30:00.000Z", hasTelemetry: true, providersTruncated: false, errorGroups: [], errorGroupsTruncated: false,
     summary: { errors: 9, previousErrors: 4, providerOperations: 200, providerFailures: 6, providerFailureRate: 0.03,
-      http5xx: 2, restarts: 1, roleStarts: [{ role: "memory_search", starts: 2, restarts: 1 }], droppedLogRecords: 0, clientErrors: 1 },
+      http5xx: 2, restarts: 1, roleStarts: [{ role: "memory_coordinator", starts: 2, restarts: 1 }], droppedLogRecords: 0, clientErrors: 1 },
     series: [
       { start: "2026-10-07T11:00:00.000Z", counts: { ...zero, providers: 6, background: 1 }, total: 7 },
       { start: "2026-10-07T12:00:00.000Z", counts: { ...zero, requests: 2 }, total: 2 }
@@ -64,7 +64,7 @@ describe("AdminHealthSection", () => {
     expect(within(screen.getByTestId("admin-health-tile-errors")).getByText("9")).toBeVisible();
     expect(within(screen.getByTestId("admin-health-tile-errors")).getByText(/\+5 vs the period before/u)).toBeVisible();
     expect(within(screen.getByTestId("admin-health-tile-providers")).getByText("3.0%")).toBeVisible();
-    expect(within(screen.getByTestId("admin-health-tile-restarts")).getByText("memory search ×1")).toBeVisible();
+    expect(within(screen.getByTestId("admin-health-tile-restarts")).getByText("memory coordinator ×1")).toBeVisible();
     expect(within(screen.getByTestId("admin-health-legend-providers")).getByText("6")).toBeVisible();
     expect(screen.getAllByTestId("admin-health-bar")).toHaveLength(2);
     expect(screen.getByRole("table", { name: /errors by hour and area/iu })).toBeInTheDocument();

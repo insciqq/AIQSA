@@ -57,7 +57,7 @@ const health: AdminHealth = {
   ],
   providersTruncated: false,
   errorGroups: [{ fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/memory/coordinator/workerProcess.ts:51",
-    count: 12, events: ["job_attempt"], roles: ["memory_search"], codes: ["memory_job_failed"],
+    count: 12, events: ["job_attempt"], roles: ["workspace_runner"], codes: ["memory_job_failed"],
     lastSeenAt: "2026-10-07T09:40:00.000Z", firstSeenAt: "2026-10-07T08:00:00.000Z", isNew: true, usersAtLeast: 3, runsAtLeast: 5 }],
   errorGroupsTruncated: false
 };
@@ -146,7 +146,7 @@ describe("health report text", () => {
     expect(text).toContain("  server errors 3 · provider failures 9 of 240 (3.8%) · browser crashes 1\n");
     expect(text).toContain("  NEW   TypeError · lib/server/memory/coordinator/workerProcess.ts:51\n" +
       "        12 times · at least 3 users · at least 5 runs · job_attempt · memory_job_failed\n" +
-      "        memory_search · last 2026-10-07 09:40\n");
+      "        workspace_runner · last 2026-10-07 09:40\n");
     expect(text).toMatch(/\n {2}OpenAI · gpt-5 +answer +7\/120 +5\.8% {2}quota +2026-10-07 09:58\n/u);
     expect(text).toContain("  app: 3 starts (2 restarts)\n");
     expect(text).not.toContain("memory_coordinator");
