@@ -13,6 +13,7 @@ import {
 import { handleFor, transcriptBuilder } from "./compaction/compaction.testFixtures";
 import { SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
 import { contextMeasureCalibration, measureContext } from "./contextMeasure";
+import { createDetachedCompactions, DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions } from "./detachedCompactions";
 import { COMPACTION_LIFECYCLE, createRunContext } from "./runContext";
 import { COMPACTION_SUMMARY_HEADING, projectTranscript, type TranscriptItem, type TranscriptTarget } from "./transcript";
 
@@ -73,13 +74,22 @@ function windowAt(items: readonly TranscriptItem[], share: number, target: Trans
 
 function harness(items: TranscriptItem[], options: Readonly<{
   call: CompactionModelCall;
+  /** The chat's registry of detached compactions, shared by its runs; absent, nothing goes on after a run. */
+  registry?: DetachedCompactions;
+  live?: () => Promise<boolean>;
+  native?: boolean;
   record?: (item: TranscriptItem) => TranscriptItem;
+  runId?: string;
   target?: TranscriptTarget;
   window: Readonly<{ contextWindow: number; maxOutputTokens: number }> | null;
 }>) {
   const appended: TranscriptItem[] = [];
+  const inserted: TranscriptItem[] = [];
   const statuses: ContextCompactionStatus[] = [];
+  /** Markers recorded after the run, when its stream is closed. */
+  const recorded: ContextCompactionStatus[] = [];
   const calls: CompactionModelRequest[] = [];
+  const settleUsage = vi.fn(async () => undefined);
   const context = createRunContext({
     append: async (added) => {
       items.push(...added);
@@ -89,18 +99,26 @@ function harness(items: TranscriptItem[], options: Readonly<{
       calls.push(call);
       return options.call(call);
     },
+    ...(options.registry ? { detached: { chatId: "chat", live: options.live ?? (async () => true),
+      onStatus: async (status: ContextCompactionStatus) => { recorded.push(status); }, registry: options.registry, settleUsage,
+      userId: "user" } } : {}),
+    insert: (added) => {
+      items.push(...added);
+      inserted.push(...added);
+    },
     items,
+    ...(options.native !== undefined ? { native: options.native } : {}),
     onStatus: async (status) => { statuses.push(status); },
     projection: {},
     record: options.record ?? ((item) => item),
     rules: engineItemRules(),
-    runId: "run-1",
+    runId: options.runId ?? "run-1",
     signal: new AbortController().signal,
     target: options.target ?? TARGET,
     tooLarge: () => new Error("context_too_large"),
     window: options.window
   });
-  return { appended, calls, context, statuses };
+  return { appended, calls, context, inserted, recorded, settleUsage, statuses };
 }
 
 const firstText = (sent: ProviderRunRequest) => {
@@ -186,16 +204,25 @@ describe("a native run's context", () => {
     ]);
   });
 
-  it("compacts natively on a route that takes its own compaction items back", async () => {
-    const chat = workChat(8, 2_000);
-    const run = harness(chat.items, { call: async (call) => call.kind === "native" ? nativeReply() : summaryReply(), target: NATIVE,
-      window: windowAt(chat.items, 0.9, NATIVE) });
-    const sent = await run.context.prepare(request(chat.items, NATIVE));
-    expect(run.calls.map((call) => call.kind)).toEqual(["native"]);
-    expect(run.appended).toEqual([expect.objectContaining({ kind: "compaction", native: expect.objectContaining({ format: "openai_responses" }) })]);
-    expect(sent.history?.[0]).toMatchObject({ type: "compaction" });
+  it("compacts with a summary on every route, also one that compacts natively, unless the native path is switched on", async () => {
+    const reply: CompactionModelCall = async (call) => call.kind === "native" ? nativeReply() : summaryReply();
+    expect(COMPACTION_LIFECYCLE.native).toBe(false);
+    const summarized = workChat(8, 2_000);
+    const byDefault = harness(summarized.items, { call: reply, target: NATIVE, window: windowAt(summarized.items, 0.9, NATIVE) });
+    const sent = await byDefault.context.prepare(request(summarized.items, NATIVE));
+    expect(byDefault.calls.every((call) => call.kind === "summary")).toBe(true);
+    expect(byDefault.appended).toEqual([expect.objectContaining({ kind: "compaction", summary: SUMMARY })]);
+    expect(firstText(sent).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+
+    const compacted = workChat(8, 2_000);
+    const native = harness(compacted.items, { call: reply, native: true, target: NATIVE, window: windowAt(compacted.items, 0.9, NATIVE) });
+    const nativeSent = await native.context.prepare(request(compacted.items, NATIVE));
+    expect(native.calls.map((call) => call.kind)).toEqual(["native"]);
+    expect(native.appended).toEqual([expect.objectContaining({ kind: "compaction",
+      native: expect.objectContaining({ format: "openai_responses" }) })]);
+    expect(nativeSent.history?.[0]).toMatchObject({ type: "compaction" });
     // The record and the earlier user messages follow the opaque item.
-    expect(sent.history?.[1]).toMatchObject({ type: "user" });
+    expect(nativeSent.history?.[1]).toMatchObject({ type: "user" });
   });
 
   it("on a size rejection compacts in the foreground and returns the request to send once more, only once", async () => {
@@ -245,35 +272,162 @@ describe("a native run's context", () => {
     expect(await run.context.overflow(next, rejection)).not.toBeNull();
   });
 
-  it("after the answer waits for a running compaction and keeps its item, so the next turn starts compacted", async () => {
+  it("never waits after the answer: a running compaction goes on detached and its run records the item, marker and usage", async () => {
     const chat = workChat(8, 2_000);
     const reply = deferred<CompactionModelResult>();
-    const run = harness(chat.items, { call: () => reply.promise, window: windowAt(chat.items, 0.78) });
+    const registry = createDetachedCompactions();
+    const run = harness(chat.items, { call: () => reply.promise, registry, window: windowAt(chat.items, 0.78) });
     await run.context.prepare(request(chat.items));
     chat.answer("The final answer.");
-    const after = run.context.afterAnswer();
-    setTimeout(() => reply.resolve(summaryReply()), 20);
-    await after;
-    expect(run.appended).toEqual([expect.objectContaining({ kind: "compaction" })]);
+    // Resolves although the compaction is still running.
+    await run.context.afterAnswer();
+    expect(run.appended).toEqual([]);
+    expect(registry.find({ chatId: "chat", targetKey: transcriptTargetKey(TARGET), userId: "user" })).not.toBeNull();
+    reply.resolve(summaryReply());
+    await vi.waitFor(() => expect(run.appended).toEqual([expect.objectContaining({ kind: "compaction" })]));
     expect(chat.items.at(-1)).toMatchObject({ kind: "compaction" });
-    expect(run.statuses).toEqual([expect.objectContaining({ outcome: "summary_applied", state: "complete" })]);
+    // The stream is closed by then: the marker is recorded with the answer, the late usage written.
+    expect(run.statuses).toEqual([]);
+    expect(run.recorded).toEqual([expect.objectContaining({ outcome: "summary_applied", state: "complete" })]);
+    await vi.waitFor(() => expect(run.settleUsage).toHaveBeenCalledTimes(1));
   });
 
-  it("stops a compaction still running after the answer's bound, or at once after an approval stop", async () => {
+  it("lets the chat's next run join a compaction still running and swap its item in, without compacting the span again", async () => {
+    const chat = workChat(8, 2_000);
+    const reply = deferred<CompactionModelResult>();
+    const registry = createDetachedCompactions();
+    const window = windowAt(chat.items, 0.78);
+    const first = harness(chat.items, { call: () => reply.promise, registry, window });
+    await first.context.prepare(request(chat.items));
+    chat.answer("The first run's answer.");
+    await first.context.afterAnswer();
+    // The next run reads the same transcript plus its own question, still past the background threshold.
+    const items: TranscriptItem[] = [...chat.items, { id: "msg-next", kind: "user", text: "And now?" }];
+    const next = harness(items, { call: async () => summaryReply(), registry, runId: "run-2", window });
+    const unchanged = await next.context.prepare(request(items));
+    expect(firstText(unchanged)).not.toContain(COMPACTION_SUMMARY_HEADING);
+    expect(next.calls).toHaveLength(0);
+    reply.resolve(summaryReply());
+    await vi.waitFor(() => expect(first.appended).toHaveLength(1));
+    const swapped = await next.context.prepare(request(items));
+    expect(next.calls).toHaveLength(0);
+    // The run that started it records it; the next run takes it in memory only, with the same id.
+    expect(next.inserted).toEqual(first.appended);
+    expect(next.appended).toEqual([]);
+    expect(firstText(swapped).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+    expect(swapped.history?.at(-1)).toEqual({ text: "And now?", type: "user" });
+  });
+
+  it("waits for the joined compaction past the swap threshold instead of starting another", async () => {
+    const chat = workChat(8, 2_000);
+    const reply = deferred<CompactionModelResult>();
+    const registry = createDetachedCompactions();
+    const window = windowAt(chat.items, 0.78);
+    const first = harness(chat.items, { call: () => reply.promise, registry, window });
+    await first.context.prepare(request(chat.items));
+    await first.context.afterAnswer();
+    const usable = window.contextWindow - window.maxOutputTokens;
+    const perChar = estimate("x".repeat(10_000)) / 10_000;
+    const items: TranscriptItem[] = [...chat.items, { id: "msg-next", kind: "user", text: `Paste: ${"x".repeat(Math.ceil(usable * 0.12 / perChar))}` }];
+    expect(measured(items) / usable).toBeGreaterThan(0.85);
+    const next = harness(items, { call: async () => summaryReply(), registry, runId: "run-2", window });
+    const waiting = next.context.prepare(request(items));
+    setTimeout(() => reply.resolve(summaryReply()), 20);
+    const sent = await waiting;
+    expect(next.calls).toHaveLength(0);
+    expect(next.statuses).toEqual([]);
+    expect(firstText(sent).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+  });
+
+  it("drops a detached compaction whose span the next run does not hold (another branch); its own run still records it", async () => {
+    const chat = workChat(8, 2_000);
+    const reply = deferred<CompactionModelResult>();
+    const registry = createDetachedCompactions();
+    const window = windowAt(chat.items, 0.78);
+    const first = harness(chat.items, { call: () => reply.promise, registry, window });
+    await first.context.prepare(request(chat.items));
+    await first.context.afterAnswer();
+    // Another branch: the earlier answers are not on it, so the cut is not current there.
+    const branch = workChat(8, 2_000).items.map((item) => ({ ...item, id: `b-${item.id}` }) as TranscriptItem);
+    const other = harness(branch, { call: async () => summaryReply(), registry, runId: "run-2", window });
+    await other.context.prepare(request(branch));
+    expect(other.calls.length).toBeGreaterThanOrEqual(1);
+    reply.resolve(summaryReply());
+    await vi.waitFor(() => expect(first.appended).toHaveLength(1));
+    await other.context.prepare(request(branch));
+    expect(other.inserted).toEqual([]);
+  });
+
+  it("swaps in a finished compaction for a run that read the transcript before its item was recorded, and only for that run", async () => {
+    const chat = workChat(8, 2_000);
+    const reply = deferred<CompactionModelResult>();
+    const registry = createDetachedCompactions();
+    const window = windowAt(chat.items, 0.78);
+    const first = harness(chat.items, { call: () => reply.promise, registry, window });
+    await first.context.prepare(request(chat.items));
+    await first.context.afterAnswer();
+    // This run read the transcript before the item was recorded.
+    const early: TranscriptItem[] = [...chat.items, { id: "msg-next", kind: "user", text: "And now?" }];
+    reply.resolve(summaryReply());
+    await vi.waitFor(() => expect(first.appended).toHaveLength(1));
+    await vi.waitFor(() => expect(first.settleUsage).toHaveBeenCalledTimes(1));
+    const next = harness(early, { call: async () => summaryReply(), registry, runId: "run-2", window });
+    const swapped = await next.context.prepare(request(early));
+    expect(next.calls).toHaveLength(0);
+    expect(next.inserted).toEqual(first.appended);
+    expect(firstText(swapped).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+    // A run that read it with the transcript has it already: nothing to swap in, nothing to compact.
+    const later: TranscriptItem[] = [...chat.items, { id: "msg-later", kind: "user", text: "And later?" }];
+    const loaded = harness(later, { call: async () => summaryReply(), registry, runId: "run-3", window });
+    const sent = await loaded.context.prepare(request(later));
+    expect(loaded.inserted).toEqual([]);
+    expect(loaded.calls).toHaveLength(0);
+    expect(firstText(sent).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+  });
+
+  it("does not join a compaction that failed: the next run compacts the span itself", async () => {
+    const chat = workChat(8, 2_000);
+    const registry = createDetachedCompactions();
+    const window = windowAt(chat.items, 0.78);
+    const reply = deferred<CompactionModelResult>();
+    // The failed compaction's run is still checking its chat, so the registry still lists it.
+    const checked = deferred<boolean>();
+    const first = harness(chat.items, { call: () => reply.promise, live: () => checked.promise, registry, window });
+    await first.context.prepare(request(chat.items));
+    await first.context.afterAnswer();
+    reply.resolve({ text: "not a summary" });
+    await ticks();
+    expect(registry.find({ chatId: "chat", targetKey: transcriptTargetKey(TARGET), userId: "user" })).not.toBeNull();
+    const items: TranscriptItem[] = [...chat.items, { id: "msg-next", kind: "user", text: "And now?" }];
+    const next = harness(items, { call: async () => summaryReply(), registry, runId: "run-2", window });
+    await next.context.prepare(request(items));
+    expect(next.calls.length).toBeGreaterThanOrEqual(1);
+    checked.resolve(true);
+    await vi.waitFor(() => expect(registry.find({ chatId: "chat", targetKey: transcriptTargetKey(TARGET), userId: "user" })).toBeNull());
+    expect(first.appended).toEqual([]);
+  });
+
+  it("stops a detached compaction when its chat is deleted or its deadline passes, and records nothing", async () => {
     vi.useFakeTimers();
     const hanging: CompactionModelCall = (call) => new Promise((_, reject) => {
       call.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     });
-    for (const wait of [true, false]) {
+    for (const deleted of [true, false]) {
       const chat = workChat(8, 2_000);
-      const run = harness(chat.items, { call: hanging, window: windowAt(chat.items, 0.78) });
+      const registry = createDetachedCompactions();
+      let live = true;
+      const run = harness(chat.items, { call: hanging, live: async () => live, registry, window: windowAt(chat.items, 0.78) });
       await run.context.prepare(request(chat.items));
-      expect(run.calls).toHaveLength(1);
-      const after = run.context.afterAnswer({ wait });
-      if (wait) await vi.advanceTimersByTimeAsync(COMPACTION_LIFECYCLE.afterAnswerWaitMs + 1);
-      await after;
+      await run.context.afterAnswer();
+      if (deleted) {
+        live = false;
+        await vi.advanceTimersByTimeAsync(DETACHED_COMPACTION.liveCheckMs + 1);
+      } else {
+        await vi.advanceTimersByTimeAsync(DETACHED_COMPACTION.deadlineMs + 1);
+      }
+      await vi.waitFor(() => expect(registry.find({ chatId: "chat", targetKey: transcriptTargetKey(TARGET), userId: "user" })).toBeNull());
       expect(run.appended).toEqual([]);
-      expect(run.statuses).toEqual([]);
+      expect(run.recorded).toEqual([]);
     }
   });
 

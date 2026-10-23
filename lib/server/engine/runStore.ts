@@ -13,7 +13,8 @@ import {
   json,
   lockRunSettlementScope
 } from "../runs/prismaRepositoryShared";
-import { closeRunningToolLoopCallsInTransaction } from "../runs/prismaRepositoryToolLoop";
+import type { ContextCompactionStatus } from "../../contracts/contextCompaction";
+import { appendRunOutputEvents, closeRunningToolLoopCallsInTransaction } from "../runs/prismaRepositoryToolLoop";
 import { runAttributionUsageRows } from "../runs/prismaRepositoryUsage";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
 
@@ -86,6 +87,20 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
           userId: scope.userId } }, chatId: scope.chatId, id: scope.assistantMessageId, role: "assistant", status: "cancelled" }
       });
       return saved.count === 1;
+    },
+
+    /**
+     * Records a compaction's status on a native run whose answer may be
+     * settled already: a background compaction can finish after its run, and
+     * its quiet marker belongs to that answer. It adds a marker and never
+     * changes the answer.
+     */
+    async appendCompactionStatus(scope: NativeRunScope, status: ContextCompactionStatus): Promise<boolean> {
+      return client.$transaction(async (tx) => {
+        if (!await lockNativeRun(tx, scope)) return false;
+        await appendRunOutputEvents(tx, scope.runId, [{ data: { artifactType: "context_compaction", payload: status }, type: "artifact" }]);
+        return true;
+      });
     },
 
     /** Completes a run whose answer is published; its open calls keep an unknown outcome. */
