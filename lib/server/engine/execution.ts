@@ -34,7 +34,7 @@ import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
 import { engineItemRules, turnEndedAfter } from "./compaction";
 import { compactionModelCall } from "./compactionCalls";
-import { buildRunConversation, turnContextIndex, turnContextItem } from "./conversation";
+import { buildRunConversation, turnContextIndex, turnContextItem, withStoppedNativeAnswers } from "./conversation";
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
@@ -301,8 +301,19 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           id: "current-user-message", role: "user" as const }];
         const answerIds = contextMessages.filter((message) => message.role === "assistant" && message.purpose === undefined)
           .map((message) => message.id);
-        const nativeRuns = await engine.transcripts.nativeRunsForAnswers({ assistantMessageIds: answerIds, chatId: scope.chatId,
-          userId: input.userId });
+        // The branch's own turns: what an answer the context left out (stopped without text) is found before.
+        const branchTurnIds = [...new Set([input.created.userMessageId, ...contextMessages
+          .filter((message) => message.role === "user" && message.purpose === undefined && message.contextTurnId === undefined)
+          .map((message) => message.id)])];
+        const nativeRuns = new Map(await engine.transcripts.nativeRunsForAnswers({ assistantMessageIds: answerIds,
+          chatId: scope.chatId, userId: input.userId }));
+        // A scheduled run's flat context is its prompt and previous shown result only.
+        const stoppedRuns = input.scheduled ? [] : (await engine.transcripts.nativeRunsBeforeTurns({ chatId: scope.chatId,
+          userId: input.userId, userMessageIds: branchTurnIds })).filter((run) => !nativeRuns.has(run.assistantMessageId));
+        for (const run of stoppedRuns) nativeRuns.set(run.assistantMessageId, run.runId);
+        // The run's own message is last in the branch, under the id a send gives it there.
+        const conversationMessages = withStoppedNativeAnswers(contextMessages, stoppedRuns.map((run) =>
+          run.nextUserMessageId === input.created.userMessageId ? { ...run, nextUserMessageId: contextMessages.at(-1)!.id } : run));
         const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId, runIds: [...nativeRuns.values()], userId: input.userId });
         // A scheduled run's flat context takes only its previous result's own work: never a compaction of what came before
         // it, nor user input that entered that answer (a follow-up).
@@ -313,7 +324,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
         const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
-          current: { messageId: input.created.userMessageId, mode }, messages: contextMessages, nativeAnswers });
+          current: { messageId: input.created.userMessageId, mode }, messages: conversationMessages, nativeAnswers });
         let conversation = conversationFor(input.approvalContinuation ? "continuation" : "input");
         // An approval continuation sends the approved call itself, then continues the stopped turn with its result.
         let approvedCall: ModelToolCall | null = null;
@@ -343,9 +354,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           normalizedRequest.answerReviewStep !== undefined;
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
-          userId: input.userId, userMessageIds: [...new Set([input.created.userMessageId, ...contextMessages
-            .filter((message) => message.role === "user" && message.purpose === undefined && message.contextTurnId === undefined)
-            .map((message) => message.id)])] });
+          userId: input.userId, userMessageIds: branchTurnIds });
         const effectItems = withRetiredEffects(conversation.items, contextMessages, retiredEffects);
         // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
         const firstCall = effectItems.findIndex((item) => item.kind === "tool_call");

@@ -9,7 +9,9 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { mergeMcpRunPlanSnapshots } from "../mcp/discovery";
 import type { McpCapabilityCatalog, McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
+import { textMessageContent } from "../../domain/content";
 import type { ProviderRunRequest } from "../providers/types";
+import { conversationMessagesFromPathRows } from "../runs/prismaRepository";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
@@ -408,9 +410,12 @@ describe("an Auto MCP run on the native engine", () => {
         expect(sent.memory.transcriptRows).toContainEqual(expect.objectContaining({ callId: "call-1", kind: "tool_result",
           outcome: "unknown", output: APPROVED_CALL_IN_FLIGHT_OUTPUT }));
 
-        // Phase 1: the user's Continue over the interrupted answer's record; the model asks for the same write again.
+        // Phase 1: the user's Continue over the interrupted answer's record; the model asks for the same write again. The
+        // interrupted answer has no text, so the context leaves it out and its run is found as the parent of the Continue.
         const later = autoDiscovery(catalog, { admitted: !auto, allowed: false });
-        later.memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"], ["answer-1", "run-1"]]));
+        later.memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"]]));
+        later.memory.transcripts.nativeRunsBeforeTurns.mockResolvedValue([{ assistantMessageId: "answer-1",
+          nextUserMessageId: "continue-1", runId: "run-1" }]);
         later.memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", stopped], ["run-1", [...sent.memory.transcriptRows]]]));
         later.memory.transcripts.approvalContinuationTurns.mockResolvedValue(new Set(["continuation-turn"]));
         const succeeded = vi.fn(async () => {
@@ -420,7 +425,7 @@ describe("an Auto MCP run on the native engine", () => {
         await nativeSseEvents(createNativeRunExecutionResponse({ adapter: scriptedNativeAdapter(script).adapter,
           created: { assistantMessageId: "answer-2", runId: "run-2", userMessageId: "continue-1" }, engine: later.memory.engine,
           mcpRuntime: () => ({ callTool: succeeded, ensureAcceptedGeneration: async () => true }) as never,
-          prepared: nativePrepared({ context: { messages: [say.user, say.answer0, say.approved, nativeSay("answer-1", "assistant", ""),
+          prepared: nativePrepared({ context: { messages: [say.user, say.answer0, say.approved,
             nativeSay("current-user-message", "user", "Continue")], mode: "branch_path" }, ...run(later) }, auto ? { mcpBindings: [] } : {}),
           repository: asRepository(later.repo as unknown as ReturnType<typeof nativeRunRepository>), services, userId: "owner" }));
         expect(writes).toBe(1);
@@ -559,6 +564,77 @@ describe("an unknown write the old core left on the branch", () => {
 
   it("sends it under Always allow when the old core left nothing unknown", async () => {
     const run = await continueOverRetired([]);
+    expect(run.callTool).toHaveBeenCalledTimes(1);
+    expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.not.objectContaining({ approval: expect.anything() }));
+  });
+});
+
+// Regression: a native run sent a write, then a restart interrupted it before any answer text. The context leaves an answer
+// without text out, so after Continue the model lost its own steps and the guard lost the unknown effect, and under Always
+// allow the same write went out twice.
+describe("a native run interrupted before any answer text", () => {
+  const write = { arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" };
+  const interrupted: TranscriptItem[] = [
+    { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "n1", kind: "tool_call", name: write.name, origin: NATIVE_RUN_ORIGIN }
+  ];
+  type Row = Readonly<{ id: string; parent?: string; role: "assistant" | "user"; status: string; text: string }>;
+  const row = (id: string, role: Row["role"], text: string, parent?: string, status = "complete"): Row =>
+    ({ id, role, status, text, ...(parent ? { parent } : {}) });
+
+  /** Continue (`continue-1`) after `leaf`, with the chat's messages and its native runs as the database holds them. */
+  async function continueAfter(rows: readonly Row[], leaf: string) {
+    const byId = new Map(rows.map((entry) => [entry.id, entry]));
+    const path: Row[] = [];
+    for (let at = byId.get(leaf); at; at = at.parent ? byId.get(at.parent) : undefined) path.unshift(at);
+    const all = [...rows, row("continue-1", "user", "Continue", leaf)];
+    const runs = new Map([["answer-1", "run-1"]]);
+    // The real context path, then the run's own message as a send adds it.
+    const messages = [...conversationMessagesFromPathRows(path.map((entry) => ({ chatId: "chat",
+      messageContent: textMessageContent(entry.text), messageId: entry.id, messageRole: entry.role, messageStatus: entry.status }))),
+    nativeSay("current-user-message", "user", "Continue")];
+    const { adapter, requests } = scriptedNativeAdapter([{ calls: [write] }, { text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.loadRuns.mockImplementation(async ({ runIds }) =>
+      new Map(runIds.map((runId): [string, TranscriptItem[]] => [runId, runId === "run-1" ? interrupted : []])));
+    // As the database answers it: a stopped native answer whose child is one of these turns.
+    memory.transcripts.nativeRunsBeforeTurns.mockImplementation(async ({ userMessageIds }) => all.flatMap((answer) => {
+      const next = all.find((entry) => entry.parent === answer.id && userMessageIds.includes(entry.id));
+      const runId = runs.get(answer.id);
+      return answer.role === "assistant" && ["cancelled", "error"].includes(answer.status) && next && runId
+        ? [{ assistantMessageId: answer.id, nextUserMessageId: next.id, runId }] : [];
+    }));
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2",
+      userMessageId: "continue-1" }, engine: memory.engine,
+    mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+    prepared: nativePrepared({ context: { messages, mode: "branch_path" }, mcp: NATIVE_MCP_SNAPSHOT,
+      // Always allow: the server's writes need no approval.
+      mcpApproval: mcpApprovalAdmission(["jira"]) }),
+    repository: asRepository(nativeRunRepository()), services: {}, userId: "owner" }));
+    return { callTool, history: requests[0]!.history!, memory, messages };
+  }
+
+  it("keeps the run's tool steps after Continue and gates an equivalent write with an approval", async () => {
+    const run = await continueAfter([row("user-1", "user", "Create the issue"),
+      row("answer-1", "assistant", "", "user-1", "error")], "answer-1");
+    // The real context path has no trace of the stopped answer.
+    expect(run.messages.map((message) => message.id)).toEqual(["user-1", "current-user-message"]);
+    expect(run.history.slice(0, 3)).toEqual([
+      expect.objectContaining({ text: "Create the issue", type: "user" }),
+      expect.objectContaining({ callId: "call-1", name: write.name, type: "tool_call" }),
+      expect.objectContaining({ callId: "call-1", type: "tool_result" })
+    ]);
+    expect(run.callTool).not.toHaveBeenCalled();
+    expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(),
+      toolName: write.name }));
+  });
+
+  it("takes nothing from an interrupted run on a sibling branch", async () => {
+    const run = await continueAfter([row("user-1", "user", "Create the issue"),
+      row("answer-1", "assistant", "", "user-1", "error"),
+      row("answer-b", "assistant", "Which project?", "user-1")], "answer-b");
+    expect(run.messages.map((message) => message.id)).toEqual(["user-1", "answer-b", "current-user-message"]);
+    expect(run.history.some((item) => item.type === "tool_call" && item.callId === "call-1")).toBe(false);
     expect(run.callTool).toHaveBeenCalledTimes(1);
     expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.not.objectContaining({ approval: expect.anything() }));
   });
