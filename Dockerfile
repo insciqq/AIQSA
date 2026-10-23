@@ -199,9 +199,6 @@ RUN apt-get update \
   && chmod 0755 /workspace /workspace/inbox /workspace/inbox/messages \
     /workspace/project /workspace/output /workspace/tmp
 
-RUN npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.160.0 \
-  && codex --version
-
 # Bundles a multi-module web page into one self-contained ES module for an
 # artifact, offline too. `--ignore-scripts` skips only the postinstall binary
 # shortcut: the JS launcher runs the native binary from the optional
@@ -240,7 +237,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.35 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.36 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.
