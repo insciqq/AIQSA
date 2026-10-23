@@ -718,6 +718,7 @@
   "memory_restore_reconciliation_pending",
   "memory_restore_service_identity_invalid",
   "memory_revision_conflict",
+  "memory_saved_secret_backfill",
   "memory_saved_secret_scrub",
   "memory_saved_secret_unreadable",
   "memory_saved_secret_value",
