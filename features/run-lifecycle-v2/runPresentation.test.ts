@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
-import { RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { RUN_INTERRUPTED_FAILURE, RUN_PREPARATION_FAILURE_MESSAGE, RUN_TIME_LIMIT_FAILURE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "@/lib/contracts/chatPdfPreparation";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
@@ -290,6 +290,18 @@ describe("run lifecycle v2 presentation", () => {
       { type: "error", data: { code: TOOL_SYNTHESIS_FAILURE.code, message: "unexposed provider diagnostic" } }
     ] }))).toMatchObject({ kind: "terminal_error", failure: { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" } });
     expect(presentToolActivityV2([{ type: "artifact", data: { artifactType: "tool_budget", payload: { kind: "rounds", limit: -1 } } }])).toBeNull();
+  });
+
+  it("offers Continue on an answer whose work was kept, live by its code and after a reload by its saved text", () => {
+    expect(presentRunLifecycleV2(state({ content: "Partial", events: [
+      { type: "error", data: { code: RUN_TIME_LIMIT_FAILURE.code, message: RUN_TIME_LIMIT_FAILURE.message } }
+    ] }))).toMatchObject({ failure: { ...RUN_TIME_LIMIT_FAILURE, recovery: "continue" }, kind: "terminal_error" });
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "error", content: "",
+      failure: { message: RUN_INTERRUPTED_FAILURE.message }, status: "error" })))
+      .toMatchObject({ failure: { ...RUN_INTERRUPTED_FAILURE, recovery: "continue" }, kind: "terminal_error" });
+    // Any other failure keeps its own recovery.
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "error", content: "",
+      failure: { message: "The answer could not be completed." }, status: "error" })).failure?.recovery).toBe("change_parameters");
   });
 
   it("stays silent without explicit lifecycle state", () => {

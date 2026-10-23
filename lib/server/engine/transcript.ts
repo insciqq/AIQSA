@@ -15,7 +15,8 @@ import type { ProviderHistoryItem, ProviderNativeData } from "../providers/histo
  * - every tool call is followed by exactly one result before anything else:
  *   results are pulled up to their call's response, a call without a recorded
  *   result gets an explicit unknown outcome, a result without its call stays
- *   out;
+ *   out; of several results of one call the latest recorded wins (a call that
+ *   waited for the user's approval and then ran);
  * - replay starts at the latest compaction the target can use: its own native
  *   compaction item, or a summary text any target can read; a compaction
  *   that keeps a recent tail verbatim (`keepFromId`) replays that tail right
@@ -75,6 +76,8 @@ export type TranscriptToolCallItem = Readonly<{
 
 export type TranscriptToolResultItem = Readonly<{
   callId: string;
+  /** The saved whole result (`read_tool_result`) when `output` is an excerpt of it. */
+  handle?: string;
   id: string;
   kind: "tool_result";
   name: string;
@@ -261,7 +264,7 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
 
   const results = new Map<string, TranscriptToolResultItem>();
   for (const item of window) {
-    if (item.kind === "tool_result" && !results.has(item.callId)) results.set(item.callId, item);
+    if (item.kind === "tool_result") results.set(item.callId, item);
   }
   const entries: SelectedTranscriptItem[] = [];
   const calls = new Set<string>();

@@ -47,6 +47,7 @@ import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDi
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
+import { nativeRunResponse, recoverUserNativeRuns, routeRun, type NativeEngineHandlerDeps } from "../engine/handlerSupport";
 import { resolveAnswerReviewAuto } from "../answerReviews/autoAdmission";
 import {
   materializePreparedRunData,
@@ -140,6 +141,13 @@ export type RunHandlerDeps = {
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
   memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunPreparationDeps["mcp"];
+  /**
+   * The native agent engine, given only by the interactive send and
+   * regenerate routes: it takes the runs `routeRun` names (the pilot's
+   * allowlist); every other run, and every entry point without it, stays on
+   * the old core.
+   */
+  nativeEngine?: NativeEngineHandlerDeps;
   providerAdmission?: RunPreparationDeps["providerAdmission"];
   providerRuntime?: ProviderRuntimeResolver;
   providers: Record<string, ProviderAdapter>;
@@ -399,6 +407,18 @@ function recoveryDeps(
   };
 }
 
+/** The tool services a native run uses, the same ones the old core gets. */
+function nativeServices(deps: RunHandlerDeps) {
+  return {
+    ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
+    ...(deps.images ? { images: deps.images } : {}),
+    ...(deps.mcp ? { mcp: deps.mcp } : {}),
+    ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
+    ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
+    ...(deps.vision ? { vision: deps.vision } : {})
+  };
+}
+
 function isActiveRunConflictError(error: unknown): error is ActiveRunConflictError {
   return error instanceof ActiveRunConflictError || (error instanceof Error && error.name === "ActiveRunConflictError");
 }
@@ -623,6 +643,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     await reconcileStaleRuns(recovery, {
       userId: auth.userId
     });
+    // Each engine recovers only its own runs.
+    await recoverUserNativeRuns(deps.nativeEngine, deps, auth.userId);
 
     const params = await context.params;
     const admissionKey = pdfAdmissionKey("send", params.chatId, auth.userId, body);
@@ -791,9 +813,13 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ? { ok: true as const }
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
+    const route = routeRun(deps.nativeEngine, { answerReview: Boolean(deps.answerReviewStep), prepared: preparedData,
+      scheduled: Boolean(deps.scheduledOccurrence), user: { email: auth.user.email, id: auth.userId },
+      workspacePredecessor: Boolean(predecessorRunId) });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
+        ...(route.engine === "native" ? { engine: "native" as const } : {}),
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: acceptedRunSnapshot(preparedData)
@@ -929,6 +955,19 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       created.runId,
       preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
+    if (route.engine === "native" && deps.nativeEngine) {
+      const systemTurn = continuationBody && body?.systemTurn && typeof body.systemTurn === "object"
+        ? body.systemTurn as Record<string, unknown> : null;
+      return nativeRunResponse(deps.nativeEngine, {
+        adapter: runtime?.adapter ?? preparation.adapter,
+        ...(typeof systemTurn?.approvalId === "string" ? { approvalId: systemTurn.approvalId } : {}),
+        ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
+        created, prepared: preparedData, repository: deps.repository,
+        ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
+        services: nativeServices(deps), userId: auth.userId,
+        ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
+      });
+    }
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
       ...(runtime?.agentResponses ? { agentResponses: runtime.agentResponses } : {}),
@@ -987,6 +1026,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     await reconcileStaleRuns(recovery, {
       userId: auth.userId
     });
+    // Each engine recovers only its own runs.
+    await recoverUserNativeRuns(deps.nativeEngine, deps, auth.userId);
 
     const params = await context.params;
     const admissionKey = pdfAdmissionKey("regenerate", params.messageId, auth.userId, body);
@@ -1066,9 +1107,13 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const answerReview = retry ? { ok: true as const }
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
+    // A document retry keeps the old core's frozen preparation.
+    const route = retry ? { engine: "v1" as const } : routeRun(deps.nativeEngine, { answerReview: false, prepared: preparedData,
+      scheduled: false, user: { email: auth.user.email, id: auth.userId }, workspacePredecessor: false });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
+        ...(route.engine === "native" ? { engine: "native" as const } : {}),
         ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
@@ -1171,6 +1216,16 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       created.runId,
       preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
+    if (route.engine === "native" && deps.nativeEngine) {
+      return nativeRunResponse(deps.nativeEngine, {
+        adapter: runtime?.adapter ?? preparation.adapter,
+        ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
+        created, prepared: preparedData, repository: deps.repository,
+        ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
+        services: nativeServices(deps), userId: auth.userId,
+        ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
+      });
+    }
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
       ...(runtime?.agentResponses ? { agentResponses: runtime.agentResponses } : {}),

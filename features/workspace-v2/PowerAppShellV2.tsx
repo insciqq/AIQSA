@@ -1907,6 +1907,7 @@ export function PowerAppShellV2({
     continueAnswerReview,
     refreshInterruptedRun,
     regenerateMessage,
+    sendContinueTurn,
     sendMcpApprovalContinuation,
     startAnswerReview,
     sendStarterPrompt,
@@ -2264,6 +2265,7 @@ export function PowerAppShellV2({
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
     continueAnswerReview,
+    sendContinueTurn,
     sendMcpApprovalContinuation,
     startAnswerReview,
     stopAnswerReview: (sessionId: string) => activeChatId

@@ -1017,7 +1017,7 @@ export async function runNative(deps: CallDeps, config: RunConfig, transcript: T
   const compact = await postJson(deps, "/v1/responses/compact", compactRequest({ model: config.model }, compactInput));
   const compaction = { ...callRecord(compact, estimateTokens(compactInput, transcript.count)), ...compactedRecord(compact.completedItems) };
   const usable = !compact.errorCode && compact.completedItems.some((item) => item.type === "compaction");
-  if (!usable) return { compaction: { ...compaction, errorCode: compaction.errorCode ?? "no_compaction_item" }, ok: false };
+  if (!usable) return { compaction: { ...compaction, errorCode: compact.errorCode ?? "no_compaction_item" }, ok: false };
   const recallRecord = await recall(deps, config, transcript, compact.completedItems, config.nativeInput === "full" ? [] : tail);
   return { compaction, ok: recallRecord.completed === true, recall: recallRecord, transcriptTokensReported: compact.usage?.inputTokens ?? null };
 }
@@ -1033,7 +1033,7 @@ export async function runSummary(deps: CallDeps, config: RunConfig, transcript: 
   };
   // An incomplete summary (max_output_tokens) is still measured for recall.
   const usable = !result.errorCode && (result.status === "completed" || result.status === "incomplete") && result.text.trim().length > 0;
-  if (!usable) return { ok: false, summary: { ...summary, errorCode: summary.errorCode ?? "summary_empty" } };
+  if (!usable) return { ok: false, summary: { ...summary, errorCode: result.errorCode ?? "summary_empty" } };
   const recallRecord = await recall(deps, config, transcript, [message("user", `${SUMMARY_PREFIX}${result.text}`)], tail);
   return { ok: result.status === "completed" && recallRecord.completed === true, recall: recallRecord, summary };
 }
@@ -1050,7 +1050,7 @@ export async function runInline(deps: CallDeps, config: RunConfig, transcript: T
   };
   const ok = completed(result) && compacted;
   return {
-    inline: { ...call, errorCode: call.errorCode ?? (compacted ? null : "no_compaction_item") },
+    inline: { ...call, errorCode: result.errorCode ?? (compacted ? null : "no_compaction_item") },
     ok,
     recall: scoreRecall(completed(result) ? result.text : "")
   };
@@ -1065,7 +1065,7 @@ export async function runTrigger(deps: CallDeps, config: RunConfig, transcript: 
     compactionAtMs: result.firstCompactionMs ?? null
   };
   const usable = !result.errorCode && result.completedItems.some((item) => item.type === "compaction");
-  if (!usable) return { compaction: { ...compaction, errorCode: compaction.errorCode ?? "no_compaction_item" }, ok: false };
+  if (!usable) return { compaction: { ...compaction, errorCode: result.errorCode ?? "no_compaction_item" }, ok: false };
   // Reasoning items of a store:false response carry no replayable state.
   const replay = result.completedItems.filter((item) => item.type !== "reasoning");
   const recallRecord = await recall(deps, config, transcript, replay, tail);
