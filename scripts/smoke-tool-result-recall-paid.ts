@@ -4,17 +4,26 @@
  * PLAYWRIGHT_TEST_AUTH=1, seeded bootstrap admin). Never a default lane and
  * never a persistent installation. It drives the stand only through its HTTP
  * API, as scripts/smoke-context-compaction-journey.ts does:
- * 1. reuses or sets up the codex-lb route and publishes a small model context
- *    window through the Admin API;
+ * 1. reuses or sets up the codex-lb route and publishes a real model context
+ *    window through the Admin API (operator decision 2026-10-23: compaction
+ *    below 400k tokens is not worth checking); a window above the one the
+ *    codex-lb listing publishes for the model fails before any paid call;
  * 2. starts the neutral bulk-result MCP fixture
  *    (tests/e2e/support/bulkResultMcpEndpoint.ts) in this process, registers,
  *    publishes, grants and enables it for the bootstrap admin;
  * 3. creates a personal chat (excluded from Memory unless
- *    AIQSA_RECALL_MEMORY=1) and sends one request that needs every record's
- *    large details, with MCP Load all;
- * 4. waits for the run and prints ONE sanitized JSON document: outcome,
- *    counts of tool calls, `read_tool_result` calls, the latest compaction
- *    cycle, and provider-reported input tokens from the Admin usage ledger.
+ *    AIQSA_RECALL_MEMORY=1). In `recall` mode it first fills the chat with
+ *    Cyrillic filler turns (MCP off, each at most 6 % of the engine's window
+ *    and below the app's 1 MiB JSON body limit) until the context stands
+ *    48k tokens below the engine's 72 % background compaction trigger, so
+ *    about fifteen fixture results push the run past it well inside its 32
+ *    tool rounds; the fixture alone holds about 170k tokens, too few for a
+ *    real window. It then sends one request that needs every record's large
+ *    details, with MCP Load all;
+ * 4. waits for the run and prints ONE sanitized JSON document: outcome, the
+ *    prefill (turns and the share of the window reached), counts of tool
+ *    calls, `read_tool_result` calls, the latest compaction cycle, and the
+ *    recall run's provider-reported input tokens from the Admin usage ledger.
  *    With AIQSA_RECALL_DB_STATS=1 (only inside an acknowledged disposable
  *    container, checked by scripts/stateful-test-target.ts) it adds read-only
  *    aggregates the HTTP API does not expose: the run's error code, exact
@@ -26,6 +35,11 @@
  *
  * Exit 0 only when the run completed with an answer and did not exhaust its
  * tool-call limit. The repetition counts are evidence, not a pass threshold.
+ *
+ * Expected paid calls in `recall` mode at the default 400k window: about ten
+ * prefill turns (reading up to ~220k input tokens), the run's tool rounds and
+ * final answer (at most 33 calls of ~220k-290k input, largely cached) and one
+ * or two summary calls. `budget` and `repeat` send no prefill.
  *
  * AIQSA_RECALL_MODE selects the scenario (default `recall`, the above):
  * - `budget`: the installation's `maxToolCalls` is lowered through the Admin
@@ -41,8 +55,10 @@
  * Environment (process only; no .env loading):
  * - AIQSA_RECALL_DISPOSABLE_STAND=1 (required acknowledgement)
  * - AIQSA_RECALL_BASE_URL (default http://127.0.0.1:3000; plain HTTP only on loopback)
- * - CODEX_LB_API_KEY, CODEX_LB_BASE_URL (falls back to ~/.codex/config.toml), AIQSA_RECALL_CODEX_MODEL (default gpt-5.5)
- * - AIQSA_RECALL_CONTEXT_WINDOW (default 32768, 16384..65536)
+ * - CODEX_LB_API_KEY, CODEX_LB_BASE_URL (falls back to ~/.codex/config.toml), AIQSA_RECALL_CODEX_MODEL
+ *   (default gpt-6.1-sol, whose listing publishes a 500k window)
+ * - AIQSA_RECALL_CONTEXT_WINDOW (default 400000, 262144..1000000 and at most
+ *   the listing's window for the model)
  * - AIQSA_RECALL_FIXTURE_HOST (listen address, default 127.0.0.1) and
  *   AIQSA_RECALL_FIXTURE_PUBLIC_HOST (host the stand uses to reach it, default the listen address)
  * - AIQSA_RECALL_MEMORY=1, AIQSA_RECALL_DB_STATS=1, AIQSA_RECALL_CLEANUP_PROVIDERS=1
@@ -55,13 +71,14 @@ import { join } from "node:path";
 import { decodeAdminModelPolicyResponse } from "../lib/contracts/adminModelPolicy";
 import { decodeAdminProviderModelSaveReceipt } from "../lib/contracts/adminProviderModelSave";
 import { decodeCatalogResponse, type CatalogModel } from "../lib/contracts/catalog";
-import { decodeChatDetailResponse, decodeChatSummaryResponse, type ChatDetailWire } from "../lib/contracts/chats";
+import { decodeChatDetailResponse, decodeChatSummaryResponse, type ChatDetailWire, type ChatMessageWire } from "../lib/contracts/chats";
 import { decodeRunOutcomeResponse } from "../lib/contracts/runs";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   decodeMemoryConsumerChatModeResponse,
   decodeMemoryConsumerPermanentChatDeleteResponse
 } from "../lib/contracts/memoryClient";
+import { contextTokenEstimator } from "../lib/domain/tokenEstimate";
 import {
   BULK_DETAIL_TOOL_NAME,
   BULK_LIST_TOOL_NAME,
@@ -72,12 +89,17 @@ import {
   type BulkRegistrationClient
 } from "../tests/e2e/support/bulkResultMcpEndpoint";
 import {
+  JOURNEY_LIMITS,
   JOURNEY_TEST_AUTH_TOKEN,
   JourneyFailure,
+  boundedMessage,
   catalogReadiness,
   codexLbSetupBody,
   contextWindowUpdate,
+  discoveredContextWindow,
+  engineContextTokens,
   journeyConfig,
+  journeyFiller,
   journeyReuseDecision,
   journeyRunParams,
   ledgerDelta,
@@ -103,6 +125,15 @@ const DELETE_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 3_000;
 const STREAM_BYTES = 32 * 1024 * 1024;
 const ANSWER_MAX_OUTPUT_TOKENS = 4_096;
+const PREFILL_MAX_OUTPUT_TOKENS = 512;
+/**
+ * What the run's tool results add before the background trigger: about
+ * fifteen fixture results (3-6k tokens each), well inside the default 32 tool
+ * rounds, so the rest of the run reads earlier results only by reference.
+ */
+const RECALL_TOOL_PHASE_TOKENS = 48_000;
+/** 6 % steps reach the prefill target in at most twelve turns at any admitted window. */
+const PREFILL_MAX_TURNS = 16;
 const READ_TOOL_RESULT_NAME = "read_tool_result";
 const TOOL_CALL_LIMIT_MESSAGE = /^Tool call limit of \d+ was exceeded\.?$/u;
 const CODE = /^[a-z0-9_]{1,80}$/u;
@@ -260,9 +291,8 @@ async function checksIdle(api: Api, connectionId: string, stage: JourneyStage = 
 
 async function ensureCodexLb(api: Api, route: CodexRoute, contextWindow: number): Promise<ProviderTarget> {
   const before = await connections(api);
-  const decision = journeyReuseDecision(before, { apiRoot: route.apiRoot, family: "openai_compatible", upstreamModelId: route.model });
-  if (decision.match) return { connectionId: decision.match.connection.id, created: false, providerModelId: decision.match.model.id };
   let catalogProof: string | undefined;
+  // Discovery (a free model listing) runs before any reuse, so the window is checked against the listed one.
   try {
     const discovery = await json(api, "provider_setup", "/api/admin/providers/custom-setup/discover", {
       body: { allowPrivateNetwork: true, apiRoot: route.apiRoot, authenticationMode: "bearer",
@@ -273,10 +303,14 @@ async function ensureCodexLb(api: Api, route: CodexRoute, contextWindow: number)
     if (!record(discovery) || !Array.isArray(discovery.models)) fail("provider_setup", "discovery_response_invalid");
     if (!discovery.models.some((model) => record(model) && model.id === route.model)) fail("provider_setup", "codex_model_not_discovered");
     if (typeof discovery.catalogProof === "string") catalogProof = discovery.catalogProof;
+    const listed = discoveredContextWindow(discovery, route.model);
+    if (listed !== null && contextWindow > listed) fail("config", "aiqsa_recall_context_window_above_listed");
   } catch (error) {
     if (!(error instanceof JourneyFailure) ||
       (error.code !== "provider_custom_setup_discovery_failed" && error.code !== "codex_model_not_discovered")) throw error;
   }
+  const decision = journeyReuseDecision(before, { apiRoot: route.apiRoot, family: "openai_compatible", upstreamModelId: route.model });
+  if (decision.match) return { connectionId: decision.match.connection.id, created: false, providerModelId: decision.match.model.id };
   const result = await json(api, "provider_setup", "/api/admin/providers/custom-setup", {
     body: codexLbSetupBody({
       apiRoot: route.apiRoot,
@@ -356,14 +390,22 @@ type RunEvidence = Readonly<{
   toolRounds: number;
 }>;
 
-async function sendAndWait(api: Api, chatId: string, model: CatalogModel, prompt: string): Promise<RunEvidence> {
+/** Sends one message after `leafId` and returns its answer once the run settled. */
+async function sendTurn(
+  api: Api,
+  chatId: string,
+  leafId: string | null,
+  model: CatalogModel,
+  prompt: string,
+  options: Readonly<{ maxOutputTokens: number; mcp: "load_all" | "off" }>
+): Promise<ChatMessageWire> {
   const response = await request(api, "turn", `/api/chats/${encodeURIComponent(chatId)}/messages`, {
     body: {
       content: { blocks: [{ text: prompt, type: "text" }] },
-      expectedActiveLeafId: null,
-      mcp: { mode: "load_all" },
+      expectedActiveLeafId: leafId,
+      mcp: { mode: options.mcp },
       modelId: model.modelId,
-      params: journeyRunParams(model, ANSWER_MAX_OUTPUT_TOKENS),
+      params: journeyRunParams(model, options.maxOutputTokens),
       provider: model.provider,
       searchPlan: { mode: "all_selected", optionIds: [] },
       searchStrategy: "search-disabled",
@@ -376,9 +418,9 @@ async function sendAndWait(api: Api, chatId: string, model: CatalogModel, prompt
   await drain(response, "turn");
   const detail = await poll("turn", RUN_TIMEOUT_MS, async () => {
     const current = await chatDetail(api, chatId);
-    return settledTurn(current, null) ? current : null;
+    return settledTurn(current, leafId) ? current : null;
   }, "run_not_settled");
-  const { assistant } = settledTurn(detail, null)!;
+  const { assistant } = settledTurn(detail, leafId)!;
   if (assistant.modelRunId) {
     const runPath = `/api/model-runs/${encodeURIComponent(assistant.modelRunId)}`;
     await poll("turn", RUN_TIMEOUT_MS, async () => {
@@ -387,7 +429,48 @@ async function sendAndWait(api: Api, chatId: string, model: CatalogModel, prompt
     }, "run_not_settled");
   }
   const settled = await chatDetail(api, chatId);
-  const final = settled.messages.find((message) => message.id === assistant.id) ?? assistant;
+  return settled.messages.find((message) => message.id === assistant.id) ?? assistant;
+}
+
+type Prefill = Readonly<{ budgetShare: number; leafId: string; turns: number }>;
+
+/**
+ * Filler turns (MCP off) until the context stands `RECALL_TOOL_PHASE_TOKENS`
+ * below the engine's background trigger, measured from each turn's session
+ * status. Every filler is at most 6 % of the engine's window, so none starts a
+ * compaction, and below the app's JSON body limit.
+ */
+async function prefill(api: Api, chatId: string, model: CatalogModel, contextWindow: number): Promise<Prefill> {
+  let estimate = contextTokenEstimator({ modelId: model.upstreamModelId, provider: model.providerFamily! });
+  let window = contextWindow - PREFILL_MAX_OUTPUT_TOKENS;
+  let context = 0;
+  let leafId: string | null = null;
+  for (let turn = 0; ; turn += 1) {
+    const target = Math.floor(window * JOURNEY_LIMITS.triggerShare) - RECALL_TOOL_PHASE_TOKENS;
+    if (leafId !== null && context >= target) {
+      return { budgetShare: Math.round(context / window * 1_000) / 1_000, leafId, turns: turn };
+    }
+    if (turn >= PREFILL_MAX_TURNS) fail("turn", "prefill_turn_bound_exhausted");
+    const tokens = Math.max(JOURNEY_LIMITS.fillerMinTokens,
+      Math.min(Math.floor(window * JOURNEY_LIMITS.fillerMaxBudgetShare), target - context));
+    const assistant = await sendTurn(api, chatId, leafId, model,
+      boundedMessage((size) => journeyFiller(turn, size, estimate), tokens),
+      { maxOutputTokens: PREFILL_MAX_OUTPUT_TOKENS, mcp: "off" });
+    if (assistant.status !== "complete") fail("turn", "prefill_turn_not_complete");
+    if (assistant.artifactSummary?.contextCompaction) fail("turn", "prefill_compacted");
+    const detail = await chatDetail(api, chatId);
+    const session = detail.contextStats.sessionMessageId === assistant.id ? detail.contextStats.session ?? null : null;
+    if (!session) return fail("evidence", "session_status_missing");
+    // The stand measures with the admitted route's own estimate family.
+    estimate = contextTokenEstimator({ modelId: session.modelId, provider: session.provider });
+    window = engineContextTokens(session) ?? window;
+    context = session.approximateInputTokens;
+    leafId = assistant.id;
+  }
+}
+
+async function sendAndWait(api: Api, chatId: string, leafId: string | null, model: CatalogModel, prompt: string): Promise<RunEvidence> {
+  const final = await sendTurn(api, chatId, leafId, model, prompt, { maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS, mcp: "load_all" });
   const calls = final.toolActivity?.calls ?? [];
   const text = typeof final.content === "string" ? final.content
     : record(final.content) && Array.isArray(final.content.blocks) ? JSON.stringify(final.content.blocks) : "";
@@ -556,8 +639,8 @@ async function main(): Promise<number> {
   const config = journeyConfig({
     ...process.env,
     AIQSA_JOURNEY_BASE_URL: env("AIQSA_RECALL_BASE_URL") || "http://127.0.0.1:3000",
-    AIQSA_JOURNEY_CODEX_MODEL: env("AIQSA_RECALL_CODEX_MODEL") || "gpt-5.5",
-    AIQSA_JOURNEY_CONTEXT_WINDOW: env("AIQSA_RECALL_CONTEXT_WINDOW") || "32768",
+    AIQSA_JOURNEY_CODEX_MODEL: env("AIQSA_RECALL_CODEX_MODEL") || "gpt-6.1-sol",
+    AIQSA_JOURNEY_CONTEXT_WINDOW: env("AIQSA_RECALL_CONTEXT_WINDOW") || String(JOURNEY_LIMITS.defaultContextWindow),
     AIQSA_JOURNEY_ROUTES: "codex-lb"
   }, codexProfileApiRoot);
   const route = config.routes[0]!;
@@ -585,6 +668,7 @@ async function main(): Promise<number> {
   let chatId: string | null = null;
   let createdConnectionId: string | null = null;
   let evidence: RunEvidence | null = null;
+  let filled: Prefill | null = null;
   let inputTokens: LedgerUsage | null = null;
   let stats: Record<string, unknown> | null = null;
   let failure: JourneyFailure | null = null;
@@ -610,9 +694,11 @@ async function main(): Promise<number> {
       savedLimits = limits;
       await writeToolLimits(api, "provider_setup", { ...limits, maxToolCalls: budgetCalls });
     }
-    const before = await ledger();
     stage = "turn";
-    evidence = await sendAndWait(api, chatId, model, mode === "repeat" ? REPEAT_REQUEST : RECALL_REQUEST);
+    // Only the recall scenario needs context pressure; the ledger below counts the recall run alone.
+    if (mode === "recall") filled = await prefill(api, chatId, model, config.contextWindow);
+    const before = await ledger();
+    evidence = await sendAndWait(api, chatId, filled?.leafId ?? null, model, mode === "repeat" ? REPEAT_REQUEST : RECALL_REQUEST);
     stage = "evidence";
     inputTokens = ledgerDelta(before, await ledger());
     if (dbStats && evidence.runId) stats = await databaseStats(evidence.runId);
@@ -643,6 +729,7 @@ async function main(): Promise<number> {
     ...(failure ? { code: failure.code, stage: failure.stage, ...(failure.httpStatus ? { httpStatus: failure.httpStatus } : {}) } : {}),
     contextWindow: config.contextWindow,
     memory,
+    prefill: filled ? { budgetShare: filled.budgetShare, turns: filled.turns } : null,
     fixture: { objects: BULK_RESULT_LIMITS.objects, calls: fixtureCalls },
     run: evidence ? {
       status: evidence.status,
