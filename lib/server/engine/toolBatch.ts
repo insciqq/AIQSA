@@ -23,7 +23,7 @@ import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecution
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
 import { toolOutputExcerpt, toolResultOutputText } from "./toolResults";
-import type { TranscriptToolResultItem } from "./transcript";
+import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
 
 /**
  * One tool batch of a native run: every call of a model response goes
@@ -46,6 +46,16 @@ export const TOOL_BATCH_LIMITS = Object.freeze({
 export const APPROVAL_PENDING_OUTPUT =
   "Not sent: this call can change data, so it waits for the user's approval in the chat. If the user approves, " +
   "it runs and you continue from its result; do not call it again meanwhile.";
+
+/** What the transcript keeps of a run-scoped result (`EngineTool.runScopedResult`) for later turns. */
+export const RUN_SCOPED_RESULT_NOTE =
+  "This result was used only in the answer that produced it and is not kept. Call the tool again if it is still needed.";
+
+/** The transcript record of an item: later turns read a note in place of a run-scoped result. */
+export function transcriptRecord(registry: ToolRegistry, item: TranscriptItem): TranscriptItem {
+  return item.kind === "tool_result" && registry.resolve(item.name)?.runScopedResult
+    ? { ...item, output: RUN_SCOPED_RESULT_NOTE } : item;
+}
 
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
@@ -151,11 +161,11 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
   async function afterToolCall(execution: EngineToolExecution, tool: EngineTool, row: ToolCallRow,
     result: ToolExecutionResult): Promise<TranscriptToolResultItem> {
     const text = toolResultOutputText(result);
-    const saved = text.length > 0 && toolOutputExcerpt(text, null).truncated
+    const saved = !tool.runScopedResult && text.length > 0 && toolOutputExcerpt(text, null).truncated
       ? await deps.saveResult({ outcome: result.status, signal: execution.signal, source: tool.observationSource, text,
         toolCallId: row.id })
       : null;
-    const excerpt = toolOutputExcerpt(text, saved);
+    const excerpt = tool.runScopedResult ? { handle: null, output: text } : toolOutputExcerpt(text, saved);
     const rowResult = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) ??
       snapshotToolExecutionResult({ callId: result.callId, content: [{ text: excerpt.output, type: "text" }], name: result.name,
         status: result.status }, toolLoopPersistenceLimits.resultBytes)!;

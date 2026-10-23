@@ -36,7 +36,7 @@ import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { runAgentLoop, type LoopToolChoice } from "./loop";
 import { callModel } from "./modelCall";
 import type { NativeRunStore } from "./runStore";
-import { runToolBatch, ToolBatchInactiveError, type ToolBatchDeps } from "./toolBatch";
+import { runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps } from "./toolBatch";
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
 import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
@@ -258,12 +258,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         const items: TranscriptItem[] = [...conversation.items];
         let sequence = await engine.transcripts.nextSequence(scope);
-        const append = async (added: readonly TranscriptItem[]) => {
-          if (added.length === 0) return;
-          items.push(...added);
-          await engine.transcripts.append(scope, sequence, added);
-          sequence += added.length;
-        };
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
@@ -290,6 +284,13 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspace: input.workspace },
           userId: input.userId
         });
+        // The run reads its items whole; the transcript keeps what later turns may read.
+        const append = async (added: readonly TranscriptItem[]) => {
+          if (added.length === 0) return;
+          items.push(...added);
+          await engine.transcripts.append(scope, sequence, added.map((item) => transcriptRecord(registry, item)));
+          sequence += added.length;
+        };
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
         const toolState = { calls: 0 };
         const batchDeps: ToolBatchDeps = {
