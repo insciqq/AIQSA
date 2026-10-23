@@ -77,7 +77,6 @@ class Fixture {
     writeFileSync(path.join(this.proc, "meminfo"), "MemTotal:       16384000 kB\n");
     writeFileSync(path.join(this.proc, "cpuinfo"), "processor\t: 0\nflags\t\t: fpu vmx\nprocessor\t: 1\nflags\t\t: fpu vmx\n");
     this.tool("docker", fakeDocker);
-    this.tool("sysctl", 'echo "${FAKE_MAX_MAP_COUNT:-262144}"');
     this.tool("timedatectl", 'echo "${FAKE_NTP:-yes}"');
     this.tool("ss", 'cat "$FAKE_STATE/ss.out" 2>/dev/null || true');
     this.tool("df", 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 1 1 %s 1%% /\\n" "${FAKE_DF_AVAILABLE:-100000000}"');
@@ -365,7 +364,7 @@ describe("doctor", () => {
     const body = fixture.writeEnv();
     const result = fixture.run(["doctor"]);
     expect(result.status).toBe(0);
-    for (const line of ["PASS docker: Engine 27.3.1", "PASS compose: Compose 2.29.7", "PASS vm.max_map_count: 262144",
+    for (const line of ["PASS docker: Engine 27.3.1", "PASS compose: Compose 2.29.7",
       "PASS memory: 15.6 GiB", "PASS cpus: 2", "PASS disk:", "PASS time:", "PASS port: 127.0.0.1:3000 is free",
       "INFO kvm: Workspace unavailable", "WARN workspace: disabled: unsupported configuration", "PASS required-keys",
       "PASS compose-config", "PASS app: healthy",
@@ -378,8 +377,6 @@ describe("doctor", () => {
   });
 
   const hostCases: Array<{ name: string; setup: (fixture: Fixture) => void; expected: RegExp[]; status: number }> = [
-    { name: "low vm.max_map_count", status: 4, setup: (f) => { f.env.FAKE_MAX_MAP_COUNT = "65530"; },
-      expected: [/FAIL vm\.max_map_count: 65530/u, /sudo sysctl -w vm\.max_map_count=262144/u, /\/etc\/sysctl\.d\/99-aiqsa\.conf/u] },
     { name: "docker socket permission", status: 4, setup: (f) => {
       f.rules.push({ match: "^version ", exit: 1, stderr: "permission denied while trying to connect to the Docker daemon socket\n" });
     }, expected: [/FAIL docker: permission denied on the Docker socket/u, /usermod -aG docker/u] },
@@ -589,6 +586,26 @@ describe("doctor", () => {
     expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm|image rm) /mu);
   });
 
+  it("lists search index leftovers with exact removal commands and stays quiet without them", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    const clean = fixture.run(["doctor", "--stack-only"]);
+    expect(clean.status).toBe(0);
+    expect(clean.stdout).not.toContain("search-leftovers");
+    fixture.rules.push(
+      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=opensearch", stdout: "c97\n" },
+      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=memory-search-worker", stdout: "c98\n" },
+      { match: "^volume inspect aiqsa-test_opensearch_data", stdout: "[]\n" }
+    );
+    const result = fixture.run(["doctor", "--stack-only"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("WARN search-leftovers: the search index service was removed");
+    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the opensearch container");
+    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the memory-search-worker container");
+    expect(result.stdout).toContain("docker volume rm aiqsa-test_opensearch_data");
+    expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm) /mu);
+  });
+
   it("reads .env strictly: quotes, CRLF, spaces, export and shell metacharacters", () => {
     const fixture = new Fixture();
     const secret = "pa$$ word`id`$(touch pwned)\"'";
@@ -672,12 +689,12 @@ describe("up and install", () => {
     // Compose lists ps rows by container name: the created app comes first.
     fixture.rules.push(
       { match: " up -d ", exit: 1, stderr: "timeout waiting for services\n" },
-      { match: " ps -a --format", stdout: "app|created||0|c1\nmigrate-bootstrap|exited||0|c2\nopensearch|running|starting|0|c4\n" }
+      { match: " ps -a --format", stdout: "app|created||0|c1\nmigrate-bootstrap|exited||0|c2\ndocling|running|starting|0|c4\n" }
     );
     const result = fixture.run(["up", "--timeout", "5"]);
     expect(result.status).toBe(5);
-    expect(result.stderr).toContain("Last 60 log lines of opensearch:");
-    expect(fixture.dockerLog).toContain("logs --no-color --tail 60 opensearch");
+    expect(result.stderr).toContain("Last 60 log lines of docling:");
+    expect(fixture.dockerLog).toContain("logs --no-color --tail 60 docling");
     expect(fixture.dockerLog).not.toContain("logs --no-color --tail 60 app");
   });
 
@@ -697,7 +714,7 @@ describe("up and install", () => {
   });
 
   it.each([
-    ["an exited service before a still starting one", "app|created||0|c1\nmemory-worker|exited||137|c5\nopensearch|running|starting|0|c4\n", "memory-worker"],
+    ["an exited service before a still starting one", "app|created||0|c1\nmemory-worker|exited||137|c5\ndocling|running|starting|0|c4\n", "memory-worker"],
     ["a running one-shot before a created service", "app|created||0|c1\nmigrate-bootstrap|running||0|c2\n", "migrate-bootstrap"],
     ["a created service when nothing else is pending", "app|created||0|c1\npostgres|running|healthy|0|c3\n", "app"]
   ])("diagnoses a timeout by rank: %s", (_name, rows, service) => {
@@ -1055,8 +1072,8 @@ const keyring = `current=v2,v1=${keyringKey("A")},v2=${keyringKey("B")}`;
 const latestMigration = "20261002000000_latest";
 const runningRows = ["app|running|healthy|0|c1", "memory-worker|running||0|c5", "knowledge-search-worker|running||0|c6",
   "migrate-bootstrap|exited||0|c2", "storage-init|exited||0|c7", "postgres|running|healthy|0|c3",
-  "opensearch|running|healthy|0|c4", "seaweedfs|running|healthy|0|c8", "minio|running|healthy|0|c9"].join("\n") + "\n";
-const restartSet = "app memory-worker knowledge-search-worker postgres opensearch seaweedfs minio";
+  "seaweedfs|running|healthy|0|c8", "minio|running|healthy|0|c9"].join("\n") + "\n";
+const restartSet = "app memory-worker knowledge-search-worker postgres seaweedfs minio";
 
 // A running installation whose schema matches the checkout's newest migration.
 function backupFixture(fixture: Fixture, migrationRow = `${latestMigration}|0`): void {
@@ -1101,7 +1118,7 @@ describe("backup", () => {
       / stop minio seaweedfs$/u, /^run --rm --network none --user 0:0 -v aiqsa-test_seaweedfs_data:\/data:ro --entrypoint tar /u,
       / exec -T postgres pg_restore --list$/u, / --entrypoint tar .* -tzf -$/u,
       new RegExp(` up -d --no-recreate --wait --wait-timeout 600 ${restartSet}$`, "u")]);
-    expect(fixture.dockerLog).not.toMatch(/ stop .*(postgres|opensearch)/u);
+    expect(fixture.dockerLog).not.toMatch(/ stop .*postgres/u);
     const [directory] = backupDirectories(fixture);
     expect(path.basename(directory)).toMatch(/^\d{8}T\d{6}Z-v0\.3\.0$/u);
     expect(statSync(directory).mode & 0o777).toBe(0o700);
@@ -1117,9 +1134,10 @@ describe("backup", () => {
     const manifest = readFileSync(path.join(directory, "manifest"), "utf8");
     for (const line of ["format=1", "aiqsa_version=0.3.0", "project=aiqsa-test", `migration=${latestMigration}`, "objects=bundled",
       "size.postgres.dump=10", "image.app=ghcr.io/insciqq/aiqsa:0.3.0", "memory_fingerprint_key_ids=v1,v2",
-      "memory_fingerprint_current=v2", "memory_opensearch_routing_key_id=v1"]) {
+      "memory_fingerprint_current=v2"]) {
       expect(manifest).toMatch(new RegExp(`^${line.replaceAll(".", "\\.")}$`, "mu"));
     }
+    expect(manifest).not.toContain("routing");
     expectNoSecrets(manifest, body);
     expect(manifest).not.toContain(keyringKey("A"));
     expectNoSecrets(result.output, body);
@@ -1226,7 +1244,7 @@ describe("restore", () => {
     expect(readFileSync(fixture.file(".env"), "utf8")).toBe(body);
     expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
     const override = readFileSync(path.join(fixture.state, "restore-override.yaml"), "utf8");
-    for (const network of ["default", "parser-control", "search-control", "workspace-control", "workspace-egress"]) {
+    for (const network of ["default", "parser-control", "workspace-control", "workspace-egress"]) {
       expect(override).toContain(`  ${network}:\n    internal: true\n`);
     }
     expect(override).toContain("  postgres18_data:\n    external: true\n    name: aiqsa-test_postgres18_data\n");
@@ -1342,7 +1360,7 @@ describe("logs", () => {
       `app-1  | ${json("fatal", "process_exit")}`,
       `app-1  |   {"timestamp":"t", "level": "error", "event":"spaced"}`
     ]);
-    expect(result.stderr).toContain("plain-text lines (PostgreSQL, OpenSearch, Tika, Docling, SeaweedFS) are hidden");
+    expect(result.stderr).toContain("plain-text lines (PostgreSQL, Tika, Docling, SeaweedFS) are hidden");
     expectNoSecrets(result.output, body);
   });
 

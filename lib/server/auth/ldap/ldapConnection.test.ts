@@ -18,7 +18,6 @@ const containerHost = {
   async lookupHostname(hostname: string): Promise<McpResolvedAddress[]> {
     if (hostname === "host.docker.internal") return [{ address: "172.17.0.1", family: 4 }];
     if (hostname === "postgres") return [{ address: "172.18.0.2", family: 4 }];
-    if (hostname === "opensearch") return [{ address: "172.18.0.3", family: 4 }];
     return [];
   }
 };

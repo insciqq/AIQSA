@@ -243,7 +243,7 @@ async function startFixture(): Promise<Fixture> {
 /** The app container: the NAS is on the LAN, outside every Compose network. */
 const networkHost: PersonalMcpNetworkHost = {
   detectContainer: () => true,
-  env: { AIQSA_OPENSEARCH_URL: "http://opensearch:9200" },
+  env: { AIQSA_TIKA_URL: "http://tika:9998" },
   interfaces: () => [{ address: "172.20.0.5", cidr: "172.20.0.5/16", internal: false, name: "eth0" }],
   lookupHostname: async (hostname) => {
     if (hostname === "host.docker.internal") return [{ address: "172.17.0.1", family: 4 }];
