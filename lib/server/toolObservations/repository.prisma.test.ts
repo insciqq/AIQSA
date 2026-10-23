@@ -673,43 +673,6 @@ describe("durable tool observation ownership", () => {
       .toMatchObject({ ...unretained, executionOutcome: "complete" });
     expect(await f.service.searchAccounting(searchProducer)).toEqual([expect.objectContaining({
       invocationId: searchProducer.toolCallId, usage: expect.objectContaining({ totalTokens: 11 }) })]);
-
-    // An Agent run beyond its own 64 MiB budget on an otherwise roomy branch.
-    const g = await fixture();
-    const session = await prisma.workspaceSession.create({ data: { chatId: g.chat.id, sandboxName: `observation-${randomUUID()}`,
-      imageRef: "aiqsa-workspace:0.1.31", internetEnabled: false, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
-      state: "RUNNING", expiresAt: new Date(Date.now() + 600_000) } });
-    cleanups.push(async () => {
-      // Binding -> session and session -> chat are RESTRICT: remove the run first.
-      await prisma.modelRun.deleteMany({ where: { id: g.run.id } });
-      await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
-    });
-    await prisma.workspaceRunBinding.create({ data: { modelRunId: g.run.id, workspaceSessionId: session.id,
-      imageRef: session.imageRef, internetEnabled: false, policyRevision: 1, runtimeVersion: "0.6.16", mcpVersion: "0.6.16",
-      toolCatalogHash: "a".repeat(64), toolDefinitions: [{ originalName: "sandbox_exec_start", namespacedName: "workspace__sandbox_exec_start",
-        description: "Fixture", inputSchema: { type: "object" } }], outputDirectory: `/workspace/output/${g.run.id}` } });
-    await prisma.agentRunBinding.create({ data: { modelRunId: g.run.id, configuration: { mcpMode: "all" }, compatibilityHash: "a".repeat(64),
-      leaseExpiresAt: new Date(Date.now() + 600_000) } });
-    await retain(g.run.id, 2);
-    const agentProducer = await g.call();
-    const agentExecute = vi.fn(async () => original);
-    // The Agent gateway's capture: Codex owns its context, so no batch share.
-    const agentResult = await captureMcpObservation({ service: g.service, producer: agentProducer,
-      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call, binding, agentExecute);
-    expect(agentExecute).toHaveBeenCalledOnce();
-    expect(agentResult).toEqual(mcpToolExecutionResult(call, original));
-    expect(await prisma.toolObservation.findUniqueOrThrow({ where: { toolCallId: agentProducer.toolCallId } }))
-      .toMatchObject({ ...unretained, executionOutcome: "complete" });
-    // Nothing was evicted, and nothing new counts toward the run budget.
-    const counted = await prisma.toolObservation.aggregate({ where: { modelRunId: g.run.id, state: { in: ["RESERVED", "STORING", "READY"] } },
-      _sum: { reservedBytes: true } });
-    expect(counted._sum.reservedBytes).toBe(64 * MiB);
-    // Without the Agent lease the call is not started, never degraded.
-    await prisma.agentRunBinding.update({ where: { modelRunId: g.run.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
-    const refused = vi.fn(async () => original);
-    await expect(captureMcpObservation({ service: g.service, producer: await g.call() }, call, binding, refused))
-      .rejects.toMatchObject({ code: "tool_observation_not_started" });
-    expect(refused).not.toHaveBeenCalled();
   });
 
   it("reports a reservation refused by run or call authority as not started", async () => {

@@ -17,10 +17,6 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { searchObservationReceipt } from "../toolObservations/searchReceipt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
-import { agentLimits } from "../agents/config";
-import { CODEX_VERSION } from "../agents/codexProfile";
-import { agentFailureMessage } from "../agents/failures";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanResult } from "../mcp/runPlan";
@@ -776,7 +772,7 @@ function normalizedToolRequest(): NormalizedRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "remember this", type: "text" }] },
     context: { messages: [], mode: "branch_path" },
-    // Every non-Agent run accepted by current admission carries the policy.
+    // Every run accepted by current admission carries the policy.
     contextCompactionPolicy: conversationContextPolicy({ leafMessageId: null, messages: [] }),
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
@@ -1901,27 +1897,24 @@ describe("run recovery", () => {
     } else expect(harness.state.failed).toEqual([]);
   });
 
-  describe("Agent runs across a guest Codex version cutover", () => {
-    const interrupted = { code: "agent_execution_interrupted", message: agentFailureMessage("agent_execution_interrupted") };
-    const agent = (codexVersion: string) => ({ ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true },
-      { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }), codexVersion, compatibilityHash: "a".repeat(64), mcpMode: "auto" as const });
+  describe("Codex Agent turns left running when the Agent was removed", () => {
+    const removed = expect.objectContaining({ code: "agent_mode_removed" });
     const workspaceDeps = () => ({
       accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(async () => ({ status: "ready" as const })),
       recoverExports: vi.fn(), settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: async () => []
     }) satisfies NonNullable<RunRecoveryDeps["workspace"]>;
 
-    it("settles an interrupted pre-upgrade Agent run without provider stream or refresh", async () => {
+    it("ends a running Agent turn visibly without provider stream, refresh or decoding its request", async () => {
       const refresh = vi.fn();
       const adapter = providerWithRefresh(refresh);
       const stream = vi.spyOn(adapter, "stream");
       const harness = createHarness({ providers: { openai: adapter } });
       const loadRequest = vi.fn(async () => { throw new Error("provider_dispatch_recovery_request_invalid_in_storage"); });
       harness.repository.loadProviderDispatchRecoveryRequest = loadRequest;
-      harness.repository.interruptExpiredAgentRun = vi.fn(async () => ({ kind: "interrupted" as const,
-        failureCode: "agent_execution_interrupted" as const, usage: [] }));
+      harness.repository.isRetiredAgentRun = vi.fn(async () => true);
       const workspace = workspaceDeps();
       await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
-      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ error: interrupted, runId })]);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ error: removed, runId })]);
       expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
       expect(workspace.settle).toHaveBeenCalledExactlyOnceWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
       expect(workspace.handoff).not.toHaveBeenCalled();
@@ -1930,57 +1923,45 @@ describe("run recovery", () => {
       expect(refresh).not.toHaveBeenCalled();
     });
 
-    it.each(["0.158.0", CODEX_VERSION])("settles a published Agent answer accepted under Codex %s without replay", async codexVersion => {
+    it("ends a published Agent answer without replay or rewriting its text", async () => {
       const refresh = vi.fn();
       const adapter = providerWithRefresh(refresh);
       const stream = vi.spyOn(adapter, "stream");
       const harness = createHarness({ providers: { openai: adapter } });
-      const saved = checkpointedRun({ phase: "provider_running", providerResponseId: "response-old", providerToolMessages: [] });
-      harness.repository.loadProviderDispatchRecoveryRequest = async () => ({
-        ...saved.normalizedRequest, workspace: completionWorkspace, agent: agent(codexVersion)
-      });
+      const loadRequest = vi.fn(async () => { throw new Error("provider_dispatch_recovery_request_invalid_in_storage"); });
+      harness.repository.loadProviderDispatchRecoveryRequest = loadRequest;
       const published = { assistantMessageId: "assistant-1", chatId: "chat-1", estimatedCostMicros: 17,
         finalText: "Already published answer", modelId: "gpt-test", provider: "openai",
         providerResponseId: "response-old", runId, usage: { inputTokens: 2, outputTokens: 3 }, userId };
       harness.repository.loadPublishedRunAnswer = vi.fn(async () => published);
-      const interrupt = vi.fn();
-      harness.repository.interruptExpiredAgentRun = interrupt;
+      harness.repository.isRetiredAgentRun = vi.fn(async () => true);
       const workspace = workspaceDeps();
       await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
       expect(stream).not.toHaveBeenCalled();
       expect(refresh).not.toHaveBeenCalled();
-      expect(interrupt).not.toHaveBeenCalled();
-      if (codexVersion === CODEX_VERSION) {
-        // Same-version recovery still captures Workspace outputs and completes.
-        expect(workspace.handoff).toHaveBeenCalledOnce();
-        expect(harness.state.completed).toEqual(published);
-        expect(harness.state.failed).toEqual([]);
-        return;
-      }
+      expect(loadRequest).not.toHaveBeenCalled();
       // The answer text is never rewritten: only the run is terminalized.
       expect(workspace.handoff).not.toHaveBeenCalled();
       expect(harness.state.completed).toBeNull();
       expect(harness.state.assistantTexts).toEqual([]);
-      expect(harness.state.failed).toEqual([{ assistantMessageId: "assistant-1", error: interrupted, runId }]);
+      expect(harness.state.failed).toEqual([{ assistantMessageId: "assistant-1", error: removed, runId }]);
       expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
       expect(workspace.settle).toHaveBeenCalledExactlyOnceWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
     });
 
-    it.each(["preparing", "pdf", "workspace"] as const)("leaves a pre-upgrade Agent run with %s preparation to its owner without decoding it", async pending => {
+    it.each(["preparing", "pdf", "workspace"] as const)("leaves an Agent run with %s preparation to its owner without decoding it", async pending => {
       const harness = createHarness({ providers: {},
         staleRuns: [staleControl({ providerResponseId: null, ...(pending === "preparing" ? { status: "preparing" as const } : {}) })] });
       const loadRequest = vi.fn(async () => { throw new Error("provider_dispatch_recovery_request_invalid_in_storage"); });
       harness.repository.loadProviderDispatchRecoveryRequest = loadRequest;
-      const interrupt = vi.fn();
-      harness.repository.interruptExpiredAgentRun = interrupt;
+      const retired = vi.fn(async () => true);
+      harness.repository.isRetiredAgentRun = retired;
       harness.repository.hasPendingPdfPreparation = async () => pending === "pdf";
       harness.repository.hasPendingWorkspacePreparation = async () => pending === "workspace";
       await reconcileStaleRuns(harness.deps, { now: new Date("2026-07-12T10:00:01.000Z"), userId });
-      // Memory preparation recovery settles a preparing run; a pending PDF or
-      // Workspace continuation reaches the executor's version guard instead.
       expect(harness.state.preparingRecoveries).toHaveLength(pending === "preparing" ? 1 : 0);
       expect(loadRequest).not.toHaveBeenCalled();
-      expect(interrupt).not.toHaveBeenCalled();
+      expect(retired).not.toHaveBeenCalled();
       expect(harness.state.failed).toEqual([]);
     });
   });
@@ -8280,11 +8261,10 @@ describe("run recovery", () => {
         expect.arrayContaining([expect.objectContaining({ error: retired })]));
     });
 
-    it("settles a published answer as before and leaves Agent runs alone", async () => {
+    it("settles a published answer as before", async () => {
       const { contextCompactionPolicy: _policy, ...legacy } = normalizedToolRequest();
       void _policy;
       expect(contextCompactionPolicyRetired(legacy)).toBe(true);
-      expect(contextCompactionPolicyRetired({ ...legacy, agent: { maxOutputTokens: 1 } as never })).toBe(false);
       expect(contextCompactionPolicyRetired(normalizedToolRequest())).toBe(false);
     });
   });

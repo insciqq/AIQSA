@@ -31,7 +31,6 @@ function fixture(rows: Row[], ancestors: readonly string[] = ["answer-1"]) {
       errorPayload: null, chat: { archived: false, permanentDeletionAt: null, projectId: null } })) },
     user: { findFirst: vi.fn(async () => ({ id: actor.userId })) },
     chat: { findUnique: vi.fn(async () => ({ archived: false, permanentDeletionAt: null, projectId: null, userId: actor.userId })) },
-    agentRunBinding: { findUnique: vi.fn(async () => null) },
     toolObservation: {
       findMany: vi.fn(async (query: { where: { id: { in: string[] } } }) => rows.filter(entry => query.where.id.in.includes(entry.id))),
       findUnique: vi.fn()

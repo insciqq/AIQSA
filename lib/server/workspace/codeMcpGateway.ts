@@ -310,7 +310,7 @@ async function serve(
     }, { legacy: "stateless", responseMode: "json" });
     const response = await handler.fetch(bounded, { parsedBody });
     if (!response.body || response.status === 204) return response;
-    // Finish the bounded transport before the lease ends, as the Agent gateway does.
+    // Finish the bounded transport before the lease ends.
     const result = await readBoundedRequestBody(new Request("http://code.invalid/", { method: "POST", body: response.body,
       duplex: "half", signal } as RequestInit), {
       maxBytes: 2 * getMcpResponseWireLimits().callToolResponseMaxBytes + 64 * 1024,

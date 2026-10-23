@@ -328,7 +328,6 @@ export type BrowserNotificationsView = Readonly<{
 }>;
 
 export type ShellComposerView = {
-  agent?: Readonly<{ enabled: boolean; unavailableReason?: string; setEnabled(value: boolean): void }>;
   /**
    * The chat's automatic answer review: the choice, who may review and why it
    * cannot run now; `save` resolves to an error message, or null when saved.

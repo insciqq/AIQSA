@@ -200,7 +200,7 @@ export function createTelegramAdmission(deps: Readonly<{
     return {
       body: buildTelegramSendBody({
         admissionId, catalog, content: input.contentBlocks, model,
-        settings: { agentEnabled: link.agentEnabled, searchEnabled: link.searchEnabled, workspaceEnabled: link.workspaceEnabled },
+        settings: { searchEnabled: link.searchEnabled, workspaceEnabled: link.workspaceEnabled },
         ...(input.systemTurn ? { systemTurn: input.systemTurn } : {}),
         target, timeZone
       }),

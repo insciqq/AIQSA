@@ -1,8 +1,8 @@
 /**
  * Opt-in, paid, bounded scenario set for the native agent engine
  * (`lib/server/engine/`) on a real Codex LB answer model on a DISPOSABLE
- * stand, plus two simple coding tasks compared with a Codex Agent turn on the
- * old core (harness task, operator: simple scenarios, no elaborate benchmark).
+ * stand, plus two simple coding tasks (harness task, operator: simple
+ * scenarios, no elaborate benchmark).
  * The scenarios the other native paid specs already cover (streaming, MCP
  * write with approval, Stop then Continue in `native-engine-paid.spec.ts`;
  * XLSX → chart and `apply_patch` in `native-workspace-paid.spec.ts`; long
@@ -46,15 +46,7 @@
  *   4. Plain question        nothing more.
  *   5a/5b. Coding tasks      a real Workspace runner, and Internet On in the
  *                            Workspace policy: the image ships no pytest
- *                            (`Dockerfile`), so the agent installs it. The
- *                            Codex Agent half also needs the Agent gateway:
- *                            AIQSA_AGENT_GATEWAY_URL on the app (the dev
- *                            Compose app sets it) and AIQSA_AGENT_APP_ORIGIN
- *                            on the runner, so `/api/workspace` reports
- *                            `agentAvailable` and the model's catalog entry
- *                            carries `agentAvailable`. Without them the
- *                            summary records `agent_unavailable` and only
- *                            the native half runs.
+ *                            (`Dockerfile`), so the agent installs it.
  *
  * The real runner is the one `native-workspace-paid.spec.ts` documents in its
  * header (AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME=0, AIQSA_WORKSPACE_RUNNER_URL,
@@ -82,12 +74,11 @@
  * one or two Workspace commands, the answer); images two turns of two
  * requests each plus exactly two gpt-image-2 calls (low quality, 1024x1024),
  * and one image model check only when generation or editing is unverified;
- * plain question one request; each coding run about four to twelve requests
- * on the native engine and a similar number through the Codex Agent gateway.
- * About 40–70 requests in all.
+ * plain question one request; each coding run about four to twelve requests.
+ * About 30–50 requests in all.
  *
  * Oracles are the persisted runs, tool calls, usage rows, Search rows, stored
- * attachments and Agent bindings, the browser's own run streams (event kinds
+ * attachments, the browser's own run streams (event kinds
  * and arrival times only, recorded by a content-free probe), the rendered
  * sources and images, the Workspace archive the product downloads (file
  * markers and pytest's own result line), a Skill script whose output depends
@@ -781,38 +772,11 @@ const BUGFIX_TASK: CodingTask = {
   }
 };
 
-type Engine = "codex_agent" | "native";
-
-/** Whether the chat's composer offers a Codex Agent turn on this model now, with the reason when not. */
-async function codexAgentAvailability(page: Page, model: PaidAnswerModel): Promise<string | null> {
-  const workspace = await page.request.get("/api/workspace");
-  const agentReady = workspace.ok() && (await workspace.json() as { workspace?: { agentAvailable?: unknown } }).workspace?.agentAvailable === true;
-  if (!agentReady) return "workspace_agent_not_ready";
-  const entry = (await catalogState(page.request))?.models.find((candidate) => candidate.provider === model.connectionId &&
-    candidate.modelId === model.modelId);
-  if (entry?.agentAvailable !== true) return "model_agent_unavailable";
-  const chip = page.getByRole("button", { exact: true, name: "Agent" });
-  if (!await chip.isVisible().catch(() => false)) return "composer_agent_chip_missing";
-  if (await chip.getAttribute("aria-disabled") === "true") return "composer_agent_chip_disabled";
-  return null;
-}
-
-/**
- * One coding run in a chat of its own: the native engine, or a Codex Agent
- * turn on the old core. Outcomes are recorded, never thrown, so the other
- * engine still runs; the caller asserts the native half.
- */
-async function codingRun(page: Page, stand: Stand, model: PaidAnswerModel, task: CodingTask, engine: Engine): Promise<Record<string, unknown>> {
-  const outcome: Record<string, unknown> = { engine, task: task.key };
+/** One coding run on the native engine in a chat of its own. Outcomes are recorded, never thrown. */
+async function codingRun(page: Page, stand: Stand, model: PaidAnswerModel, task: CodingTask): Promise<Record<string, unknown>> {
+  const outcome: Record<string, unknown> = { task: task.key };
   try {
-    const chatId = await openChat(page, stand, model, `Native coding ${task.key} ${engine}`);
-    if (engine === "codex_agent") {
-      const unavailable = await codexAgentAvailability(page, model);
-      if (unavailable) return { ...outcome, status: "agent_unavailable", unavailableReason: unavailable };
-      const chip = page.getByRole("button", { exact: true, name: "Agent" });
-      await chip.click();
-      await expect(chip).toHaveAttribute("aria-pressed", "true");
-    }
+    const chatId = await openChat(page, stand, model, `Native coding ${task.key}`);
     for (const file of task.attachments) {
       await page.getByLabel("Attach files").setInputFiles({ buffer: Buffer.from(file.text), mimeType: "text/plain", name: file.name });
       const item = page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: file.name });
@@ -823,23 +787,17 @@ async function codingRun(page: Page, stand: Stand, model: PaidAnswerModel, task:
     const { run, seenAt } = await settled((await newRun(chatId, earlier)).id);
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 120_000 });
     const calls = await toolCalls(run.id);
-    const agent = await prisma.agentRunBinding.findUnique({ select: { failureCode: true, modelCalls: true, toolCalls: true },
-      where: { modelRunId: run.id } });
     Object.assign(outcome, {
-      agentBinding: agent ? { failureCode: agent.failureCode, modelCalls: agent.modelCalls, toolCalls: agent.toolCalls } : null,
       errorCode: errorCode(run), runEngine: run.engine, status: run.status,
       timings: { serverToAnswerCompletedMs: run.answerCompletedAt ? run.answerCompletedAt.getTime() - run.createdAt.getTime() : null,
         wallMs: seenAt - sent.nodeAt },
-      // The native engine keeps every call as a tool call row; a Codex Agent turn counts its calls on its binding.
-      toolCalls: engine === "native" ? calls.count : agent?.toolCalls ?? calls.count,
-      toolNames: calls.names, usage: await runUsage(run.id), workspaceCalls: calls.workspace.length
+      toolCalls: calls.count, toolNames: calls.names, usage: await runUsage(run.id), workspaceCalls: calls.workspace.length
     });
     const handoff = await settledWorkspace(run.id).catch(() => null);
     outcome.exportState = handoff?.binding?.exportState ?? null;
     const checks = task.verify(await workspaceArchive(page, chatId));
     outcome.checks = checks;
-    outcome.success = run.status === "complete" && Object.values(checks).every(Boolean) &&
-      (engine === "native" ? run.engine === "native" : agent !== null);
+    outcome.success = run.status === "complete" && Object.values(checks).every(Boolean) && run.engine === "native";
   } catch (error) {
     outcome.success = false;
     outcome.failure = error instanceof Error && /^[a-z][a-z0-9_]{0,63}$/u.test(error.message) ? error.message : "scenario_error";
@@ -847,13 +805,12 @@ async function codingRun(page: Page, stand: Stand, model: PaidAnswerModel, task:
   return outcome;
 }
 
-async function codingComparison(page: Page, testInfo: TestInfo, task: CodingTask): Promise<void> {
+async function codingScenario(page: Page, testInfo: TestInfo, task: CodingTask): Promise<void> {
   await withStand(page, testInfo, `native-coding-${task.key}`, async (stand) => {
     await requireRealRunner(stand);
     const model = await sharedAnswerModel(page, stand);
-    const native = await codingRun(page, stand, model, task, "native");
+    const native = await codingRun(page, stand, model, task);
     stand.summary.native = native;
-    stand.summary.codexAgent = await codingRun(page, stand, model, task, "codex_agent");
     expect(native.runEngine, "the native half ran on the native engine").toBe("native");
     expect(native.status, `the native run completes (${String(native.errorCode ?? native.failure ?? native.status)})`).toBe("complete");
     const checks = (native.checks ?? null) as Record<string, boolean> | null;
@@ -1104,13 +1061,13 @@ test.describe("native engine scenario set on Codex LB", () => {
     });
   });
 
-  test("5a. coding: fizzbuzz with pytest tests, native engine and Codex Agent", async ({ page }, testInfo) => {
+  test("5a. coding: fizzbuzz with pytest tests on the native engine", async ({ page }, testInfo) => {
     test.setTimeout(90 * 60_000);
-    await codingComparison(page, testInfo, FIZZBUZZ_TASK);
+    await codingScenario(page, testInfo, FIZZBUZZ_TASK);
   });
 
-  test("5b. coding: fix a planted bug so the provided test passes, native engine and Codex Agent", async ({ page }, testInfo) => {
+  test("5b. coding: fix a planted bug so the provided test passes on the native engine", async ({ page }, testInfo) => {
     test.setTimeout(90 * 60_000);
-    await codingComparison(page, testInfo, BUGFIX_TASK);
+    await codingScenario(page, testInfo, BUGFIX_TASK);
   });
 });

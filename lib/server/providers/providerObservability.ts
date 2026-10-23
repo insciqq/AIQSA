@@ -11,8 +11,7 @@ import { providerErrorCode, providerErrorCodeOf } from "./providerErrorCode";
 
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
-type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response" |
-  "upstream" | "authority_expired" | "interrupted";
+type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
 type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
@@ -41,8 +40,8 @@ type TransportAttempt = { failureObserved: boolean };
 const transportGlobal = globalThis as typeof globalThis & { [transportScopeKey]?: AsyncLocalStorage<TransportAttempt> };
 const transportScopes = transportGlobal[transportScopeKey] ??= new AsyncLocalStorage<TransportAttempt>();
 // Provider requests reuse the pinned MCP fetch primitive. Outside a provider
-// observation scope (the Agent gateway's provider streams) this marker keeps
-// their transport records labelled as provider traffic.
+// observation scope this marker keeps their transport records labelled as
+// provider traffic.
 const providerTransportKey = Symbol.for("aiqsa.providerTransportLabel");
 const providerTransportGlobal = globalThis as typeof globalThis & { [providerTransportKey]?: AsyncLocalStorage<true> };
 const providerTransports = providerTransportGlobal[providerTransportKey] ??= new AsyncLocalStorage<true>();
@@ -356,16 +355,6 @@ type ObservedFailure = Readonly<{
   provider_error_code?: string;
 }>;
 
-/** Why an Agent run or its model request ended, named by its failure code:
- * the provider failed, the run's authority (lease) ended, its user stopped
- * it, or the request was interrupted. */
-const agentFailureReasons: Readonly<Record<string, FailureReason>> = {
-  agent_provider_failed: "upstream", agent_search_failed: "upstream",
-  agent_authority_expired: "authority_expired",
-  agent_run_cancelled: "cancelled",
-  agent_provider_interrupted: "interrupted", agent_execution_interrupted: "interrupted"
-};
-
 const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
 type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_server_error";
 
@@ -445,8 +434,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       : code === "provider_output_too_large" || code.startsWith("provider_stream_") && code !== "provider_stream_failed" ||
         code === "provider_response_too_large" || code === "provider_budget_exhausted" || code === "image_response_too_large" ? "safety_limit"
       : code === "provider_http_dns_failed" || code === "provider_http_request_failed" || code === "provider_http_tls_failed" ||
-        code === "provider_request_outcome_unknown" ||
-        code === "agent_provider_dns_failed" || code === "agent_provider_connection_lost" ? "network"
+        code === "provider_request_outcome_unknown" ? "network"
       : status !== undefined ? "http"
       : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"
       : code.startsWith("gemini_interactions_stream_") ||
@@ -455,7 +443,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
         code === "image_response_invalid" ? "invalid_response"
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
-        ? "policy" : Object.hasOwn(agentFailureReasons, code) ? agentFailureReasons[code]! : "unknown";
+        ? "policy" : "unknown";
     const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
       value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
     const streamDrop = providerStreamDrop(value);

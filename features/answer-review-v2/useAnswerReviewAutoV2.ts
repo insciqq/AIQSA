@@ -46,7 +46,6 @@ function savedChat(chat: WorkspaceChatSummary | null): WorkspaceChatSummary | nu
  */
 export function useAnswerReviewAutoV2(input: Readonly<{
   activeChat: WorkspaceChatSummary | null;
-  agentEnabled: boolean;
   assistantChat: boolean;
   authorModel: AnswerReviewCatalogModelV2 | undefined;
   /** Personal Settings default; a Project chat starts off with no reviewers. */

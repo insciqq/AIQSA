@@ -385,15 +385,6 @@ export async function insertAcceptedWorkspaceRunBinding(
     }
   });
   await bindWorkspaceSecrets(tx, { runId: ids.runId, userId: input.userId, chatId: input.chatId });
-  if (input.normalizedRequest.agent) {
-    const agent = input.normalizedRequest.agent;
-    if (input.project || input.assistant || agent.version !== 2 || !/^[a-f0-9]{64}$/u.test(agent.compatibilityHash)) {
-      throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
-    }
-    await tx.agentRunBinding.create({ data: {
-      modelRunId: ids.runId, configuration: json(agent), compatibilityHash: agent.compatibilityHash
-    } });
-  }
   if (writesChatSwitch) {
     await tx.chat.update({
       data: { workspaceEnabled: true },
@@ -716,7 +707,7 @@ type TemporaryPreparingRunAdmissionInput = Readonly<{
 }>;
 
 /**
- * Temporary Chat, Agent and scheduled task turns without Memory (an answer
+ * Temporary Chat and scheduled task turns without Memory (an answer
  * to a task's prompt whose admission froze no standing read) bypass Personal
  * Memory preparation entirely. The ordinary run is made dispatchable in the
  * admission transaction, while no Memory attempt/binding receives the
@@ -726,7 +717,7 @@ export async function finalizeTemporaryPreparingRunAdmission(
   tx: Pick<Prisma.TransactionClient, "modelRun">,
   input: TemporaryPreparingRunAdmissionInput
 ): Promise<PreparingRunAdmissionResult | null> {
-  if (input.chatMemoryMode !== "TEMPORARY" && !input.normalizedRequest.agent && !input.scheduledPrompt) return null;
+  if (input.chatMemoryMode !== "TEMPORARY" && !input.scheduledPrompt) return null;
   await tx.modelRun.update({
     data: {
       normalizedRequest: json(input.normalizedRequest),
@@ -1288,7 +1279,7 @@ async function enqueuePreparingMemoryCommand(
 ): Promise<boolean> {
   // A turn the server wrote for the user is never a Memory command.
   if (input.admissionKind !== "NORMAL_SEND" || input.project || input.scheduledOccurrence || input.systemTurnKind ||
-    input.normalizedRequest.agent || source.chatMemoryMode !== "NORMAL" ||
+    source.chatMemoryMode !== "NORMAL" ||
     !settings.useMemoryFacts ||
     admitMemoryAction(textFromContentBlocks(input.content)).state !== "SEMANTIC_CANDIDATE") {
     return false;
@@ -1331,8 +1322,7 @@ export async function admitPreparingRunWithClient(
       }
       // Command acceptance shares the owner serialization used by every
       // Memory writer, before any source-chat row is locked.
-      if (!input.normalizedRequest.agent && !options.memoryUnavailableFallback &&
-        !await lockPreparingMemoryOwner(tx, input.userId)) {
+      if (!options.memoryUnavailableFallback && !await lockPreparingMemoryOwner(tx, input.userId)) {
         throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
       }
       if (input.normalizedRequest.instructionPreset) await assertInstructionPresetSelection(
@@ -1721,8 +1711,7 @@ export async function admitPreparingRunWithClient(
       // bypasses Personal Memory.
       const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
       const scheduledWithoutMemory = scheduledPrompt && input.normalizedRequest.memoryStandingVersion !== 1;
-      const settings = lockedChat.memoryMode === "TEMPORARY" || input.normalizedRequest.agent ||
-          scheduledWithoutMemory || options.memoryUnavailableFallback
+      const settings = lockedChat.memoryMode === "TEMPORARY" || scheduledWithoutMemory || options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
         : await loadPreparingSettings(tx, input.userId, true);
 
@@ -4151,10 +4140,10 @@ export async function createDormantPreparingRun(
       preparation: fallback.deferredPdf ? "pdf" : "ready" });
     return { ...fallback, acceptedAt: new Date() };
   }
-  // Temporary, Agent and scheduled task turns without a standing read (any
+  // Temporary and scheduled task turns without a standing read (any
   // answer to a task's prompt, as admission read it) were made dispatchable
   // without Personal Memory.
-  const withoutMemory = created.chatMemoryMode === "TEMPORARY" || Boolean(admission.normalizedRequest.agent) ||
+  const withoutMemory = created.chatMemoryMode === "TEMPORARY" ||
     (created.scheduledPrompt === true && admission.normalizedRequest.memoryStandingVersion !== 1);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
@@ -4674,10 +4663,9 @@ async function continueDeferredPreparedRunWithClient(
       chat.activeLeafMessageId !== created.assistantMessageId) {
       throw failure("unavailable");
     }
-    if (admission.project || created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent) {
+    if (admission.project || created.chatMemoryMode === "TEMPORARY") {
       // These scopes never create or read Personal Memory attempts.
-      if (admission.project ? chat.projectId !== admission.project.projectId
-        : admission.normalizedRequest.agent ? chat.userId !== admission.userId || Boolean(chat.projectId) : chat.memoryMode !== "TEMPORARY") {
+      if (admission.project ? chat.projectId !== admission.project.projectId : chat.memoryMode !== "TEMPORARY") {
         throw failure("unavailable");
       }
       await tx.modelRun.update({ where: { id: created.runId }, data: {

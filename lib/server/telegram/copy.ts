@@ -22,7 +22,7 @@ export const TELEGRAM_BOT_COMMANDS: readonly TelegramBotCommand[] = [
   { command: "chats", description: "Continue one of your recent chats" },
   { command: "assistant", description: "Start a chat with an assistant" },
   { command: "model", description: "Choose the model for your messages" },
-  { command: "settings", description: "Search, Workspace, Agent and model" },
+  { command: "settings", description: "Search, Workspace and model" },
   { command: "stop", description: "Stop the running reply" },
   { command: "help", description: "List the commands" },
   { command: "unlink", description: "Disconnect Telegram from AIQSA" }
@@ -95,8 +95,6 @@ export const TELEGRAM_RUN_REFUSAL_COPY = {
   workspaceDisabled: "Workspace is off on this AIQSA. Turn Workspace off in /settings.",
   workspaceModel: "This model can't use Workspace. Choose another with /model or turn Workspace off in /settings.",
   workspaceUnavailable: "Workspace can't take this message now. Try again, or turn Workspace off in /settings.",
-  agentModel: "This model can't run Agent. Choose another with /model or turn Agent off in /settings.",
-  agentUnavailable: "Agent isn't available for this message. Turn Agent off in /settings or try again later.",
   toolsUnavailable: "A connected tool this chat uses isn't ready. Review your connections in AIQSA.",
   skillUnavailable: "A Skill this chat uses isn't available. Review your Skills in AIQSA.",
   assistantUnavailable: "This assistant isn't available now. Start a new chat with /new or choose another with /assistant.",
@@ -155,7 +153,7 @@ export function telegramAssistantSelectedText(assistantName: string): string {
   return `Next message starts a chat with ${bounded(assistantName)}`;
 }
 
-export function telegramToggleLabel(name: "Search" | "Workspace" | "Agent", enabled: boolean): string {
+export function telegramToggleLabel(name: "Search" | "Workspace", enabled: boolean): string {
   return `${name}: ${enabled ? "on" : "off"}`;
 }
 
@@ -167,24 +165,18 @@ function minutes(elapsedMs: number): number {
   return Math.max(1, Math.round(elapsedMs / 60_000));
 }
 
-export function telegramAgentWorkingText(elapsedMs: number, activity?: string): string {
-  const head = `Agent is working · ${minutes(elapsedMs)} min`;
-  const detail = activity ? bounded(activity, ACTIVITY_MAX_LENGTH) : "";
-  return detail ? `${head} — ${detail}` : head;
-}
-
-export function telegramAgentFinishedText(elapsedMs: number): string {
+export function telegramWorkFinishedText(elapsedMs: number): string {
   return `Finished in ${minutes(elapsedMs)} min`;
 }
 
-/** The status of a run that works in Workspace without Agent. */
+/** The status of a run that works in Workspace. */
 export function telegramWorkspaceWorkingText(elapsedMs: number, activity?: string): string {
   const head = `Working in Workspace · ${minutes(elapsedMs)} min`;
   const detail = activity ? bounded(activity, ACTIVITY_MAX_LENGTH) : "";
   return detail ? `${head} — ${detail}` : head;
 }
 
-/** The status of an Agent or Workspace run that ended with an error; the answer message says why. */
+/** The status of a Workspace run that ended with an error; the answer message says why. */
 export function telegramWorkFailedText(elapsedMs: number): string {
   return `Failed after ${minutes(elapsedMs)} min`;
 }
@@ -196,7 +188,7 @@ function plural(count: number, noun: string): string {
 }
 
 /**
- * One Workspace or Agent step as the status names it, from the activity the
+ * One Workspace step as the status names it, from the activity the
  * run already projected (redacted, bounded): what runs, is read or written,
  * or which tool is called. Null for lifecycle steps not worth a status line.
  */
@@ -267,7 +259,7 @@ export function telegramAlwaysAllowedText(serverName: string): string {
 export const TELEGRAM_APPROVAL_COPY = {
   pendingModel: "This tool may change data, so nothing was sent. If you allow it, the answer continues.",
   pendingCode: "Code in the Workspace called this tool, which may change data. Nothing was sent. If you allow it, the next run repeats the script.",
-  pendingAgent: "Agent called this tool, which may change data. Nothing was sent. If you allow it, Agent continues.",
+  pendingAgent: "Agent called this tool, which may change data. Nothing was sent.",
   stillRunning: "The answer is still finishing. Try again in a moment.",
   notSaved: "Your decision couldn't be saved. Try again.",
   unavailable: "This approval is no longer available."

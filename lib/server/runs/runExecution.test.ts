@@ -141,9 +141,6 @@ import { chatTitleWork } from "@/tests/support/chatTitles";
 import { createChatTitleWorker } from "../chats/titleGenerationWorker";
 import { notifyRunFollowup } from "./runFollowupRegistry";
 import type { RunFollowup } from "../../contracts/runFollowups";
-import * as agentExecutor from "../agents/executor";
-import { agentLimits } from "../agents/config";
-import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 import { conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
@@ -612,7 +609,7 @@ function preparedData(input: Readonly<{
       messages: contextMessages,
       mode: "branch_path"
     },
-    // Every non-Agent admission freezes the one conversation policy.
+    // Every admission freezes the one conversation policy.
     contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages: contextMessages }),
     modelCapabilities: {
       backgroundStreaming: true,
@@ -2171,43 +2168,6 @@ describe("run execution", () => {
       expect(JSON.stringify([...repository.toolCalls.values()])).toContain(descriptor.checksum);
       expect(events).not.toMatch(/private-preview|private-call-key|base64/);
     } finally { viewer.mockRestore(); }
-  });
-
-  it("publishes Agent Follow-up availability before native output on the initial stream", async () => {
-    const initial = chatUpdate();
-    initial.messages = initial.messages.map(message => message.role === "assistant" ? {
-      ...message, status: "streaming", content: textMessageContent(""), followups: { available: true, entries: [] }
-    } : message);
-    const repository = createRepository({ chatUpdate: initial });
-    followupFixture(repository.repository);
-    const base = preparedData();
-    const agent = { ...agentLimits(DEFAULT_AGENT_POLICY, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
-      compatibilityHash: "a".repeat(64), mcpMode: "off" as const };
-    const prepared = { ...base,
-      normalizedRequest: { ...base.normalizedRequest, agent, workspace: completionWorkspace },
-      providerRequest: { ...base.providerRequest, agent, workspace: completionWorkspace }
-    };
-    const native = vi.spyOn(agentExecutor, "executeCodexTurn").mockImplementation(async input => {
-      expect(input.followups?.operations).toBe(repository.repository.followups);
-      await input.onEvent({ type: "token", data: { delta: "Native answer" } });
-      return { ...providerResult({ finalText: "Native answer" }), followupRevision: 0 };
-    });
-    try {
-      const events = parseSse(await createRunExecutionResponse({
-        ...executionInput({ adapter: createAdapter(vi.fn()), prepared, repository: repository.repository }),
-        agentResponses: {} as NonNullable<RunExecutionInput["agentResponses"]>,
-        workspace: { accepts: () => false, execute: vi.fn(), executeAgent: vi.fn(), finalize: vi.fn(),
-          recoverExports: vi.fn(), tools: async () => [], handoff: async () => ({ status: "ready" }),
-          settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
-      }).text());
-      expect(repository.failedRuns).toEqual([]);
-      expect(native).toHaveBeenCalledOnce();
-      const admissionIndex = events.findIndex(event => event.type === "chat_update");
-      expect(admissionIndex).toBeGreaterThan(events.findIndex(event => event.type === "message_start"));
-      expect(admissionIndex).toBeLessThan(events.findIndex(event => event.type === "token"));
-      expect(events[admissionIndex]).toMatchObject({ data: { messages: [expect.anything(),
-        { followups: { available: true, entries: [] } }] } });
-    } finally { native.mockRestore(); }
   });
 
   it.each([
@@ -8013,7 +7973,7 @@ describe("run execution", () => {
     });
     // The client Search tool routes the first request through the tool loop;
     // the plain request fails on the direct stream path, also through the
-    // follow-up executor that production uses for every non-Agent dispatch.
+    // follow-up executor that production uses for every dispatch.
     for (const [prepared, withFollowups] of [
       [preparedData({ modelId: "openai-answer-model", provider: "openai", searchPlan: perplexityClientSearchPlan() }), false],
       [preparedData(), false],
@@ -9367,32 +9327,6 @@ describe("cross-turn tool history", () => {
       expect(JSON.stringify(request.context!.messages[2]!.content)).toContain("earlier tool calls of this chat could not be loaded");
     }
     expect(projectToolHistory).not.toHaveBeenCalled();
-  });
-
-  it("fails an Agent run whose records cannot fit the prompt with its own code before any native work", async () => {
-    const base = historyPrepared();
-    const agent = { ...agentLimits(DEFAULT_AGENT_POLICY, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
-      compatibilityHash: "a".repeat(64), mcpMode: "off" as const };
-    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, agent, workspace: completionWorkspace },
-      providerRequest: { ...base.providerRequest, agent, workspace: completionWorkspace } };
-    // Executed calls whose compact lines alone exceed the Agent prompt limit.
-    const entries = Array.from({ length: 2_600 }, (_, index) => {
-      const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
-      const compact = `- [${ref}] MCP Tracker › write ${"w".repeat(400)}: executed.`;
-      return { ref, compact, full: compact, details: false, essential: true };
-    });
-    const projectToolHistory = vi.fn(async () => ({ blocks: [{ ...historyProjection().blocks[0]!, entries }] }));
-    const repository = createRepository();
-    const executeAgent = vi.fn<NonNullable<NonNullable<RunExecutionInput["workspace"]>["executeAgent"]>>();
-    await createRunExecutionResponse({
-      ...executionInput({ adapter: createAdapter(vi.fn()), prepared, repository: { ...repository.repository, projectToolHistory } }),
-      agentResponses: {} as NonNullable<RunExecutionInput["agentResponses"]>,
-      workspace: { accepts: () => false, execute: vi.fn(), executeAgent, finalize: vi.fn(), recoverExports: vi.fn(), tools: async () => [],
-        handoff: async () => ({ status: "ready" }), settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
-    }).text();
-    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "agent_context_too_large",
-      message: "This conversation is too large to start Agent. Continue in a new chat." }) })]);
-    expect(executeAgent).not.toHaveBeenCalled();
   });
 
   it("sends no records and no projection I/O for a run without a frozen history", async () => {

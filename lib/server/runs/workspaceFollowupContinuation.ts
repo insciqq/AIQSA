@@ -110,7 +110,7 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
         ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
         repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
         userId: claim.userId, ...(deps.workspace ? { workspace: deps.workspace } : {}) })
-      : createRunExecutionResponse({ ...deps, adapter: runtime.adapter, agentResponses: runtime.agentResponses, created, prepared,
+      : createRunExecutionResponse({ ...deps, adapter: runtime.adapter, created, prepared,
         searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
     void (async () => {
       const reader = response.body?.getReader();

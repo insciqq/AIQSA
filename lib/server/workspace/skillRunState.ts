@@ -115,14 +115,6 @@ export class WorkspaceSkillRunState {
     });
   }
 
-  async start<T>(input: WorkspaceSkillRunIdentity, action: () => Promise<T>): Promise<T> {
-    return this.locked(input, async () => {
-      const record = await this.read(input.sessionId);
-      if (!this.exact(record, input) || record.phase !== "ready") return skillPreparationFailed();
-      return action();
-    });
-  }
-
   /** Called only after exact guest removal; a stale cleanup cannot erase its successor. */
   async removeSession(input: { sessionId: string; runtimeSandboxId: string | null }): Promise<void> {
     const record = await this.read(input.sessionId);

@@ -13,14 +13,12 @@ const budgets = { version: 1, maxCalls: 200, maxConcurrent: 4, maxPerSecond: 10 
 const catalog = { catalog: { servers: [{ tools: [{ namespacedName: "mcp_tracker_list_0000000000" }] }] } };
 
 describe("guest-code MCP eligibility", () => {
-  it("grants code access only to personal Internet-On, gateway-capable, non-Agent runs with MCP authority", () => {
+  it("grants code access only to personal Internet-On, gateway-capable runs with MCP authority", () => {
     const eligible = { workspace: { codeMcp: budgets, internetEnabled: true }, mcpDiscovery: catalog };
     expect(workspaceCodeMcpEligibility(eligible)).toEqual({ kind: "eligible", budgets });
     expect(workspaceCodeMcpEligibility({ ...eligible, project: false })).toEqual({ kind: "eligible", budgets });
     expect(workspaceCodeMcpEligibility({ workspace: eligible.workspace, mcp: { tools: [{}] } }))
       .toEqual({ kind: "eligible", budgets });
-    // Agent runs keep their own bearer and gateway surface.
-    expect(workspaceCodeMcpEligibility({ ...eligible, agent: { mcpMode: "auto" } })).toEqual({ kind: "agent" });
     // Members share a Project chat's Workspace: whatever else holds, its runs get no bearer.
     for (const request of [eligible, { ...eligible, workspace: { ...eligible.workspace, internetEnabled: false } }, { workspace: null }]) {
       expect(workspaceCodeMcpEligibility({ ...request, project: true }))

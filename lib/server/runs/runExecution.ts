@@ -17,7 +17,6 @@ import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfigu
 import { knowledgeLifecycleAfterFollowup } from "../knowledge/followupExecution";
 import { effectiveFollowupQuestion } from "../../domain/runFollowupContext";
 import { extractOpenAIUsage } from "../providers/openaiResponsesResponse";
-import { AgentExecutionError, agentFailureCode, agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop, imageGenerationFailure, type ImageFailureEvidence } from "../images/errors";
@@ -253,8 +252,6 @@ import { readOnlyRunTool } from "./toolReadOnly";
 import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory, toolRoundCall } from "./toolCallRepeatGuard";
 import { mcpApprovalGated, mcpApprovalRequestForCall } from "./mcpApprovalGate";
 import { normalizeProviderToolCallName, unknownToolCall } from "./unknownToolCall";
-import { executeCodexTurn } from "../agents/executor";
-import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
 import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
@@ -273,7 +270,6 @@ import {
 } from "./contextCompactionPlanner";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
-import { CodexProtocolError } from "../agents/codexProtocol";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
@@ -343,7 +339,6 @@ export type RunExecutionRepository = Pick<
 export type RunExecutionInput = Readonly<{
   observations?: ToolObservationService;
   skillTools?: import("../skills/toolService").SkillToolService;
-  agentResponses?: AgentResponsesTransport;
   artifacts?: Pick<import("../artifacts/service").ArtifactService, "execute" | "restore">;
   vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
@@ -773,8 +768,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         await assertProjectRunAccessCurrent(true);
         emitTransient(controller, encoder, { type: "artifact_generation", data });
       });
-      // MCP calls refused for the initiator's approval (tool loop, guest code,
-      // Agent) each have a card; their rows are its only durable state, so the
+      // MCP calls refused for the initiator's approval (tool loop, guest code)
+      // each have a card; their rows are its only durable state, so the
       // live stream forwards each new one once and the settled answer reads them.
       const emittedApprovalCards = new Set<string>();
       const emitApprovalCards = async () => {
@@ -790,14 +785,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const workspaceTurnController = normalizedRequest.workspace
         ? new AbortController()
         : null;
-      const workspaceTurnTimeoutSeconds = normalizedRequest.agent ? normalizedRequest.agent.timeoutSeconds : normalizedRequest.workspace?.turnTimeoutSeconds;
+      const workspaceTurnTimeoutSeconds = normalizedRequest.workspace?.turnTimeoutSeconds;
       const workspaceTurnTimer = workspaceTurnController && workspaceTurnTimeoutSeconds != null
         ? setTimeout(
             () => {
               logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
-                code: normalizedRequest.agent ? "workspace_tool_timeout" : "workspace_turn_time_limit", reason: "deadline",
+                code: "workspace_turn_time_limit", reason: "deadline",
                 abort_source: "workspace_deadline", timeout_ms: workspaceTurnTimeoutSeconds! * 1_000 });
-              workspaceTurnController.abort(normalizedRequest.agent ? new AgentExecutionError("agent_time_limit") : new WorkspaceRuntimeError("workspace_turn_time_limit"));
+              workspaceTurnController.abort(new WorkspaceRuntimeError("workspace_turn_time_limit"));
             },
             workspaceTurnTimeoutSeconds! * 1_000
           )
@@ -808,7 +803,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       // flag: running work is never interrupted, and Stop and the hard
       // deadline above keep their own signals.
       let workspaceTimeBudgetExhausted = false;
-      const workspaceSoftDeadlineTimer = workspaceTurnTimer && normalizedRequest.workspace && !normalizedRequest.agent
+      const workspaceSoftDeadlineTimer = workspaceTurnTimer && normalizedRequest.workspace
         ? setTimeout(() => { workspaceTimeBudgetExhausted = true; }, workspaceTurnSoftDeadlineMs(
             normalizedRequest.workspace.turnTimeoutSeconds, normalizedRequest.workspace.syncToolTimeoutSeconds))
         : null;
@@ -904,7 +899,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const toolCallReader: ToolCallReader | undefined = input.repository.readToolCall
         ? { read: (actor, ref) => input.repository.readToolCall!(actor, ref) } : undefined;
       let followupBaseRequest = input.prepared.providerRequest;
-      let agentFollowupRevision = 0;
       async function publishFollowupDelivery(revision: number) {
         tokenBuffer.resetLocal();
         answerStartMarked = false;
@@ -915,7 +909,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }).catch(() => null);
         if (update) emitTransient(controller, encoder, { type: "chat_update", data: serializeChatUpdate(update) });
       }
-      const followups = input.repository.followups && !normalizedRequest.agent
+      const followups = input.repository.followups
         ? createRunFollowupExecution({
             runId, userId: input.userId, operations: input.repository.followups,
             bridge: input.toolBridge ?? providerToolBridges[normalizedRequest.provider as keyof typeof providerToolBridges],
@@ -2446,8 +2440,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const toolCallRoutes: ToolCallRoutes = { search: isSearchCall, knowledge: isKnowledgeCall, workspace: isWorkspaceCall,
           mcp: (name) => isMcpDiscoveryCall(name) || resolveMcpRunTool(activeMcpSnapshot, name) !== null };
         const outcome = await continueProviderToolLoop({
-          // Every checkpoint of a v1 non-Agent run carries the rebuild record.
-          allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
+          // Every checkpoint of a v1 run carries the rebuild record.
+          allowContextRebuild: normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
           // A monitoring check's first verdict, or an answer review step's
           // first report, is reserved outside the business tool budgets; a
@@ -2563,7 +2557,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             await assertProjectRunAccessCurrent(true);
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
-                ...(!normalizedRequest.agent && normalizedRequest.contextCompactionPolicy
+                ...(normalizedRequest.contextCompactionPolicy
                   ? { contextCompaction: contextCompactionCheckpoint({
                       ownerId: input.userId,
                       request: roundRequest,
@@ -3422,7 +3416,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               roundIndex: round,
               runId,
               userId: input.userId,
-              ...(!normalizedRequest.agent && normalizedRequest.contextCompactionPolicy && sessionRequest
+              ...(normalizedRequest.contextCompactionPolicy && sessionRequest
                 ? { contextCompaction: contextCompactionCheckpoint({
                     ownerId: input.userId,
                     request: sessionRequest,
@@ -3720,38 +3714,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         let providerResult: ProviderRunResult & {
           usageAttributions?: RunUsageAttribution[];
         };
-        if (normalizedRequest.agent) {
-          if (!input.agentResponses || !input.workspace?.executeAgent) {
-            throw new RunPipelineError("agent_unavailable", "Agent execution is unavailable.");
-          }
-          // An Agent answer is published only after its Codex exec, a Workspace tool call.
-          toolRoundsBeforeOutput = true;
-          await announceModelRequest();
-          providerResult = await executeCodexTurn({
-            request: providerRequest, runId, userId: input.userId, signal,
-            transport: input.agentResponses, workspace: input.workspace,
-            onEvent: applyProviderEvent, onActivity: onWorkspaceActivity,
-            ...(input.repository.followups ? { followups: {
-              operations: input.repository.followups,
-              async beforeDelivery() { await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); }); return tokenBuffer.text; },
-              async onDelivery(revision: number) {
-                agentFollowupRevision = revision;
-                await publishFollowupDelivery(revision);
-              }
-            } } : {}),
-            async onPersistedEvent(event) {
-              // The gateway committed this output with the tool receipt.
-              // Forward it live without creating a second durable event.
-              emitTransient(controller, encoder, event);
-            },
-            async onUsage(attributions) {
-              reportedUsageAttributions.splice(0, reportedUsageAttributions.length, ...attributions);
-              await persistReportedUsageForIncompleteRun();
-            }
-          });
-          // Calls the Agent gateway refused for the initiator's approval.
-          await emitApprovalCards();
-        } else if (knowledgeAnswerExecution) {
+        if (knowledgeAnswerExecution) {
           providerResult = knowledgeAnswerExecution.result;
         } else if (hasClientTools) {
           const toolLoopResult = await runProviderToolLoop(providerRequest);
@@ -3848,7 +3811,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         executionStage = "completion";
         const finalization = await finalizeRunCompletion({
-          ...(followups ? { followupRevision: followups.revision } : normalizedRequest.agent ? { followupRevision: agentFollowupRevision } : {}),
+          ...(followups ? { followupRevision: followups.revision } : {}),
           ...(normalizedRequest.workspace ? { afterAnswerPublished: async (answer: { finalText: string; usage: ModelRunUsage }) => {
             answerPublished = true;
             if (knowledgeCitationAnswer && answer.finalText) {
@@ -4032,8 +3995,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           (knowledgeAnswerAttempted
             ? focusedKnowledgeFailureCode(failure)
             : pipelineError?.code ??
-              (failure instanceof AgentExecutionError ? failure.code : null) ??
-              (failure instanceof CodexProtocolError ? failure.code : null) ??
               (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
               (deadlineExceeded ? "provider_request_timed_out" : observedCode !== "unknown" ? observedCode : "provider_stream_failed"));
         await compactionPublisher.terminate(contextCompactionFailureOutcome(failureCode)).catch(() => undefined);
@@ -4049,9 +4010,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               code: failureCode,
               message: settlement?.message ?? (knowledgeAnswerAttempted
                 ? safeKnowledgeFailureMessage(failureCode)
-                : normalizedRequest.agent
-                  ? agentFailureCode(failureCode) ? agentFailureMessage(agentFailureCode(failureCode)!)
-                    : "Agent could not complete this turn. Check the selected model and Workspace status before trying again."
                 : pipelineError?.message ?? (isWorkspaceOperationFailureCode(failureCode)
                   ? workspaceOperationFailureMessage(failureCode)
                   : deadlineExceeded ? "The provider request timed out. Its outcome may be unknown."

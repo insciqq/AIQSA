@@ -16,7 +16,7 @@ import type { TelegramRunGateway } from "./gateway";
  * The bot's chat commands (D-13) and their buttons: `/new`, `/chats` (ten
  * recent personal chats), `/assistant` (pinned, recent, the rest; at most
  * twenty), `/model` (eight catalog models per page), `/settings` (one menu
- * whose toggles edit it in place; Agent only for a model that offers it).
+ * whose toggles edit it in place).
  * Choices that change where the next message goes run in order with the
  * messages around them; every choice is checked against the current catalog
  * and access before it is stored on the link.
@@ -59,7 +59,6 @@ export function telegramSettingsKeyboard(link: TelegramLinkRecord, model: Telegr
   return [
     [{ callback: { kind: "toggle_search" }, text: telegramToggleLabel("Search", link.searchEnabled) }],
     [{ callback: { kind: "toggle_workspace" }, text: telegramToggleLabel("Workspace", link.workspaceEnabled) }],
-    ...(model?.agentAvailable ? [[{ callback: { kind: "toggle_agent" as const }, text: telegramToggleLabel("Agent", link.agentEnabled) }]] : []),
     [{
       callback: { kind: "model_page", payload: { page: 0 } },
       text: model ? telegramModelLabel(model.displayName) : TELEGRAM_BRIDGE_COPY.chooseModel
@@ -106,7 +105,7 @@ export function createTelegramBridgeMenus(deps: Readonly<{
     }
   }
 
-  /** The model an ordinary message would use next, for marking and the Agent toggle. */
+  /** The model an ordinary message would use next, for marking. */
   async function nextModel(link: TelegramLinkRecord, catalog: TelegramRunCatalog): Promise<TelegramCatalogModel | null> {
     const chat = link.currentChatId ? await deps.gateway.findChat(link.userId, link.currentChatId) : null;
     const resolved = resolveTelegramModel(catalog, {
@@ -184,9 +183,7 @@ export function createTelegramBridgeMenus(deps: Readonly<{
     },
 
     toggle_search: toggle((link) => ({ searchEnabled: !link.searchEnabled })),
-    // Agent works in a Workspace: switching Workspace off ends Agent, switching Agent on starts Workspace.
-    toggle_workspace: toggle((link) => link.workspaceEnabled ? { agentEnabled: false, workspaceEnabled: false } : { workspaceEnabled: true }),
-    toggle_agent: toggle((link) => link.agentEnabled ? { agentEnabled: false } : { agentEnabled: true, workspaceEnabled: true }),
+    toggle_workspace: toggle((link) => ({ workspaceEnabled: !link.workspaceEnabled })),
 
     open_settings: async (context) => {
       await send(context, await settingsMenu(context.link));

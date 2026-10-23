@@ -30,7 +30,6 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from .errors import (
     RETRYABLE_CODES,
-    AgentModeUnsupported,
     AiqsaMcpError,
     GatewayUnavailable,
     InternetOff,
@@ -51,9 +50,8 @@ TOKEN_ENV = "AIQSA_RUN_TOKEN"
 GATEWAY_ENV = "AIQSA_GATEWAY_URL"
 INVOCATION_ENV = "AIQSA_INVOCATION_ID"
 UNAVAILABLE_ENV = "AIQSA_MCP_UNAVAILABLE"
-AGENT_TOKEN_ENV = "AIQSA_AGENT_TOKEN"
 INVOCATION_HEADER = "x-aiqsa-invocation-id"
-#: The runner relay as guests reach it; Agent runs use it without a URL variable.
+#: The runner relay as guests reach it.
 DEFAULT_GATEWAY = "http://host.microsandbox.internal:4311"
 #: Marks a gateway refusal, as opposed to an error answered by the tool itself.
 ERROR_META = "aiqsa/error"
@@ -69,7 +67,6 @@ _UNAVAILABLE = {
                             "Code can call MCP tools in personal chats only, because members share a Project chat's "
                             "Workspace."),
 }
-_AGENT_INTERNAL_TOOLS = frozenset({"find_tools", "call_tool"})
 
 
 class Tool:
@@ -148,17 +145,11 @@ class Client:
         self.retry_seconds = retry_seconds
         self._tools: Optional[List[Tool]] = None
         token = env.get(TOKEN_ENV)
-        agent_token = env.get(AGENT_TOKEN_ENV)
         if token:
             self.mode = "code"
             self.token = token
             self.gateway = (env.get(GATEWAY_ENV) or DEFAULT_GATEWAY).rstrip("/")
             self.invocation = env.get(INVOCATION_ENV) or None
-        elif agent_token:
-            self.mode = "agent"
-            self.token = agent_token
-            self.gateway = (env.get(GATEWAY_ENV) or DEFAULT_GATEWAY).rstrip("/")
-            self.invocation = None
         else:
             self.mode = "unavailable"
             self.token = ""
@@ -171,13 +162,6 @@ class Client:
     def list_tools(self) -> List[Tool]:
         """The run's MCP tools, as the run's current permissions allow."""
         self._require_access()
-        if self.mode == "agent":
-            tools = self._list()
-            if any(tool.name == "call_tool" for tool in tools):
-                raise AgentModeUnsupported(
-                    "This Agent run uses MCP Auto: tools are not listed. call(name, arguments) with an exact "
-                    "tool name or \"<server>/<tool>\" still works.")
-            return [tool for tool in tools if tool.name not in _AGENT_INTERNAL_TOOLS]
         return list(self._list())
 
     def call(self, name: str, arguments: Optional[Mapping[str, Any]] = None, *, timeout: Optional[float] = None) -> ToolResult:
@@ -188,8 +172,6 @@ class Client:
             raise AiqsaMcpError("Arguments must be a JSON object.", code="invalid_arguments")
         args = dict(arguments or {})
         self._require_access()
-        if self.mode == "agent":
-            return self._agent_call(name, args, timeout)
         return self._tool_call(self._resolve(name), args, timeout)
 
     # --- internals ------------------------------------------------------
@@ -261,54 +243,8 @@ class Client:
         if meta.get(ERROR_META) is True and isinstance(structured, dict) and isinstance(structured.get("code"), str):
             details = {key: value for key, value in structured.items() if key not in ("code", "message")}
             raise error_for(structured["code"], str(structured.get("message") or ""), details)
-        if self.mode == "agent":
-            refusal = self._agent_refusal(result)
-            if refusal:
-                raise refusal
         tool_result = ToolResult(result)
         raise ToolError(tool_result.text or "The tool answered with an error.", result=tool_result)
-
-    @staticmethod
-    def _agent_refusal(result: Dict[str, Any]) -> Optional[AiqsaMcpError]:
-        """The Agent gateway reports its own refusals as JSON text with a code."""
-        text = ToolResult(result).text
-        try:
-            value = json.loads(text) if text.lstrip().startswith("{") else None
-        except ValueError:
-            value = None
-        if isinstance(value, dict) and isinstance(value.get("code"), str) and \
-                (value["code"].startswith("agent_") or value["code"] in ("tool_unavailable", "tool_definition_changed",
-                                                                         "invalid_arguments", "upstream_unavailable",
-                                                                         "authorization_required", "result_unsupported",
-                                                                         "discovery_unavailable")):
-            return error_for(value["code"], str(value.get("message") or ""))
-        return None
-
-    def _agent_call(self, name: str, arguments: Dict[str, Any], timeout: Optional[float]) -> ToolResult:
-        """Agent runs keep their own MCP surface: exact tools, or find_tools and call_tool in Auto."""
-        tools = self._list()
-        names = {tool.name for tool in tools}
-        if name in names and name not in _AGENT_INTERNAL_TOOLS:
-            return self._settled(self._rpc("tools/call", {"name": name, "arguments": arguments}, timeout or self.timeout))
-        if "call_tool" not in names:
-            raise ToolUnavailable(f"No MCP tool {name!r} in this Agent run.")
-        found = ToolResult(self._rpc("tools/call", {"name": "find_tools", "arguments": {"query": f"select:{name}"}},
-                                     self.timeout))
-        if found.is_error:
-            self._settled(found.raw)
-        try:
-            descriptors = found.json().get("tools", [])
-        except (ProtocolError, AttributeError):
-            descriptors = []
-        matches = [item for item in descriptors if isinstance(item, dict) and isinstance(item.get("tool_id"), str)
-                   and isinstance(item.get("tool_version"), str)]
-        exact = [item for item in matches if item["tool_id"] == name]
-        chosen = exact or (matches if len(matches) == 1 else [])
-        if not chosen:
-            raise ToolUnavailable(f"No MCP tool {name!r} in this Agent run.")
-        return self._settled(self._rpc("tools/call", {"name": "call_tool", "arguments": {
-            "tool_id": chosen[0]["tool_id"], "tool_version": chosen[0]["tool_version"], "arguments": arguments}},
-            timeout or self.timeout))
 
     def _rpc(self, method: str, params: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         body = json.dumps({"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params},

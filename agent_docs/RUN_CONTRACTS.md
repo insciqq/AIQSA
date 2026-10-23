@@ -6,7 +6,6 @@ paths:
   - "lib/server/knowledge/**"
   - "lib/server/mcp/**"
   - "lib/server/workspace/**"
-  - "lib/server/agents/**"
   - "lib/server/scheduledTasks/**"
   - "lib/server/telegram/**"
   - "lib/server/answerReviews/**"
@@ -17,7 +16,7 @@ paths:
 
 How an accepted message becomes an answer: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery and outputs. The pipeline lives in `lib/server/runs/`; tools in `lib/server/tools/`.
 
-The native agent engine replaces the old run core (execution, tool loop, compaction, recovery and settlement in `lib/server/runs/`) and the Codex Agent in `lib/server/agents/`; admission, preparation and the tool executors stay. The old core is frozen and gets no fixes (operator decision 2026-10-22): it keeps serving chats until the switch, and nothing is ported from it where it differs from the rules below. Projects and Knowledge are disabled (root `AGENTS.md`), so runs get neither.
+The native agent engine replaces the old run core (execution, tool loop, compaction, recovery and settlement in `lib/server/runs/`); admission, preparation and the tool executors stay. The old core is frozen and gets no fixes (operator decision 2026-10-22): it keeps serving chats until the switch, and nothing is ported from it where it differs from the rules below. Projects and Knowledge are disabled (root `AGENTS.md`), so runs get neither.
 
 The native engine (`lib/server/engine/`) serves every run of the users in `AIQSA_NATIVE_ENGINE_USERS` (`*` is everyone, the switch) that it can run, whichever entry point admits it: personal, temporary and Assistant chats from the web or Telegram, scheduled occurrences and answer review steps (`lib/server/engine/routing.ts` names what stays on the old core; operator decision 2026-10-23). The old core finishes its own runs. It keeps writing the rows the UI, exports, limits and deletion read (`Message`, `ModelRun`, `ModelRunToolCall`, `UsageEvent`). `RunTranscriptItem` adds only the provider-neutral transcript: it holds tool results, stays private to its chat, is never exported and is deleted with its run. Memory search results stay within the run that searched and later turns search again, because Memory rechecks authority before every disclosure (`agent_docs/MEMORY.md`). Earlier old-core answers enter its context as text.
 
@@ -106,4 +105,4 @@ Code: `lib/server/telegram/`.
 - Admission binds the Workspace runtime, image, tool catalog, network policy and secret revisions. The server controls sandbox identity and VM lifecycle; execution and export are exclusive per chat. Guests receive verified originals and the user's saved secrets under `agent_docs/SECURITY.md`.
 - Every terminal path retires guest execution authority: it stops registered processes, or stops the VM (disk intact) when execution state is unknown. Stop keeps the environment; a successful turn leaves no background processes. Completion requires closed output obligations; an export failure keeps the answer. Path escapes fail closed and links or special files are skipped visibly.
 - Vision-capable models read images natively. Workspace files, and chat images for models without vision, reach a model only through admitted System Vision, whose results are untrusted.
-- The Codex Agent mode is frozen with the old core and is removed after the switch; do not extend it.
+- The Codex Agent mode is removed (operator decision 2026-10-23): a request that still asks for it is refused with `agent_mode_removed`, never answered without it. Its old answers stay readable from their messages, Workspace activity and outputs; a turn it left running is ended and never replayed (`lib/server/runs/retiredAgent.ts`). The runner relay and gateway serve only guest-code MCP.

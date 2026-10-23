@@ -75,13 +75,7 @@ export function createWorkspaceHealthService(input: Readonly<{
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const health = await input.runtime.health(controller.signal);
-      return sanitizeWorkspaceRuntimeHealth({
-        ...health,
-        agentReady: health.agentReady === true &&
-          typeof input.runtime.startAgent === "function" &&
-          typeof input.runtime.pollAgent === "function"
-      });
+      return sanitizeWorkspaceRuntimeHealth(await input.runtime.health(controller.signal));
     } catch {
       return { reasonCode: "workspace_runtime_unavailable", state: "unavailable" };
     } finally {

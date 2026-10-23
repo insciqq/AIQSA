@@ -34,8 +34,6 @@ import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, preparePdfRetry, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
-import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
-import { AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE } from "@/lib/domain/runParams";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
@@ -44,11 +42,8 @@ import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
-import { renderCodexManagedProfile } from "../agents/codexProfile";
-import { agentPrompts } from "../agents/prompt";
 import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
 import { admittedRunGuidance, splitTurnGuidance } from "../engine/systemPrompt";
-import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { logEvent } from "../observability";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { openAIResponsesToolBridge } from "../tools/bridges";
@@ -62,12 +57,6 @@ import { fetchUrlDigest } from "../webFetch/urls";
 vi.mock("../observability", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../observability")>();
   return { ...actual, logEvent: vi.fn(actual.logEvent) };
-});
-
-// Passthrough spy: the Agent compatibility identity input is otherwise private.
-vi.mock("../mcp/definitions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../mcp/definitions")>();
-  return { ...actual, hashCanonicalMcpValue: vi.fn(actual.hashCanonicalMcpValue) };
 });
 
 // The disabled areas stay tested as they worked; "while Knowledge is disabled" turns Knowledge off.
@@ -940,7 +929,7 @@ describe("standing Memory and optional search admission", () => {
     expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
     expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
     expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search")).toBe(true);
-    // Memory search no longer disables notes: the one non-Agent policy applies.
+    // Memory search no longer disables notes: the one policy applies.
     expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
   });
   it.each(["none", "no_capability"])("retains standing preparation when search is unavailable (%s)", async mode => {
@@ -1061,15 +1050,21 @@ async function expectFailure(input: {
 
 describe("run preparation", () => {
   it.each([
-    [{ agentEnabled: "yes" }, "agent_selection_invalid"],
-    [{ agentEnabled: true, workspace: { enabled: false } }, "agent_workspace_required"],
-    [{ agentEnabled: true, workspace: { enabled: true }, assistantId: "assistant" }, "agent_personal_chat_required"]
-  ] as const)("rejects incompatible Agent admission before workspace effects: %s", async (body, code) => {
+    { agentEnabled: true },
+    { agentEnabled: true, workspace: { enabled: true } },
+    { agentEnabled: "yes" }
+  ])("refuses a removed Agent turn visibly before Workspace effects: %j", async (body) => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace = { prepare: vi.fn() };
     expect(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody(body))))
-      .toMatchObject({ ok: false, code });
+      .toMatchObject({ ok: false, code: "agent_mode_removed", status: 409 });
     expect(workspace.prepare).not.toHaveBeenCalled();
+  });
+
+  it("answers an older client's explicit Agent Off as an ordinary turn", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const prepared = preparedFrom(await prepareRun(harness.deps, sendInput(successBody({ agentEnabled: false }))));
+    expect(prepared.normalizedRequest).not.toHaveProperty("agent");
   });
 
   it("freezes owner instructions for sends and regeneration without changing the user question", async () => {
@@ -1121,255 +1116,45 @@ describe("run preparation", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("admits Search with Agent and freezes policy without making budgets part of thread compatibility", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-      const search = providerNeutralOpenAISearchPlan("anthropic_messages").searches[0]!;
-      const load = vi.fn<NonNullable<RunPreparationDeps["providerAdmission"]>["load"]>(async (input) => ({
-        ...await harness.deps.providerAdmission!.load({ ...input, searchPlan: { mode: "all_selected", optionIds: [] } }),
-        requestedSearchPlan: input.searchPlan, requiresClientSearchRoutes: true, searches: [search]
-      }));
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
-        normalized: { enabled: true, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
-        params: { maxOutputTokens: 2048 }, searchPlan: { mode: "all_selected", optionIds: [search.optionId] } });
-      const configs = [];
-      for (const limitsEnabled of [false, true]) {
-        const prepared = preparedFrom(await prepareRun({ ...harness.deps, workspace, providerAdmission: { load },
-          agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY, limitsEnabled, maxOutputTokens: 256, version: limitsEnabled ? 2 : 1 }) }
-        }, sendInput(body)));
-        expect(prepared.normalizedRequest.agent).toMatchObject({ limitsEnabled, timeoutSeconds: limitsEnabled ? 3600 : null,
-          maxOutputTokens: limitsEnabled ? 256 : 2048, policyVersion: limitsEnabled ? 2 : 1 });
-        // Codex owns Agent context: no conversation policy is frozen.
-        expect(prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
-        expect(prepared.normalizedRequest.prompt.system).not.toContain("no current message manifest is present");
-        expect(prepared.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.psd);
-        expect(prepared.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
-        expect(prepared.normalizedRequest.prompt.system).not.toContain("Try to answer directly first");
-        expect(prepared.normalizedRequest.prompt.system?.split(WORKSPACE_NO_REPLAY_SAFETY)).toHaveLength(2);
-        expect(prepared.normalizedRequest.workspace?.guidanceVersion).toBe(1);
-        expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
-        const retry = preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared,
-          userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
-        expect(retry.normalizedRequest.agent?.compatibilityHash).toBe(prepared.normalizedRequest.agent?.compatibilityHash);
-        expect(retry.workspaceAdmissionPlan!.runId).not.toBe(prepared.workspaceAdmissionPlan!.runId);
-        expect(retry.normalizedRequest.workspace?.guidanceVersion).toBe(1);
-        expect(retry.normalizedRequest.prompt.system).toBe(prepared.normalizedRequest.prompt.system);
-        configs.push(prepared.normalizedRequest.agent!);
-        // A snapshot accepted under an earlier guest Codex keeps its exact Agent
-        // configuration; the sibling's executor fails it closed before dispatch.
-        const preUpgrade = { ...prepared, normalizedRequest: { ...prepared.normalizedRequest,
-          agent: { ...prepared.normalizedRequest.agent!, codexVersion: "0.158.0" } } };
-        expect(preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared: preUpgrade,
-          userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId })).normalizedRequest.agent).toEqual(preUpgrade.normalizedRequest.agent);
-      }
-      expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
-      expect(workspace.prepare).toHaveBeenCalledWith(expect.objectContaining({ agentEnabled: true }));
-      expect(configs[0]!.compatibilityHash).toBe(configs[1]!.compatibilityHash);
-      vi.mocked(workspace.prepare).mockResolvedValue({ ok: false, code: "agent_unavailable", status: 503 });
-      for (const input of [sendInput(body), regenerateInput(body)]) {
-        await expect(prepareRun({ ...harness.deps, workspace, providerAdmission: { load } }, input))
-          .resolves.toMatchObject({ ok: false, code: "agent_unavailable", status: 503 });
-      }
-    } finally { vi.unstubAllEnvs(); }
-  });
-
-  it("bounds the Agent output cap by half the context window: a chosen value is refused, a default clamped", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const admit = async (contextWindow: number, params: Record<string, unknown>, options: Readonly<{
-        agentEnabled?: boolean; limitsEnabled?: boolean; regenerate?: boolean
-      }> = {}) => {
-        const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true, contextWindow,
-          defaultMaxOutputTokens: undefined } });
-        const body = successBody({ agentEnabled: options.agentEnabled ?? true, workspace: { enabled: true },
-          provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" }, params });
-        const workspace = contractWorkspace();
-        const result = await prepareRun({ ...harness.deps, workspace, agentPolicy: { read: async () => ({
-          ...DEFAULT_AGENT_POLICY, limitsEnabled: options.limitsEnabled ?? false, maxOutputTokens: 65_536 }) } },
-        options.regenerate ? regenerateInput(body) : sendInput(body));
-        return { result, workspace };
-      };
-      // The production case: 500,000 on a 272,000-token model with Agent limits Off.
-      for (const regenerate of [false, true]) {
-        const { result } = await admit(272_000, { maxOutputTokens: 500_000 }, { regenerate });
-        expect(result).toMatchObject({ ok: false, code: AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE, status: 400 });
-        expect(!result.ok && result.message).toBe("Max output tokens is 500,000, but Agent allows at most 136,000 " +
-          "with this model (half of its 272,000-token context window). Lower Max output tokens in Model parameters " +
-          "or reset output settings, then send again.");
-      }
-      await expect(admit(272_000, { maxOutputTokens: 136_001 }).then(({ result }) => result))
-        .resolves.toMatchObject({ ok: false, code: AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE });
-      const frozen = async (...args: Parameters<typeof admit>) =>
-        preparedFrom((await admit(...args)).result).normalizedRequest.agent?.maxOutputTokens;
-      // At the limit the chosen value is admitted unchanged.
-      expect(await frozen(272_000, { maxOutputTokens: 136_000 })).toBe(136_000);
-      // The Agent policy cap brings a larger chosen value within the limit, as before.
-      expect(await frozen(272_000, { maxOutputTokens: 500_000 }, { limitsEnabled: true })).toBe(65_536);
-      // The chat default (65,536) on a 128,000-token model is clamped, sent or not.
-      expect(await frozen(128_000, {})).toBe(64_000);
-      expect(await frozen(128_000, { maxOutputTokens: 65_536 })).toBe(64_000);
-      expect(await frozen(128_000, { maxOutputTokens: 65_536 }, { limitsEnabled: true })).toBe(64_000);
-      // An ordinary turn never meets the Agent limit.
-      const ordinary = (await admit(272_000, { maxOutputTokens: 200_000 }, { agentEnabled: false })).result;
-      expect(ordinary).toMatchObject({ ok: true });
-    } finally { vi.unstubAllEnvs(); }
-  });
-
   it.each([
     { vision: false, verified: false }, { vision: true, verified: false }, { vision: true, verified: true }
   ])("routes Workspace images only to System Vision independently of the main modality (%j)", async ({ vision, verified }) => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const h = createHarness({ capabilities: { ...baseCapabilities, vision, toolCalling: true } });
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
-        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      const original = h.deps.providerAdmission!.load;
-      const load: NonNullable<RunPreparationDeps["providerAdmission"]>["load"] = async input => {
-        const plan = await original(input);
-        return { ...plan, answer: { ...plan.answer, verifiedVisionInput: verified ? true : undefined } };
-      };
-      const snapshot = compatibleAdmissionPlan("openai_responses_compatible").answer.snapshot;
-      const plans: AcceptedVisionAnalysisPlan[] = [
-        { version: 1, available: false, code: "vision_model_absent" },
-        { version: 1, available: false, code: "vision_model_unavailable" },
-        { version: 1, available: true, policyVersion: 1, verifiedVisionInput: true, reasoningEffort: null, snapshot,
-          authority: { connectionId: snapshot.connectionId, connectionVersion: 1, credentialId: snapshot.credentialId!,
-            credentialVersionId: snapshot.credentialVersionId!, providerModelId: snapshot.providerModelId, modelVersion: 1 } }
-      ];
-      for (const plan of plans) for (const agentEnabled of [false, true]) {
-        const deps = { ...h.deps, workspace, providerAdmission: { load }, vision: { resolve: async () => plan },
-          agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
-        const result = preparedFrom(await prepareRun(deps, sendInput(successBody({ agentEnabled, workspace: { enabled: true },
-          provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
-        expect(result.normalizedRequest.visionAnalysis).toEqual(plan);
-        expect(result.normalizedRequest.agent?.imageInput).toBe(agentEnabled ? false : undefined);
-        expect(result.normalizedRequest.workspaceImageView).toBeUndefined();
-        expect(result.providerRequest).toMatchObject({ provider: "openai", modelId: "gpt-fixture", modelCapabilities: { vision } });
-        expect(result.providerRequest.tools?.some(tool => tool.name === "analyze_image")).toBe(!agentEnabled);
-        expect(result.providerRequest.tools?.some(tool => tool.name === "view_workspace_image")).toBe(false);
-        expect(result.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer in this run");
-        expect(result.normalizedRequest.prompt.system).not.toContain("direct image viewer first");
-        const system = result.normalizedRequest.prompt.system!;
-        expect(system.indexOf("There is no direct Workspace file viewer")).toBeLessThan(
-          system.indexOf(agentEnabled ? "Read outputDirectory from the current AIQSA turn" : "This turn's output directory:"));
-        if (!plan.available) expect(result.normalizedRequest.prompt.system).toContain("without substituting another model");
-        if (agentEnabled) {
-          const configuration = result.normalizedRequest.agent!;
-          const profile = renderCodexManagedProfile({ gatewayOrigin: configuration.gatewayOrigin, modelId: "gpt-fixture",
-            contextWindowTokens: 32768, maxOutputTokens: configuration.maxOutputTokens, mcpTimeoutSeconds: 60,
-            mcpMode: configuration.mcpMode, imageInput: configuration.imageInput, visionAnalysis: Boolean(result.normalizedRequest.visionAnalysis),
-            developerInstructions: agentPrompts(materializePreparedRunData(result).providerRequest).developerInstructions });
-          expect(profile).toContain("view_image = false");
-          expect(profile).toContain('enabled_tools = ["analyze_image"]');
-          expect(profile).not.toContain("direct image viewer first");
-        }
-      }
-    } finally { vi.unstubAllEnvs(); }
-  });
-
-  it("separates guide-contract Agent threads while keeping observation Off out of the identity", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
-        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      const identities = new Map<string, Readonly<{ hash: string; input: Record<string, unknown> }>>();
-      for (const policy of ["off", "v1"] as const) {
-        vi.mocked(hashCanonicalMcpValue).mockClear();
-        const deps = { ...h.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
-          runPolicy: { load: async () => ({ ...DEFAULT_TOOL_RUN_BUDGETS, toolObservationPolicy: policy }) } };
-        const prepared = preparedFrom(await prepareRun(deps, sendInput(successBody({ agentEnabled: true, workspace: { enabled: true },
-          provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
-        const input = vi.mocked(hashCanonicalMcpValue).mock.calls.map(([value]) => value)
-          .find((value): value is Record<string, unknown> => typeof value === "object" && value !== null && "managedProfileVersion" in value);
-        expect(input).toBeDefined();
-        expect(prepared.normalizedRequest.toolObservationVersion).toBe(policy === "v1" ? 1 : 0);
-        identities.set(policy, { hash: prepared.normalizedRequest.agent!.compatibilityHash, input: input! });
-      }
-      const off = identities.get("off")!, v1 = identities.get("v1")!;
-      // Observation Off introduces no extra identity field. The changed
-      // developer contract must nevertheless start a fresh native thread.
-      expect(off.input.managedProfileVersion).toBe(8);
-      expect(off.input).not.toHaveProperty("toolObservationVersion");
-      expect(off.input.workspace).toMatchObject({ guidanceVersion: 1 });
-      const { guidanceVersion: _guidance, ...legacyWorkspace } = off.input.workspace as Record<string, unknown>;
-      expect(hashCanonicalMcpValue({ ...off.input, workspace: legacyWorkspace })).not.toBe(off.hash);
-      expect(v1.input).toMatchObject({ managedProfileVersion: 8, toolObservationVersion: 1 });
-      const { toolObservationVersion: _version, ...withoutObservation } = v1.input;
-      expect(hashCanonicalMcpValue(withoutObservation)).toBe(off.hash);
-      expect(v1.hash).not.toBe(off.hash);
-      // The cross-turn history contract and its call reader are part of the
-      // identity (a thread accepted before them starts fresh once), in both modes.
-      for (const identity of [off.input, v1.input]) expect(identity).toMatchObject({ toolHistory: 1, toolCallReader: true });
-      const { toolHistory: _history, toolCallReader: _reader, ...beforeHistory } = off.input;
-      expect(hashCanonicalMcpValue(beforeHistory)).not.toBe(off.hash);
-    } finally { vi.unstubAllEnvs(); }
-  });
-
-  it("admits Agent artifacts with MCP Off and invalidates continuation only for accepted capability/context changes", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-      let version = "version-one";
-      const artifacts = { validateEditTarget: async () => ({ ok: true }), contextForChat: async () => [{
-        artifact_id: "artifact-one", base_version_id: version, kind: "html", title: "Page", version_number: 1,
-        entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>Synthetic</p>" }]
-      }] } as unknown as NonNullable<RunPreparationDeps["artifacts"]>;
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
-        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      let imagePlan: ReturnType<typeof syntheticImagePlan> | null = syntheticImagePlan();
-      const deps = { ...h.deps, artifacts, workspace, images: { resolveFor: (scope: ImageModelScope) => imageModels(imagePlan).resolveFor(scope) },
-        agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
-      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } });
-      const first = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(first).toMatchObject({ artifactTool: true, agent: { mcpMode: "off" }, artifactReferences: [{ artifactId: "artifact-one", versionId: version }] });
-      expect(first.artifactResourcePolicy).toBeDefined();
-      expect(first.imagePlan).toEqual(imagePlan);
-      const same = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(same.agent!.compatibilityHash).toBe(first.agent!.compatibilityHash);
-      imagePlan = { ...imagePlan!, parameters: { quality: "high" } };
-      const changedImage = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(changedImage.agent!.compatibilityHash).not.toBe(first.agent!.compatibilityHash);
-      imagePlan = null;
-      const missingImage = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(missingImage.imagePlan).toBeUndefined();
-      expect(missingImage.agent!.compatibilityHash).not.toBe(changedImage.agent!.compatibilityHash);
-      version = "version-two";
-      const next = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(next.agent!.compatibilityHash).not.toBe(missingImage.agent!.compatibilityHash);
-      const edited = preparedFrom(await prepareRun(deps, sendInput({ ...body, artifactEdit: { artifactId: "artifact-one", versionId: version } }))).normalizedRequest;
-      expect(edited.artifactEdit?.versionId).toBe(version);
-      expect(edited.agent!.compatibilityHash).not.toBe(next.agent!.compatibilityHash);
-      vi.stubEnv("AIQSA_ARTIFACT_EXTERNAL_RESOURCES", "off");
-      const restricted = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
-      expect(restricted.artifactResourcePolicy?.on).toBe(false);
-      expect(restricted.agent!.compatibilityHash).not.toBe(next.agent!.compatibilityHash);
-      expect(first.artifactResourcePolicy?.on).toBe(true);
-      await expect(prepareRun(deps, sendInput({ ...body, tools: "none", artifactIntent: "create" })))
-        .resolves.toMatchObject({ ok: false, code: "artifact_intent_unavailable" });
-    } finally { vi.unstubAllEnvs(); }
+    const h = createHarness({ capabilities: { ...baseCapabilities, vision, toolCalling: true } });
+    const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
+      ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+      normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+        maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+        outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+        syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+    } })) };
+    const original = h.deps.providerAdmission!.load;
+    const load: NonNullable<RunPreparationDeps["providerAdmission"]>["load"] = async input => {
+      const plan = await original(input);
+      return { ...plan, answer: { ...plan.answer, verifiedVisionInput: verified ? true : undefined } };
+    };
+    const snapshot = compatibleAdmissionPlan("openai_responses_compatible").answer.snapshot;
+    const plans: AcceptedVisionAnalysisPlan[] = [
+      { version: 1, available: false, code: "vision_model_absent" },
+      { version: 1, available: false, code: "vision_model_unavailable" },
+      { version: 1, available: true, policyVersion: 1, verifiedVisionInput: true, reasoningEffort: null, snapshot,
+        authority: { connectionId: snapshot.connectionId, connectionVersion: 1, credentialId: snapshot.credentialId!,
+          credentialVersionId: snapshot.credentialVersionId!, providerModelId: snapshot.providerModelId, modelVersion: 1 } }
+    ];
+    for (const plan of plans) {
+      const deps = { ...h.deps, workspace, providerAdmission: { load }, vision: { resolve: async () => plan } };
+      const result = preparedFrom(await prepareRun(deps, sendInput(successBody({ workspace: { enabled: true },
+        provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
+      expect(result.normalizedRequest.visionAnalysis).toEqual(plan);
+      expect(result.normalizedRequest.workspaceImageView).toBeUndefined();
+      expect(result.providerRequest).toMatchObject({ provider: "openai", modelId: "gpt-fixture", modelCapabilities: { vision } });
+      expect(result.providerRequest.tools?.some(tool => tool.name === "analyze_image")).toBe(true);
+      expect(result.providerRequest.tools?.some(tool => tool.name === "view_workspace_image")).toBe(false);
+      expect(result.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer in this run");
+      expect(result.normalizedRequest.prompt.system).not.toContain("direct image viewer first");
+      const system = result.normalizedRequest.prompt.system!;
+      expect(system.indexOf("There is no direct Workspace file viewer")).toBeLessThan(system.indexOf("This turn's output directory:"));
+      if (!plan.available) expect(result.normalizedRequest.prompt.system).toContain("without substituting another model");
+    }
   });
 
   it("lists each current-message image once among conversation image references", async () => {
@@ -1588,33 +1373,27 @@ describe("run preparation", () => {
       }
     });
 
-  it.each(["history", "nonvisual", "agent", "image-plan", "empty"] as const)(
+  it.each(["history", "nonvisual", "image-plan", "empty"] as const)(
     "distinguishes image editing from actually visible current pixels: %s", async mode => {
-      vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-      try {
-        const bytes = Buffer.from("synthetic conditional image");
-        const image = runAttachment({ id: "image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
-          storageKey: "synthetic/image", checksum: sha256(bytes) });
-        const imageContent = { blocks: [{ type: "text" as const, text: "Image question" }, { type: "image" as const, attachmentId: image.id }] };
-        const hasImage = !["empty", "image-plan"].includes(mode);
-        const h = createHarness({ attachments: hasImage ? [image] : [],
-          capabilities: { ...baseCapabilities, toolCalling: true, vision: mode !== "nonvisual" },
-          ...(mode === "history" ? { sendContext: [{ id: "prior-user-message", role: "user", content: imageContent }] } : {}),
-          storageObjects: { [image.storageKey]: { body: bytes, contentType: image.mimeType } } });
-        const prepared = preparedFrom(await prepareRun({ ...h.deps, workspace: contractWorkspace(),
-          vision: { resolve: async () => ({ version: 1 as const, available: false as const, code: "vision_model_absent" as const }) },
-          agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
-          ...(mode === "image-plan" ? { images: imageModels() } : {})
-        }, sendInput(successBody({ workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
-          ...(mode === "agent" ? { agentEnabled: true } : {}),
-          ...(mode === "agent" || mode === "nonvisual" ? { content: imageContent } : {}) }))));
-        expect(prepared.normalizedRequest.prompt.system?.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode !== "empty");
-        expect(prepared.normalizedRequest.prompt.system).not.toContain("image attachments are present in your model input");
-        expect(prepared.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer");
-        expect(prepared.normalizedRequest.prompt.system?.includes("Inspect the authorized file index")).toBe(hasImage);
-        if (mode === "history") expect(h.storageReads).toEqual([]);
-        if (mode === "agent") expect(prepared.normalizedRequest.agent?.imageInput).toBe(false);
-      } finally { vi.unstubAllEnvs(); }
+      const bytes = Buffer.from("synthetic conditional image");
+      const image = runAttachment({ id: "image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
+        storageKey: "synthetic/image", checksum: sha256(bytes) });
+      const imageContent = { blocks: [{ type: "text" as const, text: "Image question" }, { type: "image" as const, attachmentId: image.id }] };
+      const hasImage = !["empty", "image-plan"].includes(mode);
+      const h = createHarness({ attachments: hasImage ? [image] : [],
+        capabilities: { ...baseCapabilities, toolCalling: true, vision: mode !== "nonvisual" },
+        ...(mode === "history" ? { sendContext: [{ id: "prior-user-message", role: "user", content: imageContent }] } : {}),
+        storageObjects: { [image.storageKey]: { body: bytes, contentType: image.mimeType } } });
+      const prepared = preparedFrom(await prepareRun({ ...h.deps, workspace: contractWorkspace(),
+        vision: { resolve: async () => ({ version: 1 as const, available: false as const, code: "vision_model_absent" as const }) },
+        ...(mode === "image-plan" ? { images: imageModels() } : {})
+      }, sendInput(successBody({ workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
+        ...(mode === "nonvisual" ? { content: imageContent } : {}) }))));
+      expect(prepared.normalizedRequest.prompt.system?.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode !== "empty");
+      expect(prepared.normalizedRequest.prompt.system).not.toContain("image attachments are present in your model input");
+      expect(prepared.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer");
+      expect(prepared.normalizedRequest.prompt.system?.includes("Inspect the authorized file index")).toBe(hasImage);
+      if (mode === "history") expect(h.storageReads).toEqual([]);
     });
 
   it.each(["anthropic_messages", "gemini_interactions_native"] as const)(
@@ -1817,48 +1596,6 @@ describe("run preparation", () => {
     expect(request.context?.messages.some(message => message.id === "original-question")).toBe(true);
     expect(request.prompt.system).toBe(prepared.normalizedRequest.prompt.system);
     expect(harness.attachmentLoads).toContainEqual({ attachmentIds: ["source-original"], userId: "user-1" });
-  });
-
-  it("binds Agent native discovery and compatibility to the full catalog and profile", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const h = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-      const pinned = { skillId: "p", revisionId: "p-r", name: "pinned", instructions: "PINNED_BODY", fileCount: 1 };
-      const available = { skillId: "a", revisionId: "a-r", name: "available", description: "NATIVE_DESCRIPTION", fileCount: 1 };
-      const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [pinned] })),
-        listEnabledForRun: vi.fn(async () => [available]), loadedBeforeForMessages: vi.fn(async () => ["a"]) };
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async input => ({ ok: true as const, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1, sandboxName: "synthetic-skills", sessionId: "ws_skills", toolDefinitions: [],
-        normalized: { enabled: true as const, imageRef: "synthetic-image", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/synthetic/manifest.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_skills",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      const deps = { ...h.deps, skills, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
-      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture", skillIds: ["p"] });
-      const first = preparedFrom(await prepareRun(deps, sendInput(body)));
-      expect(first.normalizedRequest.skills).toMatchObject({ mode: "auto", available: [{ skillId: "a", revisionId: "a-r", alias: "available", loadedBefore: false }] });
-      expect(first.providerRequest.context?.messages.some(message => message.purpose === "skill_catalog")).toBe(false);
-      expect(JSON.stringify(first.providerRequest.context)).toContain('/workspace/.aiqsa/skills/pinned');
-      expect(JSON.stringify(first.providerRequest.context)).toContain("PINNED_BODY");
-      expect(JSON.stringify(first.providerRequest.context)).not.toContain("NATIVE_DESCRIPTION");
-      expect(first.providerRequest.tools?.some(tool => tool.capability === "skill")).toBe(false);
-      expect(skills.loadedBeforeForMessages).not.toHaveBeenCalled();
-      const filtered = preparedFrom(await prepareRun({ ...deps, skillCatalogRelevance: async decision => {
-        await decision.authorize(); return [];
-      } }, { ...sendInput(body), skillCatalogDecision: { operationKey: "agent-admission", authorizeScope: async () => undefined } }));
-      expect(filtered.normalizedRequest.skills).toMatchObject({ pinned: [{ skillId: "p" }], available: [] });
-      expect(filtered.normalizedRequest.agent!.compatibilityHash).not.toBe(first.normalizedRequest.agent!.compatibilityHash);
-      expect(filtered.providerRequest.tools?.some(tool => tool.capability === "skill")).toBe(false);
-      const same = preparedFrom(await prepareRun(deps, sendInput(body)));
-      expect(same.normalizedRequest.agent!.compatibilityHash).toBe(first.normalizedRequest.agent!.compatibilityHash);
-      available.revisionId = "a-r2";
-      const revised = preparedFrom(await prepareRun(deps, sendInput(body)));
-      expect(revised.normalizedRequest.agent!.compatibilityHash).not.toBe(first.normalizedRequest.agent!.compatibilityHash);
-      const off = preparedFrom(await prepareRun(deps, sendInput({ ...body, skills: { mode: "off" } })));
-      expect(off.normalizedRequest.skills).toMatchObject({ mode: "off", available: [], pinned: [{ skillId: "p" }] });
-      expect(off.normalizedRequest.agent!.compatibilityHash).not.toBe(revised.normalizedRequest.agent!.compatibilityHash);
-    } finally { vi.unstubAllEnvs(); }
   });
 
 
@@ -3293,42 +3030,6 @@ describe("run preparation", () => {
     })));
     expect(assistantRun.normalizedRequest.prompt.system).not.toContain(hint);
     expect(catalog).toHaveBeenCalledTimes(3);
-  });
-
-  it("gives an Auto Agent the connected tool index once and no find_tools instruction without a catalog", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
-        normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      let servers: import("../mcp/runPlan").McpCapabilityCatalog["servers"] = [{ description: "Code hosting", instructions: "", namespace: "gitlab",
-        revisionId: "revision-gitlab", serverId: "server-gitlab", serverName: "GitLab",
-        tools: [{ description: "Read an issue", namespacedName: "mcp_gitlab_read_issue_1", originalName: "read_issue" }] }];
-      const deps = { ...harness.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
-        mcp: { filterTools: allowMcpTools, catalog: async () => ({ servers, version: 1 as const }), prepare: async () => readyMcpPlan() } };
-      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" });
-      const connected = agentPrompts(materializePreparedRunData(preparedFrom(await prepareRun(deps, sendInput(body)))).providerRequest);
-      expect(connected.developerInstructions.split("Connected MCP tool index for this run")).toHaveLength(2);
-      expect(connected.developerInstructions).toContain('{"name":"GitLab","description":"Code hosting","tools":["read_issue"]}');
-      expect(connected.developerInstructions).toContain("Use find_tools to load the relevant capabilities");
-      expect(connected.resumePrompt).toContain("discovery_required");
-      expect(connected.prompt).not.toContain("GitLab");
-
-      servers = [];
-      const prepared = preparedFrom(await prepareRun(deps, sendInput(body)));
-      expect(prepared.normalizedRequest.agent?.mcpMode).toBe("auto");
-      const empty = agentPrompts(materializePreparedRunData(prepared).providerRequest);
-      for (const text of [empty.developerInstructions, empty.prompt, empty.resumePrompt]) {
-        expect(text).not.toContain("find_tools");
-        expect(text).not.toContain("Connected MCP tool index");
-      }
-      expect(empty.developerInstructions).toContain("not an authorization denial");
-    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each(["off", "v1"] as const)("freezes the operator observation policy at acceptance: %s", async policy => {
@@ -5833,42 +5534,6 @@ describe("cross-turn tool history admission", () => {
     expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [], unavailable: true });
   });
 
-  it("refuses an Agent admission and its document retry whose history records cannot fit the prompt", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
-        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
-        normalized: { enabled: true, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
-          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
-          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
-          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
-      } })) };
-      const turn = { turnMessageId: "prior-answer", userMessageId: "prior-user-message", callRefs: [`tcr1_${"a".repeat(32)}`], digest: "d".repeat(64) };
-      // One earlier turn whose 2,600 calls take 1.2 MB as compact lines.
-      const records = (executed: boolean) => ({ blocks: [{ turnMessageId: turn.turnMessageId, userMessageId: turn.userMessageId, footer: null,
-        header: "[AIQSA record of tool calls made while answering the user message above.]",
-        entries: Array.from({ length: 2_600 }, (_, index) => {
-          const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
-          const compact = `- [${ref}] MCP Tracker › write ${"w".repeat(400)}: ${executed ? "executed" : "not executed: refused before dispatch"}.`;
-          return { ref, compact, full: compact, details: false, essential: executed };
-        }) }] });
-      const admit = (executed: boolean) => prepareRun({ ...harness.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
-        repository: { ...harness.deps.repository, loadToolHistory: vi.fn(async () => ({ version: 1 as const, turns: [turn] })),
-          projectToolHistory: vi.fn(async () => records(executed)) } },
-      sendInput(successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" })));
-      // Calls that were not executed are only counted: the prompt fits.
-      const admitted = preparedFrom(await admit(false));
-      // Executed calls keep their lines, so the prompt cannot fit: refused before acceptance.
-      await expect(admit(true)).resolves.toMatchObject({ ok: false, code: "agent_context_too_large", status: 413 });
-      // A document retry of the admitted run checks the records again.
-      const retry = (executed: boolean) => preparePdfRetry({ workspace, repository: { projectToolHistory: vi.fn(async () => records(executed)) } },
-        { adapter: harness.adapter, prepared: admitted, userId: "user-1", userMessageId: admitted.workspaceAdmissionPlan!.userMessageId });
-      expect((await retry(false)).ok).toBe(true);
-      await expect(retry(true)).resolves.toMatchObject({ ok: false, code: "agent_context_too_large", status: 413 });
-    } finally { vi.unstubAllEnvs(); }
-  });
-
   it("admits the call reader only for tool-capable answer models", async () => {
     const tools = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     expect(preparedFrom(await prepareRun(tools.deps, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))))
@@ -6272,19 +5937,6 @@ describe("Skill save admission", () => {
       userMessage: { content: textMessageContent("Save this as a Skill"), id: "stored-user-message", scheduledTaskPrompt: false }
     })));
     expect(own.normalizedRequest.skillSaveTool).toBe(true);
-  });
-
-  it("admits a personal Agent run, whose builtin gateway owns the tool", async () => {
-    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
-    try {
-      const prepared = preparedFrom(await prepareRun({ ...tooling(), agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } },
-        sendInput(successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" }))));
-      expect(prepared.normalizedRequest.agent).toBeDefined();
-      expect(prepared.normalizedRequest.skillSaveTool).toBe(true);
-      expect(saveTool(prepared)).toBeUndefined();
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   it("is absent, not refused later, without Workspace and in scheduled, temporary, Project, Assistant and Knowledge runs", async () => {
@@ -6870,12 +6522,12 @@ describe("answer review step admission", () => {
     expect(toolNames(prepared)).not.toContain("submit_answer_review");
   });
 
-  it("refuses a step whose model cannot call tools, an Agent, Assistant or Knowledge run before anything is accepted", async () => {
+  it("refuses a step whose model cannot call tools, a removed Agent turn, an Assistant or Knowledge run before anything is accepted", async () => {
     const { deps } = stepDeps();
     const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
       ["answer_review_model_unsupported", stepDeps({ toolCalling: false }).deps, stepInput()],
       ["answer_review_model_unsupported", deps, stepInput({ ...toolBody, tools: "none" })],
-      ["answer_review_agent_unsupported", deps, stepInput({ ...toolBody, agentEnabled: true, workspace: { enabled: true } })],
+      ["agent_mode_removed", deps, stepInput({ ...toolBody, agentEnabled: true, workspace: { enabled: true } })],
       ["answer_review_assistant_unsupported", deps, stepInput(toolBody, review, { assistantId: "assistant-1" })],
       ["answer_review_knowledge_unsupported", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
         stepInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })]

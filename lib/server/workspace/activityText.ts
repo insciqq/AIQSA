@@ -191,10 +191,6 @@ export class WorkspaceActivityText {
     return maskWorkspaceSecretPrefix(plain, plain.length, this.secrets).text;
   }
 
-  withValues(values: readonly (string | WorkspaceSecretMatch)[]): WorkspaceActivityText {
-    return new WorkspaceActivityText([...this.matches, ...values]);
-  }
-
   /** Redact before the caller bounds its output buffer, including very long secrets. */
   stream(): { push(chunk: string, done?: boolean): string } {
     const terminal = new PlainTerminalText();

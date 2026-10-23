@@ -5072,6 +5072,25 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("tells a run accepted as a retired Codex Agent turn by its stored request, for its owner only", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const ordinary = await createActiveRun(repository, userId, "Ordinary run");
+      const agentTurn = await createActiveRun(repository, userId, "Retired Agent turn");
+      const stored = await prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id: agentTurn.runId } });
+      await prisma.modelRun.update({
+        data: { normalizedRequest: { ...(stored.normalizedRequest as Prisma.JsonObject),
+          agent: { compatibilityHash: "a".repeat(64), mcpMode: "auto" } } },
+        where: { id: agentTurn.runId }
+      });
+
+      await expect(repository.isRetiredAgentRun!({ runId: agentTurn.runId, userId })).resolves.toBe(true);
+      await expect(repository.isRetiredAgentRun!({ runId: ordinary.runId, userId })).resolves.toBe(false);
+      await expect(repository.isRetiredAgentRun!({ runId: agentTurn.runId, userId: `${userId}-other` })).resolves.toBe(false);
+      await expect(repository.isRetiredAgentRun!({ runId: randomUUID(), userId })).resolves.toBe(false);
+    });
+  });
+
   it("publishes one durable Workspace update when concurrent replay repeats its identity", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

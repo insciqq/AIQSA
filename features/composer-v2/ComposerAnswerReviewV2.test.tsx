@@ -82,10 +82,10 @@ describe("answer review in the model picker and the header chip", () => {
   });
 
   it("disables the row with its reason where review is unavailable", () => {
-    render(<HeaderAndComposer answerReview={{ disabledReason: "Review is off while Agent is on.", onOpen: vi.fn(), summary: "On" }} />);
+    render(<HeaderAndComposer answerReview={{ disabledReason: "Choose a model first.", onOpen: vi.fn(), summary: "On" }} />);
     fireEvent.click(screen.getByTestId("header-model-trigger"));
     const picker = screen.getByRole("dialog", { name: "Choose model" });
     expect(within(picker).getByTestId("composer-v2-model-answer-review")).toBeDisabled();
-    expect(within(picker).getByTestId("composer-v2-model-answer-review-reason")).toHaveTextContent("Review is off while Agent is on.");
+    expect(within(picker).getByTestId("composer-v2-model-answer-review-reason")).toHaveTextContent("Choose a model first.");
   });
 });

@@ -21,7 +21,7 @@ const refused = (code: AnswerReviewRefusal, status: 400 | 409 = 409): AnswerRevi
 /**
  * A send's or regeneration's automatic review (`answerReview` in its body),
  * resolved after its preparation and before admission. Nothing is requested:
- * no session. Otherwise the answer must be reviewable (no Assistant, Agent or
+ * no session. Otherwise the answer must be reviewable (no Assistant or
  * Knowledge, an answer model that calls tools) and every reviewer is admitted
  * now for this user like a send would admit it (catalog, entitlement, Project
  * models, tool calling), never the answer's own model. A request the composer
@@ -41,9 +41,8 @@ export async function resolveAnswerReviewAuto(
   const request = decodeAnswerReviewSendRequest(input.body.answerReview);
   if (!request) return refused("answer_review_invalid", 400);
   const { normalizedRequest, project, providerAdmissionPlan: plan } = input.prepared;
-  // The Assistant fixes the model; Codex owns Agent's loop; Knowledge answers stay bound to their Sources.
+  // The Assistant fixes the model; Knowledge answers stay bound to their Sources.
   if (input.prepared.assistant || input.prepared.chatAssistant) return refused("answer_review_assistant_unsupported");
-  if (normalizedRequest.agent) return refused("answer_review_agent_unsupported");
   if (normalizedRequest.knowledgePlan.mode !== "none") return refused("answer_review_knowledge_unsupported");
   if (plan.answer.modelConfiguration.capabilities.toolCalling !== true || input.body.tools === "none") {
     return refused("answer_review_model_unsupported");

@@ -108,7 +108,6 @@ export function createWorkspaceAvailabilityService(input: Readonly<{
           : { status: "pending" as const }
         : undefined;
       return {
-        agentAvailable: available && snapshot.runtime.agentReady === true,
         available,
         enabled: state.enabled,
         internetEnabled: state.session?.internetEnabled ??

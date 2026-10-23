@@ -4,12 +4,11 @@ import { resolveAnswerReviewAuto } from "./autoAdmission";
 type Prepared = Parameters<typeof resolveAnswerReviewAuto>[1]["prepared"];
 
 function prepared(overrides: Readonly<{
-  agent?: boolean; assistant?: boolean; knowledge?: boolean; projectModelIds?: readonly string[]; toolCalling?: boolean;
+  assistant?: boolean; knowledge?: boolean; projectModelIds?: readonly string[]; toolCalling?: boolean;
 }> = {}): Prepared {
   return {
     ...(overrides.assistant ? { assistant: { assistantId: "assistant-1" } } : {}),
     normalizedRequest: {
-      ...(overrides.agent ? { agent: { version: 2 } } : {}),
       knowledgePlan: { mode: overrides.knowledge ? "explicit" : "none" }
     },
     ...(overrides.projectModelIds ? { project: { modelIds: [...overrides.projectModelIds], projectId: "project-1" } } : {}),
@@ -83,7 +82,6 @@ describe("automatic review admission", () => {
     const deps = { providerAdmission: admission({ "model-b": { name: "GPT-5", toolCalling: true } }) as never };
     for (const [overrides, code] of [
       [{ assistant: true }, "answer_review_assistant_unsupported"],
-      [{ agent: true }, "answer_review_agent_unsupported"],
       [{ knowledge: true }, "answer_review_knowledge_unsupported"],
       [{ toolCalling: false }, "answer_review_model_unsupported"]
     ] as const) {

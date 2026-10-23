@@ -33,7 +33,7 @@ const config = (overrides: Partial<AnswerReviewAutoConfig> = {}): AnswerReviewAu
   ({ enabled: true, maxRounds: 3, reviewers: [pick(gpt)], ...overrides });
 
 function state(overrides: Partial<Parameters<typeof answerReviewAutoStateV2>[0]> = {}) {
-  return answerReviewAutoStateV2({ agentEnabled: false, assistantChat: false, authorModel: claude, config: config(),
+  return answerReviewAutoStateV2({ assistantChat: false, authorModel: claude, config: config(),
     knowledgeEnabled: false, models: [claude, gpt, gemini, textOnly], ...overrides });
 }
 
@@ -49,10 +49,9 @@ describe("automatic review state", () => {
       .toEqual({ count: 2, label: "Review: GPT-5, Gemini, up to 1 round", state: "on" });
   });
 
-  it("is blocked with its reason in Assistant chats, with Agent, with Knowledge and for a model without tools", () => {
+  it("is blocked with its reason in Assistant chats, with Knowledge and for a model without tools", () => {
     for (const [overrides, reason] of [
       [{ assistantChat: true }, /Assistant chats/u],
-      [{ agentEnabled: true }, /Agent/u],
       [{ knowledgeEnabled: true }, /Knowledge/u],
       [{ authorModel: textOnly }, /can't use tools/u],
       [{ models: [claude, textOnly] }, /No other model/u]

@@ -1082,11 +1082,11 @@ describe("bound chat Assistant rows", () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  it("tests the Agent guard against the chat's binding", async () => {
+  it("refuses a removed Agent turn in an Assistant chat like anywhere else", async () => {
     const result = await prepareRun(rowDeps(resolver()), {
       body: { agentEnabled: true, text: "Hi", workspace: { enabled: true } }, source: boundSource(), userId: "user-1"
     });
-    expect(result).toMatchObject({ code: "agent_personal_chat_required", ok: false, status: 400 });
+    expect(result).toMatchObject({ code: "agent_mode_removed", ok: false, status: 409 });
   });
 
   it("turns Search off for an adjustable row and stores it for the chat", async () => {

@@ -408,65 +408,10 @@ describe("Workspace coordinator", () => {
     expect(f.runtime.collectOutputs).toHaveBeenCalledOnce();
   });
 
-  it("starts a fresh native thread from the full prompt when no compatible thread was armed", async () => {
-    const f = fixture();
-    const startAgent = vi.fn(async () => undefined);
-    const bytes = Buffer.from([{ type: "thread.started", thread_id: randomUUID() }, { type: "turn.started" }, { type: "turn.completed" }]
-      .map(event => JSON.stringify(event)).join("\n") + "\n");
-    const pollAgent = vi.fn(async () => ({ cursor: 0, nextCursor: bytes.length, stdoutBase64: bytes.toString("base64"), done: true, exitCode: 0 }));
-    Object.assign(f.runtime, { startAgent, pollAgent });
-    await f.coordinator.executeAgent!({ runId: f.runId, userId: "user_1", workspace: f.workspace, modelRunToolCallId: randomUUID(),
-      prompt: "Full accepted prompt", resumePrompt: "Resume-only prompt", runToken: "a".repeat(43), signal: new AbortController().signal,
-      timeoutSeconds: 30, onEvent: vi.fn(), threadId: undefined,
-      profile: { gatewayOrigin: "http://agent.invalid", modelId: "synthetic", contextWindowTokens: 128000,
-        maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } });
-    expect(startAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ prompt: "Full accepted prompt", threadId: undefined }));
-    expect(startAgent).not.toHaveBeenCalledWith(expect.objectContaining({ prompt: "Resume-only prompt" }));
-  });
-
-  it("interrupts only after a native command settles and resumes without reinitializing Skills or files", async () => {
-    const f = fixture(), threadId = randomUUID(), first = randomUUID(), second = randomUUID();
-    const startAgent = vi.fn(async () => undefined), interruptAgent = vi.fn(async () => true);
-    let cursor = 0;
-    const page = (events: unknown[], done = false, exitCode: number | null = null) => {
-      const bytes = Buffer.from(events.map(event => JSON.stringify(event)).join("\n") + (events.length ? "\n" : ""));
-      const result = { cursor, nextCursor: cursor + bytes.length, stdoutBase64: bytes.toString("base64"), done, exitCode };
-      cursor += bytes.length;
-      return result;
-    };
-    const pollAgent = vi.fn().mockResolvedValueOnce(page([
-      { type: "thread.started", thread_id: threadId }, { type: "turn.started" },
-      { type: "item.started", item: { id: "cmd", type: "command_execution", status: "in_progress" } }
-    ])).mockResolvedValueOnce(page([
-      { type: "item.completed", item: { id: "cmd", type: "command_execution", status: "completed", exit_code: 0 } }
-    ])).mockResolvedValueOnce(page([], true, 1));
-    Object.assign(f.runtime, { startAgent, pollAgent, interruptAgent });
-    const shouldInterrupt = vi.fn(async () => true);
-    const request = { runId: f.runId, userId: "user_1", workspace: f.workspace, modelRunToolCallId: first,
-      prompt: "Original", resumePrompt: "Continuation", runToken: "a".repeat(43), signal: new AbortController().signal,
-      timeoutSeconds: 30, onEvent: vi.fn(), shouldInterrupt,
-      profile: { gatewayOrigin: "http://agent.invalid", modelId: "synthetic", contextWindowTokens: 128000,
-        maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } };
-    expect(await f.coordinator.executeAgent!(request)).toBe("interrupted");
-    expect(shouldInterrupt).toHaveBeenCalledOnce(); expect(interruptAgent).toHaveBeenCalledOnce();
-    cursor = 0;
-    pollAgent.mockResolvedValueOnce(page([{ type: "thread.started", thread_id: threadId }, { type: "turn.started" }, { type: "turn.completed" }], true, 0));
-    await f.coordinator.executeAgent!({ ...request, previousToolCallId: first, modelRunToolCallId: second, threadId, resumePrompt: "Use CSV" });
-    expect(startAgent).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: "Use CSV", threadId,
-      previousExecSessionId: `agent-${first}`, runtimeSandboxId: "runtime_1" }));
-    expect(f.runtime.ensureSession).toHaveBeenCalledOnce(); expect(f.runtime.prepareSkillRun).toHaveBeenCalledOnce();
-    expect(f.runtime.stageAttachments).toHaveBeenCalledOnce(); expect(f.registryRows).toHaveLength(2);
-    // Loss is never recovered into a new VM for an in-task continuation.
-    f.setRuntimeSandboxId(null);
-    await expect(f.coordinator.executeAgent!({ ...request, previousToolCallId: second, modelRunToolCallId: randomUUID(), threadId }))
-      .rejects.toMatchObject({ code: "workspace_session_lost" });
-    expect(startAgent).toHaveBeenCalledTimes(2); expect(f.runtime.ensureSession).toHaveBeenCalledOnce();
-  });
-
   it("prepares frozen bundles before tools, preserves a ready guest on recovery and reinstalls only an explicit load", async () => {
     const value = fixture();
     const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
-    const plan = { agent: false, manifestHash: "a".repeat(64), initial: [ref] };
+    const plan = { manifestHash: "a".repeat(64), initial: [ref] };
     const skills = { plan: vi.fn(async () => plan), archive: vi.fn(async () => ({ bundle: ref, byteSize: 1,
       checksum: "c".repeat(64), archive: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } }) })) };
     const coordinator = createWorkspaceCoordinator({ ...value, skills });
@@ -491,7 +436,7 @@ describe("Workspace coordinator", () => {
   it("does not publish preparation or execute tools after a failed bundle transfer", async () => {
     const value = fixture();
     const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
-    const skills = { plan: vi.fn(async () => ({ agent: false, manifestHash: "a".repeat(64), initial: [ref] })),
+    const skills = { plan: vi.fn(async () => ({ manifestHash: "a".repeat(64), initial: [ref] })),
       archive: vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid"); }) };
     const coordinator = createWorkspaceCoordinator({ ...value, skills });
     await expect(coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },

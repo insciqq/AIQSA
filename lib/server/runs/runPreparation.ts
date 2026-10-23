@@ -51,9 +51,6 @@ import {
 } from "./contextCompactionContract";
 import { applyReusedContextSummary } from "./contextCompactionSummarizer";
 import {
-  AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE,
-  admitAgentMaxOutputTokens,
-  agentMaxOutputTokensRefusalMessage,
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
   validateRunParams
@@ -117,7 +114,7 @@ import { isFetchUrlDigest } from "../webFetch/urls";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
-import { toolHistoryReaders, unavailableToolHistoryProjection } from "./toolHistoryRecords";
+import { toolHistoryReaders } from "./toolHistoryRecords";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -133,12 +130,8 @@ import { skillCatalogAuthorization } from "../skills/catalogRelevanceAuthority";
 import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
 import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
-import { CODEX_MANAGED_PROFILE_VERSION } from "../agents/codexProfile";
 import { skillToolsForRequest } from "../tools/skill";
-import { agentLimits, type NormalizedRunAgent } from "../agents/config";
-import { agentPrompts } from "../agents/prompt";
-import { supportsAgentResponses } from "../providers/agentResponses";
-import { hashCanonicalMcpValue } from "../mcp/definitions";
+import { AGENT_MODE_REMOVED, isRetiredAgentRequest } from "./retiredAgent";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import { KNOWLEDGE_IMAGE_OBSERVATION_LIMITS, type KnowledgeImageObservationPlan } from "../knowledge/imageObservation";
@@ -385,7 +378,6 @@ export type RunPreparationDeps = Readonly<{
   }>;
   chatPdf?: Readonly<{ resolve(answer: ProviderAdmissionRole): Promise<ChatPdfRouteAdmission> }>;
   repository: RunPreparationRepository;
-  agentPolicy?: Readonly<{ read(): Promise<import("@/lib/contracts/agentPolicy").AgentPolicyWire> }>;
   runPolicy?: Readonly<{
     load(): Promise<ToolRunBudgets>;
   }>;
@@ -813,25 +805,6 @@ function readToolHistoryOnce(read: () => Promise<ToolHistoryProjection>): () => 
   return () => pending ??= read().catch(() => null);
 }
 
-/**
- * Whether the Agent prompts of `request` stay within their limit with the
- * tool-history records execution adds, whose floors never shrink: the frozen
- * history's records under the admitting user's authority, or the records a
- * failed read renders. Execution checks again with its own records.
- */
-async function agentPromptsFit(request: ProviderRunRequest, toolHistory: ToolHistorySnapshot | undefined,
-  readRecords: (() => Promise<ToolHistoryProjection | null>) | null): Promise<boolean> {
-  const read = toolHistory && !toolHistory.unavailable && toolHistory.turns.length > 0 && readRecords ? await readRecords() : null;
-  const records = read ?? (toolHistory ? unavailableToolHistoryProjection({ readers: toolHistoryReaders(request), toolHistory,
-    currentUserMessageId: request.context?.messages.at(-1)?.id ?? null }) : null);
-  try {
-    agentPrompts(records?.blocks.length ? insertToolHistory(request, records) : request);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Explicit document retry retains the accepted reader/answer authority, but a
  * sibling needs its own current Workspace admission and derived request. */
 export async function preparePdfRetry(
@@ -847,6 +820,8 @@ export async function preparePdfRetry(
   }>
 ): Promise<RunPreparationResult> {
   const prepared = materializePreparedRunData(input.prepared);
+  // A retired Codex Agent turn has no engine left to run it again.
+  if (isRetiredAgentRequest(prepared.normalizedRequest)) return failure(AGENT_MODE_REMOVED, 409);
   prepared.sourceKind = "regenerate";
   prepared.defaults = null;
   prepared.expectedActiveLeafId = null;
@@ -859,12 +834,10 @@ export async function preparePdfRetry(
   if (prior) {
     if (!deps.workspace) return failure("workspace_runtime_unavailable", 503);
     const request = prepared.normalizedRequest;
-    const agentEnabled = Boolean(request.agent);
     const admission = await deps.workspace.prepare({
-      ...(agentEnabled ? { agentEnabled: true } : {}),
       assistantMessageId: randomUUID(), chatId: request.chatId, enabled: true,
-      modelSupportsTools: request.modelCapabilities.toolCalling === true && (agentEnabled ||
-        input.toolBridge?.supportsToolCalling({ modelId: request.modelId, provider: request.provider }) === true),
+      modelSupportsTools: request.modelCapabilities.toolCalling === true &&
+        input.toolBridge?.supportsToolCalling({ modelId: request.modelId, provider: request.provider }) === true,
       runId: randomUUID(), ...(input.signal ? { signal: input.signal } : {}), userMessageId: input.userMessageId
     });
     if (!admission.ok) return failure(admission.code, admission.status);
@@ -876,7 +849,7 @@ export async function preparePdfRetry(
     // references, exports, Search) follow them and stay frozen, so neutral
     // facts render exactly the replaced parts.
     const segments = (workspace: WorkspaceRunAdmissionPlan) => {
-      const contract = workspacePromptContract({ workspace, agent: agentEnabled,
+      const contract = workspacePromptContract({ workspace,
         currentAttachmentCount: request.attachmentIds.length, hasIndexedFiles: false,
         hasEarlierExports: false, searchEnabled: false, fileContext: "" });
       return [contract.stable, contract.turn] as const;
@@ -895,20 +868,8 @@ export async function preparePdfRetry(
       maxToolCalls: Math.max(budgets.maxToolCalls, plan.normalized.maxToolCalls),
       maxToolRounds: Math.max(budgets.maxToolRounds, plan.normalized.maxToolRounds) };
     const prompt = { ...request.prompt, system };
-    let agent = request.agent;
-    if (agent) {
-      if (!plan.normalized.internetEnabled) return failure("agent_internet_required", 400);
-      // A changed image cannot inherit a native thread's old compatibility
-      // proof. Per-run output paths do not invalidate an otherwise usable thread.
-      if (prior.normalized.imageRef !== plan.normalized.imageRef) {
-        agent = { ...agent, compatibilityHash: hashCanonicalMcpValue({
-          prior: agent.compatibilityHash, image: plan.normalized.imageRef
-        }) };
-      }
-    }
     prepared.workspaceAdmissionPlan = plan;
-    prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized,
-      ...(agent ? { agent } : {}) };
+    prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
     const priorWorkspaceToolNames = new Set(prior.toolDefinitions.map(tool => tool.namespacedName));
     const providerRequest: ProviderRunRequest = { ...prepared.providerRequest, ...prepared.normalizedRequest,
       tools: [...(prepared.providerRequest.tools ?? []).filter(tool => !priorWorkspaceToolNames.has(tool.name)), ...admission.tools] };
@@ -919,15 +880,6 @@ export async function preparePdfRetry(
     prepared.contextTruncation = budget.contextTruncation;
     prepared.normalizedRequest = { ...prepared.normalizedRequest, context: budget.request.context! };
     prepared.providerRequest = budget.request;
-    if (agent) {
-      const history = request.toolHistory;
-      const project = deps.repository?.projectToolHistory;
-      const records = project && history ? readToolHistoryOnce(() => project({
-        actor: { chatId: request.chatId, leafMessageId: input.userMessageId, userId: input.userId },
-        readers: toolHistoryReaders(request), toolHistory: history,
-        currentUserMessageId: budget.request.context?.messages.at(-1)?.id ?? null })) : null;
-      if (!await agentPromptsFit(budget.request, history, records)) return failure("agent_context_too_large", 413);
-    }
     prepared.providerRequestPreview = input.adapter.buildRequestPreview(budget.request);
   }
   return Object.freeze({ ok: true, adapter: input.adapter, toolBridge: input.toolBridge,
@@ -1326,8 +1278,9 @@ async function prepareRunWith(
     : input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskMemory === true;
   // An answer review step's run: a turn the server wrote, answered by the step's model.
   const answerReviewStep = input.source.kind === "send" ? input.source.answerReviewStep : undefined;
-  if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
-  const agentEnabled = body?.agentEnabled === true;
+  // The Codex Agent mode is removed (operator decision 2026-10-23): a client
+  // that still asks for it is refused visibly, never answered without it.
+  if (body?.agentEnabled !== undefined && body.agentEnabled !== false) return failure(AGENT_MODE_REMOVED, 409);
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
@@ -1348,11 +1301,8 @@ async function prepareRunWith(
   const assistantSource = chatAssistantSource(body, chat, newProjectChat ? project!.defaults.assistantId : null);
   if (!assistantSource.ok) return failure(assistantSource.code, assistantSource.status);
   attempt.implicitProjectDefault = assistantSource.projectDefault === true;
-  // The Assistant fixes the model, and Agent's Codex owns its own loop.
+  // The Assistant fixes the model.
   if (answerReviewStep && assistantSource.assistantId) return failure("answer_review_assistant_unsupported", 409);
-  if (answerReviewStep && agentEnabled) return failure("answer_review_agent_unsupported", 409);
-  if (agentEnabled && !workspaceEnabled) return failure("agent_workspace_required", 400);
-  if (agentEnabled && (project || assistantSource.assistantId)) return failure("agent_personal_chat_required", 400);
 
   let assistantRun: AssistantRunMaterialization | null = null;
   let chatAssistant: ChatAssistantAdmission | null = null;
@@ -1487,7 +1437,6 @@ async function prepareRunWith(
     }
   }
   const knowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";
-  if (agentEnabled && knowledgeRequested) return failure("agent_knowledge_unsupported", 400);
   // Knowledge composes Source-bound answers: no route there writes a review or a revision.
   if (answerReviewStep && knowledgeRequested) return failure("answer_review_knowledge_unsupported", 409);
 
@@ -1613,7 +1562,6 @@ async function prepareRunWith(
       ...(knowledgeRequested || workspaceEnabled
         ? { requiresClientToolCoexistence: true }
         : {}),
-      ...(agentEnabled ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: requestedSearchPlan,
       ...(requestedSearchPreference && !project
         ? {
@@ -1633,7 +1581,6 @@ async function prepareRunWith(
     throw error;
   }
   modelConfiguration = admissionPlan.answer.modelConfiguration;
-  if (agentEnabled && !supportsAgentResponses(admissionPlan.answer.snapshot)) return failure("agent_model_unsupported", 400);
   let acceptedSearchPlan = admissionPlan.requestedSearchPlan;
   requestedSearchPlan = acceptedSearchPlan;
   if (project && requestedSearchPlan.optionIds.some((id) =>
@@ -1791,7 +1738,6 @@ async function prepareRunWith(
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
         requiresClientToolCoexistence: true,
-        ...(agentEnabled ? { requiresClientSearchRoutes: true } : {}),
         searchPlan: requestedSearchPlan,
         ...(requestedSearchPreference && !project
           ? {
@@ -1917,7 +1863,7 @@ async function prepareRunWith(
           input.userId,
           input.source.source.userMessage.id
         );
-  const skillToolsSupported = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+  const skillToolsSupported = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   // A step reports through its built-in tool: a model that cannot call it is refused before anything is accepted.
   if (answerReviewStep && (body?.tools === "none" || modelCapabilities.toolCalling !== true ||
@@ -1927,13 +1873,13 @@ async function prepareRunWith(
   // A monitoring check reports its outcome through one built-in tool, frozen
   // only from the server-only occurrence of a monitoring task. A check that
   // could not call it is refused before anything is accepted.
-  const monitoringCheck = scheduledOccurrence?.monitoring === true && !agentEnabled && body?.tools !== "none" &&
+  const monitoringCheck = scheduledOccurrence?.monitoring === true && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   if (scheduledOccurrence?.monitoring === true && !monitoringCheck) {
     return failure("model_cannot_report", 409, "This model cannot report the outcome of a monitoring check.");
   }
-  const skillCatalogSupported = skillToolsSupported || agentEnabled;
+  const skillCatalogSupported = skillToolsSupported;
   if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && !project && deps.skills?.listEnabledForRun) {
     availableSkillRuns = (await deps.skills.listEnabledForRun(input.userId)).filter((skill) => !effectiveSkillIds.includes(skill.skillId));
   }
@@ -1959,11 +1905,11 @@ async function prepareRunWith(
       throw error;
     }
   }
-  const loadedBefore = !agentEnabled && deps.skills?.loadedBeforeForMessages && availableSkillRuns.length > 0
+  const loadedBefore = deps.skills?.loadedBeforeForMessages && availableSkillRuns.length > 0
     ? new Set(await deps.skills.loadedBeforeForMessages(input.userId, chat.id, conversationMessages.map((message) => message.id))) : undefined;
   const frozenSkills = freezeSkillManifest({
     mode: skillsMode, pinned: skillRuns, available: availableSkillRuns, toolsSupported: skillToolsSupported,
-    contextWindow: modelCapabilities.contextWindow, loadedBefore, nativeDiscovery: agentEnabled, rankedAvailableSkillIds
+    contextWindow: modelCapabilities.contextWindow, loadedBefore, rankedAvailableSkillIds
   });
   skillRuns = frozenSkills.pinned.map(skill => workspaceEnabled && skill.alias
     ? { ...skill, workspacePath: skillWorkspacePath(skill.alias)! } : skill);
@@ -2077,14 +2023,14 @@ async function prepareRunWith(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
-  // Personal runs (with or without any Assistant, Workspace, Agent) use the
+  // Personal runs (with or without any Assistant or Workspace) use the
   // initiating user's effective image model; Project runs, with or without a
   // bound Assistant, only the administrator default. The scope is the
   // server-authorized chat scope, never a request field. An unusable model is
   // never substituted: the run gets no image tool and the answer model is
   // told why. An installation without image generation stays silent.
   const imageResolution = !answerReviewStep && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
-    (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }))
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
     ? await deps.images?.resolveFor(project ? { kind: "project" } : { kind: "personal", userId: input.userId }) ?? null : null;
   const imagePlan = imageResolution?.ok ? imageResolution.plan : null;
   const imageUnavailableGuidance = imageResolution && !imageResolution.ok && imageResolution.reason !== "not_configured"
@@ -2092,7 +2038,7 @@ async function prepareRunWith(
       source: imageResolution.source })
     : null;
   const artifactToolAvailable = !answerReviewStep && !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
-    modelCapabilities.toolCalling === true && (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true);
+    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   const artifactResourcePolicy = artifactToolAvailable ? getArtifactResourcePolicy() : undefined;
   const artifactToolDescription = artifactResourcePolicy ? describeArtifactTool(artifactResourcePolicy) : undefined;
   if (artifactIntent && (!artifactToolAvailable || artifactEdit)) return failure("artifact_intent_unavailable", 409, "Artifact creation is unavailable with this message configuration.");
@@ -2232,15 +2178,14 @@ async function prepareRunWith(
       : input.source.source.userMessage.id;
     const assistantMessageId = randomUUID();
     const workspaceAdmission = await deps.workspace.prepare({
-      ...(agentEnabled ? { agentEnabled: true } : {}),
       assistantMessageId,
       chatId: chat.id,
       enabled: true,
       modelSupportsTools: modelCapabilities.toolCalling === true &&
-        (agentEnabled || toolBridge?.supportsToolCalling({
+        toolBridge?.supportsToolCalling({
           modelId: executionModelId,
           provider: executionProvider
-        }) === true),
+        }) === true,
       runId,
       ...(input.signal ? { signal: input.signal } : {}),
       userMessageId
@@ -2270,7 +2215,7 @@ async function prepareRunWith(
       leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       imageIds: imageReferences.map(reference => reference.attachmentId) });
     hasWorkspaceIndexedFiles = attachments.length > 0 || facts.hasFiles;
-    const contract = workspacePromptContract({ workspace: workspaceAdmissionPlan, agent: agentEnabled,
+    const contract = workspacePromptContract({ workspace: workspaceAdmissionPlan,
       currentAttachmentCount: attachments.length, hasIndexedFiles: hasWorkspaceIndexedFiles,
       hasEarlierExports: facts.hasEarlierExports, searchEnabled: admissionPlan.searches.length > 0, fileContext });
     prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null };
@@ -2295,7 +2240,7 @@ async function prepareRunWith(
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
   if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, false, {
-    nativeCurrentImages: !agentEnabled && modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
+    nativeCurrentImages: modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
     hasIndexedFiles: hasWorkspaceIndexedFiles
   }));
   const visionAnalysis = workspaceVision ?? chatVision;
@@ -2353,54 +2298,9 @@ async function prepareRunWith(
   if (turnGuidance.length > 0) prompt = { ...prompt, turnGuidance };
   // The call reader is a session tool like the status tool: admitted for
   // every tool-capable answer model, independent of the observation policy.
-  const toolCallReader = agentEnabled || modelCapabilities.toolCalling === true &&
+  const toolCallReader = modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
-  let agent: NormalizedRunAgent | undefined;
-  if (agentEnabled) {
-    let limits: ReturnType<typeof agentLimits>;
-    try {
-      if (!deps.agentPolicy) return failure("agent_unavailable", 503);
-      limits = agentLimits(await deps.agentPolicy.read());
-    } catch { return failure("agent_unavailable", 503); }
-    if (!workspaceAdmissionPlan?.normalized.internetEnabled) return failure("agent_internet_required", 400);
-    const mcpMode = ordinaryMcpSelection?.mode === "auto" ? "auto" as const
-      : ordinaryMcpSelection?.mode === "load_all" ? "all" as const : "off" as const;
-    // The output cap must leave the Codex profile room for input: a value the
-    // user chose above it is refused here, before any run or Workspace start.
-    const outputCap = admitAgentMaxOutputTokens({
-      chosen: typeof paramValidation.params.maxOutputTokens === "number" ? paramValidation.params.maxOutputTokens : undefined,
-      contextWindow: modelCapabilities.contextWindow,
-      defaultValue: parameterControls.maxOutputTokens.defaultValue,
-      ...(limits.limitsEnabled ? { policyCap: limits.maxOutputTokens } : {})
-    });
-    if (!outputCap.ok) {
-      return failure(AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE, 400, agentMaxOutputTokensRefusalMessage(outputCap));
-    }
-    agent = { ...limits, mcpMode, imageInput: false, maxOutputTokens: outputCap.maxOutputTokens,
-      compatibilityHash: hashCanonicalMcpValue({
-        version: limits.codexVersion, managedProfileVersion: CODEX_MANAGED_PROFILE_VERSION,
-        provider: admissionPlan.answer.snapshot, imageInput: false,
-        workspace: { image: workspaceAdmissionPlan.normalized.imageRef, internet: true, guidanceVersion: WORKSPACE_GUIDANCE_VERSION },
-        gateway: limits.gatewayOrigin, reasoning: acceptedReasoning.reasoningEffort ?? null,
-        personalInstructions: personalInstructions ?? null,
-        skills: { mode: frozenSkills.manifest.mode,
-          pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
-          available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
-        search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
-        visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
-        // Absent for Off: pre-observation accepted threads keep their identity.
-        ...(observationPolicy === "v1" ? { toolObservationVersion: 1 } : {}),
-        // Accepted threads before the cross-turn history contract keep theirs.
-        toolHistory: TOOL_HISTORY_VERSION, ...(toolCallReader ? { toolCallReader: true } : {}),
-        images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
-        artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
-          references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
-          imageReferences, fileReferences } : null,
-        mcpMode, mcp: mcpCatalog ?? mcpPlan ?? null
-      })
-    };
-  }
-  const observationCapable = agent !== undefined || modelCapabilities.toolCalling === true &&
+  const observationCapable = modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({
       modelId: executionModelId,
       provider: executionProvider
@@ -2429,7 +2329,7 @@ async function prepareRunWith(
   // A task turn with Memory reads it like an ordinary personal turn whatever its chat's mode (an
   // excluded chat keeps it out of learning, not its own reads), and never as a `/memory` command:
   // its admission reads standing facts only, so such a prompt is answered as text.
-  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode !== "TEMPORARY" && (scheduledPromptAnswer
+  const memoryStandingEligible = !project && resolvedChatMode.mode !== "TEMPORARY" && (scheduledPromptAnswer
     ? scheduledMemoryRead
     : resolvedChatMode.mode === "NORMAL" && !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content)));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
@@ -2449,14 +2349,14 @@ async function prepareRunWith(
   }
   // The owner's own message in an ordinary personal chat may create one
   // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
-  // Project, Assistant, Agent or Knowledge run, nor one without tool calling.
+  // Project, Assistant or Knowledge run, nor one without tool calling.
   // Frozen here: the settings the task takes from this run, never mutable chat
   // state read later, and only in the shape recovery decodes. The task reads
   // Memory only when this run itself was admitted to read it: an eligible
   // chat, and the owner's Memory on (search admission, which every run that
   // may create a task attempts, reads exactly that).
   const scheduledTaskSettings = !scheduledPromptAnswer && !answerReviewStep && !project && !assistantRun &&
-    !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
+    !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
     ? {
@@ -2469,20 +2369,20 @@ async function prepareRunWith(
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
-  // The owner's own interactive personal chat with Workspace on, or a personal
-  // Agent run, may save one Workspace folder per answer as a personal Skill
-  // (operator exception, 2026-10-07). Never an answer to a scheduled task's
+  // The owner's own interactive personal chat with Workspace on may save one
+  // Workspace folder per answer as a personal Skill (operator exception,
+  // 2026-10-07). Never an answer to a scheduled task's
   // prompt, a temporary, Project, Assistant or Knowledge run: there the tool
   // is absent, not refused late.
   const skillSaveTool = !scheduledPromptAnswer && !answerReviewStep && !project && !assistantRun && !knowledgeRequested &&
     resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
-    typeof deps.repository.saveSkillForCall === "function" && (agentEnabled || (modelCapabilities.toolCalling === true &&
-      toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true));
-  // One page reader for every tool-calling model, never an Agent run or a
-  // Project with external tools off. Frozen here: the links user-authored text
+    typeof deps.repository.saveSkillForCall === "function" && modelCapabilities.toolCalling === true &&
+      toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  // One page reader for every tool-calling model, never a Project with
+  // external tools off. Frozen here: the links user-authored text
   // on this branch authorizes (never a scheduled prompt's), or a scheduled
   // run's task snapshot, read with the task revision the link fences.
-  const fetchUrlOffered = !agentEnabled && body?.tools !== "none" && (!project || project.policy.externalToolsEnabled) &&
+  const fetchUrlOffered = body?.tools !== "none" && (!project || project.policy.externalToolsEnabled) &&
     modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   let fetchUrlPlan: FetchUrlPlan | undefined;
@@ -2554,7 +2454,6 @@ async function prepareRunWith(
       workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
     ...(knowledgeImageObservation ? { knowledgeImageObservation } : {}),
-    ...(agent ? { agent } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
     ...(artifactEdit ? { artifactEdit } : {}),
@@ -2580,15 +2479,15 @@ async function prepareRunWith(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    // Every non-Agent run compacts by notes before anything leaves its
-    // context, whatever Knowledge, Memory search, Observation or tool support
-    // it has; Codex owns Agent context. A scheduled run's selected context is
-    // no branch prefix: it carries no branch notes (no leaf to reuse them from).
-    ...(!agent ? { contextCompactionPolicy: conversationContextPolicy({
+    // Every run compacts by notes before anything leaves its context, whatever
+    // Knowledge, Memory search, Observation or tool support it has. A
+    // scheduled run's selected context is no branch prefix: it carries no
+    // branch notes (no leaf to reuse them from).
+    contextCompactionPolicy: conversationContextPolicy({
       leafMessageId: scheduledOccurrence ? null
         : input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       messages: contextMessages
-    }) } : {}),
+    }),
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
       knowledgeReviewRepairFeedbackVersion: 1 as const,
@@ -2666,7 +2565,7 @@ async function prepareRunWith(
     ...answerReviewToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskManagementToolsForRequest(baseNormalizedRequest),
-    ...(agent ? [] : skillSaveToolsForRequest(baseNormalizedRequest)),
+    ...skillSaveToolsForRequest(baseNormalizedRequest),
     ...fetchUrlToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
@@ -2707,9 +2606,6 @@ async function prepareRunWith(
   }
 
   const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
-  if (inheritedFollowups?.entries.length && agentEnabled) {
-    return failure("followup_mode_unavailable", 409, "Turn Agent off to regenerate this answer with its follow-ups.");
-  }
   const budgetAnsweringRequest = (plan: KnowledgeAnsweringPlan | undefined) => {
     const fullContext = plan?.route === KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT;
     const requiresInitialKnowledgeCall = Boolean(
@@ -2845,9 +2741,6 @@ async function prepareRunWith(
     const contextCompactionPolicy = { ...providerRequest.contextCompactionPolicy, reuse };
     normalizedRequest.contextCompactionPolicy = contextCompactionPolicy;
     providerRequest.contextCompactionPolicy = contextCompactionPolicy;
-  }
-  if (agent && !await agentPromptsFit(providerRequest, toolHistory, admittedRecords)) {
-    return failure("agent_context_too_large", 413);
   }
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   // Assistant-derived values never overwrite the user's ordinary manual

@@ -29,10 +29,6 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
     prepareSkillRun: (input) => call(input, (signal) => runtime.prepareSkillRun({ ...input, signal })),
     installSkillBundle: (input) => call(input, (signal) => runtime.installSkillBundle({ ...input, signal })),
     completeSkillRunPreparation: (input) => call(input, (signal) => runtime.completeSkillRunPreparation({ ...input, signal })),
-    ...(runtime.startAgent ? { startAgent: (input: Parameters<NonNullable<WorkspaceRuntime["startAgent"]>>[0]) =>
-      call(input, (signal) => runtime.startAgent!({ ...input, signal })) } : {}),
-    ...(runtime.pollAgent ? { pollAgent: (input: Parameters<NonNullable<WorkspaceRuntime["pollAgent"]>>[0]) =>
-      call(input, (signal) => runtime.pollAgent!({ ...input, signal })) } : {}),
     loadBoundTools: (input) => call(input, (signal) => runtime.loadBoundTools({ ...input, signal })),
     callBoundTool: (input) => call(input, (signal) => runtime.callBoundTool({ ...input, signal })),
     cancelToolCall: (input) => call(input, () => runtime.cancelToolCall(input)),

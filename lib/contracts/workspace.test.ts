@@ -13,12 +13,7 @@ import {
 } from "./workspace";
 
 describe("workspace browser contracts", () => {
-  it("decodes explicit Agent capability without treating absent or malformed values as ready", () => {
-    const state = { available: true, enabled: true, internetEnabled: true, sessionState: "ready" };
-    expect(decodeChatWorkspaceState({ ...state, agentAvailable: true })?.agentAvailable).toBe(true);
-    expect(decodeChatWorkspaceState({ ...state, agentAvailable: false })?.agentAvailable).toBe(false);
-    expect(decodeChatWorkspaceState(state)?.agentAvailable).toBeUndefined();
-    expect(decodeChatWorkspaceState({ ...state, agentAvailable: "true" })).toBeNull();
+  it("decodes runner gateway readiness without treating malformed values as ready", () => {
     expect(decodeWorkspaceRuntimeHealth({ state: "ready", agentReady: true, secret: "hidden" }))
       .toEqual({ state: "ready", agentReady: true });
     expect(decodeWorkspaceRuntimeHealth({ state: "ready", agentReady: "true" })).toBeNull();

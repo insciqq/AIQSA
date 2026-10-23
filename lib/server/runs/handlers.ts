@@ -155,7 +155,6 @@ export type RunHandlerDeps = {
   providers: Record<string, ProviderAdapter>;
   repository: RunRepository;
   resolveAuth: RequestAuthResolver;
-  agentPolicy?: RunPreparationDeps["agentPolicy"];
   runPolicy?: RunPreparationDeps["runPolicy"];
   /** Server-only: the scheduled task occurrence a send of this handler admits. */
   scheduledOccurrence?: ScheduledOccurrenceAdmission;
@@ -494,7 +493,6 @@ async function acceptedRuntimeBinding(
   searchOptionIds: readonly string[] = []
 ): Promise<{
   adapter: ProviderAdapter;
-  agentResponses?: ProviderRuntimeBinding["agentResponses"];
   searchRuntimes: Record<string, ProviderRuntimeBinding>;
   structuredOutputAdapter?: ProviderRuntimeBinding["structuredOutputAdapter"];
   toolBridge?: ProviderToolBridge;
@@ -520,7 +518,6 @@ async function acceptedRuntimeBinding(
 
       return {
         adapter: answer.adapter,
-        ...(answer.agentResponses ? { agentResponses: answer.agentResponses } : {}),
         searchRuntimes,
         ...(answer.structuredOutputAdapter
           ? { structuredOutputAdapter: answer.structuredOutputAdapter }
@@ -971,7 +968,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     }
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
-      ...(runtime?.agentResponses ? { agentResponses: runtime.agentResponses } : {}),
       created,
       prepared: preparedData,
       repository: deps.repository,
@@ -1229,7 +1225,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     }
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
-      ...(runtime?.agentResponses ? { agentResponses: runtime.agentResponses } : {}),
       created,
       prepared: preparedData,
       repository: deps.repository,

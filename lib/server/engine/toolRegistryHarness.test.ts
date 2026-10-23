@@ -72,7 +72,7 @@ describe("native harness and self-service tools", () => {
     const other = await names(input(request(), { secrets: secrets() }));
     expect(other).toEqual(expect.arrayContaining(["update_plan", "read_secret"]));
     expect(other.filter((name) => selfServiceNames.includes(name))).toEqual([]);
-    for (const marker of [{ agent: {} }, { answerReviewStep: {} }, { monitoringVerdictTool: true }] as const) {
+    for (const marker of [{ answerReviewStep: {} }, { monitoringVerdictTool: true }] as const) {
       const ruled = await names(input(request(marker as Partial<ProviderRunRequest>), { secrets: secrets(), selfService: selfService().services }));
       expect(ruled.filter((name) => selfServiceNames.includes(name))).toEqual([]);
     }

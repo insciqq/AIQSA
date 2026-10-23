@@ -139,8 +139,6 @@ export function freezeSkillManifest(input: Readonly<{
   pinned: readonly SkillRunMaterialization[];
   available: readonly SkillRunCatalogEntry[];
   toolsSupported: boolean;
-  /** Codex performs native discovery; no AIQSA catalog consumes its context. */
-  nativeDiscovery?: boolean;
   contextWindow?: number;
   loadedBefore?: ReadonlySet<string>;
   /** Complete relevance selection in priority order. Invalid selections retain
@@ -148,7 +146,7 @@ export function freezeSkillManifest(input: Readonly<{
   rankedAvailableSkillIds?: readonly string[];
 }>): { manifest: FrozenSkillManifest; pinned: SkillRunMaterialization[]; catalog: string } {
   const pinnedIds = new Set(input.pinned.map((skill) => skill.skillId));
-  const candidates = input.mode === "auto" && (input.toolsSupported || input.nativeDiscovery)
+  const candidates = input.mode === "auto" && input.toolsSupported
     ? input.available.filter((skill) => !pinnedIds.has(skill.skillId)).sort((left, right) =>
       left.name < right.name ? -1 : left.name > right.name ? 1 : left.skillId.localeCompare(right.skillId))
     : [];
@@ -158,7 +156,7 @@ export function freezeSkillManifest(input: Readonly<{
     alias: skill.alias, name: skill.name, skillId: skill.skillId, revisionId: skill.revisionId,
     description: skill.description?.trim() || skill.name,
     fileCount: skill.fileCount ?? 0, hasExecutables: skill.hasExecutables ?? false,
-    loadedBefore: input.nativeDiscovery ? false : input.loadedBefore?.has(skill.skillId) ?? skill.loadedBefore ?? false
+    loadedBefore: input.loadedBefore?.has(skill.skillId) ?? skill.loadedBefore ?? false
   })).sort((left, right) => Number(right.loadedBefore) - Number(left.loadedBefore) ||
     (left.name < right.name ? -1 : left.name > right.name ? 1 : left.skillId.localeCompare(right.skillId)));
   // Assign aliases against the full admitted cohort first, so filtering or
@@ -167,11 +165,11 @@ export function freezeSkillManifest(input: Readonly<{
   const budget = skillCatalogBudget(input.contextWindow);
   let shown = available;
   let descriptionLimit = Math.max(160, ...available.map((skill) => [...skill.description].length));
-  while (!input.nativeDiscovery && estimateApproxTokens(renderSkillCatalog(shown)) > budget && descriptionLimit > 160) {
+  while (estimateApproxTokens(renderSkillCatalog(shown)) > budget && descriptionLimit > 160) {
     descriptionLimit = Math.max(160, Math.floor(descriptionLimit * 0.8));
     shown = available.map((skill) => ({ ...skill, description: [...skill.description].slice(0, descriptionLimit).join("") }));
   }
-  while (!input.nativeDiscovery && shown.length > 0 && estimateApproxTokens(renderSkillCatalog(shown, available.length - shown.length)) > budget) {
+  while (shown.length > 0 && estimateApproxTokens(renderSkillCatalog(shown, available.length - shown.length)) > budget) {
     shown = shown.slice(0, -1);
   }
   const omittedCount = available.length - shown.length;
@@ -180,7 +178,7 @@ export function freezeSkillManifest(input: Readonly<{
       : pinned.some((skill) => (skill.fileCount ?? 0) > 0) ? "read" as const : undefined
     : undefined;
   return {
-    catalog: input.nativeDiscovery ? "" : renderSkillCatalog(shown, omittedCount),
+    catalog: renderSkillCatalog(shown, omittedCount),
     pinned,
     manifest: {
       version: 2, mode: input.mode,
