@@ -105,13 +105,13 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
   return {
     async claim(now = new Date(), liveRunIds: readonly string[] = []): Promise<WorkspaceFollowupClaim | null> {
       return prisma.$transaction(async (tx) => {
-        // Old-core successors only: the continuation dispatches through the old
-        // core. The predecessor may belong to either engine.
+        // A successor of either engine, behind a predecessor of either engine:
+        // the continuation dispatches through the successor's own engine.
         const [row] = await tx.$queryRaw<Array<{ runId: string; userId: string }>>(Prisma.sql`
           SELECT f."modelRunId" AS "runId", r."userId" FROM "WorkspaceFollowup" f
           JOIN "ModelRun" r ON r."id" = f."modelRunId"
           JOIN "ModelRun" p ON p."id" = f."predecessorRunId"
-          WHERE r."status" IN ('preparing', 'streaming') AND r."engine" = 'v1'
+          WHERE r."status" IN ('preparing', 'streaming')
             ${liveRunIds.length ? Prisma.sql`AND r."id" NOT IN (${Prisma.join([...liveRunIds])})` : Prisma.empty}
             AND (
             (f."state" = 'waiting' AND
@@ -129,7 +129,7 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
     },
     async hasPending(): Promise<boolean> {
       return await prisma.workspaceFollowup.count({ where: {
-        state: { in: ["waiting", "preparing"] }, modelRun: { engine: "v1", status: { in: ["preparing", "streaming"] } }
+        state: { in: ["waiting", "preparing"] }, modelRun: { status: { in: ["preparing", "streaming"] } }
       } }) > 0;
     },
     async release(claim: WorkspaceFollowupClaim): Promise<void> {
@@ -150,7 +150,8 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
         leaseExpiresAt: { gt: new Date() }, modelRun: { userId: claim.userId }
       }, include: {
         predecessor: { select: { status: true } },
-        modelRun: { select: { chatId: true, createdAt: true, status: true, normalizedRequest: true, workspaceWaitPending: true } }
+        modelRun: { select: { chatId: true, createdAt: true, engine: true, status: true, normalizedRequest: true,
+          workspaceWaitPending: true } }
       } });
     },
     async markAnswerDispatched(claim: WorkspaceFollowupClaim): Promise<boolean> {

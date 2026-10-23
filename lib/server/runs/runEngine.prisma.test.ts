@@ -269,17 +269,15 @@ describe("the old run core beside the native engine on one database", () => {
     await expect(prisma.modelRun.count({ where: { chatId: oldCore.chatId } })).resolves.toBe(1);
   });
 
-  it("hands the old core's Workspace follow-up worker only old-core successors", async () => {
+  it("hands the Workspace follow-up worker successors of either engine, which it starts on their own engine", async () => {
     const userId = await owner();
     const followups = createWorkspaceFollowupRepository(prisma);
-    await interruptedFollowup(userId, "native");
-
-    await expect(followups.claim(new Date(), [])).resolves.toBeNull();
-    await expect(followups.hasPending()).resolves.toBe(false);
+    const native = await interruptedFollowup(userId, "native");
+    await expect(followups.hasPending()).resolves.toBe(true);
+    await expect(followups.claim(new Date(), [])).resolves.toMatchObject({ runId: native, userId });
 
     const oldCore = await interruptedFollowup(userId, "v1");
     await expect(followups.claim(new Date(), [])).resolves.toMatchObject({ runId: oldCore, userId });
-    await expect(followups.hasPending()).resolves.toBe(true);
   });
 
   it("hands the old core's chat PDF worker only old-core runs", async () => {
