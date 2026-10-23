@@ -159,6 +159,39 @@ describe("OpenAI Responses transport", () => {
     expect(bodies[1]).toMatchObject({ model: "model" });
   });
 
+  it("sends a caller's lane key on a request's first isolated POST only, and a fresh key on its replay", async () => {
+    const lane = "6f1c2a4e-0b7d-4c3e-9a5f-1d2e3f4a5b6c";
+    for (const requestIsolation of [true, false]) {
+      const bodies: Record<string, unknown>[] = [];
+      const responses = [new Response("rate limited", { status: 429 }), Response.json({ id: "first" }), Response.json({ id: "second" }),
+        Response.json({ id: "probe" })];
+      const client = createFetchOpenAIResponsesClient({
+        apiKey: "key",
+        fetchFn: async (_input, init) => {
+          bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return responses.shift() ?? Response.json({});
+        },
+        initialRequestRetry: { maxAttempts: 2, random: () => 0, sleep: async () => undefined },
+        requestIsolation
+      });
+      await expect(client.create({ model: "model" }, { routingKey: lane })).resolves.toEqual({ id: "first" });
+      await expect(client.create({ model: "model" }, { routingKey: lane })).resolves.toEqual({ id: "second" });
+      // A call without a lane, such as a capability probe, keeps a fresh key.
+      await expect(client.create({ model: "model" })).resolves.toEqual({ id: "probe" });
+      const keys = bodies.map((body) => body.prompt_cache_key);
+      if (!requestIsolation) {
+        // Without isolation the lane key never reaches the wire.
+        expect(keys).toEqual([undefined, undefined, undefined, undefined]);
+        continue;
+      }
+      expect(keys[0]).toBe(lane);
+      expect(keys[2]).toBe(lane);
+      // The replay of the first request, and the probe, each have a key of their own.
+      expect(new Set(keys).size).toBe(3);
+      expect(keys.filter((key) => key === lane)).toHaveLength(2);
+    }
+  });
+
   it("uses the official base URL when the configured URL is blank", async () => {
     const urls: string[] = [];
     const client = createFetchOpenAIResponsesClient({

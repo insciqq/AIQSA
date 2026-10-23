@@ -29,6 +29,8 @@ import { inheritProviderErrorCode, markProviderErrorDetail } from "./providerErr
 export type OpenAIResponseObject = Record<string, unknown>;
 
 export type OpenAIResponsesClientRequestOptions = {
+  /** With request isolation: the key of the request's first POST (`ProviderRunOptions.routingKey`); a replay gets a fresh one. */
+  routingKey?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
@@ -260,7 +262,7 @@ export function createFetchOpenAIResponsesClient(input: {
    * create can have crash-ambiguous provider state without a response id.
    */
   initialRequestRetry?: ProviderRetryOptions;
-  /** Adds a fresh opaque routing key to every physical compatible POST. */
+  /** Adds an opaque routing key to every physical compatible POST: a fresh one, or the caller's lane key on a request's first. */
   requestIsolation?: boolean;
   /** Compatible Responses may deliver an SSE representation of a nonstream create. */
   acceptStreamedCreate?: boolean;
@@ -288,11 +290,15 @@ export function createFetchOpenAIResponsesClient(input: {
       options?.timeoutMs ?? input.defaultTimeoutMs
     );
     try {
+      let posts = 0;
       const operation = async () => {
         // Generate inside the retry operation: each physical POST, including an
-        // explicitly allowed replay, receives a distinct routing identity.
+        // explicitly allowed replay, receives a distinct routing identity. Only
+        // the first may take the caller's lane key: a replay must not share a
+        // key with the attempt it replaces.
+        posts += 1;
         const requestBody = input.requestIsolation
-          ? { ...body, prompt_cache_key: randomUUID() }
+          ? { ...body, prompt_cache_key: posts === 1 && options?.routingKey ? options.routingKey : randomUUID() }
           : body;
         let response: Response;
         try {

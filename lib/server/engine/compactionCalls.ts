@@ -1,6 +1,7 @@
 import { EMPTY_KNOWLEDGE_SELECTION } from "../../contracts/knowledge";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { maxOutputTokenParamKeys, maxOutputTokensFromParams } from "../../domain/providerParams";
+import type { GatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import type { CompactionModelCall, CompactionModelRequest } from "./compaction";
 import { callModel } from "./modelCall";
@@ -34,6 +35,8 @@ export type CompactionCallPorts = Readonly<{
   now?: () => number;
   /** One physical request's provider-reported usage and cost. */
   onUsage(usage: ModelRunUsage, costUsd: number | undefined): void;
+  /** The gateway routing lane of the run's compactions, never the loop's: they run beside it (`gatewayRouting.ts`). */
+  routing?: GatewayRoutingLane;
   timeoutMs?: number;
 }>;
 
@@ -127,6 +130,7 @@ export function compactionModelCall(ports: CompactionCallPorts, request: () => P
       onDiscard: async () => undefined,
       onEvent: async () => undefined,
       onUsage: ports.onUsage,
+      ...(ports.routing ? { routing: ports.routing } : {}),
       signal: call.signal,
       stage: "compaction",
       ...(ports.timeoutMs ? { timeoutMs: ports.timeoutMs } : {})

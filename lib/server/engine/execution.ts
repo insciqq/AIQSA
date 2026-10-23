@@ -4,6 +4,7 @@ import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { logEvent, runWithContext } from "../observability";
+import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
@@ -460,11 +461,15 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),
           modelId: normalizedRequest.modelId, operationCount: 1, provider: normalizedRequest.provider,
           providerModelId: snapshot.providerModelId, purpose: "chat_answer", usage: reported } satisfies RunUsageAttribution);
+        // Gateway routing lanes (`gatewayRouting.ts`): the loop's rounds share the chat's, one run at a time; this run's
+        // compactions, which run beside the loop and may outlive the run, have their own.
+        const loopRouting = gatewayRoutingLane({ chatId: scope.chatId, name: "loop" });
+        const compactionRouting = gatewayRoutingLane({ chatId: scope.chatId, name: `compaction:${runId}` });
         // Measurement and compaction before every request (`runContext.ts`); compaction calls are the answer model's.
         const context = createRunContext({
           append,
           compactionCall: (latest) => compactionModelCall({ adapter: input.adapter, deadlineAt: startedAt + turnMs, now,
-            onUsage: recordModelUsage, timeoutMs }, latest),
+            onUsage: recordModelUsage, routing: compactionRouting, timeoutMs }, latest),
           // One still running after the answer finishes detached; the run records its item, marker and usage then,
           // the item at a sequence no record of the run takes.
           detached: { chatId: scope.chatId, live: () => engine.transcripts.runLive(scope),
@@ -533,6 +538,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               else if (pinned.type !== "usage") sink.send(pinned);
             },
             onUsage: recordModelUsage,
+            routing: loopRouting,
             signal,
             timeoutMs
           }, sent)),

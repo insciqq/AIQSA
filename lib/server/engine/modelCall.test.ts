@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { engineTestFaults } from "./faults";
@@ -103,5 +104,30 @@ describe("native model call", () => {
     expect(call.discarded).toEqual([1, 2]);
     expect(engineTestFaults({ AIQSA_NATIVE_ENGINE_TEST_FAULTS: "model_502_once", AIQSA_TEST_MODE: "1", NODE_ENV: "production" })
       .take("model_502_once")).toBe(false);
+  });
+
+  it("sends each attempt with its lane's routing key, and never the one a failed attempt may still hold", async () => {
+    const keys: (string | undefined)[] = [];
+    const provider = adapter([{ fail: markProviderStreamDrop(new Error("socket"), "reset") }, { text: "Hello" }]);
+    const stream = provider.stream.bind(provider);
+    provider.stream = (value, options) => {
+      keys.push(options?.routingKey);
+      return stream(value, options);
+    };
+    const routing = gatewayRoutingLane({ chatId: "chat-model-call", name: "loop" },
+      { env: { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: Buffer.alloc(32, 9).toString("base64") } });
+    const first = routing.key();
+    await callModel(ports(provider, { routing }), request);
+    // The chat's next round goes on with the key its retry took.
+    await callModel(ports(provider, { routing }), request);
+    expect(keys).toHaveLength(3);
+    expect(keys[0]).toBe(first);
+    expect(keys[1]).toEqual(expect.any(String));
+    expect(keys[1]).not.toBe(first);
+    expect(keys[2]).toBe(keys[1]);
+    // Without a lane the adapter gets no key, and an isolated transport gives every POST a fresh one.
+    keys.length = 0;
+    await callModel(ports(provider), request);
+    expect(keys).toEqual([undefined]);
   });
 });
