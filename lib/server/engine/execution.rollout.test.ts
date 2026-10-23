@@ -13,11 +13,13 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { monitoringCheckInstruction, monitoringVerdictReservedInstruction } from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { createNativeRunExecutionResponse } from "./execution";
 import { nativeRunResponse, type NativeEngineHandlerDeps } from "./handlerSupport";
 import { NEUTRAL_FAMILY_PROMPT } from "./prompts/neutral";
 import { parseNativeEngineUsers } from "./routing";
+import { UNKNOWN_OUTCOME_REPEAT_OUTPUT } from "./toolBatch";
 import type { TranscriptItem } from "./transcript";
 
 /**
@@ -125,6 +127,75 @@ describe("a scheduled run's flat context on the native engine", () => {
     expect(JSON.stringify(flat)).not.toContain("SYNTHETIC OLDER RESULTS");
     // An ordinary chat continues from the compaction.
     expect(JSON.stringify(await firstHistory(false))).toContain("SYNTHETIC OLDER RESULTS");
+  });
+});
+
+describe("an unknown effect on the native engine", () => {
+  const SHELL = namespacedWorkspaceToolName("sandbox_shell");
+  const unknownShell: TranscriptItem[] = [
+    { arguments: "{\"command\":\"post-report\"}", callId: "pc1", id: "u1", kind: "tool_call", name: SHELL, origin: NATIVE_RUN_ORIGIN },
+    { callId: "pc1", id: "u2", kind: "tool_result", name: SHELL, outcome: "unknown", output: "The command may have run; its exit is unknown." },
+    { id: "u3", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "The report may have been posted." }
+  ];
+  const step = { kind: "review" as const, modelName: "Fake reviewer", reviewer: 1, round: 1, sessionId: "session-1", step: 1, version: 1 as const };
+
+  /** One run whose model sends the same command again; `messages` is its frozen branch, the answer `answer-0` a native run's. */
+  async function retry(messages: readonly ReturnType<typeof nativeSay>[], options: Readonly<{
+    extra?: Partial<ProviderRunRequest>; repo?: ReturnType<typeof nativeRunRepository>; scheduled?: boolean;
+  }> = {}) {
+    const { adapter, requests } = scriptedNativeAdapter([
+      { calls: [{ arguments: { command: "post-report" }, id: "again", name: SHELL }] }, { text: "Done." }
+    ]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.nativeRunsForAnswers.mockResolvedValue(new Map([["answer-0", "run-0"]]));
+    memory.transcripts.loadRuns.mockResolvedValue(new Map([["run-0", unknownShell]]));
+    const workspace = {
+      accepts: () => true,
+      execute: vi.fn(async ({ call }: { call: { id: string; name: string } }) => ({ callId: call.id,
+        content: [{ text: "posted", type: "text" as const }], name: call.name, status: "complete" as const })),
+      handoff: vi.fn(async () => ({ status: "ready" })),
+      prepareCarryover: vi.fn(async () => undefined),
+      settle: vi.fn(async () => undefined),
+      tools: vi.fn(async () => [{ capability: "workspace" as const, description: "Run a command", inputSchema: { type: "object" }, name: SHELL }])
+    };
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      prepared: nativePrepared({ context: { messages: [...messages], mode: "branch_path" },
+        workspace: { enabled: true, syncToolTimeoutSeconds: 30, turnTimeoutSeconds: 600 } as ProviderRunRequest["workspace"], ...options.extra }),
+      repository: asRepository(options.repo ?? nativeRunRepository()), ...(options.scheduled ? { scheduled: true as const } : {}),
+      services: {}, userId: "owner", workspace: workspace as unknown as WorkspaceCoordinator }));
+    const result = requests[1]?.history?.find((item) => item.type === "tool_result" && item.callId === "again");
+    return { execute: workspace.execute, output: result?.type === "tool_result" ? result.output : null };
+  }
+
+  const occurrence = [nativeSay("previous-user", "user", "Post the daily report"), nativeSay("answer-0", "assistant", "Maybe posted."),
+    nativeSay("current-user-message", "user", "Post the daily report")];
+
+  it("stays blocked through a scheduled occurrence's prompt, which the server wrote", async () => {
+    const scheduled = await retry(occurrence, { scheduled: true });
+    expect(scheduled.execute).not.toHaveBeenCalled();
+    expect(scheduled.output).toBe(UNKNOWN_OUTCOME_REPEAT_OUTPUT);
+    // The user's own message is what releases it.
+    const asked = await retry(occurrence);
+    expect(asked.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays blocked through an answer review step and the review turns the server wrote before it", async () => {
+    const review = [nativeSay("question", "user", "Post the daily report"), nativeSay("answer-0", "assistant", "Maybe posted."),
+      nativeSay("review-turn", "user", "Review the previous answer."), nativeSay("review-answer", "assistant", "It may be posted."),
+      nativeSay("current-user-message", "user", "Review the previous answer.")];
+    const marked = nativeRunRepository();
+    marked.loadSystemTurnMessageIds.mockResolvedValue(new Set(["review-turn"]));
+    const blocked = await retry(review, { extra: { answerReviewStep: step }, repo: marked });
+    expect(blocked.execute).not.toHaveBeenCalled();
+    expect(blocked.output).toBe(UNKNOWN_OUTCOME_REPEAT_OUTPUT);
+    // Only the turns after the branch's first call are looked up.
+    expect(marked.loadSystemTurnMessageIds).toHaveBeenCalledWith({ chatId: "chat", messageIds: ["review-turn"], userId: "owner" });
+    // Turns that cannot be told apart count as the server's.
+    const unread = nativeRunRepository();
+    unread.loadSystemTurnMessageIds.mockRejectedValue(new Error("database restarted"));
+    expect((await retry(review, { extra: { answerReviewStep: step }, repo: unread })).execute).not.toHaveBeenCalled();
+    // An unmarked turn after the effect would count as the user writing.
+    expect((await retry(review, { extra: { answerReviewStep: step } })).execute).toHaveBeenCalledTimes(1);
   });
 });
 
