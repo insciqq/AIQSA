@@ -113,8 +113,10 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       }
       const visible = (attachments: readonly ProviderAttachment[]) => attachments
         .filter((attachment) => attachment.kind === "image" && (attachment.dataUrl || attachment.base64Data)).map((attachment) => attachment.id);
+      // The line holds for this request's pixels only: turn guidance, which the native engine sends with the input.
       const withSystem = (attachments: ProviderAttachment[], line: string): ProviderRunRequest => ({ ...request, attachments,
-        prompt: { ...request.prompt, system: [request.prompt.system, line].filter(Boolean).join("\n\n") } });
+        prompt: { ...request.prompt, system: [request.prompt.system, line].filter(Boolean).join("\n\n"),
+          turnGuidance: [...(request.prompt.turnGuidance ?? []), line] } });
       if (!extra.length) {
         return withSystem([...request.attachments], `Image pixels accompanying the latest user message, in order: ${JSON.stringify(visible(request.attachments))}. Additional images are references from earlier messages, not new uploads. Other image references have no visible pixels in this request.`);
       }

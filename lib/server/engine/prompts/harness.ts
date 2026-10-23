@@ -40,6 +40,7 @@ export type SavedSecretFact = Readonly<{
 }>;
 
 export type EnvironmentPromptInput = Readonly<{
+  /** The run's start; the environment names only its date. */
   now: Date;
   /** The validated IANA zone frozen at admission (`resolveStandardChatBaseline`). */
   timeZone: string;
@@ -98,10 +99,14 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
   return sections.map((lines) => lines.join("\n")).join("\n\n");
 }
 
-/** Per-turn facts. They change between turns, so they come after the stable text. */
+/**
+ * The user's facts: the date, language and saved secrets. They come after the
+ * stable text and stay the same across a day's turns of a chat; the time of
+ * day changes every turn, so it rides with the turn (`turnContextText`).
+ */
 export function environmentPromptSection(input: EnvironmentPromptInput): string {
   const lines = ["# Environment", renderLocalPromptTemplate(
-    `Today is {local_date}, local time is {local_time} (${input.timeZone}).`,
+    `Today is {local_date} in the user's time zone (${input.timeZone}).`,
     { locale: "en-US", now: input.now, timeZone: input.timeZone })];
   if (input.locale && BCP47.test(input.locale)) {
     lines.push(`The user's interface language is ${input.locale}; reply in the language the user writes in.`);
@@ -117,4 +122,26 @@ export function environmentPromptSection(input: EnvironmentPromptInput): string 
     }
   }
   return lines.join("\n");
+}
+
+export type TurnContextInput = Readonly<{
+  /** What admission recorded as holding only for this turn (`prompt.turnGuidance`), in order. */
+  guidance: readonly string[];
+  /** The run's start. */
+  now: Date;
+  /** The zone of `EnvironmentPromptInput`. */
+  timeZone: string;
+}>;
+
+/**
+ * What holds only for this turn, sent with the user's message rather than in
+ * the system prompt: the local time, then the turn's paths and current-message
+ * facts admission recorded. Rebuilt for every run and never kept, so a later
+ * turn neither sees it nor pays for it.
+ */
+export function turnContextText(input: TurnContextInput): string {
+  const time = renderLocalPromptTemplate(`Current local time: {local_time} (${input.timeZone}).`,
+    { locale: "en-US", now: input.now, timeZone: input.timeZone });
+  const parts = input.guidance.map((part) => part.trim()).filter(Boolean);
+  return ["<turn_context>", [time, ...parts].join("\n\n"), "</turn_context>"].join("\n");
 }

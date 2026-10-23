@@ -691,6 +691,22 @@ describe("provider dispatch recovery request loading", () => {
       .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
+  it("restores the recorded turn guidance and rejects one that is not a short list of text", async () => {
+    let accepted: unknown;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    accepted = { ...normalizedRequest, prompt: { ...normalizedRequest.prompt, system: "Stable.\n\nThis turn's output directory: /out.",
+      turnGuidance: ["This turn's output directory: /out."] } };
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+    for (const turnGuidance of ["This turn's output directory: /out.", [1], Array.from({ length: 17 }, () => "part")]) {
+      accepted = { ...normalizedRequest, prompt: { ...normalizedRequest.prompt, turnGuidance } };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+        .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+  });
+
   it("restores legacy pinned arrays and frozen v2 catalogs without consulting the current library", async () => {
     const reference = { skillId: "skill", revisionId: "revision", name: "review", description: "Review text", fileCount: 1 };
     const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], available: [reference], toolsSupported: true });
