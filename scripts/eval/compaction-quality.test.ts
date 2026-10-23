@@ -7,6 +7,8 @@ import { TOOL_RESULT_LIMITS } from "../../lib/server/engine/toolResults";
 import { SUMMARIZER_INSTRUCTIONS, SUMMARY_SECTIONS } from "../../lib/server/engine/compaction/summaryPrompt";
 import { contextItemTokens } from "../../lib/server/engine/contextMeasure";
 import { selectTranscript, type TranscriptItem, type TranscriptTarget } from "../../lib/server/engine/transcript";
+import { buildCompatibleResponsesRequest } from "../../lib/server/providers/compatibleResponses";
+import { responsesHistoryFromOutput } from "../../lib/server/providers/history";
 import type { ProviderRunRequest, ProviderRunResult } from "../../lib/server/providers/types";
 import {
   calledTools,
@@ -222,8 +224,14 @@ describe("evaluation runs", () => {
 
   it("drives a model through recall reads and continuation tools to a perfect score", async () => {
     const requests: ProviderRunRequest[] = [];
-    const nativeBodies: Record<string, unknown>[] = [];
+    const nativeRequests: ProviderRunRequest[] = [];
     const answer = (request: ProviderRunRequest): ProviderRunResult => {
+      if (request.compactionTrigger) {
+        nativeRequests.push(request);
+        return { finalProviderResponsePreview: {}, finalText: "",
+          history: responsesHistoryFromOutput([{ encrypted_content: "ENC", id: "cmp_1", type: "compaction" }]),
+          usage: normalizeTokenUsage({ inputTokens: 20_000, outputTokens: 900 }) };
+      }
       requests.push(request);
       const usage = normalizeTokenUsage({ inputTokens: 1_000, outputTokens: 50 });
       const reply = (text: string): ProviderRunResult => ({ finalProviderResponsePreview: {}, finalText: text, history: [{ text, type: "assistant_text" }], usage });
@@ -245,22 +253,17 @@ describe("evaluation runs", () => {
       }
       return reply("Archived; finished at 18:20 Asia/Yekaterinburg.");
     };
-    const model: EvalModel = {
-      native: async (body) => {
-        nativeBodies.push(body);
-        return { errorCode: null, items: [{ encrypted_content: "ENC", id: "cmp_1", type: "compaction" }], status: "completed",
-          usage: { inputTokens: 20_000, outputTokens: 900 } };
-      },
-      run: async (request) => answer(request)
-    };
+    const model: EvalModel = { nativeCompaction: true, run: async (request) => answer(request) };
     const lines: Record<string, unknown>[] = [];
     const summary = await runCompactionEvaluation(options({ handles: "all", paths: ["native"], scenarios: ["analysis"] }), {
       emit: (line) => lines.push({ ...line }), model: () => model, now: () => 0
     });
-    expect(nativeBodies).toHaveLength(1);
-    const input = nativeBodies[0]!.input as Record<string, unknown>[];
+    // The native call is the session's own request with the trigger last, as the engine sends it.
+    expect(nativeRequests).toHaveLength(1);
+    const body = buildCompatibleResponsesRequest(nativeRequests[0]!);
+    const input = body.input as Record<string, unknown>[];
     expect(input[input.length - 1]).toEqual({ type: "compaction_trigger" });
-    expect(nativeBodies[0]).toMatchObject({ store: false, stream: true, tool_choice: "none" });
+    expect(body).toMatchObject({ instructions: SCENARIOS.analysis.instructions, store: false, stream: true, tool_choice: "none" });
     const recall = lines.find((line) => line.event === "recall")!;
     expect(recall).toMatchObject({ parsed: true, reads: 1, rounds: 2 });
     expect(lines.find((line) => line.event === "continuation")).toMatchObject({ nextStep: true, repeated: [], violations: [] });

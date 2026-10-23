@@ -33,7 +33,6 @@ import {
   compactionRetention,
   findCompactionCut,
   planCompaction,
-  responsesCompactionInput,
   usableContextTokens,
   type CompactionCut,
   type CompactionMetadata,
@@ -42,6 +41,7 @@ import {
   type CompactionPath
 } from "../../lib/server/engine/compaction";
 import { SUMMARIZER_INSTRUCTIONS, SUMMARY_SECTIONS } from "../../lib/server/engine/compaction/summaryPrompt";
+import { nativeCompactionRequest, summaryCompactionRequest } from "../../lib/server/engine/compactionCalls";
 import {
   contextAnchor,
   contextItemTokens,
@@ -62,7 +62,7 @@ import { sleepWithSignal } from "../../lib/server/providers/providerRetry";
 import { createProviderSafeFetch } from "../../lib/server/providers/providerSafeFetch";
 import type { ProviderModelCapabilities, ProviderRunRequest, ProviderRunResult } from "../../lib/server/providers/types";
 import type { RunTool } from "../../lib/server/tools/types";
-import { DEFAULT_ROOT, parseAnswerObject, streamResponses } from "../spikes/compaction-scale";
+import { DEFAULT_ROOT, parseAnswerObject } from "../spikes/compaction-scale";
 import { createSpikeConnection, SPIKE_PROVIDER_PROFILES, SPIKE_PROVIDERS, type SpikeProvider } from "../spikes/transcript-replay-support";
 import { APPROVAL_PENDING_TEXT } from "../../lib/server/engine/compaction/items";
 import {
@@ -212,17 +212,10 @@ export function parseEvalArguments(argv: readonly string[], env: Readonly<Record
 
 // ------------------------------------------------------------- the models
 
-export type NativeCallResult = Readonly<{
-  errorCode: string | null;
-  items: readonly Record<string, unknown>[];
-  status: string | null;
-  usage: Readonly<{ inputTokens: number | null; outputTokens: number | null }>;
-}>;
-
 /** One model as the evaluation calls it. */
 export type EvalModel = Readonly<{
-  /** A Responses call ending with a compaction trigger (Codex LB, OpenAI); null where unsupported. */
-  native: ((body: Record<string, unknown>, signal: AbortSignal, idleTimeoutMs: number) => Promise<NativeCallResult>) | null;
+  /** The route compacts natively (Codex LB, OpenAI): a request with `compactionTrigger` returns one compaction item. */
+  nativeCompaction: boolean;
   /** A request through the product's provider adapter. */
   run(request: ProviderRunRequest, signal: AbortSignal): Promise<ProviderRunResult>;
 }>;
@@ -298,31 +291,21 @@ function request(run: Run, history: readonly ProviderHistoryItem[], input: Reado
   };
 }
 
-function responsesTools(tools: readonly EvalTool[]): Record<string, unknown>[] {
-  return tools.map((tool) => ({ description: tool.description, name: tool.name, parameters: tool.parameters, type: "function" }));
-}
-
-function reported(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-/** The compaction call `compact()` uses: summaries through the adapter, native calls as Responses with the trigger. */
+/**
+ * The compaction call `compact()` uses, built as the engine builds it
+ * (`lib/server/engine/compactionCalls.ts`) from the session's own request
+ * and sent through the product's adapter: a native call is that request
+ * with the span as history and the `compaction_trigger` item last, a
+ * summary call the allowlisted request with the summarizer's instructions.
+ */
 function compactionCall(run: Run): CompactionModelCall {
   return async (call) => {
-    if (call.kind === "native") {
-      if (!run.model.native) throw new Error("native_unsupported");
-      const result = await run.model.native({
-        input: responsesCompactionInput(call.history), instructions: run.scenario.instructions, model: run.target.model, store: false,
-        stream: true, tool_choice: "none", tools: responsesTools(run.scenario.tools)
-      }, call.signal, call.idleTimeoutMs);
-      if (result.errorCode) throw new Error(result.errorCode);
-      return { history: responsesHistoryFromOutput(result.items), status: result.status === "incomplete" ? "incomplete" : "completed", text: "",
-        usage: result.usage };
-    }
-    const response = await run.model.run(request(run, call.history, {
-      effort: call.reasoningEffort ?? run.options.summaryEffort, maxOutputTokens: call.maxOutputTokens ?? 4_096,
-      system: call.instructions ?? SUMMARIZER_INSTRUCTIONS, toolChoice: "none", tools: []
-    }), call.signal);
+    const native = call.kind === "native";
+    if (native && !run.model.nativeCompaction) throw new Error("native_unsupported");
+    const session = request(run, [], { effort: native ? run.options.effort : run.options.summaryEffort, maxOutputTokens: 8_192,
+      system: run.scenario.instructions, toolChoice: "auto", tools: run.scenario.tools });
+    const response = await run.model.run(native ? nativeCompactionRequest(session, call) : summaryCompactionRequest(session, call),
+      call.signal);
     const usage = normalizeTokenUsage(response.usage);
     return { ...(response.history ? { history: response.history } : {}), text: response.finalText,
       usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } };
@@ -667,7 +650,7 @@ async function runScenarioPath(options: EvalOptions, env: EvalEnvironment, id: S
 
   if (id === "switch") {
     // Native first where the route has it; the switched model then reads only the stored transcript.
-    const native = await compactOnce(run, env, build.items, model.native ? "native" : "summary", base, 1);
+    const native = await compactOnce(run, env, build.items, model.nativeCompaction ? "native" : "summary", base, 1);
     if (!native.ok) return { continuation: null, firstRecall: null, path: label, recall: null, scenario: id };
     const switched = env.model(options.provider, options.switchModel);
     if (!switched) {
@@ -766,9 +749,13 @@ const DRY_SUMMARY = SUMMARY_SECTIONS.map((section) => `## ${section}\n- (dry run
 /** A model that answers without any network: summaries with the fixed sections, nulls for recall, nothing for work. */
 export function dryRunModel(): EvalModel {
   return {
-    native: async () => ({ errorCode: null, items: [{ encrypted_content: "DRY-RUN", id: "cmp_dry", type: "compaction" }], status: "completed",
-      usage: { inputTokens: null, outputTokens: null } }),
+    nativeCompaction: true,
     async run(request) {
+      if (request.compactionTrigger) {
+        return { finalProviderResponsePreview: {}, finalText: "",
+          history: responsesHistoryFromOutput([{ encrypted_content: "DRY-RUN", id: "cmp_dry", type: "compaction" }]),
+          usage: normalizeTokenUsage({}) };
+      }
       const text = request.prompt.system === SUMMARIZER_INSTRUCTIONS ? DRY_SUMMARY
         : request.tools?.some((tool) => tool.name === READ_TOOL_RESULT.name) && request.tools.length === 1 ? "{}" : "Dry run: no model was called.";
       return { finalProviderResponsePreview: {}, finalText: text, history: [{ text, type: "assistant_text" }],
@@ -781,7 +768,6 @@ export function dryRunModel(): EvalModel {
 
 /** Attempts per model call: transient failures are sent again, as the engine does. */
 const CALL_ATTEMPTS = 3;
-const TRANSIENT_NATIVE_CODE = /^(?:http_(?:408|425|429|5\d\d)|network_\w+|stream_ended_without_terminal)$/u;
 
 function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | null {
   const profile = SPIKE_PROVIDER_PROFILES[provider];
@@ -793,30 +779,9 @@ function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | n
     configuration: { allowPrivateNetwork: false, apiRoot: baseUrl, authenticationMode: "bearer", responseTimeoutMs: options.timeoutMs }
   });
   const connection = createSpikeConnection(provider, { apiKey, baseUrl, errorDetail: false, fetchFn, timeoutMs: options.timeoutMs });
-  const nativeRoot = provider === "codex-lb" ? options.root : provider === "openai" ? "https://api.openai.com" : null;
   return {
-    native: nativeRoot ? async (body, signal, idleTimeoutMs) => {
-      const send = () => streamResponses({
-        apiKey,
-        fetch: (url, init) => fetchFn(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, signal]) : signal }),
-        idleTimeoutMs,
-        now: () => performance.now(),
-        overallTimeoutMs: options.timeoutMs,
-        root: nativeRoot
-      }, body);
-      let result = await send();
-      for (let attempt = 2; attempt <= CALL_ATTEMPTS && result.errorCode && TRANSIENT_NATIVE_CODE.test(result.errorCode) &&
-        !signal.aborted; attempt += 1) {
-        await sleepWithSignal(2_000 * attempt, signal);
-        result = await send();
-      }
-      return {
-        errorCode: result.errorCode ?? (result.status === "completed" || result.status === "incomplete" ? null : "response_not_completed"),
-        items: result.completedItems,
-        status: result.status ?? null,
-        usage: { inputTokens: reported(result.usage?.inputTokens), outputTokens: reported(result.usage?.outputTokens) }
-      };
-    } : null,
+    // The routes the engine compacts natively on (`nativeCompactionRoute`).
+    nativeCompaction: provider === "codex-lb" || provider === "openai",
     async run(providerRequest, signal) {
       for (let attempt = 1; ; attempt += 1) {
         try {
