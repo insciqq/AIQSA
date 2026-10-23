@@ -2,7 +2,7 @@ export type UploadFormatScope = "attachment" | "workspace";
 export type UploadKind = "document" | "file" | "image" | "pdf";
 export type InlineDocumentFormat = "csv" | "json" | "markdown" | "text";
 export type StructuredDocumentFormat = "csv" | "ods" | "xls" | "xlsx";
-export type SidecarParserEngine = "docling" | "tika";
+export type SidecarParserEngine = "tika";
 
 export type UploadContentEvidence =
   | "bmp"
@@ -63,7 +63,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "pdf",
     label: "PDF",
     mimeTypes: ["application/pdf"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -85,7 +85,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "document",
     label: "Word (DOCX)",
     mimeTypes: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -96,7 +96,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "document",
     label: "PowerPoint",
     mimeTypes: ["application/vnd.openxmlformats-officedocument.presentationml.presentation"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -151,7 +151,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "document",
     label: "HTML",
     mimeTypes: ["text/html", "application/xhtml+xml"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -261,7 +261,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "image",
     label: "PNG",
     mimeTypes: ["image/png"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -272,7 +272,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "image",
     label: "JPEG",
     mimeTypes: ["image/jpeg", "image/jpg"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -283,7 +283,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "image",
     label: "TIFF",
     mimeTypes: ["image/tiff", "image/x-tiff"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: workspaceOnly
   },
   {
@@ -294,7 +294,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "image",
     label: "WebP",
     mimeTypes: ["image/webp"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: attachmentScopes
   },
   {
@@ -305,7 +305,7 @@ export const UPLOAD_FORMAT_REGISTRY: readonly UploadFormatDefinition[] = Object.
     kind: "image",
     label: "BMP",
     mimeTypes: ["image/bmp", "image/x-bmp"],
-    parser: { engines: ["docling", "tika"], kind: "sidecar" },
+    parser: { engines: ["tika"], kind: "sidecar" },
     scopes: workspaceOnly
   },
   {

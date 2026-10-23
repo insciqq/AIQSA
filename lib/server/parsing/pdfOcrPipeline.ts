@@ -4,7 +4,6 @@ import { applyProviderRequestContextBudget } from "../runs/requestContextBudget"
 import { planAdaptivePdfPages, type AdaptivePdfPlan } from "./adaptivePdf";
 import { assembleAdaptivePdfPages } from "./adaptivePdfAssembly";
 import { adaptivePdfVisionPrompt, prepareAdaptivePdfVisionSupplement } from "./adaptivePdfVision";
-import type { DoclingLayoutParser } from "./doclingLayout";
 import { DocumentParserError } from "./errors";
 import {
   decodeModelPdfBatchOutput, MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION, MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION,
@@ -50,6 +49,8 @@ export function pdfOcrImageLimits(
 }
 
 export type PdfOcrLocal = Readonly<{
+  /** A docling layout that a preparation planned before the sidecar's removal
+   * stored with its local artifact; new plans have none. */
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry | null;
   plan: AdaptivePdfPlan | null;
@@ -62,7 +63,6 @@ export async function planPdfOcrSource(input: Readonly<{
   pageCount: number; parserVersion?: number; signal?: AbortSignal;
 }>, options: Readonly<{
   extractGeometry?: typeof extractNativePdfGeometry;
-  parseDocling?: DoclingLayoutParser | null;
 }> = {}): Promise<PdfOcrLocal> {
   input.signal?.throwIfAborted();
   const parserVersion = input.parserVersion ?? PDF_OCR_PARSER_VERSION;
@@ -71,28 +71,23 @@ export async function planPdfOcrSource(input: Readonly<{
   }
   const source = { bytes: input.bytes, fileName: "source.pdf", mimeType: "application/pdf", signal: input.signal };
   let geometry: NativePdfGeometry | null = null;
-  let docling: ParsedDocument | null = null;
   try {
     geometry = await (options.extractGeometry ?? extractNativePdfGeometry)(source, {
       maxBlocks: input.maxBlocks, maxCharacters: input.maxCharacters, maxPages: input.maxPages
     });
     if (geometry.pageCount !== input.pageCount) geometry = null;
   } catch { input.signal?.throwIfAborted(); }
-  if (geometry && options.parseDocling) {
-    try {
-      docling = await options.parseDocling({ ...source, parserProfileVersion: parserVersion });
-    } catch { input.signal?.throwIfAborted(); }
-  }
   input.signal?.throwIfAborted();
-  if (!geometry) return { geometry, docling, plan: null };
-  const baseline = planAdaptivePdfPages({ geometry, docling });
+  if (!geometry) return { geometry, docling: null, plan: null };
+  // Without an independent layout every page is read by vision (`docling_unavailable`).
+  const baseline = planAdaptivePdfPages({ geometry, docling: null });
   const needsStructure = new Set(geometry.blocks.filter(block => block.isTable ||
     /\p{L}/u.test(block.text) && !nativeTextIsProse(block.text)).map(block => block.page));
   const pages = baseline.pages.map(page => page.route === "native_only" && needsStructure.has(page.page)
     ? { ...page, route: "vision_required" as const, reasons: [...page.reasons, "native_math_structure" as const] }
     : page);
   const nativeOnlyPageCount = pages.filter(page => page.route === "native_only").length;
-  return { geometry, docling, plan: { pages, nativeOnlyPageCount,
+  return { geometry, docling: null, plan: { pages, nativeOnlyPageCount,
     visionRequiredPageCount: pages.length - nativeOnlyPageCount } };
 }
 

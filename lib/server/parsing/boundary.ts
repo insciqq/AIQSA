@@ -17,11 +17,6 @@ import {
   parseNativeTextPdf,
   type NativePdfParserOptions
 } from "./nativePdf";
-import {
-  PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
-  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION,
-  supplementImageHeavyPdfOcr
-} from "./ocrSupplement";
 import { parseInlineMarkdownBlocks } from "./inlineMarkdown";
 import { parseSpreadsheetInIsolation } from "./isolatedParser";
 import { resolveDocumentParserRoute } from "./routing";
@@ -148,13 +143,6 @@ export class DocumentParserBoundary {
   constructor(options: DocumentParserBoundaryOptions = {}) {
     const config = options.config ?? getDocumentParserConfig();
     this.#adapters = {
-      ...(config.docling ? {
-        docling: new HttpDocumentParserEngineAdapter({
-          config: config.docling,
-          engine: "docling",
-          fetch: options.fetch
-        })
-      } : {}),
       ...(config.tika ? {
         tika: new HttpDocumentParserEngineAdapter({
           config: config.tika,
@@ -201,7 +189,6 @@ export class DocumentParserBoundary {
     const errors: DocumentParserError[] = [];
     const attempts: ParsedDocumentParserAttempt[] = [];
     const candidates: ParsedDocument[] = [];
-    let nativeQualityReason: ParsedDocumentParserAttempt["reasonCode"];
     if (route.mediaType === "application/pdf" && this.#nativePdfLimits) {
       try {
         const native = await this.#nativePdfParser({
@@ -215,7 +202,6 @@ export class DocumentParserBoundary {
           outcome: "quality_failure",
           reasonCode: native.reasonCode ?? "native_pdf_quality_failure"
         }));
-        nativeQualityReason = native.reasonCode ?? "native_pdf_quality_failure";
       } catch (error) {
         if (input.signal?.aborted) throw abortReason(input.signal);
         const normalized = isDocumentParserError(error)
@@ -227,12 +213,6 @@ export class DocumentParserBoundary {
       }
     }
     const engines = this.#sidecarFallback ? route.engines : route.engines.slice(0, 1);
-    const shouldSupplementImageOcr = nativeQualityReason ===
-      "native_pdf_image_heavy_low_text" && this.#nativePdfLimits !== undefined &&
-      (input.parserProfileVersion === undefined || input.parserProfileVersion >=
-        PDF_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION) &&
-      engines.includes("tika") && this.#adapters.tika !== undefined;
-    let imageOcrPrimary: ParsedDocument | null = null;
     for (const engine of engines) {
       if (input.signal?.aborted) throw abortReason(input.signal);
       const adapter = this.#adapters[engine];
@@ -262,47 +242,13 @@ export class DocumentParserBoundary {
         } else {
           errors.push(new DocumentParserError("parser_rejected", engine));
         }
-        if (imageOcrPrimary && engine === "tika" && !qualityFailure) {
-          const supplemented = supplementImageHeavyPdfOcr(
-            imageOcrPrimary,
-            parsed,
-            this.#nativePdfLimits!,
-            {
-              segmentFallbackBlocks: input.parserProfileVersion === undefined ||
-                input.parserProfileVersion >=
-                  PDF_SEGMENTED_IMAGE_OCR_SUPPLEMENT_PROFILE_VERSION
-            }
-          );
-          attempts.push(supplemented.outcome === "rejected"
-            ? Object.freeze({ ...attempt, outcome: "quality_failure" })
-            : attempt);
-          return withParserEvidence(supplemented.document, attempts, {
-            additionalWarnings: supplemented.outcome === "rejected"
-              ? ["parser_fallback_failed"]
-              : []
-          });
-        }
         attempts.push(attempt);
-        if (imageOcrPrimary && engine === "tika") {
-          return withParserEvidence(imageOcrPrimary, attempts, {
-            additionalWarnings: ["parser_fallback_failed"]
-          });
-        }
-        if (!qualityFailure && engine === "docling" && shouldSupplementImageOcr) {
-          imageOcrPrimary = parsed;
-          continue;
-        }
         if (!qualityFailure) return withParserEvidence(parsed, attempts);
       } catch (error) {
         if (input.signal?.aborted) throw abortReason(input.signal);
         const normalized = isDocumentParserError(error) ? error : unavailable(engine);
         errors.push(normalized);
         attempts.push(attemptForError(engine, normalized));
-        if (imageOcrPrimary && engine === "tika") {
-          return withParserEvidence(imageOcrPrimary, attempts, {
-            additionalWarnings: ["parser_fallback_failed"]
-          });
-        }
         if (normalized.code === "parser_output_too_large") throw normalized;
       }
     }
@@ -343,11 +289,7 @@ export class DocumentParserBoundary {
       }
     };
 
-    const [docling, tika] = await Promise.all([
-      probeEngine("docling"),
-      probeEngine("tika")
-    ]);
-    return Object.freeze({ docling: Object.freeze(docling), tika: Object.freeze(tika) });
+    return Object.freeze({ tika: Object.freeze(await probeEngine("tika")) });
   }
 }
 
