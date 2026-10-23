@@ -24,7 +24,7 @@ import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
 import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
-import type { ToolObservationService } from "../toolObservations/sourceAdapters";
+import type { ToolObservationService } from "../toolObservations/service";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";

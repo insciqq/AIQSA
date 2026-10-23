@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { ADMIN_HEALTH_CODE_PATTERN } from "../../../contracts/adminHealth";
 import { normalizeRunReference, RUN_ID_LENGTH } from "../../../contracts/runReference";
 import { RUN_FAILURE_USER_INPUT_CODES } from "../attention/healthRules";
+import { RETIRED_ENGINE_FAILURE_CODES } from "../../runs/retiredEngineRuns";
 import { ADMIN_HEALTH_QUEUE_STATEMENT_TIMEOUT_MS } from "./queueThresholds";
 import type { AdminHealthQueueClient } from "./queuesRepository";
 
@@ -43,6 +44,8 @@ export type FailedRunQuery = Readonly<{
   perCode: number;
   groupLimit: number;
   statementTimeoutMs?: number;
+  /** Leaves out the old core's runs the upgrade ended (`RETIRED_ENGINE_FAILURE_CODES`). */
+  withoutRetiredEngineEnds?: boolean;
 }>;
 
 const MAX_PER_CODE = 100;
@@ -77,7 +80,7 @@ function validDate(value: unknown): value is Date {
  * The filtered set is referenced twice, so PostgreSQL scans it once.
  */
 export function adminHealthFailedRunsStatement(query: FailedRunQuery): Prisma.Sql {
-  const { from, groupLimit, perCode, to } = query;
+  const { from, groupLimit, perCode, to, withoutRetiredEngineEnds } = query;
   if (!validDate(from) || !validDate(to) || from.getTime() >= to.getTime() ||
     !Number.isSafeInteger(perCode) || perCode < 1 || perCode > MAX_PER_CODE ||
     !Number.isSafeInteger(groupLimit) || groupLimit < 1 || groupLimit > MAX_GROUPS) {
@@ -90,7 +93,9 @@ export function adminHealthFailedRunsStatement(query: FailedRunQuery): Prisma.Sq
           THEN left(run."errorPayload" ->> 'code', 128) END AS "code"
       FROM "ModelRun" AS run
       WHERE run."status" = 'error'::"ModelRunStatus"
-        AND run."createdAt" >= ${utc(from)} AND run."createdAt" < ${utc(to)}
+        AND run."createdAt" >= ${utc(from)} AND run."createdAt" < ${utc(to)}${withoutRetiredEngineEnds ? Prisma.sql`
+        AND NOT (run."engine" = 'v1'::"ModelRunEngine"
+          AND COALESCE(run."errorPayload" ->> 'code', '') = ANY(${[...RETIRED_ENGINE_FAILURE_CODES]}::text[]))` : Prisma.empty}
     ), kept AS (
       SELECT * FROM failed WHERE "code" IS NULL OR NOT ("code" = ANY(${[...RUN_FAILURE_USER_INPUT_CODES]}::text[]))
     ), ranked AS (

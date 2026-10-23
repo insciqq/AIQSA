@@ -110,7 +110,6 @@ export type RunHandlerDeps = {
     kick(): void;
   }>;
   vision?: import("../vision/service").VisionAnalysisService;
-  observations?: import("../toolObservations/sourceAdapters").ToolObservationService;
   images?: import("../images/service").ImageGenerationService;
   artifacts?: import("../artifacts/service").ArtifactService;
   allowFakeProvider?: boolean;
