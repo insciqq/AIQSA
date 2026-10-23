@@ -961,3 +961,70 @@ describe("no-auth background checks", () => {
     expect(storeActiveRefreshCas).toHaveBeenCalledOnce();
   });
 });
+
+describe("Codex LB context windows", () => {
+  const codexConfiguration = { ...connectionConfiguration, apiRoot: "https://codex-lb.example.test/backend-api/codex" };
+  const codexStored = { ...storedConnectionConfiguration, apiRoot: codexConfiguration.apiRoot };
+  const template = (upstreamModelId: string) => providerSetupModels("openai_compatible", codexConfiguration)
+    .find((candidate) => candidate.configuration.upstreamModelId === upstreamModelId)!;
+  const listing = (models: { id: string; capabilities: { contextWindow?: number } }[]) =>
+    vi.fn<AdminProviderCredentialTester["test"]>(async () => ({ method: "models_catalog", modelIds: models.map(({ id }) => id),
+      modelIdsByClass: { answer: models.map(({ id }) => id) }, models, responsesRequestIsolationDetected: true }));
+
+  it("records each catalog addition with its listed window and falls back to the template without one", async () => {
+    const catalog = { ...connection({ family: "openai_compatible", activeConfig: codexConfiguration, draftConfig: codexConfiguration, models: [] }),
+      catalogSkippedIds: [] as string[] };
+    const addSetupModelsCas = vi.fn<AdminProviderRepository["addSetupModelsCas"]>(async () => "updated");
+    const catalogTest = listing([{ id: "gpt-6.1-sol", capabilities: { contextWindow: 500_000 } }, { id: "gpt-6-sol", capabilities: {} }]);
+    const providers = service(repository({ listConnections: async () => [catalog], addSetupModelsCas }), { test: vi.fn() },
+      { credentialTester: { test: catalogTest } });
+    await providers.addCatalogModels({ connectionId: catalog.id, credentialId: "cred-primary", expectedConnectionVersion: 1,
+      expectedCredentialVersionId: "version-primary", modelIds: [template("gpt-6.1-sol").modelId, template("gpt-6-sol").modelId] });
+    const windows = Object.fromEntries(addSetupModelsCas.mock.calls[0]![0].models.map(({ configuration }) =>
+      [configuration.upstreamModelId, configuration.capabilities.contextWindow]));
+    expect(windows).toEqual({ "gpt-6.1-sol": 500_000, "gpt-6-sol": 272_000 });
+  });
+
+  async function recheck(contextWindow: number, listed: { contextWindow?: number } | null, reason: "requested" | "model" = "requested") {
+    const base = refreshCandidate("model-sol", "gpt-6.1-sol");
+    const configuration = template("gpt-6.1-sol").configuration;
+    const candidate: ProviderActiveRefreshCandidate = { ...base,
+      connection: { ...base.connection, configuration: codexStored, family: "openai_compatible" },
+      model: { ...base.model, configuration: { ...configuration, capabilities: { ...configuration.capabilities, contextWindow } } } };
+    const storeActiveRefreshCas = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const catalogTest = listed ? listing([{ id: "gpt-6.1-sol", capabilities: listed }])
+      : vi.fn<AdminProviderCredentialTester["test"]>(async () => { throw new Error("catalog_unavailable"); });
+    const providers = service(repository({ loadActiveRefreshCandidate: async () => candidate, storeActiveRefreshCas }),
+      { test: async (input) => okOutcome(input) }, { credentialTester: { test: catalogTest } });
+    const run = await providers.startCheckRun({ connectionId: "conn-openai", credentialId: "cred-primary", modelIds: ["model-sol"], reason });
+    await vi.waitFor(() => expect(providers.checkRun({ connectionId: "conn-openai", runId: run.id }).state).toBe("completed"));
+    expect(storeActiveRefreshCas).toHaveBeenCalledOnce();
+    return { catalogTest, write: storeActiveRefreshCas.mock.calls[0]![0] };
+  }
+
+  it("raises a template-default window to the listed one on a recheck of a single-key connection", async () => {
+    const { write } = await recheck(272_000, { contextWindow: 500_000 });
+    expect(write.activatedConfiguration?.capabilities.contextWindow).toBe(500_000);
+    expect(write.activateOnlyWithSingleCredential).toBe(true);
+  });
+
+  it("keeps an administrator's window through a recheck", async () => {
+    const { catalogTest, write } = await recheck(700_000, { contextWindow: 500_000 });
+    expect(write.activatedConfiguration).toBeUndefined();
+    expect(catalogTest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the stored window when the listing has none or cannot be read, and the check still completes", async () => {
+    expect((await recheck(272_000, {})).write.activatedConfiguration).toBeUndefined();
+    const unreadable = await recheck(272_000, null);
+    expect(unreadable.catalogTest).toHaveBeenCalledOnce();
+    expect(unreadable.write).toMatchObject({ status: "available" });
+    expect(unreadable.write.activatedConfiguration).toBeUndefined();
+  });
+
+  it("leaves the check after an administrator's own model save alone", async () => {
+    const { catalogTest, write } = await recheck(272_000, { contextWindow: 500_000 }, "model");
+    expect(catalogTest).not.toHaveBeenCalled();
+    expect(write.activatedConfiguration).toBeUndefined();
+  });
+});

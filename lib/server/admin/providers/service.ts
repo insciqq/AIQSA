@@ -52,8 +52,10 @@ import {
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { providerSetupModels } from "./setupModels";
+import { contextWindowRefreshable, listedContextWindow, withListedContextWindow } from "./codexLbContextWindow";
 import { catalogModelPresent, providerCatalogUpdates } from "./catalogModels";
 import {
+  codexLbConnection,
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
@@ -618,7 +620,8 @@ export function createAdminProviderService(input: Readonly<{
         .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) => catalogModelPresent(model, candidate)))
       .map((candidate) => ({
         configuration: applyNativeRoute(candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
-          image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration,
+          image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image }
+          : withListedContextWindow(candidate.configuration, listedContextWindow(outcome.models, candidate.configuration.upstreamModelId)),
           outcome.nativeRoutes?.[candidate.configuration.upstreamModelId]),
         displayName: candidate.displayName,
         id: connection.id === setupPolicy?.connection.id ? candidate.modelId : idFactory(),
@@ -738,6 +741,8 @@ export function createAdminProviderService(input: Readonly<{
     initialSetup?: InitialCapabilityCheck;
     /** Off only for the check that follows an administrator's own model save. */
     applyVerifiedCapabilities?: boolean;
+    /** Codex LB listing window that may replace a missing or template-default window. */
+    listedContextWindow?: number;
     onCapabilityProgress?: CapabilityCheckRequest["onCapabilityProgress"];
     onSavedCheckpoint?(check: AdminProviderActiveCheck): void;
     /** The administrator charged with the check's `model_check` usage. */
@@ -767,8 +772,10 @@ export function createAdminProviderService(input: Readonly<{
       // a pending administrator draft is left alone because activation replaces it.
       const recheck = !initialSetup && !value.capabilityRole && value.applyVerifiedCapabilities !== false &&
         outcome.status === "available" && (candidate.model.draftVersion ?? candidate.model.version) === candidate.model.version;
-      const activatedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence)
+      const verifiedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence)
         : recheck ? recheckVerifiedModelConfiguration(model, outcome.evidence) : model;
+      const activatedModel = initialSetup || recheck
+        ? withListedContextWindow(verifiedModel, value.listedContextWindow) : verifiedModel;
       const activatedConfiguration = canonicalJson(activatedModel) !== canonicalJson(model) ? activatedModel : undefined;
       const evidence = validateEvidence(outcome, value.mode, activatedModel);
       if (lastSaved?.status === outcome.status && canonicalJson(lastSaved.evidence) === canonicalJson(evidence)) return lastSaved;
@@ -842,6 +849,32 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   /**
+   * The window a Codex LB gateway lists for a model whose stored window is
+   * missing or the template default. A listing without one, or an unreadable
+   * listing, leaves the stored window alone; the model check reports access itself.
+   */
+  async function codexLbListedContextWindow(
+    candidate: ProviderActiveRefreshCandidate,
+    connection: ProviderConnectionConfiguration,
+    model: ProviderModelConfiguration,
+    signal: AbortSignal
+  ): Promise<number | undefined> {
+    if (candidate.connection.family !== "openai_compatible" || !codexLbConnection(connection) ||
+      !contextWindowRefreshable(model)) return undefined;
+    try {
+      const outcome = await testCredentialCatalog({
+        connection, family: candidate.connection.family, modelClasses: ["answer"], signal,
+        secret: candidate.credential.envelope === null ? null : credentialSecretSource(candidate.credential.id, {
+          envelope: candidate.credential.envelope, kind: "active", versionId: candidate.credential.versionId
+        }, "provider_active_tuple_not_found")
+      });
+      return listedContextWindow(outcome.models, model.upstreamModelId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Background check of one enabled active model with one key (PRD B3):
    * `tiny_generation` for answer models, the embed round-trip for embedding
    * models and the rerank probe for rerankers, bounded by the model's own
@@ -864,10 +897,13 @@ export function createAdminProviderService(input: Readonly<{
     if (value.signal?.aborted) forward();
     else value.signal?.addEventListener("abort", forward, { once: true });
     try {
+      const listedWindow = value.reason !== "model" || value.initialSetup
+        ? await codexLbListedContextWindow(candidate, connection, model, controller.signal) : undefined;
       const result = await executeActiveCheck({
         candidate,
         initialSetup: value.initialSetup,
         applyVerifiedCapabilities: value.reason !== "model",
+        ...(listedWindow === undefined ? {} : { listedContextWindow: listedWindow }),
         onCapabilityProgress: value.onCapabilityProgress,
         onSavedCheckpoint: (check) => value.onResult?.({ providerModelId: value.providerModelId,
           state: "partial", checks: check.evidence?.capabilitySetup?.checks, attempts: check.evidence?.capabilitySetup?.attempts }),
@@ -1370,7 +1406,7 @@ export function createAdminProviderService(input: Readonly<{
           configuration: initialModelConfiguration(candidate.configuration.modelClass === "image" ? {
             ...candidate.configuration,
             image: outcome?.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image
-          } : candidate.configuration),
+          } : withListedContextWindow(candidate.configuration, listedContextWindow(outcome?.models, candidate.configuration.upstreamModelId))),
           displayName: candidate.displayName, id: connection.id === policy?.connection.id ? candidate.modelId : idFactory(),
           inputTokenPriceUsdPerMillion: candidate.inputTokenPriceUsdPerMillion,
           cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
