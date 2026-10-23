@@ -56,7 +56,6 @@ export type ProviderModelCapabilities = {
   imageEditing?: boolean;
   nativeSearch: boolean;
   /** Native Codex /alpha/search, independent of AIQSA Search. */
-  codexStandaloneWebSearch?: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
