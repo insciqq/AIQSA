@@ -34,6 +34,7 @@ export {
   compactionRetention,
   findCompactionCut,
   planCompaction,
+  turnEndedAfter,
   usableContextTokens,
   type BackgroundCompactionState,
   type CompactionCut,

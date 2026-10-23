@@ -71,10 +71,10 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     settle: vi.fn(async () => true)
   } satisfies ToolCallStore;
   const runs = {
-    appendCompactionStatus: vi.fn(async () => true),
     applyUsageTotals: vi.fn(async () => { order.push("usage-totals"); }),
     complete: vi.fn(async () => { order.push("complete"); return true; }),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { order.push("publish"); published = input.text; return true; }),
+    recordDetachedCompaction: vi.fn(async () => true),
     saveStoppedText: vi.fn(async () => true),
     writeUsageRows: vi.fn(async () => { order.push("usage-rows"); })
   } satisfies NativeRunStore;
@@ -238,6 +238,34 @@ describe("native run execution", () => {
     expect(history.at(-1)).toMatchObject({ callId: "call-1", output: "Created A-2" });
     expect(history.some((item) => item.type === "user" && item.text.includes("approved"))).toBe(false);
     expect(memory.published()).toBe("Created A-2.");
+  });
+
+  it("continues from the server's turn text once the user wrote after the stopped turn, so a compaction never orphans the result", async () => {
+    const stopped: TranscriptItem[] = [
+      { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "n1", kind: "tool_call", name: "mcp_jira_create_issue",
+        origin: { model: "fake-qsa", provider: "connection-1" } },
+      { callId: "call-1", id: "n2", kind: "tool_result", name: "mcp_jira_create_issue", outcome: "error", output: "Waiting for approval." }
+    ];
+    const { adapter, requests } = scriptedAdapter([{ text: "Creating it now." }]);
+    const memory = memoryEngine({ approvedCall: vi.fn(async () => ({ providerCallId: "call-1", toolName: "mcp_jira_create_issue" })) },
+      { allowed: true });
+    memory.engine.transcripts.nativeRunsForAnswers = vi.fn(async () => new Map([["answer-0", "run-0"]]));
+    memory.engine.transcripts.loadRuns = vi.fn(async () => new Map([["run-0", stopped]]));
+    const continuation = prepared({ context: { messages: [
+      { content: { blocks: [{ text: "Create the issue", type: "text" }] }, id: "user-1", role: "user" },
+      { content: { blocks: [] }, id: "answer-0", role: "assistant" },
+      { content: { blocks: [{ text: "Meanwhile, what is due today?", type: "text" }] }, id: "user-2", role: "user" },
+      { content: { blocks: [{ text: "Two reviews.", type: "text" }] }, id: "answer-2", role: "assistant" },
+      { content: { blocks: [{ text: "The user approved `Create` on `Jira`. Continue the task.", type: "text" }] },
+        id: "current-user-message", role: "user" }
+    ], mode: "branch_path" }, mcp: snapshot });
+    await events(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
+      engine: memory.engine, prepared: continuation, repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    // The old call is not sent into a turn that has ended: the model makes the allowed call again, matched by the Allow.
+    expect(memory.engine.toolCalls.begin).not.toHaveBeenCalled();
+    const history = requests[0]!.history!;
+    expect(history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "user", "assistant_text", "user"]);
+    expect(history.at(-1)).toMatchObject({ currentInput: true, type: "user" });
   });
 
   it("continues a turn the old core stopped from the server's turn text, so the model makes the allowed call again", async () => {

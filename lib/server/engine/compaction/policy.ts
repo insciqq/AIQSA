@@ -111,13 +111,36 @@ function beginsTurnOrResponse(window: readonly TranscriptItem[], position: numbe
   return previous === undefined || !MODEL_ITEM_KINDS.has(previous.kind);
 }
 
-/** Window positions a compaction may cut at, ascending. A call stays open
- * until a result that is not an approval placeholder. */
+/** The user's next message (not a follow-up into a running answer, not run context): the turn before it has ended. */
+function beginsTurn(item: TranscriptItem, rules: CompactionItemRules): boolean {
+  return item.kind === "user" && item.followup !== true && !rules.runContext(item);
+}
+
+/**
+ * Whether the user wrote again after the item, so its turn has ended. A
+ * compaction may then cut past a call of that turn that has no result yet
+ * (`cutPositions`), so a result arriving for it later could lose its call.
+ */
+export function turnEndedAfter(items: readonly TranscriptItem[], itemId: string, rules?: Partial<CompactionItemRules>): boolean {
+  const resolved = itemRules(rules);
+  const index = items.findIndex((item) => item.id === itemId);
+  return index >= 0 && items.some((item, position) => position > index && beginsTurn(item, resolved));
+}
+
+/** Window positions a compaction may cut at, ascending. Within its turn a
+ * call stays open until a result that is not an approval placeholder. The
+ * user's next message closes the calls their turn left without one (stopped
+ * mid-call, past the deadline, or an approval never given): that run has
+ * ended, replay gives such a call an unknown outcome or its placeholder, and
+ * nothing sends it again by itself (`unknownEffects.ts`; a later Allow of a
+ * call no longer replayed continues as a new instruction, `execution.ts`),
+ * so it never holds every later cut back. */
 function cutPositions(window: readonly TranscriptItem[], first: number, rules: CompactionItemRules): number[] {
   const positions: number[] = [];
   const open = new Set<string>();
   const seen = new Set<string>();
   window.forEach((item, position) => {
+    if (beginsTurn(item, rules)) open.clear();
     if (position > first && open.size === 0 && beginsTurnOrResponse(window, position) && rules.stableId(item)) positions.push(position);
     if (item.kind === "tool_call" && !seen.has(item.callId)) {
       seen.add(item.callId);
