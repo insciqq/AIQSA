@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import {
   assistantRowsFromLegacyFields,
@@ -18,6 +18,13 @@ import { assertAssistantRunProvenance } from "../runs/prismaRepositoryBindings";
 import { createAssistantListingService } from "./listingRequests";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { createGetAssistantHandler, createListAssistantsHandler } from "./handlers";
+
+// These repository tests cover Knowledge links with the area on; while Knowledge is disabled
+// (`lib/domain/disabledAreas.ts`) saved Knowledge reads as unavailable, covered by the unit tests.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
 import { loadFeaturedAssistantOrders } from "./listedAssistants";
 import { createPrismaAssistantRepository } from "./prismaRepository";
 import { loadPersonalAssistantRowContext } from "./rowContext";
