@@ -178,6 +178,7 @@ import {
 const assistantRunDetailSelect = {
   ...runFollowupSelect,
   answerCompletedAt: true,
+  engine: true,
   workspaceWaitPending: true,
   chatPdfPreparation: { select: { retryable: true, state: true } },
   chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
@@ -416,8 +417,10 @@ type CurrentScheduledTasks = ReadonlyMap<string, ScheduledTask>;
 type ArtifactSummaryRun = {
   mcpToolApprovals?: readonly McpApprovalCardRow[];
   normalizedRequest?: unknown;
+  answerCompletedAt?: Date | null;
   answerStartedAt?: Date | null;
   createdAt?: Date;
+  engine?: string;
   events: { eventType?: string; payload: unknown }[];
   knowledgeRetrievalSession?: {
     degradedFlags?: string[];
@@ -453,15 +456,20 @@ type ArtifactSummaryRun = {
 };
 
 /**
- * The one user-facing timing fact of a run: admission to the first answer
- * token, or to the terminal state when no answer text arrived. It is never
- * derived from event timelines or elapsed wall time on the client.
+ * The one user-facing timing fact of a run: admission to its answer, or to
+ * the terminal state when there is none. A native run works until its answer
+ * is published, however early it starts to talk (a preamble before a long
+ * tool call), and its live answer receives this same figure
+ * (`lib/server/engine/runStore.ts`); the old core keeps its first answer
+ * token. It is never derived from event timelines or elapsed wall time on
+ * the client.
  */
 function runWorkDurationMs(run: ArtifactSummaryRun): number | null {
   if (!run.createdAt) return null;
   const terminal = run.status === "complete" || run.status === "cancelled" ||
     run.status === "error";
-  const end = run.answerStartedAt ?? (terminal ? run.updatedAt ?? null : null);
+  const answeredAt = run.engine === "native" ? run.answerCompletedAt : run.answerStartedAt;
+  const end = answeredAt ?? (terminal ? run.updatedAt ?? null : null);
   if (!end) return null;
   const duration = end.getTime() - run.createdAt.getTime();
   return Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : null;
