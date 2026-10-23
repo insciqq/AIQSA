@@ -218,6 +218,7 @@ function assertToolPairing(messages: readonly Draft[]): void {
  * before it, in whole assistant messages. Everything else is dropped.
  */
 function keepValidThinking(messages: readonly Draft[], prefix: AnthropicThinkingPrefix): Draft[] {
+  if (!messages.some((message) => message.parts.some((part) => part.thinking))) return [...messages];
   const digest = new PrefixDigest(prefix);
   const seen: { identity: string; message: number; part: Part; prefix: string }[] = [];
   messages.forEach((message, index) => {
@@ -226,7 +227,6 @@ function keepValidThinking(messages: readonly Draft[], prefix: AnthropicThinking
       else digest.feed(message.role, part.block);
     }
   });
-  if (seen.length === 0) return [...messages];
   const holds = (entry: (typeof seen)[number]) => entry.part.thinking?.binding?.prefix === entry.prefix;
   let end = seen.length - 1;
   while (end >= 0 && !holds(seen[end]!)) end -= 1;
