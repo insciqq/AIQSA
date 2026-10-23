@@ -4,7 +4,14 @@ import { ToolCallRepeatHistory, TOOL_CALL_REPEAT_BLOCKED } from "../runs/toolCal
 import { TOOL_CALL_UNKNOWN } from "../runs/unknownToolCall";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { invalidProviderToolArguments } from "../tools/types";
-import { APPROVAL_PENDING_OUTPUT, runToolBatch, ToolBatchInactiveError, type ToolBatchDeps } from "./toolBatch";
+import {
+  APPROVAL_PENDING_OUTPUT,
+  RUN_SCOPED_RESULT_NOTE,
+  runToolBatch,
+  ToolBatchInactiveError,
+  transcriptRecord,
+  type ToolBatchDeps
+} from "./toolBatch";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
 import { TOOL_RESULT_LIMITS } from "./toolResults";
@@ -127,6 +134,21 @@ describe("native tool batch", () => {
     expect(outcome.results[0]!.handle).toBe(`tor1_${"b".repeat(32)}`);
     expect(outcome.results[0]!.output.length).toBeLessThan(TOOL_RESULT_LIMITS.inlineChars);
     expect([...rows.values()][0]!.state).toBe("complete");
+  });
+
+  it("keeps a run-scoped result whole and unsaved for its run, and only a note for later turns", async () => {
+    const long = "m".repeat(TOOL_RESULT_LIMITS.inlineChars + 10_000);
+    const { store } = fakeStore();
+    const batch = deps({ memory_search: tool("memory_search", "none", async ({ call }) => ok(call, long), { runScopedResult: true }),
+      lookup: tool("lookup", "none", async ({ call }) => ok(call, "found")) }, store);
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [
+      { arguments: { query: "q" }, id: "c1", name: "memory_search" }, { arguments: {}, id: "c2", name: "lookup" }
+    ] });
+    expect(batch.saveResult).not.toHaveBeenCalled();
+    expect(outcome.results[0]!.output).toBe(long);
+    expect(outcome.results[0]!.handle).toBeUndefined();
+    const records = outcome.results.map((item) => transcriptRecord(batch.registry, item));
+    expect(records.map((item) => item.kind === "tool_result" ? item.output : null)).toEqual([RUN_SCOPED_RESULT_NOTE, "found"]);
   });
 
   it("blocks a third identical read after two identical successes", async () => {

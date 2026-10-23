@@ -86,6 +86,13 @@ export type EngineTool = Readonly<{
   links?(call: ModelToolCall): EngineToolLinks | null;
   /** The store a long result is saved in. */
   observationSource: ToolObservationSource;
+  /**
+   * The result is disclosed only within the run that produced it: it is never
+   * saved for a later read (its own budget bounds it, so it stays whole) and
+   * the transcript keeps a note in its place, so a later turn searches again
+   * and the source's authority is rechecked (Memory, `agent_docs/MEMORY.md`).
+   */
+  runScopedResult?: true;
   /** The call's own records after it ran (Search rows and their usage). */
   settled?(execution: EngineToolExecution, result: ToolExecutionResult): Promise<void>;
 }>;
@@ -166,7 +173,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   if (clientTools && request.memorySearch && input.services.memorySearch) {
     const definition = memorySearchTool(request.memorySearch);
     const service = input.services.memorySearch;
-    add({ activity: named(definition, "Memory"), definition, effects: "none", observationSource: "workspace",
+    add({ activity: named(definition, "Memory"), definition, effects: "none", observationSource: "workspace", runScopedResult: true,
       execute: async (execution) => {
         await input.onEvent(memorySearchActivityEvent({ ordinal: execution.ordinal, round: execution.round, state: "running" }));
         return service.execute(execution.call, context(execution), { signal: execution.signal });

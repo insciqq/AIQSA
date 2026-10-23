@@ -43,6 +43,16 @@ describe("native tool registry", () => {
     expect(registry.resolve(READ_TOOL_RESULT_NAME)?.effects).toBe("none");
   });
 
+  it("keeps Memory search results within the run that searched", async () => {
+    const memorySearch = { comparisonResultTokens: 12000, destinations: [], maxCalls: 3, memoryGeneration: 1, referenceChatHistory: true,
+      resultTokens: 6000, timeoutSeconds: 30, version: "memory-search-v1" } as const;
+    const registry = await buildToolRegistry(input({ request: request({ memorySearch }), services: {
+      memorySearch: { execute: vi.fn() }, repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) }
+    } }));
+    expect(registry.resolve("memory_search")).toMatchObject({ effects: "none", runScopedResult: true });
+    expect(registry.resolve(READ_TOOL_RESULT_NAME)?.runScopedResult).toBeUndefined();
+  });
+
   it("declares MCP effects from annotations and asks approval only for a tool that may change data", async () => {
     const registry = await buildToolRegistry(input({
       mcpBindings: new Map([["jira", { fingerprint: "fp-1", mcpRunBindingId: "binding-1", runtimeGenerationId: "gen-1" }]]),
