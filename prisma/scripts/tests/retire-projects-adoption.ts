@@ -22,7 +22,7 @@ INSERT INTO "ProjectGrant" (id, "projectId", "userId", role, "updatedAt") VALUES
   ('retire-grant-archived', 'retire-archived', 'retire-owner', 'OWNER', now());
 INSERT INTO "Chat" (id, "userId", "projectId", "createdByUserId", "createdByDisplayName", title, "memoryMode", "updatedAt") VALUES
   ('retire-project-chat', NULL, 'retire-active', 'retire-pending', 'Synthetic pending member', 'Synthetic Project chat', 'EXCLUDED', now()),
-  ('retire-personal-chat', 'retire-owner', NULL, NULL, NULL, 'Synthetic personal chat', 'NORMAL', now());
+  ('retire-personal-chat', 'retire-owner', NULL, NULL, '', 'Synthetic personal chat', 'NORMAL', now());
 INSERT INTO "SharedChatSnapshot" (id, "projectId", "ownerUserId", "createdByDisplayName", "chatId", "slugHash", title, snapshot) VALUES
   ('retire-project-share', 'retire-active', NULL, 'Synthetic pending member', 'retire-project-chat', repeat('a', 64), 'Synthetic', '{}'),
   ('retire-personal-share', NULL, 'retire-owner', NULL, 'retire-personal-chat', repeat('b', 64), 'Synthetic', '{}');
