@@ -248,6 +248,7 @@ describe("evaluation runs", () => {
     const replay = requests.find((request) => request.prompt.system !== SUMMARIZER_INSTRUCTIONS)!.history!;
     expect(replay[0]).toMatchObject({ type: "compaction" });
     expect(replay[1]).toMatchObject({ type: "user" });
-    expect(replay[1]!.type === "user" ? replay[1]!.text : "").toContain("## Recorded state");
+    const retained = replay[1];
+    expect(retained?.type === "user" ? retained.text : "").toContain("## Recorded state");
   });
 });
