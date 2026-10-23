@@ -72,9 +72,7 @@ readonly JOURNAL_DROPIN=/etc/systemd/journald.conf.d/50-aiqsa.conf
 RESTORE_OVERRIDE_HOOK=${AIQSA_CLI_RESTORE_OVERRIDE:-}
 readonly BACKUP_FORMAT=1
 # Services that keep running while the backup stops application writers.
-# docling stays listed: a plain `docker compose up -d` after its removal leaves
-# an orphaned container that Compose can no longer restart.
-readonly BACKUP_KEEP_RUNNING=" postgres seaweedfs minio docling tika workspace-runner "
+readonly BACKUP_KEEP_RUNNING=" postgres seaweedfs minio tika workspace-runner "
 readonly ONE_SHOT_SERVICES=" migrate-bootstrap storage-init "
 readonly KEY_ID_PATTERN='^[a-z][a-z0-9_-]{0,63}$'
 
@@ -1921,7 +1919,7 @@ backup_manifest() {
 # .env into DIR. Refusals (exit 4, or 6 for upgrade) change nothing; a later
 # failure restarts the stopped services and removes the partial backup.
 backup_create() {
-  local dir=$1 started=$SECONDS rows service state postgres="" running=" " writers=() restart=()
+  local dir=$1 started=$SECONDS rows service state postgres="" running=" " writers=() restart=() services orphans=()
   local external=0 size_db size_objects=0 available required volume image images migration old_umask errors log file files
   [[ -f $ENV_FILE ]] || backup_refuse "$(display_path "$ENV_FILE") does not exist; there is no installation to back up."
   [[ -r $ENV_FILE ]] || backup_refuse "$(display_path "$ENV_FILE") is not readable by $(id -un); run ./aiqsa.sh as its owner."
@@ -1942,10 +1940,15 @@ backup_create() {
   done <<< "$rows"
   [[ -n $postgres ]] || backup_refuse "the project $PROJECT_NAME has no postgres container." "Start the installation with ./aiqsa.sh up first."
   [[ $postgres == running ]] || backup_refuse "PostgreSQL is $postgres." "Start the installation with ./aiqsa.sh up first."
+  # A plain `docker compose up -d` leaves the containers of services a release
+  # removed running; Compose can neither stop nor restart them by name.
+  services=$(dc config --services 2>/dev/null) || services=""
   for service in $running; do
+    if [[ -n $services ]] && ! grep -qx -- "$service" <<< "$services"; then orphans+=("$service"); continue; fi
     if [[ $BACKUP_KEEP_RUNNING != *" $service "* ]]; then writers+=("$service"); fi
     if [[ $ONE_SHOT_SERVICES != *" $service "* ]]; then restart+=("$service"); fi
   done
+  (( ! ${#orphans[@]} )) || note "Leaving containers of removed services untouched: ${orphans[*]} (./aiqsa.sh up removes them)."
   schema_check || backup_refuse "the database schema does not match this checkout: $REPLY." \
     "Bring the installation to this checkout's release first (./aiqsa.sh up), then back up."
   ensure_temp_dir
