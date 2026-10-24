@@ -150,4 +150,44 @@ describe("native tool registry", () => {
       .toEqual(new Map([["jira", { fingerprint: "fp-1", mcpRunBindingId: "binding-1", runtimeGenerationId: "gen-1" }]]));
     expect(engineSnapshotMcpBindings(undefined, [])).toEqual(new Map());
   });
+
+  it("keeps a Search result over the durable row bound whole, with its sources and usage settled", async () => {
+    const findings = `${"Long verified finding. ".repeat(13_100)}TAIL_OF_FINDINGS`;
+    expect(Buffer.byteLength(findings)).toBeGreaterThan(300_000);
+    const searchOption = {
+      adapterKind: "provider_model_client" as const,
+      config: { maxResults: 8, queryMaxCharacters: 100, timeoutMs: 5_000 },
+      credentialMode: "provider_model" as const, displayName: "Engine", executionModes: ["all_selected" as const],
+      modelId: "engine-model", optionId: "engine", protocol: "openai_responses_web_search" as const, provider: "openai",
+      providerModelId: "provider-model", revisionId: "revision", searchStrategyRowId: "integration"
+    };
+    const createSearchRun = vi.fn(async () => undefined);
+    const onUsage = vi.fn();
+    const registry = await buildToolRegistry(input({ onUsage, request: request({
+      searchPlan: { mode: "all_selected", options: [searchOption] } as ProviderRunRequest["searchPlan"]
+    }), services: {
+      repository: { createSearchRun } as never, savedResults: { read: vi.fn(async () => null) },
+      searchRuntimes: { engine: {
+        adapter: { buildRequestPreview: () => ({}), async *stream() { throw new Error("unexpected_answer_dispatch"); } },
+        responseTimeoutMs: 300_000,
+        searchAdapter: { buildRequestPreview: () => ({}), search: async () => ({
+          artifacts: [], findings, finalProviderResponsePreview: {}, requestPreview: {},
+          sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }],
+          usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }
+        }) }
+      } }
+    } }));
+    const search = registry.resolve("search_selected_engines")!;
+    const execution = { call: { arguments: { query: "long query" }, id: "c1", name: "search_selected_engines" }, ordinal: 0,
+      persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal };
+    const result = await search.execute(execution);
+    expect(result.status).toBe("complete");
+    expect(JSON.stringify(result.content)).toContain("TAIL_OF_FINDINGS");
+    expect(JSON.stringify(result.content)).not.toContain("search_result_too_large");
+    await search.settled!(execution, result);
+    expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({ status: "complete",
+      artifacts: { sources: [expect.objectContaining({ url: "https://example.com/source" })] } }));
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ purpose: "web_search",
+      usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 }) }));
+  });
 });

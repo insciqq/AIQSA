@@ -72,6 +72,8 @@ describe("native model call", () => {
     expect(modelCallRetryDecision(Object.assign(new Error("long"), { code: "provider_context_length_exceeded" }),
       new AbortController().signal)).toBeNull();
     expect(modelCallRetryDecision(http(429), new AbortController().signal)).toEqual({ retryAfterMs: null });
+    // Anthropic answers an overload with 529.
+    expect(modelCallRetryDecision(http(529), new AbortController().signal)).toEqual({ retryAfterMs: null });
     expect(modelCallRetryDecision(Object.assign(http(503), { retryAfterMs: 7_000 }), new AbortController().signal))
       .toEqual({ retryAfterMs: 7_000 });
   });
