@@ -9,6 +9,8 @@ import { resolveChatAccess } from "../chats/access";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
+import { convertRasterForProvider, ProviderRasterConversionError, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
+import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
@@ -105,10 +107,26 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         }
         const stored = await storage.getObject(row.storageKey, { maxBytes: Math.min(row.byteSize, IMAGE_MAX_BYTES), signal });
         if (stored.body.byteLength !== row.byteSize || row.checksum && hash(stored.body) !== row.checksum) throw new Error("image_reference_invalid");
-        const encoded = stored.body.toString("base64");
-        extra.unshift({ id, kind: "image", status: "ready", byteSize: row.byteSize, fileName: row.fileName,
-          mimeType: row.mimeType, metadata: {}, extractedText: null, base64Data: encoded, dataUrl: `data:${row.mimeType};base64,${encoded}` });
-        remaining -= row.byteSize;
+        let body = stored.body;
+        let mimeType = row.mimeType;
+        if (providerRasterNeedsConversion(row.mimeType)) {
+          // Like the current message's images, an earlier BMP or TIFF is sent
+          // as PNG; one that cannot be converted or no longer fits stays
+          // without pixels, as the system line below tells the model.
+          try {
+            body = await convertRasterForProvider(stored.body, row.mimeType, WORKSPACE_IMAGE_LIMITS, signal);
+          } catch (error) {
+            signal?.throwIfAborted();
+            if (error instanceof ProviderRasterConversionError) continue;
+            throw error;
+          }
+          mimeType = "image/png";
+          if (body.byteLength > remaining || body.byteLength > (request.modelCapabilities.imageInputLimits?.imageBytes ?? IMAGE_MAX_BYTES)) continue;
+        }
+        const encoded = body.toString("base64");
+        extra.unshift({ id, kind: "image", status: "ready", byteSize: body.byteLength, fileName: row.fileName,
+          mimeType, metadata: {}, extractedText: null, base64Data: encoded, dataUrl: `data:${mimeType};base64,${encoded}` });
+        remaining -= body.byteLength;
       }
       const visible = (attachments: readonly ProviderAttachment[]) => attachments
         .filter((attachment) => attachment.kind === "image" && (attachment.dataUrl || attachment.base64Data)).map((attachment) => attachment.id);

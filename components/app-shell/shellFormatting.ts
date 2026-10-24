@@ -94,6 +94,8 @@ export function humanizeErrorCode(code: string): string {
     instruction_presets_unavailable: "Instructions are unavailable right now. Try again",
     active_leaf_changed: "The active branch changed before send. Review the selected branch and retry",
     attachment_not_found: "Attachment not found",
+    attachment_image_invalid:
+      "An attached image could not be converted for the model. Remove it, or save it as PNG or JPEG and attach it again",
     branch_checkout_failed: "Opening this version failed",
     catalog_malformed: "Catalog response was malformed",
     chat_title_too_long: `Use at most ${CHAT_TITLE_MAX_LENGTH} characters for the chat title`,
