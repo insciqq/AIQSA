@@ -547,7 +547,7 @@ function providerSearchPolicy(connection: Readonly<{
     return {
       clientId: `gemini-search-client:${connection.id}`,
       clientKind: "gemini_google_search",
-      description: "Google Search grounding for eligible Gemini models.",
+      description: "Web search provided by Google.",
       displayName: "Google Search",
       hostedId: "00000000-0000-4000-8000-000000001301",
       hostedKind: "gemini_google_search",

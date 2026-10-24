@@ -25,6 +25,7 @@ import { PrismaClient, type ModelRun } from "@prisma/client";
 import { expect, test, type Browser, type Page, type TestInfo } from "@playwright/test";
 import type { AdminSearchIntegration } from "../../lib/contracts/adminSearch";
 import { authenticateWithLocalToken } from "./support/localAuth";
+import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import {
   completedPaidTurn,
@@ -78,7 +79,9 @@ let shownChatId: string | null = null;
 
 async function searchEvidence(run: ModelRun) {
   const calls = await prisma.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-    select: { state: true, toolName: true }, where: { modelRunId: run.id } });
+    select: { result: true, state: true, toolName: true }, where: { modelRunId: run.id } });
+  const observations = await prisma.toolObservation.findMany({ select: { failureCode: true, sourceKind: true, state: true,
+    storageMode: true }, where: { modelRunId: run.id } });
   const searchRuns = await prisma.searchRun.findMany({ select: { artifacts: true, status: true, strategyId: true },
     where: { modelRunId: run.id } });
   const usage = await prisma.usageEvent.findMany({ select: { estimatedCostMicros: true, purpose: true },
@@ -86,6 +89,9 @@ async function searchEvidence(run: ModelRun) {
   return {
     calls: calls.map((call) => `${call.toolName}:${call.state}`),
     searchCalls: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
+    // A long result is saved for read_tool_result; only states and codes are printed.
+    observations: observations.map((row) => `${row.sourceKind}:${row.state}:${row.storageMode ?? "-"}:${row.failureCode ?? "-"}`),
+    unsavedResults: calls.flatMap((call) => /could not be saved \(([a-z_]+)\)/u.exec(JSON.stringify(call.result ?? ""))?.[1] ?? []),
     searchRuns: searchRuns.map((row) => ({ sources: Array.isArray((row.artifacts as { sources?: unknown })?.sources)
       ? ((row.artifacts as { sources: unknown[] }).sources).length : 0, status: row.status, strategyId: row.strategyId })),
     webSearchUsageRows: usage.filter((row) => row.purpose === "web_search").length,
@@ -116,6 +122,7 @@ async function touchShot(browser: Browser, baseURL: string, testInfo: TestInfo, 
   try {
     await authenticateWithLocalToken(context.request);
     const phone = await context.newPage();
+    phone.setDefaultTimeout(60_000);
     await phone.goto(path, { timeout: 600_000 });
     await expect(phone.getByTestId("app-shell")).toBeVisible({ timeout: 120_000 });
     await prepare(phone);
@@ -189,8 +196,23 @@ test("two engines answer one search together, and the model searches a time-sens
 test("Search controls and answer sources at every size", async ({ page, browser, baseURL }, testInfo) => {
   test.setTimeout(30 * 60_000);
   test.skip(!shownChatId, "no answered chat to show");
+  // A missing control fails within a minute instead of holding the whole test.
+  page.setDefaultTimeout(60_000);
   await page.goto("/", { timeout: 600_000 });
   await authenticateWithLocalToken(page.request);
+  const catalogDefaults = async () => (await (await page.request.get("/api/me/catalog")).json()).catalog.defaults;
+  const initial = await catalogDefaults();
+  // The seeded account starts with Search off (prisma/seed.ts); show the
+  // controls as everyone has them now, with two sources on for every chat.
+  const shown = [sources.get("deepseek-search-api"), sources.get("perplexity")]
+    .filter((source): source is AdminSearchIntegration => Boolean(source)).map((source) => source.strategyId);
+  const on = await page.request.patch("/api/me/settings", { data: { defaultSearchPlan: { mode: "all_selected",
+    optionIds: shown.length ? shown : [[...sources.values()][0]!.strategyId] } } });
+  expect(on.ok(), "Search turned on for every chat").toBe(true);
+  const defaults = await catalogDefaults();
+  process.stdout.write(`search_ui_defaults ${JSON.stringify({ initialOptionCount: initial.searchPlan.optionIds.length,
+    initialSource: initial.searchPreferenceSource, optionCount: defaults.searchPlan.optionIds.length,
+    source: defaults.searchPreferenceSource })}\n`);
 
   // An answer with its sources.
   await shots(page, testInfo, "01-answer-sources", async (current) => {
@@ -211,7 +233,8 @@ test("Search controls and answer sources at every size", async ({ page, browser,
 
   // Chat defaults: the Web search row and the turn-off confirmation, which is cancelled.
   await shots(page, testInfo, "03-chat-defaults-turn-off", async (current) => {
-    await current.goto("/?library=defaults", { timeout: 600_000 });
+    await current.goto(`/c/${shownChatId}`, { timeout: 600_000 });
+    await runAccountMenuAction(current, "Chat defaults");
     const settings = current.getByTestId("library-v2");
     await expect(settings).toBeVisible({ timeout: 120_000 });
     const summary = settings.getByLabel("Web search default");
@@ -231,5 +254,7 @@ test("Search controls and answer sources at every size", async ({ page, browser,
     await phone.getByRole("button", { name: /^Choose web search/u }).click();
     await expect(phone.getByRole("dialog", { name: "Web search" })).toBeVisible();
   });
+  await page.request.patch("/api/me/settings", { data: { defaultSearchPlan:
+    initial.searchPreferenceSource === "personal" ? initial.searchPlan : null } });
   for (const chatId of chats) await deletePaidChat(page.request, chatId);
 });
