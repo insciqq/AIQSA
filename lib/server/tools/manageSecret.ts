@@ -95,6 +95,16 @@ export const manageSecretTool: HarnessToolDescriptor = Object.freeze({
 });
 
 type Refusal = Readonly<{ code: string; message: string; extra?: Record<string, unknown> }>;
+/**
+ * The values a create or update call passes inline, which its answer must not
+ * repeat (issue #52): the engine masks them in the answer text.
+ */
+export function manageSecretValues(args: Record<string, unknown>): string[] {
+  if (args.action !== "create" && args.action !== "update") return [];
+  const variables = Array.isArray(args.variables) ? args.variables.map((item: unknown) => record(item) ? item.value : undefined) : [];
+  return [args.text, args.privateKey, args.passphrase, ...variables].filter((value): value is string => typeof value === "string");
+}
+
 const refusal = (code: string, message: string, extra?: Record<string, unknown>): Refusal => ({ code, message, ...(extra ? { extra } : {}) });
 const invalid = (message: string) => refusal("secret_arguments_invalid", message);
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

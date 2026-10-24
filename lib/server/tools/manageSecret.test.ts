@@ -4,7 +4,7 @@ import { decodeResourceChangeCard } from "@/lib/contracts/resourceChanges";
 import { logEvent } from "../observability";
 import type { AgentSecretService, AgentSecretView } from "../workspace/secrets/agentSecrets";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
-import { MANAGE_SECRET_TOOL_NAME, executeManageSecret, manageSecretTool } from "./manageSecret";
+import { MANAGE_SECRET_TOOL_NAME, executeManageSecret, manageSecretTool, manageSecretValues } from "./manageSecret";
 import { invalidProviderToolArguments, type ToolExecutionResult } from "./types";
 
 vi.mock("../observability", async (importOriginal) => ({
@@ -43,6 +43,15 @@ const json = (result: ToolExecutionResult) => (result.content[0] as { value: Rec
 const card = (result: ToolExecutionResult) => decodeResourceChangeCard((result.artifacts?.[0] as { data: { payload: unknown } }).data.payload);
 
 describe("manage_secret", () => {
+  it("names the inline values a create or update passes, which the answer must not repeat", () => {
+    expect(manageSecretValues({ action: "create", kind: "text", name: "DEMO", text: "abc-123-not-real" })).toEqual(["abc-123-not-real"]);
+    expect(manageSecretValues({ action: "update", kind: "env", name: "Env",
+      variables: [{ name: "A", value: "first-value" }, { name: "B", value: "second-value" }] })).toEqual(["first-value", "second-value"]);
+    expect(manageSecretValues({ action: "create", kind: "ssh_key", name: "Key", passphrase: "pass-phrase", privateKey: "KEY" }))
+      .toEqual(["KEY", "pass-phrase"]);
+    expect(manageSecretValues({ action: "propose_delete", name: "DEMO", text: "abc-123-not-real" })).toEqual([]);
+  });
+
   it("is an account change that needs neither approval nor the VM", () => {
     expect(manageSecretTool).toMatchObject({ effects: "local", name: "manage_secret", needsApproval: false, requiresVm: false });
     expect(manageSecretTool.tool).toMatchObject({ capability: "session", name: "manage_secret" });

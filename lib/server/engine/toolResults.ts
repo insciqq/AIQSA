@@ -3,7 +3,8 @@ import { OBSERVATION_ENCODING } from "../toolObservations/codec";
 import {
   decodeToolObservationDescriptor,
   isToolObservationHandle,
-  type ToolObservationSource
+  type ToolObservationSource,
+  type ToolObservationSourceBinding
 } from "../toolObservations/contract";
 import { readObservationOriginal } from "../toolObservations/searchOriginal";
 import type { ToolObservationService } from "../toolObservations/service";
@@ -73,12 +74,15 @@ export async function saveToolResultText(input: Readonly<{
   service: Pick<ToolObservationService, "withReservation">;
   signal?: AbortSignal;
   source: ToolObservationSource;
+  /** The accepted source an MCP or Search result is bound to; the store refuses one of those without it. */
+  sourceBinding?: ToolObservationSourceBinding;
   text: string;
 }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>> {
   const maximumBytes = Buffer.byteLength(JSON.stringify(input.text)) + 64;
   try {
     return await input.service.withReservation({
-      maximumBytes, producer: input.producer, source: input.source, ...(input.signal ? { signal: input.signal } : {})
+      maximumBytes, producer: input.producer, source: input.source, ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.sourceBinding ? { sourceBinding: input.sourceBinding } : {})
     }, async (receipt) => {
       if (!receipt.retained) {
         await receipt.recordUnretained(input.outcome);
@@ -189,8 +193,7 @@ export async function executeReadToolResult(
   if (start > saved.text.length) {
     return readError(call, "offset_out_of_range", `offset ${start} is past the end of this result (${saved.text.length} characters).`);
   }
-  const end = Math.min(saved.text.length, start + Number(limit));
-  return { callId: call.id, content: [{ type: "json", value: {
+  const value = (end: number) => ({
     arguments: saved.arguments,
     handle: args.handle,
     nextOffset: end < saved.text.length ? end : null,
@@ -198,5 +201,20 @@ export async function executeReadToolResult(
     text: saved.text.slice(start, end),
     tool: saved.toolName,
     totalCharacters: saved.text.length
-  } }], name: call.name, status: "complete" };
+  });
+  // The read arrives whole: escaping and the call's fields count against the inline size, so a read that would not fit
+  // ends earlier and names where to continue, instead of being cut into an excerpt of its own (review finding).
+  const fits = (end: number) => JSON.stringify(value(end)).length <= TOOL_RESULT_LIMITS.inlineChars;
+  let end = Math.min(saved.text.length, start + Number(limit));
+  if (!fits(end)) {
+    let low = Math.min(end, start + 1);
+    let high = end;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (fits(middle)) low = middle;
+      else high = middle - 1;
+    }
+    end = low;
+  }
+  return { callId: call.id, content: [{ type: "json", value: value(end) }], name: call.name, status: "complete" };
 }

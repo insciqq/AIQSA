@@ -19,7 +19,7 @@ import {
   unknownToolCallResult
 } from "../runs/unknownToolCall";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
-import type { ToolObservationSource } from "../toolObservations/contract";
+import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
 import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
@@ -95,6 +95,11 @@ export const APPROVED_TOOL_UNAVAILABLE_OUTPUT =
   "Not sent: the user approved this call, but its tool is no longer available in this chat (its server was removed, turned " +
   "off or could not start). Tell the user that it did not run.";
 
+/** A call of an MCP tool that is in the chat's Auto index but not loaded in this turn (an earlier turn loaded it). */
+export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
+  `Not run: ${name} is in this chat's tool index but is not loaded in this answer. Call find_tools with query "${query}", ` +
+  "then call the tool again.";
+
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
@@ -114,8 +119,8 @@ export type ToolBatchDeps = Readonly<{
    */
   reservedToolName?: string;
   runId: string;
-  saveResult(input: Readonly<{ outcome: "complete" | "error"; signal: AbortSignal; source: ToolObservationSource; text: string;
-    toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
+  saveResult(input: Readonly<{ outcome: "complete" | "error"; signal: AbortSignal; source: ToolObservationSource;
+    sourceBinding?: ToolObservationSourceBinding; text: string; toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
   signal: AbortSignal;
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
@@ -199,8 +204,12 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     const tool = deps.registry.resolve(call.name);
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
-      // An older tool the run replaced names its replacement; the record keeps the plain unknown form.
-      return { correctable: true, kind: "refuse", output: deps.registry.replacement?.(call.name) ?? UNKNOWN_TOOL_CALL_MESSAGE, toolName,
+      // An older tool the run replaced names its replacement, and an MCP tool of the chat's Auto index (one an earlier
+      // turn used) how to load it; the record keeps the plain unknown form.
+      const load = deps.registry.mcpLoadCall?.(call.name, call.id);
+      const output = deps.registry.replacement?.(call.name) ??
+        (load ? AUTO_TOOL_NOT_LOADED_OUTPUT(call.name, String(load.arguments.query)) : UNKNOWN_TOOL_CALL_MESSAGE);
+      return { correctable: true, kind: "refuse", output, toolName,
         result: unknownToolCallResult({ providerCallId: call.id, requested: requestedToolNameExcerpt(call.name), toolName }) };
     }
     if (hasInvalidProviderToolArguments(call.arguments)) {
@@ -231,7 +240,8 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         return { kind: "run", retry: { approval, ...(approvedBy ? { approvedBy } : {}) }, tool };
       }
       if (!unknown.userSpokeSince) {
-        return { kind: "refuse", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT, toolName: call.name,
+        // The model can do what this asks (check the state with a read-only call), so tools stay open for it.
+        return { correctable: true, kind: "refuse", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT, toolName: call.name,
           result: jsonError(call, { error: "tool_outcome_unknown_repeat", message: UNKNOWN_OUTCOME_REPEAT_OUTPUT }) };
       }
     }
@@ -251,9 +261,10 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     result: ToolExecutionResult): Promise<TranscriptToolResultItem> {
     const text = toolResultOutputText(result);
     const saveAbove = tool.definition.name === READ_TOOL_RESULT_NAME ? TOOL_RESULT_LIMITS.inlineChars : TOOL_RESULT_LIMITS.saveChars;
+    const sourceBinding = tool.observationBinding?.(execution.call, result);
     const saved = !tool.runScopedResult && text.length > saveAbove
-      ? await deps.saveResult({ outcome: result.status, signal: execution.signal, source: tool.observationSource, text,
-        toolCallId: row.id })
+      ? await deps.saveResult({ outcome: result.status, signal: execution.signal, source: tool.observationSource,
+        ...(sourceBinding ? { sourceBinding } : {}), text, toolCallId: row.id })
       : null;
     const excerpt = tool.runScopedResult ? { handle: null, output: text } : toolOutputExcerpt(text, saved);
     const rowResult = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) ??

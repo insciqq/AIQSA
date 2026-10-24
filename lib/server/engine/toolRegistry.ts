@@ -58,7 +58,7 @@ import { acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
 import { SAVE_SKILL_TOOL_NAME, executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/updatePlan";
-import type { ToolObservationSource } from "../toolObservations/contract";
+import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import type { VisionAnalysisService } from "../vision/service";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
@@ -110,6 +110,12 @@ export type EngineTool = Readonly<{
   links?(call: ModelToolCall): EngineToolLinks | null;
   /** The store a long result is saved in. */
   observationSource: ToolObservationSource;
+  /**
+   * The accepted source a saved result of this call is bound to, which the
+   * store rechecks before it publishes one of an MCP or Search store (issue
+   * #50); undefined when the call has none, and its long result goes unsaved.
+   */
+  observationBinding?(call: ModelToolCall, result: ToolExecutionResult): ToolObservationSourceBinding | undefined;
   /**
    * The result is disclosed only within the run that produced it: it is never
    * saved for a later read (its own budget bounds it, so it stays whole) and
@@ -440,6 +446,12 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   for (const definition of router?.tools ?? []) {
     add({ activity: named(definition, "Web search", () => descriptors.get(definition.name) ?? {}), definition, effects: "none",
       observationSource: "search",
+      observationBinding: (_call, result) => {
+        const sources = [...new Map(searchExecutionsFromToolResult(result)
+          .map((executed) => [`${executed.optionId}\n${executed.revisionId}`, { optionId: executed.optionId, revisionId: executed.revisionId }]))
+          .values()];
+        return sources.length > 0 ? { source: "search", sources, version: 1 } : undefined;
+      },
       execute: (execution) => router!.execute(execution.call, request, { signal: execution.signal }),
       settled: async (_execution, result) => {
         // Each engine call keeps its sources (page-reader authority, counts)
@@ -572,6 +584,15 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
         return current && binding && binding.fingerprint === current.fingerprint ? { mcpRunBindingId: binding.mcpRunBindingId } : null;
       },
       observationSource: "mcp",
+      observationBinding: () => {
+        const current = route();
+        const binding = current ? input.mcpBindings.get(current.serverId) : undefined;
+        const server = current ? snapshot?.servers.find((candidate) => candidate.serverId === current.serverId) : undefined;
+        return current && binding && server && binding.fingerprint === current.fingerprint
+          ? { fingerprint: binding.fingerprint, originalName: current.originalName, revisionId: server.revisionId,
+            serverId: current.serverId, source: "mcp", version: 1 }
+          : undefined;
+      },
       execute: async (execution) => {
         const current = route();
         const binding = current ? input.mcpBindings.get(current.serverId) : undefined;
@@ -612,7 +633,8 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
     activity: () => ({ origin: "discovery", serverName: "Auto tools" }),
     definition: mcpFindToolsTool,
     effects: "none",
-    observationSource: "mcp",
+    // The listing comes from the run's own frozen catalog, not from a server: the run owns it.
+    observationSource: "workspace",
     execute: (execution) => {
       // Discovery calls of one batch run one after another: each epoch builds on the last.
       const run = async (): Promise<ToolExecutionResult> => {

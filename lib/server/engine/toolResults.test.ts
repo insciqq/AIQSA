@@ -52,6 +52,12 @@ describe("tool result excerpts", () => {
     await expect(saveToolResultText({ outcome: "complete", producer: { runId: "r", toolCallId: "c", userId: "u" },
       service: service as never, source: "workspace", text: "long" })).resolves.toEqual({ handle });
     expect(store).toHaveBeenCalledWith({ maskable: false, original: "long", outcome: "complete", sourceTruncated: false });
+    // An MCP result goes with the accepted source the store rechecks before it publishes (issue #50).
+    const sourceBinding = { fingerprint: "f".repeat(64), originalName: "get_issue", revisionId: "rev", serverId: "jira",
+      source: "mcp", version: 1 } as const;
+    await saveToolResultText({ outcome: "complete", producer: { runId: "r", toolCallId: "c", userId: "u" },
+      service: service as never, source: "mcp", sourceBinding, text: "long" });
+    expect(service.withReservation).toHaveBeenLastCalledWith(expect.objectContaining({ source: "mcp", sourceBinding }), expect.any(Function));
     const busy = { withReservation: vi.fn(async () => { throw Object.assign(new Error("busy"), { code: "tool_observation_busy" }); }) };
     await expect(saveToolResultText({ outcome: "complete", producer: { runId: "r", toolCallId: "c", userId: "u" },
       service: busy as never, source: "mcp", text: "long" })).resolves.toEqual({ unsavedReason: "tool_observation_busy" });
@@ -60,6 +66,23 @@ describe("tool result excerpts", () => {
 
 describe("read_tool_result", () => {
   const context = (text: string | null) => ({ chatId: "chat", reader: reader(text), userId: "user" });
+
+  // Review finding: a default read of a long result was itself cut into an excerpt and saved again.
+  it("returns a read that fits whole and names where to continue", async () => {
+    const saved = "line of \"quoted\" text\n".repeat(4_000);
+    let offset: number | null = TOOL_RESULT_LIMITS.headChars;
+    let read = "";
+    for (let step = 0; step < 10 && offset !== null; step += 1) {
+      const result = await executeReadToolResult(call({ handle, offset }), context(saved));
+      const output = toolResultOutputText(result);
+      expect(output.length).toBeLessThanOrEqual(TOOL_RESULT_LIMITS.inlineChars);
+      expect(toolOutputExcerpt(output, { handle }).truncated).toBe(false);
+      const value = json(result) as { nextOffset: number | null; text: string };
+      read += value.text;
+      offset = value.nextOffset;
+    }
+    expect(read).toBe(saved.slice(TOOL_RESULT_LIMITS.headChars));
+  });
 
   it("returns the call's tool and arguments with the requested part and where to continue", async () => {
     const result = await executeReadToolResult(call({ handle, limit: 4, offset: 2 }), context("abcdefghij"));
