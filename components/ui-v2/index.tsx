@@ -135,7 +135,7 @@ export function UiV2IconSprite() {
           <circle cx="6" cy="5" r="2" />
           <circle cx="18" cy="7" r="2" />
           <circle cx="18" cy="18" r="2" />
-          <path d="M8 5h2a4 4 0 0 1 4 4v5a4 4 0 0 0 4 4M14 10a3 3 0 0 1 3-3h1M6 7v12" />
+          <path d="M8 5h2a4 4 0 0 1 4 4v7a2 2 0 0 0 2 2M14 9a2 2 0 0 1 2-2M6 7v12" />
         </symbol>
         <symbol id="v2-icon-book" viewBox="0 0 24 24">
           <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H12v18h4.5A3.5 3.5 0 0 1 20 23z" />
@@ -190,7 +190,7 @@ export function UiV2IconSprite() {
           <path d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
         </symbol>
         <symbol id="v2-icon-file" viewBox="0 0 24 24">
-          <path d="M6 3h8l4 4v14H6zM14 3v5h5M9 13h6M9 17h6" />
+          <path d="M6 3h8l4 4v14H6zM14 3v4h4M9 13h6M9 17h6" />
         </symbol>
         <symbol id="v2-icon-flask" viewBox="0 0 24 24">
           <path d="M10 3h4M11 3v6L5 19a1.5 1.5 0 0 0 1.3 2h11.4a1.5 1.5 0 0 0 1.3-2l-6-10V3M8 15h8" />
@@ -309,9 +309,10 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-provider-openrouter" viewBox="0 0 24 24">
           <path fill="currentColor" stroke="none" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z" />
         </symbol>
+        {/* Regenerate and tool are Lucide's refresh-cw and wrench (ISC). */}
         <symbol id="v2-icon-regenerate" viewBox="0 0 24 24">
-          <path d="M20 7v5h-5M4 17v-5h5" />
-          <path d="M6.1 8.5A7 7 0 0 1 18.5 7M17.9 15.5A7 7 0 0 1 5.5 17" />
+          <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5" />
+          <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5" />
         </symbol>
         <symbol id="v2-icon-search" viewBox="0 0 24 24">
           <circle cx="10.5" cy="10.5" r="6.5" />
@@ -372,7 +373,7 @@ export function UiV2IconSprite() {
           <path d="M4 6V4h16v2M12 4v16M8 20h8" />
         </symbol>
         <symbol id="v2-icon-tool" viewBox="0 0 24 24">
-          <path d="M14.5 6.5a4 4 0 0 0-5-5l2.2 2.2-3 3-2.2-2.2a4 4 0 0 0 5 5L19 17l-2 2-7.5-7.5" />
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
         </symbol>
         <symbol id="v2-icon-trash" viewBox="0 0 24 24">
           <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
