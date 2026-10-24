@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
@@ -101,14 +101,20 @@ for (const theme of ["dark", "light"] as const) {
       await settings.getByLabel("Web search default").click();
       const menu = settings.getByTestId("settings-default-search").locator(".v2-search-plan-picker");
       await expect(menu.getByRole("checkbox")).toHaveCount(6);
-      const off = menu.getByRole("button", { name: "Turn off search" });
-      if (await off.isEnabled()) await off.click();
+      // The last checked source cannot be unchecked, so other sources leave
+      // only once a wanted one is on.
+      const wanted = /Search engine [123]/u;
+      const sourceLabel = (source: Locator) => source.evaluate((element) => element.closest("label")?.textContent ?? "");
+      for (const source of await menu.getByRole("checkbox", { checked: true }).all()) {
+        if (!wanted.test(await sourceLabel(source)) && await source.isEnabled()) await source.uncheck();
+      }
       await menu.getByRole("checkbox", { name: /Search engine 1/ }).check();
-      await menu.getByRole("checkbox", { name: /Search engine 2/ }).check();
-      await menu.getByRole("checkbox", { name: /Search engine 3/ }).check();
+      for (const source of await menu.getByRole("checkbox", { checked: true }).all()) {
+        if (!wanted.test(await sourceLabel(source))) await source.uncheck();
+      }
+      for (const name of [/Search engine 2/, /Search engine 3/]) await menu.getByRole("checkbox", { name }).check();
       await expect(menu.getByRole("checkbox", { name: /Search engine 4/ })).toBeDisabled();
-      await menu.getByLabel("When the model searches").selectOption("model_choice");
-      await expect(menu).toContainText("The model decides which selected sources to query.");
+      await expect(menu.getByRole("combobox")).toHaveCount(0);
       await menu.scrollIntoViewIfNeeded();
       await expectWithinViewport(page, menu);
       await expectNoHorizontalOverflow(page);

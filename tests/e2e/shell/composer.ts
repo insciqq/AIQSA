@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { runAccountMenuAction } from "./page";
 
 export function composerRunSummary(page: Page): Locator {
   return page.getByTestId("header-model-trigger");
@@ -58,14 +59,40 @@ export async function reasoningOptionValues(page: Page): Promise<string[]> {
   return values;
 }
 
+/**
+ * Makes `label` the only web search source, or turns Search off. The chip
+ * saves the account's Search default for every chat, and Search is turned off
+ * only in Chat defaults after its confirmation (operator decision 2026-10-24).
+ */
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
+  if (/^off$/iu.test(label)) {
+    await turnSearchOffInChatDefaults(page);
+    return;
+  }
   await page.getByRole("button", { name: /^Choose web search/u }).click();
   const search = page.getByRole("dialog", { name: "Web search" });
-  const off = search.getByRole("button", { name: "Turn off search" });
-  if (await off.isEnabled()) await off.click();
-  if (!/^off$/iu.test(label)) await search.getByRole("checkbox", { name: new RegExp(label, "iu") }).check();
+  const pattern = new RegExp(label, "iu");
+  await search.getByRole("checkbox", { name: pattern }).check();
+  // The wanted source stays on, so every other one can now be unchecked.
+  for (const other of await search.getByRole("checkbox", { checked: true }).all()) {
+    if (!pattern.test(await other.evaluate((element) => element.closest("label")?.textContent ?? ""))) await other.uncheck();
+  }
   await page.keyboard.press("Escape");
   await expect(search).toHaveCount(0);
+}
+
+export async function turnSearchOffInChatDefaults(page: Page): Promise<void> {
+  await runAccountMenuAction(page, "Chat defaults");
+  const settings = page.getByTestId("library-v2");
+  const summary = settings.getByLabel("Web search default");
+  if (!/(^|· )Off$/u.test((await summary.innerText()).trim())) {
+    await summary.click();
+    await settings.getByRole("button", { name: "Turn off web search" }).click();
+    await page.getByRole("dialog", { name: "Turn off web search" }).getByRole("button", { name: "Confirm turn off" }).click();
+    await expect(summary).toHaveText(/(^|· )Off$/u);
+  }
+  await settings.getByRole("button", { name: "Back to chat" }).click();
+  await expect(settings).toHaveCount(0);
 }
 
 export async function chooseReasoningEffort(page: Page, value: string): Promise<void> {

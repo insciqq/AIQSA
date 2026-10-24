@@ -5,7 +5,6 @@ import { fetchWorkspaceUploadConfig } from "@/components/app-shell/workspaceUplo
 import { releasePendingUpload, trackPendingUploads } from "@/components/app-shell/pendingUploads";
 import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads";
 import type { GreetingPeriod } from "@/lib/domain/greeting";
-import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
 
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
@@ -680,7 +679,6 @@ export function PowerAppShellV2({
     readingAnchorKey,
     resetKey: activeChatId ?? "blank"
   });
-  const chatSearchPreferencesRef = useRef<ReturnType<typeof createChatSearchPreferences> | null>(null);
   const {
     applyModelControlDefaults,
     buildControlDraft,
@@ -708,11 +706,8 @@ export function PowerAppShellV2({
     setBrowserNotificationsEnabled,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
-    useOrganizationModelDefault,
-    useOrganizationSearchDefault
+    useOrganizationModelDefault
   } = useRunControlsActions({
-    chatSearchPreferencesRef,
-    chatSearchSession: settingsSession,
     isSettingsSessionCurrent: () => activeSettingsSessionRef.current === settingsSession,
     catalog,
     currentModel,
@@ -2041,7 +2036,6 @@ export function PowerAppShellV2({
       }
     },
     toggleReasoningBlockVisibility,
-    useOrganizationSearchDefault,
     useOrganizationModelDefault,
     uploadFiles: uploadComposerFiles,
     uploadLimitHint: uploadLimits ? workspaceUsable
