@@ -6,6 +6,8 @@ import {
   explicitKnowledgeSelection,
   type KnowledgeSelection
 } from "../../contracts/knowledge";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { prisma } from "../prisma";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import {
@@ -49,11 +51,13 @@ export type KnowledgeDeletionDrainSummary = Readonly<{
 
 type KnowledgeRunRow = Readonly<{
   baseEvidence: unknown;
+  candidateCount: number;
   chatId: string;
   id: string;
   modelRunId: string;
   modelRunToolCallId: string;
   operation: string;
+  outcome: string;
   providerCallId: string;
   query: string;
   readReceipt: unknown;
@@ -827,18 +831,65 @@ async function purgeProviderAttempts(
   }
 }
 
+type KnowledgeRunTombstoneInput = Readonly<{
+  affectedModelRunIds?: readonly string[];
+  baseSourceIdentities?: readonly KnowledgeBaseSourceIdentity[];
+  documentVersionIds?: readonly string[];
+  knowledgeBaseId?: string;
+  privateIdentifiers?: readonly string[];
+  sourceAliases?: readonly Readonly<{ modelRunId: string; sourceAlias: string }>[];
+  sourceId?: string;
+  sourceVersionIds?: readonly string[];
+}>;
+
+/** Replaces one run's private request, receipt and matching results with the value-free tombstone. */
+async function tombstoneKnowledgeRun(
+  tx: Prisma.TransactionClient,
+  row: KnowledgeRunRow,
+  input: KnowledgeRunTombstoneInput,
+  privateValues: Set<string>,
+  versionIds: ReadonlySet<string>
+): Promise<void> {
+  collectPrivateKnowledgeValues(row.readReceipt, privateValues);
+  privateValues.add(row.query);
+  const tombstoned = tombstoneResults(row.results, (entry) => input.knowledgeBaseId
+    ? entry.knowledgeBaseId === input.knowledgeBaseId ||
+      (input.baseSourceIdentities ?? []).some((identity) =>
+        identity.modelRunId === row.modelRunId &&
+        matchesKnowledgeBaseSourceIdentity(entry, identity))
+    : entry.sourceId === input.sourceId || entry.documentId === input.sourceId ||
+      typeof entry.documentVersionId === "string" && versionIds.has(entry.documentVersionId));
+  const results = retiredAnalysisOperations.has(row.operation)
+    ? tombstoneEveryResult(row.results)
+    : tombstoned.results;
+  const deletedBaseEvidenceIds = new Set([
+    ...(input.knowledgeBaseId ? [input.knowledgeBaseId] : []),
+    ...(input.baseSourceIdentities ?? []).flatMap((identity) =>
+      identity.modelRunId === row.modelRunId ? [identity.profileBindingId] : [])
+  ]);
+  await tx.knowledgeRun.update({
+    data: {
+      baseEvidence: json(input.knowledgeBaseId
+        ? baseEvidenceAfterDeletion(row.baseEvidence, deletedBaseEvidenceIds)
+        : row.baseEvidence),
+      // Candidates without relevant evidence are proven only by the relevance receipt, which goes now (issue #49).
+      ...(row.outcome === "no_relevant_evidence" && row.candidateCount > 0 ? { candidateCount: 0 } : {}),
+      providerText: tombstoned.changed || retiredAnalysisOperations.has(row.operation)
+        ? providerTextForTombstonedResults(results)
+        : providerTextForTombstonedResults([]),
+      query: deletedKnowledgeResource,
+      readReceipt: Prisma.DbNull,
+      ...(tombstoned.changed || retiredAnalysisOperations.has(row.operation)
+        ? { results: json(results) }
+        : {})
+    },
+    where: { id: row.id }
+  });
+}
+
 async function tombstoneKnowledgeRuns(
   tx: Prisma.TransactionClient,
-  input: Readonly<{
-    affectedModelRunIds?: readonly string[];
-    baseSourceIdentities?: readonly KnowledgeBaseSourceIdentity[];
-    documentVersionIds?: readonly string[];
-    knowledgeBaseId?: string;
-    privateIdentifiers?: readonly string[];
-    sourceAliases?: readonly Readonly<{ modelRunId: string; sourceAlias: string }>[];
-    sourceId?: string;
-    sourceVersionIds?: readonly string[];
-  }>
+  input: KnowledgeRunTombstoneInput
 ): Promise<TombstonedKnowledgeRuns> {
   const versionIds = new Set([
     ...(input.documentVersionIds ?? []),
@@ -877,6 +928,8 @@ async function tombstoneKnowledgeRuns(
           knowledge_run."modelRunToolCallId",
           model_run_tool_call."providerCallId",
           knowledge_run."operation",
+          knowledge_run."outcome"::text AS "outcome",
+          knowledge_run."candidateCount",
           knowledge_run."query",
           knowledge_run."baseEvidence",
           knowledge_run."readReceipt",
@@ -912,6 +965,8 @@ async function tombstoneKnowledgeRuns(
             knowledge_run."modelRunToolCallId",
             model_run_tool_call."providerCallId",
             knowledge_run."operation",
+            knowledge_run."outcome"::text AS "outcome",
+            knowledge_run."candidateCount",
             knowledge_run."query",
             knowledge_run."baseEvidence",
             knowledge_run."readReceipt",
@@ -942,39 +997,11 @@ async function tombstoneKnowledgeRuns(
 
   const privateValues = new Set(input.privateIdentifiers ?? []);
   for (const row of rows) {
-    collectPrivateKnowledgeValues(row.readReceipt, privateValues);
-    privateValues.add(row.query);
-    const tombstoned = tombstoneResults(row.results, (entry) => input.knowledgeBaseId
-      ? entry.knowledgeBaseId === input.knowledgeBaseId ||
-        (input.baseSourceIdentities ?? []).some((identity) =>
-          identity.modelRunId === row.modelRunId &&
-          matchesKnowledgeBaseSourceIdentity(entry, identity))
-      : entry.sourceId === input.sourceId || entry.documentId === input.sourceId ||
-        typeof entry.documentVersionId === "string" && versionIds.has(entry.documentVersionId));
-    const results = retiredAnalysisOperations.has(row.operation)
-      ? tombstoneEveryResult(row.results)
-      : tombstoned.results;
-    const deletedBaseEvidenceIds = new Set([
-      ...(input.knowledgeBaseId ? [input.knowledgeBaseId] : []),
-      ...(input.baseSourceIdentities ?? []).flatMap((identity) =>
-        identity.modelRunId === row.modelRunId ? [identity.profileBindingId] : [])
-    ]);
-    await tx.knowledgeRun.update({
-      data: {
-        baseEvidence: json(input.knowledgeBaseId
-          ? baseEvidenceAfterDeletion(row.baseEvidence, deletedBaseEvidenceIds)
-          : row.baseEvidence),
-        providerText: tombstoned.changed || retiredAnalysisOperations.has(row.operation)
-          ? providerTextForTombstonedResults(results)
-          : providerTextForTombstonedResults([]),
-        query: deletedKnowledgeResource,
-        readReceipt: Prisma.DbNull,
-        ...(tombstoned.changed || retiredAnalysisOperations.has(row.operation)
-          ? { results: json(results) }
-          : {})
-      },
-      where: { id: row.id }
-    });
+    // A search that could not run kept only fixed text and no evidence, which its shape check pins: nothing
+    // private to replace, and the tombstone would break that check (issue #49). Its tool call still goes.
+    if (row.outcome !== "search_unavailable") {
+      await tombstoneKnowledgeRun(tx, row, input, privateValues, versionIds);
+    }
     await tx.modelRunToolCall.updateMany({
       data: { arguments: json({ deleted: true }), result: Prisma.DbNull },
       where: { id: row.modelRunToolCallId, modelRunId: row.modelRunId }
@@ -2036,8 +2063,11 @@ export async function drainKnowledgeDeletionJobs(input: Readonly<{
       if (result === "blocked") blocked += 1;
       else if (result === "completed") completed += 1;
       else waitingForObjects += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      // The job retries; its cause is reported without values.
+      logEvent("runtime_lifecycle", { error, subsystem: "knowledge", stage: "cleanup", outcome: "failed", action: "retry",
+        code: "knowledge_purge_failed", prisma_code: databaseFailureCode(error) });
     }
   }
   completed += await processor.finalizeSettled(now);
