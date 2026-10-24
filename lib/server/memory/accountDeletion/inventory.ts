@@ -111,7 +111,6 @@ export async function loadAccountMemoryOwnedCounts(
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ModelRunMemoryBinding" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ModelRunMemoryItem" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryHistoryRun" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
-      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryToolEgressReceipt" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
     )
     SELECT inventory."userId", SUM(inventory.records)::text AS "recordCount"
     FROM inventory

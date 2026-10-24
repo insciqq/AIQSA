@@ -851,18 +851,6 @@ enum MemoryReceiptRetentionState {
   SCRUBBED
 }
 
-enum MemoryToolEgressMode {
-  PROVIDER_REQUEST
-  TOOL_CALL
-}
-
-enum MemoryToolEgressDispatchState {
-  DISPATCHED
-  COMPLETED
-  BLOCKED
-  FAILED
-}
-
 model User {
   attachmentUploads                  AttachmentUpload[]
   runFollowups RunFollowup[]
@@ -2917,7 +2905,6 @@ model ModelRun {
   optionalDecisionAttempts     OptionalDecisionAttempt[]
   memoryHistoryRuns            MemoryHistoryRun[]
   memoryToolEvents             MemoryToolEvent[]
-  memoryToolEgressReceipts     MemoryToolEgressReceipt[]
   providerRunBindings          ProviderRunBinding[]
   searchRuns                   SearchRun[]
   skillRunBindings             ModelRunSkillBinding[]
@@ -3539,7 +3526,6 @@ model ModelRunToolCall {
   workspaceRunBinding        WorkspaceRunBinding?        @relation(fields: [workspaceRunBindingId], references: [modelRunId], onDelete: SetNull, onUpdate: Restrict)
   memoryHistoryRun           MemoryHistoryRun?
   memoryToolEvents           MemoryToolEvent[]
-  memoryToolEgressReceipts   MemoryToolEgressReceipt[]
   workspaceExecution         WorkspaceExecution?
   skillBindings              ModelRunSkillBinding[]
   codeInvocations            WorkspaceCodeInvocation[]
@@ -5541,35 +5527,6 @@ model MemoryHistoryRun {
   @@index([userId, retentionState, createdAt])
   @@index([userId, state])
   @@index([modelRunId, state])
-}
-
-model MemoryToolEgressReceipt {
-  id                     String                        @id @default(uuid())
-  userId                 String
-  modelRunId             String
-  modelRunToolCallId     String?
-  requestOrdinal         Int
-  mode                   MemoryToolEgressMode
-  destinationKind        String                        @db.VarChar(64)
-  destinationFingerprint String                        @db.VarChar(128)
-  destinationSnapshot    Json
-  requestEvidenceHash    String                        @db.VarChar(128)
-  requestPreviewHash     String?                       @db.VarChar(128)
-  dispatchState          MemoryToolEgressDispatchState @default(DISPATCHED)
-  dispatchStartedAt      DateTime?
-  dispatchCompletedAt    DateTime?
-  errorCode              String?                       @db.VarChar(128)
-  createdAt              DateTime                      @default(now())
-  updatedAt              DateTime                      @default(now()) @updatedAt
-  modelRun               ModelRun                      @relation(fields: [userId, modelRunId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict, map: "MemoryToolEgressReceipt_modelRun_fkey")
-  modelRunToolCall       ModelRunToolCall?             @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "MemoryToolEgressReceipt_toolCall_fkey")
-
-  @@unique([userId, id])
-  @@unique([userId, modelRunId, id])
-  @@unique([modelRunId, requestOrdinal])
-  @@unique([modelRunId, modelRunToolCallId])
-  @@index([userId, dispatchState, createdAt])
-  @@index([modelRunId, mode])
 }
 
 /// Private pre-answer continuation. Snapshot fields never enter browser reads.
