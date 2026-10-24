@@ -70,7 +70,10 @@ describe("AIQSA guide", () => {
 
   it("states the product as shipped", () => {
     const guide = AIQSA_GUIDE_TOPICS.map((topic) => aiqsaGuideText(topic)).join("\n");
-    expect(guide).not.toMatch(/Projects?\b|Knowledge/u);
+    // Removed features appear only in the one line that says they are gone (issue #51).
+    const removed = "Projects, Knowledge (document collections searched in chats) and the Codex Agent mode were removed in AIQSA 0.4.0";
+    expect(aiqsaGuideText("overview")).toContain(removed);
+    expect(guide.replaceAll(removed, "")).not.toMatch(/Projects?\b|Knowledge/u);
     expect(guide).toContain("the agent never changes administrator settings");
     expect(guide).toContain("The agent cannot change Memory with tools.");
     expect(aiqsaGuideText("secrets")).toContain("32 secrets and 4 MiB in total, 128 KiB of environment variables, 512 KiB per file");
@@ -80,7 +83,9 @@ describe("AIQSA guide", () => {
     expect(aiqsaGuideText("scheduled_tasks")).toContain("When a task depends on particular sites, write their exact links into the instructions and tell the user which sources it uses.");
     expect(aiqsaGuideText("scheduled_tasks")).toContain("allowed once the user opens the task and saves its instructions");
     for (const section of ["assistants", "instructions", "skills", "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"]) {
-      expect(aiqsaGuideText("studio")).toContain(`/?library=${section}`);
+      expect(aiqsaGuideText("studio")).toMatch(new RegExp(`\\]\\(/\\?library=${section}[)&]`, "u"));
     }
+    // Every Studio address is a Markdown link, never a bare path the model might put in code.
+    expect(guide).not.toMatch(/(?<!\]\()\/\?library=/u);
   });
 });
