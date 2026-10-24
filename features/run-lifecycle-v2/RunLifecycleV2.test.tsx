@@ -293,7 +293,7 @@ describe("Run lifecycle v2", () => {
     // Step rows read as plain language: no raw `search_documentation`.
     expect(screen.getByRole("heading", { name: "Steps" })).toBeInTheDocument();
     expect(screen.getByText("Used AWS Documentation: search documentation")).toBeVisible();
-    expect(screen.getByText("1.3 s · round 1")).toBeVisible();
+    expect(screen.getByText("1.3 s")).toBeVisible();
     expect(screen.queryByText(/search_documentation/u)).toBeNull();
   });
 
