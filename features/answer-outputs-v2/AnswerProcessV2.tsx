@@ -439,12 +439,12 @@ export function AnswerProcessV2({
                       <details className="v2-answer-process-call-group" data-testid="tool-call-group">
                         <summary className="v2-focusable">
                           <ToolCallMarkV2 status={status} />
+                          <span className="v2-answer-process-call-group-chevron" aria-hidden="true" />
                           <span className="v2-answer-process-step-name">{group.label} ×{group.calls.length}</span>
                           <span className="v2-answer-process-step-meta">
                             {[status === "error" ? "Failed" : status === "cancelled" ? "Stopped" : null,
                               total > 0 ? toolDuration(total) : null].filter(Boolean).join(" · ")}
                           </span>
-                          <span className="v2-answer-process-call-group-chevron" aria-hidden="true" />
                         </summary>
                         <ol className="v2-answer-process-steps">
                           {group.calls.map(({ call, index }, position) => (
