@@ -5,17 +5,20 @@ import {
   SCHEDULED_TASK_KINDS,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
+  SCHEDULED_TASK_WEBHOOK_PATH_PREFIX,
   SCHEDULED_TASK_WEEKDAYS,
   scheduledTaskCard,
   scheduledTaskErrorMessage,
   type ScheduledTask,
-  type ScheduledTaskHistoryRetentionDays
+  type ScheduledTaskHistoryRetentionDays,
+  type ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
 import { describeScheduledTaskSchedule } from "../../domain/scheduledTaskSchedule";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { RunRepository, ScheduledTaskCallRefusal } from "../runs/runRepositoryContract";
+import { scheduledTaskWebhookUrl } from "../scheduledTasks/webhookUrl";
 import { isFetchUrlPlan } from "./fetchUrlPlan";
 import { resolveScheduledTaskSkillReferences, SCHEDULED_TASK_SKILLS_SCHEMA, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
@@ -45,7 +48,16 @@ type ScheduledTaskToolRequest = Readonly<{
 export type ScheduledTaskCallCreator = NonNullable<RunRepository["createScheduledTaskForCall"]>;
 
 const SETTINGS_KEYS = ["modelId", "provider", "searchEnabled", "toolsEnabled", "workspaceEnabled", "memoryEnabled"];
-const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule", "skills", "historyRetentionDays"];
+const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule", "webhook", "telegram", "skills", "historyRetentionDays"];
+
+/**
+ * The schedule a webhook-only automation keeps, off, when the model gives
+ * none (`schedule: null`): the owner contract stores a schedule for every
+ * task. It is the editor's own default (daily at 09:00), so turning the
+ * schedule on in the editor starts from what a new automation would; a daily
+ * kind lets the run's chat mode stay the model's or the editor's choice.
+ */
+export const SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE: ScheduledTaskSchedule = Object.freeze({ kind: "daily", time: "09:00" });
 
 /**
  * Whether the creating run came from a Telegram message (it has a
@@ -136,17 +148,18 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
     description: [
       "Create an automation: a saved instruction that runs automatically with this chat's model and settings;",
       "its answers appear in the automation's own chat. Use it only when the user's current message asks for something",
-      "later or repeatedly (a reminder, a regular report, watching for a change), at most once per answer, and do not",
-      "ask for confirmation: your answer shows the automation with Edit and Delete.",
+      "later, repeatedly or on events (a reminder, a regular report, watching for a change, a webhook),",
+      "at most once per answer, and do not ask for confirmation: your answer shows the automation with Edit and Delete.",
       "kind: \"monitoring\" when the user wants to hear when something happens or changes (silent without news, ends",
       "once it happened); \"standard\" for reminders and reports.",
       "prompt: a standalone instruction that works without this conversation, in the user's language; for monitoring",
       "say what counts as news. When the automation depends on particular sites or pages, write their exact URLs into prompt,",
       "since a run reads only the links in its saved prompt besides its own search results, and tell the user which",
       `sources it will use. Times are 24-hour HH:MM in the user's time zone ${timeZone}; set unused schedule`,
-      "fields to null. chatMode: null unless the user asks. When the automation runs one of this chat's skills, pin it in",
-      "skills so every run loads it. Confirm briefly what was created; if it fails, explain why and do not retry the",
-      "same arguments."
+      "fields to null. webhook: true to run it on every call another system (CI, monitoring) makes to its URL; schedule",
+      "null for webhook only. chatMode: null unless the user asks.",
+      "When the automation runs one of this chat's skills, pin it in skills so every run loads it. Confirm briefly what was",
+      "created; if it fails, explain why and do not retry the same arguments."
     ].join(" "),
     inputSchema: {
       additionalProperties: false,
@@ -155,7 +168,7 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
         prompt: { maxLength: SCHEDULED_TASK_PROMPT_MAX_LENGTH, minLength: 1, type: "string" },
         kind: { enum: [...SCHEDULED_TASK_KINDS], type: "string" },
         chatMode: { enum: ["new", "same", null], type: ["string", "null"] },
-        schedule: {
+        schedule: { anyOf: [{
           additionalProperties: false,
           properties: {
             kind: { enum: Object.keys(SCHEDULE_FIELDS), type: "string" },
@@ -178,7 +191,9 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
           },
           required: ["kind", "time", ...OPTIONAL_SCHEDULE_FIELDS],
           type: "object"
-        },
+        }, { type: "null" }] },
+        webhook: { type: "boolean" },
+        telegram: { description: "true when the user asks for results in Telegram; otherwise null.", type: ["boolean", "null"] },
         skills: SCHEDULED_TASK_SKILLS_SCHEMA,
         historyRetentionDays: {
           description: `Days old chats are kept, ${SCHEDULED_TASK_TOOL_HISTORY_FOREVER} forever; null unless the user asks ` +
@@ -207,7 +222,10 @@ export function isScheduledTaskCreateCall(request: Readonly<{ scheduledTaskTool?
 
 type ToolArguments = Readonly<{
   chatMode: unknown; historyRetentionDays: ScheduledTaskHistoryRetentionDays; kind: unknown; prompt: unknown;
-  schedule: Record<string, unknown>; skills: unknown; title: unknown;
+  /** The schedule as the owner contract stores it: `SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE` when it is off. */
+  schedule: Record<string, unknown>; scheduleEnabled: boolean; skills: unknown; title: unknown; webhookEnabled: boolean;
+  /** The user's explicit Telegram choice; null leaves it to where the run came from. */
+  telegram: boolean | null;
 }>;
 
 /**
@@ -233,11 +251,23 @@ function contractSchedule(value: unknown): Record<string, unknown> | string {
   };
 }
 
-function decodeArguments(value: Record<string, unknown>): ToolArguments | string {
+/**
+ * The model's arguments as the owner contract's draft fields. A run accepted
+ * before webhooks sent no `webhook`: off. Without a schedule the automation
+ * runs only on its webhook and keeps the off placeholder; with neither it
+ * would never run (`scheduled_task_trigger_required`).
+ */
+function decodeArguments(value: Record<string, unknown>): ToolArguments | Readonly<{ refusal: "scheduled_task_trigger_required" }> | string {
   if (Object.keys(value).some((key) => !ARGUMENT_KEYS.includes(key))) {
     return `Use only the arguments ${ARGUMENT_KEYS.join(", ")}.`;
   }
-  const schedule = contractSchedule(value.schedule);
+  const webhookEnabled = value.webhook ?? false;
+  if (typeof webhookEnabled !== "boolean") return "webhook must be true or false.";
+  const telegram = value.telegram ?? null;
+  if (telegram !== null && typeof telegram !== "boolean") return "telegram must be true, false or null.";
+  const scheduleEnabled = value.schedule !== undefined && value.schedule !== null;
+  if (!scheduleEnabled && !webhookEnabled) return { refusal: "scheduled_task_trigger_required" };
+  const schedule = scheduleEnabled ? contractSchedule(value.schedule) : { ...SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE };
   if (typeof schedule === "string") return schedule;
   // Left open (or by a run accepted before the field), a new task keeps the default.
   const history: Readonly<{ days: ScheduledTaskHistoryRetentionDays }> | null =
@@ -248,7 +278,7 @@ function decodeArguments(value: Record<string, unknown>): ToolArguments | string
       `${SCHEDULED_TASK_TOOL_HISTORY_FOREVER} (forever) or null.`;
   }
   return { chatMode: value.chatMode ?? null, historyRetentionDays: history.days, kind: value.kind, prompt: value.prompt, schedule,
-    skills: value.skills ?? [], title: value.title };
+    scheduleEnabled, skills: value.skills ?? [], telegram, title: value.title, webhookEnabled };
 }
 
 /** Where runs answer when the model leaves it open: one chat when the task requires it, else the editor's default. */
@@ -280,6 +310,25 @@ export function scheduledTaskLinksPending(task: Pick<ScheduledTask, "promptLinks
   } as const : {};
 }
 
+/**
+ * A task's webhook as the model may know it: its whole address and whether a
+ * token was issued, never the token, which no tool returns. With `explain`,
+ * how the user gets the token and what the body is.
+ */
+export function scheduledTaskModelWebhook(task: Pick<ScheduledTask, "webhook" | "webhookEnabled">, explain: boolean) {
+  if (!task.webhookEnabled || !task.webhook) return {};
+  const url = scheduledTaskWebhookUrl(task.webhook.path.slice(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX.length));
+  const tokenIssued = task.webhook.tokenIssuedAt !== null;
+  return { webhook: { url, tokenIssued, ...(explain ? { note: [
+    "Every POST to url runs the automation's prompt with the request body attached as untrusted event data.",
+    tokenIssued
+      ? "A token was issued earlier; Rotate token on the card or in Studio > Automations replaces it."
+      : "Its token is ready to issue: the user clicks Get token on the answer's card (or in Studio > Automations) and sees it once.",
+    "Senders put it in the Authorization: Bearer header, or X-Gitlab-Token for GitLab. You never see the token: never ask the",
+    "user for it or write one."
+  ].join(" ") } : {}) } };
+}
+
 /** The settled result of a creation: what the model confirms, and the answer's card. */
 export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "name">, task: ScheduledTask,
   timeZoneFallback: boolean): ToolExecutionResult {
@@ -290,17 +339,19 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       created: true,
       title: task.title,
       kind: task.kind,
-      schedule: describeScheduledTaskSchedule(task.schedule),
+      schedule: task.scheduleEnabled ? describeScheduledTaskSchedule(task.schedule) : "none: runs only on its webhook",
       timeZone: task.timeZone,
       nextRun: localInstant(task.nextRunAt, task.timeZone),
+      ...scheduledTaskModelWebhook(task, true),
       chat: task.chatMode === "same" ? "every run continues in one chat, a new one each month" : "every run starts a new chat",
       oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays),
       webSearch: task.searchEnabled,
       tools: task.toolsEnabled,
       workspace: task.workspaceEnabled,
       memory: task.memoryEnabled,
-      // Results also go to the user's Telegram (an automation created from a Telegram message).
+      // Results also go to the user's Telegram (asked for, or an automation created from a Telegram message).
       telegram: task.telegramNotify,
+      ...(task.telegramNotify ? { telegramNote: "Results reach Telegram once the user has connected it in Settings > Connections." } : {}),
       skills: scheduledTaskModelSkills(task),
       ...scheduledTaskLinksPending(task),
       note: "The answer shows this automation with Edit and Delete; the user manages automations in Studio > Automations."
@@ -329,6 +380,8 @@ function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_
       return `${scheduledTaskErrorMessage(code)} The user can pause or delete automations in Studio > Automations.`;
     case "scheduled_task_skills_need_tools":
       return "This chat has tools off, so its automation cannot pin Skills: create it with skills [] or ask the user to turn tools on.";
+    case "scheduled_task_trigger_required":
+      return "An automation needs a schedule, webhook true, or both; ask the user when it should run if that is unclear.";
     default: return scheduledTaskErrorMessage(code);
   }
 }
@@ -347,7 +400,8 @@ function refused(call: Pick<ModelToolCall, "id" | "name">, code: ScheduledTaskCa
  * Creates the task one call asks for, with the run's frozen settings (Memory
  * only when the run itself was admitted to read it) and time zone, the
  * owner's email notifications off (the editor's default) and Telegram
- * delivery on only when the creating run came from Telegram. A
+ * delivery as the model asked for it, by default on only when the creating
+ * run came from Telegram. A
  * refusal is a tool error the model explains; nothing is created then. A
  * recovered call returns the result it settled with when it had created its
  * task, and creates it only when it had not.
@@ -366,14 +420,16 @@ export async function executeCreateScheduledTask(
   if (hasInvalidProviderToolArguments(call.arguments)) return refused(call, "scheduled_task_arguments_invalid", "they are not a JSON object.");
   const decoded = decodeArguments(call.arguments);
   if (typeof decoded === "string") return refused(call, "scheduled_task_arguments_invalid", decoded);
+  if ("refusal" in decoded) return refused(call, decoded.refusal);
   const skills = resolveScheduledTaskSkillReferences(context.request, decoded.skills);
   if (!skills.ok) return refused(call, "scheduled_task_arguments_invalid", skills.message);
   const zone = runTimeZone(context.request);
-  const telegramNotify = await createdFromTelegram(telegramOrigin, { runId: context.runId, userId: context.userId });
+  const telegramNotify = decoded.telegram ?? await createdFromTelegram(telegramOrigin, { runId: context.runId, userId: context.userId });
   try {
     const outcome = await create({
       body: {
-        title: decoded.title, prompt: decoded.prompt, schedule: decoded.schedule, timeZone: zone.timeZone,
+        title: decoded.title, prompt: decoded.prompt, schedule: decoded.schedule, scheduleEnabled: decoded.scheduleEnabled,
+        webhookEnabled: decoded.webhookEnabled, timeZone: zone.timeZone,
         modelId: settings.modelId, provider: settings.provider, searchEnabled: settings.searchEnabled, emailNotify: false,
         telegramNotify, toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
         memoryEnabled: settings.memoryEnabled === true, pinnedSkillIds: skills.skillIds,

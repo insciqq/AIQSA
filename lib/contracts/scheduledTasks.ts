@@ -1034,11 +1034,20 @@ export type ScheduledTaskCard = Readonly<{
   toolsEnabled: boolean;
   workspaceEnabled: boolean;
   status: ScheduledTaskStatus;
-  /** Null unless active. */
+  /** Null unless active and on a schedule. */
   nextRunAt: string | null;
+  /** Runs on its schedule; absent on cards written before webhooks, which all ran on one. */
+  scheduleEnabled?: boolean;
+  /**
+   * Present exactly while the webhook trigger is on: the endpoint's path and
+   * when its current token was issued, never the token. The card's "Get
+   * token" issues one through the owner API.
+   */
+  webhook?: ScheduledTaskCardWebhook;
   action?: ScheduledTaskCardAction;
   deleted?: true;
 }>;
+export type ScheduledTaskCardWebhook = Readonly<Pick<ScheduledTaskWebhook, "path" | "tokenIssuedAt">>;
 /** Distinct tasks one chat answer may change, pause, resume or propose deleting. */
 export const SCHEDULED_TASK_MANAGED_PER_ANSWER = 5;
 /** Cards one answer may carry: the tasks it may manage and the one it may create. */
@@ -1049,10 +1058,17 @@ const CARD_KEYS = [
   "nextRunAt"
 ] as const;
 const CARD_ACTIONS: readonly unknown[] = SCHEDULED_TASK_CARD_ACTIONS;
+const CARD_OPTIONAL_KEYS: readonly string[] = ["scheduleEnabled", "webhook", "action", "deleted"];
+
+function cardWebhook(value: unknown): value is ScheduledTaskCardWebhook {
+  return record(value) && keys(value, ["path", "tokenIssuedAt"]) && typeof value.path === "string" &&
+    value.path.startsWith(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX) &&
+    isScheduledTaskWebhookPublicId(value.path.slice(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX.length)) && nullable(value.tokenIssuedAt, instant);
+}
 
 export function decodeScheduledTaskCard(value: unknown): ScheduledTaskCard | null {
   if (!record(value) || !CARD_KEYS.every((key) => key in value) || !Object.keys(value).every((key) =>
-    key === "action" || key === "deleted" || (CARD_KEYS as readonly string[]).includes(key))) return null;
+    CARD_OPTIONAL_KEYS.includes(key) || (CARD_KEYS as readonly string[]).includes(key))) return null;
   const schedule = decodeScheduledTaskSchedule(value.schedule);
   const title = normalizeScheduledTaskTitle(value.title);
   if (!schedule || !id(value.taskId) || !title || title !== value.title || !KINDS.includes(value.kind) ||
@@ -1060,26 +1076,39 @@ export function decodeScheduledTaskCard(value: unknown): ScheduledTaskCard | nul
     typeof value.toolsEnabled !== "boolean" || typeof value.workspaceEnabled !== "boolean" ||
     !STATUSES.includes(value.status) || !nullable(value.nextRunAt, instant) ||
     (value.status !== "active" && value.nextRunAt !== null) || (value.action !== undefined && !CARD_ACTIONS.includes(value.action)) ||
-    (value.deleted !== undefined && value.deleted !== true)) return null;
+    (value.deleted !== undefined && value.deleted !== true) ||
+    (value.scheduleEnabled !== undefined && typeof value.scheduleEnabled !== "boolean") ||
+    (value.webhook !== undefined && !cardWebhook(value.webhook)) ||
+    // At least one trigger is on, and a schedule that is off has no next run.
+    (value.scheduleEnabled === false && (value.webhook === undefined || value.nextRunAt !== null))) return null;
+  const hook = value.webhook as ScheduledTaskCardWebhook | undefined;
   return {
     taskId: value.taskId, title, kind: value.kind as ScheduledTaskKind, schedule, timeZone: value.timeZone,
     timeZoneFallback: value.timeZoneFallback, toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled,
     status: value.status as ScheduledTaskStatus, nextRunAt: value.nextRunAt,
+    ...(value.scheduleEnabled !== undefined ? { scheduleEnabled: value.scheduleEnabled } : {}),
+    ...(hook ? { webhook: { path: hook.path, tokenIssuedAt: hook.tokenIssuedAt } } : {}),
     ...(value.action !== undefined ? { action: value.action as ScheduledTaskCardAction } : {}),
     ...(value.deleted ? { deleted: true as const } : {})
   };
 }
 
-/** The card of a task as the owner's store projects it now, with the answer's last action on it. */
+/**
+ * The card of a task as the owner's store projects it now, with the answer's
+ * last action on it: its webhook only while that trigger is on.
+ */
 export function scheduledTaskCard(
   task: Pick<ScheduledTask, "id" | "kind" | "nextRunAt" | "schedule" | "status" | "timeZone" | "title" | "toolsEnabled" |
-    "workspaceEnabled">,
+    "workspaceEnabled" | "scheduleEnabled" | "webhookEnabled" | "webhook">,
   timeZoneFallback: boolean,
   action?: ScheduledTaskCardAction
 ): ScheduledTaskCard {
+  const webhook = task.webhookEnabled ? task.webhook : null;
   return {
     taskId: task.id, title: task.title, kind: task.kind, schedule: task.schedule, timeZone: task.timeZone, timeZoneFallback,
     toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled, status: task.status, nextRunAt: task.nextRunAt,
+    scheduleEnabled: task.scheduleEnabled,
+    ...(webhook ? { webhook: { path: webhook.path, tokenIssuedAt: webhook.tokenIssuedAt } } : {}),
     ...(action ? { action } : {})
   };
 }
