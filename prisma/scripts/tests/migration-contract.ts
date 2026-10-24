@@ -91,6 +91,7 @@ const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
   "eebf5019d8a511bb484b076020d9207d4a49aaf2e1af39ab4f9d31e3afc2f3a2";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
+const MCP_TOOL_UPDATE_TRUST_MIGRATION = "20261024120000_mcp_tool_update_trust";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
 const KNOWLEDGE_SNAPSHOT_TRIGGER_FIX =
   "20260818044500_knowledge_snapshot_count_trigger_fix";
@@ -7742,8 +7743,10 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, MCP_MODEL_OUTPUT_BUDGET_MIGRATION,
       fixture, proof, proof);
   }
+  // Its proof compares whole server rows, which the later tool-update columns extend.
   runForwardAdoptionProof(shadowDatabase, migrations, MCP_LEGACY_TOOL_RECHECK_MIGRATION,
-    mcpLegacyToolRecheckFixtureSql, mcpLegacyToolRecheckProofSql, mcpLegacyToolRecheckRepeatProofSql);
+    mcpLegacyToolRecheckFixtureSql, mcpLegacyToolRecheckProofSql, mcpLegacyToolRecheckRepeatProofSql,
+    MCP_TOOL_UPDATE_TRUST_MIGRATION);
   for (const { fixture, proof } of utilityRuntimeBudgetFixtures) {
     runForwardAdoptionProof(shadowDatabase, migrations, UTILITY_RUNTIME_BUDGET_MIGRATION,
       fixture, proof, proof);
