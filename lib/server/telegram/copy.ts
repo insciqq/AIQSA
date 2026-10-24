@@ -272,7 +272,7 @@ const SCHEDULED_TITLE_MAX_LENGTH = 200;
 
 /** A scheduled task's title as its Telegram delivery heads it: one line, bounded, never empty. */
 export function telegramScheduledTitle(title: string): string {
-  return bounded(title.replace(/[\u0000-\u001f\u007f]+/gu, " "), SCHEDULED_TITLE_MAX_LENGTH) || "Scheduled task";
+  return bounded(title.replace(/[\u0000-\u001f\u007f]+/gu, " "), SCHEDULED_TITLE_MAX_LENGTH) || "Automation";
 }
 
 /** The files of a scheduled result that stay in AIQSA (too many or too large for Telegram). */

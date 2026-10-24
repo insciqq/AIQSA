@@ -367,7 +367,7 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
     ...section("Artifacts:", capped(artifacts, LIMITS.listed, true)),
     ...section("Skills loaded:", skillsLoaded.size > 0 ? [`- ${[...skillsLoaded].join(", ")}`] : []),
     ...section("Skills changed:", capped(skillChanges, LIMITS.listed, true)),
-    ...section("Scheduled tasks:", capped(tasks, LIMITS.listed, true)),
+    ...section("Automations:", capped(tasks, LIMITS.listed, true)),
     ...section("Secrets, Assistants and settings changed:", capped(otherChanges, LIMITS.listed, true)),
     ...section("Data-changing calls and their outcomes:", capped(writes, LIMITS.writes, true)),
     ...section("Waiting when this record was made:", pending),

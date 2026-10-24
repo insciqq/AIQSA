@@ -112,11 +112,11 @@ export function AdminWorkspaceOverview() {
           </p>
           <p className="mt-3 text-xs leading-5 text-ink-secondary" data-testid="workspace-footprint">
             {overview.footprint ? <>
-              {plural(overview.footprint.retainedDisks, "disk")} kept · {overview.footprint.scheduledDisks} kept for scheduled tasks
+              {plural(overview.footprint.retainedDisks, "disk")} kept · {overview.footprint.scheduledDisks} kept for automations
               <br />
-              Scheduled runs in the last 24 hours: {overview.footprint.scheduledWaits} waited for a free Workspace slot ·{" "}
+              Automation runs in the last 24 hours: {overview.footprint.scheduledWaits} waited for a free Workspace slot ·{" "}
               {overview.footprint.scheduledSkips} skipped because none became free
-            </> : "Disk and scheduled run counts are unavailable."}
+            </> : "Disk and automation run counts are unavailable."}
           </p>
         </>
       ) : !error ? <p className="mt-3 text-sm text-ink-muted" role="status">Loading Workspace activity…</p> : null}

@@ -155,7 +155,7 @@ describe("ResourceChangeCardsV2: Skills", () => {
     const item = screen.getByTestId("resource-change-card");
     expect(item).toHaveTextContent("Delete Skill?");
     expect(within(item).getByRole("list", { name: "What deleting changes" })).toHaveTextContent(
-      "Linked by 2 Assistants, which lose it.Shared with colleagues, who lose access.Pinned by scheduled tasks “Monday report”");
+      "Linked by 2 Assistants, which lose it.Shared with colleagues, who lose access.Pinned by automations “Monday report”");
     fireEvent.click(within(item).getByRole("button", { name: "Delete Skill" }));
     await waitFor(() => expect(item).toHaveTextContent("Skill deleted"));
     // Guarded by the version the proposal saw.

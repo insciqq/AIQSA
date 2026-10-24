@@ -397,7 +397,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       } });
   }
 
-  const scheduledServer = "Scheduled tasks";
+  const scheduledServer = "Automations";
   for (const definition of scheduledTaskToolsForRequest(request)) {
     if (!isScheduledTaskCreateCall(request, definition.name)) continue;
     const create = input.services.repository.createScheduledTaskForCall?.bind(input.services.repository);

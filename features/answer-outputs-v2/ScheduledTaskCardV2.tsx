@@ -42,9 +42,9 @@ function listedAsShown(task: ScheduledTask | undefined, card: ScheduledTaskCard)
 }
 
 const ACTION_HEADINGS = {
-  changed: "Scheduled task changed",
-  paused: "Scheduled task paused",
-  resumed: "Scheduled task resumed",
+  changed: "Automation changed",
+  paused: "Automation paused",
+  resumed: "Automation resumed",
   delete_proposed: "Deletion proposed"
 } as const satisfies Record<NonNullable<ScheduledTaskCard["action"]>, string>;
 
@@ -100,8 +100,8 @@ function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
   // A later action of the same answer on the task replaces the declined proposal.
   const declined = proposal && kept;
   const confirming = !deleted && (asking || (proposal && !kept));
-  const heading = deleted ? "Scheduled task deleted" : declined ? "Scheduled task kept"
-    : card.action ? ACTION_HEADINGS[card.action] : "Scheduled task created";
+  const heading = deleted ? "Automation deleted" : declined ? "Automation kept"
+    : card.action ? ACTION_HEADINGS[card.action] : "Automation created";
 
   useEffect(() => {
     if (asking) keepRef.current?.focus();
@@ -128,7 +128,7 @@ function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
     try {
       await onEdit(card.taskId);
     } catch {
-      setError("The task could not be opened. Try again.");
+      setError("The automation could not be opened. Try again.");
     } finally {
       setBusy(null);
     }
@@ -185,12 +185,12 @@ function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
         <div className="v2-scheduled-task-card-actions">
           {onEdit ? (
             <UiV2Button busy={busy === "edit"} disabled={busy !== null} icon="edit" type="button"
-              aria-label={`Edit scheduled task ${card.title}`} onClick={() => void edit()}>
+              aria-label={`Edit automation ${card.title}`} onClick={() => void edit()}>
               Edit
             </UiV2Button>
           ) : null}
           <UiV2Button ref={deleteRef} disabled={busy !== null} icon="trash" type="button"
-            aria-label={`Delete scheduled task ${card.title}`} onClick={() => { setError(null); setAsking(true); }}>
+            aria-label={`Delete automation ${card.title}`} onClick={() => { setError(null); setAsking(true); }}>
             Delete
           </UiV2Button>
         </div>
@@ -201,9 +201,9 @@ function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
           <span>
             <UiV2Button busy={busy === "delete"} disabled={busy !== null && busy !== "delete"} tone="destructive" type="button"
               onClick={() => void confirmDelete()}>
-              Delete task
+              Delete automation
             </UiV2Button>
-            <UiV2Button ref={keepRef} disabled={busy !== null} type="button" onClick={cancelDelete}>Keep task</UiV2Button>
+            <UiV2Button ref={keepRef} disabled={busy !== null} type="button" onClick={cancelDelete}>Keep automation</UiV2Button>
           </span>
         </div>
       ) : null}
@@ -226,7 +226,7 @@ export function ScheduledTaskCardsV2({ cards, live = false, onEdit }: Readonly<{
 }>) {
   if (cards.length === 0) return null;
   return (
-    <section className="v2-scheduled-task-cards" aria-label="Scheduled tasks">
+    <section className="v2-scheduled-task-cards" aria-label="Automations">
       <ul>{cards.map((card) => <ScheduledTaskCardV2 key={card.taskId} card={card} live={live} onEdit={onEdit} />)}</ul>
     </section>
   );

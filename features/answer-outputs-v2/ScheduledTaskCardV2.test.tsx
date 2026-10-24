@@ -40,14 +40,14 @@ describe("ScheduledTaskCardsV2", () => {
   it("shows what was created, how often, with which capabilities and when it runs next", () => {
     render(<ScheduledTaskCardsV2 cards={[{ ...card, kind: "monitoring" }]} onEdit={vi.fn()} />);
     const item = screen.getByTestId("scheduled-task-card");
-    expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task created");
+    expect(within(item).getByRole("status")).toHaveTextContent("Automation created");
     expect(item).toHaveTextContent("Check mail");
     expect(item).toHaveTextContent("Every weekday at 09:00 · Monitoring · Tools · Workspace");
     expect(item).toHaveTextContent("Next run Mon 5 Oct, 09:00");
     // The viewer's own zone is not repeated.
     expect(item).not.toHaveTextContent("Europe/Moscow");
-    expect(within(item).getByRole("button", { name: "Edit scheduled task Check mail" })).toBeVisible();
-    expect(within(item).getByRole("button", { name: "Delete scheduled task Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Edit automation Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Delete automation Check mail" })).toBeVisible();
   });
 
   it("names the zone a UTC fallback chose, and states paused, completed and deleted tasks", () => {
@@ -61,7 +61,7 @@ describe("ScheduledTaskCardsV2", () => {
     expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Completed");
     rerender(<ScheduledTaskCardsV2 cards={[{ ...card, deleted: true }]} />);
     const deleted = screen.getByTestId("scheduled-task-card");
-    expect(within(deleted).getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(within(deleted).getByRole("status")).toHaveTextContent("Automation deleted");
     expect(deleted).not.toHaveTextContent("Next run");
     expect(within(deleted).queryAllByRole("button")).toEqual([]);
   });
@@ -69,7 +69,7 @@ describe("ScheduledTaskCardsV2", () => {
   it("opens the task's editor", async () => {
     const onEdit = vi.fn(async () => undefined);
     render(<ScheduledTaskCardsV2 cards={[card]} onEdit={onEdit} />);
-    fireEvent.click(screen.getByRole("button", { name: "Edit scheduled task Check mail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit automation Check mail" }));
     await waitFor(() => expect(onEdit).toHaveBeenCalledExactlyOnceWith("task-1"));
   });
 
@@ -79,22 +79,22 @@ describe("ScheduledTaskCardsV2", () => {
     vi.stubGlobal("fetch", fetchMock);
     useScheduledTasksStore.setState({ tasks: [{ ...listed, id: "task-delete" }] });
     render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-delete" }]} onEdit={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete automation Check mail" }));
     const confirm = screen.getByRole("group", { name: "Delete Check mail" });
     expect(confirm).toHaveTextContent("Delete “Check mail”? Its chats and answers stay in your history.");
-    expect(within(confirm).getByRole("button", { name: "Keep task" })).toHaveFocus();
+    expect(within(confirm).getByRole("button", { name: "Keep automation" })).toHaveFocus();
     expect(fetchMock).not.toHaveBeenCalled();
-    fireEvent.click(within(confirm).getByRole("button", { name: "Keep task" }));
+    fireEvent.click(within(confirm).getByRole("button", { name: "Keep automation" }));
     expect(screen.queryByRole("group")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete automation Check mail" }));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete automation" }));
     });
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/me/scheduled-tasks/task-delete",
       expect.objectContaining({ method: "DELETE" }));
     const item = screen.getByTestId("scheduled-task-card");
-    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task deleted"));
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Automation deleted"));
     expect(within(item).queryAllByRole("button")).toEqual([]);
     expect(useScheduledTasksStore.getState().tasks).toEqual([]);
   });
@@ -102,30 +102,30 @@ describe("ScheduledTaskCardsV2", () => {
   it("treats a task already gone as deleted and keeps a failed delete recoverable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "scheduled_task_not_found" }, { status: 404 })));
     render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-gone" }]} />);
-    fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete automation Check mail" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete automation" })); });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Automation deleted"));
     cleanup();
 
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "scheduled_tasks_unavailable" }, { status: 503 })));
     render(<ScheduledTaskCardsV2 cards={[card]} />);
-    fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
-    expect(await screen.findByRole("alert")).toHaveTextContent("Scheduled tasks are unavailable right now. Try again.");
-    expect(screen.getByRole("button", { name: "Delete task" })).toBeEnabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task created");
+    fireEvent.click(screen.getByRole("button", { name: "Delete automation Check mail" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete automation" })); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Automations are unavailable right now. Try again.");
+    expect(screen.getByRole("button", { name: "Delete automation" })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Automation created");
   });
 
   it("keeps a deletion when the settling answer mounts the card again", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
     const created = { ...card, taskId: "task-remount" };
     const { rerender } = render(<AnswerOutputsV2 artifact={summary([created])} live onEditScheduledTask={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete automation Check mail" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete automation" })); });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Automation deleted"));
     // The settled answer's summary still names the task as created.
     rerender(<AnswerOutputsV2 artifact={summary([created])} onEditScheduledTask={vi.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(screen.getByRole("status")).toHaveTextContent("Automation deleted");
     expect(screen.queryAllByRole("button")).toEqual([]);
   });
 });
@@ -134,18 +134,18 @@ describe("cards of tasks an answer managed", () => {
   it("says what the answer changed, paused or resumed, with the task's state and actions", () => {
     const { rerender } = render(<ScheduledTaskCardsV2 cards={[{ ...card, action: "changed" }]} onEdit={vi.fn()} />);
     const item = screen.getByTestId("scheduled-task-card");
-    expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task changed");
+    expect(within(item).getByRole("status")).toHaveTextContent("Automation changed");
     expect(item).toHaveAttribute("data-action", "changed");
     expect(item).toHaveTextContent("Next run Mon 5 Oct, 09:00");
-    expect(within(item).getByRole("button", { name: "Edit scheduled task Check mail" })).toBeVisible();
-    expect(within(item).getByRole("button", { name: "Delete scheduled task Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Edit automation Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Delete automation Check mail" })).toBeVisible();
     rerender(<ScheduledTaskCardsV2 cards={[{ ...card, action: "paused", nextRunAt: null, status: "paused" }]} onEdit={vi.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task paused");
+    expect(screen.getByRole("status")).toHaveTextContent("Automation paused");
     expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Paused");
     rerender(<ScheduledTaskCardsV2 cards={[{ ...card, action: "resumed" }]} onEdit={vi.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task resumed");
+    expect(screen.getByRole("status")).toHaveTextContent("Automation resumed");
     rerender(<ScheduledTaskCardsV2 cards={[{ ...card, action: "paused", deleted: true }]} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(screen.getByRole("status")).toHaveTextContent("Automation deleted");
     expect(screen.queryAllByRole("button")).toEqual([]);
   });
 
@@ -159,21 +159,21 @@ describe("cards of tasks an answer managed", () => {
     expect(item).toHaveTextContent("Next run Mon 5 Oct, 09:00");
     const confirm = within(item).getByRole("group", { name: "Delete Check mail" });
     expect(confirm).toHaveTextContent("Delete “Check mail”? Its chats and answers stay in your history.");
-    expect(within(confirm).getByRole("button", { name: "Keep task" })).not.toHaveFocus();
+    expect(within(confirm).getByRole("button", { name: "Keep automation" })).not.toHaveFocus();
     expect(document.body).toHaveFocus();
     // The question replaces the card's own actions until it is answered.
-    expect(within(item).queryByRole("button", { name: "Edit scheduled task Check mail" })).toBeNull();
+    expect(within(item).queryByRole("button", { name: "Edit automation Check mail" })).toBeNull();
 
-    fireEvent.click(within(confirm).getByRole("button", { name: "Keep task" }));
-    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task kept"));
+    fireEvent.click(within(confirm).getByRole("button", { name: "Keep automation" }));
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Automation kept"));
     expect(within(item).getByRole("status")).toHaveFocus();
     expect(within(item).queryByRole("group")).toBeNull();
-    expect(within(item).getByRole("button", { name: "Edit scheduled task Check mail" })).toBeVisible();
-    expect(within(item).getByRole("button", { name: "Delete scheduled task Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Edit automation Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Delete automation Check mail" })).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
     // A later change of the same answer to the task replaces the declined proposal.
     rerender(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-keep", action: "changed" }]} onEdit={vi.fn()} />);
-    expect(within(screen.getByTestId("scheduled-task-card")).getByRole("status")).toHaveTextContent("Scheduled task changed");
+    expect(within(screen.getByTestId("scheduled-task-card")).getByRole("status")).toHaveTextContent("Automation changed");
   });
 
   it("deletes a proposed task only on the owner's click, and shows a task already gone as deleted", async () => {
@@ -182,16 +182,16 @@ describe("cards of tasks an answer managed", () => {
     useScheduledTasksStore.setState({ tasks: [{ ...listed, id: "task-proposed" }] });
     render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-proposed", action: "delete_proposed" }]} />);
     expect(fetchMock).not.toHaveBeenCalled();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete automation" })); });
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/me/scheduled-tasks/task-proposed",
       expect.objectContaining({ method: "DELETE" }));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted"));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Automation deleted"));
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(useScheduledTasksStore.getState().tasks).toEqual([]);
     cleanup();
 
     render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-gone-before", action: "delete_proposed", deleted: true }]} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(screen.getByRole("status")).toHaveTextContent("Automation deleted");
     expect(screen.queryByRole("group")).toBeNull();
     expect(screen.queryAllByRole("button")).toEqual([]);
   });
@@ -199,10 +199,10 @@ describe("cards of tasks an answer managed", () => {
   it("keeps a declined proposal when the settling answer mounts it again, and asks a new proposal again", async () => {
     const proposal: ScheduledTaskCard = { ...card, taskId: "task-remount-keep", action: "delete_proposed" };
     const { rerender, unmount } = render(<AnswerOutputsV2 artifact={summary([proposal])} live onEditScheduledTask={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Keep task" }));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task kept"));
+    fireEvent.click(screen.getByRole("button", { name: "Keep automation" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Automation kept"));
     rerender(<AnswerOutputsV2 artifact={summary([proposal])} onEditScheduledTask={vi.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task kept");
+    expect(screen.getByRole("status")).toHaveTextContent("Automation kept");
     expect(screen.queryByRole("group")).toBeNull();
     unmount();
     // A later answer proposing it again asks again.
@@ -256,7 +256,7 @@ describe("a created task and the account's task list", () => {
 describe("scheduled task cards in an answer", () => {
   it("shows the card while the answer is still running and after it settles", () => {
     const { rerender } = render(<AnswerOutputsV2 artifact={summary([card])} live onEditScheduledTask={vi.fn()} />);
-    expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Scheduled task created");
+    expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Automation created");
     rerender(<AnswerOutputsV2 artifact={summary([card])} onEditScheduledTask={vi.fn()} />);
     expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Check mail");
     rerender(<AnswerOutputsV2 artifact={summary([])} />);

@@ -156,7 +156,7 @@ function SkillSaveCardV2({ card, live, onOpenLibrary }: Readonly<{ card: SkillSa
         <p className="v2-skill-save-card-warning" role="note">
           <UiV2Icon name="clock" />
           <span>
-            Used by scheduled tasks: {card.scheduledTasks.map((task) => `“${task.title}”`).join(", ")}
+            Used by automations: {card.scheduledTasks.map((task) => `“${task.title}”`).join(", ")}
             {card.scheduledTasksTruncated ? " and more" : ""}. Their next run uses this version.
           </span>
         </p>

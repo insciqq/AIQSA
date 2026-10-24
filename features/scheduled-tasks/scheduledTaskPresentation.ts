@@ -103,7 +103,7 @@ type PauseCopy = Readonly<{ reason: string; hint: string }>;
 export function scheduledTaskPauseCopy(reasonCode: string, task?: Pick<ScheduledTask, "pinnedSkills">): PauseCopy {
   switch (reasonCode) {
     case "skill_unavailable":
-      return { reason: scheduledTaskSkillUnavailableReason(task ?? {}), hint: "Edit the task's Skills, then resume." };
+      return { reason: scheduledTaskSkillUnavailableReason(task ?? {}), hint: "Edit the automation's Skills, then resume." };
     case "model_unavailable":
       return { reason: "the model is no longer available", hint: "Edit to choose another model." };
     case "search_unavailable":
@@ -143,12 +143,12 @@ export function scheduledTaskPauseCopy(reasonCode: string, task?: Pick<Scheduled
 export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCode: string | null): string {
   switch (reasonCode) {
     case "missed": return "the scheduled time passed while runs were unavailable";
-    case "chat_busy": return "the task's chat was busy with another answer";
+    case "chat_busy": return "the automation's chat was busy with another answer";
     case "usage_budget_exhausted": return "your monthly budget was used up";
     case "installation_budget_exhausted": return "the monthly budget shared by everyone was used up";
     case "previous_running": return "the previous run was still in progress";
     case "superseded": return "a newer scheduled time arrived before it could start";
-    case "workspace_capacity": return "no Workspace slot became free in time; other scheduled runs were using Workspace";
+    case "workspace_capacity": return "no Workspace slot became free in time; other automation runs were using Workspace";
     case "model_unavailable": return "the model was unavailable";
     case "search_unavailable": return "web search was unavailable with this model";
     case "provider_unavailable": return "the model's provider was unavailable";
@@ -158,19 +158,19 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "provider_server_error": return "the model provider returned a server error";
     case "account_inactive": return "the account was not active";
     case "schedule_invalid": return "the schedule could not be calculated";
-    case "paused": return "the task was paused";
+    case "paused": return "the automation was paused";
     case "admission_failed": return "the run could not start";
     case "run_unavailable": return "the run was removed before it finished";
     case "model_run_cancelled": return "it was stopped in the chat";
-    case "repeated_failures": return "the task was paused after repeated failures";
-    case "tools_unavailable": return "the task's tools could not be used with this model";
-    case "workspace_unavailable": return "Workspace could not be used for this task";
+    case "repeated_failures": return "the automation was paused after repeated failures";
+    case "tools_unavailable": return "the automation's tools could not be used with this model";
+    case "workspace_unavailable": return "Workspace could not be used for this automation";
     case "workspace_secret_limit": return "the saved Workspace secrets exceed the limit";
-    case "source_unavailable": return "a source the task uses was unavailable";
+    case "source_unavailable": return "a source the automation uses was unavailable";
     case "skill_unavailable": return "a pinned Skill was no longer available";
     case "workspace_carryover_unavailable":
       return "the Workspace files of the previous chat could not be carried over; the next run tries again, " +
-        "or turn Workspace off for the task to go on without them";
+        "or turn Workspace off for the automation to go on without them";
     case "model_cannot_report": return "the model cannot report monitoring results";
     case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
     case "provider_error":
@@ -315,7 +315,7 @@ export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now
 /** Where a run's answer appears, for the editor's chat-mode control and Run now notices. */
 export const SCHEDULED_TASK_CHAT_MODE_LABELS: Readonly<Record<ScheduledTask["chatMode"], string>> = {
   new: "Each run starts a new chat",
-  same: "Continue in this task's chat"
+  same: "Continue in this automation's chat"
 };
 
 /** The history choices the editor offers, shortest first; null keeps old chats forever. */
@@ -355,9 +355,9 @@ export function scheduledTaskHistoryLine(task: Pick<ScheduledTask, "historyDelet
 /** Copy for API failures, including codes the shared contract does not name. */
 export function scheduledTaskFailureMessage(code: string | null): string {
   switch (code) {
-    case "scheduled_task_running": return "This task is already running. Its answer will appear in the task's chat.";
-    case "unauthorized": return "Your session has ended. Sign in again to manage scheduled tasks.";
-    case "forbidden": return "Your account cannot manage scheduled tasks.";
+    case "scheduled_task_running": return "This automation is already running. Its answer will appear in the automation's chat.";
+    case "unauthorized": return "Your session has ended. Sign in again to manage automations.";
+    case "forbidden": return "Your account cannot manage automations.";
     case "payload_too_large":
     case "request_body_too_large": return "The instructions are too long.";
     default: return scheduledTaskErrorMessage(code);

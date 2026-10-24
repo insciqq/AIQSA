@@ -71,7 +71,7 @@ export const WORKSPACE_SKILLS_GUIDANCE = [
   "- stdout is for the model: a short summary of tens of lines (counts, key facts, file paths), never raw dumps.",
   "- Put large data in files under /workspace/project/out/ or in the target system, and print their paths.",
   "- Exit 0 on success. On failure exit non-zero with one line on stderr saying why.",
-  "- Durable state between runs (cursors, last seen ids) belongs in the target system or is recomputed from it. The Workspace disk is not backed up and is deleted after retention; a scheduled task's new monthly chat carries only /workspace/project.",
+  "- Durable state between runs (cursors, last seen ids) belongs in the target system or is recomputed from it. The Workspace disk is not backed up and is deleted after retention; an automation's new monthly chat carries only /workspace/project.",
   "",
   "## Test, then save",
   "- Save only when the user asked to create, save or change a Skill.",

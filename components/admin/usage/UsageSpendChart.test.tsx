@@ -18,7 +18,7 @@ describe("UsageSpendChart", () => {
     const { container } = chart();
     const legend = screen.getByRole("list", { name: "Legend" });
     expect(within(legend).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-      "Chats", "Scheduled tasks", "Images", "System"
+      "Chats", "Automations", "Images", "System"
     ]);
     const first = container.querySelector('[data-bucket="2026-10-05T00:00:00.000Z"]');
     const segments = [...(first?.querySelectorAll("path") ?? [])];
@@ -50,7 +50,7 @@ describe("UsageSpendChart", () => {
     expect(tooltip).toHaveTextContent("Oct 6");
     expect(within(tooltip).getByText("Chats").nextSibling).toHaveTextContent("$2.00");
     expect(within(tooltip).getByText("Images").nextSibling).toHaveTextContent("$0.25");
-    expect(within(tooltip).getByText("Scheduled tasks").nextSibling).toHaveTextContent("$0.00");
+    expect(within(tooltip).getByText("Automations").nextSibling).toHaveTextContent("$0.00");
     expect(within(tooltip).getByText("System").nextSibling).toHaveTextContent("Unknown");
     expect(tooltip).toHaveTextContent("Total · 2 runs$2.25");
 

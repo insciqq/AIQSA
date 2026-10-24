@@ -238,7 +238,7 @@ export function TelegramConnectionSection() {
             Telegram
           </h3>
           <p className="v2-settings-section-description">
-            Chat with AIQSA from Telegram: new chats, replies, files and scheduled task results.
+            Chat with AIQSA from Telegram: new chats, replies, files and automation results.
           </p>
         </div>
       </div>

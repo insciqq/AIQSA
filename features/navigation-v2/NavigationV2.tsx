@@ -302,7 +302,7 @@ function ChatRow({
         {unread ? <span className="v2-chat-unread" aria-hidden="true" /> : null}
       </button>
       {/* A description, not a name suffix, keeps the row name the chat title. */}
-      {unread ? <span hidden id={unreadId}>New scheduled result</span> : null}
+      {unread ? <span hidden id={unreadId}>New automation result</span> : null}
       <UiV2IconButton
         className="v2-chat-menu-trigger"
         icon="more"

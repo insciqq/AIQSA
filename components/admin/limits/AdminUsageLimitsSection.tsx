@@ -111,7 +111,7 @@ function HowLimitsWork() {
           slightly over a limit.
         </li>
         <li>
-          Message limits count messages, edits and regenerations in the last hour and day. Scheduled tasks don&apos;t
+          Message limits count messages, edits and regenerations in the last hour and day. Automations don&apos;t
           count toward them; their runs are skipped while a budget or the cap is used up.
         </li>
         <li>

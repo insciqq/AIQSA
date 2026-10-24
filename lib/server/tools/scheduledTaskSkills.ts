@@ -53,7 +53,7 @@ export function resolveScheduledTaskSkillReferences(
       "not among this chat's skills; use an alias from the skills listed here, or ask the user to pin the Skill in the composer." };
   }
   if (skillIds.length > SCHEDULED_TASK_MAX_PINNED_SKILLS) {
-    return { ok: false, message: `A task pins at most ${SCHEDULED_TASK_MAX_PINNED_SKILLS} Skills.` };
+    return { ok: false, message: `An automation pins at most ${SCHEDULED_TASK_MAX_PINNED_SKILLS} Skills.` };
   }
   return { ok: true, skillIds };
 }

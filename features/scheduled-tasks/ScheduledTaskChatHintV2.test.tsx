@@ -9,8 +9,8 @@ describe("ScheduledTaskChatHintV2", () => {
   it("says replies do not change the task and offers its editor", () => {
     const onEdit = vi.fn();
     render(<ScheduledTaskChatHintV2 title="Inbox check" onEdit={onEdit} />);
-    expect(screen.getByTestId("scheduled-task-chat-hint")).toHaveTextContent("Replies here don't change the scheduled task.");
-    fireEvent.click(screen.getByRole("button", { name: "Edit task Inbox check" }));
+    expect(screen.getByTestId("scheduled-task-chat-hint")).toHaveTextContent("Replies here don't change the automation.");
+    fireEvent.click(screen.getByRole("button", { name: "Edit automation Inbox check" }));
     expect(onEdit).toHaveBeenCalledOnce();
   });
 

@@ -9,12 +9,12 @@ import { UiV2Icon } from "@/components/ui-v2";
 export function ScheduledMessageChipV2({ onOpen, title }: Readonly<{ onOpen?(): void; title: string }>) {
   const content = <>
     <UiV2Icon name="clock" />
-    <span className="v2-scheduled-message-chip-text">Scheduled · {title}</span>
+    <span className="v2-scheduled-message-chip-text">Automation · {title}</span>
   </>;
   return onOpen ? (
     <button
       className="v2-scheduled-message-chip v2-focusable"
-      title="Open scheduled tasks"
+      title="Open automations"
       type="button"
       onClick={onOpen}
     >

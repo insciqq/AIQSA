@@ -152,7 +152,7 @@ export function SkillVersionsSection({ skill, published, disabled = false, onCha
                 <strong>Restore v{version.revisionNumber} of “{skill.name}”?</strong>
                 <p>
                   Its content becomes the current version as a new version. Your later versions stay in history.
-                  {published ? " Colleagues keep the shared version until you share again." : ""} Chats and scheduled tasks use
+                  {published ? " Colleagues keep the shared version until you share again." : ""} Chats and automations use
                   it from their next run.
                 </p>
                 <div className="v2-skill-actions">

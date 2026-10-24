@@ -174,12 +174,12 @@ export function ScheduledTaskSheet({
   const toolsReason = blockers.tools ?? "Lets each run use your MCP tools and Skills in Auto mode, as in a chat.";
   const workspaceReason = blockers.workspace ?? (workspace === "runtime_unavailable"
     ? "Workspace is unavailable right now. Runs that need it try again later."
-    : chatMode === "same" ? "Runs share this task's Workspace, so its files stay from run to run and move to each new month's chat."
+    : chatMode === "same" ? "Runs share this automation's Workspace, so its files stay from run to run and move to each new month's chat."
       : "Each run starts with an empty Workspace in its new chat.");
   // The owner's own Memory state decides what any task may read; the switch stays the task's.
   const memoryReason = memory === "paused" ? "Memory is paused, so runs read nothing. Turn it on in Studio › Memory."
     : memory === "needs_setup" ? "Memory needs administrator setup, so runs read nothing yet."
-      : "Reads what Memory knows about you. Tasks never add to Memory.";
+      : "Reads what Memory knows about you. Automations never add to Memory.";
   const leave = (proceed: () => void) => {
     if (busy) return;
     if (dirty) setPendingLeave(() => proceed);
@@ -226,7 +226,7 @@ export function ScheduledTaskSheet({
       phoneFullScreen
       width="wide"
       testId="scheduled-task-sheet"
-      title={editing ? "Edit scheduled task" : "New scheduled task"}
+      title={editing ? "Edit automation" : "New automation"}
       description="Runs your instructions on a schedule and adds each answer to a chat."
       closeBlocked={busy}
       onClose={requestClose}
@@ -234,11 +234,11 @@ export function ScheduledTaskSheet({
         <p className="v2-scheduled-preview" aria-live="polite" data-testid="scheduled-task-preview">{preview}</p>
         <span className="v2-scheduled-footer-actions">
           <UiV2Button type="button" disabled={busy} onClick={requestClose}>Cancel</UiV2Button>
-          <UiV2Button type="submit" form={formId} tone="primary" busy={busy}>{editing ? "Save changes" : "Create task"}</UiV2Button>
+          <UiV2Button type="submit" form={formId} tone="primary" busy={busy}>{editing ? "Save changes" : "Create automation"}</UiV2Button>
         </span>
       </>}
     >
-      <form id={formId} className="v2-scheduled-form" noValidate aria-label={editing ? "Edit scheduled task" : "New scheduled task"} onSubmit={submit}>
+      <form id={formId} className="v2-scheduled-form" noValidate aria-label={editing ? "Edit automation" : "New automation"} onSubmit={submit}>
         {notice ? <p className="v2-scheduled-sheet-notice" role="status">{notice}</p> : null}
         {errors.form ? <p className="v2-scheduled-form-error" id={ids.form} role="alert">{errors.form}</p> : null}
         <fieldset className="v2-scheduled-fields" disabled={busy}>
@@ -500,8 +500,8 @@ export function ScheduledTaskSheet({
               </select>
               <p className="v2-scheduled-hint" id={ids.historyHint}>
                 {draft.historyRetentionDays === null
-                  ? "This task's old chats stay until you delete them."
-                  : "Older chats of this task are deleted this long after their last run."} {SCHEDULED_TASK_HISTORY_KEPT_TEXT}
+                  ? "This automation's old chats stay until you delete them."
+                  : "Older chats of this automation are deleted this long after their last run."} {SCHEDULED_TASK_HISTORY_KEPT_TEXT}
               </p>
             </div>
             <div className="v2-scheduled-toggle">
@@ -577,7 +577,7 @@ export function ScheduledTaskSheet({
               <div className="v2-scheduled-toggle">
                 <span className="v2-scheduled-toggle-copy">
                   <span id={ids.email} className="v2-scheduled-label">Email me when it runs</span>
-                  <span id={ids.emailHelp} className="v2-scheduled-hint">The email contains the task title and a link, never the answer.</span>
+                  <span id={ids.emailHelp} className="v2-scheduled-hint">The email contains the automation&apos;s name and a link, never the answer.</span>
                 </span>
                 <UiV2Switch
                   checked={draft.emailNotify}
@@ -620,14 +620,14 @@ export function ScheduledTaskSheet({
         <ConfirmationDialog
           cancelLabel="Keep editing"
           confirmLabel="Discard changes"
-          dialogLabel="Unsaved scheduled task"
+          dialogLabel="Unsaved automation"
           title="Discard unsaved changes?"
           testId="scheduled-task-discard"
           tone="warning"
           onCancel={() => setPendingLeave(null)}
           onConfirm={() => { const proceed = pendingLeave; setPendingLeave(null); proceed(); }}
         >
-          Your changes to this scheduled task will be lost.
+          Your changes to this automation will be lost.
         </ConfirmationDialog>
       ) : null}
     </UiV2Sheet>

@@ -22,10 +22,10 @@ export type ScheduledTaskNotification = Readonly<{
 }>;
 
 const HEADLINES = {
-  "did not complete": "Scheduled task did not complete",
-  finished: "Scheduled task finished",
-  "was paused": "Scheduled task paused",
-  "was skipped": "Scheduled task skipped"
+  "did not complete": "Automation did not complete",
+  finished: "Automation finished",
+  "was paused": "Automation paused",
+  "was skipped": "Automation skipped"
 } as const;
 
 type OutcomeInput = Pick<ScheduledTaskNotification, "reasonCode" | "state" | "taskPauseReason" | "trigger" | "unavailableSources">;
@@ -90,11 +90,11 @@ export function scheduledTaskResultEmail(input: ScheduledTaskNotification & Read
     kind: "scheduled_task_result",
     subject: headline,
     text: [
-      `Your AIQSA scheduled task "${title}" ${outcome}.`,
+      `Your AIQSA automation "${title}" ${outcome}.`,
       ...(reason ? [reason] : []),
       ...scheduledTaskSourceLines(input.unavailableSources),
       "",
-      input.chatId ? "Open the task's chat:" : "Open AIQSA:",
+      input.chatId ? "Open the automation's chat:" : "Open AIQSA:",
       link
     ].join("\n"),
     to: input.email

@@ -196,8 +196,8 @@ export function ScheduledTasksPanel({
   const atActiveLimit = activeCount >= limits.maxActive;
   const atTotalLimit = tasks.length >= limits.maxTotal;
   const limitReason = atTotalLimit
-    ? `You have ${limits.maxTotal} saved tasks. Delete one to add another.`
-    : atActiveLimit ? `You have ${limits.maxActive} active tasks. Pause or delete one to add another.` : null;
+    ? `You have ${limits.maxTotal} saved automations. Delete one to add another.`
+    : atActiveLimit ? `You have ${limits.maxActive} active automations. Pause or delete one to add another.` : null;
   const sorted = sortScheduledTasks(tasks);
 
   function openCreate(preset: Partial<ScheduledTaskEditorDraft> = {}) {
@@ -255,7 +255,7 @@ export function ScheduledTasksPanel({
     const taskId = takeScheduledTaskEditRequest();
     const task = tasks.find((candidate) => candidate.id === taskId);
     if (task) openEdit(task);
-    else setNotice("This task is no longer available.");
+    else setNotice("This automation is no longer available.");
   });
   useEffect(() => {
     if (editRequest && loadState === "ready" && !busy && !editorState) takeEditRequest();
@@ -272,7 +272,7 @@ export function ScheduledTasksPanel({
     editorEpoch.current += 1;
     restoreFocus.current = "new";
     setEditor(null);
-    setNotice("This task is no longer available.");
+    setNotice("This automation is no longer available.");
   }
 
   async function save() {
@@ -302,7 +302,7 @@ export function ScheduledTasksPanel({
         const epoch = editorEpoch.current;
         setEditor((current) => current && { ...current, recentRuns: { state: "loading" } });
         loadRecentRuns(original, epoch, (latest) => setEditor((current) => current && current.original?.id === latest.id
-          ? { ...current, original: latest, notice: "This task changed elsewhere. The latest version is loaded and your edits are kept; save again to apply them." }
+          ? { ...current, original: latest, notice: "This automation changed elsewhere. The latest version is loaded and your edits are kept; save again to apply them." }
           : current));
         return;
       }
@@ -323,14 +323,14 @@ export function ScheduledTasksPanel({
     } catch (error) {
       if (!active.current) return;
       const code = errorCode(error);
-      if (code === "scheduled_task_not_found") { removeScheduledTask(task.id); setNotice("This task is no longer available."); return; }
+      if (code === "scheduled_task_not_found") { removeScheduledTask(task.id); setNotice("This automation is no longer available."); return; }
       if (code === "scheduled_task_stale") {
         void refreshScheduledTasks();
-        setRowErrors((current) => ({ ...current, [task.id]: "This task changed elsewhere. Its latest state is shown; try again." }));
+        setRowErrors((current) => ({ ...current, [task.id]: "This automation changed elsewhere. Its latest state is shown; try again." }));
         return;
       }
       const message = error instanceof Error && !(error instanceof ScheduledTaskApiError) ? error.message
-        : code === "scheduled_task_once_in_past" ? "Its time has passed. Edit the task to choose a new date or time."
+        : code === "scheduled_task_once_in_past" ? "Its time has passed. Edit the automation to choose a new date or time."
           : scheduledTaskFailureMessage(code);
       setRowErrors((current) => ({ ...current, [task.id]: message }));
     } finally {
@@ -380,28 +380,28 @@ export function ScheduledTasksPanel({
   };
 
   return (
-    <section className="v2-studio-settings-page v2-scheduled-page" aria-label="Scheduled tasks" data-testid="scheduled-tasks-panel">
+    <section className="v2-studio-settings-page v2-scheduled-page" aria-label="Automations" data-testid="scheduled-tasks-panel">
       <SectionHeading
         description="Run a prompt on a schedule. Answers arrive in your chats."
         meta={loadState === "ready" ? <span className="v2-scheduled-meta">{activeCount} of {limits.maxActive} active</span> : undefined}
         action={<UiV2Button ref={newButton} type="button" tone="primary" icon="plus" disabled={busy || loadState !== "ready" || Boolean(limitReason)}
-          aria-describedby={limitReason ? "v2-scheduled-limit" : undefined} onClick={() => openCreate()}>New task</UiV2Button>}
+          aria-describedby={limitReason ? "v2-scheduled-limit" : undefined} onClick={() => openCreate()}>New automation</UiV2Button>}
       >
-        Scheduled tasks
+        Automations
       </SectionHeading>
       {limitReason && loadState === "ready" ? <p className="v2-scheduled-note" id="v2-scheduled-limit">{limitReason}</p> : null}
       {notice && !runningNoticeSettled ? <p className="v2-scheduled-notice" role="status">{notice.text}</p> : null}
-      {loadState === "idle" || loadState === "loading" ? <p className="v2-scheduled-note" role="status">Loading scheduled tasks…</p> : null}
+      {loadState === "idle" || loadState === "loading" ? <p className="v2-scheduled-note" role="status">Loading automations…</p> : null}
       {loadState === "error" ? (
         <div className="v2-scheduled-load-error" role="alert">
-          <p>Scheduled tasks could not be loaded.</p>
+          <p>Automations could not be loaded.</p>
           <UiV2Button type="button" icon="regenerate" busy={retrying} onClick={() => void retry()}>Try again</UiV2Button>
         </div>
       ) : null}
       {loadState === "ready" && tasks.length === 0 ? (
         <div className="v2-scheduled-empty" data-testid="scheduled-tasks-empty">
           <span className="v2-scheduled-empty-icon" aria-hidden="true"><UiV2Icon name="clock" /></span>
-          <h3>No scheduled tasks yet</h3>
+          <h3>No automations yet</h3>
           <p>Ask for a news brief every morning, a weekly summary or a monthly reminder. Start from an idea or write your own.</p>
           <ul aria-label="Ideas">
             {IDEAS.map((idea) => (
@@ -413,7 +413,7 @@ export function ScheduledTasksPanel({
         </div>
       ) : null}
       {tasks.length > 0 ? (
-        <ul className="v2-scheduled-list" aria-label="Scheduled tasks">
+        <ul className="v2-scheduled-list" aria-label="Automations">
           {sorted.map((task) => (
             <ScheduledTaskRow
               key={task.id}
@@ -529,8 +529,8 @@ function ScheduledTaskRow({
         <div className="v2-scheduled-row-delete" role="group" aria-label={`Delete ${task.title}`}>
           <p>Delete “{task.title}”? Its chats and answers stay in your history.</p>
           <span>
-            <UiV2Button type="button" tone="destructive" busy={rowBusy} disabled={busy && !rowBusy} onClick={onConfirmDelete}>Delete task</UiV2Button>
-            <UiV2Button type="button" disabled={busy} onClick={onCancelDelete}>Keep task</UiV2Button>
+            <UiV2Button type="button" tone="destructive" busy={rowBusy} disabled={busy && !rowBusy} onClick={onConfirmDelete}>Delete automation</UiV2Button>
+            <UiV2Button type="button" disabled={busy} onClick={onCancelDelete}>Keep automation</UiV2Button>
           </span>
         </div>
       ) : null}

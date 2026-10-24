@@ -11,10 +11,10 @@ export function ScheduledTaskChatHintV2({ onEdit, title }: Readonly<{ onEdit?():
   return (
     <div className="v2-scheduled-chat-hint" data-testid="scheduled-task-chat-hint">
       <UiV2Icon name="clock" />
-      <p>Replies here don&apos;t change the scheduled task.</p>
+      <p>Replies here don&apos;t change the automation.</p>
       {onEdit ? (
-        <button className="v2-scheduled-chat-hint-action v2-focusable" type="button" aria-label={`Edit task ${title}`} onClick={onEdit}>
-          Edit task
+        <button className="v2-scheduled-chat-hint-action v2-focusable" type="button" aria-label={`Edit automation ${title}`} onClick={onEdit}>
+          Edit automation
         </button>
       ) : null}
     </div>

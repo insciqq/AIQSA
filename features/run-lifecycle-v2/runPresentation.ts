@@ -274,8 +274,8 @@ type ToolActivityIdentity = Readonly<{
 /** Why a page link was refused, worded by how the owner allows it. */
 function notInConversationCopy(target: string, scope: unknown): string {
   switch (scope) {
-    case "scheduled_run": return `Didn't read ${target}: open the task and save its instructions to allow this link`;
-    case "task_instructions": return `Didn't read ${target}: links in a task's instructions are read only by its scheduled runs`;
+    case "scheduled_run": return `Didn't read ${target}: open the automation and save its instructions to allow this link`;
+    case "task_instructions": return `Didn't read ${target}: links in an automation's instructions are read only by that automation's runs`;
     default: return `Skipped ${target}: only links from this chat or web search are read`;
   }
 }

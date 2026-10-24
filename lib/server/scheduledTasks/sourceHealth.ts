@@ -59,7 +59,7 @@ export function scheduledUnavailableSourcesNotice(sources: readonly ScheduledUna
   if (sources.length === 0) return null;
   const listed = sources.map((source) => `${JSON.stringify(source.name)} (${source.reason === "mcp_reauthorization_required"
     ? "needs the user to sign in again" : "unavailable"})`).join(", ");
-  return `This scheduled run cannot use some of the user's tool sources, so their tools are missing: ${listed}. ` +
+  return `This automation run cannot use some of the user's tool sources, so their tools are missing: ${listed}. ` +
     "Do not guess what those tools would return. Answer with what you can check, and say briefly which parts could not be " +
     "checked because a source was unavailable.";
 }
