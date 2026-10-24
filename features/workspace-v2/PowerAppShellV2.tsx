@@ -173,6 +173,7 @@ import {
   resolveModelControlDefaults,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
+import { coerceReasoningEffort } from "@/components/app-shell/controlDefaults";
 import { useBranchGraphController } from "./useBranchGraphController";
 import { decodeChatBranchesResponse, type ChatBranchGraphWire } from "@/lib/contracts/chats";
 import { highlightRevealedMessage, openMessageSearchMatch } from "./messageSearchMatch";
@@ -2009,7 +2010,9 @@ export function PowerAppShellV2({
     operationErrorLive: composerSession.operationErrorLive,
     operationErrorRetryable: composerSession.operationErrorRetryable,
     operationErrorRecoveries: composerSession.operationErrorRecoveries,
-    reasoningEffort,
+    // The level the next message sends: a held level the model no longer
+    // offers (Off on a model that always reasons) shows its fallback.
+    reasoningEffort: coerceReasoningEffort(reasoningEffort, currentParameterControls),
     reasoningMode,
     retryCatalog,
     searchPlanMode,

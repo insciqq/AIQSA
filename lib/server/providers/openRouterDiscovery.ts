@@ -39,6 +39,8 @@ export type OpenRouterDiscoveredModel = {
   name: string;
   outputModalities: string[];
   pricing: Record<string, string>;
+  /** `reasoning.mandatory` from the listing: the model refuses reasoning Off. Absent is unknown. */
+  reasoningMandatory?: boolean;
   supportedParameters: string[];
 };
 
@@ -202,6 +204,11 @@ function normalizeModels(value: unknown): OpenRouterDiscoveredModel[] {
 
     const architecture = isRecord(candidate.architecture) ? candidate.architecture : {};
     const contextLength = boundedPositiveInteger(candidate.context_length);
+    // Only the one boolean is read; any other shape stays unknown.
+    const reasoningMandatory = isRecord(candidate.reasoning) &&
+      typeof candidate.reasoning.mandatory === "boolean"
+      ? candidate.reasoning.mandatory
+      : undefined;
     models.push({
       ...(contextLength !== undefined ? { contextLength } : {}),
       id,
@@ -215,6 +222,7 @@ function normalizeModels(value: unknown): OpenRouterDiscoveredModel[] {
         MAX_MODALITIES
       ),
       pricing: safePricing(candidate.pricing),
+      ...(reasoningMandatory === undefined ? {} : { reasoningMandatory }),
       supportedParameters: safeStringArray(
         candidate.supported_parameters,
         MAX_SUPPORTED_PARAMETERS

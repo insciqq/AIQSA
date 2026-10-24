@@ -52,6 +52,11 @@ import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProvi
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { providerSetupModels } from "./setupModels";
 import { contextWindowRefreshable, listedContextWindow, withListedContextWindow } from "./codexLbContextWindow";
+import {
+  listedReasoningMandatory,
+  openRouterReasoningListingApplies,
+  withListedReasoningRequirement
+} from "./openRouterReasoning";
 import { catalogModelPresent, providerCatalogUpdates } from "./catalogModels";
 import {
   codexLbConnection,
@@ -728,6 +733,8 @@ export function createAdminProviderService(input: Readonly<{
     applyVerifiedCapabilities?: boolean;
     /** Codex LB listing window that may replace a missing or template-default window. */
     listedContextWindow?: number;
+    /** OpenRouter listing's `reasoning.mandatory` for the model; absent is unknown. */
+    listedReasoningMandatory?: boolean;
     onCapabilityProgress?: CapabilityCheckRequest["onCapabilityProgress"];
     onSavedCheckpoint?(check: AdminProviderActiveCheck): void;
     /** The administrator charged with the check's `model_check` usage. */
@@ -760,7 +767,9 @@ export function createAdminProviderService(input: Readonly<{
       const verifiedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence)
         : recheck ? recheckVerifiedModelConfiguration(model, outcome.evidence) : model;
       const activatedModel = initialSetup || recheck
-        ? withListedContextWindow(verifiedModel, value.listedContextWindow) : verifiedModel;
+        ? withListedReasoningRequirement(withListedContextWindow(verifiedModel, value.listedContextWindow),
+          value.listedReasoningMandatory)
+        : verifiedModel;
       const activatedConfiguration = canonicalJson(activatedModel) !== canonicalJson(model) ? activatedModel : undefined;
       const evidence = validateEvidence(outcome, value.mode, activatedModel);
       if (lastSaved?.status === outcome.status && canonicalJson(lastSaved.evidence) === canonicalJson(evidence)) return lastSaved;
@@ -860,6 +869,60 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   /**
+   * The OpenRouter listing's `reasoning.mandatory` for an answer model with a
+   * reasoning control, read with the exact checked key. An unreadable listing
+   * stays unknown and changes nothing; the model check reports access itself.
+   */
+  async function openRouterListedReasoning(
+    candidate: ProviderActiveRefreshCandidate,
+    connection: ProviderConnectionConfiguration,
+    model: ProviderModelConfiguration,
+    signal: AbortSignal
+  ): Promise<boolean | undefined> {
+    if (candidate.connection.family !== "openrouter" || !openRouterReasoningListingApplies(model) ||
+      candidate.credential.envelope === null) return undefined;
+    try {
+      const client = (input.createDiscoveryClient ?? createOpenRouterDiscoveryClient)({
+        allowPrivateNetwork: connection.allowPrivateNetwork,
+        apiRoot: connection.apiRoot,
+        bearerToken: credentialSecretSource(candidate.credential.id, {
+          envelope: candidate.credential.envelope, kind: "active", versionId: candidate.credential.versionId
+        }, "provider_active_tuple_not_found"),
+        responseTimeoutMs: effectiveProviderResponseTimeoutMs(connection)
+      });
+      return listedReasoningMandatory(await client.listModels({ signal }), model.upstreamModelId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Test & Save takes the OpenRouter listing's reasoning requirement into the
+   * draft it publishes, so a model that refuses Off never offers it. Any
+   * failure keeps the draft as the administrator saved it.
+   */
+  async function withOpenRouterListedReasoning(
+    candidate: ProviderModelActivationCandidate,
+    signal?: AbortSignal
+  ): Promise<ProviderModelActivationCandidate> {
+    const credential = candidate.connection.defaultCredential;
+    if (candidate.connection.family !== "openrouter" || !credential?.usable) return candidate;
+    let draft: ProviderModelConfiguration;
+    try { draft = normalizeProviderModelConfiguration(candidate.model.configuration); } catch { return candidate; }
+    if (!openRouterReasoningListingApplies(draft)) return candidate;
+    let mandatory: boolean | undefined;
+    try {
+      const client = await discoveryClient({ connectionId: candidate.connection.id, credentialId: credential.id });
+      mandatory = listedReasoningMandatory(await client.listModels({ signal }), draft.upstreamModelId);
+    } catch {
+      signal?.throwIfAborted();
+      return candidate;
+    }
+    const configuration = withListedReasoningRequirement(draft, mandatory);
+    return configuration === draft ? candidate : { ...candidate, model: { ...candidate.model, configuration } };
+  }
+
+  /**
    * Background check of one enabled active model with one key (PRD B3):
    * `tiny_generation` for answer models, the embed round-trip for embedding
    * models and the rerank probe for rerankers, bounded by the model's own
@@ -884,11 +947,15 @@ export function createAdminProviderService(input: Readonly<{
     try {
       const listedWindow = value.reason !== "model" || value.initialSetup
         ? await codexLbListedContextWindow(candidate, connection, model, controller.signal) : undefined;
+      // Test & Save already took the listing into its draft (`withOpenRouterListedReasoning`).
+      const reasoningMandatory = value.reason !== "model"
+        ? await openRouterListedReasoning(candidate, connection, model, controller.signal) : undefined;
       const result = await executeActiveCheck({
         candidate,
         initialSetup: value.initialSetup,
         applyVerifiedCapabilities: value.reason !== "model",
         ...(listedWindow === undefined ? {} : { listedContextWindow: listedWindow }),
+        ...(reasoningMandatory === undefined ? {} : { listedReasoningMandatory: reasoningMandatory }),
         onCapabilityProgress: value.onCapabilityProgress,
         onSavedCheckpoint: (check) => value.onResult?.({ providerModelId: value.providerModelId,
           state: "partial", checks: check.evidence?.capabilitySetup?.checks, attempts: check.evidence?.capabilitySetup?.attempts }),
@@ -1479,7 +1546,7 @@ export function createAdminProviderService(input: Readonly<{
         throw new AdminProviderServiceError("provider_draft_stale");
       }
       await assertRoutingServesAssignedRoles(candidate, value.signal);
-      const initial = await activateModelDraft(candidate, value.signal);
+      const initial = await activateModelDraft(await withOpenRouterListedReasoning(candidate, value.signal), value.signal);
       value.onActivated?.();
       const credential = candidate.connection.defaultCredential;
       if (!credential?.usable) return { check: "skipped" };
@@ -1548,7 +1615,9 @@ export function createAdminProviderService(input: Readonly<{
     }) {
       const client = await discoveryClient(value);
       try {
-        return await client.listModels({ signal: value.signal });
+        // The browser projection (`AdminOpenRouterDiscoveredModel`) carries no reasoning requirement.
+        return (await client.listModels({ signal: value.signal }))
+          .map(({ reasoningMandatory: _reasoningMandatory, ...model }) => model);
       } catch {
         throw new AdminProviderServiceError("provider_discovery_failed");
       }
