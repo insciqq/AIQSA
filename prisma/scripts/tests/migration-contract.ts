@@ -67,6 +67,13 @@ import {
 import { MODEL_RUN_ENGINE_MIGRATION, modelRunEngineFixtureSql, modelRunEngineProofSql } from "./model-run-engine-adoption";
 import { STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION, stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql } from "./stop-memory-lexical-projection-capture-adoption";
 import { RETIRE_PROJECTS_MIGRATION, retireProjectsFixtureSql, retireProjectsProofSql } from "./retire-projects-adoption";
+import {
+  SEARCH_ON_FOR_EVERYONE_MIGRATION,
+  searchOnForEveryoneFixtureSql,
+  searchOnForEveryoneProofSql,
+  searchOnForEveryoneWithoutApiFixtureSql,
+  searchOnForEveryoneWithoutApiProofSql
+} from "./search-on-for-everyone-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7904,6 +7911,12 @@ function main(
   // Workspace maintenance deletes them through the Project deletion path.
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_PROJECTS_MIGRATION,
     retireProjectsFixtureSql, retireProjectsProofSql, retireProjectsProofSql);
+  // Search turns on for everyone, and DeepSeek's hosted Search hands its
+  // selections and grants to a working DeepSeek Search API, or drops out.
+  runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
+    searchOnForEveryoneFixtureSql, searchOnForEveryoneProofSql, searchOnForEveryoneProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
+    searchOnForEveryoneWithoutApiFixtureSql, searchOnForEveryoneWithoutApiProofSql, searchOnForEveryoneWithoutApiProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
