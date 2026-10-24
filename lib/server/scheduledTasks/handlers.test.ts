@@ -18,11 +18,14 @@ const draft = {
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
   workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90
 } as const;
+/** What a create body that leaves them out starts with: no Telegram, on the schedule only. */
+const createDefaults = { telegramNotify: false, scheduleEnabled: true, webhookEnabled: false } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
+const hook = { path: "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-", tokenIssuedAt: null, lastEventAt: null, queuedEvents: 0 };
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
-    ...draft, telegramNotify: false, pinnedSkillIds: [], id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
+    ...draft, ...createDefaults, webhook: null, pinnedSkillIds: [], id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
     historyDeletedChats: 0, historyNextDeletionAt: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
     unseenResult: false, revision: 2,
@@ -35,8 +38,8 @@ function fixture(current: ScheduledTask | null = task()) {
     list: vi.fn().mockResolvedValue({ tasks: [current], limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: false }),
     get: vi.fn().mockResolvedValue(current),
     detail: vi.fn().mockResolvedValue(current ? { task: current, recentRuns: [] } : null),
-    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date, _promptUrls: readonly string[]) =>
-      task({ ...value, nextRunAt: nextRunAt.toISOString(), revision: 1 })),
+    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date | null, _promptUrls: readonly string[]) =>
+      task({ ...value, nextRunAt: nextRunAt?.toISOString() ?? null, revision: 1, webhook: value.webhookEnabled ? hook : null })),
     update: vi.fn(async (_userId: string, _taskId: string, write: ScheduledTaskUpdateWrite) =>
       task({ ...write.draft, status: write.status, revision: write.expectedRevision + 1 })),
     delete: vi.fn().mockResolvedValue(true),
@@ -81,7 +84,7 @@ describe("scheduled tasks owner API", () => {
     const response = await f.handlers.create(json("POST", { ...draft, title: "  Morning brief  " }));
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(f.store.create).toHaveBeenCalledWith("owner", { ...draft, telegramNotify: false, pinnedSkillIds: [] },
+    expect(f.store.create).toHaveBeenCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [] },
       new Date("2026-10-05T06:00:00.000Z"), []);
 
     expect(f.loadCatalog).toHaveBeenCalledWith("owner");
@@ -135,7 +138,7 @@ describe("scheduled tasks owner API", () => {
     // 4 October 2026 is a Sunday: the first hourly run is Monday 09:00 in Moscow.
     const hourlyTask = await f.handlers.create(json("POST", { ...draft, schedule: hourly, chatMode: "same" }));
     expect(hourlyTask.status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, telegramNotify: false, pinnedSkillIds: [], schedule: hourly, chatMode: "same" },
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], schedule: hourly, chatMode: "same" },
       new Date("2026-10-05T06:00:00.000Z"), []);
   });
 
@@ -320,7 +323,7 @@ describe("scheduled tasks owner API", () => {
     const disabled = await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }));
     expect([disabled.status, await disabled.json()]).toEqual([400, { error: "scheduled_task_workspace_unavailable" }]);
     expect((await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }))).status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, telegramNotify: false, pinnedSkillIds: [], workspaceEnabled: true }, expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], workspaceEnabled: true }, expect.any(Date), []);
 
     // Turning tools on for a model without tool calling is refused, even for a paused task.
     const plain = fixture(task({ modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused", toolsEnabled: false }));
@@ -340,7 +343,7 @@ describe("scheduled tasks owner API", () => {
     const f = fixture();
     const created = await f.handlers.create(json("POST", { ...draft, pinnedSkillIds: ["skill-own", "skill-shared"] }));
     expect(created.status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, telegramNotify: false, pinnedSkillIds: ["skill-own", "skill-shared"] },
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: ["skill-own", "skill-shared"] },
       expect.any(Date), []);
     expect(f.loadPinnedSkills).toHaveBeenLastCalledWith("owner", ["skill-own", "skill-shared"]);
     const cases: Array<[unknown, string]> = [
@@ -377,7 +380,7 @@ describe("scheduled tasks owner API", () => {
   it("stores the Memory switch as sent and changes it without a model check", async () => {
     const f = fixture();
     await f.handlers.create(json("POST", { ...draft, memoryEnabled: false }));
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, telegramNotify: false, pinnedSkillIds: [], memoryEnabled: false }, expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], memoryEnabled: false }, expect.any(Date), []);
     // Memory needs no tool calling: a paused task with a plain model turns it on as it is.
     const plain = fixture(task({ memoryEnabled: false, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
       status: "paused", toolsEnabled: false }));
@@ -456,5 +459,72 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(f)?.promptUrls).toBe("keep");
     await f.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
     expect(lastWrite(f)?.promptUrls).toBe("keep");
+  });
+
+  it("creates a webhook-only automation without a due time, and refuses one with no trigger", async () => {
+    const f = fixture();
+    // The schedule is still carried, but an off schedule never runs: a past once date is no refusal.
+    const once = { kind: "once", date: "2026-10-01", time: "09:00" } as const;
+    const created = await f.handlers.create(json("POST", { ...draft, schedule: once, scheduleEnabled: false, webhookEnabled: true }));
+    expect(created.status).toBe(201);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner",
+      { ...draft, ...createDefaults, pinnedSkillIds: [], schedule: once, scheduleEnabled: false, webhookEnabled: true }, null, []);
+    expect((await created.json()).task).toMatchObject({ nextRunAt: null, scheduleEnabled: false, webhookEnabled: true, webhook: hook });
+    // Both triggers, and the defaults of a body that names neither.
+    await f.handlers.create(json("POST", { ...draft, webhookEnabled: true }));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ scheduleEnabled: true, webhookEnabled: true }),
+      new Date("2026-10-05T06:00:00.000Z"), []);
+    const cases: Array<[unknown, string]> = [
+      [{ ...draft, scheduleEnabled: false }, "scheduled_task_trigger_required"],
+      [{ ...draft, scheduleEnabled: false, webhookEnabled: false, schedule: { kind: "weekly", time: "09:00", days: [] } },
+        "scheduled_task_trigger_required"],
+      [{ ...draft, scheduleEnabled: "off", webhookEnabled: true }, "scheduled_task_invalid"],
+      [{ ...draft, webhookEnabled: null }, "scheduled_task_invalid"],
+      // An off schedule still has to be one.
+      [{ ...draft, scheduleEnabled: false, webhookEnabled: true, schedule: { kind: "weekly", time: "09:00", days: [] } },
+        "scheduled_task_schedule_invalid"]
+    ];
+    for (const [body, error] of cases) {
+      const response = await f.handlers.create(json("POST", body));
+      expect([response.status, await response.json()]).toEqual([400, { error }]);
+    }
+    expect(f.store.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("turns the schedule and the webhook on and off, keeping one trigger and a due time only on a schedule", async () => {
+    const f = fixture();
+    // Off: no due time, and the task runs on its webhook alone.
+    await f.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: false, webhookEnabled: true }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ draft: { scheduleEnabled: false, webhookEnabled: true }, nextRunAt: null, status: "active" });
+    const none = await f.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: false }), "task-1");
+    expect([none.status, await none.json()]).toEqual([400, { error: "scheduled_task_trigger_required" }]);
+    expect((await f.handlers.update(patch({ expectedRevision: 2, webhookEnabled: "on" }), "task-1")).status).toBe(400);
+
+    const hooked = fixture(task({ nextRunAt: null, scheduleEnabled: false, webhookEnabled: true, webhook: hook }));
+    // Its kept schedule changes without arming or a future once time, and the webhook stays the only trigger.
+    const past = { kind: "once", date: "2026-10-01", time: "09:00" } as const;
+    expect((await hooked.handlers.update(patch({ expectedRevision: 2, schedule: past }), "task-1")).status).toBe(200);
+    expect(lastWrite(hooked)).toMatchObject({ draft: { schedule: past, scheduleEnabled: false }, nextRunAt: null, status: "active" });
+    const off = await hooked.handlers.update(patch({ expectedRevision: 2, webhookEnabled: false }), "task-1");
+    expect(await off.json()).toEqual({ error: "scheduled_task_trigger_required" });
+    // Turning the schedule on arms its next run from now, like a resume, and readmits the model.
+    hooked.loadCatalog.mockClear();
+    await hooked.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: true }), "task-1");
+    expect(lastWrite(hooked)).toMatchObject({ draft: { scheduleEnabled: true, webhookEnabled: true },
+      nextRunAt: new Date("2026-10-05T06:00:00.000Z"), status: "active" });
+    expect(hooked.loadCatalog).toHaveBeenCalledTimes(1);
+    const pastOn = await hooked.handlers.update(patch({ expectedRevision: 2, schedule: past, scheduleEnabled: true }), "task-1");
+    expect(await pastOn.json()).toEqual({ error: "scheduled_task_once_in_past" });
+    // Resuming a paused webhook-only task arms nothing.
+    const paused = fixture(task({ nextRunAt: null, scheduleEnabled: false, status: "paused", webhookEnabled: true, webhook: hook }));
+    await paused.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1");
+    expect(lastWrite(paused)).toMatchObject({ nextRunAt: null, status: "active" });
+    // A completed task whose schedule turns on is active again.
+    const goal = fixture(task({ chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null,
+      scheduleEnabled: false, status: "completed", webhookEnabled: true, webhook: hook }));
+    await goal.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(goal)).toMatchObject({ nextRunAt: null, status: "completed" });
+    await goal.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: true }), "task-1");
+    expect(lastWrite(goal)).toMatchObject({ nextRunAt: new Date("2026-10-05T06:00:00.000Z"), status: "active" });
   });
 });

@@ -7793,13 +7793,14 @@ enum ScheduledTaskOccurrenceState {
   SKIPPED
 }
 
-/// A personal prompt the scheduler posts into chats. Schedule columns are
-/// wall-clock values in `timeZone`; lib/domain/scheduledTaskSchedule.ts computes
-/// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
-/// and run, never a foreign key. `revision` changes on every owner mutation and on
-/// runner status transitions (auto-pause, once completion, a monitoring goal),
-/// not on bookkeeping (`nextRunAt`, the counters, `chatId` with its epoch and
-/// period, the baseline and its carried copy).
+/// A personal prompt the scheduler posts into chats (an automation). Schedule
+/// columns are wall-clock values in `timeZone`; lib/domain/scheduledTaskSchedule.ts
+/// computes `nextRunAt`, which is null unless ACTIVE and while the schedule is
+/// off. Model identity is revalidated at save and run, never a foreign key.
+/// `revision` changes on every owner mutation and on runner status transitions
+/// (auto-pause, once completion, a monitoring goal), not on bookkeeping
+/// (`nextRunAt`, the counters, `chatId` with its epoch and period, the baseline
+/// and its carried copy).
 model ScheduledTask {
   id                         String                    @id @default(uuid())
   userId                     String
@@ -7810,6 +7811,13 @@ model ScheduledTask {
   /// user-authorized ones of a tool-written prompt (`scheduledPromptUrlDigests`).
   /// Replaced with every write of the prompt; at most 100.
   promptUrlDigests           String[]                  @default([])
+  /// The automation runs on its schedule. Off, `nextRunAt` stays null and the
+  /// schedule columns only keep the editor's values, which never fire. At least
+  /// one trigger is on.
+  scheduleEnabled            Boolean                   @default(true)
+  /// Every event its webhook (`ScheduledTaskWebhook`) accepts runs the
+  /// automation. Rows older than the switch stay off.
+  webhookEnabled             Boolean                   @default(false)
   scheduleKind               ScheduledTaskScheduleKind
   /// Local wall-clock minute of the day, 0..1439; HOURLY: the window start (0 for the whole day).
   timeOfDayMinutes           Int
@@ -7898,6 +7906,8 @@ model ScheduledTask {
   createdChats        Chat[]                    @relation("ScheduledTaskCreatedChats")
   carryover           ScheduledTaskCarryover?
   workspaceSeeds      ChatContinuationWorkspaceSeed[]
+  webhook             ScheduledTaskWebhook?
+  webhookEvents       ScheduledTaskWebhookEvent[]
 
   @@unique([userId, id])
   @@index([status, nextRunAt])
@@ -7911,8 +7921,11 @@ model ScheduledTaskOccurrence {
   id             String                       @id @default(uuid())
   taskId         String
   userId         String
-  /// `schedule` or `manual`.
+  /// `schedule`, `manual` or `webhook`.
   trigger        String                       @db.VarChar(16)
+  /// The scheduled instant, the time of a manual request, or for a webhook
+  /// occurrence its event's `receivedAt`, which is unique per task, so
+  /// `[taskId, trigger, scheduledFor]` stays unique for webhook occurrences too.
   scheduledFor   DateTime
   state          ScheduledTaskOccurrenceState @default(PENDING)
   reasonCode     String?                      @db.VarChar(64)
@@ -7951,8 +7964,11 @@ model ScheduledTaskOccurrence {
   run            ModelRun?                    @relation(fields: [userId, runId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   browserPushDelivery BrowserPushDelivery?
   telegramDelivery    TelegramScheduledDelivery?
+  webhookEvent        ScheduledTaskWebhookEvent?
 
   @@unique([taskId, trigger, scheduledFor])
+  /// The task-consistent key a webhook event's link references.
+  @@unique([taskId, id])
   @@index([taskId, scheduledFor])
   @@index([state, leaseExpiresAt])
   @@index([chatId])
@@ -7989,6 +8005,73 @@ model ScheduledTaskCarryover {
   /// The owner-consistent key of the one-to-one task relation.
   @@unique([userId, taskId])
   @@index([sourceChatId, sourceAssistantMessageId], map: "ScheduledTaskCarryover_source_answer_idx")
+}
+
+/// An automation's webhook: the public address senders post events to and the
+/// hash of its one bearer token. Created the first time the webhook trigger is
+/// turned on and kept while it is off, so the address stays the same; it goes
+/// with the automation and its owner.
+model ScheduledTaskWebhook {
+  taskId        String        @id
+  userId        String
+  /// Random, server-generated base64url (`SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES`);
+  /// never the task id. The endpoint's only path parameter.
+  publicId      String        @unique @db.VarChar(22)
+  /// Hex SHA-256 of the whole token (`SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX` and its
+  /// random part); null until the owner first gets one. Rotation replaces it with
+  /// `tokenIssuedAt`. The plaintext is never stored.
+  tokenHash     String?       @db.Char(64)
+  tokenIssuedAt DateTime?
+  /// When the endpoint last accepted an event.
+  lastEventAt   DateTime?
+  createdAt     DateTime      @default(now())
+  task          ScheduledTask @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  /// The owner-consistent key of the one-to-one task relation.
+  @@unique([userId, taskId])
+}
+
+enum ScheduledTaskWebhookEventState {
+  QUEUED
+  ADMITTED
+  DISCARDED
+}
+
+/// One event a webhook accepted. QUEUED holds the body until its occurrence's
+/// run is admitted (ADMITTED: the body then lives only in that chat) or it can
+/// no longer run (DISCARDED); either clears the body. Bodyless rows stay for
+/// deduplication and the rate cap (`SCHEDULED_TASK_WEBHOOK_EVENT_RETENTION_MS`)
+/// and go with the automation and its owner.
+model ScheduledTaskWebhookEvent {
+  id           String                         @id @default(uuid())
+  taskId       String
+  userId       String
+  /// The later of the acceptance time and the task's previous event plus one
+  /// millisecond, written under the task row lock: unique per task, the queue's
+  /// order and its occurrence's `scheduledFor`.
+  receivedAt   DateTime
+  /// The sender's delivery key (`X-Gitlab-Event-UUID`, `X-GitHub-Delivery` or
+  /// `Idempotency-Key`); a repeat is not accepted again while the row is kept.
+  dedupeKey    String?                        @db.VarChar(200)
+  /// The `X-Gitlab-Event` or `X-GitHub-Event` header as sent; untrusted.
+  eventName    String?                        @db.VarChar(100)
+  /// The request's media type, lowercased, without parameters.
+  contentType  String?                        @db.VarChar(100)
+  /// The event text (JSON pretty-printed), set exactly while QUEUED.
+  bodyText     String?
+  state        ScheduledTaskWebhookEventState @default(QUEUED)
+  /// The occurrence of the same task the event became; the migration uses
+  /// column-scoped SET NULL, so pruning the occurrence history keeps the row.
+  occurrenceId String?
+  task         ScheduledTask                  @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  occurrence   ScheduledTaskOccurrence?       @relation(fields: [taskId, occurrenceId], references: [taskId, id], onDelete: SetNull, onUpdate: Restrict)
+
+  @@unique([taskId, receivedAt])
+  @@unique([taskId, dedupeKey])
+  /// At most one event per occurrence: the link names an occurrence of the same task.
+  @@unique([taskId, occurrenceId])
+  @@index([taskId, state, receivedAt])
+  @@index([receivedAt])
 }
 
 /// The installation's VAPID key pair for browser push, created on first use.

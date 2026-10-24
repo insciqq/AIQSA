@@ -22,6 +22,7 @@ const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const due = new Date("2026-10-05T06:00:00.000Z");
 const draft: ScheduledTaskDraft = {
   title: "Synthetic digest", prompt: "Run the synthetic digest", schedule: { kind: "daily", time: "09:00" },
+  scheduleEnabled: true, webhookEnabled: false,
   timeZone: "Europe/Moscow", modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection, searchEnabled: false,
   emailNotify: false, telegramNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [],
   chatMode: "same",

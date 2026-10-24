@@ -64,7 +64,7 @@ const turns: readonly Readonly<{ ask: string; answer: string; card: ScheduledTas
 function task(source: ScheduledTaskCard): ScheduledTask {
   return {
     id: source.taskId, title: source.title, prompt: "Synthetic scheduled instructions.",
-    schedule: source.schedule, timeZone: source.timeZone,
+    schedule: source.schedule, scheduleEnabled: true, webhookEnabled: false, webhook: null, timeZone: source.timeZone,
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
     toolsEnabled: source.toolsEnabled,
     workspaceEnabled: source.workspaceEnabled, memoryEnabled: true, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: source.kind, status: source.status,

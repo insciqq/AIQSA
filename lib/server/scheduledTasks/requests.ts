@@ -19,7 +19,7 @@ import { validScheduledTaskTimeZone, validateScheduledTaskSchedule } from "../..
 export type ScheduledTaskRequestFailure = {
   ok: false;
   code: "scheduled_task_invalid" | "scheduled_task_schedule_invalid" | "scheduled_task_time_zone_invalid" |
-    "scheduled_task_chat_mode_invalid" | "scheduled_task_skills_need_tools";
+    "scheduled_task_chat_mode_invalid" | "scheduled_task_skills_need_tools" | "scheduled_task_trigger_required";
 };
 
 export type ScheduledTaskRequestResult<T> = { ok: true; value: T } | ScheduledTaskRequestFailure;
@@ -29,7 +29,7 @@ const DRAFT_KEYS = [
   "workspaceEnabled", "memoryEnabled", "chatMode", "kind"
 ];
 /** Draft fields a create body may leave out, with their default. */
-const OPTIONAL_DRAFT_KEYS = ["pinnedSkillIds", "historyRetentionDays", "telegramNotify"];
+const OPTIONAL_DRAFT_KEYS = ["pinnedSkillIds", "historyRetentionDays", "telegramNotify", "scheduleEnabled", "webhookEnabled"];
 const UPDATE_KEYS = [...DRAFT_KEYS, ...OPTIONAL_DRAFT_KEYS, "expectedRevision", "status"];
 const invalid: ScheduledTaskRequestFailure = { ok: false, code: "scheduled_task_invalid" };
 
@@ -48,9 +48,11 @@ function taskKind(value: unknown): value is ScheduledTaskKind {
 /**
  * Create body: every editable field, nothing else; `pinnedSkillIds` may be
  * left out (none), and so may `historyRetentionDays` (a new task keeps 90
- * days of old chats) and `telegramNotify` (off). Shape and bounds fail as
- * `scheduled_task_invalid` before the schedule, then the zone, then a chat
- * mode the schedule or type does not allow, then pins without tools are judged.
+ * days of old chats), `telegramNotify` (off), `scheduleEnabled` (on) and
+ * `webhookEnabled` (off). Shape and bounds fail as `scheduled_task_invalid`
+ * before a task with neither trigger on, then the schedule (carried even when
+ * off), then the zone, then a chat mode the schedule or type does not allow,
+ * then pins without tools are judged.
  */
 export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskRequestResult<ScheduledTaskDraft> {
   if (!record(value) || !DRAFT_KEYS.every((key) => key in value) ||
@@ -63,13 +65,18 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
     ? SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS : value.historyRetentionDays;
   if (!isScheduledTaskHistoryRetentionDays(historyRetentionDays)) return invalid;
   const telegramNotify = value.telegramNotify === undefined ? false : value.telegramNotify;
-  if (typeof telegramNotify !== "boolean") return invalid;
+  const scheduleEnabled = value.scheduleEnabled === undefined ? true : value.scheduleEnabled;
+  const webhookEnabled = value.webhookEnabled === undefined ? false : value.webhookEnabled;
+  if (typeof telegramNotify !== "boolean" || typeof scheduleEnabled !== "boolean" || typeof webhookEnabled !== "boolean") {
+    return invalid;
+  }
   const title = normalizeScheduledTaskTitle(value.title);
   if (!title || !isScheduledTaskPrompt(value.prompt) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
     typeof value.emailNotify !== "boolean" || typeof value.toolsEnabled !== "boolean" ||
     typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" || !chatMode(value.chatMode) ||
     !taskKind(value.kind)) return invalid;
+  if (!scheduleEnabled && !webhookEnabled) return { ok: false, code: "scheduled_task_trigger_required" };
   const schedule = validateScheduledTaskSchedule(value.schedule, value.timeZone);
   if (!schedule.ok) return schedule;
   if (!scheduledTaskChatModeAllowed({ kind: value.kind, schedule: schedule.schedule }, value.chatMode)) {
@@ -79,7 +86,8 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
   return {
     ok: true,
     value: {
-      title, prompt: value.prompt, schedule: schedule.schedule, timeZone: schedule.timeZone, modelId: value.modelId,
+      title, prompt: value.prompt, schedule: schedule.schedule, scheduleEnabled, webhookEnabled, timeZone: schedule.timeZone,
+      modelId: value.modelId,
       provider: value.provider, searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, telegramNotify,
       toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled,
       pinnedSkillIds, chatMode: value.chatMode, kind: value.kind, historyRetentionDays
@@ -90,7 +98,8 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
 /**
  * Update body: `expectedRevision` plus at least one change; `modelId` and
  * `provider` only together. Whether the resulting chat mode suits the
- * resulting schedule and type is judged against the stored task.
+ * resulting schedule and type, and whether a trigger stays on, is judged
+ * against the stored task.
  */
 export function decodeScheduledTaskUpdateRequest(value: unknown): ScheduledTaskRequestResult<ScheduledTaskUpdateRequest> {
   if (!record(value) || Object.keys(value).length < 2 || Object.keys(value).some((key) => !UPDATE_KEYS.includes(key)) ||
@@ -111,7 +120,8 @@ export function decodeScheduledTaskUpdateRequest(value: unknown): ScheduledTaskR
     patch.modelId = value.modelId;
     patch.provider = value.provider;
   }
-  for (const key of ["searchEnabled", "emailNotify", "telegramNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled"] as const) {
+  for (const key of ["searchEnabled", "emailNotify", "telegramNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled",
+    "scheduleEnabled", "webhookEnabled"] as const) {
     if (!(key in value)) continue;
     const flag = value[key];
     if (typeof flag !== "boolean") return invalid;

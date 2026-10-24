@@ -59,6 +59,62 @@ export function isScheduledTaskHistoryRetentionDays(value: unknown): value is Sc
   return value === null || (SCHEDULED_TASK_HISTORY_RETENTION_DAYS as readonly unknown[]).includes(value);
 }
 
+/*
+ * Webhooks (operator decisions 2026-10-24 and 2026-10-25): a task runs on its
+ * schedule, on its webhook or both, and every event the webhook accepts runs
+ * the saved prompt with the event as incoming data.
+ */
+/** Bytes of a request body the endpoint reads; a longer body is refused (413). */
+export const SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * UTF-8 bytes of the text an event keeps: JSON pretty-printed while that stays
+ * within this bound, otherwise the body as received.
+ */
+export const SCHEDULED_TASK_WEBHOOK_TEXT_MAX_BYTES = 128 * 1024;
+/** Accepted events of one task waiting for their run; another is refused (429). */
+export const SCHEDULED_TASK_WEBHOOK_QUEUE_LIMIT = 20;
+/** Events one task accepts within the rate window, against loops and cost; another is refused (429). */
+export const SCHEDULED_TASK_WEBHOOK_RATE_LIMIT = 60;
+export const SCHEDULED_TASK_WEBHOOK_RATE_WINDOW_MS = 60 * 60 * 1000;
+/**
+ * How long an accepted event's bodyless row is kept after its receipt: a
+ * repeated delivery key is ignored meanwhile, and the row outlasts the rate
+ * window it counts toward.
+ */
+export const SCHEDULED_TASK_WEBHOOK_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/** Characters of a delivery key (`X-Gitlab-Event-UUID`, `X-GitHub-Delivery` or `Idempotency-Key`). */
+export const SCHEDULED_TASK_WEBHOOK_DEDUPE_KEY_MAX_LENGTH = 200;
+/** Characters of an event's header name (`X-Gitlab-Event` or `X-GitHub-Event`). */
+export const SCHEDULED_TASK_WEBHOOK_EVENT_NAME_MAX_LENGTH = 100;
+/** Characters of an event's stored media type. */
+export const SCHEDULED_TASK_WEBHOOK_CONTENT_TYPE_MAX_LENGTH = 100;
+/** Random bytes of a webhook's public id, written as 22 base64url characters. */
+export const SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES = 16;
+/** A token is this prefix and base64url of `SCHEDULED_TASK_WEBHOOK_TOKEN_BYTES` random bytes. */
+export const SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX = "aiqsa_wh_";
+export const SCHEDULED_TASK_WEBHOOK_TOKEN_BYTES = 32;
+/** The endpoint's path before the public id. */
+export const SCHEDULED_TASK_WEBHOOK_PATH_PREFIX = "/api/automations/hooks/";
+/**
+ * The endpoint's one refusal, for an unknown webhook, a missing or wrong
+ * token (one sent only in the URL included), a trigger that is off, a task
+ * that is not active and an owner who is not: it never tells them apart.
+ */
+export const SCHEDULED_TASK_WEBHOOK_REFUSAL = { status: 404, error: "not_found" } as const;
+/**
+ * The endpoint's other stable refusals and their statuses. A body or header
+ * refusal holds for any webhook, and the queue and rate refusals answer only
+ * an authenticated request, so none tells whether a webhook exists.
+ */
+export const SCHEDULED_TASK_WEBHOOK_ERROR_STATUS = {
+  webhook_body_too_large: 413,
+  webhook_body_invalid: 400,
+  webhook_headers_invalid: 400,
+  webhook_queue_full: 429,
+  webhook_rate_limited: 429
+} as const;
+export type ScheduledTaskWebhookErrorCode = keyof typeof SCHEDULED_TASK_WEBHOOK_ERROR_STATUS;
+
 export const SCHEDULED_TASK_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 export type ScheduledTaskWeekday = (typeof SCHEDULED_TASK_WEEKDAYS)[number];
 /** Hourly intervals divide the day evenly; one hour is the minimum. */
@@ -124,7 +180,14 @@ export function isScheduledTaskCheckOutcome(value: unknown): value is ScheduledT
 export type ScheduledTaskStatus = "active" | "paused" | "completed";
 export type ScheduledTaskRunState = "pending" | "running" | "completed" | "failed" | "skipped";
 export type ScheduledTaskSettledRunState = Extract<ScheduledTaskRunState, "completed" | "failed" | "skipped">;
-export type ScheduledTaskRunTrigger = "schedule" | "manual";
+/** `webhook`: an event the task's webhook accepted. */
+export type ScheduledTaskRunTrigger = "schedule" | "manual" | "webhook";
+export const SCHEDULED_TASK_RUN_TRIGGERS = ["schedule", "manual", "webhook"] as const satisfies readonly ScheduledTaskRunTrigger[];
+
+/** A stored occurrence trigger as the contract names it; the database checks the values. */
+export function scheduledTaskRunTrigger(value: string): ScheduledTaskRunTrigger {
+  return value === "manual" || value === "webhook" ? value : "schedule";
+}
 
 /**
  * One of a task's pinned Skills as its owner may see it now. `name` is null
@@ -153,11 +216,33 @@ export type ScheduledTaskLastRun = {
   unseen: boolean;
 };
 
+/**
+ * A task's webhook as its owner may see it, never its token or the token's
+ * hash. `path` is the endpoint's path (`SCHEDULED_TASK_WEBHOOK_PATH_PREFIX`
+ * and the random public id): on the installation's origin it is the address
+ * senders post to, and it stays the same while the trigger is off.
+ */
+export type ScheduledTaskWebhook = Readonly<{
+  path: string;
+  /** When the current token was issued; null before the first one. */
+  tokenIssuedAt: string | null;
+  /** When the endpoint last accepted an event; null before the first one. */
+  lastEventAt: string | null;
+  /** Accepted events still waiting for their run; 0 in projections without activity (cards, tool results). */
+  queuedEvents: number;
+}>;
+
 export type ScheduledTask = {
   id: string;
   title: string;
   prompt: string;
   schedule: ScheduledTaskSchedule;
+  /** See `ScheduledTaskDraft.scheduleEnabled`. */
+  scheduleEnabled: boolean;
+  /** See `ScheduledTaskDraft.webhookEnabled`. */
+  webhookEnabled: boolean;
+  /** Created the first time the webhook trigger was turned on, and kept while it is off; null before. */
+  webhook: ScheduledTaskWebhook | null;
   timeZone: string;
   modelId: string;
   provider: string;
@@ -199,7 +284,7 @@ export type ScheduledTask = {
    * its goal. Null for a once task's single run and for other states.
    */
   completionReason: string | null;
-  /** Null unless active. */
+  /** Null unless active and on a schedule. */
   nextRunAt: string | null;
   lastRun: ScheduledTaskLastRun | null;
   /** A pending or running occurrence exists. */
@@ -310,12 +395,33 @@ export type ScheduledTaskResponse = { task: ScheduledTask };
  * so a result that settles meanwhile stays unread.
  */
 export type ScheduledTaskSeenRequest = { runIds: string[] };
+/**
+ * A new token for a task's webhook (Get token, Rotate token), replacing any
+ * earlier one at once: the only shape that ever carries the plaintext. It is
+ * shown once and never stored, logged, written into chats or given to a
+ * model. `url` is the endpoint's whole address.
+ */
+export type ScheduledTaskWebhookTokenResponse = Readonly<{ token: string; url: string; issuedAt: string }>;
 
 /** Every editable field; also the `POST /api/me/scheduled-tasks` body, which creates an active task. */
 export type ScheduledTaskDraft = {
   title: string;
   prompt: string;
+  /** Still required while the schedule is off, when it only keeps the editor's values. */
   schedule: ScheduledTaskSchedule;
+  /**
+   * Runs on `schedule`. Off, the schedule never runs and the task has no next
+   * run. Optional in a create body: on.
+   */
+  scheduleEnabled: boolean;
+  /**
+   * Every event an authenticated sender posts to the task's webhook runs it,
+   * with the event as incoming data after the prompt. Turning it on the first
+   * time creates the webhook's address; a token is issued separately. At least
+   * one trigger is on (`scheduled_task_trigger_required`). Optional in a
+   * create body: off.
+   */
+  webhookEnabled: boolean;
   timeZone: string;
   /** The composer's `modelId` and `provider`; they travel together. */
   modelId: string;
@@ -396,7 +502,10 @@ export function scheduledTaskToolDefaults(defaults: Readonly<{ mcpMode?: ChatDef
  * result, rechecks them against the model; changed pinned Skills and those of
  * an active result are rechecked against the owner's available Skills. Pins
  * never outlive tools: turning tools off needs `pinnedSkillIds: []`. A longer
- * or forever history retention keeps chats that were not yet deleted.
+ * or forever history retention keeps chats that were not yet deleted. Turning
+ * the schedule on is a schedule change; turning it off clears the next run,
+ * and its values then change without arming, reactivating or a future once
+ * time. At least one trigger stays on.
  */
 export type ScheduledTaskUpdateRequest = Partial<ScheduledTaskDraft> & {
   expectedRevision: number;
@@ -416,6 +525,10 @@ export const SCHEDULED_TASK_ERROR_CODES = [
   "scheduled_task_workspace_unavailable",
   "scheduled_task_skills_need_tools",
   "scheduled_task_skill_unavailable",
+  /** Neither the schedule nor the webhook would be on. */
+  "scheduled_task_trigger_required",
+  /** A webhook token was asked for while the task's webhook trigger is off. */
+  "scheduled_task_webhook_off",
   "scheduled_task_limit",
   "scheduled_task_hourly_limit",
   "scheduled_task_stale",
@@ -429,6 +542,12 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/u;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/u;
 const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+const WEBHOOK_PUBLIC_ID = /^[A-Za-z0-9_-]{22}$/u;
+const WEBHOOK_TOKEN = /^aiqsa_wh_[A-Za-z0-9_-]{43}$/u;
+/** Printable ASCII without surrounding spaces, as the database checks a header value. */
+const WEBHOOK_HEADER_TEXT = /^[!-~](?:[ -~]*[!-~])?$/u;
+/** A lowercased media type essence of RFC 6838 restricted names. */
+const WEBHOOK_MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u;
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -488,6 +607,31 @@ export function isScheduledTaskPrompt(value: unknown): value is string {
 }
 export function isScheduledTaskModelIdentity(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= SCHEDULED_TASK_MODEL_IDENTITY_MAX_LENGTH;
+}
+
+/** A webhook's public id: `SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES` random bytes in base64url. */
+export function isScheduledTaskWebhookPublicId(value: unknown): value is string {
+  return typeof value === "string" && WEBHOOK_PUBLIC_ID.test(value);
+}
+/** The endpoint's path for a webhook's public id. */
+export function scheduledTaskWebhookPath(publicId: string): string {
+  return `${SCHEDULED_TASK_WEBHOOK_PATH_PREFIX}${publicId}`;
+}
+/** A token's shape: the prefix and `SCHEDULED_TASK_WEBHOOK_TOKEN_BYTES` random bytes in base64url. */
+export function isScheduledTaskWebhookToken(value: unknown): value is string {
+  return typeof value === "string" && WEBHOOK_TOKEN.test(value);
+}
+/** A delivery key the endpoint may keep: trimmed printable ASCII within the bound. */
+export function isScheduledTaskWebhookDedupeKey(value: unknown): value is string {
+  return typeof value === "string" && value.length <= SCHEDULED_TASK_WEBHOOK_DEDUPE_KEY_MAX_LENGTH && WEBHOOK_HEADER_TEXT.test(value);
+}
+/** An event header name the endpoint may keep: trimmed printable ASCII within the bound. */
+export function isScheduledTaskWebhookEventName(value: unknown): value is string {
+  return typeof value === "string" && value.length <= SCHEDULED_TASK_WEBHOOK_EVENT_NAME_MAX_LENGTH && WEBHOOK_HEADER_TEXT.test(value);
+}
+/** A media type the endpoint may keep: a lowercased `type/subtype` within the bound. */
+export function isScheduledTaskWebhookContentType(value: unknown): value is string {
+  return typeof value === "string" && value.length <= SCHEDULED_TASK_WEBHOOK_CONTENT_TYPE_MAX_LENGTH && WEBHOOK_MEDIA_TYPE.test(value);
 }
 
 /**
@@ -559,7 +703,8 @@ export function scheduledTaskChatModeAllowed(
 }
 
 const TASK_KEYS = [
-  "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "telegramNotify",
+  "id", "title", "prompt", "schedule", "scheduleEnabled", "webhookEnabled", "webhook", "timeZone", "modelId", "provider",
+  "searchEnabled", "emailNotify", "telegramNotify",
   "toolsEnabled", "workspaceEnabled", "memoryEnabled", "pinnedSkillIds", "chatMode", "kind", "historyRetentionDays", "historyDeletedChats",
   "historyNextDeletionAt", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running", "chatId",
   "unseenResult", "revision", "createdAt", "updatedAt"
@@ -574,6 +719,14 @@ function lastRun(value: unknown): value is ScheduledTaskLastRun {
   return record(value) && keys(value, ["scheduledFor", "state", "reasonCode", "finishedAt", "unseen"]) &&
     instant(value.scheduledFor) && SETTLED_RUN_STATES.includes(value.state) &&
     nullable(value.reasonCode, code) && instant(value.finishedAt) && typeof value.unseen === "boolean";
+}
+
+/** Exactly the projected webhook fields: a token or its hash never crosses the wire. */
+function webhookProjection(value: unknown): value is ScheduledTaskWebhook {
+  return record(value) && keys(value, ["path", "tokenIssuedAt", "lastEventAt", "queuedEvents"]) &&
+    typeof value.path === "string" && value.path.startsWith(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX) &&
+    isScheduledTaskWebhookPublicId(value.path.slice(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX.length)) &&
+    nullable(value.tokenIssuedAt, instant) && nullable(value.lastEventAt, instant) && count(value.queuedEvents, 0);
 }
 
 /**
@@ -615,6 +768,9 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   const schedule = decodeScheduledTaskSchedule(value.schedule);
   const title = normalizeScheduledTaskTitle(value.title), prompt = value.prompt;
   if (!schedule || !id(value.id) || !title || title !== value.title || !isScheduledTaskPrompt(prompt) ||
+    typeof value.scheduleEnabled !== "boolean" || typeof value.webhookEnabled !== "boolean" ||
+    (!value.scheduleEnabled && !value.webhookEnabled) || (!value.scheduleEnabled && value.nextRunAt !== null) ||
+    !nullable(value.webhook, webhookProjection) || (value.webhookEnabled && value.webhook === null) ||
     !isScheduledTaskTimeZoneShape(value.timeZone) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
     typeof value.emailNotify !== "boolean" || typeof value.telegramNotify !== "boolean" ||
@@ -631,8 +787,11 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     typeof value.unseenResult !== "boolean" || !count(value.revision, 1) || !instant(value.createdAt) ||
     !instant(value.updatedAt)) return null;
   const run = value.lastRun as ScheduledTaskLastRun | null;
+  const hook = value.webhook as ScheduledTaskWebhook | null;
   return {
-    id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
+    id: value.id, title, prompt, schedule, scheduleEnabled: value.scheduleEnabled, webhookEnabled: value.webhookEnabled,
+    webhook: hook && { path: hook.path, tokenIssuedAt: hook.tokenIssuedAt, lastEventAt: hook.lastEventAt, queuedEvents: hook.queuedEvents },
+    timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
     searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, telegramNotify: value.telegramNotify,
     toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, pinnedSkillIds,
     ...(skills ? { pinnedSkills: skills } : {}), chatMode: value.chatMode as ScheduledTaskChatMode,
@@ -655,6 +814,7 @@ const RUN_KEYS = [
   "skills"
 ] as const;
 const SOURCE_REASONS: readonly unknown[] = SCHEDULED_TASK_SOURCE_REASONS;
+const RUN_TRIGGERS: readonly unknown[] = SCHEDULED_TASK_RUN_TRIGGERS;
 
 /** A source name as recorded: a trimmed, control-free display name within the bound. */
 function sourceName(value: unknown): value is string {
@@ -682,7 +842,7 @@ export function decodeScheduledTaskRunSkills(value: unknown): ScheduledTaskRunSk
 
 export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null {
   if (!record(value) || !keys(value, RUN_KEYS) || !id(value.id) ||
-    !instant(value.scheduledFor) || (value.trigger !== "schedule" && value.trigger !== "manual") ||
+    !instant(value.scheduledFor) || !RUN_TRIGGERS.includes(value.trigger) ||
     !RUN_STATES.includes(value.state) || !nullable(value.reasonCode, code) || !nullable(value.startedAt, instant) ||
     !nullable(value.finishedAt, instant) || !nullable(value.chatId, id) || typeof value.unseen !== "boolean" ||
     (value.unseen && value.finishedAt === null)) return null;
@@ -690,7 +850,8 @@ export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null 
   const skills = decodeScheduledTaskRunSkills(value.skills);
   if (!unavailableSources || !skills) return null;
   return {
-    id: value.id, scheduledFor: value.scheduledFor, trigger: value.trigger, state: value.state as ScheduledTaskRunState,
+    id: value.id, scheduledFor: value.scheduledFor, trigger: value.trigger as ScheduledTaskRunTrigger,
+    state: value.state as ScheduledTaskRunState,
     reasonCode: value.reasonCode, startedAt: value.startedAt, finishedAt: value.finishedAt, chatId: value.chatId,
     unseen: value.unseen, unavailableSources, skills
   };
@@ -728,11 +889,33 @@ export function decodeScheduledTaskSeenRequest(value: unknown): ScheduledTaskSee
   return { runIds: [...value.runIds] as string[] };
 }
 
+/** A canonical http(s) address of the endpoint: no credentials, query or fragment, and a webhook path. */
+function webhookUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_048) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.href === value && (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password &&
+    !url.search && !url.hash && url.pathname.startsWith(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX) &&
+    isScheduledTaskWebhookPublicId(url.pathname.slice(SCHEDULED_TASK_WEBHOOK_PATH_PREFIX.length));
+}
+
+export function decodeScheduledTaskWebhookTokenResponse(value: unknown): ScheduledTaskWebhookTokenResponse | null {
+  if (!record(value) || !keys(value, ["token", "url", "issuedAt"]) || !isScheduledTaskWebhookToken(value.token) ||
+    !webhookUrl(value.url) || !instant(value.issuedAt)) return null;
+  return { token: value.token, url: value.url, issuedAt: value.issuedAt };
+}
+
 export function scheduledTaskErrorMessage(errorCode: unknown): string {
   switch (errorCode) {
     case "scheduled_task_invalid": return "Check the automation's name, instructions and settings.";
     case "scheduled_task_schedule_invalid": return "Check the schedule.";
     case "scheduled_task_time_zone_invalid": return "Choose a valid time zone.";
+    case "scheduled_task_trigger_required": return "Turn on at least one way to run it: on a schedule or on a webhook.";
+    case "scheduled_task_webhook_off": return "Turn on the webhook for this automation first.";
     case "scheduled_task_once_in_past": return "Choose a time at least a minute from now.";
     case "scheduled_task_chat_mode_invalid": return "Hourly and monitoring automations always continue in the same chat.";
     case "scheduled_task_model_unavailable": return "This model is not available to you for automations. Choose another model.";

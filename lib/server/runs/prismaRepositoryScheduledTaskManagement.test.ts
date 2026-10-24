@@ -36,6 +36,7 @@ const weekly: ScheduledTaskSchedule = { kind: "weekly", time: "09:00", days: ["m
 function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.", ...scheduledTaskScheduleColumns(weekly),
+    scheduleEnabled: true, webhookEnabled: false, webhook: null,
     timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
     telegramNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW", kind: "STANDARD", status: "ACTIVE",
     historyRetentionDays: 90, historyDeletedChats: 0,

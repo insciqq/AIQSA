@@ -33,6 +33,7 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
+    scheduleEnabled: true, webhookEnabled: false, webhook: null,
     modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false, telegramNotify: false,
     toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: null,
     historyDeletedChats: 0, historyNextDeletionAt: null, status: "active", pauseReason: null,

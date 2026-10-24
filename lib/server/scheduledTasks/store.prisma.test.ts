@@ -1,7 +1,12 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import type { ScheduledTaskDraft } from "../../contracts/scheduledTasks";
+import {
+  SCHEDULED_TASK_WEBHOOK_PATH_PREFIX,
+  SCHEDULED_TASK_WEBHOOK_TEXT_MAX_BYTES,
+  isScheduledTaskWebhookPublicId,
+  type ScheduledTaskDraft
+} from "../../contracts/scheduledTasks";
 import { prisma } from "../prisma";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns, ScheduledTaskError } from "./store";
 import { scheduledPromptUrlDigests } from "./promptUrls";
@@ -13,6 +18,7 @@ const store = createPrismaScheduledTaskStore(prisma);
 const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
+  scheduleEnabled: true, webhookEnabled: false,
   timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, toolsEnabled: false,
   telegramNotify: false, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard",
   historyRetentionDays: 90
@@ -21,6 +27,8 @@ const hourlyDraft: ScheduledTaskDraft = {
   ...draft, chatMode: "same",
   schedule: { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] }
 };
+/** Runs only on its webhook; its schedule is kept for the editor. */
+const webhookDraft: ScheduledTaskDraft = { ...draft, scheduleEnabled: false, webhookEnabled: true };
 const due = new Date("2026-10-05T06:00:00.000Z");
 
 async function owner(): Promise<string> {
@@ -333,5 +341,140 @@ describe("persisted scheduled tasks", () => {
     await prisma.user.delete({ where: { id: userId } });
     expect(await prisma.scheduledTask.count({ where: { userId } })).toBe(0);
     expect(await prisma.scheduledTaskOccurrence.count({ where: { userId } })).toBe(0);
+  });
+
+  it("creates a webhook-only automation without a due time and keeps its webhook while the trigger is off", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, webhookDraft, null, noUrls);
+    expect(task).toMatchObject({ nextRunAt: null, scheduleEnabled: false, status: "active", webhookEnabled: true,
+      webhook: { lastEventAt: null, queuedEvents: 0, tokenIssuedAt: null } });
+    const hook = await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: task.id } });
+    expect(isScheduledTaskWebhookPublicId(hook.publicId)).toBe(true);
+    expect(hook).toMatchObject({ tokenHash: null, tokenIssuedAt: null, userId });
+    expect(task.webhook?.path).toBe(`${SCHEDULED_TASK_WEBHOOK_PATH_PREFIX}${hook.publicId}`);
+    // Both triggers; then the schedule alone, which keeps the address for later.
+    const both = await store.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true }, expectedRevision: 1,
+      nextRunAt: due, promptUrls: "keep", status: "active" });
+    expect(both).toMatchObject({ nextRunAt: due.toISOString(), scheduleEnabled: true, webhookEnabled: true });
+    const off = await store.update(userId, task.id, { draft, expectedRevision: 2, nextRunAt: undefined, promptUrls: "keep", status: "active" });
+    expect(off).toMatchObject({ nextRunAt: due.toISOString(), webhookEnabled: false, webhook: { path: task.webhook?.path } });
+    // An issued token survives every owner edit, and no projection carries its hash.
+    const issuedAt = new Date("2026-10-25T08:00:00.000Z");
+    await prisma.scheduledTaskWebhook.update({ data: { tokenHash: "a".repeat(64), tokenIssuedAt: issuedAt }, where: { taskId: task.id } });
+    // Turning the schedule off clears its due time whatever the caller kept, and the webhook comes back at its address.
+    const again = await store.update(userId, task.id, { draft: webhookDraft, expectedRevision: 3, nextRunAt: undefined, promptUrls: "keep",
+      status: "active" });
+    expect(again).toMatchObject({ nextRunAt: null, scheduleEnabled: false, webhook: { path: task.webhook?.path,
+      tokenIssuedAt: issuedAt.toISOString() } });
+    expect(JSON.stringify(again)).not.toContain("a".repeat(64));
+    expect(await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: task.id } }))
+      .toMatchObject({ publicId: hook.publicId, tokenHash: "a".repeat(64), tokenIssuedAt: issuedAt });
+    expect((await store.list(userId)).tasks).toMatchObject([{ id: task.id, webhook: { path: task.webhook?.path } }]);
+    // A task created on its schedule alone has no webhook.
+    expect(await store.create(userId, draft, due, noUrls)).toMatchObject({ webhook: null, webhookEnabled: false });
+    expect(await prisma.scheduledTaskWebhook.count({ where: { userId } })).toBe(1);
+  });
+
+  it("needs a trigger and never gives an off schedule a due time, in the store and in the database", async () => {
+    const userId = await owner();
+    await expect(store.create(userId, { ...draft, scheduleEnabled: false }, null, noUrls))
+      .rejects.toMatchObject({ code: "scheduled_task_trigger_required" });
+    const task = await store.create(userId, draft, due, noUrls);
+    await expect(store.update(userId, task.id, { draft: { ...draft, scheduleEnabled: false }, expectedRevision: 1, nextRunAt: null,
+      promptUrls: "keep", status: "active" })).rejects.toMatchObject({ code: "scheduled_task_trigger_required" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
+      .toMatchObject({ nextRunAt: due, revision: 1, scheduleEnabled: true, webhookEnabled: false });
+    // Other writers meet the same rules, so the scheduler, which claims only due runs, never picks an off schedule.
+    await expect(prisma.scheduledTask.update({ data: { scheduleEnabled: false }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_trigger_check");
+    await expect(prisma.scheduledTask.update({ data: { scheduleEnabled: false, webhookEnabled: true }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_trigger_check");
+    await prisma.scheduledTask.update({ data: { nextRunAt: null, scheduleEnabled: false, webhookEnabled: true }, where: { id: task.id } });
+    await expect(prisma.scheduledTask.update({ data: { nextRunAt: due }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_trigger_check");
+  });
+
+  it("counts only hourly schedules that are on toward the hourly limit", async () => {
+    const userId = await owner();
+    for (let index = 0; index < 3; index += 1) await store.create(userId, { ...hourlyDraft, title: `Hourly ${index}` }, due, noUrls);
+    // A webhook-only task keeps an hourly schedule without running it.
+    const hooked = await store.create(userId, { ...hourlyDraft, scheduleEnabled: false, title: "Hooked", webhookEnabled: true }, null, noUrls);
+    expect(hooked).toMatchObject({ nextRunAt: null, schedule: { kind: "hourly" }, status: "active" });
+    await expect(store.update(userId, hooked.id, { draft: { ...hourlyDraft, title: "Hooked", webhookEnabled: true }, expectedRevision: 1,
+      nextRunAt: due, promptUrls: "keep", status: "active" })).rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
+  });
+
+  it("keeps an event's body only while it waits, links one occurrence of its own task and orders events per task", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, webhookDraft, null, noUrls);
+    const other = await store.create(userId, { ...webhookDraft, title: "Other" }, null, noUrls);
+    const at = (minute: number) => new Date(Date.UTC(2026, 9, 25, 9, minute));
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: {
+      scheduledFor: at(0), taskId: task.id, trigger: "webhook", userId
+    } });
+    await expect(prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: at(1), taskId: task.id, trigger: "retry", userId } }))
+      .rejects.toThrow("ScheduledTaskOccurrence_trigger_check");
+    const dedupeKey = "4b0dba54-5e0b-4b4f-a1b4-6a1c2b53e0a1";
+    const event = await prisma.scheduledTaskWebhookEvent.create({ data: {
+      bodyText: "{\n  \"status\": \"failed\"\n}", contentType: "application/json", dedupeKey, eventName: "Pipeline Hook",
+      occurrenceId: occurrence.id, receivedAt: at(0), taskId: task.id, userId
+    } });
+    expect(event).toMatchObject({ occurrenceId: occurrence.id, state: "QUEUED" });
+    // A repeated delivery key and a second event at the same instant are refused for the task, not for another task.
+    await expect(prisma.scheduledTaskWebhookEvent.create({ data: { bodyText: "", dedupeKey, receivedAt: at(1), taskId: task.id, userId } }))
+      .rejects.toMatchObject({ code: "P2002" });
+    await expect(prisma.scheduledTaskWebhookEvent.create({ data: { bodyText: "", receivedAt: at(0), taskId: task.id, userId } }))
+      .rejects.toMatchObject({ code: "P2002" });
+    await prisma.scheduledTaskWebhookEvent.create({ data: { bodyText: "", dedupeKey, receivedAt: at(0), taskId: other.id, userId } });
+    // An occurrence takes one event, only of its own task.
+    await expect(prisma.scheduledTaskWebhookEvent.create({ data: {
+      bodyText: "", occurrenceId: occurrence.id, receivedAt: at(2), taskId: task.id, userId
+    } })).rejects.toMatchObject({ code: "P2002" });
+    await expect(prisma.scheduledTaskWebhookEvent.create({ data: {
+      bodyText: "", occurrenceId: occurrence.id, receivedAt: at(2), taskId: other.id, userId
+    } })).rejects.toMatchObject({ code: "P2003" });
+    // The body exists exactly while the event waits and within its bound; header facts are trimmed printable ASCII.
+    for (const data of [
+      { receivedAt: at(3), taskId: task.id, userId },
+      { bodyText: "x".repeat(SCHEDULED_TASK_WEBHOOK_TEXT_MAX_BYTES + 1), receivedAt: at(3), taskId: task.id, userId },
+      { bodyText: "", eventName: "Push\nHook", receivedAt: at(3), taskId: task.id, userId },
+      { bodyText: "", dedupeKey: " padded", receivedAt: at(3), taskId: task.id, userId },
+      { bodyText: "", contentType: "application/json; charset=utf-8", receivedAt: at(3), taskId: task.id, userId }
+    ]) {
+      await expect(prisma.scheduledTaskWebhookEvent.create({ data })).rejects.toThrow("ScheduledTaskWebhookEvent_check");
+    }
+    await expect(prisma.scheduledTaskWebhookEvent.update({ data: { state: "ADMITTED" }, where: { id: event.id } }))
+      .rejects.toThrow("ScheduledTaskWebhookEvent_check");
+    expect(await store.get(userId, task.id)).toMatchObject({ webhook: { queuedEvents: 1 } });
+    expect((await store.detail(userId, task.id))?.recentRuns).toMatchObject([{ trigger: "webhook" }]);
+    await prisma.scheduledTaskWebhookEvent.update({ data: { bodyText: null, state: "ADMITTED" }, where: { id: event.id } });
+    expect(await store.get(userId, task.id)).toMatchObject({ webhook: { queuedEvents: 0 } });
+    // Pruning the occurrence history keeps the bodyless row for deduplication and the rate cap.
+    await prisma.scheduledTaskOccurrence.delete({ where: { id: occurrence.id } });
+    expect(await prisma.scheduledTaskWebhookEvent.findUniqueOrThrow({ where: { id: event.id } }))
+      .toMatchObject({ bodyText: null, occurrenceId: null, state: "ADMITTED", taskId: task.id, userId });
+    // A token hash always has its issue time, and a public id is the random base64url the store writes.
+    await expect(prisma.scheduledTaskWebhook.update({ data: { tokenHash: "a".repeat(64) }, where: { taskId: task.id } }))
+      .rejects.toThrow("ScheduledTaskWebhook_check");
+    await expect(prisma.scheduledTaskWebhook.update({ data: { tokenHash: "A".repeat(64), tokenIssuedAt: at(4) }, where: { taskId: task.id } }))
+      .rejects.toThrow("ScheduledTaskWebhook_check");
+    await expect(prisma.scheduledTaskWebhook.update({ data: { publicId: "not+a+public+id+++++++" }, where: { taskId: task.id } }))
+      .rejects.toThrow("ScheduledTaskWebhook_check");
+  });
+
+  it("removes the webhook and its events with the automation and with the account", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, webhookDraft, null, noUrls);
+    const kept = await store.create(userId, { ...webhookDraft, title: "Kept" }, null, noUrls);
+    for (const taskId of [task.id, kept.id]) {
+      await prisma.scheduledTaskWebhookEvent.create({ data: { bodyText: "{}", receivedAt: due, taskId, userId } });
+    }
+    expect(await store.delete(userId, task.id)).toBe(true);
+    expect(await prisma.scheduledTaskWebhook.count({ where: { taskId: task.id } })).toBe(0);
+    expect(await prisma.scheduledTaskWebhookEvent.count({ where: { taskId: task.id } })).toBe(0);
+    expect(await prisma.scheduledTaskWebhookEvent.count({ where: { taskId: kept.id } })).toBe(1);
+    await prisma.user.delete({ where: { id: userId } });
+    expect(await prisma.scheduledTaskWebhook.count({ where: { userId } })).toBe(0);
+    expect(await prisma.scheduledTaskWebhookEvent.count({ where: { userId } })).toBe(0);
   });
 });
