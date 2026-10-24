@@ -421,6 +421,8 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     title: draft.title.trim(),
     prompt: draft.prompt,
     schedule,
+    scheduleEnabled: true,
+    webhookEnabled: false,
     timeZone: draft.timeZone,
     modelId: draft.modelId,
     provider: draft.provider,

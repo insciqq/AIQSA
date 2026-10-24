@@ -12,7 +12,7 @@ import { nextOccurrenceAfter, sameScheduledTaskSchedule } from "../../domain/sch
 export type ScheduledTaskPlanFailure = {
   ok: false;
   code: "scheduled_task_once_in_past" | "scheduled_task_schedule_invalid" | "scheduled_task_chat_mode_invalid" |
-    "scheduled_task_skills_need_tools";
+    "scheduled_task_skills_need_tools" | "scheduled_task_trigger_required";
 };
 export type ScheduledTaskUpdatePlan = {
   ok: true;
@@ -43,16 +43,19 @@ export function firstScheduledTaskRunAt(
 }
 
 /**
- * Owner edit rules. Explicit status wins; otherwise the status is kept, except
- * that a schedule change reactivates a completed task. Pausing clears the
- * due time. Arming (resume, reactivation or a changed active schedule) takes
- * the next occurrence from now; an unchanged active schedule keeps its due time
- * so that an edit never skips a run that is already due. A changed once
- * schedule must lie ahead in any status. The model is readmitted whenever the
- * result is active, its identity, Search, type or pinned Skills changed, or
- * tools or Workspace were turned on. An hourly or monitoring result must
- * continue in one chat; the chat mode is never changed silently, nor are
- * pinned Skills dropped when tools turn off.
+ * Owner edit rules. At least one trigger stays on. Explicit status wins;
+ * otherwise the status is kept, except that a schedule change reactivates a
+ * completed task. Pausing clears the due time, and so does turning the
+ * schedule off: an off schedule never runs, and changing its values neither
+ * arms nor reactivates. Turning it on is a schedule change. Arming (resume,
+ * reactivation or a changed active schedule) takes the next occurrence from
+ * now; an unchanged active schedule keeps its due time so that an edit never
+ * skips a run that is already due. A changed once schedule that is on must lie
+ * ahead in any status. The model is readmitted whenever the result is active,
+ * its identity, Search, type or pinned Skills changed, or tools or Workspace
+ * were turned on. An hourly or monitoring result must continue in one chat,
+ * whether its schedule is on or not; the chat mode is never changed silently,
+ * nor are pinned Skills dropped when tools turn off.
  */
 export function planScheduledTaskUpdate(
   current: ScheduledTask,
@@ -63,6 +66,8 @@ export function planScheduledTaskUpdate(
     title: patch.title ?? current.title,
     prompt: patch.prompt ?? current.prompt,
     schedule: patch.schedule ?? current.schedule,
+    scheduleEnabled: patch.scheduleEnabled ?? current.scheduleEnabled,
+    webhookEnabled: patch.webhookEnabled ?? current.webhookEnabled,
     timeZone: patch.timeZone ?? current.timeZone,
     modelId: patch.modelId ?? current.modelId,
     provider: patch.provider ?? current.provider,
@@ -78,11 +83,14 @@ export function planScheduledTaskUpdate(
     // Null is a choice here (forever), not an omission.
     historyRetentionDays: patch.historyRetentionDays !== undefined ? patch.historyRetentionDays : current.historyRetentionDays
   };
+  if (!draft.scheduleEnabled && !draft.webhookEnabled) return { ok: false, code: "scheduled_task_trigger_required" };
   if (!scheduledTaskChatModeAllowed(draft, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   if (draft.pinnedSkillIds.length > 0 && !draft.toolsEnabled) return { ok: false, code: "scheduled_task_skills_need_tools" };
   const skillsChanged = draft.pinnedSkillIds.length !== current.pinnedSkillIds.length ||
     draft.pinnedSkillIds.some((skillId, index) => skillId !== current.pinnedSkillIds[index]);
-  const scheduleChanged = draft.timeZone !== current.timeZone || !sameScheduledTaskSchedule(draft.schedule, current.schedule);
+  // The schedule that runs changed: it was turned on, or its values changed while it stays on.
+  const scheduleChanged = draft.scheduleEnabled && (!current.scheduleEnabled || draft.timeZone !== current.timeZone ||
+    !sameScheduledTaskSchedule(draft.schedule, current.schedule));
   // Turning tools or Workspace on needs the model's tool calling (and Workspace the installation's) again.
   const modelChanged = draft.modelId !== current.modelId || draft.provider !== current.provider ||
     draft.searchEnabled !== current.searchEnabled || draft.kind !== current.kind ||
@@ -92,7 +100,7 @@ export function planScheduledTaskUpdate(
   // A claimed once task has no due time left to keep; a recurring one always needs one.
   const keepsDueTime = current.status === "active" && !scheduleChanged &&
     (current.nextRunAt !== null || draft.schedule.kind === "once");
-  const arming = status === "active" && !keepsDueTime;
+  const arming = draft.scheduleEnabled && status === "active" && !keepsDueTime;
   let first: Date | null = null;
   if (arming || (scheduleChanged && draft.schedule.kind === "once")) {
     const planned = firstScheduledTaskRunAt(draft.schedule, draft.timeZone, now);
@@ -101,7 +109,7 @@ export function planScheduledTaskUpdate(
   }
   return {
     ok: true, draft, status,
-    nextRunAt: status !== "active" ? null : arming ? first : undefined,
+    nextRunAt: status !== "active" || !draft.scheduleEnabled ? null : arming ? first : undefined,
     checkModel: status === "active" || modelChanged
   };
 }

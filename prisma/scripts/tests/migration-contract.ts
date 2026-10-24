@@ -75,6 +75,7 @@ import {
   searchOnForEveryoneWithoutApiFixtureSql,
   searchOnForEveryoneWithoutApiProofSql
 } from "./search-on-for-everyone-adoption";
+import { AUTOMATION_WEBHOOKS_MIGRATION, automationWebhooksFixtureSql, automationWebhooksProofSql } from "./automation-webhooks-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7922,6 +7923,10 @@ function main(
     searchOnForEveryoneFixtureSql, searchOnForEveryoneProofSql, searchOnForEveryoneProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
     searchOnForEveryoneWithoutApiFixtureSql, searchOnForEveryoneWithoutApiProofSql, searchOnForEveryoneWithoutApiProofSql);
+  // Expand only: tasks saved before the trigger switches, and by a previous-release
+  // writer during the upgrade, keep running on their schedule with the webhook off.
+  runForwardAdoptionProof(shadowDatabase, migrations, AUTOMATION_WEBHOOKS_MIGRATION,
+    automationWebhooksFixtureSql, automationWebhooksProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
