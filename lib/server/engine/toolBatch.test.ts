@@ -91,6 +91,8 @@ describe("native tool batch", () => {
     const unknown = [...rows.values()].find((row) => row.providerCallId === "c2")!;
     expect(JSON.stringify(unknown.result)).toContain(TOOL_CALL_UNKNOWN);
     expect(outcome.results[1]!.output).toBe(UNKNOWN_TOOL_CALL_MESSAGE);
+    // An unknown name and malformed arguments are mistakes the model can correct in its next call.
+    expect(outcome).toMatchObject({ correctable: 2, executed: 2 });
   });
 
   it("tells a call of a replaced tool what to use instead, and records it as an unknown call", async () => {
@@ -107,7 +109,7 @@ describe("native tool batch", () => {
     ]);
     // The step list reads both as the plain unknown calls they are.
     for (const row of rows.values()) expect(unknownToolCall({ ...row, result: row.result as never })).not.toBeNull();
-    expect(outcome.executed).toBe(0);
+    expect(outcome).toMatchObject({ correctable: 2, executed: 0 });
   });
 
   it("ends at the approval point: a gated call is not sent and gets a waiting result", async () => {

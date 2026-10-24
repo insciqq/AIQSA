@@ -738,6 +738,7 @@
   "memory_version_stale",
   "method_unavailable",
   "missed",
+  "model_answer_empty",
   "model_cannot_report",
   "model_missing",
   "model_not_available",
