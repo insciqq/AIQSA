@@ -129,23 +129,6 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
       } });
       return true;
     }),
-    beginKnowledge: input => db.$transaction(async tx => {
-      await lockRun(tx, input.runId);
-      const run = await tx.modelRun.findFirst({ where: { id: input.runId, userId: input.userId,
-        status: { in: activeModelRunStatuses }, answerCompletedAt: null, followupClosedAt: null,
-        followupRevision: input.revision }, select: {
-        followupMode: true, followupKnowledgeOffset: true, followupKnowledgeRevision: true
-      } });
-      if (!run) throw new Error("followup_execution_closed");
-      if (!run.followupMode || run.followupKnowledgeRevision === input.revision) return run.followupKnowledgeOffset;
-      const latest = await tx.knowledgeProviderAttempt.aggregate({ where: { modelRunId: input.runId }, _max: { ordinal: true } });
-      const offset = latest._max.ordinal ?? 0;
-      if (offset >= 8) throw new Error("knowledge_answer_operation_budget_exceeded");
-      await tx.modelRun.update({ where: { id: input.runId }, data: {
-        followupKnowledgeRevision: input.revision, followupKnowledgeOffset: offset
-      } });
-      return offset;
-    }),
     close: input => db.$transaction(async tx => {
       await lockRun(tx, input.runId);
       const result = await tx.modelRun.updateMany({ where: { id: input.runId, userId: input.userId,

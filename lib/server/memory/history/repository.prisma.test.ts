@@ -4099,33 +4099,16 @@ describe("Memory lexical history index persistence", () => {
           strategyId: "history-test-search"
         }
       });
-      const knowledgeToolCall = await prisma.modelRunToolCall.create({
+      await prisma.modelRunToolCall.create({
         data: {
           arguments: { private: "RAW_KNOWLEDGE_QUERY_MUST_NOT_BE_INDEXED" },
           modelRunId: groundedTurn.run.id,
           ordinal: 0,
           providerCallId: "history-knowledge-call",
+          result: { private: "RAW_KNOWLEDGE_RESULT_MUST_NOT_BE_INDEXED" },
           roundIndex: 0,
           state: "complete",
           toolName: "knowledge_search"
-        }
-      });
-      await prisma.knowledgeRun.create({
-        data: {
-          baseEvidence: [{ baseName: "History runtime Base", ordinal: 0 }],
-          candidateCount: 1,
-          candidateLimit: 1,
-          durationMs: 1,
-          embeddingUsage: [],
-          fusion: "rrf_k60",
-          invocationOrdinal: 1,
-          modelRunId: groundedTurn.run.id,
-          modelRunToolCallId: knowledgeToolCall.id,
-          outcome: "complete",
-          providerText: "RAW_KNOWLEDGE_RESULT_MUST_NOT_BE_INDEXED",
-          query: "private knowledge query",
-          resultLimit: 1,
-          results: [{ handle: "K1" }]
         }
       });
       await prisma.modelRunToolCall.create({

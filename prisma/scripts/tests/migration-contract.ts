@@ -79,6 +79,10 @@ import {
   CODEX_AGENT_RETIREMENT_MIGRATION, codexAgentRetirementFixtureSql, codexAgentRetirementProofSql
 } from "./codex-agent-retirement-adoption";
 import { DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION, dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql } from "./drop-memory-lexical-projection-adoption";
+import {
+  DROP_PROJECTS_KNOWLEDGE_MIGRATION, dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql,
+  dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql
+} from "./drop-projects-knowledge-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -540,17 +544,6 @@ function deployAndVerify(
   assert.match(
     app(database, ["npx", "prisma", "migrate", "status"]),
     /Database schema is up to date!/u,
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT character_maximum_length
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'KnowledgeProviderAttempt'
-        AND column_name = 'purpose';
-    `),
-    "64",
-    "Knowledge provider operation identifiers do not fit the active versioned purposes",
   );
   const schemaDatamodelDiff = app(database, [
     "npx",
@@ -5008,51 +5001,6 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
   }
 }
 
-function runKnowledgeValidatorRestoreSafetyProof(database: string): void {
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname = 'knowledge_document_context_valid'
-        AND provolatile = 'i'
-        AND proparallel = 'r'
-        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
-    `),
-    "1",
-    "H5 document context validator lacks its immutable restore-safe contract",
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname IN (
-          'knowledge_discovery_receipt_valid',
-          'knowledge_exact_receipt_valid'
-        )
-        AND provolatile = 'i'
-        AND proparallel = 'r'
-        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
-    `),
-    "2",
-    "H3 receipt validators lack their immutable restore-safe contracts",
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname IN (
-          'knowledge_structured_receipt_valid',
-          'knowledge_visual_receipt_valid'
-        )
-        AND provolatile = 'i'
-        AND proparallel = 's'
-        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
-    `),
-    "2",
-    "H3 auxiliary receipt validators lack restore-safe helper resolution",
-  );
-}
-
 function runKnowledgeH5DocumentContextMigrationProof(
   database: string,
   committed: readonly string[],
@@ -6179,7 +6127,14 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     SELECT 'knowledge-basic-legacy-analysis-ready';
   `);
 
-  app(database, ["npx", "prisma", "migrate", "deploy"]);
+  // `committed` ends before the Project and Knowledge drop: the rest of this
+  // proof and the search health proof after it read the Knowledge tables.
+  const historyRoot = migrationPrefixTree(database, committed);
+  try {
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", `${historyRoot}/schema.prisma`]);
+  } finally {
+    app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", historyRoot]);
+  }
   assertDeployedMigrations(database, committed);
 
   psqlScalar(database, `
@@ -7688,20 +7643,24 @@ function main(
       "independent clean installs produced different schema catalogs",
     );
   }
-  runKnowledgeProfileBackfillProof(shadowDatabase, migrations);
-  runKnowledgeSourceMigrationProof(shadowDatabase, migrations);
-  runKnowledgeReadReceiptMigrationProof(shadowDatabase, migrations);
-  runKnowledgeH2DurableDispatchMigrationProof(shadowDatabase, migrations);
-  runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, migrations);
-  runKnowledgeValidatorRestoreSafetyProof(databases[0]!);
-  runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, migrations);
-  runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
-  runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
-  runKnowledgeToolCoexistenceMigrationProof(migrations);
-  runKnowledgeSearchHealthMigrationProof(shadowDatabase, migrations);
+  // The historical Knowledge proofs deploy the history after their migration
+  // and then read Knowledge tables, so it ends before they are dropped.
+  const beforeKnowledgeDrop = migrations.slice(0, migrations.indexOf(DROP_PROJECTS_KNOWLEDGE_MIGRATION));
+  assert.ok(beforeKnowledgeDrop.length > 0, "Project and Knowledge drop migration is missing");
+  runKnowledgeProfileBackfillProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeSourceMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeReadReceiptMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH2DurableDispatchMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeToolCoexistenceMigrationProof(beforeKnowledgeDrop);
+  runKnowledgeSearchHealthMigrationProof(shadowDatabase, beforeKnowledgeDrop);
   runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
+  // Its proof reads the Project bindings the Project and Knowledge drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANT_LIVE_MIGRATION,
-    assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql);
+    assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql, undefined, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_SHARING_MIGRATION,
     skillsSharingFixtureSql, skillsSharingProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_PROGRESSIVE_MIGRATION,
@@ -7737,10 +7696,14 @@ function main(
     memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql, memoryEgressReceiptProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, NATIVE_ROUTING_MIGRATION,
     nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql);
+  // Both proofs compare whole policy rows, which the Project and Knowledge drop
+  // extends with the Memory embedding default.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_MIGRATION,
-    memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql);
+    memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql,
+    DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_V2_MIGRATION,
-    memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql);
+    memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql,
+    DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
     memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
   for (const { fixture, proof } of mcpModelOutputBudgetFixtures) {
@@ -7846,7 +7809,7 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, SCHEDULED_TASK_CHAT_ROTATION_MIGRATION,
     scheduledTaskChatRotationFixtureSql, scheduledTaskChatRotationProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION,
-    knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql);
+    knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql, undefined, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MCP_TOOL_UPDATE_TRUST_MIGRATION,
     mcpToolUpdateTrustFixtureSql, mcpToolUpdateTrustProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION,
@@ -7867,8 +7830,10 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION,
     dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql,
     dropRetiredMemoryDigestSynthesisStorageProofSql);
+  // Its proof reads the Knowledge relevance owner check the Project and Knowledge drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, USAGE_EVENT_PURPOSE_MIGRATION,
-    usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql);
+    usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql,
+    DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, WEB_SEARCH_PRICES_MIGRATION,
     webSearchPricesFixtureSql, webSearchPricesProofSql, webSearchPricesProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_REFRESH_PRICES_MIGRATION,
@@ -7911,9 +7876,9 @@ function main(
     stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql,
     stopMemoryLexicalProjectionCaptureProofSql, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION);
   // Projects are fenced for deletion, never deleted by the migration itself;
-  // Workspace maintenance deletes them through the Project deletion path.
+  // the previous release deleted them through the Project deletion path.
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_PROJECTS_MIGRATION,
-    retireProjectsFixtureSql, retireProjectsProofSql, retireProjectsProofSql);
+    retireProjectsFixtureSql, retireProjectsProofSql, retireProjectsProofSql, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   // Search turns on for everyone, and DeepSeek's hosted Search hands its
   // selections and grants to a working DeepSeek Search API, or drops out.
   runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
@@ -7928,6 +7893,14 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION,
     dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql,
     dropMemoryLexicalProjectionProofSql);
+  // Project and Knowledge storage goes, including rows a missed retirement
+  // left; the Memory embedding default moves and core routines stay.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
+    dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql, dropProjectsKnowledgeProofSql);
+  // After a completed retirement every Project check holds, and a deleted
+  // Project's scoped upload stays writable for its cleanup.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
+    dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql, dropProjectsKnowledgeRetiredProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

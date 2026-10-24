@@ -111,8 +111,6 @@ function createBootstrapTransaction(input: {
     groupCreate: record("group.create", { id: "group-id" }),
     groupFindUnique: record("group.findUnique", null),
     groupUpdate: record("group.update", { id: "group-id" }),
-    knowledgeIndexProfileUpsert: record("knowledgeIndexProfile.upsert", { id: "installation" }),
-    knowledgeAnswerPolicyUpsert: record("knowledgeAnswerPolicy.upsert", { id: "installation" }),
     memoryEgressAdminPolicyUpsert: record("memoryEgressAdminPolicy.upsert", { id: "installation" }),
     mcpActivationJobDeleteMany: record("mcpActivationJob.deleteMany", { count: 0 }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
@@ -121,7 +119,6 @@ function createBootstrapTransaction(input: {
     mcpRuntimeGenerationDeleteMany: record("mcpRuntimeGeneration.deleteMany", { count: 0 }),
     mcpServerDeleteMany: record("mcpServer.deleteMany", { count: 0 }),
     mcpServerFindMany: record("mcpServer.findMany", []),
-    projectMcpBindingDeleteMany: record("projectMcpBinding.deleteMany", { count: 0 }),
     modelPolicyUpsert: record("modelPolicy.upsert", { id: "installation" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelCreate: record("providerModel.create", { id: "reranker-model-id" }),
@@ -165,12 +162,6 @@ function createBootstrapTransaction(input: {
       findUnique: spies.groupFindUnique,
       update: spies.groupUpdate
     },
-    knowledgeIndexProfile: {
-      upsert: spies.knowledgeIndexProfileUpsert
-    },
-    knowledgeAnswerPolicy: {
-      upsert: spies.knowledgeAnswerPolicyUpsert
-    },
     memoryEgressAdminPolicy: {
       upsert: spies.memoryEgressAdminPolicyUpsert
     },
@@ -192,9 +183,6 @@ function createBootstrapTransaction(input: {
     mcpServer: {
       deleteMany: spies.mcpServerDeleteMany,
       findMany: spies.mcpServerFindMany
-    },
-    projectMcpBinding: {
-      deleteMany: spies.projectMcpBindingDeleteMany
     },
     modelPolicy: {
       upsert: spies.modelPolicyUpsert
@@ -467,16 +455,6 @@ describe("installation bootstrap", () => {
     );
     expect(fixture.spies.modelPolicyUpsert).toHaveBeenCalledWith({
       create: { defaultProviderModelId: null, id: "installation" },
-      update: {},
-      where: { id: "installation" }
-    });
-    expect(fixture.spies.knowledgeIndexProfileUpsert).toHaveBeenCalledWith({
-      create: { id: "installation" },
-      update: {},
-      where: { id: "installation" }
-    });
-    expect(fixture.spies.knowledgeAnswerPolicyUpsert).toHaveBeenCalledWith({
-      create: { id: "installation" },
       update: {},
       where: { id: "installation" }
     });
@@ -896,11 +874,10 @@ describe("installation bootstrap", () => {
     await expect(bootstrapInstallationDatabase(prisma, { ...baseInput, acceptLocalMcpRemoval: true }))
       .resolves.toMatchObject({ localMcpRemovedCount: 4, status: "already_adopted" });
 
-    const removal = fixture.events.slice(4, 12);
+    const removal = fixture.events.slice(4, 11);
     expect(removal).toEqual([
       "localMcp.inspect",
       "mcpOAuthConnection.findMany",
-      "projectMcpBinding.deleteMany",
       "mcpRuntimeGeneration.deleteMany",
       "mcpRevision.deleteMany",
       "localMcp.resetDrafts",
@@ -921,7 +898,6 @@ describe("installation bootstrap", () => {
     expect(result).not.toHaveProperty("localMcpRemovedCount");
     expect(fixture.events).toContain("localMcp.inspect");
     for (const deletion of [
-      fixture.spies.projectMcpBindingDeleteMany,
       fixture.spies.mcpRuntimeGenerationDeleteMany,
       fixture.spies.mcpRevisionDeleteMany,
       fixture.spies.mcpActivationJobDeleteMany,

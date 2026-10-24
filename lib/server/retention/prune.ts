@@ -2,22 +2,12 @@ import { ARTIFACT_WRITE_LEASE_MS } from "../artifacts/lifecycle";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
-import {
-  createPrismaKnowledgeDeletionProcessor,
-  drainKnowledgeDeletionJobs,
-  type KnowledgeDeletionDrainSummary
-} from "@/lib/server/knowledge/deletionProcessor";
 import { createMcpHubOperationStore, type McpHubMaintenanceResult } from "../mcp/hubOperations";
 import { WORKSPACE_ACTIVITY_RECEIPT } from "../runs/workspaceActivityPersistence";
 
 export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 export const DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS = 7;
 export const DEFAULT_AUTH_RETENTION_DAYS = 30;
-// Knowledge was removed (lib/server/knowledge/retirement.ts deletes what is
-// left); these retire leftover Knowledge rows until its tables are dropped.
-export const DEFAULT_KNOWLEDGE_PAYLOAD_RETENTION_DAYS = 30;
-export const DEFAULT_KNOWLEDGE_UPLOAD_SESSION_RETENTION_DAYS = 7;
-export const DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS = 30;
 export const DEFAULT_PRUNE_BATCH_SIZE = 1000;
 export const DEFAULT_DELETION_JOB_LEASE_MINUTES = 15;
 
@@ -59,39 +49,6 @@ export type AttachmentStageResult = {
   matched: number;
   rowsDeleted: number;
   sharedRowsDeleted: number;
-};
-
-export type KnowledgePayloadInspection = {
-  matched: number;
-  objects: number;
-};
-
-export type KnowledgePayloadStageResult = {
-  jobsStaged: number;
-  matched: number;
-  objectsReleased: number;
-  sharedObjects: number;
-  versionsPurged: number;
-};
-
-export type KnowledgeTrashInspection = {
-  bases: number;
-  sources: number;
-};
-
-export type KnowledgeTrashStageResult = KnowledgeTrashInspection & {
-  jobsStaged: number;
-};
-
-export type KnowledgeUploadSessionInspection = {
-  items: number;
-  multipartSessions: number;
-};
-
-export type KnowledgeUploadSessionStageResult = KnowledgeUploadSessionInspection & {
-  itemsReleased: number;
-  jobsStaged: number;
-  multipartSessionsReleased: number;
 };
 
 export type InboundMcpOAuthPruneCandidates = Readonly<{
@@ -140,24 +97,6 @@ export type RetentionRepository = {
   /** Aged terminal-run events that retention deliberately keeps as answer projections. */
   countExemptModelRunEvents(input: { cutoff: Date }): Promise<number>;
   inspectOrphanedAttachments(input: { cutoff: Date; limit: number }): Promise<AttachmentInspection>;
-  inspectStaleKnowledgePayloads(input: {
-    cutoff: Date;
-    limit: number;
-  }): Promise<KnowledgePayloadInspection>;
-  inspectExpiredKnowledgeTrash(input: {
-    cutoff: Date;
-    limit: number;
-  }): Promise<KnowledgeTrashInspection>;
-  inspectExpiredKnowledgeUploadSessions(input: {
-    cutoff: Date;
-    limit: number;
-  }): Promise<KnowledgeUploadSessionInspection>;
-  drainKnowledgeDeletionJobs(input: {
-    leaseMinutes: number;
-    limit: number;
-    now: Date;
-  }): Promise<KnowledgeDeletionDrainSummary>;
-  finalizeKnowledgeDeletionJobs(input: { now: Date }): Promise<number>;
   releaseAttachmentDeletionJob(input: {
     claimToken: string;
     errorCode: "object_delete_failed";
@@ -168,21 +107,6 @@ export type RetentionRepository = {
     cutoff: Date;
     limit: number;
   }): Promise<AttachmentStageResult>;
-  stageStaleKnowledgePayloads(input: {
-    cutoff: Date;
-    limit: number;
-    now: Date;
-  }): Promise<KnowledgePayloadStageResult>;
-  stageExpiredKnowledgeTrash(input: {
-    cutoff: Date;
-    limit: number;
-    now: Date;
-  }): Promise<KnowledgeTrashStageResult>;
-  stageExpiredKnowledgeUploadSessions(input: {
-    cutoff: Date;
-    limit: number;
-    now: Date;
-  }): Promise<KnowledgeUploadSessionStageResult>;
 };
 
 export type PruneRetentionOptions = {
@@ -191,9 +115,6 @@ export type PruneRetentionOptions = {
   deletionJobLeaseMinutes?: number;
   dryRun?: boolean;
   eventRetentionDays?: number;
-  knowledgePayloadRetentionDays?: number;
-  knowledgeTrashRetentionDays?: number;
-  knowledgeUploadSessionRetentionDays?: number;
   now?: Date;
   orphanAttachmentRetentionDays?: number;
   repository: RetentionRepository;
@@ -207,9 +128,6 @@ export type DeletionObligationDrainSummary = Readonly<{
     failed: number;
   }>;
   exhausted: boolean;
-  knowledgeJobs: KnowledgeDeletionDrainSummary & Readonly<{
-    finalizedAfterObjectDeletion: number;
-  }>;
   passes: number;
 }>;
 
@@ -243,32 +161,6 @@ export type PruneRetentionSummary = {
     grants: RetentionCount;
     tokenFamilies: RetentionCount;
   };
-  knowledgePayloadCutoff: string;
-  knowledgePayloads: {
-    jobsStaged: number;
-    matched: number;
-    objects: number;
-    objectsReleased: number;
-    sharedObjects: number;
-    versionsPurged: number;
-  };
-  knowledgeTrash: {
-    basesMatched: number;
-    basesStaged: number;
-    deletionJobs: KnowledgeDeletionDrainSummary & { finalizedAfterObjectDeletion: number };
-    jobsStaged: number;
-    sourcesMatched: number;
-    sourcesStaged: number;
-  };
-  knowledgeTrashCutoff: string;
-  knowledgeUploadSessionCutoff: string;
-  knowledgeUploadSessions: {
-    itemsMatched: number;
-    itemsReleased: number;
-    jobsStaged: number;
-    multipartSessionsMatched: number;
-    multipartSessionsReleased: number;
-  };
   modelRunEvents: RetentionCount & {
     exempt: number;
   };
@@ -286,13 +178,6 @@ type LockedAttachment = {
   id: string;
   messageId: string | null;
   savedAt: Date | null;
-};
-
-type LockedKnowledgeUploadSession = {
-  batchId: string;
-  id: string;
-  multipartUploadId: string | null;
-  storageKey: string;
 };
 
 function cutoffDate(now: Date, retentionDays: number): Date {
@@ -347,23 +232,6 @@ export function dueAttachmentDeletionJobSql(input: Readonly<{
         OR EXISTS (SELECT 1 FROM "WorkspaceCaptureReadLease" lease
           WHERE lease."captureId" = capture."id" AND lease."expiresAt" > ${now})
       )
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM "KnowledgeDocumentVersion" AS version
-      WHERE version."originalStorageKey" = job."storageKey"
-        OR version."normalizedTextStorageKey" = job."storageKey"
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM "KnowledgeSourceVersion" AS version
-      WHERE version."originalStorageKey" = job."storageKey"
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM "KnowledgeSourceIndexArtifact" AS artifact
-      WHERE artifact."normalizedTextStorageKey" = job."storageKey"
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM "KnowledgeUploadItem" AS upload
-      WHERE upload."storageKey" = job."storageKey"
     )
     AND NOT EXISTS (
       SELECT 1 FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
@@ -457,7 +325,6 @@ export type ObjectDeletionPassSummary = Readonly<{
   claimed: number;
   completed: number;
   failed: number;
-  knowledgeJobsFinalized: number;
 }>;
 
 /**
@@ -474,7 +341,6 @@ export async function runObjectDeletionPass(input: Readonly<{
     RetentionRepository,
     | "claimAttachmentDeletionJobs"
     | "completeAttachmentDeletionJob"
-    | "finalizeKnowledgeDeletionJobs"
     | "releaseAttachmentDeletionJob"
   >;
   signal?: AbortSignal;
@@ -502,12 +368,7 @@ export async function runObjectDeletionPass(input: Readonly<{
     failed += batch.failedJobIds.length;
     if (batch.failedJobIds.length > 0 || batch.claimed < batchSize) break;
   }
-  // Knowledge deletions that waited only for objects settle as in prune. A pass
-  // that deleted nothing still retries a finalization an earlier pass lost.
-  const knowledgeJobsFinalized = input.signal?.aborted
-    ? 0
-    : await input.repository.finalizeKnowledgeDeletionJobs({ now: clock() });
-  return { batches, claimed, completed, failed, knowledgeJobsFinalized };
+  return { batches, claimed, completed, failed };
 }
 
 export async function drainDeletionObligations(input: Readonly<{
@@ -526,24 +387,11 @@ export async function drainDeletionObligations(input: Readonly<{
   const summary: DeletionObligationDrainSummary = {
     attachmentJobs: { claimed: 0, completed: 0, failed: 0 },
     exhausted: false,
-    knowledgeJobs: {
-      blocked: 0,
-      claimed: 0,
-      completed: 0,
-      failed: 0,
-      finalizedAfterObjectDeletion: 0,
-      waitingForObjects: 0
-    },
     passes: 0
   };
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
     const now = new Date();
-    const knowledge = await input.repository.drainKnowledgeDeletionJobs({
-      leaseMinutes: deletionJobLeaseMinutes,
-      limit: batchSize,
-      now
-    });
     const objects = await processAttachmentDeletionJobs({
       claimableBefore: deletionJobClaimableBefore(now, deletionJobLeaseMinutes),
       limit: batchSize,
@@ -552,27 +400,16 @@ export async function drainDeletionObligations(input: Readonly<{
       storage: input.storage
     });
     const failed = objects.failedJobIds.length;
-    const finalized = await input.repository.finalizeKnowledgeDeletionJobs({ now });
     Object.assign(summary, {
       attachmentJobs: {
         claimed: summary.attachmentJobs.claimed + objects.claimed,
         completed: summary.attachmentJobs.completed + objects.completed,
         failed: summary.attachmentJobs.failed + failed
       },
-      knowledgeJobs: {
-        blocked: summary.knowledgeJobs.blocked + knowledge.blocked,
-        claimed: summary.knowledgeJobs.claimed + knowledge.claimed,
-        completed: summary.knowledgeJobs.completed + knowledge.completed,
-        failed: summary.knowledgeJobs.failed + knowledge.failed,
-        finalizedAfterObjectDeletion:
-          summary.knowledgeJobs.finalizedAfterObjectDeletion + finalized,
-        waitingForObjects:
-          summary.knowledgeJobs.waitingForObjects + knowledge.waitingForObjects
-      },
       passes: pass
     });
-    if (failed > 0 || knowledge.blocked > 0 || knowledge.failed > 0) return summary;
-    if (knowledge.claimed === 0 && objects.claimed === 0 && finalized === 0) return summary;
+    if (failed > 0) return summary;
+    if (objects.claimed === 0) return summary;
   }
 
   Object.assign(summary, { exhausted: true });
@@ -666,88 +503,6 @@ function prunableInboundMcpClientWhere(
   };
 }
 
-function staleKnowledgePayloadWhere(cutoff: Date): Prisma.KnowledgeDocumentVersionWhereInput {
-  return {
-    currentFor: null,
-    ingestCompletedAt: { lt: cutoff },
-    ingestState: "failed",
-    originalStorageKey: { not: null },
-    payloadPurgedAt: null,
-    visibleFromRevision: null
-  };
-}
-
-function expiredKnowledgeUploadSessionWhere(cutoff: Date): Prisma.KnowledgeUploadItemWhereInput {
-  return {
-    sessionExpiresAt: { lt: cutoff },
-    state: { in: ["QUEUED", "UPLOADING", "STORED", "NEEDS_ATTENTION"] },
-    storageKey: { not: null }
-  };
-}
-
-/**
- * Releases locked upload sessions through the expiry transition: stage the
- * object and multipart-abort obligation, drop recorded parts, and require a
- * new upload attempt. PostgreSQL only; the storage work is a later obligation.
- */
-async function releaseLockedKnowledgeUploadSessions(
-  tx: Prisma.TransactionClient,
-  candidates: readonly LockedKnowledgeUploadSession[],
-  now: Date,
-  releasable: (candidate: LockedKnowledgeUploadSession) => Prisma.KnowledgeUploadItemWhereInput
-): Promise<Readonly<{ itemsReleased: number; jobsStaged: number; multipartSessionsReleased: number }>> {
-  let itemsReleased = 0;
-  let jobsStaged = 0;
-  let multipartSessionsReleased = 0;
-  const touchedBatchIds = new Set<string>();
-
-  for (const candidate of candidates) {
-    const existingJob = await tx.attachmentDeletionJob.findUnique({
-      select: { id: true, multipartUploadId: true },
-      where: { storageKey: candidate.storageKey }
-    });
-    if (!existingJob) {
-      await tx.attachmentDeletionJob.create({
-        data: {
-          multipartUploadId: candidate.multipartUploadId,
-          storageKey: candidate.storageKey
-        }
-      });
-      jobsStaged += 1;
-    } else if (!existingJob.multipartUploadId && candidate.multipartUploadId) {
-      await tx.attachmentDeletionJob.update({
-        data: { multipartUploadId: candidate.multipartUploadId },
-        where: { id: existingJob.id }
-      });
-    }
-
-    await tx.knowledgeUploadPart.deleteMany({ where: { uploadItemId: candidate.id } });
-    const released = await tx.knowledgeUploadItem.updateMany({
-      data: {
-        errorCode: "knowledge_upload_session_expired",
-        multipartUploadId: null,
-        state: "NEEDS_ATTENTION",
-        storageKey: null,
-        uploadedByteSize: 0,
-        updatedAt: now
-      },
-      where: releasable(candidate)
-    });
-    if (released.count !== 1) continue;
-    itemsReleased += 1;
-    if (candidate.multipartUploadId) multipartSessionsReleased += 1;
-    touchedBatchIds.add(candidate.batchId);
-  }
-
-  if (touchedBatchIds.size > 0) {
-    await tx.knowledgeUploadBatch.updateMany({
-      data: { updatedAt: now },
-      where: { id: { in: [...touchedBatchIds] } }
-    });
-  }
-  return { itemsReleased, jobsStaged, multipartSessionsReleased };
-}
-
 export function createPrismaRetentionRepository(prisma: PrismaClient): RetentionRepository {
   return {
     async claimAttachmentDeletionJobs({ claimableBefore, limit, now }) {
@@ -813,10 +568,6 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
         `;
         const job = jobs[0];
         if (!job) return false;
-        await tx.knowledgeDeletionObject.updateMany({
-          data: { disposition: "DELETED", settledAt: new Date() },
-          where: { disposition: "PENDING", storageKey: job.storageKey }
-        });
         const deleted = await tx.attachmentDeletionJob.deleteMany({
           where: { claimToken: input.claimToken, id: input.id }
         });
@@ -1067,91 +818,11 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
         select: { storageKey: true }, where: { storageKey: { in: storageKeys } }
       });
       for (const reference of pdfReferences) sharedKeys.add(reference.storageKey);
-      const knowledgeReferences = await prisma.knowledgeDocumentVersion.findMany({
-        select: { normalizedTextStorageKey: true, originalStorageKey: true },
-        where: {
-          OR: [
-            { normalizedTextStorageKey: { in: storageKeys } },
-            { originalStorageKey: { in: storageKeys } }
-          ]
-        }
-      });
-      for (const reference of knowledgeReferences) {
-        if (reference.originalStorageKey) sharedKeys.add(reference.originalStorageKey);
-        if (reference.normalizedTextStorageKey) sharedKeys.add(reference.normalizedTextStorageKey);
-      }
-      const sourceVersionReferences = await prisma.knowledgeSourceVersion.findMany({
-        select: { originalStorageKey: true },
-        where: { originalStorageKey: { in: storageKeys } }
-      });
-      for (const reference of sourceVersionReferences) {
-        if (reference.originalStorageKey) sharedKeys.add(reference.originalStorageKey);
-      }
-      const sourceArtifactReferences = await prisma.knowledgeSourceIndexArtifact.findMany({
-        select: { normalizedTextStorageKey: true },
-        where: { normalizedTextStorageKey: { in: storageKeys } }
-      });
-      for (const reference of sourceArtifactReferences) {
-        if (reference.normalizedTextStorageKey) sharedKeys.add(reference.normalizedTextStorageKey);
-      }
-      const uploadReferences = await prisma.knowledgeUploadItem.findMany({
-        select: { storageKey: true },
-        where: { storageKey: { in: storageKeys } }
-      });
-      for (const reference of uploadReferences) {
-        if (reference.storageKey) sharedKeys.add(reference.storageKey);
-      }
 
       return {
         matched: candidates.length,
         shared: candidates.filter((candidate) => sharedKeys.has(candidate.storageKey)).length
       };
-    },
-    async inspectStaleKnowledgePayloads({ cutoff, limit }) {
-      const candidates = await prisma.knowledgeDocumentVersion.findMany({
-        orderBy: [{ ingestCompletedAt: "asc" }, { id: "asc" }],
-        select: { normalizedTextStorageKey: true, originalStorageKey: true },
-        take: limit,
-        where: staleKnowledgePayloadWhere(cutoff)
-      });
-      return {
-        matched: candidates.length,
-        objects: new Set(candidates.flatMap((candidate) => [
-          ...(candidate.originalStorageKey ? [candidate.originalStorageKey] : []),
-          ...(candidate.normalizedTextStorageKey ? [candidate.normalizedTextStorageKey] : [])
-        ])).size
-      };
-    },
-    async inspectExpiredKnowledgeTrash({ cutoff, limit }) {
-      const [sources, bases] = await Promise.all([
-        prisma.knowledgeSource.count({
-          take: limit,
-          where: { deletionRequestedAt: null, trashedAt: { lt: cutoff } }
-        }),
-        prisma.knowledgeBase.count({
-          take: limit,
-          where: { deletionRequestedAt: null, trashedAt: { lt: cutoff } }
-        })
-      ]);
-      return { bases, sources };
-    },
-    async inspectExpiredKnowledgeUploadSessions({ cutoff, limit }) {
-      const candidates = await prisma.knowledgeUploadItem.findMany({
-        orderBy: [{ sessionExpiresAt: "asc" }, { updatedAt: "asc" }, { id: "asc" }],
-        select: { multipartUploadId: true },
-        take: limit,
-        where: expiredKnowledgeUploadSessionWhere(cutoff)
-      });
-      return {
-        items: candidates.length,
-        multipartSessions: candidates.filter(({ multipartUploadId }) => multipartUploadId !== null).length
-      };
-    },
-    async drainKnowledgeDeletionJobs({ leaseMinutes, limit, now }) {
-      return drainKnowledgeDeletionJobs({ client: prisma, leaseMinutes, limit, now });
-    },
-    async finalizeKnowledgeDeletionJobs({ now }) {
-      return createPrismaKnowledgeDeletionProcessor(prisma).finalizeSettled(now);
     },
     async releaseAttachmentDeletionJob(input) {
       const released = await prisma.attachmentDeletionJob.updateMany({
@@ -1168,91 +839,6 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       });
 
       return released.count === 1;
-    },
-    async stageExpiredKnowledgeTrash({ cutoff, limit, now }) {
-      return prisma.$transaction(async (tx) => {
-        const sources = await tx.knowledgeSource.findMany({
-          orderBy: [{ trashedAt: "asc" }, { id: "asc" }],
-          select: { id: true, ownerUserId: true },
-          take: limit,
-          where: { deletionRequestedAt: null, trashedAt: { lt: cutoff } }
-        });
-        const remaining = Math.max(0, limit - sources.length);
-        const bases = remaining > 0
-          ? await tx.knowledgeBase.findMany({
-              orderBy: [{ trashedAt: "asc" }, { id: "asc" }],
-              select: { id: true, ownerUserId: true },
-              take: remaining,
-              where: { deletionRequestedAt: null, trashedAt: { lt: cutoff } }
-            })
-          : [];
-        let sourcesStaged = 0;
-        let basesStaged = 0;
-        for (const source of sources) {
-          const updated = await tx.knowledgeSource.updateMany({
-            data: { deletionRequestedAt: now, version: { increment: 1 } },
-            where: { deletionRequestedAt: null, id: source.id, trashedAt: { lt: cutoff } }
-          });
-          if (updated.count !== 1) continue;
-          await tx.knowledgeDeletionJob.create({
-            data: { ownerUserId: source.ownerUserId, targetId: source.id, targetType: "SOURCE" }
-          });
-          sourcesStaged += 1;
-        }
-        for (const base of bases) {
-          const updated = await tx.knowledgeBase.updateMany({
-            data: { deletionRequestedAt: now, version: { increment: 1 } },
-            where: { deletionRequestedAt: null, id: base.id, trashedAt: { lt: cutoff } }
-          });
-          if (updated.count !== 1) continue;
-          await tx.knowledgeDeletionJob.create({
-            data: { ownerUserId: base.ownerUserId, targetId: base.id, targetType: "BASE" }
-          });
-          basesStaged += 1;
-        }
-        return {
-          bases: basesStaged,
-          jobsStaged: sourcesStaged + basesStaged,
-          sources: sourcesStaged
-        };
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    },
-    async stageExpiredKnowledgeUploadSessions({ cutoff, limit, now }) {
-      return prisma.$transaction(async (tx) => {
-        const candidates = await tx.$queryRaw<LockedKnowledgeUploadSession[]>`
-          SELECT
-            item."id",
-            item."batchId",
-            item."storageKey",
-            item."multipartUploadId"
-          FROM "KnowledgeUploadItem" AS item
-          WHERE item."state" IN (
-              'QUEUED'::"KnowledgeUploadItemState",
-              'UPLOADING'::"KnowledgeUploadItemState",
-              'STORED'::"KnowledgeUploadItemState",
-              'NEEDS_ATTENTION'::"KnowledgeUploadItemState"
-            )
-            AND item."storageKey" IS NOT NULL
-            AND item."sessionExpiresAt" < ${cutoff}
-          ORDER BY item."sessionExpiresAt", item."updatedAt", item."id"
-          FOR UPDATE SKIP LOCKED
-          LIMIT ${limit}
-        `;
-        const released = await releaseLockedKnowledgeUploadSessions(tx, candidates, now, (candidate) => ({
-          id: candidate.id,
-          sessionExpiresAt: { lt: cutoff },
-          state: { in: ["QUEUED", "UPLOADING", "STORED", "NEEDS_ATTENTION"] },
-          storageKey: candidate.storageKey
-        }));
-
-        return {
-          items: candidates.length,
-          itemsReleased: released.itemsReleased,
-          jobsStaged: released.jobsStaged,
-          multipartSessions: candidates.filter(({ multipartUploadId }) => multipartUploadId !== null).length,
-          multipartSessionsReleased: released.multipartSessionsReleased
-        };
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     },
     async stageOrphanedAttachments({ cutoff, limit }) {
       return prisma.$transaction(async (tx) => {
@@ -1312,26 +898,6 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           const pdfReferences = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id" FROM "ChatPdfArtifact" WHERE "storageKey" = ${storageKey} FOR SHARE
           `;
-          const knowledgeDocumentReferences = await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT "id" FROM "KnowledgeDocumentVersion"
-            WHERE "originalStorageKey" = ${storageKey} OR "normalizedTextStorageKey" = ${storageKey}
-            FOR SHARE
-          `;
-          const knowledgeSourceVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT "id" FROM "KnowledgeSourceVersion"
-            WHERE "originalStorageKey" = ${storageKey}
-            FOR SHARE
-          `;
-          const knowledgeSourceArtifactReferences = await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT "id" FROM "KnowledgeSourceIndexArtifact"
-            WHERE "normalizedTextStorageKey" = ${storageKey}
-            FOR SHARE
-          `;
-          const knowledgeUploadReferences = await tx.$queryRaw<Array<{ id: string }>>`
-            SELECT "id" FROM "KnowledgeUploadItem"
-            WHERE "storageKey" = ${storageKey}
-            FOR SHARE
-          `;
           const artifactBlobReferences = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT blob."id" FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
             JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
@@ -1359,11 +925,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           if (
             skillFileReferences.length === 0 &&
             remainingReferenceCount === 0 &&
-            pdfReferences.length === 0 &&
-            knowledgeDocumentReferences.length === 0 &&
-            knowledgeSourceVersionReferences.length === 0 &&
-            knowledgeSourceArtifactReferences.length === 0 &&
-            knowledgeUploadReferences.length === 0
+            pdfReferences.length === 0
             && artifactVersionReferences.length === 0
             && artifactBlobReferences.length === 0 && artifactRenderReferences.length === 0
             && artifactPublicationReferences.length === 0
@@ -1404,169 +966,6 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           sharedRowsDeleted
         };
       });
-    },
-    async stageStaleKnowledgePayloads({ cutoff, limit, now }) {
-      return prisma.$transaction(async (tx) => {
-        const candidates = await tx.knowledgeDocumentVersion.findMany({
-          orderBy: [{ ingestCompletedAt: "asc" }, { id: "asc" }],
-          select: {
-            id: true,
-            normalizedTextStorageKey: true,
-            originalStorageKey: true
-          },
-          take: limit,
-          where: staleKnowledgePayloadWhere(cutoff)
-        });
-        let jobsStaged = 0;
-        let objectsReleased = 0;
-        let sharedObjects = 0;
-        let versionsPurged = 0;
-
-        const candidateStorageKeys = [...new Set(candidates.flatMap((candidate) => [
-          ...(candidate.originalStorageKey ? [candidate.originalStorageKey] : []),
-          ...(candidate.normalizedTextStorageKey ? [candidate.normalizedTextStorageKey] : [])
-        ]))].sort();
-        for (const storageKey of candidateStorageKeys) {
-          await tx.$queryRaw<Array<{ lock: string }>>`
-            SELECT pg_advisory_xact_lock(hashtextextended(${storageKey}, 260))::text AS "lock"
-          `;
-        }
-
-        for (const candidate of candidates) {
-          const rows = await tx.$queryRaw<Array<{
-            normalizedTextStorageKey: string | null;
-            originalStorageKey: string | null;
-          }>>`
-            SELECT "originalStorageKey", "normalizedTextStorageKey"
-            FROM "KnowledgeDocumentVersion"
-            WHERE "id" = ${candidate.id}
-              AND "ingestState" = 'failed'::"KnowledgeDocumentIngestState"
-              AND "ingestCompletedAt" < ${cutoff}
-              AND "visibleFromRevision" IS NULL
-              AND "payloadPurgedAt" IS NULL
-              AND "originalStorageKey" IS NOT NULL
-              AND NOT EXISTS (
-                SELECT 1 FROM "KnowledgeDocument" AS document
-                WHERE document."currentVersionId" = "KnowledgeDocumentVersion"."id"
-              )
-            FOR UPDATE
-          `;
-          const version = rows[0];
-          if (!version?.originalStorageKey) continue;
-          const storageKeys = [...new Set([
-            version.originalStorageKey,
-            ...(version.normalizedTextStorageKey ? [version.normalizedTextStorageKey] : [])
-          ])].sort();
-
-          await tx.usageEvent.deleteMany({
-            where: { knowledgeDocumentVersionId: candidate.id }
-          });
-          await tx.knowledgeChunk.deleteMany({
-            where: { documentVersionId: candidate.id }
-          });
-
-          for (const storageKey of storageKeys) {
-            const attachmentReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id"
-              FROM "Attachment"
-              WHERE "storageKey" = ${storageKey}
-              FOR SHARE
-            `;
-            const knowledgeDocumentReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id"
-              FROM "KnowledgeDocumentVersion"
-              WHERE "id" <> ${candidate.id}
-                AND ("originalStorageKey" = ${storageKey}
-                  OR "normalizedTextStorageKey" = ${storageKey})
-              FOR SHARE
-            `;
-            const knowledgeSourceVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id" FROM "KnowledgeSourceVersion"
-              WHERE "originalStorageKey" = ${storageKey}
-              FOR SHARE
-            `;
-            const knowledgeSourceArtifactReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id" FROM "KnowledgeSourceIndexArtifact"
-              WHERE "normalizedTextStorageKey" = ${storageKey}
-              FOR SHARE
-            `;
-            const knowledgeUploadReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id" FROM "KnowledgeUploadItem"
-              WHERE "storageKey" = ${storageKey}
-              FOR SHARE
-            `;
-            const artifactBlobReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT blob."id" FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
-              JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
-              WHERE blob."storageKey" = ${storageKey}
-                AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)})) FOR SHARE
-            `;
-            const artifactRenderReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id" FROM "ArtifactRender" WHERE "renderedStorageKey" = ${storageKey} FOR SHARE
-            `;
-            const artifactVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT version."id" FROM "ArtifactVersion" AS version
-              JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
-              WHERE version."bundleStorageKey" = ${storageKey}
-                AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-              FOR SHARE
-            `;
-            const artifactPublicationReferences = await tx.$queryRaw<Array<{ id: string }>>`
-              SELECT "id" FROM "ArtifactPublication"
-              WHERE "bundleStorageKey" = ${storageKey} AND ("status" = 'READY' OR ("status" = 'PENDING' AND "createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-              FOR SHARE
-            `;
-            const skillFileReferences = await tx.$queryRaw<Array<{ revisionId: string }>>`
-              SELECT "revisionId" FROM "SkillRevisionFile" WHERE "storageKey" = ${storageKey} FOR SHARE
-            `;
-            if (
-              skillFileReferences.length === 0 &&
-              attachmentReferences.length === 0 &&
-              knowledgeDocumentReferences.length === 0 &&
-              knowledgeSourceVersionReferences.length === 0 &&
-              knowledgeSourceArtifactReferences.length === 0 &&
-              knowledgeUploadReferences.length === 0
-              && artifactVersionReferences.length === 0
-              && artifactBlobReferences.length === 0 && artifactRenderReferences.length === 0
-              && artifactPublicationReferences.length === 0
-            ) {
-              const existing = await tx.attachmentDeletionJob.findUnique({
-                select: { id: true },
-                where: { storageKey }
-              });
-              if (!existing) {
-                await tx.attachmentDeletionJob.create({ data: { storageKey } });
-                jobsStaged += 1;
-              }
-            } else {
-              sharedObjects += 1;
-            }
-            objectsReleased += 1;
-          }
-
-          await tx.knowledgeDocumentVersion.update({
-            data: {
-              ingestChunkCount: null,
-              ingestEmbeddedChunkCount: 0,
-              normalizedTextByteSize: null,
-              normalizedTextChecksum: null,
-              normalizedTextStorageKey: null,
-              originalStorageKey: null,
-              payloadPurgedAt: now
-            },
-            where: { id: candidate.id }
-          });
-          versionsPurged += 1;
-        }
-
-        return {
-          jobsStaged,
-          matched: candidates.length,
-          objectsReleased,
-          sharedObjects,
-          versionsPurged
-        };
-      });
     }
   };
 }
@@ -1582,12 +981,6 @@ function emptySummary(input: {
   eventIds: string[];
   exemptEventCount: number;
   inboundMcpOAuthCandidates: InboundMcpOAuthPruneCandidates;
-  knowledgePayloadCutoff: Date;
-  knowledgePayloadInspection: KnowledgePayloadInspection;
-  knowledgeTrashCutoff: Date;
-  knowledgeTrashInspection: KnowledgeTrashInspection;
-  knowledgeUploadSessionCutoff: Date;
-  knowledgeUploadSessionInspection: KnowledgeUploadSessionInspection;
   orphanAttachmentCutoff: Date;
   orphanInspection: AttachmentInspection;
 }): PruneRetentionSummary {
@@ -1633,39 +1026,6 @@ function emptySummary(input: {
         matched: input.inboundMcpOAuthCandidates.tokenFamilyIds.length
       }
     },
-    knowledgePayloadCutoff: input.knowledgePayloadCutoff.toISOString(),
-    knowledgePayloads: {
-      jobsStaged: 0,
-      matched: input.knowledgePayloadInspection.matched,
-      objects: input.knowledgePayloadInspection.objects,
-      objectsReleased: 0,
-      sharedObjects: 0,
-      versionsPurged: 0
-    },
-    knowledgeTrash: {
-      basesMatched: input.knowledgeTrashInspection.bases,
-      basesStaged: 0,
-      deletionJobs: {
-        blocked: 0,
-        claimed: 0,
-        completed: 0,
-        failed: 0,
-        finalizedAfterObjectDeletion: 0,
-        waitingForObjects: 0
-      },
-      jobsStaged: 0,
-      sourcesMatched: input.knowledgeTrashInspection.sources,
-      sourcesStaged: 0
-    },
-    knowledgeTrashCutoff: input.knowledgeTrashCutoff.toISOString(),
-    knowledgeUploadSessionCutoff: input.knowledgeUploadSessionCutoff.toISOString(),
-    knowledgeUploadSessions: {
-      itemsMatched: input.knowledgeUploadSessionInspection.items,
-      itemsReleased: 0,
-      jobsStaged: 0,
-      multipartSessionsMatched: input.knowledgeUploadSessionInspection.multipartSessions,
-      multipartSessionsReleased: 0
-    },
     modelRunEvents: {
       deleted: 0,
       exempt: input.exemptEventCount,
@@ -1690,18 +1050,6 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS
   );
   const authRetentionDays = positiveInteger(options.authRetentionDays, DEFAULT_AUTH_RETENTION_DAYS);
-  const knowledgePayloadRetentionDays = positiveInteger(
-    options.knowledgePayloadRetentionDays,
-    DEFAULT_KNOWLEDGE_PAYLOAD_RETENTION_DAYS
-  );
-  const knowledgeTrashRetentionDays = positiveInteger(
-    options.knowledgeTrashRetentionDays,
-    DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS
-  );
-  const knowledgeUploadSessionRetentionDays = positiveInteger(
-    options.knowledgeUploadSessionRetentionDays,
-    DEFAULT_KNOWLEDGE_UPLOAD_SESSION_RETENTION_DAYS
-  );
   const deletionJobLeaseMinutes = positiveInteger(
     options.deletionJobLeaseMinutes,
     DEFAULT_DELETION_JOB_LEASE_MINUTES
@@ -1710,17 +1058,11 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   const eventCutoff = cutoffDate(now, eventRetentionDays);
   const orphanAttachmentCutoff = cutoffDate(now, orphanAttachmentRetentionDays);
   const authCutoff = cutoffDate(now, authRetentionDays);
-  const knowledgePayloadCutoff = cutoffDate(now, knowledgePayloadRetentionDays);
-  const knowledgeTrashCutoff = cutoffDate(now, knowledgeTrashRetentionDays);
-  const knowledgeUploadSessionCutoff = cutoffDate(now, knowledgeUploadSessionRetentionDays);
   const claimableBefore = deletionJobClaimableBefore(now, deletionJobLeaseMinutes);
   const [
     eventIds,
     exemptEventCount,
     orphanInspection,
-    knowledgePayloadInspection,
-    knowledgeTrashInspection,
-    knowledgeUploadSessionInspection,
     authSessionIds,
     authFlowTokenIds,
     connectPairingIds,
@@ -1730,12 +1072,6 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     options.repository.findPrunableModelRunEventIds({ cutoff: eventCutoff, limit: batchSize }),
     options.repository.countExemptModelRunEvents({ cutoff: eventCutoff }),
     options.repository.inspectOrphanedAttachments({ cutoff: orphanAttachmentCutoff, limit: batchSize }),
-    options.repository.inspectStaleKnowledgePayloads({ cutoff: knowledgePayloadCutoff, limit: batchSize }),
-    options.repository.inspectExpiredKnowledgeTrash({ cutoff: knowledgeTrashCutoff, limit: batchSize }),
-    options.repository.inspectExpiredKnowledgeUploadSessions({
-      cutoff: knowledgeUploadSessionCutoff,
-      limit: batchSize
-    }),
     options.repository.findPrunableAuthSessionIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableAuthFlowTokenIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableConnectPairingIds({ cutoff: authCutoff, limit: batchSize }),
@@ -1753,12 +1089,6 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     eventIds,
     exemptEventCount,
     inboundMcpOAuthCandidates,
-    knowledgePayloadCutoff,
-    knowledgePayloadInspection,
-    knowledgeTrashCutoff,
-    knowledgeTrashInspection,
-    knowledgeUploadSessionCutoff,
-    knowledgeUploadSessionInspection,
     orphanAttachmentCutoff,
     orphanInspection
   });
@@ -1778,31 +1108,9 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
       cutoff: authCutoff
     })
   ]);
-  const stagedKnowledgeTrash = await options.repository.stageExpiredKnowledgeTrash({
-    cutoff: knowledgeTrashCutoff,
-    limit: batchSize,
-    now
-  });
-  const knowledgeDeletionJobs = await options.repository.drainKnowledgeDeletionJobs({
-    leaseMinutes: deletionJobLeaseMinutes,
-    limit: batchSize,
-    now
-  });
-  const stagedKnowledgeUploadSessions = await options.repository.stageExpiredKnowledgeUploadSessions({
-    cutoff: knowledgeUploadSessionCutoff,
-    limit: batchSize,
-    now
-  });
-  // These stages can touch the same private object key. Keep them sequential so
-  // each stage observes references released by the previous stage.
   const stagedAttachments = await options.repository.stageOrphanedAttachments({
     cutoff: orphanAttachmentCutoff,
     limit: batchSize
-  });
-  const stagedKnowledgePayloads = await options.repository.stageStaleKnowledgePayloads({
-    cutoff: knowledgePayloadCutoff,
-    limit: batchSize,
-    now
   });
   const claimableDeletionJobIds = await options.repository.findClaimableAttachmentDeletionJobIds({
     now,
@@ -1825,21 +1133,6 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   summary.inboundMcpOAuth.clients.deleted = deletedInboundMcpOAuth.clients;
   summary.inboundMcpOAuth.grants.deleted = deletedInboundMcpOAuth.grants;
   summary.inboundMcpOAuth.tokenFamilies.deleted = deletedInboundMcpOAuth.tokenFamilies;
-  summary.knowledgePayloads = {
-    jobsStaged: stagedKnowledgePayloads.jobsStaged,
-    matched: stagedKnowledgePayloads.matched,
-    objects: knowledgePayloadInspection.objects,
-    objectsReleased: stagedKnowledgePayloads.objectsReleased,
-    sharedObjects: stagedKnowledgePayloads.sharedObjects,
-    versionsPurged: stagedKnowledgePayloads.versionsPurged
-  };
-  summary.knowledgeUploadSessions = {
-    itemsMatched: stagedKnowledgeUploadSessions.items,
-    itemsReleased: stagedKnowledgeUploadSessions.itemsReleased,
-    jobsStaged: stagedKnowledgeUploadSessions.jobsStaged,
-    multipartSessionsMatched: stagedKnowledgeUploadSessions.multipartSessions,
-    multipartSessionsReleased: stagedKnowledgeUploadSessions.multipartSessionsReleased
-  };
   summary.orphanedAttachments = {
     jobsStaged: stagedAttachments.jobsStaged,
     matched: stagedAttachments.matched,
@@ -1852,19 +1145,6 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     failedJobs: objectDeletion.failedJobIds.map((id) => ({ code: "object_delete_failed" as const, id })),
     matched: claimableDeletionJobIds.length,
     objectsDeleted: objectDeletion.objectsDeleted
-  };
-
-  const finalizedKnowledgeJobs = await options.repository.finalizeKnowledgeDeletionJobs({ now });
-  summary.knowledgeTrash = {
-    basesMatched: knowledgeTrashInspection.bases,
-    basesStaged: stagedKnowledgeTrash.bases,
-    deletionJobs: {
-      ...knowledgeDeletionJobs,
-      finalizedAfterObjectDeletion: finalizedKnowledgeJobs
-    },
-    jobsStaged: stagedKnowledgeTrash.jobsStaged,
-    sourcesMatched: knowledgeTrashInspection.sources,
-    sourcesStaged: stagedKnowledgeTrash.sources
   };
 
   return summary;

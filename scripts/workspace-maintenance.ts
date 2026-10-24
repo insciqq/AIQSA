@@ -3,7 +3,6 @@ import { logEvent } from "../lib/server/observability";
 import { setTimeout as wait } from "node:timers/promises";
 import { prisma } from "@/lib/server/prisma";
 import { runWorkspaceMaintenance } from "@/lib/server/workspace/cleanup";
-import { logProjectDeletionPass, runProjectDeletionMaintenance } from "@/lib/server/projects/deletion";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { createWorkspaceRuntime } from "@/lib/server/workspace/defaultRuntime";
 import { startTelemetryRecorder } from "@/lib/server/telemetry/recorder";
@@ -24,11 +23,8 @@ async function main(): Promise<void> {
         claimed_count: summary.cleanupClaimed, completed_count: summary.cleanupCompleted,
         failed_count: summary.cleanupFailed + summary.idleFailed });
     }
-    // Projects were removed: fenced ones whose chats still hold a Workspace VM are deleted here.
-    const projectDeletions = await runProjectDeletionMaintenance({ prisma, runtime });
-    logProjectDeletionPass(projectDeletions);
     if (once) {
-      console.log(JSON.stringify({ ...summary, projectDeletions }));
+      console.log(JSON.stringify(summary));
       return;
     }
     await wait(intervalMs);
