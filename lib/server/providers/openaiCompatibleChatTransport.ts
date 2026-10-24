@@ -13,6 +13,7 @@ import {
   providerResponseFailure
 } from "./responseFailure";
 import { inheritProviderErrorCode } from "./providerErrorCode";
+import { parseRetryAfterMs } from "../retryAfter";
 
 export type OpenAICompatibleChatClientRequestOptions = {
   signal?: AbortSignal;
@@ -123,9 +124,11 @@ async function throwHttpError(
   }
 
   const routingCode = openRouterRoutingFailureCode({ code: failureCode });
+  // The provider's Retry-After shapes the wait before a transient failure is sent again.
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   throw inheritProviderErrorCode(Object.assign(new Error(routingCode
     ? openRouterRoutingFailureMessage(routingCode) : providerHttpErrorMessage(providerName, response.status)),
-    { httpStatus: response.status },
+    { httpStatus: response.status, ...(retryAfterMs !== null ? { retryAfterMs } : {}) },
     failureCode && response.status !== 401 && response.status !== 403
       ? { code: failureCode, ...contextLength, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}), ...(quotaExhausted ? { quotaExhausted: true } : {}) } : {}),
     decoded);

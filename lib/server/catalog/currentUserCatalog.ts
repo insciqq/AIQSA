@@ -14,7 +14,7 @@ import {
   canAccessSearchStrategy,
   type ResolvedEntitlements
 } from "../auth/entitlements";
-import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
+import { automaticSearchOptionId, decodeSearchPlan, hostedSearchProtocolUsable, type SearchPlan } from "../../domain/search";
 import {
   decodeChatDefaultMcpMode,
   INSTALLATION_CHAT_DEFAULTS,
@@ -174,8 +174,21 @@ export function resolveSearchPreference(input: Readonly<{
   strategies: SearchStrategyCatalogEntry[];
 }>): ResolvedSearchPreference {
   const decodedOrganization = decodeSearchPlan(input.organizationPlan);
+  const organizationOptionIds = decodedOrganization.ok ? decodedOrganization.plan.optionIds : [];
+  // Search is on for everyone (operator decision 2026-10-24): an organization
+  // default without a source is automatic, never Off. A chosen source that is
+  // unavailable is never replaced.
+  const automatic = organizationOptionIds.length === 0
+    ? automaticSearchOptionId(input.strategies.flatMap((strategy) => strategy.kind === "none"
+      ? []
+      : [{
+          protocols: strategy.routes.flatMap((route) => route.adapterKind === "provider_model_client" ||
+            hostedSearchProtocolUsable(route.protocol) ? [route.protocol] : []),
+          strategyId: strategy.strategyId
+        }]))
+    : null;
   const organizationPlan = reconcileSearchPlanSelection(
-    decodedOrganization.ok ? decodedOrganization.plan.optionIds : [],
+    automatic ? [automatic] : organizationOptionIds,
     decodedOrganization.ok ? decodedOrganization.plan.mode : "all_selected",
     input.strategies
   );

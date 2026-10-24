@@ -4,10 +4,11 @@ import type { CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { userImageModelErrorMessage, type ImageModelUnavailableReason, type UserImageModelOption } from "@/lib/contracts/imageModels";
 import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
+import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { UiV2Button } from "@/components/ui-v2";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
 import type { SearchPlan } from "@/lib/domain/search";
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
 import { SettingsRowV2 } from "./SettingsV2";
 
@@ -141,9 +142,63 @@ export function ImageModelRowV2({ view }: Readonly<{ view: ChatDefaultImageModel
 }
 
 /**
+ * Chat defaults › Web search: the sources every chat searches (chats keep no
+ * Search plan of their own, operator decision 2026-10-24). This is the only
+ * place Search is turned off, and only after a confirmation that names the cost.
+ */
+function WebSearchDefaultRowV2({ engines, onResetSearchPlan, onSearchPlan, searchPlan, searchPreferenceSource }: Readonly<{
+  engines: readonly CatalogSearchStrategy[];
+  onResetSearchPlan?(): void;
+  onSearchPlan(plan: SearchPlan): void;
+  searchPlan: SearchPlan;
+  searchPreferenceSource?: "organization" | "personal";
+}>) {
+  const [confirmingOff, setConfirmingOff] = useState(false);
+  const names = searchPlan.optionIds.map((id) =>
+    engines.find((engine) => engine.strategyId === id)?.displayName ?? "Unavailable source");
+  return (
+    <SettingsRowV2 description="Sources the model uses to search the web in every chat." testId="settings-default-search" title="Web search">
+      <details className="v2-search-default-disclosure">
+        <summary aria-label="Web search default">{searchPreferenceSource === "organization" ? "Organization default · " : ""}{names.length ? names.join(", ") : "Off"}</summary>
+        <SearchPlanPickerV2 options={engines} selectedIds={searchPlan.optionIds}
+          onChange={(optionIds) => onSearchPlan({ mode: "all_selected", optionIds })} />
+        {(searchPreferenceSource === "personal" && onResetSearchPlan) || searchPlan.optionIds.length ? (
+          <div className="v2-search-plan-actions">
+            {searchPreferenceSource === "personal" && onResetSearchPlan ? (
+              <button className="v2-search-plan-link v2-focusable" type="button" onClick={onResetSearchPlan}>Use organization default</button>
+            ) : null}
+            {searchPlan.optionIds.length ? (
+              <button className="v2-search-plan-link v2-focusable" type="button" onClick={() => setConfirmingOff(true)}>Turn off web search</button>
+            ) : null}
+          </div>
+        ) : null}
+      </details>
+      {confirmingOff ? (
+        <ConfirmationDialog
+          portal
+          cancelLabel="Keep search on"
+          confirmLabel="Turn off"
+          dialogLabel="Turn off web search"
+          icon="x"
+          onCancel={() => setConfirmingOff(false)}
+          onConfirm={() => {
+            setConfirmingOff(false);
+            onSearchPlan({ mode: "all_selected", optionIds: [] });
+          }}
+          testId="turn-off-web-search-confirmation"
+          title="Turn off web search?"
+        >
+          The model will answer only from what it already knows and won&apos;t be able to check current facts. Answers will get worse.
+        </ConfirmationDialog>
+      ) : null}
+    </SettingsRowV2>
+  );
+}
+
+/**
  * Chat defaults rows below Default model (PRD §4.9): Web search, MCP tools,
- * Skills and Image model. Each change persists the personal default only;
- * the open chat's composer keeps its own selection.
+ * Skills and Image model. Each change persists the personal default; Web
+ * search applies to every chat, the other rows to new chats.
  */
 export function ChatDefaultsRowsV2({
   imageModel,
@@ -176,12 +231,8 @@ export function ChatDefaultsRowsV2({
 
   return (
     <>
-      <SettingsRowV2 description="Choose up to three sources and how they work together." testId="settings-default-search" title="Web search">
-        <details className="v2-search-default-disclosure">
-          <summary aria-label="Web search default">{searchPreferenceSource === "organization" ? "Organization default · " : ""}{searchPlan.optionIds.length ? `${searchPlan.optionIds.length} ${searchPlan.optionIds.length === 1 ? "source" : "sources"} selected` : "Off"}</summary>
-          <SearchPlanPickerV2 options={engines} plan={searchPlan} onChange={onSearchPlan} onReset={onResetSearchPlan} scope="defaults" />
-        </details>
-      </SettingsRowV2>
+      <WebSearchDefaultRowV2 engines={engines} onResetSearchPlan={onResetSearchPlan} onSearchPlan={onSearchPlan}
+        searchPlan={searchPlan} searchPreferenceSource={searchPreferenceSource} />
       <SettingsRowV2 description={<>How a new chat discovers tools from your enabled servers. {onOpenMcp ? <button className="v2-studio-inline-link v2-focusable" onClick={onOpenMcp} type="button">MCP servers</button> : null}</>} testId="settings-default-mcp" title="MCP tools">
         <SettingsSegmentV2
           label="MCP tools default"

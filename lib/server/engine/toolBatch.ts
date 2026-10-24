@@ -19,6 +19,7 @@ import {
   unknownToolCallResult
 } from "../runs/unknownToolCall";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
+import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
 import { engineToolCallKind } from "./toolCallKind";
@@ -317,6 +318,17 @@ async function settleRecord(deps: ToolBatchDeps, input: Parameters<ToolCallStore
   }
 }
 
+/** The records of a result its tool returned only with its cancellation; they never fail or delay the stop further. */
+async function settleCancelledResult(deps: ToolBatchDeps, tool: EngineTool, execution: EngineToolExecution,
+  result: ToolExecutionResult): Promise<void> {
+  try {
+    await tool.settled?.(execution, result);
+  } catch (error) {
+    logEvent("service_operation", { action: "degrade", code: "tool_records_unsaved", error, outcome: "degraded",
+      run_id: deps.runId, stage: "write", subsystem: "database" });
+  }
+}
+
 async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, execution: EngineToolExecution): Promise<ToolExecutionResult> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -398,6 +410,9 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       // Stop or the deadline: the run's ending closes the record with an unknown outcome.
       if (deps.signal.aborted) {
         settled({ kind: "aborted", reason: deps.signal.reason });
+        // A stopped Search keeps what its settled engines reported (usage, sources) before the stop goes on;
+        // nothing else runs meanwhile.
+        if (error instanceof SearchToolCancelledError) await settleCancelledResult(deps, tool, execution, error.result);
         throw error;
       }
       const code = safeCode(error);

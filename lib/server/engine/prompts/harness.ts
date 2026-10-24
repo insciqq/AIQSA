@@ -12,6 +12,7 @@ import { WORKSPACE_NO_REPLAY_SAFETY } from "@/lib/server/workspace/promptContrac
 /** Tool names the guidance refers to (checked against their owners in tests). */
 export const HARNESS_TOOL_NAMES = Object.freeze({
   applyPatch: "apply_patch",
+  fetchUrl: "fetch_url",
   findTools: "find_tools",
   loadSkill: "load_skill",
   readSecret: "read_secret",
@@ -19,11 +20,16 @@ export const HARNESS_TOOL_NAMES = Object.freeze({
   updatePlan: "update_plan"
 });
 
+/** The Search tools: one for every selected source, or one per source. */
+export const HARNESS_SEARCH_TOOL = /^(?:search_selected_engines|search_engine_[1-3])$/u;
+
 export type HarnessPromptInput = Readonly<{
   /** Names of the tools offered on this request. */
   tools: readonly string[];
   /** The installation offers the Workspace in this chat. */
   workspace: boolean;
+  /** The run admitted web Search, also a provider's hosted one with no tool of its own. */
+  webSearch?: boolean;
   /**
    * The AIQSA self-description (`./selfService.ts`); `systemPromptFor`
    * fills it in for the request's tools when it is not given.
@@ -64,6 +70,7 @@ function savedSecret(secret: SavedSecretFact): string {
 export function harnessPromptSection(input: HarnessPromptInput): string {
   const has = new Set(input.tools);
   const tool = (name: string, line: string) => has.has(name) ? [line] : [];
+  const search = input.webSearch === true || input.tools.some((name) => HARNESS_SEARCH_TOOL.test(name));
   const sections = [
     [
       "# AIQSA",
@@ -78,12 +85,19 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       `- ${WORKSPACE_NO_REPLAY_SAFETY}`,
       "- Calls that may change data in other systems (MCP tools that are not read-only) are sent only after the user approves them in the chat; the turn waits for that decision. Do not ask for the same approval in text.",
       ...tool(HARNESS_TOOL_NAMES.readToolResult, `- A large tool result arrives as its beginning and end with a handle. Read the omitted part with \`${HARNESS_TOOL_NAMES.readToolResult}\` instead of running the tool again; results stay readable later in the chat.`),
+      ...tool(HARNESS_TOOL_NAMES.fetchUrl, `- Read a web page with \`${HARNESS_TOOL_NAMES.fetchUrl}\` when the user gives a link or a search result's snippet is not enough.`),
       ...tool(HARNESS_TOOL_NAMES.findTools, `- More tools from the user's MCP connections can be found with \`${HARNESS_TOOL_NAMES.findTools}\`; search there before saying a capability is missing.`),
       ...tool(HARNESS_TOOL_NAMES.loadSkill, `- The user's Skills are listed by name and description. Load a Skill's instructions with \`${HARNESS_TOOL_NAMES.loadSkill}\` before you follow it; this needs no Workspace.`),
       ...tool(HARNESS_TOOL_NAMES.updatePlan, `- \`${HARNESS_TOOL_NAMES.updatePlan}\` shows your plan to the user as progress; use it for work with several steps.`),
       ...tool(HARNESS_TOOL_NAMES.applyPatch, `- Edit text files in the Workspace with \`${HARNESS_TOOL_NAMES.applyPatch}\`; create binary or generated files with code.`),
       ...tool(HARNESS_TOOL_NAMES.readSecret, `- The user's saved secrets (tokens, passwords, keys) are yours to use for their tasks: \`${HARNESS_TOOL_NAMES.readSecret}\` returns a value by name, in any chat. A value you read is stored in this chat's history; do not repeat it in your answer unless the user asks for it.`)
     ],
+    ...(search ? [[
+      "# Web search",
+      "- Your knowledge stops at a cutoff and the world keeps changing. Search before you answer anything that may have changed or that you are not sure about: news, prices and rates, versions and releases, schedules, people, laws, documentation, anything tied to today's date. Do not answer such questions from memory.",
+      "- Write focused queries, in the language most likely to find good sources. When results are thin or disagree, search again with a different query; independent searches can run in parallel.",
+      "- Base the answer on what the sources say and link the ones you rely on. Say so when the results do not settle the question."
+    ]] : []),
     ...(input.workspace ? [[
       "# Workspace",
       "This chat has a private Linux sandbox with a persistent disk, shell, Python, package managers, a headless browser and Office, PDF and image libraries. It starts on the first call that runs code or touches its files, which takes about a second, and keeps this chat's files between turns. Tools that run no code (secrets, Skills, MCP, search, Memory, images) work without it.",

@@ -60,11 +60,14 @@ describe("Telegram send body", () => {
     expect(body).toMatchObject({ modelId: odd.modelId, searchPlan: { optionIds: [SEARCH_OPTION.strategyId] } });
   });
 
-  it("sends no Search options with Search off, the model's first option when none of the saved ones fit, and none when it has none", () => {
+  it("sends the user's default sources the model supports, and none with Search off or a default turned off", () => {
     const catalog = fakeCatalog({ defaults: { searchPlan: { mode: "all_selected", optionIds: [] } } });
     const model = catalog.models[0]!;
     expect(telegramSearchPlan(catalog, model, false)).toEqual({ mode: "all_selected", optionIds: [] });
-    expect(telegramSearchPlan(catalog, model, true)).toEqual({ mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] });
+    // A default turned off in Chat defaults is never replaced by the model's first source.
+    expect(telegramSearchPlan(catalog, model, true)).toEqual({ mode: "all_selected", optionIds: [] });
+    const chosen = fakeCatalog({ defaults: { searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] } } });
+    expect(telegramSearchPlan(chosen, chosen.models[0]!, true)).toEqual({ mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] });
     expect(telegramSearchPlan(catalog, fakeCatalogModel({ searchStrategyIds: [] }), true)).toEqual({ mode: "all_selected", optionIds: [] });
     const off = buildTelegramSendBody({
       admissionId: "tg-1-80", catalog, content: TEXT, model, settings: { ...SETTINGS, searchEnabled: false }, target: { assistantId: null, kind: "new" }

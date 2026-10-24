@@ -33,7 +33,6 @@ export type RunSetupComposerV2 = Pick<
   | "streamMode"
   | "temperature"
   | "useOrganizationModelDefault"
-  | "useOrganizationSearchDefault"
 > & {
   /** The chat's Assistant; its parameters row governs the fields while its model is in use. */
   assistant?: ComposerV2Assistant | null;

@@ -45,7 +45,9 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 ## Search
 
 - A Search engine receives only a bounded generated query and server-owned controls, never the conversation, prompts, attachment identity, file names or extracted text. Raw result bodies and recursively discovered URLs are not kept, and no unselected engine runs as a fallback.
-- The DeepSeek Search API is built in (operator decision 2026-10-18): a Search source beside a DeepSeek connection's hosted Search, offered to every tool-calling answer model and enabled by provider setup after one result-bearing probe. DeepSeek reports no cost, so a result-bearing request is billed at the published per-request price, an empty or rejected one costs nothing, and an unreadable one stays unknown (`lib/server/providers/deepSeekSearchApi.ts`).
+- Search is on for everyone (operator decision 2026-10-24). An organization default without a source resolves to the first usable source in the priority of `automaticSearchOptionId` (`lib/domain/search.ts`); there is no organization Off, and a chosen source that becomes unusable is never replaced. Every search goes to all selected sources.
+- Every chat model calls tools, and only OpenAI hosted Search runs inside such an answer; every other source searches through its client route, a separate request to the source's technical model. Catalog, admission and administrator readiness share this rule (`hostedSearchProtocolUsable`).
+- The DeepSeek Search API is DeepSeek's only Search source (operator decisions 2026-10-18 and 2026-10-24): offered to every tool-calling answer model and enabled by provider setup after one result-bearing probe. DeepSeek's hosted Search is retired, because live checks showed V4 Flash never searching through it and no model returning source links. DeepSeek reports no cost, so a result-bearing request is billed at the published per-request price, an empty or rejected one costs nothing, and an unreadable one stays unknown (`lib/server/providers/deepSeekSearchApi.ts`).
 
 ## Documents, embeddings and reranking
 

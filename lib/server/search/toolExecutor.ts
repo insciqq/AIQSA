@@ -7,6 +7,7 @@ import {
   type AdminSearchReasoningPolicy
 } from "../../contracts/adminSearch";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import type { ProviderSearchDispatch } from "../providers/searchDispatch";
 import {
   isProviderSearchExecutionError,
   ProviderSearchExecutionError
@@ -35,6 +36,8 @@ import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { bindContext, logEvent } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
+import { providerRetryDelayMs, sleepWithSignal } from "../providers/providerRetry";
+import { MODEL_CALL_RETRY, modelCallRetryDecision } from "../engine/modelCall";
 
 export {
   searchExecutionPreviewCount,
@@ -60,6 +63,80 @@ const legacySearchExecutionDefaults = Object.freeze({
 type SearchExecutionResult = SearchExecutionEvidence;
 
 type SearchFailureEvidence = NonNullable<SearchExecutionEvidence["failure"]>;
+
+/** Requests of one engine's Search call, the first included. A read-only
+ * Search retries transparently (answer first, RUN_CONTRACTS.md) within its
+ * own deadline and under Stop; the DeepSeek Search API retries itself. */
+export const SEARCH_ENGINE_MAX_ATTEMPTS = 3;
+
+/** A retry is sent only when this much of the engine's deadline is left
+ * after its wait, so no paid request starts that cannot finish. */
+const SEARCH_RETRY_MIN_ATTEMPT_MS = 2_000;
+
+/** The waits between an engine's attempts; seams for tests. */
+export type SearchRetryPorts = Readonly<{
+  random?: () => number;
+  sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+}>;
+
+/** What the provider reported one attempt cost. */
+type SearchAccounting = Readonly<{ costUsd: number | null; usage: ModelRunUsage }>;
+
+/**
+ * Accounts each physical request of one attempt that the provider answered,
+ * so a failure after it (a dropped continuation, an unreadable body) keeps
+ * that request's reported usage and cost.
+ */
+function searchAttemptLedger() {
+  const usages: ModelRunUsage[] = [];
+  const costs: number[] = [];
+  async function dispatch<T>(request: Readonly<{
+    body: unknown;
+    cost?(value: T): number | null;
+    execute(): Promise<T>;
+    usage(value: T): ModelRunUsage;
+  }>): Promise<T> {
+    const value = await request.execute();
+    try {
+      usages.push(request.usage(value));
+      const cost = request.cost?.(value);
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) costs.push(cost);
+    } catch {
+      // Unreadable usage stays unknown; the adapter reports that failure itself.
+    }
+    return value;
+  }
+  return {
+    accounting: (): SearchAccounting => ({
+      costUsd: costs.length ? costs.reduce((sum, cost) => sum + cost, 0) : null,
+      usage: sumTokenUsage(usages)
+    }),
+    dispatch
+  };
+}
+
+/** A failed attempt's accounting: what its typed failure carries, else what its answered requests reported. */
+function failedAttemptAccounting(error: unknown, ledger: ReturnType<typeof searchAttemptLedger>): SearchAccounting {
+  return isProviderSearchExecutionError(error)
+    ? { costUsd: error.costUsd, usage: error.usage }
+    : ledger.accounting();
+}
+
+function reportedAccounting(accounting: SearchAccounting): boolean {
+  return accounting.costUsd !== null || normalizeTokenUsage(accounting.usage).completeness !== "unavailable";
+}
+
+/** Every attempt's reported usage, summed; a cost only when every attempt that reported usage reported one. */
+function combinedAccounting(accountings: readonly SearchAccounting[]): SearchAccounting {
+  const reported = accountings.filter(reportedAccounting);
+  if (reported.length <= 1) return reported[0] ?? accountings[accountings.length - 1] ?? { costUsd: null, usage: zeroUsage() };
+  return {
+    costUsd: reported.every((accounting) => accounting.costUsd !== null)
+      ? reported.reduce((sum, accounting) => sum + (accounting.costUsd ?? 0), 0)
+      : null,
+    usage: sumTokenUsage(reported.map((accounting) => accounting.usage))
+  };
+}
 
 /** Carries accounting from every settled engine while cancellation still stops
  * the caller before another tool or answer request can be dispatched. */
@@ -121,11 +198,20 @@ function toolName(ordinal: number): string {
   return `search_engine_${ordinal + 1}`;
 }
 
+/** What the model is told about Search, after how it reaches the web. */
+const SEARCH_GUIDANCE =
+  "Search before answering anything that may have changed or that you are not sure about: news, prices, rates, " +
+  "versions, releases, schedules, people, laws, documentation. Write one focused query in the language most likely " +
+  "to find good sources, and search again with a refined query when results are thin. Results give findings and " +
+  "numbered sources with URLs; cite the sources you use.";
+
+const ALL_SELECTED_DESCRIPTION = `Search the web through the user's selected search sources. ${SEARCH_GUIDANCE}`;
+
 function toolDescription(option: NormalizedSearchPlanOption): string {
   const displayName = option.displayName?.trim().slice(0, 160);
   return displayName
-    ? `Search the user-selected web source ${JSON.stringify(displayName)} with a concise query.`
-    : "Search one user-selected web source with a concise query.";
+    ? `Search the web through the user-selected source ${JSON.stringify(displayName)}. ${SEARCH_GUIDANCE}`
+    : `Search the web through one user-selected source. ${SEARCH_GUIDANCE}`;
 }
 
 function searchDisplayName(option: NormalizedSearchPlanOption): string {
@@ -307,7 +393,8 @@ async function consumeProviderSearch(
   request: ProviderSearchRequest,
   option: NormalizedSearchPlanOption,
   signal?: AbortSignal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  dispatch?: ProviderSearchDispatch
 ): Promise<{
   costUsd: number | null;
   findings: string;
@@ -317,7 +404,7 @@ async function consumeProviderSearch(
   usage: ModelRunUsage;
 }> {
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
-  const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
+  const result = await runtime.searchAdapter.search(request, { ...(dispatch ? { dispatch } : {}), signal, timeoutMs });
   const costUsd = result.costUsd ?? null;
   const sourceAttribution = result.sourceAttribution ?? "available";
   if (result.noResults === true) {
@@ -397,6 +484,7 @@ async function executeOne(input: Readonly<{
   engineIndex: number;
   option: NormalizedSearchPlanOption;
   query: ValidatedSearchQuery;
+  retry?: SearchRetryPorts;
   runtime: ProviderRuntimeBinding | undefined;
   signal?: AbortSignal;
 }>): Promise<SearchExecutionResult> {
@@ -456,19 +544,61 @@ async function executeOne(input: Readonly<{
     bindContext(() => abortAttempt("search_timeout", new SearchDeadlineError(), true)),
     effectiveTimeoutMs
   );
+  const runtime = input.runtime;
+  const remainingMs = () => Math.max(0, effectiveTimeoutMs - (performance.now() - startedAt));
+  // Each failed attempt that was sent again; the last attempt's own failure is accounted in the catch.
+  const retried: SearchAccounting[] = [];
+  let ledger = searchAttemptLedger();
+  /** The same request to the same engine again after a transient failure:
+   * a network error, a rate limit, a server error or a dropped stream, never
+   * a deterministic rejection or a response the adapter refused. */
+  const retryDelayMs = (error: unknown, attempt: number): number | null => {
+    if (abortCode !== undefined || attemptController.signal.aborted || isProviderSearchExecutionError(error) ||
+      input.option.protocol === "deepseek_search_api") return null;
+    const decision = modelCallRetryDecision(error, attemptController.signal);
+    if (!decision) return null;
+    const proposed = attempt < SEARCH_ENGINE_MAX_ATTEMPTS
+      ? providerRetryDelayMs(attempt, decision.retryAfterMs, input.retry?.random, MODEL_CALL_RETRY.backoff) : null;
+    const delayMs = proposed !== null && proposed + SEARCH_RETRY_MIN_ATTEMPT_MS <= remainingMs() ? proposed : null;
+    const failure = observedFailure(error);
+    logEvent("provider_retry", {
+      action: delayMs === null ? "stop" : "retry", attempt, code: failure.code, reason: failure.reason, stage: "search",
+      ...(delayMs === null ? {} : { delay_ms: delayMs }),
+      ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {})
+    });
+    return delayMs;
+  };
+  const searchWithRetries = async () => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await consumeProviderSearch(
+          runtime,
+          request,
+          input.option,
+          attemptController.signal,
+          // A later attempt gets only what the engine's deadline leaves.
+          attempt === 1 ? effectiveTimeoutMs : Math.max(1, Math.floor(remainingMs())),
+          ledger.dispatch
+        );
+      } catch (error) {
+        const delayMs = retryDelayMs(error, attempt);
+        if (delayMs === null) throw error;
+        retried.push(failedAttemptAccounting(error, ledger));
+        ledger = searchAttemptLedger();
+        await (input.retry?.sleep ?? sleepWithSignal)(delayMs, attemptController.signal);
+      }
+    }
+  };
   try {
-    const result = await consumeProviderSearch(
-      input.runtime,
-      request,
-      input.option,
-      attemptController.signal,
-      effectiveTimeoutMs
-    );
+    const attempt = await searchWithRetries();
+    const { costUsd, usage } = combinedAccounting([...retried, { costUsd: attempt.costUsd, usage: attempt.usage }]);
+    const result = { ...attempt, costUsd, usage };
     // A caller cancellation may happen while another engine settles; preserve
     // that engine's settled evidence for fan-out accounting. A local deadline,
     // however, invalidates a result that arrived after the Search-owned timer.
     if (abortCode === "search_timeout") {
-      throw new ProviderSearchExecutionError({ artifacts: [], code: abortCode, costUsd: result.costUsd, usage: result.usage });
+      // This attempt's own accounting: the earlier ones are already in `retried`.
+      throw new ProviderSearchExecutionError({ artifacts: [], code: abortCode, costUsd: attempt.costUsd, usage: attempt.usage });
     }
     logEvent("tool_execution", {
       tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
@@ -524,12 +654,13 @@ async function executeOne(input: Readonly<{
         : abortCode === "search_cancelled" ? "cancelled" : observed.reason,
       httpStatus: observed.httpStatus
     });
+    const accounting = combinedAccounting([...retried, failedAttemptAccounting(error, ledger)]);
     return failedSearchExecution({
       call: input.call,
-      costUsd: providerFailure?.costUsd ?? null,
+      costUsd: accounting.costUsd,
       failure,
       option: input.option,
-      usage: normalizeTokenUsage({ ...providerFailure?.usage, completeness: "partial" })
+      usage: normalizeTokenUsage({ ...accounting.usage, completeness: "partial" })
     });
   } finally {
     clearTimeout(timeout);
@@ -644,6 +775,7 @@ export function fitDurableSearchToolResult(input: Readonly<{
 export function createSearchPlanToolRouter(input: Readonly<{
   initialInvocationCounts?: Readonly<Record<string, number>>;
   plan: NormalizedSearchPlan;
+  retry?: SearchRetryPorts;
   runtimes: Readonly<Record<string, ProviderRuntimeBinding | undefined>>;
 }>): SearchPlanToolRouter | null {
   const clientOptions = input.plan.options.filter(
@@ -670,8 +802,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         options: clientOptions,
         tool: searchTool(
           allSelectedToolName,
-          "Search every user-selected web engine with the same concise query and combine attributed sources." +
-            budgetDescription(clientOptions),
+          ALL_SELECTED_DESCRIPTION + budgetDescription(clientOptions),
           Math.min(...clientOptions.map((option) => searchExecutionConfiguration(option).queryMaxCharacters))
         )
       }]
@@ -774,6 +905,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         engineIndex: index + 1,
         option,
         query,
+        ...(input.retry ? { retry: input.retry } : {}),
         runtime: input.runtimes[option.optionId],
         ...(options?.signal ? { signal: options.signal } : {})
       })));

@@ -18,6 +18,7 @@ import {
   decodeSearchPlan,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
+  hostedSearchProtocolUsable,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
   type SearchPlan
@@ -189,9 +190,10 @@ function draftKind(draft: AdminSearchDraft): AdminSearchKind {
   return "web_search";
 }
 
+/** DeepSeek's hosted Search is retired (operator decision 2026-10-24): a
+ * DeepSeek model only carries its key for the DeepSeek Search API. */
 function clientSearchKind(adapterKind: string): AdminSearchProviderModelOption["searchKind"] | null {
   if (adapterKind === "anthropic_messages") return "anthropic_web_search";
-  if (adapterKind === "deepseek_responses_native") return "deepseek_web_search";
   if (adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible") {
     return "web_search";
   }
@@ -435,7 +437,9 @@ function routeReady(
       ? { adapterKind: draft.adapterKind, draft }
       : null;
   }
-  return providerModels.some((model) =>
+  // Every chat model calls tools, and only OpenAI hosted Search coexists with
+  // them, so another hosted route never answers a chat on its own.
+  return hostedSearchProtocolUsable(draft.protocol) && providerModels.some((model) =>
     model.enabled && model.connectionId === option.sourceConnectionId && model.nativeSearch &&
     compatibleTechnicalAdapter(draft.protocol, model.adapterKind)
   )
@@ -831,7 +835,8 @@ export function createAdminSearchService(input: Readonly<{
     const plan: SearchPlan = decoded.plan;
     if (plan.optionIds.some((optionId) =>
       !selectable.some((integration) => integration.strategyId === optionId)) ||
-      (plan.mode === "all_selected" && plan.optionIds.some((optionId) =>
+      // A single source has no fan-out, so its hosted-only route qualifies in either mode.
+      (plan.mode === "all_selected" && plan.optionIds.length > 1 && plan.optionIds.some((optionId) =>
         !selectable.find((integration) => integration.strategyId === optionId)
           ?.executionModes.includes("all_selected"))) ||
       !isSearchCombinationCompatible(plan.optionIds, selectable, plan.mode)) {
@@ -846,27 +851,6 @@ export function createAdminSearchService(input: Readonly<{
       where: { id: "installation", version: args.expectedVersion }
     });
     if (updated.count !== 1) throw new AdminSearchServiceError("search_policy_stale");
-  }
-
-  async function initializeDefault(
-    tx: Prisma.TransactionClient,
-    optionId: string,
-    userId: string,
-    mode: SearchPlan["mode"] = "all_selected"
-  ): Promise<void> {
-    // Only the untouched installation default is eligible. Concurrent first
-    // connections compete for this row; a later save, including Off, wins.
-    await tx.searchPolicy.updateMany({
-      data: {
-        defaultPlan: json({ mode, optionIds: [optionId] }),
-        updatedByUserId: userId,
-        version: { increment: 1 }
-      },
-      where: {
-        id: "installation", version: 1, updatedByUserId: null,
-        defaultPlan: { equals: json({ mode: "all_selected", optionIds: [] }) }
-      }
-    });
   }
 
   async function loadOption(
@@ -1088,9 +1072,6 @@ export function createAdminSearchService(input: Readonly<{
             },
             where: { id: published.child.id }
           });
-          if (!refreshed.archivedAt && (args.bootstrap || refreshed.enabled)) {
-            await initializeDefault(tx, refreshed.optionId, args.userId);
-          }
         }
       }
       async function ensureHostedRoute(
@@ -1291,9 +1272,6 @@ export function createAdminSearchService(input: Readonly<{
         where: { id: option.id }
       });
       await publishLogicalOption(tx, option, check.evidence);
-      if (option.enabled && !option.archivedAt) {
-        await initializeDefault(tx, option.optionId, args.userId);
-      }
     });
   }
 
@@ -1351,10 +1329,6 @@ export function createAdminSearchService(input: Readonly<{
         data: { enabled: args.enabled },
         where: { id: args.id }
       });
-      if (args.enabled) {
-        await initializeDefault(tx, source.strategyId, args.userId,
-          source.executionModes.includes("all_selected") ? "all_selected" : "model_choice");
-      }
     });
   }
 

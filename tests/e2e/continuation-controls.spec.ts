@@ -167,9 +167,6 @@ for (const width of [1440, 390]) {
     const composer = page.getByRole("textbox", { name: "Message" });
     await selectModel(page, chosen.provider, chosen.displayName);
     await chooseSearchStrategy(page, "Perplexity");
-    await page.getByRole("button", { name: /^Choose web search/ }).click();
-    await page.getByRole("dialog", { name: "Web search" }).getByLabel("When the model searches").selectOption("model_choice");
-    await page.keyboard.press("Escape");
     let parameters = await openRunSetup(page);
     await parameters.getByLabel("Temperature", { exact: true }).fill("0.4");
     await parameters.getByLabel("Max output tokens").fill("1700");
@@ -235,7 +232,7 @@ for (const width of [1440, 390]) {
     await expect(parameters.getByRole("switch", { name: /^Background/ })).toHaveAttribute("aria-checked", "true");
     await closeRunSetup(page);
     await page.getByRole("button", { name: /^Choose web search/ }).click();
-    await expect(page.getByRole("dialog", { name: "Web search" }).getByLabel("When the model searches")).toHaveValue("model_choice");
+    await expect(page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Perplexity/u })).toBeChecked();
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole("treeitem", { name: source.title, exact: true }).click();

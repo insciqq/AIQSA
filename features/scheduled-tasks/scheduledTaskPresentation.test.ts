@@ -407,8 +407,10 @@ describe("scheduled task type and tools in drafts", () => {
     expect(scheduledTaskCapabilityBlockers(catalog, noTools, "available"))
       .toEqual({ monitoring: "Monitoring needs a model that can use tools. Choose another model.",
         tools: "Not available with this model.", workspace: "Not available with this model." });
-    expect(validateScheduledTaskDraft({ ...noTools, toolsEnabled: false }, catalog, null, now)).toEqual({});
-    expect(validateScheduledTaskDraft({ ...noTools, kind: "monitoring", toolsEnabled: true, workspaceEnabled: true }, catalog, null, now))
+    // Choosing a model without Search turns the task's Search off in the sheet.
+    expect(validateScheduledTaskDraft({ ...noTools, searchEnabled: false, toolsEnabled: false }, catalog, null, now)).toEqual({});
+    expect(validateScheduledTaskDraft({ ...noTools, kind: "monitoring", searchEnabled: false, toolsEnabled: true, workspaceEnabled: true },
+      catalog, null, now))
       .toEqual({
         kind: "Monitoring needs a model that can use tools. Choose another model.",
         tools: "This model cannot use tools. Turn tools off or choose another model.",
@@ -431,6 +433,9 @@ describe("scheduled task Memory in drafts", () => {
   it("starts a new task reading Memory, keeps a stored task's choice and sends only a change", () => {
     const blank = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Brief", prompt: "Summarize." });
     expect(blank.memoryEnabled).toBe(true);
+    // Search starts on wherever the model can search (operator decision 2026-10-24).
+    expect(blank.searchEnabled).toBe(true);
+    expect(blankScheduledTaskDraft(null, "Europe/London", now).searchEnabled).toBe(false);
     expect(scheduledTaskCreateRequest(blank)).toMatchObject({ memoryEnabled: true });
     expect(blankScheduledTaskDraft(null, "Europe/London", now).memoryEnabled).toBe(true);
     const stored = scheduledTaskFixture({ memoryEnabled: false });
@@ -440,8 +445,8 @@ describe("scheduled task Memory in drafts", () => {
     expect(scheduledTaskUpdateRequest(edit, stored)).toEqual({ expectedRevision: 1 });
     expect(scheduledTaskUpdateRequest({ ...edit, memoryEnabled: true }, stored)).toEqual({ expectedRevision: 1, memoryEnabled: true });
     // Memory needs no tool calling: a model without tools keeps the switch and saves.
-    expect(validateScheduledTaskDraft({ ...blank, modelId: "model-c", toolsEnabled: false, workspaceEnabled: false }, catalog, null, now))
-      .toEqual({});
+    expect(validateScheduledTaskDraft({ ...blank, modelId: "model-c", searchEnabled: false, toolsEnabled: false, workspaceEnabled: false },
+      catalog, null, now)).toEqual({});
   });
 
   it("reads the owner's Memory state from the shell's settings", () => {

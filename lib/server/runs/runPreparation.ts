@@ -1187,9 +1187,8 @@ export async function prepareRun(
     admissionPlan = await providerAdmission.load({
       providerConnectionId: selectedProvider,
       providerModelId: selectedModelId,
-      ...(workspaceEnabled
-        ? { requiresClientToolCoexistence: true }
-        : {}),
+      // Chat models always call tools, so hosted Search must coexist with them.
+      requiresClientToolCoexistence: true,
       searchPlan: requestedSearchPlan,
       ...(requestedSearchPreference
         ? {
@@ -1286,52 +1285,8 @@ export async function prepareRun(
 
   const mcpToolsEnabled = mcpDiscoveryEnabled ||
     Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const requiresClientToolCoexistence = mcpToolsEnabled || workspaceEnabled ||
-    modelConfiguration.capabilities.toolCalling === true;
-  if (
-    requiresClientToolCoexistence &&
-    admissionPlan.searches.some((candidate) =>
-      candidate.configuration.adapterKind === "answer_provider_hosted")
-  ) {
-    try {
-      admissionPlan = await providerAdmission.load({
-        providerConnectionId: selectedProvider,
-        providerModelId: selectedModelId,
-        requiresClientToolCoexistence: true,
-        searchPlan: requestedSearchPlan,
-        ...(requestedSearchPreference
-          ? {
-              searchPreferencePlan: requestedSearchPreference.plan,
-              searchPreferenceSource: requestedSearchPreference.source
-            }
-          : {}),
-        userId: input.userId
-      });
-    } catch (error) {
-      if (error instanceof ProviderAdmissionError) {
-        return failure(
-          error.code,
-          error.code === "credential_assignment_ambiguous" ? 409 : 403
-        );
-      }
-      throw error;
-    }
-    acceptedSearchPlan = admissionPlan.requestedSearchPlan;
-    requestedSearchPlan = acceptedSearchPlan;
-    if (requestedSearchPreference) {
-      requestedSearchPreference = {
-        plan: admissionPlan.requestedSearchPreferencePlan !== undefined
-          ? admissionPlan.requestedSearchPreferencePlan
-          : requestedSearchPreference.plan,
-        source: requestedSearchPreference.source
-      };
-    }
-    modelConfiguration = admissionPlan.answer.modelConfiguration;
-  }
-
-  // The first plan may only establish that hosted Search conflicts with the
-  // admitted client tools. Derive every runtime field once, from the final
-  // plan whose exact answer binding will be persisted and revalidated.
+  // Derive every runtime field once, from the plan whose exact answer binding
+  // will be persisted and revalidated.
   const answerPreview = createProviderPreviewRuntimeBinding(
     admissionPlan.answer.snapshot,
     deps.allowFakeProvider === true

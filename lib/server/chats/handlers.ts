@@ -323,7 +323,6 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     ...(chat.answerReview ? { answerReview: chat.answerReview } : {}),
     assistantId: chat.assistantId ?? null,
     createdAt: iso(chat.createdAt),
-    ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
@@ -579,6 +578,8 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (bodyError) {
       return bodyError;
     }
+    // Search is one personal default for every chat (operator decision
+    // 2026-10-24): a per-chat plan from an older client is validated and ignored.
     const search = body?.defaultSearchPlan == null ? null : decodeSearchPlan(body.defaultSearchPlan);
     if (search && !search.ok) {
       return chatRouteErrorJson({ error: "search_plan_invalid" }, { status: 400 });
@@ -608,7 +609,6 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
         ...(answerReview !== undefined ? { answerReview } : {}),
         ...assistant.update,
         chatId: params.chatId,
-        ...(body && "defaultSearchPlan" in body ? { defaultSearchPlan: search?.ok ? search.plan : null } : {}),
         folderId: folderValue(body),
         pinned: pinnedValue(body),
         title,

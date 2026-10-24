@@ -139,6 +139,7 @@ export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Pr
     upstreamModelId: input.snapshot.model.upstreamModelId }, {
     environment: { now: input.now, timeZone, ...(secrets ? { secrets } : {}) },
     tools,
+    webSearch: request.searchPlan.options.length > 0,
     workspace: request.workspace?.enabled === true
   });
   const { turnGuidance, ...admitted } = request.prompt;

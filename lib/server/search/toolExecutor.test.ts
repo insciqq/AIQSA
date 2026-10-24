@@ -22,10 +22,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { observeProviderOperation } from "../providers/providerObservability";
 import { createOpenAIResponsesSearchAdapter } from "../providers/openaiResponsesSearch";
+import { createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
 import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
 import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient } from "../providers/deepSeekSearchApi";
 import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION, searchUsageAttribution } from "./toolResult";
 import { SEARCH_NO_RESULTS_FINDINGS } from "./evidence";
+
+const SEARCH_GUIDANCE_TEXT = "Search before answering anything that may have changed or that you are not sure about: " +
+  "news, prices, rates, versions, releases, schedules, people, laws, documentation. Write one focused query in the " +
+  "language most likely to find good sources, and search again with a refined query when results are thin. Results " +
+  "give findings and numbered sources with URLs; cite the sources you use.";
 
 function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
   return {
@@ -316,11 +322,24 @@ describe("Search plan tool router", () => {
 
     expect(router.tools).toEqual([
       expect.objectContaining({
-        description: "Search the user-selected web source \"Company Gateway Search\" with a concise query. This source can be requested at most 2 times for this answer.",
+        description: "Search the web through the user-selected source \"Company Gateway Search\". " + SEARCH_GUIDANCE_TEXT +
+          " This source can be requested at most 2 times for this answer.",
         name: "search_engine_1"
       })
     ]);
     expect(JSON.stringify(router.tools)).not.toContain(connectionId);
+  });
+
+  it("tells the model when and how to search through every selected source", () => {
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("one"), option("two")] },
+      runtimes: {}
+    })!;
+    expect(router.tools).toEqual([expect.objectContaining({
+      description: "Search the web through the user's selected search sources. " + SEARCH_GUIDANCE_TEXT +
+        " This source can be requested at most 2 times for this answer.",
+      name: "search_selected_engines"
+    })]);
   });
 
   it("rejects undeclared noncanonical tool names", async () => {
@@ -1746,5 +1765,163 @@ describe("DeepSeek Search API engine", () => {
     expect(searchExecutionsFromToolResult(saved(SEARCH_NO_RESULTS_FINDINGS, "deepseek_search_api"))).toHaveLength(1);
     expect(searchExecutionsFromToolResult(saved("Provider claims without sources.", "deepseek_search_api"))).toEqual([]);
     expect(searchExecutionsFromToolResult(saved(SEARCH_NO_RESULTS_FINDINGS, "openai_responses_web_search"))).toEqual([]);
+  });
+});
+
+describe("Search engine retries", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const completed = () => Response.json({ id: "resp_test", status: "completed",
+    usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+    output: [{ id: "ws_test", type: "web_search_call", status: "completed",
+      action: { type: "search", sources: [{ url: "https://example.com" }] } },
+    { type: "message", content: [{ type: "output_text", text: "Found it." }] }] });
+
+  function nativeRouter(fetchFn: typeof fetch, sleep = vi.fn(async (_delayMs: number, _signal: AbortSignal): Promise<void> => undefined)) {
+    const searchAdapter = createOpenAIResponsesSearchAdapter({
+      client: createFetchOpenAIResponsesClient({ apiKey: "fake", fetchFn }), provider: "openai"
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("one")] },
+      retry: { random: () => 0, sleep },
+      runtimes: { one: { ...runtime(), searchAdapter } }
+    })!;
+    return { router, sleep };
+  }
+
+  it("sends a native Search again after a server error and returns its result", async () => {
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ error: { type: "server_error" } }, { status: 503 }))
+      .mockResolvedValue(completed());
+    const { router, sleep } = nativeRouter(fetchFn);
+    const result = await router.execute(call("search_selected_engines"), {});
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(result.status).toBe("complete");
+    expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({
+      findings: "Found it.", status: "complete", usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 })
+    })]);
+  });
+
+  it("does not send a rejected key again", async () => {
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ error: { type: "invalid_api_key" } }, { status: 401 }));
+    const { router, sleep } = nativeRouter(fetchFn);
+    const result = await router.execute(call("search_selected_engines"), {});
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result.status).toBe("error");
+  });
+
+  it("waits at least the provider's Retry-After before sending a rate-limited Search again", async () => {
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ error: { type: "rate_limit_exceeded" } },
+        { headers: { "retry-after": "2" }, status: 429 }))
+      .mockResolvedValue(completed());
+    const { router, sleep } = nativeRouter(fetchFn);
+    const result = await router.execute(call("search_selected_engines"), {});
+    expect(result.status).toBe("complete");
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep.mock.calls[0]![0]).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it("never retries when too little of the engine's deadline would be left to answer", async () => {
+    // 5 s deadline: a 4 s Retry-After leaves less than the 2 s an attempt needs.
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: "rate_limit_exceeded" } },
+      { headers: { "retry-after": "4" }, status: 429 }));
+    const { router, sleep } = nativeRouter(fetchFn);
+    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("gives up after three attempts, and never waits past the engine's deadline", async () => {
+    const failing = () => vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ error: { type: "server_error" } }, { status: 502 }));
+    const bounded = failing();
+    const result = await nativeRouter(bounded).router.execute(call("search_selected_engines"), {});
+    expect(bounded).toHaveBeenCalledTimes(3);
+    expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({ status: "error" })]);
+
+    // A Retry-After longer than the engine's own deadline (5 s) ends the retries at once.
+    const late = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: "rate_limit_exceeded" } },
+      { headers: { "retry-after": "60" }, status: 429 }));
+    const { router, sleep } = nativeRouter(late);
+    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect(late).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("stops waiting at once when the user stops, keeping the cancellation", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: "server_error" } }, { status: 503 }));
+    const controller = new AbortController();
+    const sleep = vi.fn(async (_delayMs: number, signal: AbortSignal) => {
+      controller.abort(new Error("stopped"));
+      signal.throwIfAborted();
+    });
+    const { router } = nativeRouter(fetchFn, sleep);
+    await expect(router.execute(call("search_selected_engines"), {}, { signal: controller.signal }))
+      .rejects.toBeInstanceOf(SearchToolCancelledError);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("re-sends only the failed engine of a fan-out and accounts every attempt's reported usage", async () => {
+    let flakyCalls = 0;
+    const steadySearch = vi.fn();
+    const flaky: ProviderRuntimeBinding = { ...runtime(), searchAdapter: {
+      buildRequestPreview: () => ({}),
+      async search(request, options) {
+        flakyCalls += 1;
+        // Each attempt is one answered request; the first then loses its continuation.
+        await options!.dispatch!({ body: {}, cost: () => 0.001, execute: async () => ({}),
+          usage: () => ({ inputTokens: 10, outputTokens: 1, totalTokens: 11 }) });
+        if (flakyCalls === 1) throw Object.assign(new Error("provider_http_error"), { httpStatus: 503 });
+        return { artifacts: [], costUsd: 0.001, findings: "Flaky finding.", finalProviderResponsePreview: {},
+          requestPreview: {}, sources: [{ rank: 1, title: "Flaky", url: "https://flaky.example" }],
+          usage: { inputTokens: 10, outputTokens: 1, totalTokens: 11 } };
+      }
+    } };
+    const steady = runtime({ onRequest: steadySearch });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("flaky"), option("steady")] },
+      retry: { random: () => 0, sleep: async () => undefined },
+      runtimes: { flaky, steady }
+    })!;
+    const result = await router.execute(call("search_selected_engines"), {});
+    expect(flakyCalls).toBe(2);
+    expect(steadySearch).toHaveBeenCalledOnce();
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({ costUsd: 0.002, optionId: "flaky", status: "complete",
+        usage: expect.objectContaining({ inputTokens: 20, outputTokens: 2, totalTokens: 22 }) }),
+      expect.objectContaining({ optionId: "steady", status: "complete" })
+    ]);
+  });
+
+  it("leaves the DeepSeek Search API's retries to its own adapter", async () => {
+    const search = vi.fn(async () => { throw Object.assign(new Error("deepseek_search_api_http_error"), { httpStatus: 503 }); });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("api", { protocol: "deepseek_search_api", provider: "deepseek" })] },
+      retry: { sleep: async () => undefined },
+      runtimes: { api: { ...runtime(), searchAdapter: { buildRequestPreview: () => ({}), search } } }
+    })!;
+    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("never sends a response the adapter refused again", async () => {
+    const search = vi.fn(async () => {
+      throw Object.assign(new ProviderSearchExecutionError({ artifacts: [], code: "openai_search_sources_invalid",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }), { httpStatus: 503 });
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("one")] },
+      retry: { sleep: async () => undefined },
+      runtimes: { one: { ...runtime(), searchAdapter: { buildRequestPreview: () => ({}), search } } }
+    })!;
+    const result = await router.execute(call("search_selected_engines"), {});
+    expect(search).toHaveBeenCalledOnce();
+    expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({
+      failure: { code: "openai_search_sources_invalid" }, usage: expect.objectContaining({ inputTokens: 1 })
+    })]);
   });
 });

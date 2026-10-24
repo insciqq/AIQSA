@@ -67,4 +67,30 @@ describe("presentSearchSourcesV2", () => {
     expect(presented.sources[1]).toMatchObject({ domain: "nodejs.org", title: "nodejs.org" });
     expect(presented.sources[2]).toMatchObject({ domain: "example.com", title: "example.com" });
   });
+
+  it("labels a Google grounding redirect by the site its title names, not the redirect host", () => {
+    const presented = presentSearchSourcesV2([
+      { rank: 1, title: "reuters.com", url: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC1" },
+      { rank: 2, title: "www.Example.org", url: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/XyZ2" },
+      { rank: 3, title: "A story without a site name", url: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/Q3" }
+    ]);
+
+    expect(presented.sources[0]).toMatchObject({ domain: "reuters.com", title: "reuters.com" });
+    expect(presented.sources[1]).toMatchObject({ domain: "example.org", title: "example.org" });
+    expect(presented.sources[2]).toMatchObject({ domain: null, title: "A story without a site name" });
+    expect(JSON.stringify(presented.sources.map(({ domain, title }) => ({ domain, title }))))
+      .not.toContain("vertexaisearch");
+  });
+
+  it("shows a title that only repeats the site once", () => {
+    const presented = presentSearchSourcesV2([
+      { rank: 1, title: "www.BBC.com", url: "https://www.bbc.com/news/world-1" },
+      { rank: 2, title: "bbc.com.", url: "https://bbc.com/news/world-2" },
+      { rank: 3, title: "other.example", url: "https://bbc.com/news/world-3" }
+    ]);
+
+    expect(presented.sources[0]).toMatchObject({ domain: "bbc.com", title: "bbc.com" });
+    expect(presented.sources[1]).toMatchObject({ domain: "bbc.com", title: "bbc.com" });
+    expect(presented.sources[2]).toMatchObject({ domain: "bbc.com", title: "other.example" });
+  });
 });

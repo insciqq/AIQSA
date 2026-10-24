@@ -25,7 +25,7 @@ import { loadExposedChatModelId } from "./chatCreationDefaults";
 
 const sourceSelect = {
   activeLeafMessageId: true, archived: true, assistantId: true, assistantOverrides: true,
-  defaultProviderModelId: true, defaultSearchPlan: true, folderId: true,
+  defaultProviderModelId: true, folderId: true,
   id: true, importSource: true, importSourceModel: true, memoryMode: true, permanentDeletionAt: true,
   title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
@@ -352,7 +352,6 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
           // The import marker (never its key) keeps a continued imported chat out of Memory.
           ...(chat.importSource ? { importSource: chat.importSource, importSourceModel: chat.importSourceModel } : {}),
-          defaultSearchPlan: chat.defaultSearchPlan ?? Prisma.DbNull,
           ...continuedAssistantBinding(chat),
           workspaceEnabled: chat.workspaceEnabled,
           userId: source.userId,

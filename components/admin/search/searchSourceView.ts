@@ -9,7 +9,7 @@ import {
   type AdminSearchProviderModelOption
 } from "@/lib/contracts/adminSearch";
 import { isSearchCombinationCompatible } from "@/lib/domain/catalogMatrix";
-import type { SearchPlanMode } from "@/lib/domain/search";
+import { automaticSearchOptionId, type SearchPlanMode } from "@/lib/domain/search";
 
 /**
  * Presentation rules for the Search page (PRD 5.6): one status word per
@@ -39,20 +39,13 @@ export function searchSourceStatus(source: AdminSearchIntegration): SearchSource
 
 /** Which chat models can use this source, as one short phrase for the list. */
 export function searchModelsReach(source: AdminSearchIntegration): string {
-  if (source.kind === "gemini_google_search") return "Gemini models";
   if (!source.ready) return "No Search model yet";
-  if (source.kind === "perplexity_search" || source.kind === "deepseek_search_api" ||
-    source.broaderModelSetup === "ready") {
-    return "All chat models";
-  }
+  if (source.kind !== "web_search" || source.broaderModelSetup === "ready") return "All chat models";
   return "This provider's models";
 }
 
 /** The longer explanation of the reach for the source page. */
 export function searchModelsReachDetail(source: AdminSearchIntegration): string | null {
-  if (source.kind === "gemini_google_search") {
-    return "Google Search runs inside Gemini answers; other chat models cannot use it.";
-  }
   if (!source.ready) {
     if (source.configurable) return "Choose an enabled Search model in Configure so chats can use this source.";
     // A built-in without its own route yet: provider setup adds it with the key.
@@ -133,6 +126,26 @@ export function planKind(source: AdminSearchIntegration): SearchPlanOption["kind
 export function selectablePlanSources(catalog: AdminSearchCatalog): AdminSearchIntegration[] {
   return catalog.integrations.filter((source) =>
     source.enabled && source.ready && !source.archivedAt);
+}
+
+function sourceProtocol(source: AdminSearchIntegration): string {
+  if (source.kind === "deepseek_search_api") return "deepseek_search_api";
+  if (source.kind === "perplexity_search") return "openrouter_perplexity_chat";
+  if (source.kind === "gemini_google_search") return "gemini_google_search";
+  // A web source ready without a configured client route is OpenAI's hosted one.
+  return source.configuration?.protocol ?? "openai_responses_web_search";
+}
+
+/** The source users search with while the recommendation names none: Search
+ * is on for everyone (operator decision 2026-10-24), the server resolves the
+ * same priority per user. */
+export function automaticPlanSource(catalog: AdminSearchCatalog): AdminSearchIntegration | null {
+  const selectable = selectablePlanSources(catalog);
+  const optionId = automaticSearchOptionId(selectable.map((source) => ({
+    protocols: [sourceProtocol(source)],
+    strategyId: source.strategyId
+  })));
+  return selectable.find((source) => source.strategyId === optionId) ?? null;
 }
 
 export function planCompatible(

@@ -452,12 +452,18 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
           .values()];
         return sources.length > 0 ? { source: "search", sources, version: 1 } : undefined;
       },
-      execute: (execution) => router!.execute(execution.call, request, { signal: execution.signal }),
+      // The whole result: a long one reaches the model as an excerpt with a saved reference (`toolBatch.ts`), so
+      // no engine's findings are dropped for size.
+      execute: (execution) => router!.execute(execution.call, request, { retainOriginal: true, signal: execution.signal }),
       settled: async (_execution, result) => {
         // Each engine call keeps its sources (page-reader authority, counts)
-        // and its usage; a failed one keeps its reported usage too.
-        for (const executed of searchExecutionsFromToolResult(result)) {
+        // and its usage; a failed one keeps its reported usage too. Usage is
+        // counted first, so a lost record never loses another engine's usage.
+        const executions = searchExecutionsFromToolResult(result);
+        for (const executed of executions) {
           if (executed.usage) input.onUsage(searchUsageAttribution(executed));
+        }
+        for (const executed of executions) {
           await input.services.repository.createSearchRun({
             artifacts: { sources: executed.sources }, invocationId: executed.invocationId, modelId: executed.modelId,
             modelRunId: input.runId, provider: executed.provider, searchRevisionId: executed.revisionId,

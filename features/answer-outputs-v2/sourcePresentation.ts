@@ -44,6 +44,17 @@ export function sourceDomainV2(value: string): string | null {
   return url ? normalizedHost(url) : null;
 }
 
+/** Google Search grounding links through this redirect host; the source's
+ * title then names the real site. */
+const GOOGLE_GROUNDING_REDIRECT_HOST = "vertexaisearch.cloud.google.com";
+
+/** A title that is only a host name ("example.com", "www.Example.com"). */
+function hostShapedTitle(title: string): string | null {
+  const trimmed = title.trim().replace(/\.$/u, "").toLowerCase();
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/u.test(trimmed)) return null;
+  return trimmed.startsWith("www.") ? trimmed.slice(4) : trimmed;
+}
+
 function urlShapedTitle(title: string, url: string): boolean {
   const trimmed = title.trim();
   return trimmed.length === 0 ||
@@ -70,14 +81,20 @@ export function presentSearchSourcesV2(
       continue;
     }
     seen.add(key);
-    const domain = sourceDomainV2(source.url);
+    const urlDomain = sourceDomainV2(source.url);
+    const titleHost = hostShapedTitle(source.title);
+    // A grounding redirect names its site only in the title; the redirect
+    // host itself never labels a source.
+    const domain = urlDomain === GOOGLE_GROUNDING_REDIRECT_HOST ? titleHost : urlDomain;
+    const title = urlShapedTitle(source.title, source.url)
+      ? domain ?? source.title
+      // A title that only repeats the site renders as that site, once.
+      : titleHost && titleHost === domain ? domain : source.title;
     presented.push({
       domain,
       rank: source.rank,
       ...(source.snippet ? { snippet: source.snippet } : {}),
-      title: urlShapedTitle(source.title, source.url)
-        ? domain ?? source.title
-        : source.title,
+      title,
       url: source.url
     });
   }

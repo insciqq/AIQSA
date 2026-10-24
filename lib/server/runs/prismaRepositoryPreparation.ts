@@ -1175,7 +1175,9 @@ export async function admitPreparingRunWithClient(
         });
         if (chat._count.messages === 0 && input.defaults) {
           await tx.chat.update({
-            data: { defaultProviderModelId: input.defaults.modelId, defaultSearchPlan: json(input.defaults.searchPlan) },
+            // Chats keep no Search plan of their own (operator decision
+            // 2026-10-24); the column stays for compatibility, unwritten.
+            data: { defaultProviderModelId: input.defaults.modelId },
             where: { id: input.chatId }
           });
         }

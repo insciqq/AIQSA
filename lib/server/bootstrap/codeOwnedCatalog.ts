@@ -48,16 +48,9 @@ const builtInSearchOptions = Object.freeze({
     sourceConnectionId: providerTemplateIds.anthropicConnection,
     templateKey: "search:anthropic"
   }),
-  "deepseek-native-web-search": Object.freeze({
-    description: "Web search provided by DeepSeek. Source URLs are not returned by the provider.",
-    displayName: "DeepSeek Search",
-    id: "00000000-0000-4000-8000-000000001406",
-    kind: "web_search",
-    sourceConnectionId: providerTemplateIds.deepSeekConnection,
-    templateKey: "search:deepseek"
-  }),
-  // A client route on the same DeepSeek connection; provider setup adds it
-  // after one check, as for the other provider searches.
+  // DeepSeek searches only through its Search API (its hosted Search is
+  // retired, operator decision 2026-10-24): a client route on the DeepSeek
+  // connection that provider setup adds after one check.
   "deepseek-search-api": Object.freeze({
     description: "Web results with source links from the DeepSeek Search API.",
     displayName: "DeepSeek Search API",
