@@ -18,7 +18,7 @@ export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
 }>) {
   const defaults = composer.chatDefaults;
   return <section className="v2-studio-settings-page" data-testid="studio-chat-defaults">
-    <SectionHeading description="How a new chat starts. Chats you already have keep their own choices.">Chat defaults</SectionHeading>
+    <SectionHeading description="How your chats start. Web search applies to every chat; the other choices apply to new chats.">Chat defaults</SectionHeading>
     <SettingsDefaultModelRowV2 composer={composer} />
     {defaults?.assistant ? <SettingsDefaultAssistantRowV2 assistant={defaults.assistant} /> : null}
     {defaults ? <ChatDefaultsRowsV2

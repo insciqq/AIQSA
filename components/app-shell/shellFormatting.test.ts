@@ -15,6 +15,18 @@ describe("shell error formatting", () => {
     expect(formatted).not.toContain(code);
   });
 
+  it.each([
+    ["search_strategy_not_available", "The selected web search source isn't available right now. Choose another source in the search menu"],
+    ["search_plan_invalid", "Your web search selection is no longer valid. Open the search menu and choose sources again"],
+    ["search_plan_duplicate_option", "Your web search selection is no longer valid. Open the search menu and choose sources again"],
+    ["search_plan_too_many_options", "Your web search selection is no longer valid. Open the search menu and choose sources again"],
+    ["search_preference_invalid", "Your web search selection is no longer valid. Open the search menu and choose sources again"]
+  ])("names the search menu as the recovery for %s", async (code, message) => {
+    expect(humanizeErrorCode(code)).toBe(`${message} (${code})`);
+    expect(await responseErrorMessage(Response.json({ error: code }, { status: 400 }), "send_failed_400"))
+      .toBe(`${message} (${code})`);
+  });
+
   it("explains a refused PDF admission in the same words as the blocked chip", async () => {
     expect(await responseErrorMessage(
       Response.json({ error: "pdf_processing_configuration_incomplete" }, { status: 409 }), "send_failed_409"

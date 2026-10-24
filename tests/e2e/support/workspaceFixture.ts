@@ -3,6 +3,7 @@ import { expect, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../../lib/domain/providerTemplates";
 import { parseChatRoutePath } from "../../../lib/domain/chatRoute";
 import { keepAccountMcpDefault } from "./chatDefaults";
+import { chooseSearchStrategy } from "../shell/composer";
 
 /** Pins Fake QSA's window at 64k so Workspace's admitted contract and tool
  * schemas fit (the seed now matches; the specs that relied on this keep it).
@@ -42,13 +43,7 @@ export async function configureWorkspaceOnlyTools(page: Page): Promise<void> {
   await page.getByRole("menu", { name: "MCP tools", exact: true }).getByRole("menuitemradio", { name: /^Off/u }).click();
   await page.getByRole("button", { name: "Change Skills mode", exact: true }).click();
   await page.getByRole("menu", { name: "Skills", exact: true }).getByRole("menuitemradio", { name: /^Off/u }).click();
-  const search = page.getByRole("button", { name: /^Choose web search/u });
-  if (await search.count()) {
-    await search.click();
-    const off = page.getByRole("dialog", { name: "Web search", exact: true }).getByRole("button", { name: "Turn off search", exact: true });
-    if (await off.isEnabled()) await off.click();
-    await page.keyboard.press("Escape");
-  }
+  if (await page.getByRole("button", { name: /^Choose web search/u }).count()) await chooseSearchStrategy(page, "Off");
 }
 
 /** Published answer text releases the composer before output transfer finishes.
