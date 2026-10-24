@@ -103,6 +103,15 @@ describe("MCP call display", () => {
       expect(readObservation).toHaveBeenCalledOnce(); expect(read).toHaveBeenCalledTimes(2);
     }
   });
+  it("shows a saved text original in place of the stored excerpt and keeps the stored error flag and dropped types", async () => {
+    const current = row({ observation: { id: "original" } as McpCallDetailRecord["observation"],
+      result: { ...row().result as Record<string, unknown>, rawPreview: { isError: true, unsupportedContentTypes: ["image"] } } });
+    const readObservation = vi.fn(async () => ({ response: mcpDisplaySection("the whole result"), isError: false, unsupportedContentTypes: [] }));
+    const details = await createMcpCallDetailsService({ repository: { read: async () => current }, readObservation })
+      ({ runId: "run", userId: "user", roundIndex: 1, ordinal: 0 });
+    expect(details).toMatchObject({ isError: true, response: { text: "the whole result" }, responseState: "available",
+      unsupportedContentTypes: ["image"] });
+  });
   it("rejects oversized or internally inconsistent browser payloads", () => {
     const details = projectMcpCallDetails(row());
     expect(decodeMcpCallDetails({ ...details, response: { text: "x".repeat(MCP_CALL_DISPLAY_BYTES + 1), byteSize: MCP_CALL_DISPLAY_BYTES + 1, truncated: false } })).toBeNull();

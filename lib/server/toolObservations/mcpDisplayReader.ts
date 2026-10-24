@@ -62,6 +62,8 @@ class DisplayParser {
   private capture = "";
   private stringRole: Role = "envelope";
   private stringRedactor: Redactor | null = null;
+  /** The original is one text: the native engine saves the result's model-facing text (`saveToolResultText`). */
+  private bare = false;
   isError = false;
   unsupportedContentTypes: string[] = [];
 
@@ -80,9 +82,10 @@ class DisplayParser {
   private valueRole(kind: "object" | "array" | "string" | "scalar"): Role {
     const frame = this.stack.at(-1);
     if (!frame) {
-      if (this.started || kind !== "object") throw unavailable();
+      if (this.started || kind !== "object" && kind !== "string") throw unavailable();
       this.started = true;
-      return "envelope";
+      this.bare = kind === "string";
+      return this.bare ? "text" : "envelope";
     }
     if (frame.role === "envelope") {
       if (frame.key === "text" && kind === "array") return "text";
@@ -233,7 +236,7 @@ class DisplayParser {
   }
   finish() {
     if (this.token === "scalar") this.endScalar();
-    if (!this.finished || this.token || this.fields.size !== 4) throw unavailable();
+    if (!this.finished || this.token || !this.bare && this.fields.size !== 4) throw unavailable();
   }
 }
 
