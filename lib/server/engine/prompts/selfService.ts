@@ -98,7 +98,7 @@ Studio sections and their addresses (give the user these links):
 - Scheduled tasks: /?library=scheduled
 - MCP servers: /?library=mcp (personal servers, and servers the user always allowed)
 - Secrets: /?library=secrets
-- Chat defaults: /?library=defaults (model and tools for new chats)`,
+- Chat defaults: /?library=defaults (model and tools for new chats; web search sources for every chat)`,
 
   secrets: `# Secrets
 - Kinds: Text (a token or note), Environment (KEY=value variables), SSH key (private key and optional passphrase), File (any file, original bytes) and Browser session (a saved website sign-in for the Workspace browser, created there).
