@@ -112,6 +112,7 @@ const gitlab: AdminMcpServer = {
   activeRevision: null,
   activation: null,
   archivedAt: null,
+  autoApplyToolUpdates: true,
   description: "GitLab",
   draft: {
     auth: { mode: "static" },

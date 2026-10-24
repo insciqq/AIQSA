@@ -198,6 +198,7 @@ function mcpServer(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
     activePersonalSlots: [],
     activeRevision: null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "",
     draft: {
       auth: { mode: "none" },

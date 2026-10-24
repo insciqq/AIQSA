@@ -703,6 +703,7 @@ function serializeAdminServer(
       ? serializeRevision(record.revisions.find((revision) => revision.id === record.activeRevision!.id) ?? record.activeRevision)
       : null,
     archivedAt: record.archivedAt?.toISOString() ?? null,
+    autoApplyToolUpdates: record.autoApplyToolUpdates,
     description: record.description,
     draft,
     draftTest,
@@ -1879,14 +1880,16 @@ export function createPrismaMcpRepository(input: {
       return repository.activateDraft(serverId);
     },
 
-    enqueueLegacyToolRechecks: async () => {
-      // The migration marks only the upgrade's existing servers. Consuming that
-      // marker and recording the ordinary activation are one transaction, so a
-      // restart cannot lose the work or repeatedly retry a failed upstream check.
+    enqueueAutomaticToolChecks: async () => {
+      // Two markers ask for one automatic Test & Save: the upgrade marks the
+      // servers it found with name-only evidence, and a runtime marks a trusted
+      // server whose tools changed upstream. Consuming a marker and recording
+      // the ordinary activation are one transaction, so a restart cannot lose
+      // the work or repeatedly retry a failed upstream check.
       while (await client.$transaction(async (tx) => {
         const [candidate] = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "McpServer"
-          WHERE "legacyToolRecheckPending" = true
+          WHERE ("legacyToolRecheckPending" = true OR "toolUpdateCheckPending" = true)
             AND "ownerUserId" IS NULL
           ORDER BY "id"
           FOR UPDATE SKIP LOCKED
@@ -1897,9 +1900,14 @@ export function createPrismaMcpRepository(input: {
           include: { activeRevision: true, activationJob: true },
           where: { id: candidate.id }
         });
-        await tx.mcpServer.update({ data: { legacyToolRecheckPending: false }, where: { id: server.id } });
-        if (!server.enabled || server.archivedAt || !server.activeRevision ||
-          mcpPublishedToolDefinitions(server.activeRevision.validationEvidence).kind !== "names") return true;
+        await tx.mcpServer.update({
+          data: { legacyToolRecheckPending: false, toolUpdateCheckPending: false }, where: { id: server.id }
+        });
+        if (!server.enabled || server.archivedAt || !server.activeRevision) return true;
+        const legacy = server.legacyToolRecheckPending &&
+          mcpPublishedToolDefinitions(server.activeRevision.validationEvidence).kind === "names";
+        const toolUpdate = server.toolUpdateCheckPending && server.autoApplyToolUpdates;
+        if (!legacy && !toolUpdate) return true;
         if (server.activationJob && LIVE_ACTIVATION_STAGES.includes(
           server.activationJob.stage as (typeof LIVE_ACTIVATION_STAGES)[number]
         )) return true;
@@ -1932,8 +1940,12 @@ export function createPrismaMcpRepository(input: {
           }))?.id;
         }
 
-        // An upgrade must not publish unrelated settings somebody left in a
-        // draft. Existing manual Test & Save remains the recovery path.
+        // An automatic check must not publish unrelated settings somebody left
+        // in a draft. A tool update waits quietly for the administrator's own
+        // Test & Save, which the changed tools' attention item asks for; the
+        // upgrade check records the refusal. Manual Test & Save stays the
+        // recovery path.
+        if (!legacy && draftHash !== server.activeRevision.draftHash) return true;
         const result: ActivationEnqueueResult = draftHash !== server.activeRevision.draftHash
           ? { kind: "draft_changed" }
           : !validationUserId ? { kind: "invalid_values", issues: [{
@@ -1950,7 +1962,7 @@ export function createPrismaMcpRepository(input: {
           validationUserId
         } });
         return true;
-      })) { /* Drain durable upgrade markers before normal activation claims. */ }
+      })) { /* Drain durable automatic-check markers before normal activation claims. */ }
     },
 
     requestActivation: async ({ expectedDraftHash, serverId, validationUserId }) => {
@@ -2568,6 +2580,7 @@ export function createPrismaMcpRepository(input: {
     updateServer: async ({
       toolAccess,
       tool,
+      autoApplyToolUpdates,
       expectedUpdatedAt,
       description,
       draft,
@@ -2587,7 +2600,8 @@ export function createPrismaMcpRepository(input: {
         if (enabled === true && !existing.activeRevisionId) return { kind: "revision_required" as const };
         const storedDraft = draftFrom(existing.draft);
         if (toolAccess) {
-          if (!expectedUpdatedAt || tool || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined) {
+          if (!expectedUpdatedAt || tool || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined ||
+            autoApplyToolUpdates !== undefined) {
             return { kind: "draft_changed" as const };
           }
           const active = existing.activeRevisionId
@@ -2627,7 +2641,8 @@ export function createPrismaMcpRepository(input: {
           return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
         }
         if (tool) {
-          if (!expectedUpdatedAt || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined) {
+          if (!expectedUpdatedAt || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined ||
+            autoApplyToolUpdates !== undefined) {
             return { kind: "draft_changed" as const };
           }
           const active = existing.activeRevisionId
@@ -2697,6 +2712,7 @@ export function createPrismaMcpRepository(input: {
         if (description !== undefined) data.description = description;
         if (name !== undefined) data.displayName = name;
         if (enabled !== undefined) data.enabled = enabled;
+        if (autoApplyToolUpdates !== undefined) data.autoApplyToolUpdates = autoApplyToolUpdates;
         if (draftChanged) {
           data.draft = draft as Prisma.InputJsonValue;
           if (!policyOnlyDraftChange) {

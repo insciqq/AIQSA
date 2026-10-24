@@ -122,7 +122,7 @@ describe("MCP held-back tool contracts", () => {
       validationEvidence: { evidence: {}, testedAt: "2026-09-27T00:00:00.000Z", toolInventory: [] }
     });
     const server = (overrides: Partial<AdminMcpServer>): AdminMcpServer => ({
-      activation: null, activePersonalSlots: [], activeRevision: revision("definitions"), archivedAt: null, description: "",
+      activation: null, activePersonalSlots: [], activeRevision: revision("definitions"), archivedAt: null, autoApplyToolUpdates: true, description: "",
       draft: { auth: { mode: "none" }, runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 60_000 }, slots: [],
         source: { kind: "remote", url: "https://mcp.example/mcp" }, transport: "streamable_http" },
       draftTest: null, draftTested: true, enabled: true, grants: [], id: "server-1", name: "Tools", namespace: "tools",

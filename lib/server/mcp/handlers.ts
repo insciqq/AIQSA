@@ -210,13 +210,13 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const toolAccess = body.toolAccess === undefined ? undefined : decodeMcpToolAccessPolicy(body.toolAccess);
     if (toolAccess === null || (toolAccess && (
       typeof body.expectedUpdatedAt !== "string" ||
-      ["tool", "draft", "sharedValues", "name", "description", "enabled"].some((field) => body[field] !== undefined)
+      ["tool", "draft", "sharedValues", "name", "description", "enabled", "autoApplyToolUpdates"].some((field) => body[field] !== undefined)
     ))) return errorJson("invalid_draft", 400);
     if (body.tool !== undefined) {
       if (!isRecord(body.tool) || typeof body.tool.name !== "string" ||
         !body.tool.name.trim() || body.tool.name.length > 256 || typeof body.tool.enabled !== "boolean" ||
         typeof body.expectedUpdatedAt !== "string" ||
-        ["draft", "sharedValues", "name", "description", "enabled"].some((field) => body[field] !== undefined)) {
+        ["draft", "sharedValues", "name", "description", "enabled", "autoApplyToolUpdates"].some((field) => body[field] !== undefined)) {
         return errorJson("invalid_draft", 400);
       }
       tool = { enabled: body.tool.enabled, name: body.tool.name };
@@ -226,7 +226,8 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     if (name === null || description === null ||
       (body.expectedUpdatedAt !== undefined && (typeof body.expectedUpdatedAt !== "string" ||
         !Number.isFinite(Date.parse(body.expectedUpdatedAt)))) ||
-      (typeof body.enabled !== "undefined" && typeof body.enabled !== "boolean")) {
+      (typeof body.enabled !== "undefined" && typeof body.enabled !== "boolean") ||
+      (typeof body.autoApplyToolUpdates !== "undefined" && typeof body.autoApplyToolUpdates !== "boolean")) {
       return errorJson("invalid_draft", 400);
     }
     let draft: McpDraftConfiguration | undefined;
@@ -238,7 +239,8 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const sharedValues = typeof body.sharedValues === "undefined" ? undefined : slotValues(body.sharedValues);
     if (sharedValues === null) return errorJson("invalid_mcp_values", 400);
     if (typeof name === "undefined" && typeof description === "undefined" &&
-      typeof body.enabled === "undefined" && !draft && typeof sharedValues === "undefined" && !tool && !toolAccess) {
+      typeof body.enabled === "undefined" && typeof body.autoApplyToolUpdates === "undefined" &&
+      !draft && typeof sharedValues === "undefined" && !tool && !toolAccess) {
       return errorJson("invalid_draft", 400);
     }
     const { serverId } = await context.params;
@@ -249,6 +251,7 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
       ...(description !== undefined ? { description } : {}),
       ...(draft ? { draft } : {}),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+      ...(typeof body.autoApplyToolUpdates === "boolean" ? { autoApplyToolUpdates: body.autoApplyToolUpdates } : {}),
       ...(name !== undefined ? { name } : {}),
       ...(sharedValues !== undefined ? { sharedValues } : {}),
       serverId

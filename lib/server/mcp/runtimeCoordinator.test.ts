@@ -602,6 +602,8 @@ describe("MCP runtime coordinator", () => {
       tools: [{ description: "d".repeat(MAX_TOOL_DESCRIPTION_LENGTH), name: "read_mail" }, { description: null, name: "send_mail" }],
       version: 1
     });
+    // A personal server follows its live tools; only installation servers ask for an automatic check.
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].upstreamToolsHash).toBeUndefined();
 
     test.setInventory([tool("read_mail", "changed-read-definition"), tool("delete_mail")]);
     test.listChanged();
@@ -687,6 +689,11 @@ describe("MCP runtime coordinator", () => {
     expect(vi.mocked(test.repository.markReady).mock.calls[2]![0].inventory).toEqual({
       exclusions: [], tools: DEFAULT_TOOLS, version: 1
     });
+    // The listing hash names the upstream tools and definitions, so a reverted server reads as the original.
+    const hashes = vi.mocked(test.repository.markReady).mock.calls.map(([input]) => input.upstreamToolsHash);
+    expect(hashes[0]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(hashes[1]).not.toBe(hashes[0]);
+    expect(hashes[2]).toBe(hashes[0]);
     await expect(test.coordinator.callTool({
       definitionHash: "hash-echo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"

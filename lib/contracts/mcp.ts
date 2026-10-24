@@ -389,6 +389,8 @@ export type AdminMcpServer = {
   activePersonalSlots: AdminMcpPersonalSlotSummary[];
   activeRevision: McpRevisionSummary | null;
   archivedAt: string | null;
+  /** Trusted: tool changes the server's runtime sees are checked and applied automatically. */
+  autoApplyToolUpdates: boolean;
   description: string;
   draft: McpDraftConfiguration;
   draftTest: McpDraftTestSummary | null;
@@ -570,6 +572,7 @@ export type AdminMcpCreateRequest = {
 export type AdminMcpUpdateRequest = {
   toolAccess?: McpToolAccessPolicy;
   tool?: { enabled: boolean; name: string };
+  autoApplyToolUpdates?: boolean;
   expectedUpdatedAt?: string;
   description?: string;
   draft?: McpDraftConfiguration;

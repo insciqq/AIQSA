@@ -73,6 +73,7 @@ function adminServer(input: Partial<AdminMcpServer> = {}): AdminMcpServer {
       })),
     activeRevision: revision,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "Example MCP",
     draft,
     draftTest: {
@@ -682,6 +683,19 @@ describe("MCP handler input validation", () => {
     expect(onRuntimeChanged).not.toHaveBeenCalled();
     repository.nextError = { kind: "draft_changed" };
     expect((await send({ toolAccess, expectedUpdatedAt: NOW })).status).toBe(409);
+  });
+
+  it("lets only an administrator switch a server's automatic tool updates", async () => {
+    const repository = new MemoryMcpRepository();
+    const update = createAdminMcpUpdateHandler(deps(repository));
+    const expectedUpdatedAt = "2026-09-08T12:00:00.000Z";
+    const send = (body: object, user = "admin") => update(request({ body, user, contentType: "application/json", method: "PATCH" }), routeContext);
+    expect((await send({ autoApplyToolUpdates: false, expectedUpdatedAt }, "user-1")).status).toBe(403);
+    expect((await send({ autoApplyToolUpdates: "false", expectedUpdatedAt })).status).toBe(400);
+    expect((await send({ autoApplyToolUpdates: false, expectedUpdatedAt, tool: { enabled: true, name: "search" } })).status).toBe(400);
+    expect(repository.updateCalls).toEqual([]);
+    expect((await send({ autoApplyToolUpdates: false, expectedUpdatedAt })).status).toBe(200);
+    expect(repository.updateCalls).toEqual([{ autoApplyToolUpdates: false, expectedUpdatedAt, serverId: SERVER_ID }]);
   });
 
   it("requires admin authority and a version for an isolated immediate tool switch", async () => {

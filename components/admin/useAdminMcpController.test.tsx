@@ -10,6 +10,7 @@ function mcpServer(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
     activeRevision: null,
     activation: null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "Team tools",
     draft: {
       auth: { mode: "none" },

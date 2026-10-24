@@ -34,7 +34,7 @@ function repository(
   overrides: Partial<McpActivationCoordinatorRepository> = {}
 ): McpActivationCoordinatorRepository {
   return {
-    enqueueLegacyToolRechecks: vi.fn(async () => undefined),
+    enqueueAutomaticToolChecks: vi.fn(async () => undefined),
     advanceActivation: vi.fn(async () => true),
     claimActivation: vi.fn(async () => claims.shift() ?? null),
     failActivation: vi.fn(async () => true),
@@ -49,7 +49,7 @@ describe("MCP activation coordinator", () => {
 
   it("queues upgrade checks before claiming and keeps ordinary activation available if queueing fails", async () => {
     const claims: McpActivationClaim[] = [];
-    const storage = repository(claims, { enqueueLegacyToolRechecks: vi.fn()
+    const storage = repository(claims, { enqueueAutomaticToolChecks: vi.fn()
       .mockImplementationOnce(async () => { claims.push(claim()); })
       .mockRejectedValueOnce(new Error("upgrade_queue_unavailable")) });
     const validate = vi.fn<McpDraftValidator["validate"]>(async () => ({

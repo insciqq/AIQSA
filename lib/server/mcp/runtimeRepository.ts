@@ -47,6 +47,8 @@ const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"] 
 const RECENT_ACTIVITY_MS = 15 * 60_000;
 const DRAIN_GRACE_MS = 60_000;
 const INVENTORY_FRESH_MS = 5 * 60_000;
+/** One automatic Test & Save request per changed listing, at most this often per server. */
+const TOOL_UPDATE_CHECK_SPACING_MS = 60 * 60_000;
 
 function runtimeConfigurationError(code: "mcp_values_invalid" | "mcp_runtime_fingerprint_collision"): Error {
   return Object.assign(new Error(code), { code });
@@ -725,7 +727,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       return count === 1;
     },
 
-    markReady: async ({ discoveredInventory, fingerprint, generationId, inventory, now }) => {
+    markReady: async ({ discoveredInventory, fingerprint, generationId, inventory, now, upstreamToolsHash }) => {
       const inventoryJson = JSON.stringify(inventory);
       const count = await client.$executeRaw`
         UPDATE "McpRuntimeGeneration" AS generation
@@ -794,6 +796,35 @@ export function createPrismaMcpRuntimeRepository(input: {
               )
             )
         `.catch(retainDatabaseFailure);
+      }
+      if (count === 1 && upstreamToolsHash && inventory.exclusions.some(({ reason }) => reason !== "disabled_by_policy")) {
+        // A trusted installation server's tools changed upstream: ask for one
+        // automatic Test & Save of the serving revision. The same listing, or
+        // any listing soon after the last request, asks nothing.
+        await client.$executeRaw`
+          UPDATE "McpServer" AS server
+          SET "toolUpdateCheckPending" = true,
+              "toolUpdateCheckHash" = ${upstreamToolsHash},
+              "toolUpdateCheckRequestedAt" = ${now}
+          FROM "McpRuntimeGeneration" AS generation
+          LEFT JOIN "McpUserServer" AS preference ON preference."id" = generation."userServerId"
+          WHERE generation."id" = ${generationId}
+            AND generation."fingerprint" = ${fingerprint}
+            AND server."id" = COALESCE(preference."serverId", generation."sharedServerId")
+            AND server."ownerUserId" IS NULL
+            AND server."autoApplyToolUpdates" = true
+            AND server."enabled" = true
+            AND server."archivedAt" IS NULL
+            AND server."activeRevisionId" = generation."revisionId"
+            AND server."toolUpdateCheckPending" = false
+            AND server."toolUpdateCheckHash" IS DISTINCT FROM ${upstreamToolsHash}
+            AND (server."toolUpdateCheckRequestedAt" IS NULL
+              OR server."toolUpdateCheckRequestedAt" <= ${new Date(now.getTime() - TOOL_UPDATE_CHECK_SPACING_MS)})
+        `.catch((error: unknown) => {
+          // The generation is ready either way; the next listing asks again.
+          reportSubsystemFailure({ error, subsystem: "mcp", stage: "prepare", code: "mcp_activation_failed",
+            prisma_code: databaseFailureCode(error), action: "retry" });
+        });
       }
       return count === 1;
     },

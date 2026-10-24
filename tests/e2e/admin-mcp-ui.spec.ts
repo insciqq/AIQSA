@@ -108,6 +108,7 @@ function existingServer(): AdminMcpServer {
     activeRevision: active,
     activation: null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "Existing server used to prove the list and page flows.",
     draft: {
       auth: { mode: "none" },
@@ -148,6 +149,7 @@ function serverFromCreate(body: AdminMcpCreateRequest): AdminMcpServer {
       updatedAt: fixedTime
     } : null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: body.description ?? "",
     draft: body.draft,
     draftTest: null,
