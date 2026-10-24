@@ -78,6 +78,7 @@ import {
 import {
   CODEX_AGENT_RETIREMENT_MIGRATION, codexAgentRetirementFixtureSql, codexAgentRetirementProofSql
 } from "./codex-agent-retirement-adoption";
+import { DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION, dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql } from "./drop-memory-lexical-projection-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7905,9 +7906,10 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_RUN_ENGINE_MIGRATION,
     modelRunEngineFixtureSql, modelRunEngineProofSql, modelRunEngineProofSql);
   // Retirement step one: capture stops, rows and the previous release's enqueue path stay.
+  // Its proof reads the tables the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION,
     stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql,
-    stopMemoryLexicalProjectionCaptureProofSql);
+    stopMemoryLexicalProjectionCaptureProofSql, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION);
   // Projects are fenced for deletion, never deleted by the migration itself;
   // Workspace maintenance deletes them through the Project deletion path.
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_PROJECTS_MIGRATION,
@@ -7922,6 +7924,10 @@ function main(
   // values its old approval cards and Telegram buttons name stay.
   runForwardAdoptionProof(shadowDatabase, migrations, CODEX_AGENT_RETIREMENT_MIGRATION,
     codexAgentRetirementFixtureSql, codexAgentRetirementProofSql, codexAgentRetirementProofSql);
+  // Retirement step two: the projection tables, their types and routines go.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION,
+    dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql,
+    dropMemoryLexicalProjectionProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

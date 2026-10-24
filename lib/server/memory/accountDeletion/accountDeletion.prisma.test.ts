@@ -162,9 +162,6 @@ async function cleanupOwner(userId: string): Promise<void> {
     await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await tx.memoryMaintenanceExecution.deleteMany({ where: { userId } });
     await tx.user.deleteMany({ where: { id: userId } });
-    // Rows of the retired lexical projection have no foreign key to the user.
-    await tx.memoryLexicalProjectionEvent.deleteMany({ where: { userId } });
-    await tx.memoryLexicalProjectionState.deleteMany({ where: { userId } });
   });
 }
 
@@ -1197,14 +1194,6 @@ describe("Prisma account Memory deletion", () => {
       expect(otherMaintenance.executions).toHaveLength(2);
       expect(otherMaintenance.executions.some((execution) => execution.acceptedOutput !== null)).toBe(true);
       expect(otherMaintenance.suppressions).toHaveLength(1);
-      // Rows the retired lexical projection wrote before the upgrade carry no
-      // foreign key and wait for no worker; the account purge removes them.
-      await prisma.memoryLexicalProjectionEvent.create({ data: {
-        idempotencyFingerprint: `account-memory-leftover-${randomUUID()}`,
-        memoryRevisionSnapshot: 0,
-        operation: "PURGE_USER",
-        userId
-      } });
       await prisma.user.update({ data: { status: "disabled" }, where: { id: userId } });
       expect(await countAccountMemoryOwnedData(prisma, userId)).toBeGreaterThan(0);
 
@@ -1333,8 +1322,6 @@ describe("Prisma account Memory deletion", () => {
       await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
         .resolves.toBe(0);
       await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(0);
-      await expect(prisma.memoryLexicalProjectionEvent.count({ where: { userId } }))
-        .resolves.toBe(0);
       await expect(maintenanceArtifacts(otherUserId)).resolves.toEqual(otherMaintenance);
       await expect(prisma.user.findUnique({ where: { id: otherUserId } })).resolves.toMatchObject({ status: "active" });
     } finally {

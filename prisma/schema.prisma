@@ -878,29 +878,6 @@ enum MemoryEmbeddingBatchItemState {
   OUTCOME_UNKNOWN
 }
 
-enum MemoryLexicalProjectionOperation {
-  SYNC_ENTRY
-  DELETE_ENTRY
-  PURGE_GENERATION
-  PURGE_USER
-}
-
-enum MemoryLexicalProjectionEventState {
-  PENDING
-  CLAIMED
-  RETRY_WAIT
-  SUCCEEDED
-  BLOCKED_REQUIRES_ADMIN
-}
-
-enum MemoryLexicalProjectionStatus {
-  BUILDING
-  CATCHING_UP
-  READY
-  DEGRADED
-  RETIRED
-}
-
 enum MemoryHistoryRunState {
   RUNNING
   COMPLETE
@@ -7074,65 +7051,6 @@ model MemorySearchEntry {
   @@index([userId, recallRoundId])
   @@index([userId, recallRoundSegmentId])
   @@index([userId, toolEventId])
-}
-
-/// Retired with the Memory lexical search index (operator decision
-/// 2026-10-23): nothing writes it and the next release drops it.
-model MemoryLexicalProjectionEvent {
-  sequence               BigInt                            @id @default(autoincrement())
-  id                     String                            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId                 String
-  indexGenerationId      String?
-  searchEntryId          String?
-  operation              MemoryLexicalProjectionOperation
-  memoryRevisionSnapshot Int
-  idempotencyFingerprint String                            @unique @db.VarChar(128)
-  state                  MemoryLexicalProjectionEventState @default(PENDING)
-  attemptCount           Int                               @default(0)
-  leaseToken             String?                           @db.VarChar(128)
-  leaseExpiresAt         DateTime?
-  nextAttemptAt          DateTime?
-  errorCode              String?                           @db.VarChar(64)
-  createdAt              DateTime                          @default(now())
-  updatedAt              DateTime                          @default(now()) @updatedAt
-  completedAt            DateTime?
-
-  @@index([state, nextAttemptAt, leaseExpiresAt, sequence], map: "MemoryLexicalProjectionEvent_queue_idx")
-  @@index([userId, indexGenerationId, state, sequence], map: "MemoryLexicalProjectionEvent_generation_idx")
-  @@index([userId, searchEntryId, sequence], map: "MemoryLexicalProjectionEvent_entry_idx")
-  @@index([userId, state, sequence], map: "MemoryLexicalProjectionEvent_user_order_idx")
-}
-
-/// Retired with the Memory lexical search index (operator decision
-/// 2026-10-23): nothing writes it and the next release drops it.
-model MemoryLexicalProjectionState {
-  id                         String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId                     String
-  indexGenerationId          String
-  backendKind                String                        @db.VarChar(64)
-  mappingVersion             String                        @db.VarChar(64)
-  normalizationVersion       String                        @db.VarChar(64)
-  analysisProfile            String                        @db.VarChar(64)
-  retrievalPipelineVersion   String                        @db.VarChar(64)
-  status                     MemoryLexicalProjectionStatus @default(BUILDING)
-  enqueuedThroughSequence    BigInt                        @default(0)
-  visibleThroughSequence     BigInt                        @default(0)
-  targetMemoryRevision       Int
-  projectedThroughRevision   Int                           @default(0)
-  expectedDocumentCount      Int?
-  visibleDocumentCount       Int?
-  projectionFingerprint      String?                       @db.Char(64)
-  expectedContentFingerprint String?                       @db.Char(64)
-  visibleContentFingerprint  String?                       @db.Char(64)
-  lastSuccessfulRefreshAt    DateTime?
-  lastIntegrityCheckAt       DateTime?
-  lastErrorCode              String?                       @db.VarChar(64)
-  createdAt                  DateTime                      @default(now())
-  updatedAt                  DateTime                      @default(now()) @updatedAt
-  readyAt                    DateTime?
-
-  @@unique([userId, indexGenerationId], map: "MemoryLexicalProjectionState_user_generation_key")
-  @@index([userId, status, updatedAt], map: "MemoryLexicalProjectionState_user_status_idx")
 }
 
 model MemoryEmbeddingBatchItem {
