@@ -89,6 +89,10 @@ describe("native tool registry", () => {
     expect(create.approval?.(call(create.definition.name))).toMatchObject({ serverId: "jira", toolName: "mcp_jira_create_issue" });
     expect(create.links?.(call(create.definition.name))).toEqual({ mcpRunBindingId: "binding-1" });
     expect(create.activity(call(create.definition.name))).toMatchObject({ origin: "mcp", serverName: "Jira", toolName: "create_issue" });
+    // A long result is saved bound to the accepted server, revision and runtime, which the store rechecks (issue #50).
+    const result = { callId: "c1", content: [], name: create.definition.name, status: "complete" as const };
+    expect(create.observationBinding?.(call(create.definition.name), result)).toEqual({ fingerprint: "fp-1",
+      originalName: "create_issue", revisionId: "rev-1", serverId: "jira", source: "mcp", version: 1 });
   });
 
   it("asks no approval once the user always allows the server, and refuses a call without its runtime binding", async () => {
@@ -96,6 +100,8 @@ describe("native tool registry", () => {
     const create = registry.resolve("mcp_jira_create_issue")!;
     expect(create.approval?.({ arguments: {}, id: "c1", name: create.definition.name })).toBeUndefined();
     expect(create.links?.({ arguments: {}, id: "c1", name: create.definition.name })).toBeNull();
+    expect(create.observationBinding?.({ arguments: {}, id: "c1", name: create.definition.name },
+      { callId: "c1", content: [], name: create.definition.name, status: "complete" })).toBeUndefined();
   });
 
   it("sends an MCP call through the accepted runtime, starting it on demand", async () => {

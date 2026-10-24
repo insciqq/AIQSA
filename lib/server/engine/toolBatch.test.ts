@@ -7,6 +7,7 @@ import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types
 import { invalidProviderToolArguments } from "../tools/types";
 import {
   APPROVAL_PENDING_OUTPUT,
+  AUTO_TOOL_NOT_LOADED_OUTPUT,
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
   ToolBatchInactiveError,
@@ -112,6 +113,19 @@ describe("native tool batch", () => {
     expect(outcome).toMatchObject({ correctable: 2, executed: 0 });
   });
 
+  it("tells a call of an Auto tool an earlier turn loaded how to load it in this answer", async () => {
+    const { store } = fakeStore();
+    const batch = deps({ find_tools: tool("find_tools", "none", vi.fn()) }, store);
+    const registry: ToolRegistry = { ...batch.registry, mcpLoadCall: (name, id) => name === "mcp_jira_get_issue"
+      ? { arguments: { query: `select:${name}` }, id, name: "find_tools" } : undefined };
+    const outcome = await runToolBatch({ ...batch, registry }, { calls: 0 }, { round: 1, calls: [
+      { arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }, { arguments: {}, id: "c2", name: "made_up" }
+    ] });
+    expect(outcome.results.map((item) => item.output)).toEqual([AUTO_TOOL_NOT_LOADED_OUTPUT("mcp_jira_get_issue", "select:mcp_jira_get_issue"),
+      UNKNOWN_TOOL_CALL_MESSAGE]);
+    expect(outcome).toMatchObject({ correctable: 2, executed: 0 });
+  });
+
   it("ends at the approval point: a gated call is not sent and gets a waiting result", async () => {
     const create = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
     const { store } = fakeStore({ gated: true });
@@ -152,6 +166,8 @@ describe("native tool batch", () => {
     const again = await runToolBatch(batch, state, { calls: [{ arguments: { title: "one issue" }, id: "c2", name: "write" }], round: 2 });
     expect(write).toHaveBeenCalledTimes(1);
     expect(again.results[0]).toMatchObject({ outcome: "error", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT });
+    // The refusal asks for a read-only check, so tools stay open for it (review finding).
+    expect(again).toMatchObject({ correctable: 1, executed: 0 });
     expect(JSON.stringify((store.refuse.mock.calls.at(-1)![0] as { result: unknown }).result)).toContain("tool_outcome_unknown_repeat");
     // Other arguments are another effect; after the user wrote, the model may send it again.
     await runToolBatch(batch, state, { calls: [{ arguments: { title: "another issue" }, id: "c3", name: "write" }], round: 3 });
@@ -268,8 +284,10 @@ describe("native tool batch", () => {
   it("saves every result over the save bound with a handle and shows it whole; a short one and a read of a saved one stay unsaved", async () => {
     const medium = "r".repeat(TOOL_RESULT_LIMITS.saveChars + 1);
     const { store } = fakeStore();
+    const binding = { fingerprint: "f".repeat(64), originalName: "lookup", revisionId: "rev-1", serverId: "jira", source: "mcp", version: 1 } as const;
     const batch = deps({
-      lookup: tool("lookup", "none", async ({ call }) => ok(call, call.arguments.size === "short" ? "x".repeat(TOOL_RESULT_LIMITS.saveChars) : medium)),
+      lookup: tool("lookup", "none", async ({ call }) => ok(call, call.arguments.size === "short" ? "x".repeat(TOOL_RESULT_LIMITS.saveChars) : medium),
+        { observationBinding: () => binding }),
       read_tool_result: tool("read_tool_result", "none", async ({ call }) => ok(call, medium))
     }, store);
     const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [
@@ -278,7 +296,8 @@ describe("native tool batch", () => {
       { arguments: { handle: `tor1_${"c".repeat(32)}` }, id: "c3", name: "read_tool_result" }
     ] });
     expect(batch.saveResult).toHaveBeenCalledTimes(1);
-    expect(batch.saveResult).toHaveBeenCalledWith(expect.objectContaining({ text: medium, toolCallId: "row-1-0" }));
+    expect(batch.saveResult).toHaveBeenCalledWith(expect.objectContaining({ source: "mcp", sourceBinding: binding, text: medium,
+      toolCallId: "row-1-0" }));
     expect(outcome.results.map((item) => item.handle)).toEqual([`tor1_${"b".repeat(32)}`, undefined, undefined]);
     expect(outcome.results[0]!.output).toBe(medium);
   });

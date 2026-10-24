@@ -63,6 +63,50 @@ describe("native answer stream", () => {
     expect(stream.text).toBe("Hello world");
   });
 
+  // Issue #52: a value the turn saved as a secret is never shown or saved in the answer, even split across tokens.
+  it("masks a saved secret value in what it streams and saves", () => {
+    const { events, shown, stream } = harness();
+    stream.beginRound();
+    stream.push("Saving it.");
+    stream.completeRound("Saving it.");
+    stream.mask(["abc-123-not-real", "short"]);
+    stream.beginRound();
+    for (const delta of ["Done: DEMO_TOKEN = ", "abc-", "123", "-not", "-re"]) stream.push(delta);
+    expect(shown()).toBe("Saving it.\n\nDone: DEMO_TOKEN = ");
+    expect(stream.text).toBe("Saving it.\n\nDone: DEMO_TOKEN = ");
+    stream.push("al. A short note, abc-1 stays.");
+    stream.completeRound("Done: DEMO_TOKEN = abc-123-not-real. A short note, abc-1 stays.");
+    expect(stream.text).toBe("Saving it.\n\nDone: DEMO_TOKEN = •••. A short note, abc-1 stays.");
+    expect(shown()).toBe(stream.text);
+    expect(events.some((event) => event.type === "message_reset")).toBe(false);
+  });
+
+  it("corrects text already sent when a value is masked after it", () => {
+    const { shown, stream } = harness();
+    stream.beginRound();
+    stream.push("Your token abc-123-not-real is noted.");
+    stream.completeRound("Your token abc-123-not-real is noted.");
+    stream.mask(["abc-123-not-real"]);
+    expect(shown()).toBe("Your token ••• is noted.");
+    expect(stream.text).toBe(shown());
+  });
+
+  // Issue #53: what a hard crash keeps is what was saved; slow writes must not fall behind the stream.
+  it("keeps saving the latest text when writes are slower than the save interval", async () => {
+    vi.useFakeTimers();
+    const save = vi.fn(async (_text: string) => { await new Promise((resolve) => setTimeout(resolve, 1_000)); });
+    const { stream } = harness(save as never);
+    stream.beginRound();
+    for (let line = 1; line <= 40; line += 1) {
+      stream.push(`${line}. item\n`);
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    // 8 s of streaming against 1 s writes: the write that just ran carried the text of at most one write ago.
+    const saved = save.mock.calls.at(-1)![0];
+    expect(stream.text.length - saved.length).toBeLessThanOrEqual("10. item\n".length * 8);
+    expect(save.mock.calls.length).toBeLessThanOrEqual(9);
+  });
+
   it("starts over after a delivered follow-up", () => {
     const { stream } = harness();
     stream.beginRound();

@@ -26,6 +26,7 @@ import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
+import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecret";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
@@ -457,7 +458,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           runId,
           saveResult: async (save) => saveToolResultText({ outcome: save.outcome,
             producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
-            signal: save.signal, source: save.source, text: save.text }),
+            signal: save.signal, source: save.source, ...(save.sourceBinding ? { sourceBinding: save.sourceBinding } : {}),
+            text: save.text }),
           signal,
           store: engine.toolCalls,
           unknownEffects,
@@ -646,6 +648,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           runTools: async (calls, round) => {
             await answer.flush();
             const batch = await runToolBatch(batchDeps, toolState, { calls, round });
+            // A value the user had saved as a secret is not repeated in the answer, whatever the model writes (issue #52).
+            answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments) : []));
             if (batch.approvals.length > 0) await emitApprovalCards();
             return batch;
           },
