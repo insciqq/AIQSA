@@ -75,6 +75,9 @@ import {
   searchOnForEveryoneWithoutApiFixtureSql,
   searchOnForEveryoneWithoutApiProofSql
 } from "./search-on-for-everyone-adoption";
+import {
+  CODEX_AGENT_RETIREMENT_MIGRATION, codexAgentRetirementFixtureSql, codexAgentRetirementProofSql
+} from "./codex-agent-retirement-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -680,11 +683,6 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(jsonb_build_array(id, "providerModelId", "reasoningEffort", version, "updatedByUserId") ORDER BY id)
         FROM "SystemModelPolicy"
       ), '[]'::jsonb),
-      'agent_policy', COALESCE((
-        SELECT jsonb_agg(jsonb_build_array(id, "limitsEnabled", "timeoutSeconds", "maxModelCalls",
-          "maxToolCalls", "tokenBudget", "maxOutputTokens", version, "updatedByUserId") ORDER BY id)
-        FROM "AgentPolicy"
-      ), '[]'::jsonb),
       'memory_utility_model_policy', COALESCE((
         SELECT jsonb_agg(to_jsonb(policy) - 'createdAt' - 'updatedAt' ORDER BY policy.id)
         FROM "MemoryUtilityModelPolicy" AS policy
@@ -724,8 +722,6 @@ function runBootstrapProof(database: string): void {
     "30", "fresh installation must use the Memory search time limit default");
   assert.equal(psqlScalar(database, `SELECT "maxToolCalls" || ':' || "maxToolRounds" FROM "ModelPolicy" WHERE id = 'installation';`),
     "80:32", "fresh installation must receive the increased tool budgets");
-  assert.equal(psqlScalar(database, `SELECT "limitsEnabled" FROM "AgentPolicy" WHERE id = 'installation';`), "f",
-    "Agent budgets must be disabled by default");
   assert.equal(
     psqlScalar(database, `SELECT enabled FROM "WorkspacePolicy" WHERE id = 'installation';`),
     "t",
@@ -793,7 +789,6 @@ function runBootstrapProof(database: string): void {
     "adopted bootstrap changed the settled fresh-install foundation",
   );
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
-    UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
     UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';
     UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';
     UPDATE "ConnectPolicy" SET enabled = true, version = version + 1 WHERE id = 'installation';
@@ -7718,9 +7713,10 @@ function main(
     skillImportSourceFixtureSql, skillImportSourceProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, PERPLEXITY_LEGACY_REASONING_MIGRATION,
     perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql);
+  // Its proof reads the Agent policy the Codex Agent retirement later drops.
   for (const { fixture, proof, repeatProof } of toolBudgetDefaultsFixtures) {
     runForwardAdoptionProof(shadowDatabase, migrations, TOOL_BUDGET_DEFAULTS_MIGRATION,
-      fixture, proof, repeatProof);
+      fixture, proof, repeatProof, CODEX_AGENT_RETIREMENT_MIGRATION);
   }
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_TIMEOUT_MIGRATION,
     memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql);
@@ -7922,6 +7918,10 @@ function main(
     searchOnForEveryoneFixtureSql, searchOnForEveryoneProofSql, searchOnForEveryoneProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
     searchOnForEveryoneWithoutApiFixtureSql, searchOnForEveryoneWithoutApiProofSql, searchOnForEveryoneWithoutApiProofSql);
+  // The Codex Agent's storage goes, including rows earlier releases left; the
+  // values its old approval cards and Telegram buttons name stay.
+  runForwardAdoptionProof(shadowDatabase, migrations, CODEX_AGENT_RETIREMENT_MIGRATION,
+    codexAgentRetirementFixtureSql, codexAgentRetirementProofSql, codexAgentRetirementProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

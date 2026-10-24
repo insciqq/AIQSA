@@ -135,7 +135,6 @@ function createBootstrapTransaction(input: {
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     systemModelPolicyUpsert: record("systemModelPolicy.upsert", { id: "installation" }),
-    agentPolicyUpsert: record("agentPolicy.upsert", { id: "installation" }),
     memoryUtilityModelPolicyUpsert: record("memoryUtilityModelPolicy.upsert", { id: "installation" }),
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
@@ -224,7 +223,6 @@ function createBootstrapTransaction(input: {
     systemModelPolicy: {
       upsert: spies.systemModelPolicyUpsert
     },
-    agentPolicy: { upsert: spies.agentPolicyUpsert },
     memoryUtilityModelPolicy: {
       upsert: spies.memoryUtilityModelPolicyUpsert,
       findUniqueOrThrow: vi.fn().mockResolvedValue({ recommendationAdoptionVersion: 2 })

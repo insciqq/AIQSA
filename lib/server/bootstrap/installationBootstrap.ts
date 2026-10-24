@@ -356,11 +356,6 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
-  await tx.agentPolicy.upsert({
-    create: { id: "installation" },
-    update: {},
-    where: { id: "installation" }
-  });
   await tx.memoryUtilityModelPolicy.upsert({
     create: { id: "installation" },
     // Migration owns compatibility; reruns preserve every assignment and clear.
