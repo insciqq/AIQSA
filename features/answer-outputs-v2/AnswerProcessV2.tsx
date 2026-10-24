@@ -42,8 +42,8 @@ function toolDuration(durationMs: number | undefined): string | null {
     : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
 }
 
-/* Meta reads "0.8 s · round 2"; only a non-complete state adds a word. A
-   skipped page read already says so in its label. */
+/* Meta reads "0.8 s"; only a non-complete state adds a word. A skipped page
+   read already says so in its label. */
 function toolMeta(call: ToolCallV2): string {
   const parts: string[] = [];
   const duration = toolDuration(call.durationMs);
@@ -51,8 +51,47 @@ function toolMeta(call: ToolCallV2): string {
   else if (call.status === "error" && !fetchCallSkippedV2(call)) parts.push("Failed");
   else if (call.status === "cancelled") parts.push("Stopped");
   if (duration) parts.push(duration);
-  parts.push(`round ${call.round}`);
   return parts.join(" · ");
+}
+
+type ToolCallStateV2 = Parameters<typeof describeToolCallV2>[1];
+
+function toolCallState(call: ToolCallV2): ToolCallStateV2 {
+  return call.status === "running" ? "running"
+    : call.status === "error" ? "failed" : call.status === "cancelled" ? "cancelled" : "settled";
+}
+
+function hasMcpDetails(call: ToolCallV2, runId: string | null): boolean {
+  return call.origin === "mcp" && Boolean(call.details) && Boolean(runId);
+}
+
+function toolCallKey(call: ToolCallV2, index: number, runId: string | null): string {
+  return hasMcpDetails(call, runId) && call.details
+    ? `${runId}:${call.details.roundIndex}:${call.details.ordinal}` : `${call.round}:${index}:${call.toolName}`;
+}
+
+type ToolCallGroupV2 = { calls: { call: ToolCallV2; index: number }[]; label: string };
+
+/** A call that carries its own control or notice keeps its own row. */
+function standsAloneV2(call: ToolCallV2): boolean {
+  return call.status === "running" || Boolean(call.approvalRequired) || fetchCallSkippedV2(call) ||
+    (call.origin === "skill" && call.toolName === "load_skill") || (call.origin === "discovery" && Boolean(call.mcpUnavailable?.length));
+}
+
+/** Consecutive finished calls with the same description and outcome read as one row ("Used GitLab: list commits ×14"). */
+function groupToolCallsV2(calls: readonly ToolCallV2[]): ToolCallGroupV2[] {
+  const groups: ToolCallGroupV2[] = [];
+  calls.forEach((call, index) => {
+    const label = describeToolCallV2(call, toolCallState(call));
+    const previous = groups.at(-1);
+    const head = previous?.calls[0]?.call;
+    if (previous && head && previous.label === label && head.status === call.status && !standsAloneV2(call) && !standsAloneV2(head)) {
+      previous.calls.push({ call, index });
+    } else {
+      groups.push({ calls: [{ call, index }], label });
+    }
+  });
+  return groups;
 }
 
 function searchEngineOutcome(engine: ThreadSearchEngineActivity): string {
@@ -150,6 +189,34 @@ function SkillPinV2({ skillId, pinned, onPin }: Readonly<{ skillId: string; pinn
       }).finally(() => setPending(false)); }}>{pinned ? "Pinned" : pending ? "Pinning…" : "Pin"}</UiV2Button>
     {error ? <span role="alert">{error}</span> : null}
   </span>;
+}
+
+/** One step: its outcome mark, label and meta, with MCP request and response details for the run's initiator. */
+function ToolCallRowV2({ call, label, onPinSkill, pinnedSkillIds, runId }: Readonly<{
+  call: ToolCallV2;
+  label: string;
+  onPinSkill?(skillId: string): Promise<void>;
+  pinnedSkillIds: readonly string[];
+  runId: string | null;
+}>) {
+  return (
+    <li className={hasMcpDetails(call, runId) ? "v2-mcp-call-row" : undefined} data-status={call.status}>
+      {/* A call waiting for approval or a skipped page read did not fail: it was never sent. */}
+      <ToolCallMarkV2 status={call.approvalRequired || fetchCallSkippedV2(call) ? "cancelled" : call.status} />
+      {hasMcpDetails(call, runId) && call.details && runId ? (
+        <McpCallDetailsV2 runId={runId} reference={call.details} status={call.status} label={label} meta={toolMeta(call)} />
+      ) : (
+        <span className="v2-answer-process-step">
+          <span className="v2-answer-process-step-name">{label}</span>
+          <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
+          {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
+            ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}
+          {call.origin === "discovery" && call.mcpUnavailable?.length
+            ? <McpUnavailableServersV2 servers={call.mcpUnavailable} /> : null}
+        </span>
+      )}
+    </li>
+  );
 }
 
 export type AnswerProcessV2Props = Readonly<{
@@ -358,36 +425,37 @@ export function AnswerProcessV2({
             <section className="v2-answer-process-section">
               <h3>Steps</h3>
               <ol className="v2-answer-process-steps">
-                {calls.map((call, index) => (
-                  <li key={call.origin === "mcp" && call.details && runId ? `${runId}:${call.details.roundIndex}:${call.details.ordinal}` : `${call.round}:${index}:${call.toolName}`}
-                    className={call.origin === "mcp" && call.details && runId ? "v2-mcp-call-row" : undefined} data-status={call.status}>
-                    {/* A call waiting for approval or a skipped page read did not fail: it was never sent. */}
-                    <ToolCallMarkV2 status={call.approvalRequired || fetchCallSkippedV2(call) ? "cancelled" : call.status} />
-                    {call.origin === "mcp" && call.details && runId ? (
-                      <McpCallDetailsV2 runId={runId} reference={call.details} status={call.status}
-                        label={describeToolCallV2(call, call.status === "running" ? "running"
-                          : call.status === "error" ? "failed" : call.status === "cancelled" ? "cancelled" : "settled")}
-                        meta={toolMeta(call)} />
-                    ) : (
-                      <span className="v2-answer-process-step">
-                        <span className="v2-answer-process-step-name">
-                          {describeToolCallV2(
-                            call,
-                            call.status === "running"
-                              ? "running"
-                              : call.status === "error" ? "failed"
-                              : call.status === "cancelled" ? "cancelled" : "settled"
-                          )}
-                        </span>
-                        <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
-                        {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
-                          ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}
-                        {call.origin === "discovery" && call.mcpUnavailable?.length
-                          ? <McpUnavailableServersV2 servers={call.mcpUnavailable} /> : null}
-                      </span>
-                    )}
-                  </li>
-                ))}
+                {groupToolCallsV2(calls).map((group) => {
+                  const [first] = group.calls;
+                  if (group.calls.length === 1) {
+                    return <ToolCallRowV2 call={first.call} key={toolCallKey(first.call, first.index, runId)} label={group.label}
+                      onPinSkill={onPinSkill} pinnedSkillIds={pinnedSkillIds} runId={runId} />;
+                  }
+                  const total = group.calls.reduce((sum, { call }) => sum + (call.durationMs ?? 0), 0);
+                  const status = first.call.status;
+                  return (
+                    <li className="v2-answer-process-call-group-row" data-status={status}
+                      key={`group:${toolCallKey(first.call, first.index, runId)}`}>
+                      <details className="v2-answer-process-call-group" data-testid="tool-call-group">
+                        <summary className="v2-focusable">
+                          <ToolCallMarkV2 status={status} />
+                          <span className="v2-answer-process-step-name">{group.label} ×{group.calls.length}</span>
+                          <span className="v2-answer-process-step-meta">
+                            {[status === "error" ? "Failed" : status === "cancelled" ? "Stopped" : null,
+                              total > 0 ? toolDuration(total) : null].filter(Boolean).join(" · ")}
+                          </span>
+                          <span className="v2-answer-process-call-group-chevron" aria-hidden="true" />
+                        </summary>
+                        <ol className="v2-answer-process-steps">
+                          {group.calls.map(({ call, index }, position) => (
+                            <ToolCallRowV2 call={call} key={toolCallKey(call, index, runId)} label={`Call ${position + 1}`}
+                              onPinSkill={onPinSkill} pinnedSkillIds={pinnedSkillIds} runId={runId} />
+                          ))}
+                        </ol>
+                      </details>
+                    </li>
+                  );
+                })}
               </ol>
             </section>
           ) : null}

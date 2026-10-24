@@ -115,8 +115,19 @@ export function collapsedCommandV2(preview: string): string {
     : preview;
 }
 
+/** An interpreter given its program inline, after any `cd … &&`: the row names the language, not escaped source. */
+const INLINE_SCRIPT = /^(?:cd\s+\S+\s*&&\s*)*(?:\S*\/)?(python[0-9.]*|node)\s+(?:-c\b|-e\b|-p\b|--eval\b|-\s*<<|<<)/u;
+
+/** One line for a command: inline code by its language, a multi-line command by its first line. */
+function commandSummary(preview: string): string {
+  const interpreter = INLINE_SCRIPT.exec(preview)?.[1];
+  if (interpreter) return interpreter === "node" ? "JavaScript code" : "Python code";
+  const [first = "", ...rest] = preview.split("\n");
+  return collapsedCommandV2(rest.length > 0 ? `${first.trimEnd()} …` : first);
+}
+
 function commandLabel(entry: ThreadWorkspaceActivityEntry): string {
-  const command = collapsedCommandV2(entry.command?.preview ?? "command");
+  const command = commandSummary(entry.command?.preview ?? "command");
   if (entry.phase === "failed") return `${command} failed`;
   if (entry.phase === "closed") return `${command} · exit not observed`;
   if (entry.phase === "unknown") return `${command} · outcome unconfirmed`;

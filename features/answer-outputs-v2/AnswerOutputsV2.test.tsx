@@ -325,15 +325,16 @@ describe("answer outputs v2", () => {
 
     const [skipped, failed] = screen.getAllByRole("listitem");
     expect(skipped).toHaveTextContent("Skipped www.shop.example/tariffs: only links from this chat or web search are read");
-    expect(skipped).toHaveTextContent("94 ms · round 3");
+    expect(skipped).toHaveTextContent("94 ms");
+    expect(skipped).not.toHaveTextContent("round");
     expect(skipped).not.toHaveTextContent("Failed");
     expect(skipped!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "cancelled");
     expect(failed).toHaveTextContent("Couldn't read down.example/page: the site is unreachable");
-    expect(failed).toHaveTextContent("Failed · 1.2 s · round 3");
+    expect(failed).toHaveTextContent("Failed · 1.2 s");
     expect(failed!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "error");
   });
 
-  it("shows successful search calls per engine with other outcomes and rounds separately", () => {
+  it("shows successful search calls per engine with other outcomes separately", () => {
     render(<AnswerProcessV2 toolActivity={{ calls: [
       { origin: "web_search", round: 2, status: "complete", toolName: "search" }
     ], searchEngines: [
@@ -345,7 +346,28 @@ describe("answer outputs v2", () => {
     expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("Perplexity ×2 · 1 in progress");
     expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("OpenAI (CodexLB) ×1 · 1 unsuccessful · 1 skipped");
     expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("Provider-internal searches and HTTP retries are excluded.");
-    expect(screen.getByText(/round 2/iu)).toBeVisible();
+    // Rounds are the engine's bookkeeping, not something the user acts on.
+    expect(screen.queryByText(/round/iu)).toBeNull();
+  });
+
+  it("folds consecutive finished calls of one tool into one row and keeps a running call apart", () => {
+    const listCommits = { origin: "mcp", round: 2, serverName: "GitLab", status: "complete", toolName: "list_commits" } as const;
+    render(<AnswerProcessV2 toolActivity={{ calls: [
+      { origin: "discovery", round: 1, status: "complete", toolName: "find_tools" },
+      { ...listCommits, durationMs: 720 },
+      { ...listCommits, durationMs: 369, round: 4 },
+      { ...listCommits, durationMs: 360, round: 4 },
+      { ...listCommits, round: 5, status: "running" }
+    ] }} />);
+    (screen.getByTestId("tool-activity-disclosure") as HTMLDetailsElement).open = true;
+
+    const group = screen.getByTestId("tool-call-group");
+    expect(group).toHaveTextContent("Used GitLab: list commits ×3");
+    expect(group).toHaveTextContent("1.4 s");
+    expect(group).not.toHaveAttribute("open");
+    fireEvent.click(within(group).getByText("Used GitLab: list commits ×3"));
+    expect(within(group).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Call 1720 ms", "Call 2369 ms", "Call 3360 ms"]);
+    expect(screen.getByText("Using GitLab: list commits")).toBeVisible();
   });
 
   it.each([
@@ -361,8 +383,8 @@ describe("answer outputs v2", () => {
 
     expect(screen.getByText(label)).toBeVisible();
     expect(screen.getByRole("listitem")).toHaveAttribute("data-status", status);
-    if (status === "error") expect(screen.getByText("Failed · round 2")).toBeVisible();
-    if (status === "cancelled") expect(screen.getByText("Stopped · round 2")).toBeVisible();
+    if (status === "error") expect(screen.getByText("Failed")).toBeVisible();
+    if (status === "cancelled") expect(screen.getByText("Stopped")).toBeVisible();
     expect(document.body.textContent).not.toMatch(/Searched the web|Searching the web/iu);
   });
 

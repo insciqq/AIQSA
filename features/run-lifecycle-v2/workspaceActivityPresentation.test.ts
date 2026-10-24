@@ -134,6 +134,12 @@ describe("workspace activity presentation", () => {
     expect(workspaceActivityLabelV2(command("a", "failed"))).toBe("npm test failed");
     expect(workspaceActivityLabelV2(command("a", "cancelled"))).toBe("Stopped npm test");
     expect(workspaceActivityLabelV2(command("a", "succeeded", "x".repeat(120)))).toBe(`Ran ${"x".repeat(79)}…`);
+    // Inline code reads as its language and a multi-line command as its first line; the card keeps the whole command.
+    expect(workspaceActivityLabelV2(command("a", "succeeded", "python -c \"data={\\n'page':'''557a947a'''}\""))).toBe("Ran Python code");
+    expect(workspaceActivityLabelV2(command("a", "running", "cd project && python3 - <<'EOF'\nprint(1)\nEOF"))).toBe("Running Python code…");
+    expect(workspaceActivityLabelV2(command("a", "failed", "node -e 'console.log(1)'"))).toBe("JavaScript code failed");
+    expect(workspaceActivityLabelV2(command("a", "succeeded", "cat > a.txt <<'EOF'\nhello\nEOF"))).toBe("Ran cat > a.txt <<'EOF' …");
+    expect(workspaceActivityLabelV2(command("a", "succeeded", "python script.py"))).toBe("Ran python script.py");
     expect(workspaceActivityLabelV2({ file: { displayPath: "project/a.ts" }, id: "b", kind: "file_read", phase: "succeeded" })).toBe("Read project/a.ts");
     expect(workspaceActivityLabelV2({ file: { displayPath: "inbox/report.xlsx", targetPath: "project/report.xlsx" }, id: "c", kind: "file_copy", phase: "succeeded" }))
       .toBe("Copied inbox/report.xlsx → project/report.xlsx");

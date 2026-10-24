@@ -119,10 +119,12 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
       </summary>
       <div className="v2-workspace-command-body">
         {failure ? <p className="v2-workspace-row-note" role="note">{failure}</p> : null}
-        <div className="v2-workspace-command-line">
-          <span className="v2-workspace-output-label">Command</span>
-          <code className="v2-workspace-command-text">$ {command.preview}</code>
-          <CopyCommandV2 command={command.preview} />
+        <div className="v2-workspace-output">
+          <div className="v2-workspace-command-line">
+            <span className="v2-workspace-output-label">Command</span>
+            <CopyCommandV2 command={command.preview} />
+          </div>
+          <pre className="v2-workspace-output-text v2-workspace-command-text" tabIndex={0}>$ {command.preview}</pre>
         </div>
         {command.cwd ? (
           <div className="v2-workspace-command-line">
@@ -210,9 +212,11 @@ export function WorkspaceActivityTimelineV2({ activity }: WorkspaceActivityTimel
   ));
   return (
     <>
-      <div className="v2-workspace-feed-heading">
-        {compact.earlier > 0 ? <button className="v2-workspace-history-button v2-focusable" ref={opener} onClick={() => setOverlay(true)} type="button">{compact.earlier} earlier steps · Show all</button> : null}
-      </div>
+      {compact.earlier > 0 ? (
+        <div className="v2-workspace-feed-heading">
+          <button className="v2-workspace-history-button v2-focusable" ref={opener} onClick={() => setOverlay(true)} type="button">{compact.earlier} earlier steps · Show all</button>
+        </div>
+      ) : null}
       <ol className="v2-workspace-timeline" data-testid="workspace-activity">{renderRows(compact.visible)}</ol>
       {overlay ? <WorkspaceActivityOverlay activity={activity} rows={rows} onClose={() => setOverlay(false)} /> : null}
     </>
