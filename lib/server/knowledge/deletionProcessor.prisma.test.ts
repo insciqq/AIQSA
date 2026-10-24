@@ -810,6 +810,98 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     }
   });
 
+  // Issue #59: a retried evidence step leaves several attempts of one purpose, and a shared
+  // tombstone request hash broke the partial unique index on the second one.
+  it("tombstones several provider attempts of one run and purpose", async () => {
+    const suffix = randomUUID();
+    const ownerUserId = "knowledge-base-retried-attempts-owner-" + suffix;
+    await prisma.user.create({
+      data: { displayName: "Base retried attempts owner", id: ownerUserId, status: "active" }
+    });
+    const base = await prisma.knowledgeBase.create({
+      data: { name: "Private retried Base", ownerUserId },
+      select: { id: true }
+    });
+    const chat = await prisma.chat.create({
+      data: { title: "Retried Knowledge evidence", userId: ownerUserId },
+      select: { id: true }
+    });
+    const message = await prisma.message.create({
+      data: { chatId: chat.id, content: { text: "question" }, role: "user" },
+      select: { id: true }
+    });
+    const run = await prisma.modelRun.create({
+      data: {
+        chatId: chat.id,
+        modelId: "test-model",
+        normalizedRequest: { knowledgePlan: { baseIds: [base.id] } },
+        provider: "test",
+        status: "complete",
+        userId: ownerUserId,
+        userMessageId: message.id
+      },
+      select: { id: true }
+    });
+    await prisma.knowledgeRunScope.create({
+      data: { budgetPolicy: {}, modelRunId: run.id, resolvedBaseCount: 1, resolvedSourceCount: 0,
+        selection: { baseIds: [base.id], sourceIds: [] } }
+    });
+    await prisma.providerRunBinding.create({
+      data: { bindingKey: "answer", credentialSource: "default", executionSnapshot: { synthetic: true },
+        modelRunId: run.id, role: "answer" }
+    });
+    const created = new Date();
+    const attemptIds: string[] = [];
+    for (const [ordinal, purpose] of [[1, "knowledge_evidence_compose_v2"], [2, "knowledge_evidence_compose_v2"],
+      [3, "knowledge_evidence_review_v2"], [4, "knowledge_evidence_review_v2"]] as const) {
+      const attempt = await prisma.knowledgeProviderAttempt.create({
+        data: {
+          acceptedRequest: { operation: purpose, pipeline: "evidence_answer_review_v2", version: 44, workflowVersion: 11 },
+          checkpointHash: "e".repeat(64),
+          contractVersion: 2,
+          createdAt: created,
+          estimatedUsage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 },
+          evidenceReceiptHash: "b".repeat(64),
+          failureCode: "superseded",
+          idempotencyKey: `retried-attempt:${String(ordinal)}:${suffix}`,
+          modelRunId: run.id,
+          ordinal,
+          purpose,
+          releasedAt: created,
+          requestHash: String(ordinal).repeat(64),
+          roundIndex: 0,
+          state: "released"
+        },
+        select: { id: true }
+      });
+      attemptIds.push(attempt.id);
+    }
+
+    try {
+      await requestKnowledgeDeletion(prisma, { id: base.id, ownerUserId, targetType: "BASE" });
+      const summary = await drainDeletionObligations({
+        repository: createPrismaRetentionRepository(prisma),
+        storage: { async deleteObject() {} }
+      });
+      expect(summary.knowledgeJobs.failed).toBe(0);
+      await expect(prisma.knowledgeBase.findUnique({ where: { id: base.id } })).resolves.toBeNull();
+
+      const attempts = await prisma.knowledgeProviderAttempt.findMany({
+        orderBy: { ordinal: "asc" },
+        select: { id: true, idempotencyKey: true, requestHash: true },
+        where: { modelRunId: run.id }
+      });
+      expect(attempts.map(({ idempotencyKey }) => idempotencyKey)).toEqual(attemptIds.map(purgedProviderAttemptKey));
+      expect(new Set(attempts.map(({ requestHash }) => requestHash)).size).toBe(attemptIds.length);
+      for (const attempt of attempts) {
+        expect(attempt.requestHash).toMatch(/^[0-9a-f]{64}$/);
+        expect(["1", "2", "3", "4"].map((digit) => digit.repeat(64))).not.toContain(attempt.requestHash);
+      }
+    } finally {
+      await cleanup({ baseIds: [base.id], ownerUserId });
+    }
+  });
+
   it("scrubs observation previews, reader fragments and carried notes of deleted Knowledge evidence", async () => {
     const suffix = randomUUID();
     const ownerUserId = "knowledge-copies-delete-owner-" + suffix;

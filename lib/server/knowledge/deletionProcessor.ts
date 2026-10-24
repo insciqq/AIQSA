@@ -712,9 +712,8 @@ async function purgeProviderAttempts(
     where: { modelRunId: { in: [...modelRunIds] } }
   });
   for (const attempt of attempts) {
-    const idempotencyKey = `purged:${createHash("sha256")
-      .update(attempt.id, "utf8")
-      .digest("hex")}`;
+    const tombstone = createHash("sha256").update(attempt.id, "utf8").digest("hex");
+    const idempotencyKey = `purged:${tombstone}`;
     const terminalTransition = attempt.state === "reserved"
       ? {
           failureCode: "purged",
@@ -819,7 +818,9 @@ async function purgeProviderAttempts(
         leaseExpiresAt: null,
         leaseToken: null,
         providerResponseId: null,
-        requestHash: "0".repeat(64)
+        // Several attempts of one run and purpose may exist (retries), and partial unique
+        // indexes cover (modelRunId, purpose, requestHash), so the tombstone is per row (issue #59).
+        requestHash: tombstone
       },
       where: {
         id: attempt.id,
