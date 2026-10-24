@@ -27,7 +27,16 @@ export const healthReportSources: HealthReportSources & HealthRunReportSources =
   queues: adminHealthQueuesService,
   runs: adminHealthRunLookup,
   findings: readDefaultHealthFindings,
-  connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } }),
+  connections: async () => (await prisma.providerConnection.findMany({ select: {
+    credentials: { select: { activeVersion: { select: { activatedAt: true, revokedAt: true } }, enabled: true } },
+    displayName: true,
+    enabled: true,
+    id: true
+  } })).map((connection) => ({ ...connection, credentials: connection.credentials.map(({ activeVersion, enabled }) => ({
+    activeVersion: activeVersion && { activatedAt: activeVersion.activatedAt.toISOString(),
+      revokedAt: activeVersion.revokedAt?.toISOString() ?? null },
+    enabled
+  })) })),
   failedRuns: readReportFailedRuns,
   slowTransactions: (span) => adminHealthTelemetryStore.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY }),
   failureStreaks: readReportFailureStreaks

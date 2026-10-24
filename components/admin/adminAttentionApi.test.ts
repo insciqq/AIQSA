@@ -29,7 +29,7 @@ describe("requestAdminAttention", () => {
 });
 
 describe("requestAdminAttentionSummary", () => {
-  const summary = { bad: 1, checkedAt: "2026-10-07T12:00:00.000Z", health: null, unavailable: ["health"], warn: 2 };
+  const summary = { bad: 1, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: ["health"], warn: 2 };
 
   it("decodes the badge counts and rejects malformed or negative counts", async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ summary }));

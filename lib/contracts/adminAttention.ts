@@ -123,8 +123,6 @@ export type AdminAttentionErrorResponse = ErrorResponse<
 export type AdminAttentionSummary = {
   bad: number;
   checkedAt: string;
-  /** Active items that jump to Health (telemetry rules and stalled queues); `null` while telemetry is unavailable. */
-  health: number | null;
   /** Sources that could not be read this time; their counts are missing. */
   unavailable: AdminAttentionSource[];
   warn: number;
@@ -274,7 +272,7 @@ export function decodeAdminAttentionSummaryResponse(value: unknown): AdminAttent
   if (!isRecord(value) || !isRecord(value.summary)) return null;
   const summary = value.summary;
   if (typeof summary.checkedAt !== "string" || !Number.isFinite(Date.parse(summary.checkedAt)) ||
-    !count(summary.bad) || !count(summary.warn) || !(summary.health === null || count(summary.health)) ||
+    !count(summary.bad) || !count(summary.warn) ||
     !Array.isArray(summary.unavailable) ||
     !summary.unavailable.every((source) => typeof source === "string" && ATTENTION_SOURCES.has(source))) {
     return null;
@@ -283,7 +281,6 @@ export function decodeAdminAttentionSummaryResponse(value: unknown): AdminAttent
     summary: {
       bad: summary.bad,
       checkedAt: summary.checkedAt,
-      health: summary.health,
       unavailable: [...new Set(summary.unavailable as AdminAttentionSource[])],
       warn: summary.warn
     }

@@ -49,7 +49,7 @@ describe("stalled background queue attention", () => {
     expect(failed.unavailable).toContain("queues");
   });
 
-  it("counts stalled queues on the badge and on the Health navigation entry", async () => {
+  it("counts stalled queues on the badge", async () => {
     const findings: HealthFinding[] = [{ code: "logs_dropped", lines: 2 }];
     const service = createAdminAttentionSummaryService({
       now: () => new Date("2026-10-07T12:00:00.000Z"),
@@ -60,12 +60,12 @@ describe("stalled background queue attention", () => {
       }
     });
     await expect(service.read()).resolves.toEqual({
-      bad: 0, checkedAt: "2026-10-07T12:00:00.000Z", health: 2, unavailable: [], warn: 2
+      bad: 0, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [], warn: 2
     });
 
     const queuesDown = createAdminAttentionSummaryService({
       sources: { health: vi.fn().mockResolvedValue([]), providers: vi.fn().mockResolvedValue([]), queues: vi.fn().mockRejectedValue(new Error("down")) }
     });
-    await expect(queuesDown.read()).resolves.toMatchObject({ health: 0, unavailable: ["queues"], warn: 0 });
+    await expect(queuesDown.read()).resolves.toMatchObject({ unavailable: ["queues"], warn: 0 });
   });
 });

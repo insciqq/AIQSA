@@ -50,7 +50,7 @@ describe("admin attention handler", () => {
 });
 
 describe("admin attention summary handler", () => {
-  const summary = { bad: 1, checkedAt: "2026-10-07T12:00:00.000Z", health: 1, unavailable: [], warn: 0 };
+  const summary = { bad: 1, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [], warn: 0 };
 
   it("returns the badge counts to an active administrator without HTTP caching", async () => {
     const read = vi.fn().mockResolvedValue(summary);

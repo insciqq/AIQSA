@@ -18,7 +18,7 @@ import {
 } from "./NavigationV2";
 
 const attentionSummary = vi.hoisted(() => ({
-  current: null as null | { bad: number; checkedAt: string; health: number | null; unavailable: []; warn: number }
+  current: null as null | { bad: number; checkedAt: string; unavailable: []; warn: number }
 }));
 vi.mock("./useAdminAttentionSummary", async (importOriginal) => ({
   ...await importOriginal<typeof import("./useAdminAttentionSummary")>(),
@@ -106,7 +106,7 @@ describe("Navigation v2", () => {
 
   it("puts an administrator's attention dot on the closed mobile drawer trigger", () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
-    attentionSummary.current = { bad: 2, checkedAt: "2026-10-07T12:00:00.000Z", health: 2, unavailable: [], warn: 0 };
+    attentionSummary.current = { bad: 2, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [], warn: 0 };
     const view = render(<ReadingRoomShellV2 adminEntryVisible onNewChat={vi.fn()} onSelectChat={vi.fn()}>
       <main>Conversation</main>
     </ReadingRoomShellV2>);

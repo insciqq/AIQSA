@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { TelemetryCounterGroup } from "../../telemetry/store";
 import {
   evaluateHealthRules,
@@ -7,6 +6,7 @@ import {
   healthAttentionItems,
   memoryRebuildFindings,
   readHealthCounterRows,
+  type HealthAttentionConnection,
   type HealthCounterRows,
   type HealthFinding
 } from "./healthRules";
@@ -55,7 +55,7 @@ describe("evaluateHealthRules", () => {
       completed("conn-1", 40, 30),
       failed("conn-1", { code: "provider_auth_rejected", httpStatus: 401, reason: "http" }, 3, 2)
     ] }), now);
-    expect(rejected).toEqual([{ code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 3 }]);
+    expect(rejected).toEqual([{ code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 3, lastFailureAt: minutesAgo(2) }]);
 
     const recovered = evaluateHealthRules(rows({ providerOperations: [
       failed("conn-1", { code: "provider_auth_rejected", httpStatus: 401, reason: "http" }, 3, 10),
@@ -71,9 +71,9 @@ describe("evaluateHealthRules", () => {
       failed("conn-3", { code: "provider_quota_exhausted", httpStatus: 429, reason: "http" }, 1)
     ] }), now);
     expect(findings).toEqual([
-      { code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 1 },
-      { code: "provider_runtime_quota_exhausted", connectionId: "conn-2", failures: 2 },
-      { code: "provider_runtime_quota_exhausted", connectionId: "conn-3", failures: 1 }
+      { code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 1, lastFailureAt: minutesAgo(5) },
+      { code: "provider_runtime_quota_exhausted", connectionId: "conn-2", failures: 2, lastFailureAt: minutesAgo(5) },
+      { code: "provider_runtime_quota_exhausted", connectionId: "conn-3", failures: 1, lastFailureAt: minutesAgo(5) }
     ]);
   });
 
@@ -278,14 +278,17 @@ describe("readHealthCounterRows", () => {
   });
 });
 
-function connection(id: string, displayName: string, enabled = true): AdminProviderConnection {
-  return { displayName, enabled, id } as AdminProviderConnection;
+type Key = Readonly<{ activatedAt?: Date; enabled?: boolean; revokedAt?: Date }>;
+
+function connection(id: string, displayName: string, enabled = true, keys: readonly Key[] = [{}]): HealthAttentionConnection {
+  return { displayName, enabled, id, credentials: keys.map(({ activatedAt = minutesAgo(600), enabled: on = true, revokedAt }) => ({
+    activeVersion: { activatedAt: activatedAt.toISOString(), revokedAt: revokedAt?.toISOString() ?? null }, enabled: on })) };
 }
 
 describe("healthAttentionItems", () => {
   const findings: HealthFinding[] = [
-    { code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 3 },
-    { code: "provider_runtime_quota_exhausted", connectionId: "conn-2", failures: 1 },
+    { code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 3, lastFailureAt: minutesAgo(5) },
+    { code: "provider_runtime_quota_exhausted", connectionId: "conn-2", failures: 1, lastFailureAt: minutesAgo(5) },
     { code: "provider_runtime_failing", connectionId: "conn-1", failures: 6, total: 20,
       kinds: { network: 1, other: 0, rate_limited: 4, server_error: 1, timeout: 0 } },
     { code: "server_errors_rising", errors: 12 },
@@ -335,5 +338,20 @@ describe("healthAttentionItems", () => {
       "A provider connection rejected its key 3 times in the last hour, after its last successful request — check the key",
       "A provider connection reported no remaining quota or balance 1 time in the last hour — check the provider account"
     ]);
+  });
+
+  it("stays quiet once the keys changed after the last rejection and speaks again at the next one", () => {
+    const rejected = findings.slice(0, 1);
+    const shown = (keys: readonly Key[], at = minutesAgo(5)) => healthAttentionItems(
+      [{ code: "provider_runtime_key_rejected", connectionId: "conn-1", failures: 3, lastFailureAt: at }],
+      [connection("conn-1", "Anthropic", true, keys)]).length;
+    expect(healthAttentionItems(rejected, [connection("conn-1", "Anthropic", true, [])])).toEqual([]);
+    expect(shown([{ revokedAt: minutesAgo(2) }])).toBe(0);
+    expect(shown([{ enabled: false }])).toBe(0);
+    expect(shown([{ activatedAt: minutesAgo(2) }])).toBe(0);
+    expect(shown([{ activatedAt: minutesAgo(2) }], minutesAgo(1))).toBe(1);
+    expect(shown([{}, { revokedAt: minutesAgo(2) }])).toBe(1);
+    // A failing connection is about its requests, not its key.
+    expect(healthAttentionItems(findings.slice(2, 3), [connection("conn-1", "OpenAI", true, [])])).toHaveLength(1);
   });
 });
