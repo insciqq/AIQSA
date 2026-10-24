@@ -330,6 +330,19 @@ describe("native tool batch", () => {
     expect(JSON.stringify((store.refuse.mock.calls.at(-1)![0] as { result: unknown }).result)).toContain(TOOL_CALL_REPEAT_BLOCKED);
   });
 
+  it("never blocks reading a saved result again, which a compaction may have dropped from the context", async () => {
+    const read = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "same part"));
+    const { store } = fakeStore();
+    const batch = deps({ read_tool_result: tool("read_tool_result", "none", read) }, store);
+    const state = { calls: 0 };
+    for (const round of [1, 2, 3]) {
+      const outcome = await runToolBatch(batch, state, { round,
+        calls: [{ arguments: { handle: `tor1_${"c".repeat(32)}`, offset: 0 }, id: `c${round}`, name: "read_tool_result" }] });
+      expect(outcome).toMatchObject({ executed: 1 });
+    }
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
   it("stops recording once the run is no longer active", async () => {
     const { store } = fakeStore({ inactive: true });
     await expect(runToolBatch(deps({ lookup: tool("lookup", "none", async ({ call }) => ok(call)) }, store), { calls: 0 },

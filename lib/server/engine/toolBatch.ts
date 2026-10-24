@@ -223,7 +223,8 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
         toolName: call.name };
     }
-    const repeatOf = deps.history.blockFor({ arguments: call.arguments, toolName: call.name }, round, {
+    // A read of a saved result is never a loop to stop: after a compaction it is the only way back to that text.
+    const repeatOf = call.name === READ_TOOL_RESULT_NAME ? null : deps.history.blockFor({ arguments: call.arguments, toolName: call.name }, round, {
       batch: batch.filter((other) => other !== call).map((other) => ({ arguments: other.arguments, toolName: other.name })),
       readOnly: (name) => deps.registry.resolve(name)?.effects === "none"
     });
