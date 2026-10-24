@@ -242,10 +242,6 @@ async function purgeReusableAndPrivateMemory(
       where: { id: { in: leaves.map(({ id }) => id) }, userId }
     });
   }
-  // The retired lexical projection tables have no foreign key to the user and
-  // nothing writes them any more; remove what the user left there.
-  await tx.memoryLexicalProjectionEvent.deleteMany({ where: { userId } });
-  await tx.memoryLexicalProjectionState.deleteMany({ where: { userId } });
 
   // Never-dispatched cancellation evidence is disposable. Settled calls with
   // durable usage stay as detached, content-free evidence until the global
@@ -361,8 +357,6 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'receipts', COUNT(*)::integer FROM "MemoryOperationReceipt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'generations', COUNT(*)::integer FROM "MemoryIndexGeneration" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'search', COUNT(*)::integer FROM "MemorySearchEntry" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'lexical-projection-events', COUNT(*)::integer FROM "MemoryLexicalProjectionEvent" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'lexical-projection-states', COUNT(*)::integer FROM "MemoryLexicalProjectionState" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'embedding-batch-items', COUNT(*)::integer FROM "MemoryEmbeddingBatchItem" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'attempts', COUNT(*)::integer FROM "MemoryRetrievalAttempt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'attempt-items', COUNT(*)::integer FROM "MemoryRetrievalAttemptItem" WHERE "userId" = ${input.userId}
