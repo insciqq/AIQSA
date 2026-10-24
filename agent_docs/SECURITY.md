@@ -23,7 +23,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Secrets, logs and shares
 
-- Secrets, credentials, bearer tokens and private operator notes never appear in public Git, logs, previews, analytics or shares, except saved secret values in a chat's own content as the next rule accepts. Secret API fields are write-only. Bearer secrets (sessions, share tokens, SCIM tokens, inbound MCP OAuth codes and tokens) are stored only as hashes.
+- Secrets, credentials, bearer tokens and private operator notes never appear in public Git, logs, previews, analytics or shares, except saved secret values in a chat's own content as the next rule accepts. Secret API fields are write-only. Bearer secrets (sessions, share tokens, SCIM tokens, inbound MCP OAuth codes and tokens, automation webhook tokens) are stored only as hashes.
 - Saved secrets (operator decision 2026-10-22): the agent has full access to its user's saved secrets, names and values, in every chat and without the Workspace VM, and guest commands receive them as environment values. Accepted risk: values the agent reads reach the model provider and the chat transcript, and so wherever that chat's content goes (exports, shares, Telegram). This is not DLP: models and guest code can copy them. They never appear in logs. A value `manage_secret` saved in a turn is masked in that turn's answer text, so the answer does not carry it further (issue #52, `lib/server/engine/answerStream.ts`). Installation, provider, database and session credentials never reach the agent or the guest.
 - Logs are structured, allowlisted and content-free: no prompts, answers, queries, instructions, file names or content, endpoints, tool bodies, Memory, credentials or bearer URLs. A failure record carries its class, first application frame, fingerprint and allowlisted cause facts (database or errno codes, syscall, timing), never the message or stack. Records may carry the user's internal id; PostgreSQL telemetry never stores user, run, job or trace ids. Mechanism: `lib/server/observability/`.
 - Exception: operator-controlled Nginx error diagnostics may contain public-share bearer paths. Operators restrict their retention, redact support copies and revoke leaked shares. The exception never covers access or application logs, authorization headers or provider, MCP and session credentials.
@@ -50,8 +50,14 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 ## Page reading (`fetch_url`)
 
 - `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in that run's own Search evidence, so injected text cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
-- A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it.
+- A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it, and neither does a webhook event's body.
 - Requests are GET only, to public addresses on ports 80 and 443, with no administrator exception and no credentials or cookies. Parsing happens only in the disposable parser process, never in the application.
+
+## Automation webhooks
+
+- Webhook runs are not restricted (operator decision 2026-10-24): they carry a scheduled task's standing authority (Workspace, below). Accepted risk: whoever holds the token can steer the agent through the body with the owner's tools and secrets. The token is the only boundary, and Rotate replaces it at once.
+- The token is accepted only in a header, never in the URL. Only its SHA-256 is stored, compared in constant time; the plaintext is shown once by the action that issues it and is never stored, logged, written into a chat or sent to a model, so the agent's card issues it outside the transcript.
+- The route takes no session and is public by its own path prefix only; the same-origin guard still applies and passes senders without a browser origin.
 
 ## MCP
 

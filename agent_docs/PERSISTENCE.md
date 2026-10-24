@@ -46,6 +46,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - Build an index on a large live table with `CREATE INDEX CONCURRENTLY` as the only statement in its migration file, so writers keep working during the upgrade. Prisma sends a file as one simple query, and PostgreSQL refuses `CONCURRENTLY` inside the implicit transaction of a multi-statement query. A failed concurrent build leaves an invalid index and a failed migration; the operator drops the index and marks the migration rolled back before deploying again.
 - Bootstrap accepts only an empty schema or the exact adopted administrator identity and refuses any other non-empty database before changing it. It creates no demo content or real provider deployments; reruns repair code-owned foundations but keep operator identity, credentials, settings, grants and content.
 - Upgrade adoptions of earlier configuration run once; later administrator edits stay independent of them.
+- A scheduled task's schedule columns stay required (decision 2026-10-25): a webhook-only task keeps the editor's schedule with `scheduleEnabled` off, and a check keeps its next run null, so existing rows needed no backfill and the previous release, which never fires a task without a next run, stays safe to roll back to (`prisma/migrations/20261025120000_automation_webhooks/migration.sql`).
 - Never run migrate, seed, prune or reset against the persistent installation during development. Verify with `npm run db:migration:smoke` (plus `npm run db:baseline:contract` for baseline or custom DDL) on disposable databases (`agent_docs/TESTING.md`).
 
 ## Deletion
@@ -63,6 +64,7 @@ Cutoffs and batch sizes live in code; these are the product decisions behind the
 
 - Deleting chats never resets spend: chat deletion and Temporary chat expiry keep usage and only detach run and Memory links. Usage limits gate admission, not spend; accepted runs finish and system work is never blocked.
 - A scheduled task's history retention deletes only chats its runs created and the owner never touched or kept, through the ordinary permanent-deletion path (`lib/server/scheduledTasks/historyRetention.ts`). Deleting the task makes its chats ordinary.
+- A webhook event keeps its body only until its run is admitted, after which the body lives only in that chat under the task's history retention, or until it is discarded because it can no longer run; it never runs later. The bodyless row stays seven days for deduplication and the rate cap (decision 2026-10-25, `lib/contracts/scheduledTasks.ts`). The webhook and its events go with the task and the account.
 - Operator telemetry has no foreign key to users; deleting an account clears its id from incidents in the same transaction.
 - An answer problem report stores a reason and an optional comment, never the question or answer, and disappears with the answer, chat or reporting account.
 
