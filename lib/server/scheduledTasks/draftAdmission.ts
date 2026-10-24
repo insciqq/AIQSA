@@ -15,7 +15,8 @@ export type ScheduledTaskDraftAdmissionDeps = Readonly<{
 }>;
 
 export type ScheduledTaskCreateAdmission =
-  | Readonly<{ ok: true; draft: ScheduledTaskDraft; nextRunAt: Date }>
+  /** `nextRunAt` is null exactly when the schedule is off. */
+  | Readonly<{ ok: true; draft: ScheduledTaskDraft; nextRunAt: Date | null }>
   | Readonly<{ ok: false; code: ScheduledTaskErrorCode }>;
 
 /**
@@ -45,9 +46,11 @@ export async function admitScheduledTaskModel(
 
 /**
  * Every rule `POST /api/me/scheduled-tasks` applies before the store's limits,
- * in its order: the strict body decoder, the first due instant from `now`,
- * then the model against the owner's current catalog. The chat tool creates
- * through the same rules, so neither path can admit what the other refuses.
+ * in its order: the strict body decoder, the first due instant from `now`
+ * when the schedule is on (an off schedule never runs, so a past once date
+ * is no refusal), then the model against the owner's current catalog. The
+ * chat tool creates through the same rules, so neither path can admit what
+ * the other refuses.
  */
 export async function admitScheduledTaskCreate(
   deps: ScheduledTaskDraftAdmissionDeps,
@@ -57,13 +60,17 @@ export async function admitScheduledTaskCreate(
 ): Promise<ScheduledTaskCreateAdmission> {
   const decoded = decodeScheduledTaskCreateRequest(body);
   if (!decoded.ok) return decoded;
-  const first = firstScheduledTaskRunAt(decoded.value.schedule, decoded.value.timeZone, now);
-  if (!first.ok) return first;
+  let nextRunAt: Date | null = null;
+  if (decoded.value.scheduleEnabled) {
+    const first = firstScheduledTaskRunAt(decoded.value.schedule, decoded.value.timeZone, now);
+    if (!first.ok) return first;
+    nextRunAt = first.nextRunAt;
+  }
   try {
     await admitScheduledTaskModel(deps, userId, decoded.value);
   } catch (error) {
     if (error instanceof ScheduledTaskError) return { ok: false, code: error.code };
     throw error;
   }
-  return { ok: true, draft: decoded.value, nextRunAt: first.nextRunAt };
+  return { ok: true, draft: decoded.value, nextRunAt };
 }

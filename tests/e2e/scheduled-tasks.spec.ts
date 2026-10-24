@@ -27,7 +27,7 @@ test.setTimeout(240_000);
 function task(overrides: Partial<ScheduledTask>): ScheduledTask {
   return {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
-    schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
+    schedule: { kind: "daily", time: "09:00" }, scheduleEnabled: true, webhookEnabled: false, webhook: null, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
     toolsEnabled: false, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: "standard", status: "active", pauseReason: null,
     historyRetentionDays: 90, historyDeletedChats: 0, historyNextDeletionAt: null, completionReason: null,

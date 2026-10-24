@@ -22,6 +22,7 @@ const schedules: ScheduledTaskSchedule[] = [
 function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
+    scheduleEnabled: true, webhookEnabled: false, webhook: null,
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
     provider: "connection-1", searchEnabled: false, emailNotify: true, telegramNotify: true, toolsEnabled: true, workspaceEnabled: false,
     memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW", historyRetentionDays: 90, historyDeletedChats: 0,
@@ -94,7 +95,8 @@ describe("scheduled task storage mapping", () => {
       where.unseenAt ? [{ taskId: "alert" }, { taskId: "quiet" }] : []);
     // The settled runs, then the history retention's next deletion per task.
     const $queryRaw = vi.fn().mockResolvedValueOnce(settled).mockResolvedValueOnce([{ dueAt: at(30), taskId: "alert" }]);
-    const client = { $queryRaw, scheduledTaskOccurrence: { findMany } };
+    const groupBy = vi.fn().mockResolvedValue([]);
+    const client = { $queryRaw, scheduledTaskOccurrence: { findMany }, scheduledTaskWebhookEvent: { groupBy } };
     const activity = await loadScheduledTaskActivity(client as unknown as PrismaClient, "user-1", ["alert", "quiet", "idle"]);
     expect(activity.get("alert")).toEqual({
       historyNextDeletionAt: at(30).toISOString(),
@@ -110,5 +112,36 @@ describe("scheduled task storage mapping", () => {
     const task = toScheduledTask(row(), activity.get("quiet")!);
     expect(decodeScheduledTask(task)).toEqual(task);
     expect(task).toMatchObject({ lastRun: { unseen: false }, unseenResult: true });
+  });
+
+  it("projects the trigger switches and the webhook's address, issue time and waiting events, never its token", async () => {
+    const webhook = { lastEventAt: new Date("2026-10-25T09:30:00.000Z"), publicId: "AbCdEfGhIjKlMnOpQrSt_-",
+      tokenIssuedAt: new Date("2026-10-25T08:00:00.000Z") };
+    const hooked = row({ nextRunAt: null, scheduleEnabled: false, webhook, webhookEnabled: true });
+    const groupBy = vi.fn().mockResolvedValue([{ _count: { _all: 3 }, taskId: "task-1" }]);
+    const client = { $queryRaw: vi.fn().mockResolvedValue([]), scheduledTaskOccurrence: { findMany: vi.fn().mockResolvedValue([]) },
+      scheduledTaskWebhookEvent: { groupBy } };
+    const activity = await loadScheduledTaskActivity(client as unknown as PrismaClient, "user-1", ["task-1"]);
+    // Only events still waiting for their run count, and only the owner's.
+    expect(groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      where: { state: "QUEUED", taskId: { in: ["task-1"] }, userId: "user-1" }
+    }));
+    const task = toScheduledTask(hooked, activity.get("task-1")!);
+    expect(decodeScheduledTask(task)).toEqual(task);
+    expect(task).toMatchObject({
+      nextRunAt: null, scheduleEnabled: false, webhookEnabled: true,
+      webhook: { lastEventAt: "2026-10-25T09:30:00.000Z", path: "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-",
+        queuedEvents: 3, tokenIssuedAt: "2026-10-25T08:00:00.000Z" }
+    });
+    // A projection without activity (a card, a tool result) counts no waiting events; a task never on a webhook has none.
+    expect(toScheduledTask(hooked, { lastRun: null, running: false, unseen: false }).webhook)
+      .toMatchObject({ queuedEvents: 0, tokenIssuedAt: "2026-10-25T08:00:00.000Z" });
+    expect(toScheduledTask(row(), { lastRun: null, running: false, unseen: false })).toMatchObject({
+      scheduleEnabled: true, webhook: null, webhookEnabled: false
+    });
+    // A webhook whose trigger is off keeps its address; one without a token yet says so.
+    const kept = toScheduledTask(row({ webhook: { ...webhook, tokenIssuedAt: null } }), { lastRun: null, running: false, unseen: false });
+    expect(decodeScheduledTask(kept)).toEqual(kept);
+    expect(kept.webhook).toMatchObject({ path: "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-", tokenIssuedAt: null });
   });
 });
