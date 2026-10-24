@@ -78,13 +78,19 @@ function itemStatus(item: ComposerAttachmentItemV2): string {
 
 export function AttachmentTrayV2({
   items,
+  onPasteAsText,
   onRemove,
   onRetry,
+  pastedTextIds,
   usage
 }: Readonly<{
   items: readonly ComposerAttachmentItemV2[];
+  /** Turns a long paste the composer made into a file back into message text. */
+  onPasteAsText?(id: string): void;
   onRemove?(id: string): void;
   onRetry?(id: string): void;
+  /** Rows that came from a long paste and offer "Paste as text". */
+  pastedTextIds?: ReadonlySet<string>;
   usage?: AttachmentLimitUsage | null;
 }>) {
   const listRef = useRef<HTMLUListElement>(null);
@@ -214,6 +220,16 @@ export function AttachmentTrayV2({
                   onClick={() => onRetry(item.id)}
                 >
                   Retry
+                </button>
+              ) : null}
+              {onPasteAsText && pastedTextIds?.has(item.id) ? (
+                <button
+                  aria-label={`Paste as text: ${item.fileName}`}
+                  className="v2-attachment-paste-back v2-focusable"
+                  type="button"
+                  onClick={() => onPasteAsText(item.id)}
+                >
+                  Paste as text
                 </button>
               ) : null}
               {onRemove ? (
