@@ -82,8 +82,11 @@ test("one Search default serves every chat across navigation, reload and login",
     expect(created.ok()).toBe(true);
     const chatId = (await created.json()).chat.id;
     // Chats keep no Search plan of their own (operator decision 2026-10-24):
-    // one an older release saved on a chat is ignored.
-    expect((await page.request.patch(`/api/chats/${chatId}`, { data: { defaultSearchPlan: off } })).ok()).toBe(true);
+    // an older client's write is accepted without storing anything, and one
+    // an older release saved on a chat is ignored.
+    expect((await page.request.patch(`/api/chats/${chatId}`, { data: { defaultSearchPlan: chosen } })).ok()).toBe(true);
+    expect((await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toBeNull();
+    await prisma.chat.update({ where: { id: chatId }, data: { defaultSearchPlan: off } });
     const searchChip = page.getByRole("button", { name: /^Choose web search/ });
     const chipSource = page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Inheritance Search/ });
     await page.goto(`/c/${chatId}`);
