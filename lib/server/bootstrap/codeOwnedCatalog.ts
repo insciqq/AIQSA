@@ -60,7 +60,7 @@ const builtInSearchOptions = Object.freeze({
     templateKey: "search:deepseek-search-api"
   }),
   "gemini-google-search": Object.freeze({
-    description: "Google Search grounding for eligible Gemini models.",
+    description: "Web search provided by Google.",
     displayName: "Google Search",
     id: "00000000-0000-4000-8000-000000001403",
     kind: "gemini_google_search",
