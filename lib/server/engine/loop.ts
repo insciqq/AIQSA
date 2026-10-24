@@ -162,7 +162,9 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
     if (calls.length === 0 || toolChoice === "none") {
       // A tool-free response of only calls, which may not run, is not an answer: the round is asked once more.
-      const callsOnly = toolChoice === "none" && calls.length > 0 && !result.finalText.trim();
+      // Calls written as native markup the adapter stopped count too (issue #56).
+      const callsOnly = toolChoice === "none" && (calls.length > 0 || result.synthesisToolCallForbidden === true) &&
+        !result.finalText.trim();
       if (callsOnly && answerNow === null) {
         answerNow = "due";
         continue;

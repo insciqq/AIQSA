@@ -45,11 +45,17 @@ export class DeepSeekHttpError extends Error {
   }
 }
 
+/**
+ * Names a failure of the shared Responses parser as DeepSeek's. The error
+ * itself is kept: its stream drop, context-length code and counts decide the
+ * transparent retry and overflow compaction, and a new error lost them.
+ */
 export function deepSeekResponseError(error: unknown): Error {
   if (!(error instanceof Error) || !error.message.startsWith("openai_")) {
     return error instanceof Error ? error : new Error("deepseek_response_failed");
   }
-  return new Error(error.message.replace(/^openai_/u, "deepseek_"));
+  error.message = error.message.replace(/^openai_/u, "deepseek_");
+  return error;
 }
 
 async function parseJsonResponse(

@@ -316,14 +316,16 @@ export function chatMessagesFromHistory(
 /**
  * Interaction steps as history, in step order. Thought steps stay whole with
  * their signatures, a function call keeps a signature it carries, and hosted
- * Google Search steps stay out (the answer text carries their result).
+ * Google Search steps stay out (the answer text carries their result). A
+ * thought without a signature stays out too: Gemini refuses it as
+ * continuation, and the next round could not be sent.
  */
 export function geminiHistoryFromSteps(steps: readonly Record<string, unknown>[]): ProviderHistoryItem[] {
   const items: ProviderHistoryItem[] = [];
   for (const protectedStep of steps) {
     const step = geminiInteractionStepForWire(protectedStep);
     if (step.type === "thought") {
-      items.push({ native: native("gemini_interactions", step), type: "reasoning" });
+      if (nonEmptyString(step.signature)) items.push({ native: native("gemini_interactions", step), type: "reasoning" });
     } else if (step.type === "function_call") {
       const callId = nonEmptyString(step.id);
       const name = nonEmptyString(step.name);
@@ -361,6 +363,8 @@ export function geminiStepsFromHistory(
   options: Pick<ProviderHistoryRenderOptions<Record<string, unknown>[]>, "currentInput">
 ): Readonly<{ current: boolean; step: Record<string, unknown> }>[] {
   return history.flatMap((item, index) => {
+    // An unsigned thought an earlier release kept is left out, as it is no longer kept.
+    if (item.type === "reasoning" && !nonEmptyString(nativeFields(item.native, "gemini_interactions").signature)) return [];
     const step = geminiStep(item, options);
     return item.type === "tool_result" && history[index + 1]?.type === "user"
       ? [step, { current: false, step: { content: [], type: "model_output" } }]

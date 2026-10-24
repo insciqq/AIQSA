@@ -24,6 +24,7 @@ import { visibleAnswerText } from "./visibleAnswer";
 import { providerResponseFailure } from "./responseFailure";
 import { markProviderErrorDetail } from "./providerErrorCode";
 import { chatHistoryFromMessage } from "./history";
+import { markProviderStreamDrop } from "./streamDrop";
 
 export type OpenAIChatCompletionsRecord = Readonly<Record<string, unknown>>;
 
@@ -159,6 +160,22 @@ export function parseOpenAIChatToolCalls(
   });
 }
 
+/**
+ * A response that stopped for its output limit or a content filter did not
+ * complete: its text stays the partial answer, and its tool calls never run
+ * (as a Responses `incomplete` terminal).
+ */
+export function assertOpenAIChatFinished(response: OpenAIChatCompletionsRecord, invalidTerminalError: string): void {
+  const message = firstOpenAIChatMessage(response);
+  const finishReason = firstOpenAIChatChoice(response)?.finish_reason;
+  if (finishReason === "content_filter" || typeof message?.refusal === "string" && message.refusal.trim()) {
+    throw Object.assign(new Error(invalidTerminalError), { code: "provider_response_not_retryable", capabilityFailureReason: "refusal" });
+  }
+  if (finishReason === "length") {
+    throw Object.assign(new Error(invalidTerminalError), { capabilityFailureReason: "budget_exhausted" });
+  }
+}
+
 export function assertOpenAIChatTerminalResponse(
   response: OpenAIChatCompletionsRecord,
   options: Readonly<{
@@ -171,10 +188,7 @@ export function assertOpenAIChatTerminalResponse(
   if (!message) {
     throw new Error(options.invalidTerminalError);
   }
-  if (firstOpenAIChatChoice(response)?.finish_reason === "content_filter" ||
-    typeof message.refusal === "string" && message.refusal.trim()) {
-    throw Object.assign(new Error(options.invalidTerminalError), { code: "provider_response_not_retryable", capabilityFailureReason: "refusal" });
-  }
+  assertOpenAIChatFinished(response, options.invalidTerminalError);
 
   const calls = rawToolCalls(message);
   if (openAIChatText(message.content).trim()) {
@@ -533,7 +547,7 @@ export async function* streamOpenAIChatSseResponse<
       parsed = JSON.parse(event.data) as unknown;
     } catch {
       observeStreamParseFailure(response.body);
-      throw new Error(profile.truncatedError);
+      throw markProviderStreamDrop(new Error(profile.truncatedError), "truncated");
     }
     if (!isOpenAIChatRecord(parsed)) {
       continue;
@@ -607,8 +621,9 @@ export async function* streamOpenAIChatSseResponse<
     }
   }
 
+  // A body that ended before its terminal frame is a dropped stream, sent again unchanged (`agent_docs/PROVIDERS.md`).
   if (!terminalSeen) {
-    throw new Error(profile.truncatedError);
+    throw markProviderStreamDrop(new Error(profile.truncatedError), "truncated");
   }
   if (!summaryEmitted) {
     yield openAIChatSummaryEvent({
