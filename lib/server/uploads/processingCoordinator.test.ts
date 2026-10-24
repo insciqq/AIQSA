@@ -312,7 +312,7 @@ describe("attachment processing coordinator", () => {
       claimToken: "claim-1",
       jobId: "job-1",
       result: expect.objectContaining({
-        extractedText: "Region\tRevenue\nNorth\t10",
+        extractedText: "Sheet: Sales\nRegion\tRevenue\nNorth\t10",
         metadata: { document: expect.objectContaining({ engine: "spreadsheet", status: "complete" }) }
       })
     }));

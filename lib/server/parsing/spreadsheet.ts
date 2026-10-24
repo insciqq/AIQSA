@@ -880,8 +880,23 @@ export function parseSpreadsheetDocument(
     mediaType: input.mimeType,
     pageCount: workbook.sheets.length,
     status: partial ? "partial" : "complete",
-    text: indexed.blocks.map((block) => block.text).join("\n\n"),
+    text: documentText(indexed.blocks, input.fileName),
     warnings: partial ? ["truncated_oversized_section"] : [],
     workbook
   });
+}
+
+/**
+ * The text a model reads: each sheet's tables start under the sheet's name, so
+ * a question about one sheet finds its tables. A CSV has no sheet names.
+ */
+function documentText(blocks: readonly ParsedDocumentBlock[], fileName: string): string {
+  const csv = fileName.toLocaleLowerCase("und").endsWith(".csv");
+  let sheet: string | undefined;
+  return blocks.map((block) => {
+    const name = block.headingPath[0];
+    if (csv || name === undefined || name === sheet) return block.text;
+    sheet = name;
+    return `Sheet: ${name}\n${block.text}`;
+  }).join("\n\n");
 }
