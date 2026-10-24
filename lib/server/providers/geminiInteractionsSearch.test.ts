@@ -248,4 +248,26 @@ describe("Gemini Interactions query-only Search adapter", () => {
     });
     expect(error).not.toHaveProperty("response");
   });
+
+  it("takes a cited page without text offsets as a source, and needs no Search suggestions", async () => {
+    const steps = (response().steps as Record<string, unknown>[]).map((step) => {
+      if (step.type === "google_search_result") return { ...step, result: [{}] };
+      if (step.type !== "model_output") return step;
+      return { ...step, content: [{
+        annotations: [
+          { title: "Offset-free source", type: "url_citation", url: "https://example.test/offset-free" },
+          { end_index: 25, start_index: 0, title: "Weather source", type: "url_citation",
+            url: "https://example.test/valencia-weather" }
+        ],
+        text: "Valencia is warm and sunny.",
+        type: "text"
+      }] };
+    });
+    const adapter = createGeminiInteractionsSearchAdapter({ client: client(async () => response({ steps })) });
+    const result = await adapter.search(request());
+    expect(result.findings).toBe("Valencia is warm and sunny.");
+    expect(result.sources.map((source) => source.url)).toEqual([
+      "https://example.test/offset-free", "https://example.test/valencia-weather"
+    ]);
+  });
 });

@@ -151,9 +151,10 @@ export function droppedRequestRetryDelay(retry: ProviderDroppedRequestRetry, inp
   return delayMs;
 }
 
+/** Rate limits and server errors, Anthropic's 529 overload included. */
 export function isRetryableProviderHttpStatus(status: number | null): boolean {
   return status === 408 || status === 425 || status === 429 ||
-    status === 500 || status === 502 || status === 503 || status === 504;
+    status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
 }
 
 export function isRetryableProviderNetworkError(error: unknown): boolean {

@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import { loadTechnicalProviderRole } from "../../providerRuntime/admission";
 import { createProviderRuntimeBinding } from "../../providers/runtimeFactory";
-import type { ProviderModelCapabilities, ProviderSearchAdapter } from "../../providers/types";
+import { ProviderSearchExecutionError, type ProviderModelCapabilities, type ProviderSearchAdapter } from "../../providers/types";
+import type { ModelRunUsage } from "../../../domain/modelRunEvents";
+import type { ModelCheckUsageWriter } from "../providers/modelCheckUsage";
 import { adminSearchProviderPolicy, createAdminSearchTester } from "./tester";
 
 vi.mock("../../providerRuntime/admission", () => ({ loadTechnicalProviderRole: vi.fn() }));
@@ -267,5 +269,41 @@ describe("admin Search diagnostic execution", () => {
     await vi.advanceTimersByTimeAsync(5_001);
     expect(await execution).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 5_000 });
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("charges the acting administrator for each request the exact checked deployment answered", async () => {
+    const recordUsage = vi.fn<ModelCheckUsageWriter>(async () => undefined);
+    const accounted = () => createAdminSearchTester({} as PrismaClient, { recordUsage });
+    const answered = (usage: ModelRunUsage, cost?: number) => ({ body: {}, ...(cost === undefined ? {} : { cost: () => cost }),
+      execute: async () => ({ usage }), usage: (value: { usage: ModelRunUsage }) => value.usage });
+    // Two answered requests (a paused turn and its continuation), then success.
+    search.mockImplementationOnce(async (_request, options) => {
+      await options!.dispatch!(answered({ inputTokens: 5, outputTokens: 3 }, 0.004));
+      await options!.dispatch!(answered({ inputTokens: 2, outputTokens: 1 }));
+      return sourceResult();
+    });
+    await accounted().test({ draft: draft("openai_responses_web_search"), userId: "admin-1" });
+    expect(recordUsage.mock.calls.map(([record]) => record)).toEqual([
+      { modelClass: "answer", modelId: "upstream-model", provider: "openai_compatible", providerModelId: "technical-model",
+        reportedCostUsd: 0.004, usage: { inputTokens: 5, outputTokens: 3 }, userId: "admin-1" },
+      expect.objectContaining({ reportedCostUsd: null, usage: { inputTokens: 2, outputTokens: 1 }, userId: "admin-1" })
+    ]);
+
+    // A refused answer was still billed; a transport failure answered nothing.
+    recordUsage.mockClear();
+    search.mockImplementationOnce(async (_request, options) => {
+      await options!.dispatch!(answered({ inputTokens: 4, outputTokens: 1 }));
+      throw new ProviderSearchExecutionError({ artifacts: [], code: "openai_search_sources_invalid",
+        usage: { inputTokens: 4, outputTokens: 1 } });
+    });
+    await expect(accounted().test({ draft: draft("openai_responses_web_search"), userId: "admin-1" }))
+      .rejects.toMatchObject({ code: "openai_search_sources_invalid" });
+    expect(recordUsage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ usage: { inputTokens: 4, outputTokens: 1 } }));
+    recordUsage.mockClear();
+    search.mockImplementationOnce(async (_request, options) => options!.dispatch!({ body: {},
+      execute: async () => { throw Object.assign(new Error("provider_http_error"), { httpStatus: 503 }); },
+      usage: () => ({ inputTokens: 1 }) }));
+    await expect(accounted().test({ draft: draft("openai_responses_web_search"), userId: "admin-1" })).rejects.toThrow();
+    expect(recordUsage).not.toHaveBeenCalled();
   });
 });

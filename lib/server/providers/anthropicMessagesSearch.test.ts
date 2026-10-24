@@ -64,8 +64,10 @@ function searchRequest(
   };
 }
 
+// Upstream shapes (anthropic-sdk-typescript `ServerToolUseBlock`, `WebSearchToolResultBlock`, `TextBlock`).
 function searchCall(id = "srvtoolu-1") {
   return {
+    caller: { type: "direct" },
     id,
     input: { query: "Moscow news" },
     name: "web_search",
@@ -363,6 +365,41 @@ describe("Anthropic Messages query-only Search adapter", () => {
 
     expect(error).toMatchObject({ code: "anthropic_search_response_invalid" });
     expect(JSON.stringify(error)).not.toContain("PRIVATE_UNKNOWN_BLOCK");
+  });
+
+  it("reads documented responses: an optional caller, citations: null and keys added upstream", async () => {
+    const { caller: _caller, ...resultWithoutCaller } = searchResult();
+    const adapter = createAnthropicMessagesSearchAdapter({
+      client: client(async () => message({
+        content: [
+          { ...searchCall(), future_field: "PRIVATE_FUTURE_CALL_FIELD" },
+          { ...resultWithoutCaller, content: [{ ...searchResult().content[0], future_field: "PRIVATE_FUTURE_RESULT" }] },
+          { citations: null, text: "Intro. ", type: "text" },
+          { ...citedText(), citations: [{ ...citedText().citations[0], future_field: "PRIVATE_FUTURE_CITATION" }],
+            future_field: "PRIVATE_FUTURE_TEXT" }
+        ]
+      }))
+    });
+    const result = await adapter.search(searchRequest());
+    expect(result.findings).toBe("Intro. Current findings.");
+    expect(result.sources).toEqual([expect.objectContaining({ citation: 1, url: "https://example.com/report" })]);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_FUTURE");
+  });
+
+  it("still validates every field it reads", async () => {
+    const refused = async (content: Record<string, unknown>[]) => createAnthropicMessagesSearchAdapter({
+      client: client(async () => message({ content }))
+    }).search(searchRequest()).then(() => null, (value: unknown) => value);
+    expect(await refused([{ ...searchCall(), caller: { tool_id: "PRIVATE_CODE_CALL", type: "code_execution_20260120" } },
+      searchResult(), citedText()])).toMatchObject({ code: "anthropic_search_response_invalid" });
+    expect(await refused([{ ...searchCall(), input: { queries: ["x"] } }, searchResult(), citedText()]))
+      .toMatchObject({ code: "anthropic_search_response_invalid" });
+    expect(await refused([searchCall(), searchResult("srvtoolu-1", { content: [{ ...searchResult().content[0], url: 7 }] }),
+      citedText()])).toMatchObject({ code: "anthropic_search_response_invalid" });
+    expect(await refused([searchCall(), searchResult(), { citations: "none", text: "x", type: "text" }]))
+      .toMatchObject({ code: "anthropic_search_response_invalid" });
+    expect(await refused([searchCall(), searchResult(), { ...citedText(),
+      citations: [{ ...citedText().citations[0], encrypted_index: null }] }])).toMatchObject({ code: "anthropic_search_response_invalid" });
   });
 
   it("rejects a non-direct Search result caller under the basic direct contract", async () => {

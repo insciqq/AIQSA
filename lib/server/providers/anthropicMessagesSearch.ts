@@ -292,9 +292,13 @@ export function buildAnthropicMessagesSearchRequest(
   return request.generationBudget ? { ...body, max_tokens: admittedOutputAllowance(request.generationBudget, body) } : body;
 }
 
-function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const allowed = new Set(keys);
-  return Object.keys(value).every((key) => allowed.has(key));
+// Blocks, results and citations are read by the fields the adapter uses,
+// each validated; keys Anthropic adds later are ignored, never a reason to
+// refuse a whole answered response (they stay inside the bounded replay).
+
+/** The tool is declared with `allowed_callers: ["direct"]`: a caller, when the block names one, must be that. */
+function directSearchCaller(value: unknown): boolean {
+  return value === undefined || isRecord(value) && value.type === "direct";
 }
 
 function searchCall(value: Record<string, unknown>): Readonly<{
@@ -309,10 +313,9 @@ function searchCall(value: Record<string, unknown>): Readonly<{
   if (
     value.type !== "server_tool_use" ||
     value.name !== "web_search" ||
-    !exactKeys(value, ["id", "input", "name", "type"]) ||
+    !directSearchCaller(value.caller) ||
     !id ||
     !input ||
-    !exactKeys(input, ["query"]) ||
     !query
   ) {
     throw new Error("anthropic_search_response_invalid");
@@ -323,7 +326,6 @@ function searchCall(value: Record<string, unknown>): Readonly<{
 function resultSource(value: Record<string, unknown>): Record<string, unknown> {
   if (
     value.type !== "web_search_result" ||
-    !exactKeys(value, ["encrypted_content", "page_age", "title", "type", "url"]) ||
     !boundedString(value.url, MAX_ANTHROPIC_SEARCH_URL_LENGTH) ||
     !boundedString(value.title, MAX_ANTHROPIC_SEARCH_TITLE_LENGTH) ||
     !boundedString(value.encrypted_content, MAX_ANTHROPIC_OPAQUE_FIELD_LENGTH) ||
@@ -342,7 +344,6 @@ function resultSource(value: Record<string, unknown>): Record<string, unknown> {
 function embeddedError(value: Record<string, unknown>): string {
   if (
     value.type !== "web_search_tool_result_error" ||
-    !exactKeys(value, ["error_code", "type"]) ||
     typeof value.error_code !== "string" ||
     !embeddedSearchErrorCodes.has(value.error_code)
   ) {
@@ -351,14 +352,9 @@ function embeddedError(value: Record<string, unknown>): string {
   return `anthropic_search_${value.error_code}`;
 }
 
-function directSearchCaller(value: unknown): boolean {
-  return isRecord(value) && value.type === "direct" && exactKeys(value, ["type"]);
-}
-
 function citationSource(value: Record<string, unknown>): Record<string, unknown> {
   if (
     value.type !== "web_search_result_location" ||
-    !exactKeys(value, ["cited_text", "encrypted_index", "title", "type", "url"]) ||
     !boundedString(value.url, MAX_ANTHROPIC_SEARCH_URL_LENGTH) ||
     (value.title !== null &&
       !boundedString(value.title, MAX_ANTHROPIC_SEARCH_TITLE_LENGTH)) ||
@@ -460,7 +456,6 @@ export function inspectAnthropicWebSearchContent(
         MAX_ANTHROPIC_MESSAGE_ID_LENGTH
       );
       if (
-        !exactKeys(candidate, ["caller", "content", "tool_use_id", "type"]) ||
         !directSearchCaller(candidate.caller) ||
         !toolUseId ||
         !calls.has(toolUseId) ||
@@ -495,13 +490,13 @@ export function inspectAnthropicWebSearchContent(
     }
     if (
       candidate.type !== "text" ||
-      !exactKeys(candidate, ["citations", "text", "type"]) ||
       typeof candidate.text !== "string"
     ) {
       throw new Error("anthropic_search_response_invalid");
     }
     textParts.push(candidate.text);
-    if (candidate.citations === undefined) continue;
+    // `citations: null` is a text block without citations.
+    if (candidate.citations === undefined || candidate.citations === null) continue;
     if (!Array.isArray(candidate.citations)) {
       throw new Error("anthropic_search_response_invalid");
     }

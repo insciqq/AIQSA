@@ -41,6 +41,7 @@ import {
 } from "./attachmentPayload";
 import { parseSseStream } from "./sse";
 import { markProviderErrorCode, markProviderErrorDetail, providerErrorCodeOfBody } from "./providerErrorCode";
+import { parseRetryAfterMs } from "../retryAfter";
 import { assertProviderHistoryRequest, providerHistoryPreview } from "./history";
 import { anthropicHistoryFromContent, anthropicMessagesFromHistory, anthropicPromptCache } from "./anthropicMessagesHistory";
 import { markProviderStreamDrop } from "./streamDrop";
@@ -968,7 +969,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             }
             let citations: Record<string, unknown>[] | null = null;
             let citationCharacters = 0;
-            if (block.citations !== undefined) {
+            // `citations: null` is a block without citations; a later citations delta starts the list.
+            if (block.citations !== undefined && block.citations !== null) {
               if (
                 block.type !== "text" ||
                 !Array.isArray(block.citations) ||
@@ -1341,8 +1343,11 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
       code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, httpStatus: response.status, ...contextLength
     }), providerError);
   }
+  // The provider's Retry-After shapes the wait before a transient failure is sent again.
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   throw markProviderErrorCode(Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
     httpStatus: response.status,
+    ...(retryAfterMs !== null ? { retryAfterMs } : {}),
     ...(invalidRequest ? { code: "provider_http_invalid_request" } : {})
   }), providerError);
 }

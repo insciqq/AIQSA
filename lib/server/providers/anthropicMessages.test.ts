@@ -78,7 +78,15 @@ describe("Anthropic context-length rejection", () => {
       if (status === 400) expect(failure).toHaveProperty("code", "provider_http_invalid_request");
       else expect(failure).not.toHaveProperty("code");
       expect(JSON.stringify(failure)).not.toContain(sentinel);
+      expect(failure).not.toHaveProperty("retryAfterMs");
     }
+  });
+
+  it("carries the provider's Retry-After on a rate limit", async () => {
+    const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
+      Response.json({ type: "error", error: { type: "rate_limit_error", message: sentinel } },
+        { headers: { "retry-after": "12" }, status: 429 }) });
+    await expect(client.createMessage({})).rejects.toMatchObject({ httpStatus: 429, retryAfterMs: 12_000 });
   });
 });
 
@@ -1420,7 +1428,9 @@ describe("Anthropic Messages adapter", () => {
         },
         { type: "ping" },
         {
+          // Upstream shapes: the call names its caller and a text block starts with `citations: null`.
           content_block: {
+            caller: { type: "direct" },
             id: "srvtoolu-hosted",
             input: {},
             name: "web_search",
@@ -1453,7 +1463,7 @@ describe("Anthropic Messages adapter", () => {
         },
         { index: 1, type: "content_block_stop" },
         {
-          content_block: { text: "", type: "text" },
+          content_block: { citations: null, text: "", type: "text" },
           index: 2,
           type: "content_block_start"
         },
