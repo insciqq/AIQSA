@@ -36,7 +36,7 @@ async function main() {
     format: "xlsx",
     mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   });
-  assert.equal(xlsx.text, "Region\tRevenue\nNorth\t10", "isolated_parser_release_xlsx_invalid");
+  assert.equal(xlsx.text, "Sheet: Sales\nRegion\tRevenue\nNorth\t10", "isolated_parser_release_xlsx_invalid");
 
   const html = await extractHtmlTextInIsolation({
     bytes: Buffer.from("<h1>Release</h1><script>probe()</script><p>check</p>"),
