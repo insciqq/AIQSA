@@ -18,6 +18,7 @@ import {
   decodeSearchPlan,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
+  hostedSearchProtocolUsable,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
   type SearchPlan
@@ -189,9 +190,10 @@ function draftKind(draft: AdminSearchDraft): AdminSearchKind {
   return "web_search";
 }
 
+/** DeepSeek's hosted Search is retired (operator decision 2026-10-24): a
+ * DeepSeek model only carries its key for the DeepSeek Search API. */
 function clientSearchKind(adapterKind: string): AdminSearchProviderModelOption["searchKind"] | null {
   if (adapterKind === "anthropic_messages") return "anthropic_web_search";
-  if (adapterKind === "deepseek_responses_native") return "deepseek_web_search";
   if (adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible") {
     return "web_search";
   }
@@ -435,7 +437,9 @@ function routeReady(
       ? { adapterKind: draft.adapterKind, draft }
       : null;
   }
-  return providerModels.some((model) =>
+  // Every chat model calls tools, and only OpenAI hosted Search coexists with
+  // them, so another hosted route never answers a chat on its own.
+  return hostedSearchProtocolUsable(draft.protocol) && providerModels.some((model) =>
     model.enabled && model.connectionId === option.sourceConnectionId && model.nativeSearch &&
     compatibleTechnicalAdapter(draft.protocol, model.adapterKind)
   )

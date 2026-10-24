@@ -974,9 +974,9 @@ describe("provider admission", () => {
     expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
   });
 
-  it("prefers same-connection Anthropic hosted Search", async () => {
+  it("never admits hosted Anthropic Search, which cannot coexist with chat tools", async () => {
     const option = anthropicOption();
-    const { db, providerModelFindUnique } = admissionDb({
+    const { db } = admissionDb({
       answer: officialAnthropicModel,
       options: [option],
       technicalModels: [officialAnthropicSearchModel]
@@ -990,16 +990,9 @@ describe("provider admission", () => {
     });
 
     expect(expectSearch(plan)).toMatchObject({
-      bindingKey: null,
-      integrationId: "route-hosted:anthropic",
-      optionId: "anthropic-web-search",
-      revisionId: "revision-hosted:anthropic",
-      configuration: {
-        adapterKind: "answer_provider_hosted",
-        provider: "anthropic"
-      }
+      integrationId: "route-client:anthropic",
+      configuration: { adapterKind: "provider_model_client", provider: "anthropic" }
     });
-    expect(providerModelFindUnique).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1079,9 +1072,9 @@ describe("provider admission", () => {
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 
-  it("keeps single-source same-connection Gemini Search hosted", async () => {
+  it("searches same-connection Gemini answers through the client route", async () => {
     const option = geminiOption();
-    const { db, providerModelFindUnique } = admissionDb({
+    const { db } = admissionDb({
       answer: geminiModel,
       options: [option],
       technicalModels: [geminiSearchModel]
@@ -1095,11 +1088,8 @@ describe("provider admission", () => {
     });
 
     expect(expectSearch(plan)).toMatchObject({
-      bindingKey: null,
-      integrationId: "route-hosted:gemini",
-      configuration: { adapterKind: "answer_provider_hosted" }
+      configuration: { adapterKind: "provider_model_client" }
     });
-    expect(providerModelFindUnique).not.toHaveBeenCalled();
   });
 
   it("uses the Gemini client route for cross-provider answers and MCP coexistence", async () => {
@@ -1728,7 +1718,7 @@ describe("provider admission", () => {
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 
-  it("admits exact Gemini-hosted Google Search", async () => {
+  it("refuses a Google Search source that has only its hosted route", async () => {
     const gemini: ModelSpec = {
       adapterKind: "gemini_interactions_native",
       connectionId: "connection-gemini",
@@ -1751,18 +1741,12 @@ describe("provider admission", () => {
     };
     const { db } = admissionDb({ answer: gemini, options: [option] });
 
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
       providerConnectionId: gemini.connectionId,
       providerModelId: gemini.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
       userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      integrationId: "route-google-hosted",
-      optionId: "gemini-google-search",
-      revisionId: "revision-google-hosted"
-    });
+    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 
   it("checks personal preference grants against logical option ids", async () => {

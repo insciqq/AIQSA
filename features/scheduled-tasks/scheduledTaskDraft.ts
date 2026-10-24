@@ -205,7 +205,8 @@ export function blankScheduledTaskDraft(
     date: tomorrow(timeZone, now),
     timeZone,
     ...model,
-    searchEnabled: false,
+    // Search is on by default wherever the model can use it (operator decision 2026-10-24).
+    searchEnabled: modelHasSearch(catalog, catalogModel(catalog, model)),
     emailNotify: false,
     telegramNotify: false,
     ...scheduledTaskStartingTools(catalog, model, workspace),

@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { MCP_FIND_TOOLS_NAME } from "../../mcp/discovery";
+import type { NormalizedSearchPlanOption } from "../../providers/types";
+import { createSearchPlanToolRouter } from "../../search/toolExecutor";
+import { FETCH_URL_TOOL_NAME } from "../../tools/fetchUrlPlan";
 import { APPLY_PATCH_TOOL_NAME } from "../../tools/applyPatch";
 import { READ_SECRET_TOOL_NAME } from "../../tools/readSecret";
 import { READ_TOOL_RESULT_NAME } from "../../tools/readToolResult";
@@ -8,7 +11,7 @@ import { LOAD_SKILL_TOOL_NAME } from "../../tools/skill";
 import { UPDATE_PLAN_TOOL_NAME } from "../../tools/updatePlan";
 import { CLAUDE_FAMILY_PROMPT } from "./claude";
 import { GPT_FAMILY_PROMPT } from "./gpt";
-import { HARNESS_TOOL_NAMES, systemPromptFamily, systemPromptFor } from "./index";
+import { HARNESS_SEARCH_TOOL, HARNESS_TOOL_NAMES, systemPromptFamily, systemPromptFor } from "./index";
 import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
 
 const now = new Date("2026-10-23T09:05:00Z");
@@ -85,10 +88,29 @@ describe("system prompt", () => {
   });
 
   it("refers to tools by the names their owners register", () => {
+    const source = (optionId: string): NormalizedSearchPlanOption => ({ adapterKind: "provider_model_client",
+      config: { maxOutputTokens: 1_024 }, credentialMode: "provider_model", executionModes: ["all_selected", "model_choice"],
+      modelId: "engine", optionId, protocol: "deepseek_search_api", provider: "deepseek", providerModelId: "pm",
+      revisionId: "rev", searchStrategyRowId: "row" });
+    const toolNames = (mode: "all_selected" | "model_choice") => createSearchPlanToolRouter({
+      plan: { mode, options: [source("one"), source("two")] }, runtimes: {} })!.tools.map((tool) => tool.name);
     expect(HARNESS_TOOL_NAMES).toEqual({
-      applyPatch: APPLY_PATCH_TOOL_NAME, findTools: MCP_FIND_TOOLS_NAME, loadSkill: LOAD_SKILL_TOOL_NAME,
-      readSecret: READ_SECRET_TOOL_NAME, readToolResult: READ_TOOL_RESULT_NAME, updatePlan: UPDATE_PLAN_TOOL_NAME
+      applyPatch: APPLY_PATCH_TOOL_NAME, fetchUrl: FETCH_URL_TOOL_NAME, findTools: MCP_FIND_TOOLS_NAME,
+      loadSkill: LOAD_SKILL_TOOL_NAME, readSecret: READ_SECRET_TOOL_NAME, readToolResult: READ_TOOL_RESULT_NAME,
+      updatePlan: UPDATE_PLAN_TOOL_NAME
     });
+    for (const name of [...toolNames("all_selected"), ...toolNames("model_choice")]) {
+      expect(name).toMatch(HARNESS_SEARCH_TOOL);
+    }
+  });
+
+  it("asks the model to search for what may have changed only when Search is admitted", () => {
+    const prompt = (input: Readonly<{ tools: readonly string[]; webSearch?: boolean }>) =>
+      systemPromptFor({ modelId: "x", provider: "openai" }, { environment, workspace: false, ...input }).stable;
+    expect(prompt({ tools: [] })).not.toContain("# Web search");
+    expect(prompt({ tools: ["search_selected_engines"] })).toContain("Search before you answer anything that may have changed");
+    expect(prompt({ tools: ["search_engine_2"] })).toContain("# Web search");
+    expect(prompt({ tools: [], webSearch: true })).toContain("# Web search");
   });
 
   it("keeps the derived prompts free of the source products' own identities", () => {

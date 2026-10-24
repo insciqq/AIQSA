@@ -21,6 +21,7 @@ import type {
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../auth/fullAccessGroup";
 import {
   decodeSearchPlan,
+  hostedSearchProtocolUsable,
   type SearchPlan
 } from "../../domain/search";
 import {
@@ -874,23 +875,10 @@ function hostedRouteCompatible(
   ) {
     return false;
   }
-  if (option.kind === "gemini_google_search") {
-    return route.draft.protocol === "gemini_google_search" &&
-      answer.snapshot.providerFamily === "gemini" &&
-      answer.snapshot.model.adapterKind === "gemini_interactions_native";
-  }
-  if (route.draft.protocol === "anthropic_web_search") {
-    return option.kind === "web_search" &&
-      answer.snapshot.providerFamily === "anthropic" &&
-      answer.snapshot.model.adapterKind === "anthropic_messages";
-  }
-  if (route.draft.protocol === "deepseek_responses_web_search") {
-    return option.kind === "web_search" &&
-      answer.snapshot.providerFamily === "deepseek" &&
-      answer.snapshot.model.adapterKind === "deepseek_responses_native";
-  }
+  // Every chat model calls tools, and only OpenAI hosted Search coexists with
+  // them; other sources search through their client route.
   return option.kind === "web_search" &&
-    route.draft.protocol === "openai_responses_web_search" &&
+    hostedSearchProtocolUsable(route.draft.protocol) &&
     (answer.snapshot.model.adapterKind === "openai_responses_native" ||
       answer.snapshot.model.adapterKind === "openai_responses_compatible");
 }
@@ -911,7 +899,6 @@ function clientRouteCompatible(
   }
   if (option.kind === "web_search") {
     return route.draft.protocol === "anthropic_web_search" ||
-      route.draft.protocol === "deepseek_responses_web_search" ||
       route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
@@ -933,7 +920,6 @@ function routeBelongsToOption(
 ): boolean {
   if (option.kind === "web_search") {
     return route.draft.protocol === "anthropic_web_search" ||
-      route.draft.protocol === "deepseek_responses_web_search" ||
       route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
@@ -950,8 +936,7 @@ function routeBelongsToOption(
 
 function hostedRouteSupportsClientTools(candidate: ResolvedSearchRouteCandidate): boolean {
   return candidate.route.draft.adapterKind === "answer_provider_hosted" &&
-    (candidate.route.draft.protocol === "deepseek_responses_web_search" ||
-      candidate.route.draft.protocol === "openai_responses_web_search");
+    hostedSearchProtocolUsable(candidate.route.draft.protocol);
 }
 
 function validCompleteRouteAssignment(input: Readonly<{
@@ -1191,7 +1176,8 @@ export async function loadProviderAdmissionPlan(
       if (hasAmbiguousRouteKinds(routes)) {
         throw new ProviderAdmissionError("search_strategy_not_available");
       }
-      let ready = routes.some((route) => route.draft.adapterKind === "answer_provider_hosted");
+      let ready = routes.some((route) => route.draft.adapterKind === "answer_provider_hosted" &&
+        hostedSearchProtocolUsable(route.draft.protocol));
       let readinessError: ProviderAdmissionError | undefined;
       if (!ready) {
         for (const route of routes) {

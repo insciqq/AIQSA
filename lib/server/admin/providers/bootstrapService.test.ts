@@ -233,30 +233,23 @@ describe("provider automatic setup", () => {
       const value = fixture();
       value.connection.family = "deepseek";
       value.connection.displayName = "DeepSeek";
-      const models = value.search.providerModels.map((model) => ({ ...model, connectionDisplayName: "DeepSeek" }));
-      // Every DeepSeek model also carries its connection key for the API.
-      value.search.providerModels = [
-        ...models.map((model) => ({ ...model, searchKind: "deepseek_web_search" as const })),
-        ...models.map((model) => ({ ...model, searchKind: "deepseek_search_api" as const }))
-      ];
-      const builtIn = (kind: "deepseek_search_api" | "web_search") => ({ archivedAt: null, broaderModelSetup: "not_applicable" as const,
+      // A DeepSeek model only carries its connection key for the API; its
+      // hosted Search is retired (operator decision 2026-10-24).
+      value.search.providerModels = value.search.providerModels.map((model) => ({ ...model,
+        connectionDisplayName: "DeepSeek", searchKind: "deepseek_search_api" as const }));
+      value.search.integrations.push({ archivedAt: null, broaderModelSetup: "not_applicable" as const,
         configurable: false, configuration: null, configurationActive: false, draftDirty: false, draftVersion: 0, draftTestEvidence: null,
         enabled: true, executionModes: [], providerModel: null, ready: false, readiness: "setup_required" as const,
-        sourceConnectionId: value.connection.id, system: true, kind, ...kind === "web_search"
-          ? { description: "Hosted", displayName: "DeepSeek Search", id: "hosted", strategyId: "deepseek-native-web-search" }
-          : { description: "API", displayName: "DeepSeek Search API", id: "api", strategyId: "deepseek-search-api" } });
-      value.search.integrations.push(builtIn("web_search"), builtIn("deepseek_search_api"));
-      return { ...value, api: value.search.integrations[1]! };
+        sourceConnectionId: value.connection.id, system: true, kind: "deepseek_search_api",
+        description: "API", displayName: "DeepSeek Search API", id: "api", strategyId: "deepseek-search-api" });
+      return { ...value, api: value.search.integrations[value.search.integrations.length - 1]! };
     }
 
-    it("checks and publishes the hosted Search and the built-in Search API, each once", async () => {
+    it("checks and publishes only the built-in Search API", async () => {
       const value = deepSeekFixture();
       expect(await value.run()).toMatchObject({ search: "ready", state: "completed", searchResults: [
-        { name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "ready" }] });
-      expect(value.searchCreate).toHaveBeenCalledTimes(2);
-      expect(value.searchCreate).toHaveBeenNthCalledWith(1, expect.objectContaining({
-        draft: expect.objectContaining({ protocol: "deepseek_responses_web_search" }) }));
-      expect(value.searchCreate).toHaveBeenNthCalledWith(2, expect.objectContaining({ bootstrap: true, check: true,
+        { name: "DeepSeek Search API", status: "ready" }] });
+      expect(value.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ bootstrap: true, check: true,
         displayName: "DeepSeek Search API", userId: "operator", draft: expect.objectContaining({ adapterKind: "provider_model_client",
           maxSearchCallsPerAnswer: 8, protocol: "deepseek_search_api", providerModelId: "model-terra", queryMaxCharacters: 128 }) }));
       expect(value.searchSave).not.toHaveBeenCalled();
@@ -271,7 +264,7 @@ describe("provider automatic setup", () => {
       expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
       expect(value.searchSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
         draft: configuration, expectedDraftVersion: 3, id: "api" }));
-      expect(value.searchCreate).toHaveBeenCalledOnce();
+      expect(value.searchCreate).not.toHaveBeenCalled();
     });
 
     it.each(["disabled before setup", "disabled", "archived", "edited"])("leaves an operator's %s API source alone", async (state) => {
@@ -279,27 +272,18 @@ describe("provider automatic setup", () => {
       Object.assign(value.api, state === "disabled before setup" ? { enabled: false } : {
         configurable: true, configurationActive: true, configuration: null,
         ...state === "disabled" ? { enabled: false } : state === "archived" ? { archivedAt: "2026-10-18T12:00:00.000Z" } : { draftDirty: true } });
-      expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
-      expect(value.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        draft: expect.objectContaining({ protocol: "deepseek_responses_web_search" }) }));
+      expect(await value.run()).toMatchObject({ search: "skipped", state: "completed" });
+      expect(value.searchCreate).not.toHaveBeenCalled();
       expect(value.searchSave).not.toHaveBeenCalled();
     });
 
-    it("keeps the hosted Search when the API check fails and lets a retry finish it", async () => {
+    it("reports a failed API check and lets a retry finish it", async () => {
       const value = deepSeekFixture();
-      value.searchCreate.mockResolvedValueOnce({ created: false, id: "hosted" })
-        .mockRejectedValueOnce(new Error("synthetic_search_failure"));
+      value.searchCreate.mockRejectedValueOnce(new Error("synthetic_search_failure"));
       expect(await value.run()).toMatchObject({ search: "failed", state: "partial", searchResults: [
-        { name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "failed" }] });
-      expect(value.searchCreate).toHaveBeenCalledTimes(2);
-      // The hosted Search is now published; the retry rechecks it and finishes the API.
-      const hosted = value.search.integrations[0]!;
-      Object.assign(hosted, { configurable: true, configurationActive: true, draftVersion: 1, configuration: {
-        ...adminSearchExecutionDefaults, adapterKind: "provider_model_client", credentialMode: "provider_model",
-        protocol: "deepseek_responses_web_search", providerModelId: "model-terra" } });
+        { name: "DeepSeek Search API", status: "failed" }] });
       expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
-      expect(value.searchSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "hosted" }));
-      expect(value.searchCreate).toHaveBeenCalledTimes(3);
+      expect(value.searchCreate).toHaveBeenCalledTimes(2);
       expect(value.searchCreate).toHaveBeenLastCalledWith(expect.objectContaining({
         draft: expect.objectContaining({ protocol: "deepseek_search_api" }) }));
     });

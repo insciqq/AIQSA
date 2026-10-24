@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  automaticSearchOptionId,
   decodeSearchPlan,
+  hostedSearchProtocolUsable,
   mergeSearchEvidence
 } from "./search";
 
@@ -66,5 +68,28 @@ describe("fan-out evidence", () => {
         url: "https://example.test/shared"
       }
     ]);
+  });
+});
+
+describe("automatic Search source", () => {
+  it("takes the fastest, cheapest source with links first and nothing without a usable route", () => {
+    const sources = [
+      { protocols: ["anthropic_web_search"], strategyId: "anthropic" },
+      { protocols: ["openai_responses_web_search"], strategyId: "openai" },
+      { protocols: ["openrouter_perplexity_chat"], strategyId: "perplexity" },
+      { protocols: ["deepseek_search_api"], strategyId: "deepseek-api" }
+    ];
+    expect(automaticSearchOptionId(sources)).toBe("deepseek-api");
+    expect(automaticSearchOptionId(sources.slice(0, 3))).toBe("perplexity");
+    expect(automaticSearchOptionId(sources.slice(0, 2))).toBe("openai");
+    expect(automaticSearchOptionId([{ protocols: [], strategyId: "hosted-only" }])).toBeNull();
+    expect(automaticSearchOptionId([])).toBeNull();
+  });
+
+  it("runs only OpenAI hosted Search inside a tool-calling answer", () => {
+    expect(hostedSearchProtocolUsable("openai_responses_web_search")).toBe(true);
+    for (const protocol of ["anthropic_web_search", "gemini_google_search", "deepseek_responses_web_search"]) {
+      expect(hostedSearchProtocolUsable(protocol)).toBe(false);
+    }
   });
 });
