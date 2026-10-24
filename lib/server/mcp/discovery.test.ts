@@ -190,10 +190,11 @@ describe("MCP Auto discovery", () => {
     const text = (result: ReturnType<typeof mcpFindToolsExecutionResult>) =>
       (result.content[0] as { text: string }).text;
     const found = text(mcpFindToolsExecutionResult(call, { loaded: [created!], alreadyAvailable: [sprint!],
-      unknownNames: ["missing"] }));
+      notOffered: ["mcp_jira_close_issue_1"], unknownNames: ["missing"] }));
     expect(found).toContain("Loaded 1 MCP tool for the next step:\n- mcp_jira_create_issue_1 (Jira): Create an issue in a project");
     expect(found).toContain("Already available (no need to load again):\n- mcp_jira_read_sprint_1 (Jira)");
     expect(found).toContain('Unknown names in select (not in the tool index): ["missing"]');
+    expect(found).toContain('No longer offered by their server, not loaded: ["mcp_jira_close_issue_1"]. Do not call them;');
     expect(found).not.toContain("No enabled MCP tool matched");
     expect(text(mcpFindToolsExecutionResult(call, { loaded: [] }))).toMatch(/^No enabled MCP tool matched this query\. Try other short English keywords/u);
   });

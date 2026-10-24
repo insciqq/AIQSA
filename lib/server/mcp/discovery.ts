@@ -262,11 +262,14 @@ export function mcpFindToolsExecutionResult(
   result: Readonly<{
     loaded: readonly McpCatalogToolSelection[];
     alreadyAvailable?: readonly McpCatalogToolSelection[];
+    /** Selected tools their loaded server no longer offers. */
+    notOffered?: readonly string[];
     unknownNames?: readonly string[];
     unavailable?: readonly McpFindToolsUnavailableServer[];
   }>
 ): ToolExecutionResult {
   const alreadyAvailable = result.alreadyAvailable ?? [];
+  const notOffered = result.notOffered ?? [];
   const unknownNames = result.unknownNames ?? [];
   const unavailable = result.unavailable ?? [];
   const lines = [
@@ -279,6 +282,8 @@ export function mcpFindToolsExecutionResult(
       ...alreadyAvailable.map(resultLine)
     ] : []),
     ...(unknownNames.length ? [`Unknown names in select (not in the tool index): ${JSON.stringify(unknownNames)}`] : []),
+    ...(notOffered.length ? [`No longer offered by their server, not loaded: ${JSON.stringify(notOffered)}. Do not call them; ` +
+      "if the task needs them, tell the user the service changed."] : []),
     ...(unavailable.length ? [
       "Unavailable now (their matching tools were not loaded):",
       ...unavailable.map(unavailableLine),

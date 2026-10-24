@@ -138,12 +138,13 @@ export async function executeDurableMcpDiscovery(
     epoch.modelRunToolCallId === input.modelRunToolCallId
   );
   const resultFrom = async (discovery: McpDiscoveryState, snapshot: McpRunPlanSnapshot,
-    fresh?: Readonly<{ previouslyActive: ReadonlySet<string>; unknownNames: readonly string[] }>) => {
+    fresh?: Readonly<{ notOffered: readonly string[]; previouslyActive: ReadonlySet<string>; unknownNames: readonly string[] }>) => {
     const checkpoint = checkpointResult({ discovery, modelRunToolCallId: input.modelRunToolCallId, snapshot,
       ...(fresh ? { previouslyActive: fresh.previouslyActive } : {}) });
     return mcpFindToolsExecutionResult(input.call, {
       loaded: await input.filterTools(input.userId, checkpoint.loaded),
       alreadyAvailable: await input.filterTools(input.userId, checkpoint.alreadyAvailable),
+      notOffered: fresh?.notOffered ?? [],
       unknownNames: fresh?.unknownNames ?? [],
       unavailable: checkpoint.unavailable
     });
@@ -182,7 +183,7 @@ export async function executeDurableMcpDiscovery(
       ? new McpAutoDiscoveryUnavailableError(error.code, error.serverName)
       : new McpAutoDiscoveryUnavailableError("mcp_materialization_failed");
   }
-  const { alreadyActive, plans, search, unavailable } = discovered;
+  const { alreadyActive, notOffered, plans, search, unavailable } = discovered;
   // One plan per loaded server, already fitted onto the run's snapshot in rank order.
   const addedSnapshot: McpRunPlanSnapshot = {
     servers: plans.flatMap((plan) => plan.snapshot.servers),
@@ -209,6 +210,6 @@ export async function executeDurableMcpDiscovery(
     discovery: appended.discovery,
     snapshot: appended.snapshot,
     toolResult: await resultFrom(appended.discovery, appended.snapshot,
-      { previouslyActive: activeNames, unknownNames: search.unknownNames })
+      { notOffered: notOffered.map((tool) => tool.namespacedName), previouslyActive: activeNames, unknownNames: search.unknownNames })
   };
 }

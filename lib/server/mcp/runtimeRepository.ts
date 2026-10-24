@@ -47,7 +47,7 @@ const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"] 
 const RECENT_ACTIVITY_MS = 15 * 60_000;
 const DRAIN_GRACE_MS = 60_000;
 const INVENTORY_FRESH_MS = 5 * 60_000;
-/** One automatic Test & Save request per changed listing, at most this often per server. */
+/** A changed server asks for an automatic Test & Save at most this often. */
 const TOOL_UPDATE_CHECK_SPACING_MS = 60 * 60_000;
 
 function runtimeConfigurationError(code: "mcp_values_invalid" | "mcp_runtime_fingerprint_collision"): Error {
@@ -727,7 +727,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       return count === 1;
     },
 
-    markReady: async ({ discoveredInventory, fingerprint, generationId, inventory, now, upstreamToolsHash }) => {
+    markReady: async ({ discoveredInventory, fingerprint, generationId, inventory, now }) => {
       const inventoryJson = JSON.stringify(inventory);
       const count = await client.$executeRaw`
         UPDATE "McpRuntimeGeneration" AS generation
@@ -797,14 +797,15 @@ export function createPrismaMcpRuntimeRepository(input: {
             )
         `.catch(retainDatabaseFailure);
       }
-      if (count === 1 && upstreamToolsHash && inventory.exclusions.some(({ reason }) => reason !== "disabled_by_policy")) {
+      if (count === 1 && inventory.exclusions.some(({ reason }) => reason !== "disabled_by_policy")) {
         // A trusted installation server's tools changed upstream: ask for one
-        // automatic Test & Save of the serving revision. The same listing, or
-        // any listing soon after the last request, asks nothing.
+        // automatic Test & Save of the serving revision. While the change
+        // persists (a failed or cancelled check, a listing the validator does
+        // not see), it asks again only after the spacing; personal servers
+        // follow their live tools and never ask.
         await client.$executeRaw`
           UPDATE "McpServer" AS server
           SET "toolUpdateCheckPending" = true,
-              "toolUpdateCheckHash" = ${upstreamToolsHash},
               "toolUpdateCheckRequestedAt" = ${now}
           FROM "McpRuntimeGeneration" AS generation
           LEFT JOIN "McpUserServer" AS preference ON preference."id" = generation."userServerId"
@@ -817,7 +818,6 @@ export function createPrismaMcpRuntimeRepository(input: {
             AND server."archivedAt" IS NULL
             AND server."activeRevisionId" = generation."revisionId"
             AND server."toolUpdateCheckPending" = false
-            AND server."toolUpdateCheckHash" IS DISTINCT FROM ${upstreamToolsHash}
             AND (server."toolUpdateCheckRequestedAt" IS NULL
               OR server."toolUpdateCheckRequestedAt" <= ${new Date(now.getTime() - TOOL_UPDATE_CHECK_SPACING_MS)})
         `.catch((error: unknown) => {

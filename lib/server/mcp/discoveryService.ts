@@ -143,6 +143,8 @@ export async function discoverMcpTools(input: Readonly<{
   userId: string;
 }>): Promise<Readonly<{
   alreadyActive: McpDiscoverySelection;
+  /** Selected tools a loaded server no longer offers, for the model to hear about. */
+  notOffered: McpDiscoverySelection;
   plans: ReadyPlan[];
   search: McpToolSearchResult;
   selected: McpDiscoverySelection;
@@ -154,6 +156,8 @@ export async function discoverMcpTools(input: Readonly<{
   let alreadyActive: McpDiscoverySelection = [];
   let loaded = 0;
   let unavailableCount = 0;
+  /** Selected tools a loaded server no longer offers. */
+  const notOffered: McpDiscoverySelection[number][] = [];
   const observe = (outcome: "completed" | "failed" | "cancelled") => logEvent("mcp_discovery", {
     outcome, duration_ms: Date.now() - started,
     ...(search ? { mode: search.mode, candidate_count: search.candidateCount, result_count: search.matches.length,
@@ -183,20 +187,25 @@ export async function discoverMcpTools(input: Readonly<{
     const batches = input.partial === "tool" ? selected.map((tool) => [tool]) : groupByServer(selected);
     const materialize = (batch: McpDiscoverySelection) =>
       materializeMcpSelection({ materialize: input.materialize, selected: batch, signal, userId: input.userId });
+    const notOfferedNow = (error: unknown) =>
+      error instanceof McpDiscoveryError && error.unavailable?.cause === "mcp_tool_not_available";
     const settled = await Promise.allSettled(batches.map(async (batch) => {
       await assertActive();
       try {
         return await materialize(batch);
       } catch (error) {
         // The server dropped or changed some selected tools since the catalog
-        // was frozen: load the ones it still offers, as Admin promises.
-        if (input.partial !== "server" || batch.length < 2 || !(error instanceof McpDiscoveryError) ||
-          error.unavailable?.cause !== "mcp_tool_not_available") throw error;
+        // was frozen: load the ones it still offers, as Admin promises, and
+        // name the others. Any other probe failure keeps its own outcome.
+        if (input.partial !== "server" || batch.length < 2 || !notOfferedNow(error)) throw error;
         const probes = await Promise.allSettled(batch.map((tool) => materialize([tool])));
+        for (const probe of probes) if (probe.status === "rejected" && !notOfferedNow(probe.reason)) throw probe.reason;
         const offered = batch.filter((_tool, index) => probes[index]!.status === "fulfilled");
         if (offered.length === 0) throw error;
         await assertActive();
-        return materialize(offered);
+        const plan = await materialize(offered);
+        notOffered.push(...batch.filter((_tool, index) => probes[index]!.status === "rejected"));
+        return plan;
       }
     }));
     await assertActive();
@@ -231,7 +240,7 @@ export async function discoverMcpTools(input: Readonly<{
     unavailableCount = unavailable.length;
     for (const server of unavailable) logEvent("mcp_discovery_server_unavailable", { code: server.reason, cause: server.cause });
     observe("completed");
-    return { alreadyActive, plans, search, selected,
+    return { alreadyActive, notOffered, plans, search, selected,
       unavailable: unavailable.map(({ reason, serverId }) => ({ reason, serverId })) };
   } catch (error) {
     observe(signal?.aborted ? "cancelled" : "failed");

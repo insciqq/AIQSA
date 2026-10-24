@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   McpClientSessionError,
   validateMcpToolArguments,
@@ -69,13 +68,6 @@ function discoveredInventory(tools: readonly McpRuntimeInventoryTool[]): McpDisc
   };
 }
 
-/** A content-free identity of an upstream listing: its tool names and definitions. */
-function upstreamToolsHash(tools: readonly McpRuntimeInventoryTool[]): string {
-  const definitions = tools.map(({ definitionHash, name }): [string, string] => [name, definitionHash])
-    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
-  return createHash("sha256").update(JSON.stringify(definitions)).digest("hex");
-}
-
 export type McpRuntimeSession = {
   callTool(input: {
     arguments: Record<string, unknown>;
@@ -114,8 +106,6 @@ export type McpRuntimeCoordinatorRepository = {
     /** Schema-free inventory retained for the owner's personal catalog. */
     discoveredInventory?: McpDiscoveredInventory;
     now: Date;
-    /** An installation server's upstream listing; a trusted server whose tools changed asks for a check. */
-    upstreamToolsHash?: string;
   }): Promise<boolean>;
   markStarting(input: { fingerprint: string; generationId: string; now: Date }): Promise<boolean>;
   synchronizeDesired(input: {
@@ -913,7 +903,7 @@ export class McpRuntimeCoordinator {
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
-        ...(launch.personalRuntime ? { discoveredInventory: discoveredInventory(tools) } : { upstreamToolsHash: upstreamToolsHash(tools) }),
+        ...(launch.personalRuntime ? { discoveredInventory: discoveredInventory(tools) } : {}),
         now: this.#now()
       }));
       signal.throwIfAborted();
@@ -1010,7 +1000,7 @@ export class McpRuntimeCoordinator {
         fingerprint,
         generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
-        ...(live.allowUnpublishedTools ? { discoveredInventory: discoveredInventory(tools) } : { upstreamToolsHash: upstreamToolsHash(tools) }),
+        ...(live.allowUnpublishedTools ? { discoveredInventory: discoveredInventory(tools) } : {}),
         now: this.#now()
       }));
       live.repositoryStateWrite = readinessWrite;
