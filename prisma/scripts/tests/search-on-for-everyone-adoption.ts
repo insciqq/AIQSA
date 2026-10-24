@@ -1,5 +1,5 @@
 /** Synthetic predecessor state; migration-contract owns disposable targets. */
-export const SEARCH_ON_FOR_EVERYONE_MIGRATION = "20261024120000_search_on_for_everyone";
+export const SEARCH_ON_FOR_EVERYONE_MIGRATION = "20261024160000_search_on_for_everyone";
 
 const AVATAR = '{"kind":"generated","recipeVersion":1,"paletteId":"ember","backgroundShape":"circle","foregroundShape":"ring","rotations":[0,0],"accents":[]}';
 
