@@ -4,17 +4,20 @@ export const SEARCH_ON_FOR_EVERYONE_MIGRATION = "20261024120000_search_on_for_ev
 const AVATAR = '{"kind":"generated","recipeVersion":1,"paletteId":"ember","backgroundShape":"circle","foregroundShape":"ring","rotations":[0,0],"accents":[]}';
 
 /** A DeepSeek connection with its retired hosted Search and the Search API,
- * working or not, plus every kind of stored plan that names the hosted one. */
+ * working or with its key-carrying model disabled, plus every kind of stored
+ * plan that names the hosted one. */
 function fixture(apiWorking: boolean): string {
   return `
-INSERT INTO "ProviderConnection" (id, "displayName", family, "updatedAt")
-VALUES ('sofe-deepseek', 'Synthetic DeepSeek', 'deepseek', now()),
-  ('sofe-openrouter', 'Synthetic OpenRouter', 'openrouter', now());
-INSERT INTO "ProviderModel" (id, "connectionId", provider, "modelId", "displayName", capabilities, "defaultParams", "updatedAt")
-VALUES ('sofe-deepseek-model', 'sofe-deepseek', 'deepseek', 'deepseek-v4-pro', 'Synthetic DeepSeek model', '{}', '{}', now());
+INSERT INTO "ProviderConnection" (id, "displayName", family, enabled, "activeVersion", "updatedAt")
+VALUES ('sofe-deepseek', 'Synthetic DeepSeek', 'deepseek', true, 1, now()),
+  ('sofe-openrouter', 'Synthetic OpenRouter', 'openrouter', true, 1, now());
+INSERT INTO "ProviderModel" (id, "connectionId", provider, "modelId", "displayName", capabilities, "defaultParams", enabled,
+  "activeVersion", "updatedAt")
+VALUES ('sofe-deepseek-model', 'sofe-deepseek', 'deepseek', 'deepseek-v4-pro', 'Synthetic DeepSeek model', '{}', '{}', ${apiWorking},
+  1, now());
 INSERT INTO "SearchOption" (id, "optionId", "displayName", description, kind, "sourceConnectionId", enabled, "updatedAt")
 VALUES ('sofe-hosted', 'deepseek-native-web-search', 'DeepSeek Search', 'Synthetic hosted', 'web_search', 'sofe-deepseek', true, now()),
-  ('sofe-api', 'deepseek-search-api', 'DeepSeek Search API', 'Synthetic API', 'deepseek_search_api', 'sofe-deepseek', ${apiWorking}, now()),
+  ('sofe-api', 'deepseek-search-api', 'DeepSeek Search API', 'Synthetic API', 'deepseek_search_api', 'sofe-deepseek', true, now()),
   ('sofe-perplexity', 'perplexity-x', 'Perplexity', 'Synthetic Perplexity', 'perplexity_search', 'sofe-openrouter', true, now());
 INSERT INTO "SearchStrategy" (id, "searchOptionId", "strategyId", provider, "modelId", "providerModelId",
   "displayName", kind, description, config, "adapterKind", "credentialMode", "updatedAt")
@@ -62,6 +65,13 @@ VALUES ('sofe-assistant-fixed', 'sofe-user-1', 'Synthetic fixed', '${AVATAR}', '
     '{"mode":"model_choice","optionIds":["perplexity-x","deepseek-native-web-search"]}', 'adjustable', 'adjustable', 2, now()),
   ('sofe-assistant-off', 'sofe-user-1', 'Synthetic off', '${AVATAR}', 'Synthetic instructions',
     '{"mode":"off"}', 'fixed', 'adjustable', 7, now());
+
+INSERT INTO "Chat" (id, "userId", title, "memoryMode", "assistantOverrides", "updatedAt") VALUES
+  ('sofe-chat-mixed', 'sofe-user-1', 'Synthetic chat', 'EXCLUDED',
+    '{"search":{"mode":"all_selected","optionIds":["deepseek-native-web-search","perplexity-x"]},"tools":{"mode":"off"}}', now()),
+  ('sofe-chat-only', 'sofe-user-1', 'Synthetic chat', 'EXCLUDED',
+    '{"search":{"mode":"model_choice","optionIds":["deepseek-native-web-search"]}}', now()),
+  ('sofe-chat-off', 'sofe-user-1', 'Synthetic chat', 'EXCLUDED', '{"search":{"mode":"off"}}', now());
 `;
 }
 
@@ -72,7 +82,7 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "SearchOption" WHERE id = 'sofe-hosted' AND NOT enabled AND "archivedAt" IS NOT NULL)
     OR EXISTS (SELECT 1 FROM "SearchStrategy" WHERE id = 'sofe-hosted-client' AND enabled)
   THEN RAISE EXCEPTION 'hosted_deepseek_search_still_offered'; END IF;
-  IF NOT EXISTS (SELECT 1 FROM "SearchOption" WHERE id = 'sofe-api' AND "archivedAt" IS NULL AND enabled = ${apiWorking})
+  IF NOT EXISTS (SELECT 1 FROM "SearchOption" WHERE id = 'sofe-api' AND "archivedAt" IS NULL AND enabled)
     OR NOT EXISTS (SELECT 1 FROM "SearchStrategy" WHERE id = 'sofe-api-client' AND enabled)
   THEN RAISE EXCEPTION 'search_api_changed'; END IF;
 
@@ -119,6 +129,14 @@ DO $$ BEGIN
     OR NOT EXISTS (SELECT 1 FROM "AssistantDefinition" WHERE id = 'sofe-assistant-off' AND version = 7 AND
       "searchPlan" = '{"mode":"off"}'::jsonb)
   THEN RAISE EXCEPTION 'assistant_search_or_version_changed'; END IF;
+
+  IF (SELECT "assistantOverrides" FROM "Chat" WHERE id = 'sofe-chat-mixed') IS DISTINCT FROM
+      ('{"search":{"mode":"all_selected","optionIds":' || ${apiWorking ? `'["deepseek-search-api","perplexity-x"]'` : `'["perplexity-x"]'`} ||
+        '},"tools":{"mode":"off"}}')::jsonb
+    OR (SELECT "assistantOverrides" FROM "Chat" WHERE id = 'sofe-chat-only') IS DISTINCT FROM
+      ${apiWorking ? `'{"search":{"mode":"model_choice","optionIds":["deepseek-search-api"]}}'` : `'{}'`}::jsonb
+    OR (SELECT "assistantOverrides" FROM "Chat" WHERE id = 'sofe-chat-off') IS DISTINCT FROM '{"search":{"mode":"off"}}'::jsonb
+  THEN RAISE EXCEPTION 'assistant_chat_override_not_moved'; END IF;
 
   IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'aiqsa_search_plan_without_retired')
   THEN RAISE EXCEPTION 'migration_helper_left_behind'; END IF;
