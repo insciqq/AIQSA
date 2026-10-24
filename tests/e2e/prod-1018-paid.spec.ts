@@ -510,7 +510,7 @@ test("DeepSeek Search API built in: setup with the key enables it without Add so
     expect(source.draftTestEvidence?.method, "setup published it after a live check").toBe("provider_search");
     expect(summary.apiSourcesOnConnection, "exactly one DeepSeek Search API source on the connection").toBe(1);
     // DeepSeek's hosted Search is retired (operator decision 2026-10-24): setup checks only the Search API, and
-    // the untouched installation default takes it.
+    // the untouched installation default stays automatic, which resolves to it.
     const setup = (await rawConnection(request, connectionId))?.checkRun?.setup;
     const hosted = (await searchCatalog(request)).integrations.find((entry) => entry.strategyId === "deepseek-native-web-search");
     const plan = await db().searchPolicy.findUniqueOrThrow({ select: { defaultPlan: true }, where: { id: "installation" } });
@@ -519,7 +519,9 @@ test("DeepSeek Search API built in: setup with the key enables it without Add so
     expect(setup, "setup checked the DeepSeek Search API").toMatchObject({ search: "ready", state: "completed", searchResults: [
       { name: "DeepSeek Search API", status: "ready" }] });
     expect(summary.hostedListed, "no hosted DeepSeek Search is offered").toBe(false);
-    expect(plan.defaultPlan).toMatchObject({ optionIds: [BUILT_IN_SEARCH_API] });
+    expect(plan.defaultPlan).toMatchObject({ optionIds: [] });
+    const resolved = (await (await request.get("/api/me/catalog")).json()) as { defaults?: { organizationSearchPlan?: { optionIds?: string[] } } };
+    expect(resolved.defaults?.organizationSearchPlan?.optionIds, "the automatic default resolves to the Search API").toEqual([BUILT_IN_SEARCH_API]);
     summary.afterShots = await adminSearchShots(page, testInfo, "after", source.id);
 
     const codex = await codexAnswerModel(request);

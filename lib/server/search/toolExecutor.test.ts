@@ -1816,13 +1816,23 @@ describe("Search engine retries", () => {
   it("waits at least the provider's Retry-After before sending a rate-limited Search again", async () => {
     const fetchFn = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ error: { type: "rate_limit_exceeded" } },
-        { headers: { "retry-after": "3" }, status: 429 }))
+        { headers: { "retry-after": "2" }, status: 429 }))
       .mockResolvedValue(completed());
     const { router, sleep } = nativeRouter(fetchFn);
     const result = await router.execute(call("search_selected_engines"), {});
     expect(result.status).toBe("complete");
     expect(fetchFn).toHaveBeenCalledTimes(2);
-    expect(sleep.mock.calls[0]![0]).toBeGreaterThanOrEqual(3_000);
+    expect(sleep.mock.calls[0]![0]).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it("never retries when too little of the engine's deadline would be left to answer", async () => {
+    // 5 s deadline: a 4 s Retry-After leaves less than the 2 s an attempt needs.
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: "rate_limit_exceeded" } },
+      { headers: { "retry-after": "4" }, status: 429 }));
+    const { router, sleep } = nativeRouter(fetchFn);
+    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("gives up after three attempts, and never waits past the engine's deadline", async () => {
