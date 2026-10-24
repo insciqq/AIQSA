@@ -125,7 +125,7 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       title: "Weekly summary", schedule: { kind: "weekly", time: "17:00", days: ["fri"] }, modelId: "model-a", provider: "provider-a",
-      searchEnabled: false, emailNotify: false, memoryEnabled: true, chatMode: "new"
+      searchEnabled: true, emailNotify: false, memoryEnabled: true, chatMode: "new"
     }));
     expect(screen.getByRole("status")).toHaveTextContent("“Weekly summary” is scheduled.");
     expect(screen.getByRole("heading", { name: "Weekly summary" })).toBeInTheDocument();
