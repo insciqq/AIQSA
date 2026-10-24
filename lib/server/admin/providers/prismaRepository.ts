@@ -523,24 +523,8 @@ function providerSearchPolicy(connection: Readonly<{
       provider: "anthropic"
     };
   }
-  if (connection.family === "deepseek" && connection.templateKey === "deepseek") {
-    return {
-      clientId: `deepseek-search-client:${connection.id}`,
-      clientKind: "provider_model_web_search",
-      description: "Web search provided by DeepSeek. Source URLs are not returned by the provider.",
-      displayName: "DeepSeek Search",
-      hostedId: "deepseek-native-web-search",
-      hostedKind: "deepseek_native_web_search",
-      hostedStrategyId: "deepseek-native-web-search",
-      modelAdapterKind: "deepseek_responses_native",
-      optionId: "deepseek-native-web-search",
-      optionKind: "web_search",
-      optionRowId: "00000000-0000-4000-8000-000000001406",
-      optionTemplateKey: "search:deepseek",
-      protocol: "deepseek_responses_web_search",
-      provider: "deepseek"
-    };
-  }
+  // DeepSeek's hosted Search is retired (operator decision 2026-10-24); its
+  // connection searches only through the DeepSeek Search API source.
   if (connection.family === "openai" && connection.templateKey === "openai") {
     return {
       clientId: `openai-search-client:${connection.id}`,
@@ -801,8 +785,21 @@ async function synchronizeProviderSearch(
       searchOptionId: option.id
     }
   });
-  const selectedModel = eligibleModels.find((model) => model.id === existingClient?.providerModelId) ??
-    eligibleModels[0]!;
+  // A new client route searches with the cheapest eligible model; an existing
+  // one keeps the model it has.
+  const priced = await tx.providerModel.findMany({
+    select: { id: true, inputTokenPriceUsdPerMillion: true, outputTokenPriceUsdPerMillion: true },
+    where: { id: { in: eligibleModels.map((model) => model.id) } }
+  });
+  const price = (id: string) => {
+    const row = priced.find((candidate) => candidate.id === id);
+    return row?.inputTokenPriceUsdPerMillion != null && row.outputTokenPriceUsdPerMillion != null
+      ? Number(row.inputTokenPriceUsdPerMillion) + Number(row.outputTokenPriceUsdPerMillion)
+      : Number.POSITIVE_INFINITY;
+  };
+  const cheapest = [...eligibleModels].sort((left, right) =>
+    price(left.id) - price(right.id) || left.id.localeCompare(right.id))[0]!;
+  const selectedModel = eligibleModels.find((model) => model.id === existingClient?.providerModelId) ?? cheapest;
   const clientDraft: AdminSearchDraft = {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",

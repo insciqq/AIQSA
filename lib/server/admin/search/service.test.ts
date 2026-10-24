@@ -1397,15 +1397,14 @@ describe("admin Search service", () => {
 
   it("validates logical policy kinds and permits normalized Google multi-source plans", async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
+    // Google Search reaches chats only through its client route.
     const geminiDraft: AdminSearchDraft = {
       ...draft,
-      adapterKind: "answer_provider_hosted",
-      credentialMode: "answer_provider",
       protocol: "gemini_google_search",
-      providerModelId: null
+      providerModelId: "gemini-model"
     };
     const openAi = option([child(draft)]);
-    const google = option([child(geminiDraft, { id: "strategy-google" })], {
+    const google = option([child(geminiDraft, { id: "strategy-google", providerModelId: "gemini-model" })], {
       displayName: "Google Search",
       id: "source-google",
       kind: "gemini_google_search",
@@ -1551,19 +1550,11 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     expect(state.write).not.toHaveBeenCalled();
   });
 
-  it("preserves only the explicit native DeepSeek source-attribution exception", async () => {
+  it("refuses DeepSeek's retired hosted Search before any provider request", async () => {
     const state = fixture("deepseek_responses_web_search");
-    const outcome = {
-      method: "provider_search" as const, normalizedSourceCount: 0, probeBinding: PROBE_BINDING,
-      protocol: "deepseek_responses_web_search" as const, status: "available" as const
-    };
-    state.test.mockResolvedValueOnce(outcome);
-    await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
+    await expect(state.save()).rejects.toMatchObject({ code: "search_provider_model_not_available" });
+    expect(state.test).not.toHaveBeenCalled();
     expect(state.write).not.toHaveBeenCalled();
-    state.test.mockResolvedValueOnce({ ...outcome, sourceAttribution: "provider_unavailable" });
-    await state.save();
-    expect(state.currentBinding).toHaveBeenCalledOnce();
-    expect(state.write).toHaveBeenCalled();
   });
 
   it("fails closed before a provider request when current authority cannot be read", async () => {
@@ -1631,8 +1622,8 @@ describe("DeepSeek Search API source", () => {
       providerModel: expect.objectContaining({ id: "deepseek-flash" }),
       ready: true
     })]);
+    // DeepSeek's hosted Search is retired: its models only carry the API key.
     expect(catalog.providerModels.map(({ id, searchKind }) => `${searchKind}:${id}`)).toEqual([
-      "deepseek_web_search:deepseek-pro",
       "deepseek_search_api:deepseek-flash",
       "deepseek_search_api:deepseek-pro"
     ]);

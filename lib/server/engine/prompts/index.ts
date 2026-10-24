@@ -10,6 +10,7 @@ import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
 import { selfServicePromptSection } from "./selfService";
 
 export {
+  HARNESS_SEARCH_TOOL,
   HARNESS_TOOL_NAMES,
   turnContextText,
   type EnvironmentPromptInput,

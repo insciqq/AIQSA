@@ -115,6 +115,35 @@ export function decodeSearchPlan(value: unknown): SearchPlanDecodeResult {
   };
 }
 
+/**
+ * The source an unset organization default resolves to (operator decision
+ * 2026-10-24: Search is on for everyone): the fastest and cheapest source with
+ * source links first. A source qualifies by the protocol of one of its routes.
+ */
+const AUTOMATIC_SEARCH_PROTOCOL_PRIORITY: readonly SearchProtocol[] = [
+  "deepseek_search_api",
+  "openrouter_perplexity_chat",
+  "openai_responses_web_search",
+  "gemini_google_search",
+  "anthropic_web_search"
+];
+
+export function automaticSearchOptionId(
+  sources: readonly Readonly<{ protocols: readonly string[]; strategyId: string }>[]
+): string | null {
+  for (const protocol of AUTOMATIC_SEARCH_PROTOCOL_PRIORITY) {
+    const source = sources.find((candidate) => candidate.protocols.includes(protocol));
+    if (source) return source.strategyId;
+  }
+  return null;
+}
+
+/** Only OpenAI-protocol hosted Search runs inside a tool-calling answer
+ * request; every other source searches through its client route. */
+export function hostedSearchProtocolUsable(protocol: string): boolean {
+  return protocol === "openai_responses_web_search";
+}
+
 function normalizedUrl(value: string): string | null {
   const safe = safeExternalHref(value);
   if (!safe) return null;

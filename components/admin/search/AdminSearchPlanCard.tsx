@@ -2,6 +2,7 @@
 
 import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
 import {
+  automaticPlanSource,
   planCompatible,
   planKind,
   selectablePlanSources,
@@ -9,7 +10,7 @@ import {
 } from "@/components/admin/search/searchSourceView";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
-import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
+import type { SearchPlan } from "@/lib/domain/search";
 import { useState } from "react";
 
 const focusRing =
@@ -17,10 +18,11 @@ const focusRing =
 const touchTarget = "[@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch";
 
 /**
- * Recommended Search plan (PRD 5.6, semantics unchanged): the sources a new
- * user searches with until they choose their own. It never grants access, so
- * only enabled, working sources can be picked. Mount it keyed by the policy
- * version so a saved plan becomes the new baseline.
+ * Recommended Search plan (PRD 5.6): the sources a user searches with until
+ * they choose their own. Every search goes to all of them, and none means the
+ * best working source automatically, never Off (operator decision 2026-10-24).
+ * It never grants access, so only enabled, working sources can be picked.
+ * Mount it keyed by the policy version so a saved plan becomes the new baseline.
  */
 export function AdminSearchPlanCard({
   busy,
@@ -32,7 +34,6 @@ export function AdminSearchPlanCard({
   onSave(plan: SearchPlan): Promise<string | null>;
 }>) {
   const [optionIds, setOptionIds] = useState<string[]>([...catalog.policy.defaultPlan.optionIds]);
-  const [planMode, setPlanMode] = useState<SearchPlanMode>(catalog.policy.defaultPlan.mode);
   const [formError, setFormError] = useState<string | null>(null);
   const selectable = selectablePlanSources(catalog);
   const options: SearchPlanOption[] = selectable.map((source) => ({
@@ -42,27 +43,20 @@ export function AdminSearchPlanCard({
   }));
   const missing = optionIds.filter((optionId) =>
     !selectable.some((source) => source.strategyId === optionId));
+  const automatic = automaticPlanSource(catalog);
 
   function toggle(optionId: string) {
     const active = optionIds.includes(optionId);
     const next = active
       ? optionIds.filter((candidate) => candidate !== optionId)
       : [...optionIds, optionId];
-    if (!active && (next.length > 3 || !planCompatible(next, options, "model_choice"))) return;
-    const nextMode = next.length === 0
-      ? "all_selected"
-      : planCompatible(next, options, planMode)
-        ? planMode
-        : "model_choice";
+    if (!active && (next.length > 3 || !planCompatible(next, options, "all_selected"))) return;
     setOptionIds(next);
-    setPlanMode(nextMode);
     setFormError(null);
   }
 
-  const dirty = planMode !== catalog.policy.defaultPlan.mode ||
+  const dirty = catalog.policy.defaultPlan.mode !== "all_selected" ||
     optionIds.join(" ") !== catalog.policy.defaultPlan.optionIds.join(" ");
-  const allSelectedAvailable = optionIds.length > 0 &&
-    planCompatible(optionIds, options, "all_selected");
   const canSave = dirty && missing.length === 0 && !busy;
 
   return (
@@ -73,7 +67,8 @@ export function AdminSearchPlanCard({
           <div className="min-w-0">
             <p className="text-sm font-medium text-ink">Default for users</p>
             <p className="mt-0.5 text-xs leading-5 text-ink-muted">
-              Used until a person makes a personal choice. This recommendation never grants access.
+              Every chat searches these sources until a person picks their own. With none chosen, the
+              best working source is used. This recommendation never grants access.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -82,7 +77,7 @@ export function AdminSearchPlanCard({
               const disabled = !active && (optionIds.length >= 3 || !planCompatible(
                 [...optionIds, source.strategyId],
                 options,
-                "model_choice"
+                "all_selected"
               ));
               return (
                 <button
@@ -121,30 +116,10 @@ export function AdminSearchPlanCard({
               <span className="text-xs text-ink-muted">No enabled, working Search sources yet.</span>
             ) : null}
           </div>
-          {optionIds.length > 1 ? (
-            <div className="flex flex-wrap gap-4 border-t border-trace-subtle pt-3 text-xs text-ink-secondary">
-              <label className={allSelectedAvailable ? "flex items-center gap-2" : "flex items-center gap-2 opacity-45"}>
-                <input
-                  checked={planMode === "all_selected"}
-                  className="accent-proof"
-                  disabled={!allSelectedAvailable || busy}
-                  onChange={() => setPlanMode("all_selected")}
-                  type="radio"
-                />
-                Search all selected sources
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  checked={planMode === "model_choice" || !allSelectedAvailable}
-                  className="accent-proof"
-                  disabled={busy}
-                  onChange={() => setPlanMode("model_choice")}
-                  type="radio"
-                />
-                Let the model choose
-              </label>
-            </div>
-          ) : null}
+          {optionIds.length === 0 ? (
+            <p className="text-xs text-ink-muted" data-testid="admin-search-plan-automatic">
+              {automatic ? `Automatic: ${automatic.displayName}` : "Automatic: no working source yet"}
+            </p>          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
           <p className="mr-auto min-w-0 text-xs text-ink-muted" role="status">
@@ -157,7 +132,6 @@ export function AdminSearchPlanCard({
             disabled={!dirty || busy}
             onClick={() => {
               setOptionIds([...catalog.policy.defaultPlan.optionIds]);
-              setPlanMode(catalog.policy.defaultPlan.mode);
               setFormError(null);
             }}
             tone="ghost"
@@ -170,7 +144,7 @@ export function AdminSearchPlanCard({
             disabled={!canSave}
             onClick={() => {
               setFormError(null);
-              void onSave({ mode: planMode, optionIds }).then((message) => {
+              void onSave({ mode: "all_selected", optionIds }).then((message) => {
                 if (message) setFormError(message);
               });
             }}

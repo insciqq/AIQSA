@@ -93,7 +93,7 @@ describe("searchModelsReach", () => {
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "ready" }))).toBe("All chat models");
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required" }))).toBe("This provider's models");
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required", ready: false, readiness: "setup_required" }))).toBe("No Search model yet");
-    expect(searchModelsReach(source({ kind: "gemini_google_search", broaderModelSetup: "not_applicable" }))).toBe("Gemini models");
+    expect(searchModelsReach(source({ kind: "gemini_google_search", broaderModelSetup: "not_applicable" }))).toBe("All chat models");
   });
 
   it("points a source that is not set up at the action that exists for it", () => {

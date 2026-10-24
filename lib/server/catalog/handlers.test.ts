@@ -502,6 +502,50 @@ describe("catalog handler", () => {
       .not.toContain("perplexity-tool-search");
   });
 
+  it("turns an organization default without a source into the first usable source, never Off", () => {
+    const base = {
+      entitlements: {
+        fullAccess: true as const,
+        modelKeys: new Set<string>(),
+        providerKeys: new Set<string>(),
+        searchStrategies: new Set<string>()
+      },
+      models: defaultProviderModels,
+      searchPolicy: { defaultPlan: { mode: "all_selected", optionIds: [] } },
+      searchStrategies: defaultSearchStrategies,
+      settings: {
+        defaultControlValues: {},
+        defaultProviderModelId: "fake-qsa",
+        defaultSearchPlan: null,
+        showCitations: true,
+        showReasoningBlocks: false
+      }
+    };
+    // Perplexity's client route outranks OpenAI's hosted one; hosted Anthropic
+    // and Google Search cannot run beside chat tools and never qualify.
+    expect(buildCurrentUserCatalog(base).defaults).toMatchObject({
+      organizationSearchPlan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] },
+      searchPlan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] },
+      searchPreferenceSource: "organization"
+    });
+    const withoutPerplexity = buildCurrentUserCatalog({ ...base, entitlements: {
+      modelKeys: new Set<string>(), providerKeys: new Set<string>(),
+      searchStrategies: new Set(["anthropic-web-search", "openai-native-web-search"])
+    } });
+    expect(withoutPerplexity.defaults.searchPlan.optionIds).toEqual(["openai-native-web-search"]);
+    // A personal Off stays Off.
+    expect(buildCurrentUserCatalog({ ...base, settings: { ...base.settings,
+      defaultSearchPlan: { mode: "all_selected", optionIds: [] } } }).defaults.searchPlan.optionIds).toEqual([]);
+    // A chosen organization source the user cannot use is never replaced.
+    expect(buildCurrentUserCatalog({ ...base,
+      entitlements: {
+        modelKeys: new Set<string>(), providerKeys: new Set<string>(),
+        searchStrategies: new Set(["openai-native-web-search"])
+      },
+      searchPolicy: { defaultPlan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] } }
+    }).defaults.searchPlan.optionIds).toEqual([]);
+  });
+
   it("rejects anonymous catalog requests", async () => {
     const GET = createCatalogHandler({
       loadCatalogData: async () => null,
