@@ -25,7 +25,8 @@ const body = {
 };
 const created: ScheduledTask = {
   id: "task-1", title: "Check mail", prompt: body.prompt, schedule: { kind: "weekly", time: "09:00",
-    days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1",
+    days: ["mon", "tue", "wed", "thu", "fri"] }, scheduleEnabled: true, webhookEnabled: false, webhook: null,
+  timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1",
   searchEnabled: false, emailNotify: false, telegramNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [],
   chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 0, historyNextDeletionAt: null, status: "active",
   pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,

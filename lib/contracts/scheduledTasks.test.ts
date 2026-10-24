@@ -14,23 +14,45 @@ import {
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_SEEN_RUNS_LIMIT,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
+  SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES,
+  SCHEDULED_TASK_WEBHOOK_DEDUPE_KEY_MAX_LENGTH,
+  SCHEDULED_TASK_WEBHOOK_ERROR_STATUS,
+  SCHEDULED_TASK_WEBHOOK_EVENT_NAME_MAX_LENGTH,
+  SCHEDULED_TASK_WEBHOOK_EVENT_RETENTION_MS,
+  SCHEDULED_TASK_WEBHOOK_PATH_PREFIX,
+  SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES,
+  SCHEDULED_TASK_WEBHOOK_QUEUE_LIMIT,
+  SCHEDULED_TASK_WEBHOOK_RATE_LIMIT,
+  SCHEDULED_TASK_WEBHOOK_RATE_WINDOW_MS,
+  SCHEDULED_TASK_WEBHOOK_REFUSAL,
+  SCHEDULED_TASK_WEBHOOK_TEXT_MAX_BYTES,
+  SCHEDULED_TASK_WEBHOOK_TOKEN_BYTES,
+  SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX,
   decodeScheduledTask,
   decodeScheduledTaskDetailResponse,
   decodeScheduledTaskListResponse,
   decodeScheduledTaskPinnedSkillIds,
   decodeScheduledTaskSeenRequest,
+  decodeScheduledTaskWebhookTokenResponse,
   SCHEDULED_TASK_MAX_PINNED_SKILLS,
   scheduledTaskSkillNameProjection,
   scheduledTaskSkillUnavailableReason,
 
   isScheduledTaskPrompt,
   isScheduledTaskRunIncomplete,
+  isScheduledTaskWebhookContentType,
+  isScheduledTaskWebhookDedupeKey,
+  isScheduledTaskWebhookEventName,
+  isScheduledTaskWebhookPublicId,
+  isScheduledTaskWebhookToken,
   normalizeScheduledTaskTitle,
   scheduledTaskChatModeAllowed,
   scheduledTaskErrorMessage,
   scheduledTaskReasonMessage,
+  scheduledTaskRunTrigger,
   scheduledTaskSourceMessage,
   scheduledTaskToolDefaults,
+  scheduledTaskWebhookPath,
   type ScheduledTask,
   type ScheduledTaskSchedule
 } from "./scheduledTasks";
@@ -38,6 +60,7 @@ import {
 const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
+  scheduleEnabled: true, webhookEnabled: false, webhook: null,
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, telegramNotify: true, toolsEnabled: true,
   workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 2,
   historyNextDeletionAt: "2026-11-01T06:00:00.000Z", status: "active", pauseReason: null, completionReason: null,
@@ -298,5 +321,99 @@ describe("scheduled task wire contract", () => {
       ["created", "created"], ["managed-0", "resumed"], ["managed-1", "paused"], ["managed-2", "paused"], ["managed-3", "paused"],
       ["managed-4", "paused"]
     ]);
+  });
+
+  const publicId = "AbCdEfGhIjKlMnOpQrSt_-";
+  const webhook = { path: `${SCHEDULED_TASK_WEBHOOK_PATH_PREFIX}${publicId}`, tokenIssuedAt: "2026-10-25T08:00:00.000Z",
+    lastEventAt: "2026-10-25T09:30:00.000Z", queuedEvents: 2 };
+
+  it("runs on a schedule, a webhook or both, and projects the webhook without its token", () => {
+    const hooked = { ...task, scheduleEnabled: false, webhookEnabled: true, webhook, nextRunAt: null };
+    expect(decodeScheduledTask(hooked)).toEqual(hooked);
+    expect(decodeScheduledTask({ ...task, webhookEnabled: true, webhook })).toMatchObject({ scheduleEnabled: true, webhookEnabled: true });
+    // A webhook whose trigger was turned off keeps its address; one never issued a token has no issue time.
+    expect(decodeScheduledTask({ ...task, webhook: { ...webhook, tokenIssuedAt: null, lastEventAt: null, queuedEvents: 0 } }))
+      .toMatchObject({ webhookEnabled: false, webhook: { path: webhook.path, tokenIssuedAt: null } });
+    for (const candidate of [
+      // At least one trigger is on, an off schedule has no next run and an on webhook has its address.
+      { ...task, scheduleEnabled: false, nextRunAt: null }, { ...hooked, nextRunAt: "2026-10-26T06:00:00.000Z" },
+      { ...hooked, webhook: null }, { ...task, scheduleEnabled: undefined }, { ...task, webhookEnabled: "on" },
+      { ...task, webhook: undefined },
+      // Never the token or its hash, and only the endpoint's own path.
+      { ...hooked, webhook: { ...webhook, token: `${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"A".repeat(43)}` } },
+      { ...hooked, webhook: { ...webhook, tokenHash: "a".repeat(64) } },
+      { ...hooked, webhook: { ...webhook, path: `/api/other/${publicId}` } },
+      { ...hooked, webhook: { ...webhook, path: `${SCHEDULED_TASK_WEBHOOK_PATH_PREFIX}short` } },
+      { ...hooked, webhook: { ...webhook, path: `https://ai.example${webhook.path}` } },
+      { ...hooked, webhook: { ...webhook, queuedEvents: -1 } }, { ...hooked, webhook: { ...webhook, lastEventAt: "recently" } }
+    ]) {
+      expect(decodeScheduledTask(candidate)).toBeNull();
+    }
+  });
+
+  it("names webhook runs in the history and reads any other stored trigger as scheduled", () => {
+    const run = { id: "run-1", scheduledFor: "2026-10-25T09:30:00.000Z", trigger: "webhook", state: "completed", reasonCode: null,
+      startedAt: "2026-10-25T09:30:01.000Z", finishedAt: "2026-10-25T09:31:00.000Z", chatId: "chat-1", unseen: true,
+      unavailableSources: [], skills: [] };
+    expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [run] })?.recentRuns).toEqual([run]);
+    expect(["schedule", "manual", "webhook", "retry"].map(scheduledTaskRunTrigger)).toEqual(["schedule", "manual", "webhook", "schedule"]);
+  });
+
+  it("issues the webhook token only in its own response, with the endpoint's whole address", () => {
+    const token = `${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"Az09_-".repeat(7)}x`;
+    const issued = { token, url: `https://ai.example${scheduledTaskWebhookPath(publicId)}`, issuedAt: "2026-10-25T08:00:00.000Z" };
+    expect(decodeScheduledTaskWebhookTokenResponse(issued)).toEqual(issued);
+    expect(decodeScheduledTaskWebhookTokenResponse({ ...issued, url: `http://localhost:3000${webhook.path}` })).not.toBeNull();
+    for (const candidate of [
+      { ...issued, extra: true }, { ...issued, token: "secret" }, { ...issued, token: `${token}A` }, { ...issued, token: token.slice(1) },
+      { ...issued, url: `${issued.url}?token=${token}` }, { ...issued, url: `${issued.url}#token` },
+      { ...issued, url: `https://user:pass@ai.example${webhook.path}` }, { ...issued, url: `ftp://ai.example${webhook.path}` },
+      { ...issued, url: "https://ai.example/api/me/scheduled-tasks" }, { ...issued, url: webhook.path },
+      { ...issued, url: `https://AI.example${webhook.path}` }, { ...issued, issuedAt: "now" }, null, []
+    ]) {
+      expect(decodeScheduledTaskWebhookTokenResponse(candidate)).toBeNull();
+    }
+  });
+
+  it("bounds webhook identifiers, tokens and the header facts an event keeps", () => {
+    // The random parts' base64url lengths are the shapes the decoders accept.
+    expect(Math.ceil(SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES * 4 / 3)).toBe(publicId.length);
+    expect(Math.ceil(SCHEDULED_TASK_WEBHOOK_TOKEN_BYTES * 4 / 3)).toBe(43);
+    expect(isScheduledTaskWebhookPublicId(publicId)).toBe(true);
+    for (const id of [publicId.slice(1), `${publicId}A`, `${publicId.slice(1)}=`, `${publicId.slice(1)}/`, 22]) {
+      expect(isScheduledTaskWebhookPublicId(id)).toBe(false);
+    }
+    expect(isScheduledTaskWebhookToken(`${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"a".repeat(43)}`)).toBe(true);
+    for (const token of [`aiqsa_xx_${"a".repeat(43)}`, `${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"a".repeat(42)}`,
+      `${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"a".repeat(42)}+`, `Bearer ${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"a".repeat(43)}`]) {
+      expect(isScheduledTaskWebhookToken(token)).toBe(false);
+    }
+    for (const key of ["4b0dba54-5e0b-4b4f-a1b4-6a1c2b53e0a1", "x".repeat(SCHEDULED_TASK_WEBHOOK_DEDUPE_KEY_MAX_LENGTH), "a b"]) {
+      expect(isScheduledTaskWebhookDedupeKey(key)).toBe(true);
+    }
+    for (const key of ["", "x".repeat(SCHEDULED_TASK_WEBHOOK_DEDUPE_KEY_MAX_LENGTH + 1), " key", "key ", "a\tb", "ключ", null]) {
+      expect(isScheduledTaskWebhookDedupeKey(key)).toBe(false);
+    }
+    expect(["Pipeline Hook", "push", "x".repeat(SCHEDULED_TASK_WEBHOOK_EVENT_NAME_MAX_LENGTH)].every(isScheduledTaskWebhookEventName))
+      .toBe(true);
+    expect(["", "x".repeat(SCHEDULED_TASK_WEBHOOK_EVENT_NAME_MAX_LENGTH + 1), "Push\nHook"].some(isScheduledTaskWebhookEventName))
+      .toBe(false);
+    expect(["application/json", "text/plain", "application/vnd.api+json"].every(isScheduledTaskWebhookContentType)).toBe(true);
+    expect(["Application/JSON", "application/json; charset=utf-8", "json", "text/", ""].some(isScheduledTaskWebhookContentType))
+      .toBe(false);
+  });
+
+  it("keeps the endpoint's bounds and refusals stable", () => {
+    expect(SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES).toBe(65_536);
+    expect(SCHEDULED_TASK_WEBHOOK_TEXT_MAX_BYTES).toBeGreaterThanOrEqual(SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES);
+    expect([SCHEDULED_TASK_WEBHOOK_QUEUE_LIMIT, SCHEDULED_TASK_WEBHOOK_RATE_LIMIT, SCHEDULED_TASK_WEBHOOK_RATE_WINDOW_MS])
+      .toEqual([20, 60, 3_600_000]);
+    // A bodyless event row outlasts the rate window it counts toward.
+    expect(SCHEDULED_TASK_WEBHOOK_EVENT_RETENTION_MS).toBeGreaterThan(SCHEDULED_TASK_WEBHOOK_RATE_WINDOW_MS);
+    expect(SCHEDULED_TASK_WEBHOOK_REFUSAL).toEqual({ status: 404, error: "not_found" });
+    expect(SCHEDULED_TASK_WEBHOOK_ERROR_STATUS).toMatchObject({ webhook_body_too_large: 413, webhook_queue_full: 429,
+      webhook_rate_limited: 429 });
+    expect(scheduledTaskErrorMessage("scheduled_task_trigger_required")).not.toBe(scheduledTaskErrorMessage("scheduled_tasks_unavailable"));
+    expect(scheduledTaskErrorMessage("scheduled_task_webhook_off")).not.toBe(scheduledTaskErrorMessage("scheduled_tasks_unavailable"));
   });
 });

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   Prisma,
   type PrismaClient,
@@ -13,8 +14,11 @@ import {
   SCHEDULED_TASK_MAX_PINNED_SKILLS,
   SCHEDULED_TASK_MAX_TOTAL,
   SCHEDULED_TASK_RECENT_RUNS_LIMIT,
+  SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES,
   SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
   isScheduledTaskHistoryRetentionDays,
+  scheduledTaskRunTrigger,
+  scheduledTaskWebhookPath,
   type ScheduledTask,
   type ScheduledTaskChatMode,
   type ScheduledTaskDetailResponse,
@@ -72,6 +76,8 @@ export type ScheduledTaskActivity = {
   unseen: boolean;
   /** When the task's history retention deletes its next old chat; absent for projections without history. */
   historyNextDeletionAt?: string | null;
+  /** Accepted webhook events waiting for their run; absent when none waits. */
+  webhookQueuedEvents?: number;
 };
 export type ScheduledTaskUpdateWrite = Readonly<{
   expectedRevision: number;
@@ -93,15 +99,22 @@ export interface ScheduledTaskStore {
   list(userId: string): Promise<ScheduledTaskListResponse>;
   get(userId: string, taskId: string): Promise<ScheduledTask | null>;
   detail(userId: string, taskId: string): Promise<ScheduledTaskDetailResponse | null>;
-  /** Creates an active task; throws `scheduled_task_limit` or `scheduled_task_hourly_limit` at a limit. */
-  create(userId: string, draft: ScheduledTaskDraft, nextRunAt: Date, promptUrls: ScheduledPromptUrlDigests): Promise<ScheduledTask>;
+  /**
+   * Creates an active task, `nextRunAt` null exactly when its schedule is off,
+   * with its webhook when that trigger is on; throws
+   * `scheduled_task_trigger_required` without a trigger and
+   * `scheduled_task_limit` or `scheduled_task_hourly_limit` at a limit.
+   */
+  create(userId: string, draft: ScheduledTaskDraft, nextRunAt: Date | null, promptUrls: ScheduledPromptUrlDigests): Promise<ScheduledTask>;
   /**
    * Writes every editable field and the status under `expectedRevision`, clears
    * the pause reason and the failure, incomplete-run and missing report
    * counts, clears the completion reason unless the task stays completed, and
    * increments the revision; a changed prompt, schedule kind or task kind also
    * starts a new generation without a baseline. Activation counts against the
-   * active limits.
+   * active limits. A schedule that is off clears the due time; a webhook
+   * trigger that is on gets its webhook if it has none, and one turned off
+   * keeps it.
    */
   update(userId: string, taskId: string, write: ScheduledTaskUpdateWrite): Promise<ScheduledTask>;
   /**
@@ -136,11 +149,14 @@ const KIND_COLUMN = {
 
 export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
-  onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
+  onceLocalDate: true, everyHours: true, untilMinutes: true, scheduleEnabled: true, webhookEnabled: true, timeZone: true,
+  modelId: true, provider: true,
   searchEnabled: true, emailNotify: true, telegramNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true,
   pinnedSkillIds: true, chatMode: true, kind: true, historyRetentionDays: true, historyDeletedChats: true, status: true, pauseReason: true,
   completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true, promptUrlDigests: true,
-  chat: { select: { permanentDeletionAt: true } }
+  chat: { select: { permanentDeletionAt: true } },
+  // Never the token hash: a projection has no use for it.
+  webhook: { select: { lastEventAt: true, publicId: true, tokenIssuedAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
 
@@ -207,7 +223,13 @@ export function toScheduledTask(
   skills?: ReadonlyMap<string, ScheduledTaskPinnedSkill>
 ): ScheduledTask {
   return {
-    id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row), timeZone: row.timeZone,
+    id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row),
+    scheduleEnabled: row.scheduleEnabled, webhookEnabled: row.webhookEnabled,
+    webhook: row.webhook ? {
+      path: scheduledTaskWebhookPath(row.webhook.publicId), tokenIssuedAt: row.webhook.tokenIssuedAt?.toISOString() ?? null,
+      lastEventAt: row.webhook.lastEventAt?.toISOString() ?? null, queuedEvents: activity.webhookQueuedEvents ?? 0
+    } : null,
+    timeZone: row.timeZone,
     modelId: row.modelId, provider: row.provider, searchEnabled: row.searchEnabled, emailNotify: row.emailNotify,
     telegramNotify: row.telegramNotify, toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled,
     memoryEnabled: row.memoryEnabled,
@@ -236,7 +258,7 @@ function scheduledTaskRunUnseen(row: Readonly<{ unseenAt: Date | null; finishedA
 
 function toScheduledTaskRun(row: RunRow, skills: ReadonlyMap<string, ScheduledTaskRunSkill[]>): ScheduledTaskRun {
   return {
-    id: row.id, scheduledFor: row.scheduledFor.toISOString(), trigger: row.trigger === "manual" ? "manual" : "schedule",
+    id: row.id, scheduledFor: row.scheduledFor.toISOString(), trigger: scheduledTaskRunTrigger(row.trigger),
     state: RUN_STATE_WIRE[row.state], reasonCode: row.reasonCode, startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null, chatId: usableChatId(row.chatId, row.chat),
     unseen: scheduledTaskRunUnseen(row),
@@ -253,8 +275,8 @@ type SettledRow = {
 /**
  * Per task of the owner: the newest settled occurrence with its own unread
  * flag, whether one is pending or running (and waiting for a Workspace slot),
- * whether any result is unread and when its history retention deletes the
- * next old chat.
+ * whether any result is unread, how many webhook events wait for their run
+ * and when its history retention deletes the next old chat.
  */
 export async function loadScheduledTaskActivity(
   client: ScheduledTaskClient,
@@ -287,6 +309,11 @@ export async function loadScheduledTaskActivity(
     select: { taskId: true },
     where: { taskId: { in: [...taskIds] }, unseenAt: { not: null }, userId }
   });
+  const queued = await client.scheduledTaskWebhookEvent.groupBy({
+    by: ["taskId"],
+    _count: { _all: true },
+    where: { state: "QUEUED", taskId: { in: [...taskIds] }, userId }
+  });
   for (const row of settled) {
     const state: ScheduledTaskSettledRunState = RUN_STATE_WIRE[row.state];
     activity.set(row.taskId, {
@@ -304,6 +331,7 @@ export async function loadScheduledTaskActivity(
         (row.state === "PENDING" && row.reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE) });
   }
   for (const row of unseen) activity.set(row.taskId, { ...activity.get(row.taskId)!, unseen: true });
+  for (const row of queued) activity.set(row.taskId, { ...activity.get(row.taskId)!, webhookQueuedEvents: row._count._all });
   for (const [taskId, dueAt] of await loadScheduledTaskHistoryNextDeletions(client, userId, taskIds, now)) {
     activity.set(taskId, { ...activity.get(taskId)!, historyNextDeletionAt: dueAt.toISOString() });
   }
@@ -320,7 +348,8 @@ export async function readScheduledTaskEmailAvailability(client: ScheduledTaskCl
 
 function draftColumns(draft: ScheduledTaskDraft) {
   return {
-    title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
+    title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule),
+    scheduleEnabled: draft.scheduleEnabled, webhookEnabled: draft.webhookEnabled, timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
     telegramNotify: draft.telegramNotify, toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled,
     memoryEnabled: draft.memoryEnabled,
@@ -338,11 +367,29 @@ async function lockOwner(tx: Prisma.TransactionClient, userId: string): Promise<
   if (owners.length !== 1) throw new ScheduledTaskError("scheduled_tasks_unavailable");
 }
 
-/** Active hourly tasks of the owner other than `exceptTaskId`, under the owner lock. */
+/**
+ * Active hourly tasks of the owner other than `exceptTaskId`, under the owner
+ * lock; an hourly schedule that is off never runs, so it does not count.
+ */
 async function activeHourlyTasks(tx: Prisma.TransactionClient, userId: string, exceptTaskId?: string): Promise<number> {
   return tx.scheduledTask.count({
-    where: { scheduleKind: "HOURLY", status: "ACTIVE", userId, ...(exceptTaskId ? { id: { not: exceptTaskId } } : {}) }
+    where: {
+      scheduleEnabled: true, scheduleKind: "HOURLY", status: "ACTIVE", userId, ...(exceptTaskId ? { id: { not: exceptTaskId } } : {})
+    }
   });
+}
+
+/**
+ * Gives a task with the webhook trigger on its webhook: a new random public id
+ * the first time, without a token; an existing webhook keeps its address and
+ * token. A public id that collides fails the write instead of being skipped.
+ */
+async function ensureScheduledTaskWebhook(tx: Prisma.TransactionClient, userId: string, taskId: string): Promise<void> {
+  const publicId = randomBytes(SCHEDULED_TASK_WEBHOOK_PUBLIC_ID_BYTES).toString("base64url");
+  await tx.$executeRaw`
+    INSERT INTO "ScheduledTaskWebhook" ("taskId", "userId", "publicId") VALUES (${taskId}, ${userId}, ${publicId})
+    ON CONFLICT ("taskId") DO NOTHING
+  `;
 }
 
 /** Keeps the newest occurrences of a task; open ones are never removed. */
@@ -364,29 +411,40 @@ function visibleTask(userId: string, taskId: string) {
 
 /**
  * Creates an active task inside the caller's transaction, under the owner lock
- * that serializes the limits: throws `scheduled_task_limit` or
- * `scheduled_task_hourly_limit` at a limit and `scheduled_tasks_unavailable`
- * for an inactive account. The owner API and the chat tool both create here,
- * each with the prompt's page-reading snapshot for its authorship.
+ * that serializes the limits: throws `scheduled_task_trigger_required` without
+ * a trigger, `scheduled_task_limit` or `scheduled_task_hourly_limit` at a
+ * limit and `scheduled_tasks_unavailable` for an inactive account. A schedule
+ * that is off gets no due time; one that is on needs it. A task with the
+ * webhook trigger on gets its webhook in the same transaction. The owner API
+ * and the chat tool both create here, each with the prompt's page-reading
+ * snapshot for its authorship.
  */
 export async function insertScheduledTask(
   tx: Prisma.TransactionClient,
   userId: string,
   draft: ScheduledTaskDraft,
-  nextRunAt: Date,
+  nextRunAt: Date | null,
   promptUrls: ScheduledPromptUrlDigests
 ): Promise<ScheduledTask> {
+  if (!draft.scheduleEnabled && !draft.webhookEnabled) throw new ScheduledTaskError("scheduled_task_trigger_required");
+  if (draft.scheduleEnabled && nextRunAt === null) throw new Error("scheduled_task_next_run_missing");
   await lockOwner(tx, userId);
   const total = await tx.scheduledTask.count({ where: { userId } });
   const active = await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } });
   if (total >= SCHEDULED_TASK_MAX_TOTAL || active >= SCHEDULED_TASK_MAX_ACTIVE) throw new ScheduledTaskError("scheduled_task_limit");
-  if (draft.schedule.kind === "hourly" && await activeHourlyTasks(tx, userId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
+  if (draft.scheduleEnabled && draft.schedule.kind === "hourly" &&
+    await activeHourlyTasks(tx, userId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
     throw new ScheduledTaskError("scheduled_task_hourly_limit");
   }
-  const row = await tx.scheduledTask.create({
-    data: { ...draftColumns(draft), nextRunAt, promptUrlDigests: [...promptUrls], status: "ACTIVE", userId },
-    select: scheduledTaskRowSelect
+  const { id } = await tx.scheduledTask.create({
+    data: {
+      ...draftColumns(draft), nextRunAt: draft.scheduleEnabled ? nextRunAt : null, promptUrlDigests: [...promptUrls],
+      status: "ACTIVE", userId
+    },
+    select: { id: true }
   });
+  if (draft.webhookEnabled) await ensureScheduledTaskWebhook(tx, userId, id);
+  const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id, userId } } });
   return toScheduledTask(row, { lastRun: null, running: false, unseen: false },
     await loadScheduledTaskPinnedSkillMap(tx, userId, row.pinnedSkillIds));
 }
@@ -408,11 +466,12 @@ export async function updateScheduledTask(
 ): Promise<ScheduledTask> {
   await lockOwner(tx, userId);
   const current = await tx.scheduledTask.findUnique({
-    select: { kind: true, prompt: true, revision: true, scheduleKind: true, status: true },
+    select: { kind: true, prompt: true, revision: true, scheduleEnabled: true, scheduleKind: true, status: true },
     where: { userId_id: { id: taskId, userId } }
   });
   if (!current) throw new ScheduledTaskError("scheduled_task_not_found");
   if (current.revision !== write.expectedRevision) throw new ScheduledTaskError("scheduled_task_stale");
+  if (!write.draft.scheduleEnabled && !write.draft.webhookEnabled) throw new ScheduledTaskError("scheduled_task_trigger_required");
   // A changed prompt never keeps a snapshot computed for other text.
   if (write.promptUrls === "keep" && current.prompt !== write.draft.prompt) {
     throw new Error("scheduled_task_prompt_urls_missing");
@@ -422,7 +481,9 @@ export async function updateScheduledTask(
     await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } }) >= SCHEDULED_TASK_MAX_ACTIVE) {
     throw new ScheduledTaskError("scheduled_task_limit");
   }
-  if (write.status === "active" && kind === "HOURLY" && (current.status !== "ACTIVE" || current.scheduleKind !== "HOURLY") &&
+  // Only a schedule that is on runs hourly; the task counts once it starts to.
+  const countedHourly = current.status === "ACTIVE" && current.scheduleEnabled && current.scheduleKind === "HOURLY";
+  if (write.status === "active" && write.draft.scheduleEnabled && kind === "HOURLY" && !countedHourly &&
     await activeHourlyTasks(tx, userId, taskId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
     throw new ScheduledTaskError("scheduled_task_hourly_limit");
   }
@@ -439,7 +500,8 @@ export async function updateScheduledTask(
       ...(write.promptUrls === "keep" ? {} : { promptUrlDigests: [...write.promptUrls] }),
       // A task that stays completed keeps why; resuming clears it.
       ...(write.status === "completed" ? {} : { completionReason: null }),
-      ...(write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
+      // A schedule that is off never has a due time, whatever the caller kept.
+      ...(!write.draft.scheduleEnabled ? { nextRunAt: null } : write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
       ...(newGeneration ? {
         baselineAssistantMessageId: null, baselineGeneration: null, baselineRunId: null, baselineUserMessageId: null,
         generation: { increment: 1 }
@@ -448,6 +510,8 @@ export async function updateScheduledTask(
     where: { id: taskId, revision: write.expectedRevision, userId }
   });
   if (updated.count !== 1) throw new ScheduledTaskError("scheduled_task_stale");
+  // Turning the trigger off keeps the webhook, so its address survives turning it on again.
+  if (write.draft.webhookEnabled) await ensureScheduledTaskWebhook(tx, userId, taskId);
   // A result carried into a rotated chat belongs to the old question as well.
   if (newGeneration) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId, userId } });
   const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
