@@ -1078,7 +1078,7 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     strategyId: "openai-native-web-search"
   },
   {
-    description: "Google Search grounding for eligible Gemini models.",
+    description: "Web search provided by Google.",
     displayName: "Google Search",
     kind: "gemini_google_search",
     routes: [{
