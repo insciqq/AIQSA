@@ -426,7 +426,8 @@ function validCitationIndex(value: unknown): number | null {
   return index !== null && index <= MAX_CITATION_INDEX ? index : null;
 }
 
-function citationFromAnnotation(value: unknown): GroundingDisplayEvent["data"]["citations"][number] | null {
+/** The page a `url_citation` names; its text offsets are optional. */
+function sourceFromAnnotation(value: unknown): Readonly<{ title: string; url: string }> | null {
   if (!isRecord(value) || value.type !== "url_citation") {
     return null;
   }
@@ -437,16 +438,41 @@ function citationFromAnnotation(value: unknown): GroundingDisplayEvent["data"]["
   if (!url || (!url.startsWith("https://") && !url.startsWith("http://"))) {
     return null;
   }
+  const title = typeof value.title === "string"
+    ? value.title.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, MAX_CITATION_TITLE_LENGTH)
+    : "";
+  return { title, url };
+}
+
+/** A citation the answer can place: a source with valid text offsets. */
+function citationFromAnnotation(value: unknown): GroundingDisplayEvent["data"]["citations"][number] | null {
+  const source = sourceFromAnnotation(value);
+  if (!source || !isRecord(value)) return null;
   const startIndex = validCitationIndex(value.start_index);
   const endIndex = validCitationIndex(value.end_index);
   if (startIndex === null || endIndex === null || endIndex < startIndex) {
     return null;
   }
-  const title = typeof value.title === "string"
-    ? value.title.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, MAX_CITATION_TITLE_LENGTH)
-    : "";
+  return { endIndex, startIndex, ...source };
+}
 
-  return { endIndex, startIndex, title, url };
+/** Every page the findings cite, placed or not, in their order. */
+function groundingSources(protectedSteps: readonly Record<string, unknown>[]): Readonly<{ title: string; url: string }>[] {
+  const sources: Readonly<{ title: string; url: string }>[] = [];
+  for (const protectedStep of protectedSteps) {
+    const step = geminiInteractionStepForWire(protectedStep);
+    if (step.type !== "model_output" || !Array.isArray(step.content)) continue;
+    for (const content of step.content) {
+      if (!isRecord(content) || !Array.isArray(content.annotations)) continue;
+      for (const annotation of content.annotations) {
+        const source = sourceFromAnnotation(annotation);
+        if (!source) continue;
+        if (sources.length >= MAX_CITATION_COUNT) throw new Error("gemini_interactions_grounding_invalid");
+        sources.push(source);
+      }
+    }
+  }
+  return sources;
 }
 
 type GeminiGroundingRetention = Readonly<{
@@ -506,7 +532,8 @@ function groundingRetentionForSteps(
 }
 
 function groundingDisplayEvent(
-  protectedSteps: readonly Record<string, unknown>[]
+  protectedSteps: readonly Record<string, unknown>[],
+  options: Readonly<{ suggestionsRequired?: boolean }> = {}
 ): GroundingDisplayEvent | null {
   let callCount = 0;
   let queryCount = 0;
@@ -565,7 +592,9 @@ function groundingDisplayEvent(
     return null;
   }
   const suggestionsHtml = suggestions.join("\n");
-  if (callCount > 0 && !suggestionsHtml) {
+  // An answer shows Google's suggestions beside its grounding; a query-only
+  // Search result keeps them when present and needs none.
+  if (callCount > 0 && !suggestionsHtml && options.suggestionsRequired !== false) {
     throw new Error("gemini_interactions_grounding_suggestions_missing");
   }
 
@@ -646,7 +675,8 @@ export function geminiInteractionSummaryEvent(input: Readonly<{
 
 function normalizeInteraction(
   response: GeminiInteractionRecord,
-  context: GeminiInteractionsResponseContext
+  context: GeminiInteractionsResponseContext,
+  options: Readonly<{ suggestionsRequired?: boolean }> = {}
 ): NormalizedInteraction {
   const status = validateTerminalStatus(response.status);
   if (
@@ -669,7 +699,7 @@ function normalizeInteraction(
   const toolCalls = geminiInteractionsToolBridge.parseToolCalls(protectedSteps);
   const rawFinalText = textFromSteps(protectedSteps);
   const finalText = visibleAnswerText(rawFinalText);
-  const grounding = groundingDisplayEvent(protectedSteps);
+  const grounding = groundingDisplayEvent(protectedSteps, options);
 
   if (status === "requires_action" && toolCalls.length === 0) {
     throw new Error("gemini_interactions_required_action_missing");
@@ -749,19 +779,15 @@ export function normalizeGeminiInteractionsSearchResponse(
   response: GeminiInteractionRecord,
   context: GeminiInteractionsResponseContext
 ): GeminiInteractionsSearchResponse {
-  const normalized = normalizeInteraction(response, context);
+  const normalized = normalizeInteraction(response, context, { suggestionsRequired: false });
   if (normalized.status !== "completed") {
     throw new Error("gemini_interactions_search_not_completed");
   }
   if (!normalized.grounding || normalized.grounding.data.runSearch.callCount < 1) {
     throw new Error("gemini_interactions_search_call_missing");
   }
-  const sources = normalizeSearchSources(
-    normalized.grounding.data.citations.map((citation) => ({
-      title: citation.title,
-      url: citation.url
-    }))
-  );
+  // A source needs only its page; the text offsets place inline citations.
+  const sources = normalizeSearchSources(groundingSources(normalized.protectedSteps));
   if (sources.length === 0) {
     throw new Error("gemini_interactions_search_sources_missing");
   }

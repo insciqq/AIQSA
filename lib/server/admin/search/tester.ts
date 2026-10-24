@@ -19,6 +19,8 @@ import type {
   ProviderSearchPolicy,
   ProviderSearchRequest
 } from "../../providers/types";
+import type { ModelRunUsage } from "../../../domain/modelRunEvents";
+import { createModelCheckUsageRecorder, type ModelCheckUsageWriter } from "../providers/modelCheckUsage";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import { loadTechnicalProviderRole } from "../../providerRuntime/admission";
 import { validateSearchToolArguments } from "../../search/query";
@@ -145,7 +147,10 @@ async function credentialSource(
   });
 }
 
-export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester {
+export function createAdminSearchTester(prisma: PrismaClient, options: Readonly<{
+  /** Writes the administrator's `model_check` usage rows; absent, checks stay unaccounted. */
+  recordUsage?: ModelCheckUsageWriter;
+}> = {}): AdminSearchTester {
   return {
     async currentBinding({ providerModelId, store, userId }) {
       const role = await loadTechnicalProviderRole(store, { providerModelId, userId });
@@ -193,10 +198,33 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         strategyId: searchPolicy.strategyId
       };
       const timeoutMs = Math.min(draft.timeoutMs, runtime.responseTimeoutMs);
+      // A probe is paid: the acting administrator is charged one `model_check`
+      // row per request the exact checked deployment answered, whether the
+      // check then passes, fails or was cancelled meanwhile.
+      const usage = createModelCheckUsageRecorder(options.recordUsage, {
+        userId, provider: role.snapshot.providerFamily, modelId: searchPolicy.modelId,
+        providerModelId: role.snapshot.providerModelId,
+        modelClass: "modelClass" in role.snapshot.model ? role.snapshot.model.modelClass : "answer"
+      });
+      async function dispatch<T>(request: Readonly<{
+        body: unknown;
+        cost?(value: T): number | null;
+        execute(): Promise<T>;
+        usage(value: T): ModelRunUsage;
+      }>): Promise<T> {
+        const value = await request.execute();
+        try {
+          usage?.record({ reportedCostUsd: request.cost?.(value) ?? null, usage: request.usage(value) });
+        } catch {
+          // Unreadable usage stays unknown; the adapter reports that failure itself.
+        }
+        return value;
+      }
       const deadline = withTimeoutSignal(parentSignal, timeoutMs, "operation");
       try {
         deadline.signal.throwIfAborted();
         const result = await runtime.searchAdapter.search(searchRequest, {
+          ...(usage ? { dispatch } : {}),
           signal: deadline.signal,
           timeoutMs
         });
@@ -217,6 +245,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         };
       } finally {
         deadline.clear();
+        await usage?.settled();
       }
     }
   };
