@@ -307,6 +307,30 @@ describe("admin provider draft tester", () => {
     expect(outcome.evidence.compatibility).toMatchObject({ toolCalling: "not_supported", structuredOutput: "verified" });
   });
 
+  it("proves OpenRouter tools at the chat's default reasoning, not reasoning Off (#58)", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body));
+      bodies.push(body);
+      const name = body.tools?.[0]?.function?.name;
+      if (name === "aiqsa_tool_call_probe") {
+        // A model whose reasoning is mandatory rejects reasoning Off.
+        return body.reasoning?.enabled === false
+          ? Response.json({ error: { code: 400 } }, { status: 400 })
+          : strictToolChatResponse(name, { city: "Oslo" });
+      }
+      return body.stream ? streamedChatResponse() : structuredChatResponse();
+    });
+    const outcome = await createAdminProviderDraftTester({ pdfInputProbe: { async probe() { return null; } }, retrySleep: async () => {}, createFetch: () => fetchFn }).test(input({
+      mode: "tiny_generation",
+      model: { ...input().model, capabilities: { ...input().model.capabilities, reasoning: true, toolCalling: true } }
+    }));
+    expect(outcome.evidence.compatibility).toMatchObject({ toolCalling: "verified" });
+    expect(bodies.find((body) => body.tool_choice === "auto")).toMatchObject({
+      reasoning: { enabled: true, effort: "medium", exclude: true }
+    });
+  });
+
   it.each([401, 429, 503])("keeps later capabilities after an ordinary-tool HTTP %s without publishing incompatibility", async (status) => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
       const body = JSON.parse(String(request?.body));

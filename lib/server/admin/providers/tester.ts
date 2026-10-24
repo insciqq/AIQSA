@@ -54,7 +54,11 @@ import {
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 import { createProviderVisionInputProbe } from "../../providers/visionInputProbe";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
-import { declaredModelOutputTokenLimit, lowestConfiguredReasoningEffort } from "../../providers/providerModelCapabilities";
+import {
+  declaredModelOutputTokenLimit,
+  defaultConfiguredReasoningEffort,
+  lowestConfiguredReasoningEffort
+} from "../../providers/providerModelCapabilities";
 import { withTimeoutSignal } from "../../providers/network";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { INITIAL_CAPABILITY_MODEL_TIMEOUT_MS, INITIAL_CAPABILITY_SETUP_POLICY_VERSION,
@@ -590,7 +594,12 @@ async function testToolCalling(
     const runtime = providerRuntime(input, options);
     if (!runtime.toolBridge) return "not_supported";
     const request = generationRequest(input, false);
-    const effort = lowestConfiguredReasoningEffort(input.model, input.providerFamily);
+    // OpenRouter proves tools at the level a chat sends by default: a model
+    // that rejects reasoning Off would otherwise fail and leave chat (#58).
+    const openRouter = input.model.adapterKind === "openrouter_chat_completions";
+    const effort = openRouter
+      ? defaultConfiguredReasoningEffort(input.model, input.providerFamily)
+      : lowestConfiguredReasoningEffort(input.model, input.providerFamily);
     const maxOutputTokens = probeOutputTokens(input, effort === "none" ? 128 : 1_024);
     const stream = runtime.adapter.stream({
       ...request,
@@ -599,9 +608,7 @@ async function testToolCalling(
         ...request.params,
         maxOutputTokens,
         max_output_tokens: maxOutputTokens,
-        ...(input.model.adapterKind === "openrouter_chat_completions"
-          ? { reasoning: { enabled: effort !== "none", effort, exclude: true } }
-          : {})
+        ...(openRouter ? { reasoning: { enabled: effort !== "none", effort, exclude: true } } : {})
       },
       toolChoice: "auto",
       tools: [{

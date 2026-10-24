@@ -33,6 +33,15 @@ export function lowestConfiguredReasoningEffort(
     .find((effort) => controls.options.includes(effort)) ?? controls.defaultValue;
 }
 
+/** The reasoning level a chat sends when nobody changes it. */
+export function defaultConfiguredReasoningEffort(
+  configuration: Parameters<typeof configuredModelParameterControls>[0],
+  providerFamily: string
+): string {
+  const controls = configuredModelParameterControls(configuration, providerFamily).reasoningEffort;
+  return controls.supported ? controls.defaultValue : "none";
+}
+
 export const GEMINI_THINKING_LEVELS: readonly string[] = ["minimal", "low", "medium", "high"];
 
 /** Gemini thinking levels that the exact deployment's configured reasoning
