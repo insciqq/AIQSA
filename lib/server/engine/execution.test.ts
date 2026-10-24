@@ -9,6 +9,7 @@ import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { engineTestFaults } from "./faults";
 import { createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
+import { ANSWER_NOW_INSTRUCTION, MAX_CORRECTION_ROUNDS } from "./loop";
 import type { NativeRunStore } from "./runStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { TranscriptItem } from "./transcript";
@@ -70,7 +71,13 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
       rows.set(row.id, row);
       return gated ? { approvalId: "approval-1", kind: "gated", row } : { kind: "running", row };
     }),
-    refuse: vi.fn(async () => null),
+    refuse: vi.fn(async (input) => {
+      const row: ToolCallRow = { arguments: input.arguments as ToolCallRow["arguments"], id: `row-${rows.size}`, ordinal: input.ordinal,
+        providerCallId: input.providerCallId, result: input.result as ToolCallRow["result"], roundIndex: input.roundIndex, startedAt: null,
+        state: "error", toolName: input.toolName };
+      rows.set(row.id, row);
+      return row;
+    }),
     settle: vi.fn(async () => true)
   } satisfies ToolCallStore;
   const runs = {
@@ -231,6 +238,39 @@ describe("native run execution", () => {
     expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text.startsWith("<turn_context>"))).toBe(false);
     expect(memory.published()).toBe("A-1 is open.");
     expect(result.some((event) => event.type === "artifact" && event.data.artifactType === "tool_call")).toBe(true);
+  });
+
+  it("lets the model correct a tool name it got wrong and answers from the corrected call", async () => {
+    const { adapter, requests } = scriptedAdapter([
+      { calls: [{ arguments: { key: "A-1" }, id: "call-1", name: "mcp_jira_get_issue_old" }], text: "" },
+      { calls: [{ arguments: { key: "A-1" }, id: "call-2", name: "mcp_jira_get_issue" }], text: "" },
+      { text: "A-1 is open." }
+    ]);
+    const memory = memoryEngine();
+    const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+    await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot }), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "auto"]);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(memory.published()).toBe("A-1 is open.");
+  });
+
+  it("fails visibly with a stable code when the model never answers but only calls tools it may not use", async () => {
+    const { adapter, requests } = scriptedAdapter([{ calls: [{ arguments: {}, id: "call-1", name: "mcp_jira_get_issue_old" }], text: "" }]);
+    const memory = memoryEngine();
+    const repo = repository();
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      prepared: prepared({ mcp: snapshot }), repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+    // The corrections, the tool-free round, and the one more round that asks for the answer itself.
+    expect(requests.map((request) => request.toolChoice))
+      .toEqual([...Array<string>(MAX_CORRECTION_ROUNDS + 1).fill("auto"), "none", "none"]);
+    expect(requests.at(-1)!.history?.at(-1)).toEqual({ text: ANSWER_NOW_INSTRUCTION, type: "user" });
+    expect(requests.at(-2)!.history?.some((item) => item.type === "user" && item.text === ANSWER_NOW_INSTRUCTION)).toBe(false);
+    expect(result.at(-1)).toMatchObject({ data: { code: "model_answer_empty" }, type: "error" });
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "model_answer_empty" }),
+      expect.anything());
+    expect(memory.runs.complete).not.toHaveBeenCalled();
   });
 
   it("ends the turn at the approval point with the card, without sending the call", async () => {

@@ -140,6 +140,11 @@ export type ToolBatchOutcome = Readonly<{
   budgetExhausted: boolean;
   /** Calls that were sent; a batch that sent none made no progress. */
   executed: number;
+  /**
+   * Calls refused before sending for a mistake the model can correct with its next call: a tool not declared
+   * in this round (an older name, a tool `find_tools` has not loaded yet) or arguments that were not one object.
+   */
+  correctable: number;
   results: readonly TranscriptToolResultItem[];
 }>;
 
@@ -152,7 +157,7 @@ export class ToolBatchInactiveError extends Error {
 }
 
 type BeforeToolCall =
-  | Readonly<{ budget?: true; kind: "refuse"; output: string; result: ToolLoopJsonValue; toolName: string }>
+  | Readonly<{ budget?: true; correctable?: true; kind: "refuse"; output: string; result: ToolLoopJsonValue; toolName: string }>
   | Readonly<{
     /** The run's reserved report, asked for the first time: it does not count against the call budget. */
     exempt?: true;
@@ -195,12 +200,13 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
       // An older tool the run replaced names its replacement; the record keeps the plain unknown form.
-      return { kind: "refuse", output: deps.registry.replacement?.(call.name) ?? UNKNOWN_TOOL_CALL_MESSAGE, toolName,
+      return { correctable: true, kind: "refuse", output: deps.registry.replacement?.(call.name) ?? UNKNOWN_TOOL_CALL_MESSAGE, toolName,
         result: unknownToolCallResult({ providerCallId: call.id, requested: requestedToolNameExcerpt(call.name), toolName }) };
     }
     if (hasInvalidProviderToolArguments(call.arguments)) {
       const message = "The arguments were not one JSON object, so nothing was run. Call the tool again with valid arguments.";
-      return { kind: "refuse", output: message, result: jsonError(call, { error: "tool_arguments_invalid", message }), toolName: call.name };
+      return { correctable: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_arguments_invalid", message }),
+        toolName: call.name };
     }
     const exempt = deps.reservedToolName !== undefined && call.name === deps.reservedToolName && state.reservedCalled !== true;
     if (!exempt && state.calls >= deps.maxToolCalls) {
@@ -321,6 +327,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   const hooks = createToolHooks(deps, state);
   const approvals: string[] = [];
   let budgetExhausted = false;
+  let correctable = 0;
   let executed = 0;
   const declared = input.calls.filter((call) => deps.registry.resolve(call.name));
   if (declared.length > 0) deps.onLiveEvent(liveRunPhaseStatus({ count: declared.length, phase: "tools" }));
@@ -337,6 +344,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       runId: deps.runId, userId: deps.userId };
     if (before.kind === "refuse") {
       if (before.budget) budgetExhausted = true;
+      if (before.correctable) correctable += 1;
       const row = await deps.store.refuse({ ...record, result: before.result, toolName: before.toolName });
       if (!row) throw new ToolBatchInactiveError();
       recordToolCall({ kind, settled: { kind: "result", result: before.result } });
@@ -413,5 +421,5 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     }
   };
   await Promise.all(Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length) }, worker));
-  return { approvals, budgetExhausted, executed, results };
+  return { approvals, budgetExhausted, correctable, executed, results };
 }

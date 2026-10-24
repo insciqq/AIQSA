@@ -13,9 +13,15 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * and go again until a response calls no tool. The turn stops at Stop or its
  * deadline (the signal), at an approval point (a call that waits for the
  * user ends the turn), and answers without tools once its tool rounds, call
- * budget or tool time are spent. A run's one reserved report (a monitoring
- * check's verdict, an answer review step's report) is offered alone once
- * more when its call budget or tool rounds ran out before it was made.
+ * budget or tool time are spent, or once a batch ran nothing. A batch whose
+ * calls were only mistakes the model can correct (an unknown tool name,
+ * malformed arguments) keeps tools for a few rounds, since its results say
+ * how (issue #54). A tool-free round that still answered only with calls is
+ * asked once more for the answer, and an answer that stays empty fails
+ * visibly instead of completing (issue #55). A run's one reserved report (a
+ * monitoring check's verdict, an answer review step's report) is offered
+ * alone once more when its call budget or tool rounds ran out before it was
+ * made.
  * Everything the loop knows is the transcript; every effect goes through
  * its ports.
  */
@@ -44,7 +50,10 @@ export type AgentLoopPorts = Readonly<{
    * hooks in. `reserved`: the round offers only the reserved call, and its
    * request carries the instruction that asks for it.
    */
-  prepareRequest(input: Readonly<{ reserved?: true; round: number; toolChoice: LoopToolChoice }>): Promise<ProviderRunRequest>;
+  prepareRequest(input: Readonly<{
+    /** The round asks for the answer itself: its request carries `ANSWER_NOW_INSTRUCTION`. */
+    answerNow?: true; reserved?: true; round: number; toolChoice: LoopToolChoice;
+  }>): Promise<ProviderRunRequest>;
   /**
    * The run's one call reserved outside the tool budgets, while it has not
    * been made (`toolBatch.ts` exempts its first call from the call budget).
@@ -62,9 +71,18 @@ export type AgentLoopPorts = Readonly<{
 
 export type AgentLoopOutcome =
   | Readonly<{ kind: "answered"; rounds: number }>
-  | Readonly<{ approvals: readonly string[]; kind: "approval"; rounds: number }>;
+  | Readonly<{ approvals: readonly string[]; kind: "approval"; rounds: number }>
+  /** The tool-free rounds answered only with calls and the turn has no answer text: a failure, never a completion. */
+  | Readonly<{ kind: "empty"; rounds: number }>;
 
 export const NO_MORE_TOOLS_OUTPUT = "Not run: this answer may call no more tools. Answer with what you have.";
+
+/** The request-only instruction of the one more tool-free round a response of only calls gets. */
+export const ANSWER_NOW_INSTRUCTION =
+  "Tools are closed for this answer. Reply to the user now in plain text with what you have; do not call any tool.";
+
+/** Rounds a turn may spend correcting calls refused before sending (an unknown tool name, malformed arguments). */
+export const MAX_CORRECTION_ROUNDS = 2;
 
 /**
  * Close-or-deliver attempts at the end of a turn. Each failed attempt means a
@@ -104,6 +122,11 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
   /** A call was refused for the call budget. */
   let budgetSpent = false;
   let reservedOffered = false;
+  let corrections = 0;
+  /** The answer's text so far; a delivered follow-up starts the answer over. */
+  let answerText = "";
+  /** The one more tool-free round that asks for the answer: due next, or already taken. */
+  let answerNow: "due" | "taken" | null = null;
   const approvals: string[] = [];
   const ended = (round: number): AgentLoopOutcome =>
     approvals.length > 0 ? { approvals, kind: "approval", rounds: round } : { kind: "answered", rounds: round };
@@ -117,11 +140,15 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       ports.reservedCall?.outstanding() === true ? ports.reservedCall : null;
     if (reserved) reservedOffered = true;
     const toolChoice: LoopToolChoice = open || reserved ? "auto" : "none";
+    const asking = answerNow === "due" && toolChoice === "none";
+    if (asking) answerNow = "taken";
     await ports.roundStart(round);
-    const request = await ports.prepareRequest({ round, toolChoice, ...(reserved ? { reserved: true as const } : {}) });
+    const request = await ports.prepareRequest({ round, toolChoice, ...(reserved ? { reserved: true as const } : {}),
+      ...(asking ? { answerNow: true as const } : {}) });
     const result = await ports.callModel(request, round);
     // Answer first: the response's text is the answer's before any record of it is written.
     await ports.roundEnd(result, round);
+    answerText += result.finalText;
     const calls = distinctCalls(result.toolCalls);
     const items = ports.responseItems(result);
     const runnable = toolChoice === "none" ? [] : reserved ? calls.filter((call) => call.name === reserved.name) : calls;
@@ -134,10 +161,20 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     const refusedCalls = calls.filter((call) => !runnable.includes(call));
     if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
     if (calls.length === 0 || toolChoice === "none") {
+      // A tool-free response of only calls, which may not run, is not an answer: the round is asked once more.
+      const callsOnly = toolChoice === "none" && calls.length > 0 && !result.finalText.trim();
+      if (callsOnly && answerNow === null) {
+        answerNow = "due";
+        continue;
+      }
       // The answer is final unless a follow-up arrived: then the turn goes on with it.
       const followups = await settleFollowups(ports);
-      if (followups.length === 0) return ended(round);
+      if (followups.length === 0) {
+        return callsOnly && approvals.length === 0 && !answerText.trim() ? { kind: "empty", rounds: round } : ended(round);
+      }
       await ports.append(followups);
+      answerText = "";
+      answerNow = null;
       toolsAllowed = true;
       continue;
     }
@@ -151,15 +188,23 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
       const followups = await settleFollowups(ports);
       if (followups.length === 0) return ended(round);
       await ports.append(followups);
+      answerText = "";
+      answerNow = null;
       toolsAllowed = true;
       continue;
     }
-    // A spent budget, or a batch of which nothing ran, is answered without tools.
+    // A spent budget, or a batch of which nothing ran, is answered without tools; a batch of only correctable
+    // mistakes keeps them for a bounded number of rounds, so the model can do what its results ask.
     if (batch.budgetExhausted) budgetSpent = true;
-    if (batch.budgetExhausted || batch.executed === 0) toolsAllowed = false;
+    const correcting = !batch.budgetExhausted && batch.executed === 0 && batch.correctable === runnable.length &&
+      corrections < MAX_CORRECTION_ROUNDS;
+    if (correcting) corrections += 1;
+    if (batch.budgetExhausted || batch.executed === 0 && !correcting) toolsAllowed = false;
     const followups = await ports.deliverFollowups();
     if (followups.length > 0) {
       await ports.append(followups);
+      answerText = "";
+      answerNow = null;
       toolsAllowed = true;
     }
   }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { ModelToolCall } from "../tools/types";
-import { NO_MORE_TOOLS_OUTPUT, runAgentLoop, type AgentLoopPorts } from "./loop";
+import { MAX_CORRECTION_ROUNDS, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type AgentLoopPorts } from "./loop";
 import type { ToolBatchOutcome } from "./toolBatch";
 import type { TranscriptItem, TranscriptUserItem } from "./transcript";
 
@@ -21,6 +21,8 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
 }> = {}) {
   const items: TranscriptItem[] = [];
   const choices: string[] = [];
+  /** Rounds whose request asked for the answer itself. */
+  const asked: number[] = [];
   const order: string[] = [];
   let index = 0;
   const closes = [...(options.closes ?? [])];
@@ -32,15 +34,16 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
     closeFollowups: vi.fn(async () => closes.shift() ?? true),
     deliverFollowups: vi.fn(async () => followups.shift() ?? []),
     maxToolRounds: options.maxToolRounds ?? 8,
-    prepareRequest: vi.fn(async ({ toolChoice }) => {
+    prepareRequest: vi.fn(async ({ answerNow, round, toolChoice }) => {
       choices.push(toolChoice);
+      if (answerNow) asked.push(round);
       return { toolChoice } as ProviderRunRequest;
     }),
     responseItems: (result) => [{ id: `a${index}`, kind: "assistant_text", text: result.finalText }],
     roundEnd: vi.fn(async () => { order.push("roundEnd"); }),
     roundStart: vi.fn(async () => undefined),
     runTools: vi.fn(async (calls: readonly ModelToolCall[]): Promise<ToolBatchOutcome> => ({
-      approvals: [], budgetExhausted: false, executed: calls.length,
+      approvals: [], budgetExhausted: false, correctable: 0, executed: calls.length,
       results: calls.map((entry: ModelToolCall) => ({ callId: entry.id, id: `r-${entry.id}`, kind: "tool_result" as const, name: entry.name,
         outcome: "complete" as const, output: "ok" })),
       ...options.batch?.(calls)
@@ -48,7 +51,7 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
     signal: new AbortController().signal,
     toolTimeLeft: () => true
   };
-  return { choices, items, order, ports };
+  return { asked, choices, items, order, ports };
 }
 
 describe("native agent loop", () => {
@@ -99,10 +102,51 @@ describe("native agent loop", () => {
   it("answers without tools after the last tool round or a batch of which nothing ran", async () => {
     const rounds = harness([response("", [call("c1")]), response("", [call("c2")]), response("Done")], { maxToolRounds: 1 });
     await runAgentLoop(rounds.ports);
-    expect(rounds.choices).toEqual(["auto", "none"]);
+    // The tool-free round answered only with a call, so it is asked once more for the answer.
+    expect(rounds.choices).toEqual(["auto", "none", "none"]);
+    expect(rounds.asked).toEqual([3]);
     const stalled = harness([response("", [call("c1")]), response("Done")], { batch: () => ({ executed: 0 }) });
     await runAgentLoop(stalled.ports);
     expect(stalled.choices).toEqual(["auto", "none"]);
+  });
+
+  it("lets the model correct a call it could not make, a bounded number of times", async () => {
+    // An older tool name, a tool find_tools has not loaded yet: its result says how to go on, so tools stay open.
+    const unknown = (calls: readonly ModelToolCall[]) =>
+      calls.every((entry) => entry.name === "old_name") ? { correctable: calls.length, executed: 0 } : {};
+    const corrected = harness([response("", [call("c1", "old_name")]), response("", [call("c2", "find_tools")]), response("Done")],
+      { batch: unknown });
+    await expect(runAgentLoop(corrected.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(corrected.choices).toEqual(["auto", "auto", "auto"]);
+    expect(corrected.ports.runTools).toHaveBeenCalledTimes(2);
+
+    // Mistakes that keep coming close tools after the bound, and a mixed batch of which nothing ran closes them at once.
+    const repeated = harness(Array.from({ length: MAX_CORRECTION_ROUNDS + 1 }, (_, index) => response("", [call(`u${index}`, "old_name")]))
+      .concat(response("Done")), { batch: unknown });
+    await runAgentLoop(repeated.ports);
+    expect(repeated.choices).toEqual([...Array<string>(MAX_CORRECTION_ROUNDS + 1).fill("auto"), "none"]);
+    const mixed = harness([response("", [call("c1", "old_name"), call("c2")]), response("Done")],
+      { batch: () => ({ correctable: 1, executed: 0 }) });
+    await runAgentLoop(mixed.ports);
+    expect(mixed.choices).toEqual(["auto", "none"]);
+  });
+
+  it("asks a tool-free round that answered only with calls once more, and fails an answer that stays empty", async () => {
+    const spent = { batch: () => ({ budgetExhausted: true }) };
+    const recovered = harness([response("", [call("c1")]), response("", [call("c2", "find_tools")]), response("Here is what I have")], spent);
+    await expect(runAgentLoop(recovered.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(recovered.choices).toEqual(["auto", "none", "none"]);
+    expect(recovered.asked).toEqual([3]);
+    expect(recovered.items.find((item) => item.kind === "tool_result" && item.callId === "c2"))
+      .toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+
+    const empty = harness([response("", [call("c1")]), response("", [call("c2")]), response("", [call("c3")])], spent);
+    await expect(runAgentLoop(empty.ports)).resolves.toEqual({ kind: "empty", rounds: 3 });
+    expect(empty.ports.callModel).toHaveBeenCalledTimes(3);
+
+    // Text the answer already has is kept: the turn answers with it rather than failing.
+    const said = harness([response("Checking your notes.", [call("c1")]), response("", [call("c2")]), response("", [call("c3")])], spent);
+    await expect(runAgentLoop(said.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
   });
 
   it("takes a follow-up delivered between rounds or before the answer closes", async () => {

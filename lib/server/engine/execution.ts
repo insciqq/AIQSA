@@ -39,7 +39,7 @@ import { buildRunConversation, turnContextIndex, turnContextItem, withStoppedNat
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
-import { runAgentLoop, type LoopToolChoice } from "./loop";
+import { ANSWER_NOW_INSTRUCTION, runAgentLoop, type LoopToolChoice } from "./loop";
 import { callModel } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
@@ -607,8 +607,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return accepted.map((entry) => ({ followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
           },
           maxToolRounds: budgets.maxToolRounds,
-          prepareRequest: async ({ reserved: reservedRound, toolChoice }: Readonly<{ reserved?: true; round: number;
-            toolChoice: LoopToolChoice }>) => {
+          prepareRequest: async ({ answerNow, reserved: reservedRound, toolChoice }: Readonly<{ answerNow?: true;
+            reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
             const tools = [...registry.definitions()];
             const request: ProviderRunRequest = {
               ...base,
@@ -623,9 +623,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             // Compaction at the request boundary; a request that cannot fit even then fails visibly.
             const prepared = await context.prepare(request);
             void recordContextStatus("request");
-            // The reserved round's instruction rides on its request only, never on the transcript.
-            return reservedRound && reserved
-              ? { ...prepared, history: [...(prepared.history ?? []), { text: reserved.instruction, type: "user" as const }] }
+            // A reserved round's or an answer-now round's instruction rides on its request only, never on the transcript.
+            const instruction = reservedRound && reserved ? reserved.instruction : answerNow ? ANSWER_NOW_INSTRUCTION : null;
+            return instruction
+              ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
               : prepared;
           },
           ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => toolState.reservedCalled !== true } } : {}),
@@ -653,6 +654,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
+        // A turn that ended with no answer at all is a failure the user can retry, never an empty completion.
+        if (outcome.kind === "empty") {
+          throw new EngineFailure("model_answer_empty", "The model returned no answer. Send your request again.");
+        }
 
         // Answer first: the text is published before hand-off, completion and usage.
         signal.throwIfAborted();
