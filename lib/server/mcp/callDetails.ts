@@ -79,7 +79,10 @@ export function createMcpCallDetailsService(input: Readonly<{
     let details = projectMcpCallDetails(row);
     if (!contentUnavailable(row) && row.observation && ["complete", "error"].includes(row.state)) {
       const original = await input.readObservation(row, signal);
-      details = original ? { ...details, ...original, responseState: "available" } : { ...details, response: null, responseState: "unavailable" };
+      // A saved text original carries no envelope: the stored result keeps its error flag and dropped content types.
+      details = original ? { ...details, ...original, isError: details.isError || original.isError, responseState: "available",
+        unsupportedContentTypes: [...new Set([...details.unsupportedContentTypes, ...original.unsupportedContentTypes])].slice(0, 16) }
+        : { ...details, response: null, responseState: "unavailable" };
     }
     signal?.throwIfAborted();
     const after = await input.repository.read(key);

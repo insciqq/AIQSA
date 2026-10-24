@@ -85,6 +85,20 @@ describe("bounded MCP display originals", () => {
     expect(result.response.byteSize).toBe(Buffer.byteLength(JSON.stringify({ value: text }, null, 2)));
   });
 
+  // The native engine saves a long result as its one model-facing text; the display must read it, not call it gone.
+  it("reads a saved result text, redacted and cut to the display limit, and nothing after it", async () => {
+    const secret = "synthetic-secret";
+    const text = `{"projects":[{"name":"api","token":"${secret}"}]}\n\n` + "z".repeat(70_000);
+    const result = await read(JSON.stringify(text), [secret], 17);
+    expect(result.isError).toBe(false);
+    expect(result.unsupportedContentTypes).toEqual([]);
+    expect(result.response.truncated).toBe(true);
+    expect(result.response.text.startsWith('{"projects":[{"name":"api","token":"[REDACTED]"}]}\n\nzzz')).toBe(true);
+    expect(result.response.text).not.toContain(secret);
+    await expect(read(JSON.stringify("ok") + '"more"')).rejects.toThrow("tool_observation_unavailable");
+    await expect(read("1")).rejects.toThrow("tool_observation_unavailable");
+  });
+
   it("rejects credential-bearing metadata and represents empty results", async () => {
     await expect(read(JSON.stringify({ isError: false, structuredContent: null, text: [], unsupportedContentTypes: ["private"] }), ["private"]))
       .rejects.toThrow("tool_observation_unavailable");
