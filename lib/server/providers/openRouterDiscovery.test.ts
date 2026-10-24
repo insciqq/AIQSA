@@ -216,6 +216,25 @@ describe("OpenRouter account-filtered discovery", () => {
     }
   });
 
+  it("reads only the listing's boolean reasoning.mandatory and ignores every other reasoning shape", async () => {
+    const client = createOpenRouterDiscoveryClient({ apiRoot: "https://openrouter.example.test/api/v1", bearerToken: "synthetic",
+      network: { lookupHostname: publicLookup, dispatch: async () => responseJson({ data: [
+        { id: "z-ai/glm-5.3", name: "GLM 5.3", reasoning: { mandatory: true, default_enabled: true,
+          supported_efforts: ["max", "high", "low"], default_effort: "max" } },
+        { id: "z-ai/glm-5.2", name: "GLM 5.2", reasoning: { mandatory: false, supported_efforts: ["xhigh", "high", "none"] } },
+        { id: "z-ai/glm-5.1", name: "GLM 5.1", reasoning: { default_enabled: true } },
+        { id: "synthetic/string", name: "String", reasoning: { mandatory: "true" } },
+        { id: "synthetic/array", name: "Array", reasoning: [{ mandatory: true }] },
+        { id: "synthetic/flag", name: "Flag", reasoning: true }
+      ] }) } });
+    const models = await client.listModels();
+    expect(Object.fromEntries(models.map(({ id, reasoningMandatory }) => [id, reasoningMandatory]))).toEqual({
+      "synthetic/array": undefined, "synthetic/flag": undefined, "synthetic/string": undefined,
+      "z-ai/glm-5.1": undefined, "z-ai/glm-5.2": false, "z-ai/glm-5.3": true
+    });
+    expect(models.find(({ id }) => id === "z-ai/glm-5.1")).not.toHaveProperty("reasoningMandatory");
+  });
+
   it("supports the current tilde model alias while rejecting arbitrary path input and blank keys", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const client = createOpenRouterDiscoveryClient({

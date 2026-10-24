@@ -249,6 +249,20 @@ describe("the model parameters layer opened from the picker's Parameters row", (
     expect(useComposerControlStore.getState().reasoningEffort).toBe("xhigh");
     expect(reasoningChip()).toHaveAccessibleName("Reasoning effort: xhigh");
 
+    // A held Off on a model that stops offering it (OpenRouter mandatory
+    // reasoning) shows the level the next message sends, not Off.
+    fireEvent.click(reasoningChip());
+    fireEvent.click(within(screen.getByRole("menu", { name: "Reasoning effort" })).getByRole("menuitemradio", { name: "none" }));
+    expect(reasoningChip()).toHaveAccessibleName("Reasoning effort: none");
+    await act(async () => {
+      const catalog = useWorkspaceStore.getState().catalog!;
+      useWorkspaceStore.setState({ catalog: { ...catalog, models: catalog.models.map(model => model.modelId === "gpt-5.5"
+        ? { ...model, parameterControls: { ...model.parameterControls,
+          reasoningEffort: { supported: true, options: ["low", "medium", "high"], defaultValue: "medium" } } } : model) } });
+    });
+    expect(useComposerControlStore.getState().reasoningEffort).toBe("none");
+    expect(reasoningChip()).toHaveAccessibleName("Reasoning effort: medium");
+
     await act(async () => {
       const catalog = useWorkspaceStore.getState().catalog!;
       useWorkspaceStore.setState({ catalog: { ...catalog, models: catalog.models.map(model => model.modelId === "gpt-5.5"

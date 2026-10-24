@@ -263,12 +263,14 @@ function credentialTester(): AdminProviderCredentialTester {
 function service(
   providerRepository: AdminProviderRepository,
   tester: AdminProviderDraftTester,
-  options: { checkConcurrency?: number; credentialTester?: AdminProviderCredentialTester } = {}
+  options: { checkConcurrency?: number; credentialTester?: AdminProviderCredentialTester;
+    createDiscoveryClient?: Parameters<typeof createAdminProviderService>[0]["createDiscoveryClient"] } = {}
 ) {
   let runIndex = 0;
   let index = 0;
   return createAdminProviderService({
     checkConcurrency: options.checkConcurrency,
+    ...(options.createDiscoveryClient ? { createDiscoveryClient: options.createDiscoveryClient } : {}),
     checkRunIdFactory: () => `run-${++runIndex}`,
     credentialTester: options.credentialTester ?? credentialTester(),
     encryptionKey: () => KEY,
@@ -1026,5 +1028,96 @@ describe("Codex LB context windows", () => {
     const { catalogTest, write } = await recheck(272_000, { contextWindow: 500_000 }, "model");
     expect(catalogTest).not.toHaveBeenCalled();
     expect(write.activatedConfiguration).toBeUndefined();
+  });
+});
+
+describe("OpenRouter mandatory reasoning", () => {
+  type Listing = () => Promise<{ id: string; reasoningMandatory?: boolean }[]>;
+  const openRouterStored = { ...storedConnectionConfiguration, apiRoot: "https://openrouter.example.test/api/v1" };
+  const glm = {
+    adapterKind: "openrouter_chat_completions" as const,
+    answerSelectable: true,
+    capabilities: { nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: true, streaming: true,
+      toolCalling: true, vision: false },
+    defaultParams: {},
+    modelClass: "answer" as const,
+    openRouterRouting: { mode: "automatic" as const, providers: [] },
+    upstreamModelId: "z-ai/glm-5.3"
+  };
+  const discovery = (listModels: Listing) => {
+    const list = vi.fn(listModels);
+    return { createDiscoveryClient: () => ({ listModels: list } as never), list };
+  };
+  const mandatory: Listing = async () => [
+    { id: "z-ai/glm-5.3", reasoningMandatory: true },
+    { id: "z-ai/glm-5.2", reasoningMandatory: false }
+  ];
+
+  async function recheck(listModels: Listing, reason: "requested" | "model" = "requested") {
+    const base = refreshCandidate("model-sol", "z-ai/glm-5.3");
+    const candidate: ProviderActiveRefreshCandidate = { ...base,
+      connection: { ...base.connection, configuration: openRouterStored, displayName: "OpenRouter", family: "openrouter" },
+      model: { ...base.model, configuration: glm } };
+    const storeActiveRefreshCas = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const { createDiscoveryClient, list } = discovery(listModels);
+    const providers = service(repository({ loadActiveRefreshCandidate: async () => candidate, storeActiveRefreshCas }),
+      { test: async (input) => okOutcome(input) }, { createDiscoveryClient });
+    const run = await providers.startCheckRun({ connectionId: "conn-openai", credentialId: "cred-primary", modelIds: ["model-sol"], reason });
+    await vi.waitFor(() => expect(providers.checkRun({ connectionId: "conn-openai", runId: run.id }).state).toBe("completed"));
+    expect(storeActiveRefreshCas).toHaveBeenCalledOnce();
+    return { list, write: storeActiveRefreshCas.mock.calls[0]![0] };
+  }
+
+  it("drops Off from a saved model on the next check when the listing says reasoning is mandatory", async () => {
+    const { list, write } = await recheck(mandatory);
+    expect(list).toHaveBeenCalledOnce();
+    expect(write.status).toBe("available");
+    expect(write.activatedConfiguration?.capabilities).toMatchObject({
+      defaultReasoningEffort: "medium", reasoningEfforts: ["low", "medium", "high"]
+    });
+  });
+
+  it("keeps the saved levels when the listing cannot be read or says nothing, and the check still completes", async () => {
+    const unreadable = await recheck(async () => { throw new Error("listing_unavailable"); });
+    expect(unreadable.write).toMatchObject({ status: "available" });
+    expect(unreadable.write.activatedConfiguration).toBeUndefined();
+    expect((await recheck(async () => [{ id: "z-ai/glm-5.3" }])).write.activatedConfiguration).toBeUndefined();
+  });
+
+  it("leaves the check after Test & Save to the activation, which already read the listing", async () => {
+    const { list, write } = await recheck(mandatory, "model");
+    expect(list).not.toHaveBeenCalled();
+    expect(write.activatedConfiguration).toBeUndefined();
+  });
+
+  function testAndSave(listModels: Listing) {
+    const activateModelCas = vi.fn<AdminProviderRepository["activateModelCas"]>(async () => "updated");
+    const candidate = activationCandidate({ family: "openrouter" });
+    const { createDiscoveryClient, list } = discovery(listModels);
+    const providers = service(repository({
+      activateModelCas,
+      async loadModelActivationCandidate() { return { ...candidate, model: { ...candidate.model, configuration: glm } }; },
+      async loadDiscoveryCandidate() {
+        return { connection: { configuration: openRouterStored, family: "openrouter", id: "conn-openai" },
+          credential: { id: "cred-primary", source: { envelope, kind: "active" as const, versionId: "version-primary" } } };
+      },
+      async loadActiveRefreshCandidate() { return null; }
+    }), { test: async (input) => okOutcome(input) }, { createDiscoveryClient });
+    return { activate: () => providers.activateModel({ connectionId: "conn-openai", modelId: "model-sol" }), activateModelCas, list };
+  }
+
+  it("publishes a Test & Save draft without Off for a mandatory-reasoning model", async () => {
+    const { activate, activateModelCas, list } = testAndSave(mandatory);
+    await activate();
+    expect(list).toHaveBeenCalledOnce();
+    expect(activateModelCas.mock.calls[0]![0].model.configuration.capabilities).toMatchObject({
+      defaultReasoningEffort: "medium", reasoningEfforts: ["low", "medium", "high"]
+    });
+  });
+
+  it("publishes the draft as saved when the listing is unreadable", async () => {
+    const { activate, activateModelCas } = testAndSave(async () => { throw new Error("listing_unavailable"); });
+    await activate();
+    expect(activateModelCas.mock.calls[0]![0].model.configuration.capabilities).toEqual(glm.capabilities);
   });
 });

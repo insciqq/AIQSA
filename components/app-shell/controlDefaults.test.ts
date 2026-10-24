@@ -144,6 +144,19 @@ describe("control defaults", () => {
     expect(coerceReasoningEffort("high", selected.parameterControls)).toBe("high");
   });
 
+  it("shows the model default for a held Off once a model that always reasons stops offering it", () => {
+    const selected = model({ modelId: "z-ai/glm-5.3", provider: "openrouter" });
+    selected.parameterControls.reasoningEffort = {
+      defaultValue: "medium", options: ["low", "medium", "high"], supported: true
+    };
+    const saved = { [modelControlKey(selected)]: { reasoningEffort: "none" } };
+
+    expect(resolveModelControlDefaults(selected, saved).reasoningEffort).toBe("medium");
+    // The saved personal value is kept, so it returns if the model offers Off again.
+    expect(saved[modelControlKey(selected)]).toEqual({ reasoningEffort: "none" });
+    expect(coerceReasoningEffort("none", selected.parameterControls)).toBe("medium");
+  });
+
   it("uses the first option only when the model default is unavailable too", () => {
     const controls = defaultParameterControls(null);
     controls.reasoningEffort = { defaultValue: "max", options: ["low", "medium"], supported: true };
