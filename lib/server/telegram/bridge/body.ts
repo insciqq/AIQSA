@@ -71,21 +71,16 @@ export function resolveTelegramModel(catalog: TelegramRunCatalog, input: Readonl
 }
 
 /**
- * Search on: the user's preferred options the model supports, else its first
- * usable option, else none (the model offers no Search, as the composer
- * shows it). Search off: no options.
+ * Search on: the user's default sources the model supports, else none. A
+ * source the user did not choose, or Search they turned off in Chat
+ * defaults, is never substituted. Search off: no options.
  */
 export function telegramSearchPlan(catalog: TelegramRunCatalog, model: TelegramCatalogModel, enabled: boolean): SearchPlan {
   const off: SearchPlan = { mode: "all_selected", optionIds: [] };
   if (!enabled) return off;
   const preferred = reconcileModelSearchPlan(model, catalog.defaults.searchPlan.optionIds, catalog.defaults.searchPlan.mode,
     catalog.searchStrategies);
-  if (preferred.optionIds.length > 0) return { mode: preferred.mode, optionIds: [...preferred.optionIds] };
-  const concrete = new Set(catalog.searchStrategies.filter((option) => option.kind !== "none").map((option) => option.strategyId));
-  const first = model.searchStrategyIds.find((optionId) => concrete.has(optionId));
-  if (!first) return off;
-  const fallback = reconcileModelSearchPlan(model, [first], "all_selected", catalog.searchStrategies);
-  return fallback.optionIds.length > 0 ? { mode: fallback.mode, optionIds: [...fallback.optionIds] } : off;
+  return preferred.optionIds.length > 0 ? { mode: preferred.mode, optionIds: [...preferred.optionIds] } : off;
 }
 
 function savedControlDraft(value: unknown): Record<string, boolean | string> {

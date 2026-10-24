@@ -20,6 +20,7 @@ import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCall
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
 import { TOOL_RESULT_LIMITS } from "./toolResults";
 import { createUnknownEffects } from "./unknownEffects";
+import { SearchToolCancelledError } from "../search/toolExecutor";
 
 function definition(name: string): RunTool {
   return { capability: "mcp", description: name, inputSchema: { type: "object" }, name };
@@ -379,7 +380,7 @@ describe("native tool batch", () => {
         "other failed tool_call_unknown "
       ]);
     expect(records.filter((record) => record.outcome === "completed")[0]).toHaveProperty("duration_ms");
-    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE_|lookup|"write"|c[1-7]"/u);
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE_|lookup|"write"|"c[1-7]"/u);
   });
 
   it("logs a call its run stopped as cancelled, once, and none for a call never recorded", async () => {
@@ -396,5 +397,39 @@ describe("native tool batch", () => {
       { calls: [{ arguments: {}, id: "c1", name: "lookup" }], round: 1 })).rejects.toBeInstanceOf(ToolBatchInactiveError);
     expect(observation.records().filter((record) => record.event === "tool_call").map((record) => [record.outcome, record.code]))
       .toEqual([["cancelled", "tool_call_cancelled"]]);
+  });
+
+  it("settles a stopped Search's carried result (engine usage, sources) once, then stops without running more", async () => {
+    const controller = new AbortController();
+    const { store } = fakeStore();
+    const carried: ToolExecutionResult = { callId: "c1", content: [{ text: "Search failed: search_cancelled", type: "text" }],
+      name: "search", status: "complete", usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } };
+    const settled = vi.fn<NonNullable<EngineTool["settled"]>>(async () => undefined);
+    const later = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const search = tool("search", "none", async () => {
+      controller.abort();
+      throw new SearchToolCancelledError(carried, new Error("stopped"));
+    }, { observationSource: "search", settled });
+    const batch = deps({ later: tool("later", "none", later), search }, store, { signal: controller.signal });
+    await expect(runToolBatch({ ...batch, sleep: vi.fn(async () => undefined) }, { calls: 0 }, { calls: [
+      { arguments: { query: "q" }, id: "c1", name: "search" }
+    ], round: 1 })).rejects.toBeInstanceOf(SearchToolCancelledError);
+    expect(settled).toHaveBeenCalledOnce();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ call: expect.objectContaining({ id: "c1" }) }), carried);
+    expect(later).not.toHaveBeenCalled();
+    // The run's ending closes the record; the batch never settles a stopped call itself.
+    expect(store.settle).not.toHaveBeenCalled();
+  });
+
+  it("keeps the stop when a stopped Search's records cannot be written", async () => {
+    const controller = new AbortController();
+    const { store } = fakeStore();
+    const carried: ToolExecutionResult = { callId: "c1", content: [], name: "search", status: "error" };
+    const search = tool("search", "none", async () => {
+      controller.abort();
+      throw new SearchToolCancelledError(carried, new Error("stopped"));
+    }, { settled: vi.fn(async () => { throw new Error("database_unavailable"); }) });
+    await expect(runToolBatch(deps({ search }, store, { signal: controller.signal }), { calls: 0 },
+      { calls: [{ arguments: {}, id: "c1", name: "search" }], round: 1 })).rejects.toBeInstanceOf(SearchToolCancelledError);
   });
 });

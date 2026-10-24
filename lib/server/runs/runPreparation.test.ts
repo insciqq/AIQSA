@@ -2847,7 +2847,7 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch") ?? []).toEqual([]);
   });
 
-  it("re-admits hosted Gemini Search as a client route when MCP tools must coexist", async () => {
+  it("admits Gemini Search once, as a client route that coexists with MCP tools", async () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
     );
@@ -2889,11 +2889,9 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     expect(result.ok).toBe(true);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(2);
-    expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
-      "requiresClientToolCoexistence"
-    );
-    expect(admissionLoad.mock.calls[1]?.[0]).toMatchObject({
+    // Chat models always call tools, so admission asks for coexistence at once.
+    expect(admissionLoad).toHaveBeenCalledTimes(1);
+    expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({
       requiresClientToolCoexistence: true,
       searchPlan: { mode: "model_choice", optionIds: [optionId] }
     });
@@ -2943,10 +2941,8 @@ describe("run preparation", () => {
 
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(2);
-    expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
-      "requiresClientToolCoexistence"
-    );
+    expect(admissionLoad).toHaveBeenCalledTimes(1);
+    expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({ requiresClientToolCoexistence: true });
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );

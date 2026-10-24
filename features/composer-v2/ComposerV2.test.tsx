@@ -507,11 +507,18 @@ describe("Composer v2", () => {
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
     menuClosed("Add");
 
-    // Search: sources can be combined without closing the menu.
+    // Search: only the sources, combined without closing the menu. There is
+    // no mode, turn-off or organization link, and the last source stays on.
     fireEvent.click(screen.getByRole("button", { name: /^Choose web search/u }));
-    expect(screen.getByRole("dialog", { name: "Web search" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Turn off search" })).toBeEnabled();
+    const searchDialog = screen.getByRole("dialog", { name: "Web search" });
+    expect(searchDialog).toBeVisible();
+    expect(within(searchDialog).queryByRole("button", { name: /Turn off|organization/u })).toBeNull();
+    expect(within(searchDialog).queryByRole("combobox")).toBeNull();
+    expect(within(searchDialog).queryByText(/Research-grade search|Saved for this chat|Let the model choose/u)).toBeNull();
+    expect(within(searchDialog).getByRole("checkbox", { name: /Web Search/u })).toBeDisabled();
+    expect(searchDialog).toHaveTextContent("To turn search off, use Chat defaults in Studio.");
     fireEvent.click(screen.getByRole("checkbox", { name: /Research Search/ }));
+    expect(onSearch).toHaveBeenCalledOnce();
     expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
     expect(screen.getByRole("dialog", { name: "Web search" })).toBeVisible();
     fireEvent.keyDown(screen.getByRole("checkbox", { name: /Research Search/ }), { key: "Escape" });
@@ -542,25 +549,34 @@ describe("Composer v2", () => {
     rerender(<ComposerV2 {...initial} selectedSearchOptionIds={[]} />);
     expect(screen.getByRole("button", { name: "Choose web search" }))
       .toHaveAccessibleDescription("Search: Off");
+    // Off still shows the chip; checking a source turns search back on.
+    expect(screen.getByRole("button", { name: "Choose web search" })).toHaveTextContent("Search off");
+    fireEvent.click(screen.getByRole("button", { name: "Choose web search" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Web Search/u }));
+    expect(initial.onSelectSearchOptionIds).toHaveBeenCalledWith(["web-primary"]);
     expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
   });
 
-  it("keeps an unavailable saved Search source visible and removable", () => {
+  it("keeps an unavailable saved Search source visible and removable once another source is on", () => {
     const onSearch = vi.fn();
-    render(<ComposerV2 {...props({ selectedSearchOptionIds: ["retired-source"], onSelectSearchOptionIds: onSearch })} />);
+    const { rerender } = render(<ComposerV2 {...props({ selectedSearchOptionIds: ["retired-source"], onSelectSearchOptionIds: onSearch })} />);
     const trigger = screen.getByRole("button", { name: "Choose web search" });
     expect(trigger).toHaveAccessibleDescription("Search: Unavailable source");
     fireEvent.click(trigger);
+    expect(screen.getByRole("checkbox", { name: /Unavailable source/ })).toBeDisabled();
+    rerender(<ComposerV2 {...props({ selectedSearchOptionIds: ["retired-source", "web-primary"], onSelectSearchOptionIds: onSearch })} />);
     fireEvent.click(screen.getByRole("checkbox", { name: /Unavailable source/ }));
-    expect(onSearch).toHaveBeenCalledWith([]);
+    expect(onSearch).toHaveBeenCalledWith(["web-primary"]);
   });
 
-  it("closes Search with Escape after clearing disables the focused control", async () => {
+  it("closes Search with Escape after a change disables the focused control", async () => {
     const { rerender } = render(<ComposerV2 {...props()} />);
     const trigger = screen.getByRole("button", { name: /^Choose web search/u });
     fireEvent.click(trigger);
-    screen.getByRole("button", { name: "Turn off search" }).focus();
-    rerender(<ComposerV2 {...props({ selectedSearchOptionIds: [] })} />);
+    screen.getByRole("checkbox", { name: /Research Search/u }).focus();
+    // It becomes the one source left on, which cannot be unchecked.
+    rerender(<ComposerV2 {...props({ selectedSearchOptionIds: ["research-search"] })} />);
+    expect(screen.getByRole("checkbox", { name: /Research Search/u })).toBeDisabled();
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Web search" })).toBeNull();
     await waitFor(() => expect(trigger).toHaveFocus());

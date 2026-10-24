@@ -254,10 +254,14 @@ describe("AdminSearchSection", () => {
       .toEqual(["Working", "Setup needed", "Disabled"]);
     expect(rows[0]).toHaveTextContent("All chat models");
     expect(rows[1]).toHaveTextContent("No Search model yet");
-    expect(rows[2]).toHaveTextContent("Gemini models");
+    // Google Search reaches every chat model through its client route.
+    expect(rows[2]).toHaveTextContent("All chat models");
     expect(within(rows[2]!).getByRole("link")).toHaveClass("opacity-65");
     expect(within(rows[0]!).getByRole("link")).toHaveAttribute("href", "/admin?section=search&resource=source-perplexity");
     expect(screen.getByRole("region", { name: "Recommended Search plan" })).toHaveTextContent("never grants access");
+    // No source chosen means the best working one, never Off.
+    expect(screen.getByTestId("admin-search-plan-automatic")).toHaveTextContent("Automatic: Perplexity Search");
+    expect(screen.queryByText("Let the model choose")).not.toBeInTheDocument();
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Search");
     await waitFor(() => expect(screen.getByRole("button", { name: "Add source" })).toBeEnabled());
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();

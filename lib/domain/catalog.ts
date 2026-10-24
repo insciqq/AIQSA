@@ -1078,24 +1078,6 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     strategyId: "openai-native-web-search"
   },
   {
-    description: "Web search provided by DeepSeek. DeepSeek currently returns findings without source URLs.",
-    displayName: "DeepSeek Search",
-    kind: "web_search",
-    routes: [{
-      adapterKind: "answer_provider_hosted",
-      config: { sourceAttribution: "provider_unavailable", tool: "web_search" },
-      credentialMode: "answer_provider",
-      executionModes: ["model_choice"],
-      kind: "deepseek_native_web_search",
-      physicalStrategyId: "deepseek-native-web-search",
-      protocol: "deepseek_responses_web_search",
-      revisionId: "template:deepseek-native-web-search:v1",
-      searchStrategyRowId: "deepseek-native-web-search"
-    }],
-    sourceConnectionId: "deepseek",
-    strategyId: "deepseek-native-web-search"
-  },
-  {
     description: "Google Search grounding for eligible Gemini models.",
     displayName: "Google Search",
     kind: "gemini_google_search",

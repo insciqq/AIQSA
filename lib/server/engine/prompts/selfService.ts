@@ -108,7 +108,7 @@ Studio sections as links. Give the user these Markdown links exactly as written,
 - [Scheduled tasks](/?library=scheduled)
 - [MCP servers](/?library=mcp): personal servers, and servers the user always allowed
 - [Secrets](/?library=secrets)
-- [Chat defaults](/?library=defaults): model and tools for new chats
+- [Chat defaults](/?library=defaults): model and tools for new chats; web search sources for every chat
 ${REMOVED_FEATURES}`,
 
   secrets: `# Secrets

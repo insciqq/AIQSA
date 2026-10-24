@@ -3,7 +3,7 @@ import type {
   SearchStrategyCatalogEntry,
   SearchStrategyRouteCatalogEntry
 } from "./catalog";
-import type { SearchPlan, SearchPlanMode } from "./search";
+import { hostedSearchProtocolUsable, type SearchPlan, type SearchPlanMode } from "./search";
 import type {
   CatalogWireModel,
   CatalogWireSearchStrategy
@@ -125,19 +125,9 @@ function hostedRouteCompatible(
   ) {
     return false;
   }
-  if (route.protocol === "gemini_google_search") {
-    return option.kind === "gemini_google_search" &&
-      model.adapterKind === "gemini_interactions_native";
-  }
-  if (route.protocol === "anthropic_web_search") {
-    return option.kind === "web_search" &&
-      model.adapterKind === "anthropic_messages";
-  }
-  if (route.protocol === "deepseek_responses_web_search") {
-    return option.kind === "web_search" &&
-      model.adapterKind === "deepseek_responses_native";
-  }
-  return route.protocol === "openai_responses_web_search" &&
+  // Every chat model calls tools, and only OpenAI hosted Search coexists with
+  // them; other sources search through their client route.
+  return hostedSearchProtocolUsable(route.protocol) &&
     option.kind === "web_search" &&
     (model.adapterKind === "openai_responses_native" ||
       model.adapterKind === "openai_responses_compatible");
@@ -158,7 +148,6 @@ function clientRouteCompatible(
     // The DeepSeek Search API is a web_search source of its own, reached
     // only through this client route.
     return route.protocol === "anthropic_web_search" ||
-      route.protocol === "deepseek_responses_web_search" ||
       route.protocol === "deepseek_search_api" ||
       route.protocol === "openai_responses_web_search";
   }

@@ -154,9 +154,10 @@ export function createAdminProviderBootstrap(input: {
       value.signal.throwIfAborted();
       result.state = "partial";
     }
-    // Setup owns the connection's own Search and, on DeepSeek, the separate
-    // DeepSeek Search API source. Each is checked and published on its own.
-    for (const searchApi of connection.family === "deepseek" ? [false, true] : [false]) {
+    // Setup owns the connection's own Search; a DeepSeek connection's is the
+    // DeepSeek Search API (its hosted Search is retired, operator decision
+    // 2026-10-24). Each is checked and published on its own.
+    for (const searchApi of connection.family === "deepseek" ? [true] : [false]) {
       let name: string | null = null;
       try {
         value.signal.throwIfAborted();

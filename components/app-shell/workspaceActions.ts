@@ -660,7 +660,10 @@ export function useWorkspaceActions({
 
     setSelectedProvider(model?.provider ?? chat.defaultProvider, "system");
     setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
-    const searchPlan = chat.defaultSearchPlan ?? resolvePreferredSearchPlan(
+    // A chat keeps no Search plan of its own (operator decision 2026-10-24):
+    // every chat searches with the user's personal or organization default.
+    // A stored `defaultSearchPlan` from older releases is ignored.
+    const searchPlan = resolvePreferredSearchPlan(
       catalogOverride?.defaults.searchPlan,
       catalogOverride?.searchStrategies
     );

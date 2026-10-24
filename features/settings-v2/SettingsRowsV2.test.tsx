@@ -24,7 +24,7 @@ const strategies = [
 ];
 
 describe("ChatDefaultsRowsV2", () => {
-  it("persists the search engine and MCP and Skills modes without touching the composer", () => {
+  it("persists the search sources and MCP and Skills modes", () => {
     const onSearchPlan = vi.fn();
     const onMcpMode = vi.fn();
     const onSkillsMode = vi.fn();
@@ -38,12 +38,14 @@ describe("ChatDefaultsRowsV2", () => {
         onSearchPlan={onSearchPlan}
       />
     );
+    expect(screen.getByTestId("settings-default-search")).toHaveTextContent("Sources the model uses to search the web in every chat.");
     const search = screen.getByLabelText("Web search default");
-    expect(search).toHaveTextContent("1 source selected");
+    expect(search).toHaveTextContent("Web search");
     fireEvent.click(search);
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
-    fireEvent.click(screen.getByRole("button", { name: "Turn off search" }));
-    expect(onSearchPlan).toHaveBeenCalledWith({ mode: "all_selected", optionIds: [] });
+    expect(screen.queryByRole("combobox")).toBeNull();
+    // The last source is never unchecked here; turning off is its own action.
+    expect(screen.getByRole("checkbox", { name: "Web search" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "Google" }));
     expect(onSearchPlan).toHaveBeenLastCalledWith({ mode: "all_selected", optionIds: ["next-search", "google"] });
 
@@ -55,20 +57,70 @@ describe("ChatDefaultsRowsV2", () => {
     expect(screen.queryByTestId("settings-default-knowledge")).toBeNull();
   });
 
-  it("shows saved Off defaults as they are", () => {
+  it("turns web search off only after a confirmation that names the cost", () => {
+    const onSearchPlan = vi.fn();
+    render(
+      <ChatDefaultsRowsV2
+        mcpMode="auto"
+        searchPlan={{ mode: "all_selected", optionIds: ["next-search", "google"] }}
+        searchStrategies={strategies}
+        onMcpMode={vi.fn()}
+        onSearchPlan={onSearchPlan}
+      />
+    );
+    expect(screen.getByLabelText("Web search default")).toHaveTextContent("Web search, Google");
+    fireEvent.click(screen.getByLabelText("Web search default"));
+    fireEvent.click(screen.getByRole("button", { name: "Turn off web search" }));
+    let dialog = screen.getByRole("dialog", { name: "Turn off web search" });
+    expect(dialog).toHaveTextContent("Turn off web search?");
+    expect(dialog).toHaveTextContent("The model will answer only from what it already knows and won't be able to check current facts. Answers will get worse.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep search on" }));
+    expect(screen.queryByRole("dialog", { name: "Turn off web search" })).toBeNull();
+    expect(onSearchPlan).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn off web search" }));
+    dialog = screen.getByRole("dialog", { name: "Turn off web search" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm turn off" }));
+    expect(onSearchPlan).toHaveBeenCalledOnce();
+    expect(onSearchPlan).toHaveBeenCalledWith({ mode: "all_selected", optionIds: [] });
+  });
+
+  it("offers the organization default only for a personal choice", () => {
+    const onResetSearchPlan = vi.fn();
+    const { rerender } = render(
+      <ChatDefaultsRowsV2 mcpMode="auto" searchPlan={{ mode: "all_selected", optionIds: ["google"] }} searchStrategies={strategies}
+        searchPreferenceSource="personal" onResetSearchPlan={onResetSearchPlan} onMcpMode={vi.fn()} onSearchPlan={vi.fn()} />
+    );
+    fireEvent.click(screen.getByLabelText("Web search default"));
+    fireEvent.click(screen.getByRole("button", { name: "Use organization default" }));
+    expect(onResetSearchPlan).toHaveBeenCalledOnce();
+    rerender(
+      <ChatDefaultsRowsV2 mcpMode="auto" searchPlan={{ mode: "all_selected", optionIds: ["google"] }} searchStrategies={strategies}
+        searchPreferenceSource="organization" onResetSearchPlan={onResetSearchPlan} onMcpMode={vi.fn()} onSearchPlan={vi.fn()} />
+    );
+    expect(screen.getByLabelText("Web search default")).toHaveTextContent("Organization default · Google");
+    expect(screen.queryByRole("button", { name: "Use organization default" })).toBeNull();
+  });
+
+  it("shows saved Off defaults as they are and turns search on by checking a source", () => {
+    const onSearchPlan = vi.fn();
     render(
       <ChatDefaultsRowsV2
         mcpMode="off"
         searchPlan={{ mode: "all_selected", optionIds: [] }}
         searchStrategies={strategies}
         onMcpMode={vi.fn()}
-        onSearchPlan={vi.fn()}
+        onSearchPlan={onSearchPlan}
       />
     );
     expect(screen.getByLabelText("Web search default")).toHaveTextContent("Off");
+    expect(screen.queryByRole("button", { name: "Turn off web search" })).toBeNull();
     expect(
       within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Off" })
     ).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByLabelText("Web search default"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Google" }));
+    expect(onSearchPlan).toHaveBeenCalledWith({ mode: "all_selected", optionIds: ["google"] });
   });
 });
 

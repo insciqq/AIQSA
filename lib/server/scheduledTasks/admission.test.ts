@@ -546,8 +546,9 @@ describe("scheduled task search plan", () => {
     const model = catalog([]).models[0]!;
     expect(scheduledTaskSearchPlan({ catalog: catalog(["alpha"]), model, searchEnabled: false })).toEqual({ mode: "all_selected", optionIds: [] });
     expect(scheduledTaskSearchPlan({ catalog: catalog(["alpha"]), model, searchEnabled: true })).toEqual({ mode: "all_selected", optionIds: ["alpha"] });
-    // No usable preference: the model's first usable option, never none.
-    expect(scheduledTaskSearchPlan({ catalog: catalog(["gamma"]), model, searchEnabled: true })).toEqual({ mode: "all_selected", optionIds: ["beta"] });
+    // No usable owner source: none is chosen for them, so the occurrence pauses.
+    expect(scheduledTaskSearchPlan({ catalog: catalog(["gamma"]), model, searchEnabled: true })).toBeNull();
+    expect(scheduledTaskSearchPlan({ catalog: catalog([]), model, searchEnabled: true })).toBeNull();
     expect(scheduledTaskSearchPlan({ catalog: { ...catalog([]), searchStrategies: [] }, model, searchEnabled: true })).toBeNull();
   });
 });

@@ -259,6 +259,16 @@ describe("OpenRouter Chat transport", () => {
     );
   });
 
+  it("carries the provider's Retry-After on an HTTP failure, and nothing without one", async () => {
+    const responses = [
+      new Response(JSON.stringify({ error: { code: 429 } }), { headers: { "retry-after": "7" }, status: 429 }),
+      new Response("", { status: 503 })
+    ];
+    const client = createFetchOpenRouterChatClient({ apiKey: "key", fetchFn: async () => responses.shift()! });
+    await expect(client.createChatCompletion({})).rejects.toMatchObject({ httpStatus: 429, retryAfterMs: 7_000 });
+    expect(await client.createChatCompletion({}).catch((error: unknown) => error)).not.toHaveProperty("retryAfterMs");
+  });
+
   it("combines caller cancellation with the transport timeout signal", async () => {
     const controller = new AbortController();
     controller.abort(new Error("caller_cancelled"));

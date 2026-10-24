@@ -20,8 +20,9 @@ export type ScheduledTaskSendTarget =
 
 /**
  * The run's Search: none when the task has it off; otherwise the owner's
- * preferred selection that the model supports, else the model's first usable
- * option. Null when Search is on but no option can be selected.
+ * default sources that the model supports. Null when Search is on but none
+ * of them can run, so the occurrence pauses visibly: a source the owner did
+ * not choose, or one they turned off, is never substituted.
  */
 export function scheduledTaskSearchPlan(input: Readonly<{
   catalog: ScheduledTaskRunCatalog;
@@ -31,11 +32,7 @@ export function scheduledTaskSearchPlan(input: Readonly<{
   if (!input.searchEnabled) return { mode: "all_selected", optionIds: [] };
   const { model, catalog } = input;
   const preferred = reconcileModelSearchPlan(model, catalog.searchPlan.optionIds, catalog.searchPlan.mode, catalog.searchStrategies);
-  if (preferred.optionIds.length > 0) return preferred;
-  const concrete = new Set(catalog.searchStrategies.filter((option) => option.kind !== "none").map((option) => option.strategyId));
-  const first = model.searchStrategyIds.find((optionId) => concrete.has(optionId));
-  const fallback = first ? reconcileModelSearchPlan(model, [first], "all_selected", catalog.searchStrategies) : null;
-  return fallback && fallback.optionIds.length > 0 ? fallback : null;
+  return preferred.optionIds.length > 0 ? preferred : null;
 }
 
 /**

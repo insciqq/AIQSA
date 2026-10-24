@@ -275,7 +275,9 @@ describe("catalog capability matrix", () => {
       expect(buildCatalogModel(model, defaultSearchStrategies).defaultParams).not.toHaveProperty(
         "temperature"
       );
-      expect(availableSearchStrategiesForModel(model, defaultSearchStrategies)).toContain(
+      // Hosted Google Search never coexists with the tools every chat has;
+      // the source reaches Gemini through its client route once one exists.
+      expect(availableSearchStrategiesForModel(model, defaultSearchStrategies)).not.toContain(
         "gemini-google-search"
       );
     }
@@ -333,18 +335,17 @@ describe("catalog capability matrix", () => {
     );
   });
 
-  it("lets first-party Anthropic answers use hosted Anthropic Search and Perplexity", () => {
+  it("offers first-party Anthropic answers no hosted Anthropic Search, only client routes", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "anthropic");
 
     expect(model).toBeDefined();
     expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
-      "anthropic-web-search",
       "perplexity-tool-search",
       "search-disabled"
     ]);
   });
 
-  it("prefers same-connection hosted Anthropic Search and uses its query-only route cross-provider", () => {
+  it("routes Anthropic Search through its query-only route for every model, its own provider's included", () => {
     const template = defaultSearchStrategies.find(
       ({ strategyId }) => strategyId === "anthropic-web-search"
     );
@@ -377,7 +378,7 @@ describe("catalog capability matrix", () => {
     expect(openAI).toBeDefined();
 
     expect(resolveSearchRouteForModel(anthropic!, anthropicSearch)?.adapterKind).toBe(
-      "answer_provider_hosted"
+      "provider_model_client"
     );
     expect(resolveSearchRouteForModel(openAI!, anthropicSearch)).toMatchObject({
       adapterKind: "provider_model_client",

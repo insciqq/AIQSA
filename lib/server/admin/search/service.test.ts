@@ -1397,15 +1397,14 @@ describe("admin Search service", () => {
 
   it("validates logical policy kinds and permits normalized Google multi-source plans", async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
+    // Google Search reaches chats only through its client route.
     const geminiDraft: AdminSearchDraft = {
       ...draft,
-      adapterKind: "answer_provider_hosted",
-      credentialMode: "answer_provider",
       protocol: "gemini_google_search",
-      providerModelId: null
+      providerModelId: "gemini-model"
     };
     const openAi = option([child(draft)]);
-    const google = option([child(geminiDraft, { id: "strategy-google" })], {
+    const google = option([child(geminiDraft, { id: "strategy-google", providerModelId: "gemini-model" })], {
       displayName: "Google Search",
       id: "source-google",
       kind: "gemini_google_search",
@@ -1453,11 +1452,12 @@ describe("admin Search service", () => {
       credentialMode: "answer_provider",
       providerModelId: null
     })])]);
-    await expect(service.updatePolicy({
+    // A single source has no fan-out: its hosted-only route qualifies.
+    await service.updatePolicy({
       defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
       expectedVersion: 3,
       userId: "admin-1"
-    })).rejects.toMatchObject({ code: "search_default_unavailable" });
+    });
 
     findMany.mockResolvedValueOnce([openAi, google]);
     await service.updatePolicy({
@@ -1517,10 +1517,8 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     expect(state.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ isolationLevel: "Serializable" }));
     expect(state.currentBinding.mock.invocationCallOrder[0]).toBeLessThan(state.write.mock.invocationCallOrder[0]!);
     expect(state.test).toHaveBeenCalledOnce();
-    expect(state.tx.searchPolicy.updateMany).toHaveBeenCalledWith({
-      data: { defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] }, updatedByUserId: "admin-1", version: { increment: 1 } },
-      where: { id: "installation", version: 1, updatedByUserId: null, defaultPlan: { equals: { mode: "all_selected", optionIds: [] } } }
-    });
+    // An unset organization default stays automatic; publishing never picks it.
+    expect(state.tx.searchPolicy.updateMany).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1551,19 +1549,11 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     expect(state.write).not.toHaveBeenCalled();
   });
 
-  it("preserves only the explicit native DeepSeek source-attribution exception", async () => {
+  it("refuses DeepSeek's retired hosted Search before any provider request", async () => {
     const state = fixture("deepseek_responses_web_search");
-    const outcome = {
-      method: "provider_search" as const, normalizedSourceCount: 0, probeBinding: PROBE_BINDING,
-      protocol: "deepseek_responses_web_search" as const, status: "available" as const
-    };
-    state.test.mockResolvedValueOnce(outcome);
-    await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
+    await expect(state.save()).rejects.toMatchObject({ code: "search_provider_model_not_available" });
+    expect(state.test).not.toHaveBeenCalled();
     expect(state.write).not.toHaveBeenCalled();
-    state.test.mockResolvedValueOnce({ ...outcome, sourceAttribution: "provider_unavailable" });
-    await state.save();
-    expect(state.currentBinding).toHaveBeenCalledOnce();
-    expect(state.write).toHaveBeenCalled();
   });
 
   it("fails closed before a provider request when current authority cannot be read", async () => {
@@ -1631,8 +1621,8 @@ describe("DeepSeek Search API source", () => {
       providerModel: expect.objectContaining({ id: "deepseek-flash" }),
       ready: true
     })]);
+    // DeepSeek's hosted Search is retired: its models only carry the API key.
     expect(catalog.providerModels.map(({ id, searchKind }) => `${searchKind}:${id}`)).toEqual([
-      "deepseek_web_search:deepseek-pro",
       "deepseek_search_api:deepseek-flash",
       "deepseek_search_api:deepseek-pro"
     ]);
@@ -1727,11 +1717,10 @@ describe("DeepSeek Search API source", () => {
     expect(revisions.create).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
       validationEvidence: expect.objectContaining({ method: "provider_search", normalizedSourceCount: 3 })
     }) });
+    // An unset organization default stays automatic: publishing never writes it.
+    expect(tx.searchPolicy.updateMany).not.toHaveBeenCalled();
     if (bootstrap) {
       expect(optionUpdate).toHaveBeenCalledWith({ data: { enabled: true }, where: { id: builtIn.id } });
-      expect(tx.searchPolicy.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({ defaultPlan: { mode: "all_selected", optionIds: ["deepseek-search-api"] } })
-      }));
     } else {
       // The operator's off switch holds until they enable the now ready source.
       expect(optionUpdate).not.toHaveBeenCalled();
