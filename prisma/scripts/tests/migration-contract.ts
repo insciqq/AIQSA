@@ -52,6 +52,7 @@ import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImport
 import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
 import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publishedImageModelsProofSql } from "./published-image-models-adoption";
 import { KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION, knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql } from "./knowledge-image-observation-adoption";
+import { MCP_TOOL_UPDATE_TRUST_MIGRATION, mcpToolUpdateTrustFixtureSql, mcpToolUpdateTrustProofSql } from "./mcp-tool-update-trust-adoption";
 import { DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION, dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql } from "./drop-retired-memory-synthesis-columns-adoption";
 import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql } from "./drop-retired-mcp-activation-storage-adoption";
 import { DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION, dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql } from "./drop-retired-memory-digest-synthesis-storage-adoption";
@@ -91,7 +92,6 @@ const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
   "eebf5019d8a511bb484b076020d9207d4a49aaf2e1af39ab4f9d31e3afc2f3a2";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
-const MCP_TOOL_UPDATE_TRUST_MIGRATION = "20261024120000_mcp_tool_update_trust";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
 const KNOWLEDGE_SNAPSHOT_TRIGGER_FIX =
   "20260818044500_knowledge_snapshot_count_trigger_fix";
@@ -7843,6 +7843,8 @@ function main(
     scheduledTaskChatRotationFixtureSql, scheduledTaskChatRotationProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION,
     knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MCP_TOOL_UPDATE_TRUST_MIGRATION,
+    mcpToolUpdateTrustFixtureSql, mcpToolUpdateTrustProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION,
     dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql,
     dropRetiredMemorySynthesisColumnsProofSql);
