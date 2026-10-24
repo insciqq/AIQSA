@@ -20,8 +20,9 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * asked once more for the answer, and an answer that stays empty fails
  * visibly instead of completing (issue #55). A run's one reserved report (a
  * monitoring check's verdict, an answer review step's report) is offered
- * alone once more when its call budget or tool rounds ran out before it was
- * made.
+ * alone once more when its call budget, tool rounds or tool time ran out
+ * before it was made; past tool time that round runs inside the answer
+ * reserve, and the turn's deadline still ends it.
  * Everything the loop knows is the transcript; every effect goes through
  * its ports.
  */
@@ -134,9 +135,9 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     ports.signal.throwIfAborted();
     const timeLeft = ports.toolTimeLeft();
     const open = toolsAllowed && round <= ports.maxToolRounds && timeLeft;
-    // Once the call budget or the tool rounds are spent, an outstanding reserved call is offered alone in one
-    // more round; a batch without progress or spent tool time answers at once.
-    const reserved = !open && timeLeft && !reservedOffered && (budgetSpent || round > ports.maxToolRounds) &&
+    // Once the call budget, the tool rounds or the tool time are spent, an outstanding reserved call is offered
+    // alone in one more round; a batch without progress answers at once.
+    const reserved = !open && !reservedOffered && (budgetSpent || round > ports.maxToolRounds || !timeLeft) &&
       ports.reservedCall?.outstanding() === true ? ports.reservedCall : null;
     if (reserved) reservedOffered = true;
     const toolChoice: LoopToolChoice = open || reserved ? "auto" : "none";

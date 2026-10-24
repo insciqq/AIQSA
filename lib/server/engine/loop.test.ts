@@ -183,7 +183,7 @@ describe("native agent loop", () => {
 describe("the run's reserved report", () => {
   /** A harness whose `report` call is the reserved one, outstanding until a batch runs it. */
   function reservedHarness(responses: readonly ProviderRunResult[], options: Parameters<typeof harness>[1] & Readonly<{
-    budgetExhaustedBy?: string; made?: boolean; timeLeft?: boolean;
+    budgetExhaustedBy?: string; made?: boolean; signal?: AbortSignal; timeLeft?: boolean | (() => boolean);
   }> = {}) {
     let made = options.made ?? false;
     const reservedRounds: number[] = [];
@@ -200,7 +200,9 @@ describe("the run's reserved report", () => {
         return prepare(input);
       },
       reservedCall: { name: "report", outstanding: () => !made },
-      ...(options.timeLeft === false ? { toolTimeLeft: () => false } : {})
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.timeLeft === undefined ? {} : { toolTimeLeft: typeof options.timeLeft === "function" ? options.timeLeft
+        : () => options.timeLeft as boolean })
     };
     return { ...run, ports, reservedRounds };
   }
@@ -237,7 +239,7 @@ describe("the run's reserved report", () => {
     expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
   });
 
-  it("is not offered once made, after a batch without progress, or when the tool time ran out", async () => {
+  it("is not offered once made or after a batch without progress while tool time is left", async () => {
     const made = reservedHarness([response("", [call("v1", "report"), call("c1")]), response("Done")], { budgetExhaustedBy: "c1" });
     await runAgentLoop(made.ports);
     expect(made.choices).toEqual(["auto", "none"]);
@@ -246,9 +248,46 @@ describe("the run's reserved report", () => {
     await runAgentLoop(stalled.ports);
     expect(stalled.choices).toEqual(["auto", "none"]);
     expect(stalled.reservedRounds).toEqual([]);
-    const late = reservedHarness([response("Done")], { timeLeft: false });
-    await runAgentLoop(late.ports);
-    expect(late.choices).toEqual(["none"]);
-    expect(late.reservedRounds).toEqual([]);
+  });
+
+  it("is offered alone once when the tool time ran out, then the turn answers", async () => {
+    // Tool time ends after the first round: the reserved round runs inside the answer reserve.
+    let rounds = 0;
+    const { choices, items, ports, reservedRounds } = reservedHarness([
+      response("", [call("c1")]), response("", [call("v1", "report"), call("c2")]), response("Done")
+    ], { timeLeft: () => rounds++ === 0 });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(reservedRounds).toEqual([2]);
+    // Only the reserved call runs; the other one gets its result without running.
+    expect(vi.mocked(ports.runTools).mock.calls.map(([calls]) => calls.map((entry) => entry.id))).toEqual([["c1"], ["v1"]]);
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+    // A reserved round that made only other calls is not offered again.
+    const ignored = reservedHarness([response("", [call("c2")]), response("Done")], { timeLeft: false });
+    await expect(runAgentLoop(ignored.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+    expect(ignored.choices).toEqual(["auto", "none"]);
+    expect(ignored.reservedRounds).toEqual([1]);
+    expect(ignored.ports.runTools).not.toHaveBeenCalled();
+  });
+
+  it("is not offered past the tool time once made", async () => {
+    let rounds = 0;
+    const made = reservedHarness([response("", [call("v1", "report")]), response("Done")], { timeLeft: () => rounds++ === 0 });
+    await expect(runAgentLoop(made.ports)).resolves.toEqual({ kind: "answered", rounds: 2 });
+    expect(made.choices).toEqual(["auto", "none"]);
+    expect(made.reservedRounds).toEqual([]);
+  });
+
+  it("does not outlast the turn's deadline", async () => {
+    // The deadline fires during the last tool batch: the run ends there instead of taking the reserved round.
+    const deadline = new AbortController();
+    const reason = new Error("run time limit");
+    let rounds = 0;
+    const { ports, reservedRounds } = reservedHarness([response("", [call("c1")]), response("Done")], {
+      batch: () => { deadline.abort(reason); return {}; }, signal: deadline.signal, timeLeft: () => rounds++ === 0
+    });
+    await expect(runAgentLoop(ports)).rejects.toBe(reason);
+    expect(ports.callModel).toHaveBeenCalledTimes(1);
+    expect(reservedRounds).toEqual([]);
   });
 });

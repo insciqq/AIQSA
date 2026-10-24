@@ -19,7 +19,7 @@ import { monitoringCheckInstruction, monitoringVerdictReservedInstruction } from
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
-import { createNativeRunExecutionResponse } from "./execution";
+import { createNativeRunExecutionResponse, NATIVE_TURN_LIMITS } from "./execution";
 import { nativeRunResponse, type NativeEngineHandlerDeps } from "./handlerSupport";
 import { NEUTRAL_FAMILY_PROMPT } from "./prompts/neutral";
 import {
@@ -90,6 +90,36 @@ describe("a scheduled monitoring check on the native engine", () => {
     expect(repo.recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith({ runId: "run-1", userId: "owner", verdict: "no_update" });
     expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === reserved)).toBe(false);
     expect(memory.published()).toBe("Nothing new.");
+  });
+
+  it("is asked for its verdict alone once its tool time ran out, inside the answer reserve", async () => {
+    const reserved = monitoringVerdictReservedInstruction();
+    const { adapter, requests } = scriptedNativeAdapter([
+      { calls: [{ arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }] },
+      { calls: [{ arguments: { status: "update" }, id: "v1", name: VERDICT }, { arguments: { key: "A-2" }, id: "c2",
+        name: "mcp_jira_get_issue" }] },
+      { text: "A-1 moved." }
+    ]);
+    const memory = memoryNativeEngine();
+    const repo = nativeRunRepository();
+    let clock = Date.now();
+    // The first lookup takes the turn up to its answer reserve: tool time is over, the deadline is not.
+    const callTool = vi.fn(async () => {
+      clock += NATIVE_TURN_LIMITS.turnMs - NATIVE_TURN_LIMITS.answerReserveMs;
+      return { isError: false, text: ["open"], unsupportedContentTypes: [] };
+    });
+    const result = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: { ...memory.engine,
+      now: () => clock }, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: nativePrepared({ mcp: NATIVE_MCP_SNAPSHOT, monitoringVerdictTool: true }),
+      repository: asRepository(repo), scheduled: true, services: {}, userId: "owner" }));
+    expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    expect(requests).toHaveLength(3);
+    expect(requests[1]!.toolChoice).toBe("auto");
+    expect(requests[1]!.history!.at(-1)).toEqual({ text: reserved, type: "user" });
+    expect(requests[2]!.toolChoice).toBe("none");
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(repo.recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith({ runId: "run-1", userId: "owner", verdict: "update" });
+    expect(memory.published()).toBe("A-1 moved.");
   });
 
   it("tells the model when its occurrence can no longer take a verdict", async () => {
