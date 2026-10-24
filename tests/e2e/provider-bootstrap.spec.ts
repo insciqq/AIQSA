@@ -191,19 +191,17 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       include: { strategies: { include: { activeRevision: true } } } });
     expect(search.enabled).toBe(true);
     expect(search.strategies.some(({ activeRevision }) => activeRevision !== null)).toBe(true);
+    // The untouched organization default stays automatic: setup and enabling a source never pick it
+    // (operator decision 2026-10-24), and users resolve it to the first usable source.
     expect(await prisma.searchPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
-      defaultPlan: { mode: "all_selected", optionIds: [search.optionId] }, version: 2
+      defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1
     });
-    const selectOff = await page.request.patch("/api/admin/search", { data: {
-      defaultPlan: { mode: "all_selected", optionIds: [] }, expectedVersion: 2
-    } });
-    expect(selectOff.ok()).toBe(true);
     const enableAgain = await page.request.post(`/api/admin/search/${search.id}/actions`, {
       data: { action: "enable" }
     });
     expect(enableAgain.ok()).toBe(true);
     expect(await prisma.searchPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
-      defaultPlan: { mode: "all_selected", optionIds: [] }, version: 3
+      defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1
     });
     await page.reload();
     await expect(page.getByTestId("provider-page-status")).not.toContainText("Disabled");

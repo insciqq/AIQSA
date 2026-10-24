@@ -1452,11 +1452,12 @@ describe("admin Search service", () => {
       credentialMode: "answer_provider",
       providerModelId: null
     })])]);
-    await expect(service.updatePolicy({
+    // A single source has no fan-out: its hosted-only route qualifies.
+    await service.updatePolicy({
       defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
       expectedVersion: 3,
       userId: "admin-1"
-    })).rejects.toMatchObject({ code: "search_default_unavailable" });
+    });
 
     findMany.mockResolvedValueOnce([openAi, google]);
     await service.updatePolicy({
@@ -1516,10 +1517,8 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     expect(state.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ isolationLevel: "Serializable" }));
     expect(state.currentBinding.mock.invocationCallOrder[0]).toBeLessThan(state.write.mock.invocationCallOrder[0]!);
     expect(state.test).toHaveBeenCalledOnce();
-    expect(state.tx.searchPolicy.updateMany).toHaveBeenCalledWith({
-      data: { defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] }, updatedByUserId: "admin-1", version: { increment: 1 } },
-      where: { id: "installation", version: 1, updatedByUserId: null, defaultPlan: { equals: { mode: "all_selected", optionIds: [] } } }
-    });
+    // An unset organization default stays automatic; publishing never picks it.
+    expect(state.tx.searchPolicy.updateMany).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1718,11 +1717,10 @@ describe("DeepSeek Search API source", () => {
     expect(revisions.create).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
       validationEvidence: expect.objectContaining({ method: "provider_search", normalizedSourceCount: 3 })
     }) });
+    // An unset organization default stays automatic: publishing never writes it.
+    expect(tx.searchPolicy.updateMany).not.toHaveBeenCalled();
     if (bootstrap) {
       expect(optionUpdate).toHaveBeenCalledWith({ data: { enabled: true }, where: { id: builtIn.id } });
-      expect(tx.searchPolicy.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({ defaultPlan: { mode: "all_selected", optionIds: ["deepseek-search-api"] } })
-      }));
     } else {
       // The operator's off switch holds until they enable the now ready source.
       expect(optionUpdate).not.toHaveBeenCalled();

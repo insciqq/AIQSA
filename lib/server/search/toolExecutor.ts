@@ -69,6 +69,10 @@ type SearchFailureEvidence = NonNullable<SearchExecutionEvidence["failure"]>;
  * own deadline and under Stop; the DeepSeek Search API retries itself. */
 export const SEARCH_ENGINE_MAX_ATTEMPTS = 3;
 
+/** A retry is sent only when this much of the engine's deadline is left
+ * after its wait, so no paid request starts that cannot finish. */
+const SEARCH_RETRY_MIN_ATTEMPT_MS = 2_000;
+
 /** The waits between an engine's attempts; seams for tests. */
 export type SearchRetryPorts = Readonly<{
   random?: () => number;
@@ -555,7 +559,7 @@ async function executeOne(input: Readonly<{
     if (!decision) return null;
     const proposed = attempt < SEARCH_ENGINE_MAX_ATTEMPTS
       ? providerRetryDelayMs(attempt, decision.retryAfterMs, input.retry?.random, MODEL_CALL_RETRY.backoff) : null;
-    const delayMs = proposed !== null && proposed < remainingMs() ? proposed : null;
+    const delayMs = proposed !== null && proposed + SEARCH_RETRY_MIN_ATTEMPT_MS <= remainingMs() ? proposed : null;
     const failure = observedFailure(error);
     logEvent("provider_retry", {
       action: delayMs === null ? "stop" : "retry", attempt, code: failure.code, reason: failure.reason, stage: "search",
