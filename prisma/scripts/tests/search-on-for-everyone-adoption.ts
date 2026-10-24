@@ -8,13 +8,13 @@ const AVATAR = '{"kind":"generated","recipeVersion":1,"paletteId":"ember","backg
  * plan that names the hosted one. */
 function fixture(apiWorking: boolean): string {
   return `
-INSERT INTO "ProviderConnection" (id, "displayName", family, enabled, "activeVersion", "updatedAt")
-VALUES ('sofe-deepseek', 'Synthetic DeepSeek', 'deepseek', true, 1, now()),
-  ('sofe-openrouter', 'Synthetic OpenRouter', 'openrouter', true, 1, now());
+INSERT INTO "ProviderConnection" (id, "displayName", family, enabled, "activeVersion", "activeConfig", "activatedAt", "updatedAt")
+VALUES ('sofe-deepseek', 'Synthetic DeepSeek', 'deepseek', true, 1, '{}', now(), now()),
+  ('sofe-openrouter', 'Synthetic OpenRouter', 'openrouter', true, 1, '{}', now(), now());
 INSERT INTO "ProviderModel" (id, "connectionId", provider, "modelId", "displayName", capabilities, "defaultParams", enabled,
-  "activeVersion", "updatedAt")
+  "activeVersion", "activeConfig", "activatedAt", "updatedAt")
 VALUES ('sofe-deepseek-model', 'sofe-deepseek', 'deepseek', 'deepseek-v4-pro', 'Synthetic DeepSeek model', '{}', '{}', ${apiWorking},
-  1, now());
+  1, '{}', now(), now());
 INSERT INTO "SearchOption" (id, "optionId", "displayName", description, kind, "sourceConnectionId", enabled, "updatedAt")
 VALUES ('sofe-hosted', 'deepseek-native-web-search', 'DeepSeek Search', 'Synthetic hosted', 'web_search', 'sofe-deepseek', true, now()),
   ('sofe-api', 'deepseek-search-api', 'DeepSeek Search API', 'Synthetic API', 'deepseek_search_api', 'sofe-deepseek', true, now()),
