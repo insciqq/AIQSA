@@ -525,7 +525,6 @@ type AcceptedReceiptDerivatives = Readonly<{
   attemptId: string;
   attemptItemId: string;
   bindingId: string;
-  egressReceiptId: string;
   historyRunId: string;
   marker: string;
   memoryItemId: string;
@@ -656,26 +655,6 @@ async function createAcceptedReceiptDerivatives(input: Readonly<{
       toolName: "search_my_history"
     }
   });
-  const destinationSnapshot = {
-    fingerprint: "memory-lifecycle-answer-provider",
-    kind: "answer_provider" as const,
-    version: 1 as const
-  };
-  const egressReceipt = await prisma.memoryToolEgressReceipt.create({
-    data: {
-      destinationFingerprint: memorySha256(destinationSnapshot),
-      destinationKind: "answer_provider",
-      destinationSnapshot,
-      dispatchCompletedAt: now,
-      dispatchStartedAt: now,
-      dispatchState: "COMPLETED",
-      mode: "PROVIDER_REQUEST",
-      modelRunId: input.modelRunId,
-      requestOrdinal: 1,
-      requestEvidenceHash: memorySha256({ marker, type: "provider-request" }),
-      userId: input.userId
-    }
-  });
   const privateResults = {
     indexing: {
       degradationCode: null,
@@ -726,7 +705,6 @@ async function createAcceptedReceiptDerivatives(input: Readonly<{
     attemptId: attempt.id,
     attemptItemId: attemptItem.id,
     bindingId: binding.id,
-    egressReceiptId: egressReceipt.id,
     historyRunId: historyRun.id,
     marker,
     memoryItemId: memoryItem.id,
@@ -792,13 +770,6 @@ async function expectAcceptedReceiptDerivatives(
   await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
     where: { id: receipt.memoryItemId }
   })).resolves.toMatchObject({ includedText: receipt.marker });
-  await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
-    where: { id: receipt.egressReceiptId }
-  })).resolves.toMatchObject({
-    dispatchState: "COMPLETED",
-    errorCode: null,
-    mode: "PROVIDER_REQUEST"
-  });
 }
 
 async function claimDeletion(

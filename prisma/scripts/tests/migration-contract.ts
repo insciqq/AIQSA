@@ -38,6 +38,7 @@ import { DECISION_UPGRADE_MIGRATION, decisionUpgradeFixtureSql, decisionUpgradeP
 import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUtilityModelProofSql, memoryUtilityModelRepeatProofSql } from "./memory-utility-model-adoption";
 import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
 import { MEMORY_EGRESS_RECEIPT_MIGRATION, memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql } from "./memory-egress-receipt-adoption";
+import { DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION, dropMemoryToolEgressReceiptFixtureSql, dropMemoryToolEgressReceiptProofSql } from "./drop-memory-tool-egress-receipt-adoption";
 import { MEMORY_RECOMMENDATION_MIGRATION, memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql } from "./memory-recommendation-adoption";
 import { MEMORY_RECOMMENDATION_V2_MIGRATION, memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql } from "./memory-recommendation-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
@@ -7692,8 +7693,10 @@ function main(
     memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_BUDGET_MIGRATION,
     memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql);
+  // Its proof reads the table the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_EGRESS_RECEIPT_MIGRATION,
-    memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql, memoryEgressReceiptProofSql);
+    memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql, memoryEgressReceiptProofSql,
+    DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, NATIVE_ROUTING_MIGRATION,
     nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql);
   // Both proofs compare whole policy rows, which the Project and Knowledge drop
@@ -7901,6 +7904,9 @@ function main(
   // Project's scoped upload stays writable for its cleanup.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
     dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql, dropProjectsKnowledgeRetiredProofSql);
+  // Only the old run core wrote these receipts; the releases since stopped every write.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION,
+    dropMemoryToolEgressReceiptFixtureSql, dropMemoryToolEgressReceiptProofSql, dropMemoryToolEgressReceiptProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

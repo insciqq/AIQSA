@@ -1234,21 +1234,6 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
     serverId: "fixture-mcp-server",
     version: 1 as const
   };
-  const egressReceipt = await prisma.memoryToolEgressReceipt.create({
-    data: {
-      destinationFingerprint: memorySha256(destinationSnapshot),
-      destinationKind: "mcp",
-      destinationSnapshot,
-      dispatchCompletedAt: now,
-      dispatchStartedAt: now,
-      dispatchState: "COMPLETED",
-      mode: "PROVIDER_REQUEST",
-      modelRunId: run.id,
-      requestOrdinal: 1,
-      requestEvidenceHash: memorySha256({ marker, type: "request" }),
-      userId: input.userId
-    }
-  });
   const toolCall = await prisma.modelRunToolCall.create({
     data: {
       arguments: { query: marker },
@@ -1317,7 +1302,6 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
   return {
     attemptId: attempt.id,
     bindingId: binding.id,
-    egressReceiptId: egressReceipt.id,
     destinationSnapshot,
     historyRunId: historyRun.id,
     marker,
@@ -1353,13 +1337,6 @@ async function expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(
     status: "complete"
   });
   expect(JSON.stringify(scrubbedCall)).not.toContain(receipt.marker);
-  await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
-    where: { id: receipt.egressReceiptId }
-  })).resolves.toMatchObject({
-    dispatchState: "COMPLETED",
-    errorCode: null,
-    mode: "PROVIDER_REQUEST"
-  });
   await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({
     where: { id: receipt.bindingId }
   })).resolves.toMatchObject({ outcome: "USED" });

@@ -363,7 +363,6 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'run-bindings', COUNT(*)::integer FROM "ModelRunMemoryBinding" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'run-items', COUNT(*)::integer FROM "ModelRunMemoryItem" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'history-runs', COUNT(*)::integer FROM "MemoryHistoryRun" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'tool-egress', COUNT(*)::integer FROM "MemoryToolEgressReceipt" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'other-deletions', COUNT(*)::integer
         FROM "MemoryDeletionOutbox"
         WHERE "userId" = ${input.userId} AND "id" <> ${input.deletionId}
