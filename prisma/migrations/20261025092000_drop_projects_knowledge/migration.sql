@@ -1,10 +1,12 @@
 -- Projects and Knowledge were removed together with their data (operator
 -- decisions 2026-10-23). Since 0.4.0 retirement has deleted what they held
 -- through their own deletion paths, and nothing else reads or writes them;
--- this release drops their storage (decision 2026-10-25). The previous release
--- still reads these tables while Compose replaces it (retirement, deletion
--- reference checks, the Memory embedding default); those reads fail and are
--- retried until it stops. Nothing that remains depends on them.
+-- this release drops their storage (decision 2026-10-25). Until Compose has
+-- replaced the previous release, its reads of these tables (retirement,
+-- deletion reference checks, the Memory embedding default) and its Assistant
+-- and MCP runtime generation queries, which still select the columns dropped
+-- below, fail; deletion obligations retry. Nothing that remains depends on
+-- them.
 --
 -- Retirement is expected to have emptied them on every installation before
 -- this release is deployed. The migration does not refuse to run when it has
@@ -299,13 +301,13 @@ BEGIN
       ('AttachmentUpload', 'AttachmentUpload_project_retired_check', '"projectId" IS NULL'),
       ('SharedChatSnapshot', 'SharedChatSnapshot_project_retired_check', '"projectId" IS NULL'),
       ('UsageEvent', 'UsageEvent_project_retired_check', '"projectId" IS NULL')
-    ) AS retired(relation, name, rule)
+    ) AS retired(table_name, check_name, check_rule)
   LOOP
     BEGIN
       EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I CHECK (%s)',
-        retired_check.relation, retired_check.name, retired_check.rule);
+        retired_check.table_name, retired_check.check_name, retired_check.check_rule);
     EXCEPTION WHEN check_violation THEN
-      RAISE WARNING 'project_retirement_leftover_rows table=%', retired_check.relation;
+      RAISE WARNING 'project_retirement_leftover_rows table=%', retired_check.table_name;
     END;
   END LOOP;
 END;
