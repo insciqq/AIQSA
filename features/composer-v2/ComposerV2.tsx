@@ -36,6 +36,7 @@ import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2"
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
 import { UsageLimitNoticeV2 } from "./UsageLimitNoticeV2";
 import { useComposerDictationV2 } from "./dictation/ComposerDictationV2";
+import { PASTE_AS_FILE_MIN_CHARS, usePastedTextAttachmentsV2 } from "./pastedTextAttachments";
 import type { CatalogDictation } from "@/lib/contracts/speechToText";
 import {
   ComposerCommandPaletteV2,
@@ -667,6 +668,20 @@ export function ComposerV2({
      ordinary description. The "+" button itself is off while a response runs. */
   const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
   const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
+  const pastedTexts = usePastedTextAttachmentsV2(attachmentItems, sessionKey);
+  const [pasteBackAttempt, setPasteBackAttempt] = useState<Readonly<{ id: string; sessionKey: string }> | null>(null);
+  const pendingPasteCaret = useRef<Readonly<{ caret: number; draft: string }> | null>(null);
+  // After "Paste as text", focus returns to the message with the caret after
+  // the restored text once it is on screen; any other draft drops the request.
+  useLayoutEffect(() => {
+    const pending = pendingPasteCaret.current;
+    if (!pending) return;
+    pendingPasteCaret.current = null;
+    const field = textareaRef.current;
+    if (pending.draft !== draft || !field || field.disabled || field.value !== pending.draft) return;
+    field.focus({ preventScroll: true });
+    field.setSelectionRange(pending.caret, pending.caret);
+  }, [draft]);
   const artifactMenuReason = artifactUnavailableReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
 
   const concreteSearchOptions = config?.catalog.searchStrategies.filter(
@@ -914,32 +929,81 @@ export function ComposerV2({
     else if (!activeRun) onSend?.();
   }
 
-  function submitFiles(files: FileList | readonly File[]) {
-    const { accepted, rejected } = partitionAttachmentSelection(files, attachmentPolicy);
+  function attachmentCountOverflow(adding: number) {
     const currentCount = attachmentLimitUsage?.count ?? attachmentItems.filter(
       (item) => item.status !== "rejected"
     ).length;
     const maxCount = attachmentLimitUsage?.limits?.maxCount ??
       config?.catalog.attachmentLimits?.maxCount;
-    const attemptedCount = currentCount + accepted.length;
-    if (
-      accepted.length > 0 &&
-      typeof maxCount === "number" &&
-      attemptedCount > maxCount
-    ) {
-      onAttachmentCountLimitExceeded?.({ attemptedCount, currentCount, maxCount });
+    const attemptedCount = currentCount + adding;
+    return adding > 0 && typeof maxCount === "number" && attemptedCount > maxCount
+      ? { attemptedCount, currentCount, maxCount }
+      : null;
+  }
+
+  function submitFiles(files: FileList | readonly File[]) {
+    const { accepted, rejected } = partitionAttachmentSelection(files, attachmentPolicy);
+    const overflow = attachmentCountOverflow(accepted.length);
+    if (overflow) {
+      onAttachmentCountLimitExceeded?.(overflow);
     } else if (accepted.length > 0) {
       void onUploadFiles?.(accepted);
     }
     if (rejected.length > 0) onRejectedFiles?.(rejected);
   }
 
-  function pasteFiles(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+  function handlePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
     const files = event.clipboardData.files;
-    if (files.length === 0) return;
+    if (files.length > 0) {
+      event.preventDefault();
+      if (!attachmentSelectionDisabled) submitFiles(files);
+      return;
+    }
+    // A long plain-text paste becomes a text file the model reads in full, as
+    // in other chat apps. A follow-up sends only text, and a composer that
+    // cannot take this file (no attachments, no text documents for this
+    // model, the count limit reached) keeps the paste as ordinary text.
+    if (followupMode || attachmentSelectionDisabled) return;
+    const text = event.clipboardData.getData("text/plain");
+    if (text.length < PASTE_AS_FILE_MIN_CHARS) return;
+    const file = pastedTexts.fileFor(text);
+    if (partitionAttachmentSelection([file], attachmentPolicy).accepted.length === 0 || attachmentCountOverflow(1)) return;
     event.preventDefault();
-    if (!attachmentSelectionDisabled) submitFiles(files);
+    pastedTexts.remember(file, text);
+    submitFiles([file]);
   }
+
+  /* Why a pasted-text attachment cannot go back into the message now, if it cannot. */
+  function pasteBackBlockReason(text: string): string | null {
+    if (inputDisabled) return inputBlockedReason;
+    if (followupMode && buildComposerMessage(draft, comments).length + text.length > RUN_FOLLOWUP_MAX_CHARS) {
+      return `Too long for a follow-up (over ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters). It stays attached for your next message.`;
+    }
+    return null;
+  }
+
+  /* "Paste as text": the attachment leaves the tray and its text goes into the
+     message at the caret (or the end), exactly as pasted. */
+  function pasteBackAsText(id: string) {
+    const text = pastedTexts.textFor(id);
+    if (text === null) return;
+    if (pasteBackBlockReason(text)) {
+      setPasteBackAttempt({ id, sessionKey });
+      return;
+    }
+    const textarea = textareaRef.current;
+    const start = textarea && textarea.value === draft ? textarea.selectionStart : draft.length;
+    const end = textarea && textarea.value === draft ? Math.max(start, textarea.selectionEnd) : draft.length;
+    const before = draft.slice(0, start);
+    const next = { caret: before.length + text.length, draft: `${before}${text}${draft.slice(end)}` };
+    setPasteBackAttempt(null);
+    pastedTexts.forget(id);
+    onRemoveAttachment?.(id);
+    pendingPasteCaret.current = next;
+    onDraftChange(next.draft);
+  }
+  const pasteBackText = pasteBackAttempt?.sessionKey === sessionKey ? pastedTexts.textFor(pasteBackAttempt.id) : null;
+  const pasteBackNotice = pasteBackText === null ? null : pasteBackBlockReason(pasteBackText);
 
   function updateDropEffect(event: ReactDragEvent<HTMLDivElement>) {
     event.dataTransfer.dropEffect = attachmentSelectionDisabled ? "none" : "copy";
@@ -1281,8 +1345,11 @@ export function ComposerV2({
           items={attachmentItems}
           onRemove={onRemoveAttachment}
           onRetry={onRetryAttachment}
+          pastedTextIds={onRemoveAttachment ? pastedTexts.ids : undefined}
+          onPasteAsText={pasteBackAsText}
           usage={attachmentLimitUsage}
         />
+        {pasteBackNotice ? <p className="v2-composer-status" role="alert">{pasteBackNotice}</p> : null}
         {followupMode && (attachmentItems.length > 0 || artifactCreate || artifactEdit) ? (
           <p className="v2-composer-status">Only your text is sent as a follow-up. Files and artifact choices are kept for your next message.</p>
         ) : null}
@@ -1335,7 +1402,7 @@ export function ComposerV2({
               const next = event.relatedTarget;
               if (layer === "commands" && !(next instanceof Node && layerRef.current?.contains(next))) setLayer(null);
             }}
-            onPaste={pasteFiles}
+            onPaste={handlePaste}
           />
 
           <div className="v2-composer-controls">

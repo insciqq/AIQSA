@@ -204,6 +204,24 @@
   background: color-mix(in srgb, var(--v2-color-warn) 10%, transparent);
 }
 
+/* Puts a long paste back into the message: a quiet ink action, not a state. */
+.v2-attachment-paste-back {
+  min-height: 2rem;
+  padding: 0.25rem 0.4375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-attachment-paste-back:hover {
+  background: var(--v2-color-hover);
+}
+
 /* Capacity on the left, the privacy note on the right: one quiet head row. */
 .v2-attachment-tray-head {
   display: flex;
@@ -412,7 +430,8 @@
 
 @media (hover: none), (pointer: coarse) {
   .v2-attachment-actions .v2-icon-button,
-  .v2-attachment-retry {
+  .v2-attachment-retry,
+  .v2-attachment-paste-back {
     min-width: 2.5rem;
     min-height: 2.5rem;
   }

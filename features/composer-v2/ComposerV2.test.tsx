@@ -1368,6 +1368,81 @@ describe("Composer v2", () => {
   });
 });
 
+describe("a long plain-text paste", () => {
+  const long = "строка текста\n".repeat(400);
+  const pasteText = (text: string) => fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), {
+    clipboardData: { files: [], getData: (type: string) => type === "text/plain" ? text : "", types: ["text/plain"] }
+  });
+
+  it("becomes one Pasted text.txt attachment and leaves the message box alone", async () => {
+    const onDraftChange = vi.fn(), onUploadFiles = vi.fn();
+    render(<ComposerV2 {...props({ onDraftChange, onUploadFiles })} />);
+    expect(long.length).toBeGreaterThanOrEqual(5_000);
+    expect(pasteText(long)).toBe(false);
+    expect(onUploadFiles).toHaveBeenCalledOnce();
+    const [file] = onUploadFiles.mock.calls[0]![0] as File[];
+    expect(file).toMatchObject({ name: "Pasted text.txt", type: "text/plain" });
+    expect(await file!.text()).toBe(long);
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
+  });
+
+  it("numbers a second paste in the same draft", () => {
+    const onUploadFiles = vi.fn();
+    const { rerender } = render(<ComposerV2 {...props({ onUploadFiles })} />);
+    pasteText(long);
+    rerender(<ComposerV2 {...props({
+      onUploadFiles,
+      attachmentItems: [{ id: "upload-1", fileName: "Pasted text.txt", status: "uploading", upload: true }]
+    })} />);
+    pasteText(`${long}more`);
+    expect((onUploadFiles.mock.calls[1]![0] as File[])[0]!.name).toBe("Pasted text 2.txt");
+  });
+
+  it("stays ordinary text when short, in a follow-up, or where files cannot be attached", () => {
+    const onUploadFiles = vi.fn();
+    const { rerender } = render(<ComposerV2 {...props({ onUploadFiles })} />);
+    expect(pasteText("x".repeat(4_999))).toBe(true);
+    rerender(<ComposerV2 {...props({ activeRun: true, runId: "run", onFollowup: vi.fn(), onUploadFiles })} />);
+    expect(pasteText(long)).toBe(true);
+    rerender(<ComposerV2 {...props()} />);
+    expect(pasteText(long)).toBe(true);
+    rerender(<ComposerV2 {...props({ attachmentPolicy: { documents: false, images: true, pdfs: true }, onUploadFiles })} />);
+    expect(pasteText(long)).toBe(true);
+    expect(onUploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("goes back into the message at the caret with Paste as text, and the attachment leaves", () => {
+    const onDraftChange = vi.fn(), onRemoveAttachment = vi.fn(), onUploadFiles = vi.fn();
+    const base = { onDraftChange, onRemoveAttachment, onUploadFiles };
+    const { rerender } = render(<ComposerV2 {...props(base)} />);
+    pasteText(long);
+    const file = (onUploadFiles.mock.calls[0]![0] as File[])[0]!;
+    // The row changes its id when the upload settles; the action follows it.
+    rerender(<ComposerV2 {...props({ ...base, attachmentItems: [{ id: "upload-1", fileName: file.name, byteSize: file.size, status: "uploading", upload: true }] })} />);
+    rerender(<ComposerV2 {...props({ ...base, attachmentItems: [{ id: "att-1", fileName: file.name, byteSize: file.size, status: "ready" }] })} />);
+    const field = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    field.setSelectionRange(8, 8);
+    fireEvent.click(screen.getByRole("button", { name: "Paste as text: Pasted text.txt" }));
+    expect(onRemoveAttachment).toHaveBeenCalledWith("att-1");
+    expect(onDraftChange).toHaveBeenCalledWith(`Проверь ${long}источники`);
+  });
+
+  it("stays attached with a reason when the text is too long for a follow-up", () => {
+    const onRemoveAttachment = vi.fn(), onUploadFiles = vi.fn(), onDraftChange = vi.fn();
+    const huge = "x".repeat(20_000);
+    const base = { onDraftChange, onRemoveAttachment, onUploadFiles };
+    const { rerender } = render(<ComposerV2 {...props(base)} />);
+    pasteText(huge);
+    const item = { id: "att-1", fileName: "Pasted text.txt", byteSize: 20_000, status: "ready" as const };
+    rerender(<ComposerV2 {...props({ ...base, attachmentItems: [item], activeRun: true, runId: "run", onFollowup: vi.fn() })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Paste as text: Pasted text.txt" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Too long for a follow-up");
+    expect(onRemoveAttachment).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+});
+
 describe("the composer's reasoning effort chip", () => {
   const LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
   const reasoning = (value = "high", onChange = vi.fn()) => ({ onChange, options: LEVELS, value });
