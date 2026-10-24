@@ -35,9 +35,9 @@ test("one Search default serves every chat across navigation, reload and login",
       connectionVersion: 1, modelVersion: 1, status: "available", checkedAt: new Date() } });
     const option = await prisma.searchOption.create({ data: { optionId, displayName: "OpenAI Search",
       description: "Synthetic catalog-only OpenAI Search", kind: "web_search", sourceConnectionId: authority.connectionId } });
-    const draft = { ...normalizeSearchDraft(builtInSearchDraft({ kind: "web_search", config: {} })) };
+    const draft = { ...normalizeSearchDraft(builtInSearchDraft({ kind: "openai_native_web_search", config: {} })) };
     const strategy = await prisma.searchStrategy.create({ data: { searchOptionId: option.id, strategyId: optionId,
-      provider: "openai", displayName: "OpenAI Search", kind: "web_search", description: "Synthetic Search",
+      provider: "openai", displayName: "OpenAI Search", kind: "openai_native_web_search", description: "Synthetic Search",
       config: {}, draft, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider" } });
     const revision = await prisma.searchIntegrationRevision.create({ data: { searchStrategyId: strategy.id,
       revisionNumber: 1, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", configuration: draft,
