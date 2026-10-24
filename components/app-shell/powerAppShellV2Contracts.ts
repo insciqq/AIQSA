@@ -457,7 +457,6 @@ export type ShellComposerView = {
   toggleCitationsVisibility(): void;
   toggleNotificationSound(): void;
   toggleReasoningBlockVisibility(): void;
-  useOrganizationSearchDefault(): void;
   useOrganizationModelDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   reuseFile?(attachmentId: string, fileName: string): Promise<boolean>;

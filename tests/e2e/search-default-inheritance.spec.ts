@@ -6,14 +6,13 @@ import { hashPassword } from "../../lib/server/auth/password";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { builtInSearchDraft, normalizeSearchDraft, searchDraftHash } from "../../lib/server/search/configuration";
 import { createTestProviderExecutionAuthority, deleteTestProviderExecutionAuthority } from "../support/providerExecutionAuthority";
-import { chooseSearchStrategy } from "./shell/composer";
 import { loginWithPassword, startNewChat } from "./support/workspace";
 import { runAccountMenuAction } from "./shell/page";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
-test("Search defaults and saved chat choices survive navigation, reload and login", async ({ page }, testInfo) => {
+test("one Search default serves every chat across navigation, reload and login", async ({ page }, testInfo) => {
   test.setTimeout(150_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const id = randomUUID();
@@ -70,78 +69,77 @@ test("Search defaults and saved chat choices survive navigation, reload and logi
     const created = await page.request.post("/api/chats", { data: { title: "Saved Search choices" } });
     expect(created.ok()).toBe(true);
     const chatId = (await created.json()).chat.id;
+    // Chats keep no Search plan of their own (operator decision 2026-10-24):
+    // one an older release saved on a chat is ignored.
+    expect((await page.request.patch(`/api/chats/${chatId}`, { data: { defaultSearchPlan: off } })).ok()).toBe(true);
+    const searchChip = page.getByRole("button", { name: /^Choose web search/ });
+    const chipSource = page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Google Search/ });
     await page.goto(`/c/${chatId}`);
-    await chooseSearchStrategy(page, "Off");
-    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toEqual(off);
-    expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toBeNull();
-    await page.reload();
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
-    await startNewChat(page);
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
+    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
+    // The chip never turns Search off: its last source stays on.
+    await searchChip.click();
+    await expect(chipSource).toBeChecked();
+    await expect(chipSource).toBeDisabled();
+    await page.keyboard.press("Escape");
+
+    // Off only in Chat defaults, after a confirmation, and for every chat.
     await runAccountMenuAction(page, "Chat defaults");
     let settings = page.getByTestId("library-v2");
     await settings.getByLabel("Web search default").click();
-    await settings.getByRole("button", { name: "Turn off search" }).click();
+    const confirmation = page.getByRole("dialog", { name: "Turn off web search" });
+    await settings.getByRole("button", { name: "Turn off web search" }).click();
+    await expect(confirmation).toContainText("Answers will get worse.");
+    await confirmation.getByRole("button", { name: "Keep search on" }).click();
+    await expect(confirmation).toHaveCount(0);
+    expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toBeNull();
+    await settings.getByRole("button", { name: "Turn off web search" }).click();
+    await confirmation.getByRole("button", { name: "Confirm turn off" }).click();
     await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toEqual(off);
+    await expect(settings.getByLabel("Web search default")).toHaveText("Off");
+    await settings.getByRole("button", { name: "Back to chat" }).click();
+    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
+    await expect(searchChip).toContainText("Search off");
+    await startNewChat(page);
+    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
     await page.goto("about:blank");
     await page.request.post("/api/auth/logout", { data: {} });
     await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: id }));
     await loginWithPassword(page, user);
     await startNewChat(page);
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
+    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: off });
-    await runAccountMenuAction(page, "Chat defaults");
-    settings = page.getByTestId("library-v2");
-    await settings.getByLabel("Web search default").click();
-    await settings.getByRole("checkbox", { name: /Google Search/ }).check();
-    await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toEqual(google);
-    await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: id }));
-    await settings.getByRole("button", { name: "Back to chat" }).click();
-    await startNewChat(page);
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Google");
-    expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: google });
-    await page.goto(`/c/${chatId}`);
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Off");
-    await runAccountMenuAction(page, "Chat defaults");
-    settings = page.getByTestId("library-v2");
-    await settings.getByLabel("Web search default").click();
-    await settings.getByRole("button", { name: "Use organization Search default" }).click();
-    await expect.poll(async () => (await catalog()).defaults.searchPreferenceSource).toBe("organization");
 
-    // A second saved chat keeps Google while the first keeps Off.
-    const savedResponse = await page.request.post("/api/chats", { data: { title: "Saved Google Search" } });
-    expect(savedResponse.ok()).toBe(true);
-    const savedChatId = (await savedResponse.json()).chat.id;
-    expect((await page.request.patch(`/api/chats/${savedChatId}`, {
-      data: { defaultSearchPlan: google }
-    })).ok()).toBe(true);
-    // `/` always opens a new blank chat. After the reset it follows the
-    // organization default, and neither saved chat choice leaks into it: the
-    // Off pass rules out the saved chat's Google, the Google pass the other
-    // chat's Off.
+    // Checking a source in any chat's chip turns Search back on everywhere,
+    // without a confirmation, and leaves the chat's own column untouched.
+    await page.goto(`/c/${chatId}`);
+    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
+    await searchChip.click();
+    await chipSource.check();
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toEqual(google);
+    expect((await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toEqual(off);
+    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
+    await startNewChat(page);
+    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
+    expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: google });
+    await runAccountMenuAction(page, "Chat defaults");
+    settings = page.getByTestId("library-v2");
+    await expect(settings.getByLabel("Web search default")).toHaveText("Google Search");
+    await settings.getByLabel("Web search default").click();
+    await settings.getByRole("button", { name: "Use organization default" }).click();
+    await expect.poll(async () => (await catalog()).defaults.searchPreferenceSource).toBe("organization");
+    await settings.getByRole("button", { name: "Back to chat" }).click();
+
+    // New and existing chats both follow the organization default now.
     for (const [plan, label] of [[off, "Off"], [google, "Google"]] as const) {
       await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: plan } });
       await page.goto("/");
       expect((await catalog()).defaults, `new blank chat after the reset, organization Search default ${label}`)
         .toMatchObject({ organizationSearchPlan: plan, searchPlan: plan, searchPreferenceSource: "organization" });
-      await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription(`Search: ${label}`);
+      await expect(searchChip).toHaveAccessibleDescription(`Search: ${label}`);
+      await page.goto(`/c/${chatId}`);
+      await expect(searchChip, `existing chat, organization Search default ${label}`).toHaveAccessibleDescription(`Search: ${label}`);
     }
-    // Each saved chat keeps its own choice as the user moves between them.
-    const searchChip = page.getByRole("button", { name: /^Choose web search/ });
-    await page.goto(`/c/${savedChatId}`);
-    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
-    await chooseSearchStrategy(page, "Off");
-    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: savedChatId } })).defaultSearchPlan).toEqual(off);
-    await page.goto(`/c/${chatId}`);
-    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
-    await page.goto(`/c/${savedChatId}`);
-    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
-    await chooseSearchStrategy(page, "Google");
-    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: savedChatId } })).defaultSearchPlan).toEqual(google);
-    await page.goto(`/c/${chatId}`);
-    await expect(searchChip).toHaveAccessibleDescription("Search: Off");
-    await page.goto(`/c/${savedChatId}`);
-    await expect(searchChip).toHaveAccessibleDescription("Search: Google");
     for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await searchChip.click();

@@ -51,6 +51,9 @@ export function exportFileBaseName(title: string, date: Date = new Date()): stri
   return `${slug || "chat"}-${date.toISOString().slice(0, 10)}`;
 }
 
+const SEARCH_SELECTION_INVALID =
+  "Your web search selection is no longer valid. Open the search menu and choose sources again";
+
 export function errorMessage(error: unknown): string {
   return humanizeErrorCode(error instanceof Error ? error.message : "Request failed");
 }
@@ -126,7 +129,12 @@ export function humanizeErrorCode(code: string): string {
     [CHAT_PDF_ROUTE_UNAVAILABLE_CODE]:
       `${CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE} Remove the PDF, choose a model that can read PDFs, or ask an administrator`,
     run_malformed: "Run response was malformed",
-    search_provider_not_available: "Search provider is not available",
+    search_strategy_not_available:
+      "The selected web search source isn't available right now. Choose another source in the search menu",
+    search_plan_invalid: SEARCH_SELECTION_INVALID,
+    search_plan_duplicate_option: SEARCH_SELECTION_INVALID,
+    search_plan_too_many_options: SEARCH_SELECTION_INVALID,
+    search_preference_invalid: SEARCH_SELECTION_INVALID,
     settings_malformed: "Settings response was malformed",
     skill_not_available:
       "A selected Skill is no longer available. Review Skills and try again",
@@ -139,7 +147,6 @@ export function humanizeErrorCode(code: string): string {
     structured_output_not_supported:
       "The selected System Model does not have verified structured output",
     unsupported_attachment_type: "Attachment is not supported by this model",
-    unsupported_search_strategy: "Search is not supported for this model",
     // Used only when a limit refusal arrives without readable facts.
     installation_budget_exhausted:
       "The monthly budget shared by everyone is used up. Send again after it resets, or ask an administrator to raise it",

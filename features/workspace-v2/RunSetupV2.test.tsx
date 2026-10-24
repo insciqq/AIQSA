@@ -28,7 +28,6 @@ function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetup
     streamMode: true,
     temperature: "0.7",
     useOrganizationModelDefault: vi.fn(),
-    useOrganizationSearchDefault: vi.fn(),
     ...overrides
   };
 }
