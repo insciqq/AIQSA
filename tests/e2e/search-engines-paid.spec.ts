@@ -79,7 +79,9 @@ let shownChatId: string | null = null;
 
 async function searchEvidence(run: ModelRun) {
   const calls = await prisma.modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-    select: { state: true, toolName: true }, where: { modelRunId: run.id } });
+    select: { result: true, state: true, toolName: true }, where: { modelRunId: run.id } });
+  const observations = await prisma.toolObservation.findMany({ select: { failureCode: true, sourceKind: true, state: true,
+    storageMode: true }, where: { modelRunId: run.id } });
   const searchRuns = await prisma.searchRun.findMany({ select: { artifacts: true, status: true, strategyId: true },
     where: { modelRunId: run.id } });
   const usage = await prisma.usageEvent.findMany({ select: { estimatedCostMicros: true, purpose: true },
@@ -87,6 +89,9 @@ async function searchEvidence(run: ModelRun) {
   return {
     calls: calls.map((call) => `${call.toolName}:${call.state}`),
     searchCalls: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
+    // A long result is saved for read_tool_result; only states and codes are printed.
+    observations: observations.map((row) => `${row.sourceKind}:${row.state}:${row.storageMode ?? "-"}:${row.failureCode ?? "-"}`),
+    unsavedResults: calls.flatMap((call) => /could not be saved \(([a-z_]+)\)/u.exec(JSON.stringify(call.result ?? ""))?.[1] ?? []),
     searchRuns: searchRuns.map((row) => ({ sources: Array.isArray((row.artifacts as { sources?: unknown })?.sources)
       ? ((row.artifacts as { sources: unknown[] }).sources).length : 0, status: row.status, strategyId: row.strategyId })),
     webSearchUsageRows: usage.filter((row) => row.purpose === "web_search").length,
@@ -195,9 +200,19 @@ test("Search controls and answer sources at every size", async ({ page, browser,
   page.setDefaultTimeout(60_000);
   await page.goto("/", { timeout: 600_000 });
   await authenticateWithLocalToken(page.request);
-  const defaults = (await (await page.request.get("/api/me/catalog")).json()).catalog.defaults;
-  process.stdout.write(`search_ui_defaults ${JSON.stringify({ optionCount: defaults.searchPlan.optionIds.length,
-    organizationOptionCount: defaults.organizationSearchPlan.optionIds.length, source: defaults.searchPreferenceSource })}\n`);
+  const catalogDefaults = async () => (await (await page.request.get("/api/me/catalog")).json()).catalog.defaults;
+  const initial = await catalogDefaults();
+  // The seeded account starts with Search off (prisma/seed.ts); show the
+  // controls as everyone has them now, with two sources on for every chat.
+  const shown = [sources.get("deepseek-search-api"), sources.get("perplexity")]
+    .filter((source): source is AdminSearchIntegration => Boolean(source)).map((source) => source.strategyId);
+  const on = await page.request.patch("/api/me/settings", { data: { defaultSearchPlan: { mode: "all_selected",
+    optionIds: shown.length ? shown : [[...sources.values()][0]!.strategyId] } } });
+  expect(on.ok(), "Search turned on for every chat").toBe(true);
+  const defaults = await catalogDefaults();
+  process.stdout.write(`search_ui_defaults ${JSON.stringify({ initialOptionCount: initial.searchPlan.optionIds.length,
+    initialSource: initial.searchPreferenceSource, optionCount: defaults.searchPlan.optionIds.length,
+    source: defaults.searchPreferenceSource })}\n`);
 
   // An answer with its sources.
   await shots(page, testInfo, "01-answer-sources", async (current) => {
@@ -239,5 +254,7 @@ test("Search controls and answer sources at every size", async ({ page, browser,
     await phone.getByRole("button", { name: /^Choose web search/u }).click();
     await expect(phone.getByRole("dialog", { name: "Web search" })).toBeVisible();
   });
+  await page.request.patch("/api/me/settings", { data: { defaultSearchPlan:
+    initial.searchPreferenceSource === "personal" ? initial.searchPlan : null } });
   for (const chatId of chats) await deletePaidChat(page.request, chatId);
 });
