@@ -697,6 +697,119 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
     }
   });
 
+  // Issue #49: these two searches have shapes the plain tombstone broke, and one such row failed the whole job forever.
+  it("deletes a Base whose searches found no relevant passage or could not run", async () => {
+    const suffix = randomUUID();
+    const ownerUserId = "knowledge-base-negative-delete-owner-" + suffix;
+    await prisma.user.create({
+      data: { displayName: "Base negative search owner", id: ownerUserId, status: "active" }
+    });
+    const base = await prisma.knowledgeBase.create({
+      data: { name: "Private searched Base", ownerUserId },
+      select: { id: true }
+    });
+    const chat = await prisma.chat.create({
+      data: { title: "Negative Knowledge searches", userId: ownerUserId },
+      select: { id: true }
+    });
+    const message = await prisma.message.create({
+      data: { chatId: chat.id, content: { text: "question" }, role: "user" },
+      select: { id: true }
+    });
+    const run = await prisma.modelRun.create({
+      data: {
+        chatId: chat.id,
+        modelId: "test-model",
+        normalizedRequest: { knowledgePlan: { baseIds: [base.id] } },
+        provider: "test",
+        status: "complete",
+        userId: ownerUserId,
+        userMessageId: message.id
+      },
+      select: { id: true }
+    });
+    await prisma.knowledgeRunScope.create({
+      data: { budgetPolicy: {}, modelRunId: run.id, resolvedBaseCount: 1, resolvedSourceCount: 0,
+        selection: { baseIds: [base.id], sourceIds: [] } }
+    });
+    const toolCall = (ordinal: number) => prisma.modelRunToolCall.create({
+      data: {
+        arguments: { query: "private searched base" },
+        completedAt: new Date(),
+        modelRunId: run.id,
+        ordinal,
+        providerCallId: `knowledge-negative-${String(ordinal)}-${suffix}`,
+        result: { results: [] },
+        roundIndex: 0,
+        startedAt: new Date(),
+        state: "complete",
+        toolName: "retrieve_knowledge"
+      },
+      select: { id: true }
+    });
+    const judged = await toolCall(0);
+    const unavailable = await toolCall(1);
+    const common = { candidateLimit: 64, durationMs: 4, embeddingUsage: [], fusion: "weighted_rrf_v2", modelRunId: run.id,
+      operation: "automatic_search", resultLimit: 8, results: [] } as const;
+    // Candidates the relevance step judged below its floor: only the receipt proves them.
+    const noRelevant = await prisma.knowledgeRun.create({
+      data: {
+        ...common,
+        baseEvidence: [{ baseName: "Private searched Base", knowledgeBaseId: base.id }],
+        candidateCount: 2,
+        invocationOrdinal: 1,
+        modelRunToolCallId: judged.id,
+        outcome: "no_relevant_evidence",
+        providerText: "No relevant Knowledge passage was found.",
+        query: "private searched base",
+        readReceipt: { relevance: { attemptIds: ["chunk-a", "chunk-b"], chunkIds: ["chunk-a", "chunk-b"], durationMs: 5,
+          failureCode: null, scores: [0.02, 0.05], status: "complete", version: 1 } }
+      },
+      select: { id: true }
+    });
+    const searchUnavailable = await prisma.knowledgeRun.create({
+      data: {
+        ...common,
+        baseEvidence: [],
+        candidateCount: 0,
+        failureCode: "knowledge_search_backend_unavailable",
+        invocationOrdinal: 2,
+        modelRunToolCallId: unavailable.id,
+        outcome: "search_unavailable",
+        providerText: "Knowledge search is temporarily unavailable. Do not infer or invent an answer from Knowledge.",
+        query: "knowledge_search_unavailable"
+      },
+      select: { id: true }
+    });
+
+    try {
+      await requestKnowledgeDeletion(prisma, { id: base.id, ownerUserId, targetType: "BASE" });
+      const summary = await drainDeletionObligations({
+        repository: createPrismaRetentionRepository(prisma),
+        storage: { async deleteObject() {} }
+      });
+      expect(summary.knowledgeJobs.failed).toBe(0);
+      await expect(prisma.knowledgeBase.findUnique({ where: { id: base.id } })).resolves.toBeNull();
+
+      const judgedRun = await prisma.knowledgeRun.findUnique({
+        select: { baseEvidence: true, candidateCount: true, query: true, readReceipt: true },
+        where: { id: noRelevant.id }
+      });
+      expect(judgedRun).toEqual({ baseEvidence: [{ deleted: true }], candidateCount: 0,
+        query: "deleted_knowledge_resource", readReceipt: null });
+      // The failed search kept only fixed text: it stays as it was.
+      await expect(prisma.knowledgeRun.findUnique({ select: { query: true }, where: { id: searchUnavailable.id } }))
+        .resolves.toEqual({ query: "knowledge_search_unavailable" });
+      await expect(prisma.modelRunToolCall.findMany({ select: { arguments: true, result: true },
+        where: { modelRunId: run.id } })).resolves.toEqual([
+        { arguments: { deleted: true }, result: null },
+        { arguments: { deleted: true }, result: null }
+      ]);
+    } finally {
+      await cleanup({ baseIds: [base.id], ownerUserId });
+    }
+  });
+
   it("scrubs observation previews, reader fragments and carried notes of deleted Knowledge evidence", async () => {
     const suffix = randomUUID();
     const ownerUserId = "knowledge-copies-delete-owner-" + suffix;

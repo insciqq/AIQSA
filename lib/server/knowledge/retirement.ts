@@ -1,4 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { createAccountKnowledgeDeletionHook, type AccountKnowledgeDeletionHook } from "./accountDeletion";
 import { drainKnowledgeDeletionJobs, type KnowledgeDeletionDrainSummary } from "./deletionProcessor";
 
@@ -77,8 +79,10 @@ export function createKnowledgeRetirement(deps: KnowledgeRetirementDeps) {
       signal?.throwIfAborted();
       try {
         await deps.client.$transaction((tx) => advance(tx, { now: now(), userId: ownerUserId }));
-      } catch {
+      } catch (error) {
         failedOwners += 1;
+        logEvent("runtime_lifecycle", { error, subsystem: "knowledge", stage: "cleanup", outcome: "failed", action: "retry",
+          code: "knowledge_retirement_failed", prisma_code: databaseFailureCode(error) });
       }
     }
     signal?.throwIfAborted();
