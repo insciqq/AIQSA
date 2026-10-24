@@ -1,4 +1,3 @@
-import { createChatSearchPreferences, updateLocalChatSearch } from "./chatSearchPreferences";
 import { isAnswerSoundId, type AnswerSoundId } from "@/lib/contracts/answerSound";
 import {
   clampedNumber,
@@ -31,8 +30,8 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
-import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
-import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
+import { isSearchCombinationCompatible, reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
+import { SEARCH_DISABLED_STRATEGY_ID, type SearchPlan, type SearchPlanMode } from "@/lib/domain/search";
 
 type PendingControlDefaults = {
   draft: SavedControlDraft;
@@ -44,8 +43,6 @@ type MutableRef<T> = {
 };
 
 type RunControlsActionsInput = {
-  chatSearchSession?: symbol;
-  chatSearchPreferencesRef?: MutableRef<ReturnType<typeof createChatSearchPreferences> | null>;
   catalog: Catalog | null;
   currentModel: CatalogModel | undefined;
   isSettingsSessionCurrent?(): boolean;
@@ -58,9 +55,29 @@ type RunControlsActionsInput = {
   setSettingsNotice(notice: Notice): void;
 };
 
+/**
+ * A personal Search plan as the UI writes it: every search goes to all
+ * selected sources (operator decision 2026-10-24), so a source that cannot
+ * join the ones before it in that mode is left out instead of switching mode.
+ */
+export function allSelectedSearchPlan(
+  optionIds: readonly string[],
+  strategies: Parameters<typeof isSearchCombinationCompatible>[1]
+): SearchPlan {
+  const selected: string[] = [];
+  for (const optionId of optionIds) {
+    if (optionId === SEARCH_DISABLED_STRATEGY_ID || selected.includes(optionId)) continue;
+    if (isSearchCombinationCompatible([...selected, optionId], strategies, "all_selected")) selected.push(optionId);
+  }
+  return { mode: "all_selected", optionIds: selected };
+}
+
+function sameSearchPlan(left: SearchPlan | undefined, right: SearchPlan): boolean {
+  return left?.mode === right.mode && left.optionIds.length === right.optionIds.length &&
+    left.optionIds.every((optionId, index) => optionId === right.optionIds[index]);
+}
+
 export function useRunControlsActions({
-  chatSearchPreferencesRef,
-  chatSearchSession,
   isSettingsSessionCurrent,
   catalog,
   currentModel,
@@ -72,13 +89,6 @@ export function useRunControlsActions({
   setNotice,
   setSettingsNotice
 }: RunControlsActionsInput) {
-  const chatSearchPreferences = (chatSearchPreferencesRef?.current?.session === chatSearchSession ? chatSearchPreferencesRef?.current : null) ?? createChatSearchPreferences({
-    session: chatSearchSession,
-    isCurrent: () => isSettingsSessionCurrent?.() !== false,
-    onError: () => setNotice({ text: "Search choice could not be saved. Choose it again to retry.", kind: "error" })
-  });
-  if (chatSearchPreferencesRef) chatSearchPreferencesRef.current = chatSearchPreferences;
-
   function currentCatalogFromStore() {
     return resolveCatalog
       ? resolveCatalog()
@@ -522,60 +532,52 @@ export function useRunControlsActions({
     });
   }
 
-  function selectSearchStrategy(strategyId: string) {
-    const nextSearchStrategy = strategyId === "search-disabled" ||
-      currentCatalogFromStore()?.searchStrategies.some((strategy) =>
-        strategy.strategyId === strategyId)
-      ? strategyId
-      : "search-disabled";
-    selectSearchPlan(
-      nextSearchStrategy === "search-disabled" ? [] : [nextSearchStrategy],
-      "all_selected"
-    );
-  }
-
+  /**
+   * Chats keep no Search plan of their own (operator decision 2026-10-24):
+   * without an Assistant the composer's sources are the user's personal
+   * default, saved at once and used by every chat. The composer never turns
+   * Search off; an empty choice is ignored here and belongs to Chat defaults.
+   */
   function selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode) {
-    const plan = reconcileSearchPlanSelection(
-      optionIds,
-      mode,
-      currentCatalogFromStore()?.searchStrategies ?? []
-    );
-    const assistantChat = Boolean(boundComposerAssistant(useComposerControlStore.getState()));
-    useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
+    const strategies = currentCatalogFromStore()?.searchStrategies ?? [];
     // With an Assistant the chat's Search is an Assistant row; its chat
     // update belongs to the composer's Assistant actions.
-    if (assistantChat) return;
-    const state = useWorkspaceStore.getState();
-    const chat = state.chats.find(item => item.id === state.activeChatId);
-    if (chat) {
-      updateLocalChatSearch(chat.id, plan);
-      if (!chat.pendingPersonalDraft) void chatSearchPreferences.save(chat.id, plan);
+    if (boundComposerAssistant(useComposerControlStore.getState())) {
+      const plan = reconcileSearchPlanSelection(optionIds, mode, strategies);
+      useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
+      return;
     }
+    const plan = allSelectedSearchPlan(optionIds, strategies);
+    if (!plan.optionIds.length) return;
+    useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
+    savePersonalSearchPlan(plan);
   }
 
-  function useOrganizationSearchDefault() {
-    const plan = currentCatalogFromStore()?.defaults.organizationSearchPlan ?? { mode: "all_selected" as const, optionIds: [] };
-    selectSearchPlan(plan.optionIds, plan.mode);
+  function savePersonalSearchPlan(plan: SearchPlan, options: { noticeScope?: SettingsNoticeScope } = {}) {
+    const defaults = currentCatalogFromStore()?.defaults;
+    if (defaults?.searchPreferenceSource === "personal" && sameSearchPlan(defaults.searchPlan, plan)) return;
+    void persistUserDefaults({ searchPlan: plan, searchPreferenceSource: "personal" }, options);
+  }
+
+  /** The open chat follows the user's Search default unless an Assistant governs it. */
+  function applySearchDefaultToOpenChat(plan: SearchPlan) {
+    if (isSettingsSessionCurrent?.() === false) return;
+    if (boundComposerAssistant(useComposerControlStore.getState())) return;
+    useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode, "system");
   }
 
   function resetDefaultSearchPlan() {
     const plan = currentCatalogFromStore()?.defaults.organizationSearchPlan ?? { mode: "all_selected" as const, optionIds: [] };
     updateLocalCatalogDefaults({ searchPlan: plan, searchPreferenceSource: "organization" });
+    applySearchDefaultToOpenChat(plan);
     void settingsMutationCoordinator.enqueue({ searchPlan: null }, { noticeScope: "settings" });
   }
 
-  /* Chat defaults: personal defaults for new chats only; the open
-     chat's composer selection is left untouched. */
+  /** Chat defaults › Web search: the only place Search is turned off. */
   function setDefaultSearchPlan(plan: SearchPlan) {
-    const reconciled = reconcileSearchPlanSelection(
-      plan.optionIds,
-      plan.mode,
-      currentCatalogFromStore()?.searchStrategies ?? []
-    );
-    void persistUserDefaults(
-      { searchPlan: reconciled, searchPreferenceSource: "personal" },
-      { noticeScope: "settings" }
-    );
+    const next = allSelectedSearchPlan(plan.optionIds, currentCatalogFromStore()?.searchStrategies ?? []);
+    applySearchDefaultToOpenChat(next);
+    savePersonalSearchPlan(next, { noticeScope: "settings" });
   }
 
   function setDefaultMcpMode(mode: ChatDefaultMcpMode) {
@@ -719,7 +721,6 @@ export function useRunControlsActions({
     selectMcpMode,
     selectModel,
     selectSearchPlan,
-    selectSearchStrategy,
     setDefaultAnswerReview,
     setDefaultAssistant,
     setDefaultMcpMode,
@@ -729,7 +730,6 @@ export function useRunControlsActions({
     setSendWithEnter,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
-    useOrganizationModelDefault,
-    useOrganizationSearchDefault
+    useOrganizationModelDefault
   };
 }

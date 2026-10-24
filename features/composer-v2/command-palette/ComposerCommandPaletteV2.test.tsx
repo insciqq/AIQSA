@@ -316,12 +316,13 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(screen.getByRole("dialog", { name: "Web search" })).toBeInTheDocument();
   });
 
-  it("turns web search off, with no Workspace command", () => {
+  it("offers no command to turn web search or Workspace off", () => {
     const onSelectSearchOptionIds = vi.fn();
     render(<Harness selectedSearchOptionIds={["web-primary"]} onSelectSearchOptionIds={onSelectSearchOptionIds} />);
+    // Search is turned off only in Chat defaults (operator decision 2026-10-24).
     type("/", "/turn off web");
-    key("Enter");
-    expect(onSelectSearchOptionIds).toHaveBeenCalledWith([]);
+    expect(screen.queryByRole("option", { name: /Turn off web search/u })).toBeNull();
+    expect(onSelectSearchOptionIds).not.toHaveBeenCalled();
     // Workspace is ambient: the palette offers no command to switch it.
     type("/", "/workspace");
     expect(screen.queryByRole("option", { name: /Turn (on|off) Workspace/u })).toBeNull();

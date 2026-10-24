@@ -44,9 +44,8 @@ export type ComposerPaletteActionsInput = Readonly<{
   skillLibrary: PaletteAction | null;
   /** The MCP chip (its layer). */
   mcp: PaletteAction;
-  /** The Search chip (its layer) and its "Turn off search". */
+  /** The Search chip (its layer). Search is turned off only in Chat defaults. */
   search: PaletteAction | null;
-  searchOff: PaletteAction | null;
 }>;
 
 export type ComposerPaletteModelsInput = Readonly<{
@@ -124,7 +123,6 @@ function actionEntries(input: ComposerPaletteActionsInput): ComposerPaletteEntry
   });
   add("mcp", "MCP tools…", "tool", input.mcp, ["mcp", "tools", "servers"]);
   if (input.search) add("search", "Web search…", "globe", input.search, ["web", "search", "internet"]);
-  if (input.searchOff) add("search-off", "Turn off web search", "globe", input.searchOff, ["web", "search"]);
   add("artifact", "Create artifact", "artifact", input.artifact, ["artifact", "page", "slides", "game", "chart"]);
   add("attach", "Attach files", "attach", input.attach, ["attach", "files", "upload"]);
   if (input.skillLibrary) add("skill-library", "Skills…", "wand", input.skillLibrary, ["skills", "library", "pin"]);

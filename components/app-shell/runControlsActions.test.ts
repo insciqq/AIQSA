@@ -211,3 +211,96 @@ describe("composer MCP mode", () => {
     expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
   });
 });
+
+describe("composer Search", () => {
+  const strategies = [
+    { displayName: "One", kind: "web_search", strategyId: "one" },
+    { displayName: "Two", kind: "web_search", strategyId: "two" },
+    { displayName: "Hosted", executionModes: ["model_choice"], kind: "web_search", strategyId: "hosted" }
+  ];
+
+  function useSearchActionsForTest(searchPlan = { mode: "all_selected", optionIds: ["one"] }) {
+    const catalog = {
+      defaults: {
+        controlValues: {},
+        organizationSearchPlan: { mode: "all_selected", optionIds: ["two"] },
+        searchPlan,
+        searchPreferenceSource: "personal"
+      },
+      models: [],
+      searchStrategies: strategies
+    } as unknown as Catalog;
+    const enqueue = vi.fn(async () => true);
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const actions = useRunControlsActions({
+      catalog,
+      currentModel: undefined,
+      pendingControlDefaultsRef: { current: null },
+      pendingControlDefaultsTimerRef: { current: null },
+      resolveCatalog: () => catalog,
+      settingsMutationCoordinatorRef: {
+        current: { configure: vi.fn(), enqueue, retry: vi.fn() } as unknown as SettingsMutationCoordinator
+      },
+      setCatalog: vi.fn(),
+      setNotice: () => undefined,
+      setSettingsNotice: () => undefined
+    });
+    return { actions, enqueue, fetch };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("saves a chip change once as the personal default for every chat, never as the chat's plan", () => {
+    const { actions, enqueue, fetch } = useSearchActionsForTest();
+
+    actions.selectSearchPlan(["one", "two"], "model_choice");
+
+    const plan = { mode: "all_selected", optionIds: ["one", "two"] };
+    expect(useComposerControlStore.getState()).toMatchObject({ searchPlanMode: "all_selected", selectedSearchOptionIds: ["one", "two"] });
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledWith({ searchPlan: plan, searchPreferenceSource: "personal" }, {});
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("searches all selected sources, leaving out a source that cannot join them", () => {
+    const { actions, enqueue } = useSearchActionsForTest({ mode: "all_selected", optionIds: ["two"] });
+
+    actions.selectSearchPlan(["one", "hosted"], "all_selected");
+
+    expect(enqueue).toHaveBeenCalledWith({ searchPlan: { mode: "all_selected", optionIds: ["one"] }, searchPreferenceSource: "personal" }, {});
+  });
+
+  it("never turns search off from the composer and skips an unchanged default", () => {
+    const { actions, enqueue } = useSearchActionsForTest();
+
+    actions.selectSearchPlan([], "all_selected");
+    actions.selectSearchPlan(["one"], "all_selected");
+
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("keeps an Assistant chat's Search as that chat's own row", () => {
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture() });
+    const { actions, enqueue } = useSearchActionsForTest();
+
+    actions.selectSearchPlan([], "all_selected");
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual([]);
+  });
+
+  it("turns search off from Chat defaults and applies it to the open chat", () => {
+    const { actions, enqueue } = useSearchActionsForTest();
+
+    actions.setDefaultSearchPlan({ mode: "all_selected", optionIds: [] });
+
+    expect(enqueue).toHaveBeenCalledWith(
+      { searchPlan: { mode: "all_selected", optionIds: [] }, searchPreferenceSource: "personal" },
+      { noticeScope: "settings" }
+    );
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual([]);
+  });
+});

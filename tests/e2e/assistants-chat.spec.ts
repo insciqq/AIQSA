@@ -564,8 +564,7 @@ test("fixed Search, MCP and Skills keep their chips with one dot, and each menu 
     const searchDialog = page.getByRole("dialog", { name: "Web search" });
     await chips.search.chip.click();
     await expect(searchDialog.getByTestId("assistant-row-provenance")).toHaveText(fixedBy);
-    await expect(searchDialog.getByLabel("When the model searches")).toBeDisabled();
-    await expect(searchDialog.getByRole("button", { name: "Turn off search" })).toBeDisabled();
+    for (const source of await searchDialog.getByRole("checkbox").all()) await expect(source).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(searchDialog).toHaveCount(0);
 
@@ -813,7 +812,8 @@ test("turning Search off in a chat with adjustable Search sends the next answer 
 
     const update = chatUpdate(page, chatId);
     await searchChip.click();
-    await searchDialog.getByRole("button", { name: "Turn off search" }).click();
+    // An adjustable Assistant row may still be emptied in its own chat.
+    await searchDialog.getByRole("checkbox", { checked: true }).uncheck();
     await page.keyboard.press("Escape");
     await expect(searchDialog).toHaveCount(0);
     expect((await update).status()).toBe(200);

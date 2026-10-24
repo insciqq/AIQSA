@@ -378,10 +378,10 @@ export type ComposerV2Props = Readonly<{
   onRetryAttachment?(id: string): void;
   onSelectModel?(model: CatalogModel): void;
   onSelectMcp?(selection: McpRunSelection): void;
+  /** Without an Assistant this saves the user's Search default for every chat. */
   onSelectSearchOptionIds?(optionIds: readonly string[]): void;
+  /** How an Assistant's adjustable Search row combines sources; ordinary chats search all selected sources. */
   searchPlanMode?: SearchPlanMode;
-  onSelectSearchPlanMode?(mode: SearchPlanMode): void;
-  onResetSearchPlan?(): void;
   onSend?(): void;
   onFollowup?(runId: string): void;
   followupSending?: boolean;
@@ -561,8 +561,6 @@ export function ComposerV2({
   onSelectModel,
   onSelectSearchOptionIds,
   searchPlanMode = "all_selected",
-  onSelectSearchPlanMode,
-  onResetSearchPlan,
   onSend,
   onFollowup,
   followupSending = false,
@@ -1178,11 +1176,6 @@ export function ComposerV2({
         detail: searchDescription.replace(/^Search: /u, ""),
         disabledReason: onSelectSearchOptionIds ? null : "Unavailable",
         run: () => openFromPalette("search", searchTriggerRef.current)
-      } : null,
-      searchOff: selectedSearchOptionIds.length > 0 && onSelectSearchOptionIds ? {
-        detail: "No web search in your next messages",
-        disabledReason: searchFixed ? assistantRowNoticeText(searchProvenance) ?? "Fixed by the Assistant" : null,
-        run: () => onSelectSearchOptionIds([])
       } : null
     },
     models: onSelectModel ? {
@@ -1371,7 +1364,7 @@ export function ComposerV2({
                   aria-label={activeSearchEngineName ? `Choose web search: ${activeSearchEngineName}` : "Choose web search"}
                   aria-describedby={`${layerId}-search-description`}
                   onClick={event => openLayer("search", event.currentTarget)}>
-                  <CapabilityChipContent label="Search" icon="globe" count={selectedSearchOptionIds.length > 1 ? selectedSearchOptionIds.length : 0}
+                  <CapabilityChipContent label={selectedSearchOptionIds.length ? "Search" : "Search off"} icon="globe" count={selectedSearchOptionIds.length > 1 ? selectedSearchOptionIds.length : 0}
                     description={searchDescription} descriptionId={`${layerId}-search-description`} />
                 </button>
               ) : null}
@@ -1565,18 +1558,19 @@ export function ComposerV2({
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Web search</p>
                   {provenanceNotice(searchProvenance, assistantSearchLabel)}
+                  {/* Search is turned off only in Chat defaults (operator
+                      decision 2026-10-24); an Assistant's adjustable row
+                      keeps its own per-chat choice, Off included. */}
                   <SearchPlanPickerV2
                     options={concreteSearchOptions.map(option => ({ ...option,
                       executionModes: currentModel?.searchOptionCompatibility?.[option.strategyId]?.executionModes ?? option.executionModes }))}
-                    plan={{ mode: searchPlanMode, optionIds: selectedSearchOptionIds }}
+                    selectedIds={selectedSearchOptionIds}
                     availableIds={compatibleSearchOptionIds}
                     disabled={searchFixed || activeRun || !onSelectSearchOptionIds}
-                    onChange={plan => {
-                      if (plan.mode !== searchPlanMode) onSelectSearchPlanMode?.(plan.mode);
-                      else onSelectSearchOptionIds?.(plan.optionIds);
-                    }}
-                    onReset={onResetSearchPlan}
-                    scope="chat"
+                    allowEmpty={Boolean(boundAssistant)}
+                    combineMode={boundAssistant ? searchPlanMode : "all_selected"}
+                    lastSourceNote="To turn search off, use Chat defaults in Studio."
+                    onChange={optionIds => onSelectSearchOptionIds?.(optionIds)}
                   />
                   {resetToAssistantRow(searchProvenance, "button")}
                 </div>

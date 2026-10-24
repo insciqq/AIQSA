@@ -1103,8 +1103,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       searchPlanMode={composer.searchPlanMode}
-      onSelectSearchPlanMode={mode => composer.selectSearchPlan(composer.selectedSearchOptionIds, mode)}
-      onResetSearchPlan={composer.useOrganizationSearchDefault}
       onSend={() => void composer.submitComposer()}
       onFollowup={canSubmitFollowup && !autoReviewGroup
           ? runId => void composer.submitFollowup?.(runId) : undefined}
