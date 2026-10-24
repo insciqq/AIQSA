@@ -134,17 +134,17 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
     capability: "session",
     // Every ordinary chat request carries this text, so it stays short; the schema describes each field.
     description: [
-      "Create a scheduled task: a saved instruction that runs automatically with this chat's model and settings;",
-      "its answers appear in the task's own chat. Use it only when the user's current message asks for something",
+      "Create an automation: a saved instruction that runs automatically with this chat's model and settings;",
+      "its answers appear in the automation's own chat. Use it only when the user's current message asks for something",
       "later or repeatedly (a reminder, a regular report, watching for a change), at most once per answer, and do not",
-      "ask for confirmation: your answer shows the task with Edit and Delete.",
+      "ask for confirmation: your answer shows the automation with Edit and Delete.",
       "kind: \"monitoring\" when the user wants to hear when something happens or changes (silent without news, ends",
       "once it happened); \"standard\" for reminders and reports.",
       "prompt: a standalone instruction that works without this conversation, in the user's language; for monitoring",
-      "say what counts as news. When the task depends on particular sites or pages, write their exact URLs into prompt,",
+      "say what counts as news. When the automation depends on particular sites or pages, write their exact URLs into prompt,",
       "since a run reads only the links in its saved prompt besides its own search results, and tell the user which",
       `sources it will use. Times are 24-hour HH:MM in the user's time zone ${timeZone}; set unused schedule`,
-      "fields to null. chatMode: null unless the user asks. When the task runs one of this chat's skills, pin it in",
+      "fields to null. chatMode: null unless the user asks. When the automation runs one of this chat's skills, pin it in",
       "skills so every run loads it. Confirm briefly what was created; if it fails, explain why and do not retry the",
       "same arguments."
     ].join(" "),
@@ -276,7 +276,7 @@ export function scheduledTaskLinksPending(task: Pick<ScheduledTask, "promptLinks
   return task.promptLinksPending ? {
     linksPending: true,
     linksNote: "Runs cannot read the links in this prompt that the user did not write in this chat until the user " +
-      "opens the task with Edit and saves its instructions once. Tell the user which links these are and to do that."
+      "opens the automation with Edit and saves its instructions once. Tell the user which links these are and to do that."
   } as const : {};
 }
 
@@ -299,11 +299,11 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       tools: task.toolsEnabled,
       workspace: task.workspaceEnabled,
       memory: task.memoryEnabled,
-      // Results also go to the user's Telegram (a task created from a Telegram message).
+      // Results also go to the user's Telegram (an automation created from a Telegram message).
       telegram: task.telegramNotify,
       skills: scheduledTaskModelSkills(task),
       ...scheduledTaskLinksPending(task),
-      note: "The answer shows this task with Edit and Delete; the user manages tasks in Studio > Scheduled."
+      note: "The answer shows this automation with Edit and Delete; the user manages automations in Studio > Automations."
     } }],
     name: call.name,
     status: "complete"
@@ -313,11 +313,11 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
 function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_invalid", detail?: string): string {
   switch (code) {
     case "scheduled_task_arguments_invalid": return `The arguments are invalid: ${detail ?? "check them."}`;
-    case "scheduled_task_answer_limit": return "This answer already created a scheduled task; one answer creates at most one.";
+    case "scheduled_task_answer_limit": return "This answer already created an automation; one answer creates at most one.";
     case "scheduled_task_already_created":
-      return "An earlier answer to this message already created this scheduled task and the user still has it in " +
-        "Studio > Scheduled; refer to it instead of creating another.";
-    case "scheduled_task_call_unavailable": return "A scheduled task cannot be created from this answer.";
+      return "An earlier answer to this message already created this automation and the user still has it in " +
+        "Studio > Automations; refer to it instead of creating another.";
+    case "scheduled_task_call_unavailable": return "An automation cannot be created from this answer.";
     case "scheduled_task_invalid":
       return `Check title (1-${SCHEDULED_TASK_TITLE_MAX_LENGTH} characters), prompt (instruction text, at most ` +
         `${SCHEDULED_TASK_PROMPT_MAX_LENGTH} characters) and kind (standard or monitoring).`;
@@ -326,9 +326,9 @@ function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_
         "month, and that an hourly window ends after it starts.";
     case "scheduled_task_limit":
     case "scheduled_task_hourly_limit":
-      return `${scheduledTaskErrorMessage(code)} The user can pause or delete tasks in Studio > Scheduled.`;
+      return `${scheduledTaskErrorMessage(code)} The user can pause or delete automations in Studio > Automations.`;
     case "scheduled_task_skills_need_tools":
-      return "This chat has tools off, so its task cannot pin Skills: create it with skills [] or ask the user to turn tools on.";
+      return "This chat has tools off, so its automation cannot pin Skills: create it with skills [] or ask the user to turn tools on.";
     default: return scheduledTaskErrorMessage(code);
   }
 }

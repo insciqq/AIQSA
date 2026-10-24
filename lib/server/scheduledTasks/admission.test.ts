@@ -527,7 +527,7 @@ describe("scheduled task admission on the agent engine", () => {
     const tools = (f.state.requests[0]!.tools ?? []).map((tool) => tool.name);
     expect(tools).toEqual(expect.arrayContaining(["report_monitoring_result", "read_secret"]));
     expect(tools.some((name) => name.startsWith("manage_") || name === "create_scheduled_task")).toBe(false);
-    expect(f.state.requests[0]!.prompt.system).toContain("scheduled monitoring check");
+    expect(f.state.requests[0]!.prompt.system).toContain("an automation's monitoring check");
   });
 });
 

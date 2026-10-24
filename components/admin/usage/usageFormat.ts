@@ -31,8 +31,8 @@ export const USAGE_CATEGORY_META: Record<AdminUsageCategory, Readonly<{
   },
   scheduled: {
     color: "var(--v2-chart-2)",
-    label: "Scheduled tasks",
-    meaning: "Answers and Search in scheduled task runs"
+    label: "Automations",
+    meaning: "Answers and Search in automation runs"
   },
   images: {
     color: "var(--v2-chart-3)",

@@ -29,10 +29,10 @@ const deviceSubscription = {
 };
 const dismissedKeyPrefix = "aiqsa.browserNotifications.bannerDismissed:";
 const copy = {
-  allowed: "This device shows a notification when an answer or a scheduled task finishes while AIQSA is in the background or closed.",
-  banner: "Get notified when answers and scheduled tasks finish, even with AIQSA closed.",
+  allowed: "This device shows a notification when an answer or an automation finishes while AIQSA is in the background or closed.",
+  banner: "Get notified when answers and automations finish, even with AIQSA closed.",
   blocked: "Notifications are blocked for this site. Allow them in your browser’s site settings, then reload AIQSA.",
-  off: "Get a notification when an answer or a scheduled task finishes while AIQSA is in the background or closed.",
+  off: "Get a notification when an answer or an automation finishes while AIQSA is in the background or closed.",
   request: "Allow notifications in this browser to receive them on this device.",
   unsupported: "This browser does not support notifications."
 };

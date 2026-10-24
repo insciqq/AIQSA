@@ -150,11 +150,11 @@ async function deliveryState(occurrenceId: string): Promise<Readonly<{ code: str
 async function openEditor(page: Page, title: string) {
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 60_000 });
-  await runAccountMenuAction(page, "Scheduled");
+  await runAccountMenuAction(page, "Automations");
   const panel = page.getByTestId("scheduled-tasks-panel");
   await panel.getByRole("button", { name: `More actions for ${title}`, exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit scheduled task", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Edit automation", exact: true });
   await expect(dialog).toBeVisible();
   return dialog;
 }
@@ -219,7 +219,7 @@ test("Run now sends the result to Telegram in one message with its heading, refe
   await expect.poll(() => richSince(since), { timeout: DELIVERY_TIMEOUT_MS }).toHaveLength(1);
   const [message] = richSince(since);
   expect(message).toContain("Telegram morning brief");
-  expect(message).toContain("Scheduled task finished");
+  expect(message).toContain("Automation finished");
   expect(message).toContain("Fake answer: Synthetic Telegram morning brief instructions.");
   await expect.poll(() => deliveryState(occurrence.id), { timeout: 15_000 }).toEqual({ code: null, state: "sent" });
   const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: occurrence.runId! } });
@@ -279,7 +279,7 @@ test("a scheduled run that pauses its task sends the heading and the reason only
       { cause: error });
   }
   const [text] = textsSince(since);
-  expect(text).toMatch(/^Telegram pause check\nScheduled task paused\n\S/u);
+  expect(text).toMatch(/^Telegram pause check\nAutomation paused\n\S/u);
   expect(text).not.toContain("Fake answer");
   expect(richSince(since)).toEqual([]);
   await expect.poll(() => deliveryState(occurrence.id), { timeout: 15_000 }).toEqual({ code: null, state: "sent" });

@@ -58,11 +58,11 @@ type FailureCode = Exclude<FetchUrlActivityOutcome, "read">;
 function notInConversationMessage(scope: FetchUrlRefusalScope | undefined, searchAvailable: boolean): string {
   switch (scope) {
     case "scheduled_run":
-      return "This scheduled run reads only the links its owner allowed by saving the task's instructions, and this one is " +
-        "not allowed, so it was not read. Do not try variations of it. Tell the owner that to allow it, they open the task " +
+      return "This automation run reads only the links its owner allowed by saving the automation's instructions, and this one is " +
+        "not allowed, so it was not read. Do not try variations of it. Tell the owner that to allow it, they open the automation " +
         "and save its instructions, adding the link to them if it is not there.";
     case "task_instructions":
-      return "This link appears only in a scheduled task's instructions, which only that task's scheduled runs read; this " +
+      return "This link appears only in an automation's instructions, which only that automation's own runs read; this " +
         "answer cannot, so it was not read. Do not try variations of it. If the page is needed now, ask the user to send " +
         "the link in the chat.";
     default:

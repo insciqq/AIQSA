@@ -165,7 +165,7 @@ const subsystemLabels = {
   projects: "Project removal",
   push: "Push notifications",
   run_recovery: "Chat run recovery",
-  scheduled_tasks: "Scheduled tasks",
+  scheduled_tasks: "Automations",
   telegram: "Telegram",
   telemetry: "Health telemetry",
   workspace: "Workspace"

@@ -67,13 +67,13 @@ describe("scheduled task presentation", () => {
     }), now);
     expect(scheduledTaskLastRunLine(scheduledTaskFixture(), now)).toBeNull();
     expect(run("completed", null)).toBe("Last run Mon 5 Oct, 09:00 · Answered");
-    expect(run("failed", "chat_busy")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the task's chat was busy with another answer");
+    expect(run("failed", "chat_busy")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the automation's chat was busy with another answer");
     expect(run("skipped", "missed")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the scheduled time passed while runs were unavailable");
     expect(run("failed", "provider_http_529")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the answer did not complete");
     // Every reason the runner records reads as words.
     expect(run("failed", "model_run_cancelled")).toBe("Last run Mon 5 Oct, 09:00 · Failed: it was stopped in the chat");
     expect(run("failed", "admission_failed")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the run could not start");
-    expect(run("skipped", "paused")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the task was paused");
+    expect(run("skipped", "paused")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the automation was paused");
   });
 
   it("announces answers and failures that paused the task, never routine skips or failures", () => {
@@ -118,7 +118,7 @@ describe("scheduled task presentation", () => {
       .toMatchObject({ outcome: "Waiting for a free Workspace slot", tone: "live" });
     expect(scheduledTaskRunRow(run({ finishedAt: "2026-10-05T20:00:01.000Z", reasonCode: "workspace_capacity", state: "skipped" }),
       "Europe/London", now)).toMatchObject({
-      outcome: "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace", tone: "neutral"
+      outcome: "Skipped: no Workspace slot became free in time; other automation runs were using Workspace", tone: "neutral"
     });
     expect(scheduledTaskStatusLine(scheduledTaskFixture({ running: true, waitingForWorkspace: true }), now))
       .toEqual({ text: "Waiting for a free Workspace slot", tone: "live" });
@@ -150,7 +150,7 @@ describe("scheduled task presentation", () => {
 
   it("maps the run conflict and unknown failures to copy", () => {
     expect(scheduledTaskFailureMessage("scheduled_task_running")).toMatch(/already running/u);
-    expect(scheduledTaskFailureMessage("something_new")).toBe("Scheduled tasks are unavailable right now. Try again.");
+    expect(scheduledTaskFailureMessage("something_new")).toBe("Automations are unavailable right now. Try again.");
   });
 
   it("orders active, paused, then completed tasks and lists the viewer's zone first", () => {
@@ -303,9 +303,9 @@ describe("pinned Skills in the editor and history", () => {
       pinnedSkillIds: (pinnedSkills ?? []).map((skill) => skill.id), pinnedSkills
     }), now);
     expect(paused([{ ...digest, available: false }, style])).toEqual({ tone: "attention",
-      text: "Paused: the pinned Skill “gitlab-digest” is no longer available. Edit the task's Skills, then resume." });
+      text: "Paused: the pinned Skill “gitlab-digest” is no longer available. Edit the automation's Skills, then resume." });
     expect(paused([{ id: "skill-gone", name: null, available: false, hasExecutables: false }]).text)
-      .toBe("Paused: a pinned Skill is no longer available. Edit the task's Skills, then resume.");
+      .toBe("Paused: a pinned Skill is no longer available. Edit the automation's Skills, then resume.");
     const row = scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule", state: "completed",
       reasonCode: null, startedAt: "2026-10-05T08:00:01.000Z", finishedAt: "2026-10-05T08:01:00.000Z", chatId: "chat-1", unseen: false,
       unavailableSources: [], skills: [{ name: "gitlab-digest", version: 3 }, { name: "House style", version: 1 }] }, "Europe/London", now);
@@ -330,7 +330,7 @@ describe("monitoring and tool copy", () => {
     expect(row({ reasonCode: "no_update" })).toMatchObject({ outcome: "No update: nothing changed since the last shown result", tone: "quiet", sources: [] });
     expect(row({ reasonCode: "update" })).toMatchObject({ outcome: "Update: something changed since the last shown result", tone: "neutral" });
     expect(row({ reasonCode: "baseline" }).outcome).toBe("First check: the starting point later checks compare with");
-    expect(row({ reasonCode: "goal_reached" })).toMatchObject({ outcome: "Goal reached — task completed", tone: "neutral" });
+    expect(row({ reasonCode: "goal_reached" })).toMatchObject({ outcome: "Goal reached — automation completed", tone: "neutral" });
     expect(row({ reasonCode: "unreported" }).outcome).toBe("Shown: the check did not report whether anything changed");
     expect(row({ reasonCode: "could_not_check", unavailableSources: [{ name: "Tracker", reason: "mcp_reauthorization_required" }] }))
       .toEqual(expect.objectContaining({ outcome: "Could not check: a source was unavailable", tone: "attention", sources: ["Tracker needs sign-in."] }));
@@ -338,7 +338,7 @@ describe("monitoring and tool copy", () => {
     expect(row({ unavailableSources: [{ name: "Calendar", reason: "mcp_server_unavailable" }] }))
       .toEqual(expect.objectContaining({ outcome: "Answered", tone: "attention", sources: ["Calendar is unavailable."] }));
     expect(row({ state: "failed", reasonCode: "run_deadline" }).outcome).toBe("Failed: it was stopped after running for 30 minutes");
-    expect(row({ state: "failed", reasonCode: "tools_unavailable" }).outcome).toBe("Failed: the task's tools could not be used with this model");
+    expect(row({ state: "failed", reasonCode: "tools_unavailable" }).outcome).toBe("Failed: the automation's tools could not be used with this model");
   });
 
   it("names a monitoring check's outcome on the last-run line and a reached goal on the status line", () => {
@@ -414,10 +414,10 @@ describe("scheduled task type and tools in drafts", () => {
       .toEqual({
         kind: "Monitoring needs a model that can use tools. Choose another model.",
         tools: "This model cannot use tools. Turn tools off or choose another model.",
-        workspace: expect.stringMatching(/^Workspace is not available for this task/u)
+        workspace: expect.stringMatching(/^Workspace is not available for this automation/u)
       });
     expect(validateScheduledTaskDraft({ ...base, workspaceEnabled: true }, catalog, null, now, "installation_disabled").workspace)
-      .toMatch(/^Workspace is not available for this task/u);
+      .toMatch(/^Workspace is not available for this automation/u);
   });
 
   it("reads the installation's Workspace availability apart from the composer model's", () => {
@@ -496,6 +496,6 @@ describe("scheduled task history", () => {
     expect(scheduledTaskRunRow({ chatId: null, finishedAt: "2026-11-01T06:31:00.000Z", id: "run-1", reasonCode: "workspace_carryover_unavailable",
       scheduledFor: "2026-11-01T06:00:00.000Z", skills: [], startedAt: "2026-11-01T06:00:00.000Z", state: "failed",
       trigger: "schedule", unavailableSources: [], unseen: false }, "UTC", now))
-      .toMatchObject({ outcome: expect.stringContaining("turn Workspace off for the task"), tone: "attention" });
+      .toMatchObject({ outcome: expect.stringContaining("turn Workspace off for the automation"), tone: "attention" });
   });
 });

@@ -100,10 +100,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   descriptors.set("read_skill_file", { origin: "skill", serverName: "Skills", toolName: "read_skill_file" });
   if (normalizedRequest.imagePlan) descriptors.set("generate_image", { origin: "image", serverName: "Images", toolName: "generate_image" });
   if (normalizedRequest.scheduledTaskTool) {
-    descriptors.set("create_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "create_scheduled_task" });
+    descriptors.set("create_scheduled_task", { origin: "session", serverName: "Automations", toolName: "create_scheduled_task" });
   }
   if (normalizedRequest.scheduledTaskManagementTool) {
-    descriptors.set("manage_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "manage_scheduled_task" });
+    descriptors.set("manage_scheduled_task", { origin: "session", serverName: "Automations", toolName: "manage_scheduled_task" });
   }
   if (normalizedRequest.skillSaveTool) descriptors.set("save_skill", { origin: "skill", serverName: "Skills", toolName: "save_skill" });
   // The native engine's harness tools (`harnessTools.ts`): a patch is a Workspace step whose

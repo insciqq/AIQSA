@@ -201,7 +201,7 @@ describe("browser push sender", () => {
     const h = harness({ events: new Map([["occurrence-1", occurrence]]), targets: [phone.target] });
     h.sender.notifyOccurrence("occurrence-1");
     await h.sender.idle();
-    expect(phone.open(h.requests[0]!.body)).toMatchObject({ body: "Scheduled task finished", title: "Brief", url: "/scheduled" });
+    expect(phone.open(h.requests[0]!.body)).toMatchObject({ body: "Automation finished", title: "Brief", url: "/scheduled" });
   });
 
   it("names each delivery's push service by its endpoint host class, never the endpoint", async () => {

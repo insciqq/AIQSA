@@ -791,9 +791,9 @@ describe("answer process label", () => {
     expect(describeToolCallV2(call("fetch_url_not_in_conversation"), "failed"))
       .toBe("Skipped news.example/today: only links from this chat or web search are read");
     expect(describeToolCallV2({ ...call("fetch_url_not_in_conversation"), fetchRefusalScope: "scheduled_run" }, "failed"))
-      .toBe("Didn't read news.example/today: open the task and save its instructions to allow this link");
+      .toBe("Didn't read news.example/today: open the automation and save its instructions to allow this link");
     expect(describeToolCallV2({ ...call("fetch_url_not_in_conversation"), fetchRefusalScope: "task_instructions" }, "failed"))
-      .toBe("Didn't read news.example/today: links in a task's instructions are read only by its scheduled runs");
+      .toBe("Didn't read news.example/today: links in an automation's instructions are read only by that automation's runs");
     for (const blocked of ["fetch_blocked_address", "fetch_port_not_allowed", "fetch_url_credentials"]) {
       expect(describeToolCallV2(call(blocked), "failed")).toBe("Blocked news.example/today: this address is not allowed");
     }

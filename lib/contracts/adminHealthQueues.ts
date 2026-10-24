@@ -30,7 +30,7 @@ export type AdminHealthQueueState = (typeof adminHealthQueueStates)[number];
 export const adminHealthQueueCopy: Readonly<Record<AdminHealthQueueId, Readonly<{ label: string; purpose: string }>>> = {
   attachment_processing: { label: "Chat file processing", purpose: "Reads files attached in chats so answers can use them" },
   chat_titles: { label: "Chat titles", purpose: "Names new chats after their first answer" },
-  scheduled_tasks: { label: "Scheduled tasks", purpose: "Starts scheduled task runs when they are due" },
+  scheduled_tasks: { label: "Automations", purpose: "Starts automation runs when they are due" },
   memory: { label: "Memory learning and indexing", purpose: "Learns facts and indexes chat history, as on the Memory card" },
   mcp_activation: { label: "MCP server checks", purpose: "Checks installation MCP server settings before they go live" },
   workspace_cleanup: { label: "Workspace cleanup", purpose: "Removes sandboxes of deleted or expired Workspaces" },

@@ -237,7 +237,7 @@ describe("Navigation v2", () => {
     ] });
     const unread = screen.getByRole("treeitem", { name: chats[0].title });
     const read = screen.getByRole("treeitem", { name: chats[1].title });
-    expect(unread).toHaveAccessibleDescription("New scheduled result");
+    expect(unread).toHaveAccessibleDescription("New automation result");
     expect(unread.querySelector(".v2-chat-unread")).toHaveAttribute("aria-hidden", "true");
     expect(read).not.toHaveAttribute("aria-describedby");
     expect(read.querySelector(".v2-chat-unread")).toBeNull();

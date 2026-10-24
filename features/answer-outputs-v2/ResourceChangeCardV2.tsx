@@ -292,7 +292,7 @@ function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalC
   const consequences = [
     ...card.assistantCount > 0 ? [`Linked by ${plural(card.assistantCount, "Assistant", "Assistants")}, which lose it.`] : [],
     ...card.shared ? ["Shared with colleagues, who lose access."] : [],
-    ...card.scheduledTasks.length ? [`Pinned by scheduled tasks ${quoted(card.scheduledTasks.map((task) => task.title))}; their next runs fail until they are changed.`] : []
+    ...card.scheduledTasks.length ? [`Pinned by automations ${quoted(card.scheduledTasks.map((task) => task.title))}; their next runs fail until they are changed.`] : []
   ];
   return (
     <CardV2 actions={asking ? null : <CardLinkV2 href={SKILL_LIBRARY_PATH} icon="library">Open library</CardLinkV2>} error={state.error}

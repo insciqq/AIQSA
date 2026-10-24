@@ -48,7 +48,7 @@ describe("SkillSaveCardsV2", () => {
     expect(item).toHaveTextContent("gitlab-digest");
     expect(item).toHaveTextContent("Add commit summaries");
     expect(item).toHaveTextContent("Colleagues keep the published version until you share this Skill again.");
-    expect(within(item).getByRole("note")).toHaveTextContent("Used by scheduled tasks: “Morning digest”. Their next run uses this version.");
+    expect(within(item).getByRole("note")).toHaveTextContent("Used by automations: “Morning digest”. Their next run uses this version.");
     const files = within(item).getByRole("list", { name: "Files of gitlab-digest" });
     expect(within(files).getAllByRole("listitem").map((row) => row.getAttribute("data-change"))).toEqual(["changed", "added", "removed"]);
     expect(within(files).getAllByRole("listitem")[1]).toHaveTextContent("Runs");

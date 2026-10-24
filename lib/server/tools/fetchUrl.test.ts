@@ -116,7 +116,7 @@ describe("fetch_url provenance", () => {
     const taskUrl = "https://daily.example/report";
     const s = session({ plan: { taskUrlDigests: [fetchUrlDigest(taskUrl)], userUrlDigests: [], version: 1 }, scheduled: true });
     const refused = await s.execute(call(USER_URL), { persistedToolCallId: "c1", signal });
-    expect(String(json(refused).message)).toContain("open the task and save its instructions");
+    expect(String(json(refused).message)).toContain("open the automation and save its instructions");
     // The activity row points the owner at the task instead of the chat.
     expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: USER_URL }, refused)).toMatchObject({
       fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "scheduled_run" });
@@ -128,7 +128,7 @@ describe("fetch_url provenance", () => {
     const s = session({ plan: { instructionUrlDigests: [fetchUrlDigest(taskUrl)], userUrlDigests: [], version: 1 } });
     const fromInstructions = await s.execute(call(taskUrl), { persistedToolCallId: "c1", signal });
     expect(json(fromInstructions).error).toBe("fetch_url_not_in_conversation");
-    expect(String(json(fromInstructions).message)).toContain("only that task's scheduled runs read");
+    expect(String(json(fromInstructions).message)).toContain("only that automation's own runs read");
     expect(String(json(fromInstructions).message)).toContain("ask the user to send the link in the chat");
     expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: taskUrl }, fromInstructions))
       .toMatchObject({ fetchRefusalScope: "task_instructions" });

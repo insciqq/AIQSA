@@ -307,7 +307,7 @@ export function scheduledTaskDraftSchedule(draft: ScheduledTaskEditorDraft): Sch
 /** Why the chat choice is fixed to the task's own chat, or null when the owner chooses. */
 export function scheduledTaskForcedChatReason(draft: Pick<ScheduledTaskEditorDraft, "kind" | "repeat">): string | null {
   if (draft.kind === "monitoring") return "Monitoring compares each check with the last result, so it always continues in one chat.";
-  return draft.repeat === "hourly" ? "Hourly tasks always continue in one chat." : null;
+  return draft.repeat === "hourly" ? "Hourly automations always continue in one chat." : null;
 }
 
 /**
@@ -395,7 +395,7 @@ export function validateScheduledTaskDraft(
   const model = catalogModel(catalog, draft);
   const keptModel = original && original.modelId === draft.modelId && original.provider === draft.provider;
   if (!draft.modelId || (!model && !keptModel)) errors.model = "Choose a model.";
-  else if (!model) errors.model = "This model is not available to you for scheduled tasks. Choose another model.";
+  else if (!model) errors.model = "This model is not available to you for automations. Choose another model.";
   else if (draft.searchEnabled && !modelHasSearch(catalog, model)) {
     errors.search = "Web search is not available with this model. Turn it off or choose another model.";
   }

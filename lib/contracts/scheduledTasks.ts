@@ -730,27 +730,27 @@ export function decodeScheduledTaskSeenRequest(value: unknown): ScheduledTaskSee
 
 export function scheduledTaskErrorMessage(errorCode: unknown): string {
   switch (errorCode) {
-    case "scheduled_task_invalid": return "Check the task name, instructions and settings.";
+    case "scheduled_task_invalid": return "Check the automation's name, instructions and settings.";
     case "scheduled_task_schedule_invalid": return "Check the schedule.";
     case "scheduled_task_time_zone_invalid": return "Choose a valid time zone.";
     case "scheduled_task_once_in_past": return "Choose a time at least a minute from now.";
-    case "scheduled_task_chat_mode_invalid": return "Hourly and monitoring tasks always continue in the same chat.";
-    case "scheduled_task_model_unavailable": return "This model is not available to you for scheduled tasks. Choose another model.";
+    case "scheduled_task_chat_mode_invalid": return "Hourly and monitoring automations always continue in the same chat.";
+    case "scheduled_task_model_unavailable": return "This model is not available to you for automations. Choose another model.";
     case "scheduled_task_model_cannot_report": return "Monitoring needs a model that can use tools. Choose another model.";
     case "scheduled_task_search_unavailable": return "Web search is not available with this model. Turn it off or choose another model.";
     case "scheduled_task_tools_unavailable": return "This model cannot use tools. Turn tools off or choose another model.";
     case "scheduled_task_workspace_unavailable":
-      return "Workspace is not available for this task. It needs a model with tool support and Workspace turned on by the administrator.";
+      return "Workspace is not available for this automation. It needs a model with tool support and Workspace turned on by the administrator.";
     case "scheduled_task_skills_need_tools": return "Pinned Skills need tools. Turn tools on or remove the pinned Skills.";
     case "scheduled_task_skill_unavailable": return "A pinned Skill is not available to you. Remove it or choose another Skill.";
     case "scheduled_task_limit":
-      return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE} active and ${SCHEDULED_TASK_MAX_TOTAL} saved scheduled tasks.`;
+      return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE} active and ${SCHEDULED_TASK_MAX_TOTAL} saved automations.`;
     case "scheduled_task_hourly_limit":
-      return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE_HOURLY} active hourly tasks. Pause one or choose a less frequent schedule.`;
-    case "scheduled_task_stale": return "This task was changed elsewhere. Reload it and try again; your unsaved changes are kept.";
-    case "scheduled_task_not_found": return "This task is no longer available.";
-    case "scheduled_task_running": return "This task is already running. Wait for the current run to finish.";
-    default: return "Scheduled tasks are unavailable right now. Try again.";
+      return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE_HOURLY} active hourly automations. Pause one or choose a less frequent schedule.`;
+    case "scheduled_task_stale": return "This automation was changed elsewhere. Reload it and try again; your unsaved changes are kept.";
+    case "scheduled_task_not_found": return "This automation is no longer available.";
+    case "scheduled_task_running": return "This automation is already running. Wait for the current run to finish.";
+    default: return "Automations are unavailable right now. Try again.";
   }
 }
 
@@ -769,16 +769,16 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "provider_rate_limited": return "The model provider was limiting requests.";
     case "provider_server_error": return "The model provider returned a server error.";
     case "tools_unavailable":
-      return "The task's tools can no longer be used with this model. Turn tools off, choose another model, or switch some Skills or MCP tools off, then resume.";
+      return "The automation's tools can no longer be used with this model. Turn tools off, choose another model, or switch some Skills or MCP tools off, then resume.";
     case "workspace_unavailable":
-      return "Workspace can no longer be used for this task. Turn Workspace off or choose a model with tool support, then resume.";
+      return "Workspace can no longer be used for this automation. Turn Workspace off or choose a model with tool support, then resume.";
     case "workspace_secret_limit": return "Your saved Workspace secrets exceed the limit. Remove some in Settings or turn Workspace off, then resume.";
     case "workspace_carryover_unavailable":
-      return "The Workspace files of the task's previous chat could not be carried into its new chat, so nothing ran. " +
-        "The next run tries again; to go on without them, turn Workspace off for this task.";
-    case "skill_unavailable": return "A pinned Skill is no longer available. Edit the task's Skills, then resume.";
+      return "The Workspace files of the automation's previous chat could not be carried into its new chat, so nothing ran. " +
+        "The next run tries again; to go on without them, turn Workspace off for this automation.";
+    case "skill_unavailable": return "A pinned Skill is no longer available. Edit the automation's Skills, then resume.";
     case "source_unavailable":
-      return `Paused after ${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source the task uses. Reconnect it and resume.`;
+      return `Paused after ${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source the automation uses. Reconnect it and resume.`;
     case "account_inactive": return "Paused while the account was not active. Resume to continue.";
     case "schedule_invalid": return "The schedule can no longer be calculated. Edit the schedule and resume.";
     case "repeated_failures": return "Paused after three failed runs in a row.";
@@ -787,22 +787,22 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "baseline": return "First check: the starting point later checks compare with.";
     case "update": return "Update: something changed since the last shown result.";
     case "no_update": return "No update: nothing changed since the last shown result.";
-    case "goal_reached": return "Goal reached — task completed.";
+    case "goal_reached": return "Goal reached — automation completed.";
     case "unreported": return "Shown: the check did not report whether anything changed.";
     case "could_not_check": return "Could not check: a source was unavailable.";
     case "missed": return "Skipped: the scheduled time passed while runs were unavailable.";
     case "previous_running": return "Skipped: the previous run was still in progress.";
     case "superseded": return "Skipped: a newer scheduled time arrived before this run could start.";
-    case "chat_busy": return "Skipped: the task's chat was busy.";
+    case "chat_busy": return "Skipped: the automation's chat was busy.";
     case "usage_budget_exhausted":
       return "Skipped: your monthly budget was used up. Runs continue after it resets or an administrator raises it.";
     case "installation_budget_exhausted":
       return "Skipped: the monthly budget shared by everyone was used up. Runs continue after it resets or an administrator raises it.";
-    case "waiting_for_workspace": return "Waiting for a free Workspace slot: other scheduled runs are using Workspace.";
-    case "workspace_capacity": return "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace.";
-    case "paused": return "Skipped: the task was paused.";
+    case "waiting_for_workspace": return "Waiting for a free Workspace slot: other automation runs are using Workspace.";
+    case "workspace_capacity": return "Skipped: no Workspace slot became free in time; other automation runs were using Workspace.";
+    case "paused": return "Skipped: the automation was paused.";
     case "admission_failed": return "The run could not start.";
-    case "run_unavailable": return "The task's chat was deleted before the run finished.";
+    case "run_unavailable": return "The automation's chat was deleted before the run finished.";
     case "model_run_cancelled": return "Stopped in the chat.";
     case "run_deadline": return `Stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes.`;
     default: return "The run did not complete.";

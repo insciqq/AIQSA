@@ -29,7 +29,7 @@ describe("administrator Workspace environment list", () => {
     expect(screen.getByText("1 changing · 1 unknown · 2 stopped")).toBeVisible();
     // Content-free disk and scheduled capacity counts.
     expect(screen.getByTestId("workspace-footprint")).toHaveTextContent(
-      "7 disks kept · 2 kept for scheduled tasksScheduled runs in the last 24 hours: 4 waited for a free Workspace slot · 1 skipped because none became free");
+      "7 disks kept · 2 kept for automationsAutomation runs in the last 24 hours: 4 waited for a free Workspace slot · 1 skipped because none became free");
     const rows = screen.getByRole("list", { name: "Workspace environments" });
     expect(within(rows).getByText("Fixture user")).toBeVisible();
     expect(within(rows).getByText("ws-1234567890abcdef")).toBeVisible();
@@ -58,7 +58,7 @@ describe("administrator Workspace environment list", () => {
       rows: [], state: "unavailable", stoppedCount: null, totalCount: 0 }, ok: true });
     render(<AdminWorkspaceOverview />);
     expect(await screen.findByText("Live environment count is unknown.")).toBeVisible();
-    expect(screen.getByText("Disk and scheduled run counts are unavailable.")).toBeVisible();
+    expect(screen.getByText("Disk and automation run counts are unavailable.")).toBeVisible();
     expect(screen.queryByText("No active environments.")).not.toBeInTheDocument();
     api.read.mockResolvedValue({ data: { ...overview, activeCount: 0, rows: [], totalCount: 0 }, ok: true });
     fireEvent.click(screen.getByRole("button", { name: "Refresh activity" }));

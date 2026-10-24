@@ -54,7 +54,7 @@ export function browserPushMessage(event: BrowserPushEvent): BrowserPushMessage 
     body: [headline, ...(reason ? [reason] : []), ...scheduledTaskSourceLines(event.unavailableSources, PUSH_SOURCE_LINES)]
       .join("\n"),
     tag: event.chatId ? `aiqsa-chat-${event.chatId}` : "aiqsa-scheduled",
-    title: cleanTitle(event.title, "Scheduled task"),
+    title: cleanTitle(event.title, "Automation"),
     url: event.chatId ? chatPath(event.chatId) : "/scheduled",
     v: 1
   };

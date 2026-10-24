@@ -465,7 +465,7 @@ describe("scheduled task runner", () => {
     expect(h.chats.get(h.sent[0]!.chatId)?.title).toBe("Synthetic brief · October 2026");
     expect(task).toMatchObject({ chatEpoch: 1, chatId: h.sent[0]!.chatId, chatPeriod: "2026-10" });
     expect(h.emails).toHaveLength(1);
-    expect(h.emails[0]).toMatchObject({ kind: "scheduled_task_result", subject: "Scheduled task finished", to: "owner@example.test" });
+    expect(h.emails[0]).toMatchObject({ kind: "scheduled_task_result", subject: "Automation finished", to: "owner@example.test" });
     expect(h.emails[0]!.text).toContain(`https://aiqsa.example.test/c/${h.sent[0]!.chatId}`);
     expect(h.emails[0]!.text).not.toContain("Summarize");
     // The finished run frees its owner's slot: the runner wakes itself for the next one.
@@ -582,7 +582,7 @@ describe("scheduled task runner", () => {
     h.advance(HOUR);
     await h.tick();
     expect(h.forTask(task).map((row) => row.state)).toEqual(["COMPLETED", "SKIPPED", "COMPLETED"]);
-    expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task finished", "Scheduled task finished"]);
+    expect(h.emails.map((email) => email.subject)).toEqual(["Automation finished", "Automation finished"]);
   });
 
   it("replaces a pending run that could not start once the next instant arrives", async () => {
@@ -730,7 +730,7 @@ describe("scheduled task runner", () => {
     await vi.waitFor(() => expect(pending).toHaveLength(2));
     pending[1]!();
     await runner.idle();
-    expect(delivered.map((message) => message.subject)).toEqual(["Scheduled task paused", "Scheduled task paused"]);
+    expect(delivered.map((message) => message.subject)).toEqual(["Automation paused", "Automation paused"]);
     // At most once: a later settlement pass never claims them again.
     await runner.tick();
     await runner.idle();
@@ -1079,8 +1079,8 @@ describe("scheduled task runner with the owner's tools", () => {
     await h.tick();
     expect(h.forTask(refusing)).toMatchObject([{ reasonCode: "workspace_unavailable", state: "FAILED" }]);
     expect(refusing).toMatchObject({ nextRunAt: null, pauseReason: "workspace_unavailable", status: "PAUSED" });
-    expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task paused"]);
-    expect(h.emails[0]!.text).toContain("Workspace can no longer be used for this task.");
+    expect(h.emails.map((email) => email.subject)).toEqual(["Automation paused"]);
+    expect(h.emails[0]!.text).toContain("Workspace can no longer be used for this automation.");
     // Paused: no later instant fails and emails again.
     h.advance(24 * HOUR);
     await h.tick();
@@ -1174,7 +1174,7 @@ describe("scheduled run source health", () => {
     // The result completed; its health is incomplete and the owner hears which source needs sign-in.
     expect(first).toMatchObject({ reasonCode: null, state: "COMPLETED" });
     expect(task).toMatchObject({ consecutiveFailures: 0, consecutiveIncompleteRuns: 1, status: "ACTIVE" });
-    expect(h.emails.at(-1)).toMatchObject({ subject: "Scheduled task finished", text: expect.stringContaining("Mail needs sign-in.") });
+    expect(h.emails.at(-1)).toMatchObject({ subject: "Automation finished", text: expect.stringContaining("Mail needs sign-in.") });
     for (let day = 0; day < 2; day += 1) {
       h.advance(24 * HOUR);
       await h.tick();
@@ -1182,7 +1182,7 @@ describe("scheduled run source health", () => {
     expect(h.forTask(task).map((row) => row.state)).toEqual(["COMPLETED", "COMPLETED", "COMPLETED"]);
     expect(h.settled.map((settlement) => settlement.sourceAlert)).toEqual([true, false, false]);
     expect(task).toMatchObject({ consecutiveIncompleteRuns: 3, nextRunAt: null, pauseReason: "source_unavailable", status: "PAUSED" });
-    expect(h.emails.at(-1)).toMatchObject({ subject: "Scheduled task paused", text: expect.stringContaining("Mail needs sign-in.") });
+    expect(h.emails.at(-1)).toMatchObject({ subject: "Automation paused", text: expect.stringContaining("Mail needs sign-in.") });
     // The health is logged by its registered code, never by source name.
     expect(lines.join("")).not.toContain("Mail");
     expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>))
@@ -1405,9 +1405,9 @@ describe("scheduled monitoring checks and source health", () => {
     // A hidden check without news never reaches Telegram either.
     expect(h.telegram).toEqual(notified);
     expect(quiet!.unseenAt).toBeNull();
-    expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task finished", "Scheduled task finished", "Scheduled task paused"]);
+    expect(h.emails.map((email) => email.subject)).toEqual(["Automation finished", "Automation finished", "Automation paused"]);
     expect(h.emails[1]!.text).toContain("Could not check: a source was unavailable.\nTracker is unavailable.");
-    expect(h.emails[2]!.text).toContain("could not reach a source the task uses");
+    expect(h.emails[2]!.text).toContain("could not reach a source the automation uses");
     expect(h.emails[2]!.text).toContain("Tracker is unavailable.");
   });
 
@@ -1421,7 +1421,7 @@ describe("scheduled monitoring checks and source health", () => {
     expect(task).toMatchObject({ pauseReason: "verdict_missing", status: "PAUSED" });
     expect(h.pushes).toEqual([check!.id]);
     expect(h.emails).toHaveLength(1);
-    expect(h.emails[0]).toMatchObject({ subject: "Scheduled task paused" });
+    expect(h.emails[0]).toMatchObject({ subject: "Automation paused" });
     expect(h.emails[0]!.text).toContain("was paused.\nPaused after three checks in a row did not report whether anything changed.");
   });
 

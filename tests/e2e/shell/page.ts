@@ -2,7 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export async function runAccountMenuAction(
   page: Page,
-  name: "Assistants" | "Memory" | "Settings" | "Chat defaults" | "Instructions" | "Secrets" | "MCP servers" | "Skills" | "Files" | "Scheduled"
+  name: "Assistants" | "Memory" | "Settings" | "Chat defaults" | "Instructions" | "Secrets" | "MCP servers" | "Skills" | "Files" | "Automations"
 ): Promise<Locator> {
   // Library and the account menu live on the rail (desktop/compact) or in
   // the mobile drawer's footer, which has to be opened first.

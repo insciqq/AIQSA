@@ -172,17 +172,17 @@ function cardOf(page: Page, title: string): Locator {
 }
 
 function editButton(scope: Locator, title: string): Locator {
-  return scope.getByRole("button", { name: `Edit scheduled task ${title}`, exact: true });
+  return scope.getByRole("button", { name: `Edit automation ${title}`, exact: true });
 }
 
 function deleteButton(scope: Locator, title: string): Locator {
-  return scope.getByRole("button", { name: `Delete scheduled task ${title}`, exact: true });
+  return scope.getByRole("button", { name: `Delete automation ${title}`, exact: true });
 }
 
 test("cards show a created, monitoring, other-zone, deleted and paused task at every size in both themes", async ({ page }, info) => {
   const api = await prepare(page);
   const weekly = cardOf(page, cards.weekly.title);
-  await expect(weekly.getByRole("status")).toHaveText("Scheduled task created");
+  await expect(weekly.getByRole("status")).toHaveText("Automation created");
   await expect(weekly).toContainText("Every weekday at 09:00 · Tools");
   await expect(weekly).toContainText("Next run Mon 5 Oct, 09:00");
   // The viewer's own zone is not repeated.
@@ -215,13 +215,13 @@ test("cards show a created, monitoring, other-zone, deleted and paused task at e
   });
 
   const deleted = cardOf(page, cards.deleted.title);
-  await expect(deleted.getByRole("status")).toHaveText("Scheduled task deleted");
+  await expect(deleted.getByRole("status")).toHaveText("Automation deleted");
   await expect(deleted).toHaveAttribute("data-state", "deleted");
   await expect(deleted).toContainText("Every day at 07:30");
   await expect(deleted).not.toContainText("Next run");
   await expect(deleted.getByRole("button")).toHaveCount(0);
   const paused = cardOf(page, cards.paused.title);
-  await expect(paused.getByRole("status")).toHaveText("Scheduled task created");
+  await expect(paused.getByRole("status")).toHaveText("Automation created");
   await expect(paused).toHaveAttribute("data-state", "paused");
   await expect(paused).toContainText("Paused");
   await expect(paused).not.toContainText("Next run");
@@ -242,10 +242,10 @@ test("Edit opens Studio › Scheduled on that task's editor", async ({ page }, i
   const monitoring = cardOf(page, cards.monitoring.title);
   await editButton(monitoring, cards.monitoring.title).click();
   const sheet = page.getByTestId("scheduled-task-sheet");
-  const dialog = sheet.getByRole("dialog", { name: "Edit scheduled task", exact: true });
+  const dialog = sheet.getByRole("dialog", { name: "Edit automation", exact: true });
   await expect(dialog).toBeVisible();
   // The modal editor hides the page behind it from the accessibility tree.
-  await expect(page.getByTestId("library-v2").getByRole("tab", { includeHidden: true, name: "Scheduled" }))
+  await expect(page.getByTestId("library-v2").getByRole("tab", { includeHidden: true, name: "Automations" }))
     .toHaveAttribute("aria-selected", "true");
   await expect(sheet.getByLabel("Name", { exact: true })).toHaveValue(cards.monitoring.title);
   await expect(dialog.getByRole("group", { name: "Type", exact: true }).getByRole("radio", { name: "Monitoring", exact: true }))
@@ -271,24 +271,24 @@ test("Delete asks inline, deletes the task and the card then reads as deleted", 
   // Keep task closes the question and returns focus to Delete; nothing is sent.
   await deleteButton(weekly, title).click();
   await expect(confirm).toContainText(`Delete “${title}”? Its chats and answers stay in your history.`);
-  await expect(confirm.getByRole("button", { name: "Keep task", exact: true })).toBeFocused();
+  await expect(confirm.getByRole("button", { name: "Keep automation", exact: true })).toBeFocused();
   await expect(editButton(weekly, title)).toHaveCount(0);
   await captureState(page, info, "scheduled-card-delete-confirm", {
     anchor: confirm,
     atEachSize: async () => {
-      await expectWithinViewport(page, confirm.getByRole("button", { name: "Delete task", exact: true }));
-      await expectWithinViewport(page, confirm.getByRole("button", { name: "Keep task", exact: true }));
+      await expectWithinViewport(page, confirm.getByRole("button", { name: "Delete automation", exact: true }));
+      await expectWithinViewport(page, confirm.getByRole("button", { name: "Keep automation", exact: true }));
       await expectNoHorizontalOverflow(page);
     }
   });
-  await confirm.getByRole("button", { name: "Keep task", exact: true }).click();
+  await confirm.getByRole("button", { name: "Keep automation", exact: true }).click();
   await expect(confirm).toHaveCount(0);
   await expect(deleteButton(weekly, title)).toBeFocused();
   expect(api.writes).toEqual([]);
 
   await deleteButton(weekly, title).click();
-  await confirm.getByRole("button", { name: "Delete task", exact: true }).click();
-  await expect(weekly.getByRole("status")).toHaveText("Scheduled task deleted");
+  await confirm.getByRole("button", { name: "Delete automation", exact: true }).click();
+  await expect(weekly.getByRole("status")).toHaveText("Automation deleted");
   await expect(weekly).toHaveAttribute("data-state", "deleted");
   await expect(weekly.getByRole("status")).toBeFocused();
   await expect(weekly.getByRole("button")).toHaveCount(0);
@@ -309,13 +309,13 @@ test("Delete asks inline, deletes the task and the card then reads as deleted", 
 test("managed cards say what an answer changed, paused or proposed to delete, at every size in both themes", async ({ page }, info) => {
   const api = await prepare(page);
   const moved = cardOf(page, managed.moved.title);
-  await expect(moved.getByRole("status")).toHaveText("Scheduled task changed");
+  await expect(moved.getByRole("status")).toHaveText("Automation changed");
   await expect(moved).toHaveAttribute("data-action", "changed");
   await expect(moved).toContainText("Every Mon, Wed, Fri at 10:00");
   await expect(moved).toContainText("Next run Mon 5 Oct, 10:00");
   await expect(editButton(moved, managed.moved.title)).toBeVisible();
   const stopped = cardOf(page, managed.stopped.title);
-  await expect(stopped.getByRole("status")).toHaveText("Scheduled task paused");
+  await expect(stopped.getByRole("status")).toHaveText("Automation paused");
   await expect(stopped).toHaveAttribute("data-state", "paused");
   await expect(stopped).toContainText("Paused");
   await expect(stopped).not.toContainText("Next run");
@@ -334,17 +334,17 @@ test("managed cards say what an answer changed, paused or proposed to delete, at
   await expect(proposal.getByRole("status")).toHaveText("Deletion proposed");
   await expect(proposal).toContainText("Next run Mon 5 Oct, 08:00");
   await expect(question).toContainText(`Delete “${managed.proposal.title}”? Its chats and answers stay in your history.`);
-  await expect(question.getByRole("button", { name: "Keep task", exact: true })).not.toBeFocused();
+  await expect(question.getByRole("button", { name: "Keep automation", exact: true })).not.toBeFocused();
   await expect(editButton(proposal, managed.proposal.title)).toHaveCount(0);
   // A proposal whose task is already gone reads as deleted.
   const gone = cardOf(page, managed.proposalGone.title);
-  await expect(gone.getByRole("status")).toHaveText("Scheduled task deleted");
+  await expect(gone.getByRole("status")).toHaveText("Automation deleted");
   await expect(gone.getByRole("button")).toHaveCount(0);
   await captureState(page, info, "scheduled-card-delete-proposal", {
     anchor: proposal,
     atEachSize: async () => {
-      await expectWithinViewport(page, question.getByRole("button", { name: "Delete task", exact: true }));
-      await expectWithinViewport(page, question.getByRole("button", { name: "Keep task", exact: true }));
+      await expectWithinViewport(page, question.getByRole("button", { name: "Delete automation", exact: true }));
+      await expectWithinViewport(page, question.getByRole("button", { name: "Keep automation", exact: true }));
       await expectNoHorizontalOverflow(page);
     }
   });
@@ -356,8 +356,8 @@ test("a deletion proposal deletes only on the owner's click, and Keep leaves the
   const title = managed.proposal.title;
   let proposal = cardOf(page, title);
   let question = proposal.getByRole("group", { name: `Delete ${title}`, exact: true });
-  await question.getByRole("button", { name: "Keep task", exact: true }).click();
-  await expect(proposal.getByRole("status")).toHaveText("Scheduled task kept");
+  await question.getByRole("button", { name: "Keep automation", exact: true }).click();
+  await expect(proposal.getByRole("status")).toHaveText("Automation kept");
   await expect(proposal.getByRole("status")).toBeFocused();
   await expect(question).toHaveCount(0);
   await expect(editButton(proposal, title)).toBeVisible();
@@ -378,8 +378,8 @@ test("a deletion proposal deletes only on the owner's click, and Keep leaves the
   proposal = cardOf(page, title);
   question = proposal.getByRole("group", { name: `Delete ${title}`, exact: true });
   await expect(proposal.getByRole("status")).toHaveText("Deletion proposed");
-  await question.getByRole("button", { name: "Delete task", exact: true }).click();
-  await expect(proposal.getByRole("status")).toHaveText("Scheduled task deleted");
+  await question.getByRole("button", { name: "Delete automation", exact: true }).click();
+  await expect(proposal.getByRole("status")).toHaveText("Automation deleted");
   await expect(proposal.getByRole("status")).toBeFocused();
   await expect(proposal.getByRole("button")).toHaveCount(0);
   expect(api.writes).toEqual([{ method: "DELETE", path: `/${managed.proposal.taskId}`, body: null }]);
@@ -412,7 +412,7 @@ test.describe("touch controls", () => {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-card-touch-${size.width}x${size.height}.png`) });
       await deleteButton(weekly, title).click();
-      for (const name of ["Delete task", "Keep task"]) {
+      for (const name of ["Delete automation", "Keep automation"]) {
         const control = confirm.getByRole("button", { name, exact: true });
         await control.scrollIntoViewIfNeeded();
         await expectTouchSafe(control);
@@ -420,7 +420,7 @@ test.describe("touch controls", () => {
       }
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-card-confirm-touch-${size.width}x${size.height}.png`) });
-      await confirm.getByRole("button", { name: "Keep task", exact: true }).click();
+      await confirm.getByRole("button", { name: "Keep automation", exact: true }).click();
       await expect(confirm).toHaveCount(0);
     }
   });

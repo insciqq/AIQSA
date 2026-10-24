@@ -143,7 +143,7 @@ describe("scheduled task wire contract", () => {
       .toBe("the pinned Skills “a”, “b” and “c” are no longer available");
     expect(scheduledTaskSkillUnavailableReason({ pinnedSkills: [skill(null)] })).toBe("a pinned Skill is no longer available");
     expect(scheduledTaskSkillUnavailableReason({})).toBe("a pinned Skill is no longer available");
-    expect(scheduledTaskReasonMessage("skill_unavailable")).toBe("A pinned Skill is no longer available. Edit the task's Skills, then resume.");
+    expect(scheduledTaskReasonMessage("skill_unavailable")).toBe("A pinned Skill is no longer available. Edit the automation's Skills, then resume.");
   });
 
   it("keeps hourly and monitoring tasks in one chat and lets other tasks start a chat per run", () => {
@@ -217,7 +217,7 @@ describe("scheduled task wire contract", () => {
     const messages = SCHEDULED_TASK_ERROR_CODES.map(scheduledTaskErrorMessage);
     expect(new Set(messages).size).toBe(SCHEDULED_TASK_ERROR_CODES.length);
     expect(scheduledTaskErrorMessage("anything_else")).toBe(scheduledTaskErrorMessage("scheduled_tasks_unavailable"));
-    expect(scheduledTaskErrorMessage("scheduled_task_hourly_limit")).toContain("3 active hourly tasks");
+    expect(scheduledTaskErrorMessage("scheduled_task_hourly_limit")).toContain("3 active hourly automations");
     expect(scheduledTaskReasonMessage(null)).toBeNull();
     expect(scheduledTaskReasonMessage("repeated_failures")).toContain("three");
     expect(scheduledTaskReasonMessage("previous_running")).toBe("Skipped: the previous run was still in progress.");
@@ -247,7 +247,7 @@ describe("scheduled task wire contract", () => {
     expect(new Set([...tools, ...monitoring]).size).toBe(tools.length + monitoring.length);
     expect(scheduledTaskReasonMessage("no_update")).toMatch(/^No update/u);
     expect(scheduledTaskReasonMessage("update")).toMatch(/^Update/u);
-    expect(scheduledTaskReasonMessage("goal_reached")).toBe("Goal reached — task completed.");
+    expect(scheduledTaskReasonMessage("goal_reached")).toBe("Goal reached — automation completed.");
   });
 
   it("projects a chat answer's card from the task alone and folds replays to one card per task", () => {

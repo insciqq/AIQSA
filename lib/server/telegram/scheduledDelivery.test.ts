@@ -159,7 +159,7 @@ describe("Telegram scheduled delivery", () => {
     expect(more).toHaveLength(0);
     const message = sent!.params.rich_message as TelegramInputRichMessage;
     expect(validateTelegramRichMessage(message)).toMatchObject({ ok: true });
-    expect(message.blocks[0]).toEqual({ type: "paragraph", text: [{ type: "bold", text: "Morning brief" }, "\nScheduled task finished"] });
+    expect(message.blocks[0]).toEqual({ type: "paragraph", text: [{ type: "bold", text: "Morning brief" }, "\nAutomation finished"] });
     expect(richText(message)).toContain(SENTINEL);
     expect(sent!.params.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] });
     // A reply to it continues the run's chat from its answer.
@@ -185,7 +185,7 @@ describe("Telegram scheduled delivery", () => {
     await h.sender.idle();
     expect(h.fake.calls("sendRichMessage")).toHaveLength(0);
     const [sent] = h.fake.calls("sendMessage");
-    expect(sent!.params.text).toMatch(/^Morning brief\nScheduled task paused\n\S/u);
+    expect(sent!.params.text).toMatch(/^Morning brief\nAutomation paused\n\S/u);
     expect(sent!.params.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] });
     expect(h.refs).toEqual([expect.objectContaining({ chatId: "chat-1", messageId: null })]);
     expect(h.row().state).toBe("sent");

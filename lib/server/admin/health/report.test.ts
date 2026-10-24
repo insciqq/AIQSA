@@ -153,8 +153,7 @@ describe("health report text", () => {
     expect(text).toContain("  app: 3 starts (2 restarts)\n");
     expect(text).not.toContain("memory_coordinator");
     expect(text).toContain("  STALLED      Chat titles · 4 waiting, 0 running · oldest due 3 hours ago\n");
-    expect(text).toContain("  SLOW         Scheduled tasks · 2 waiting, 1 running · oldest due 20 minutes ago\n" +
-      "               3 failed in 24 hours\n");
+    expect(text).toContain("  SLOW         Automations · 2 waiting, 1 running · oldest due 20 minutes ago · 3 failed in 24 hours\n");
     expect(text).toContain("  UNAVAILABLE  Memory learning and indexing · could not be read\n");
     expect(text).toContain("  2026-10-07 09:59:12  error  app  provider_operation  ref 1a2b3c4d\n" +
       "      code provider_rate_limited · answer · OpenAI · gpt-5 · HTTP 429\n");

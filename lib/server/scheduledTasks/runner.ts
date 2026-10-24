@@ -75,7 +75,7 @@ export type ScheduledTaskRunnerDeps = Readonly<{
 }>;
 
 const BATCH = 50;
-const RUN_DEADLINE_MESSAGE = "Scheduled run stopped at its time limit";
+const RUN_DEADLINE_MESSAGE = "Automation run stopped at its time limit";
 /** The pause a failed save-time admission maps to when the same check fails before a run. */
 const RESOLUTION_PAUSES: Readonly<Record<
   "scheduled_task_model_cannot_report" | "scheduled_task_model_unavailable" | "scheduled_task_search_unavailable" |

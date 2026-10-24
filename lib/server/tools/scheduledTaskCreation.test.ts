@@ -226,7 +226,7 @@ describe("create_scheduled_task tool", () => {
 
   it("asks for the exact links of the sites a task depends on and for naming its sources", () => {
     const { description } = createScheduledTaskTool("Europe/Moscow");
-    expect(description).toContain("When the task depends on particular sites or pages, write their exact URLs into prompt, " +
+    expect(description).toContain("When the automation depends on particular sites or pages, write their exact URLs into prompt, " +
       "since a run reads only the links in its saved prompt besides its own search results, and tell the user which " +
       "sources it will use.");
   });
@@ -236,7 +236,7 @@ describe("create_scheduled_task tool", () => {
       context(), creator(task({ promptLinksPending: true })));
     expect(pending.content).toEqual([{ type: "json", value: expect.objectContaining({
       created: true, linksPending: true,
-      linksNote: expect.stringContaining("opens the task with Edit and saves its instructions once")
+      linksNote: expect.stringContaining("opens the automation with Edit and saves its instructions once")
     }) }]);
     const allowed = await executeCreateScheduledTask(call(reminder), context(), creator());
     expect(JSON.stringify(allowed.content)).not.toContain("linksPending");
@@ -293,12 +293,12 @@ describe("create_scheduled_task tool", () => {
   it("explains every refusal as a tool error and creates nothing", async () => {
     for (const [code, phrase] of [
       ["scheduled_task_limit", "up to 10 active and 50 saved"],
-      ["scheduled_task_hourly_limit", "up to 3 active hourly tasks"],
-      ["scheduled_task_model_unavailable", "not available to you for scheduled tasks"],
+      ["scheduled_task_hourly_limit", "up to 3 active hourly automations"],
+      ["scheduled_task_model_unavailable", "not available to you for automations"],
       ["scheduled_task_schedule_invalid", "The schedule is invalid or never runs"],
       ["scheduled_task_once_in_past", "at least a minute from now"],
       ["scheduled_task_chat_mode_invalid", "always continue in the same chat"],
-      ["scheduled_task_answer_limit", "already created a scheduled task"],
+      ["scheduled_task_answer_limit", "already created an automation"],
       ["scheduled_task_already_created", "An earlier answer to this message already created"],
       ["scheduled_task_call_unavailable", "cannot be created from this answer"]
     ] as const) {

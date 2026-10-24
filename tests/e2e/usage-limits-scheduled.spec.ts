@@ -76,13 +76,13 @@ test("a used-up budget skips a scheduled run with its reason and never pauses th
 
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
-  await runAccountMenuAction(page, "Scheduled");
+  await runAccountMenuAction(page, "Automations");
   const panel = page.getByTestId("scheduled-tasks-panel");
   await expect(panel.getByRole("heading", { name: "Budget check" })).toBeVisible();
   await expect(panel.getByText(/^Paused/u)).toHaveCount(0);
   await panel.getByRole("button", { name: "More actions for Budget check", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
-  const runs = page.getByRole("dialog", { name: "Edit scheduled task", exact: true })
+  const runs = page.getByRole("dialog", { name: "Edit automation", exact: true })
     .getByRole("region", { name: "Recent runs", exact: true });
   await expect(runs.getByRole("listitem").first()).toContainText("Skipped: your monthly budget was used up");
 });

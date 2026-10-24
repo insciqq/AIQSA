@@ -4127,7 +4127,7 @@ describe("scheduled task sends", () => {
         { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }
       ]);
       const system = prepared.normalizedRequest.prompt.system;
-      expect(system).toContain("This scheduled run cannot use some of the user's tool sources");
+      expect(system).toContain("This automation run cannot use some of the user's tool sources");
       expect(system).toContain("\"Synthetic Mail\" (needs the user to sign in again)");
       expect(system).not.toContain("Synthetic Notes");
     });
@@ -4183,7 +4183,7 @@ describe("monitoring check admission", () => {
     const check = preparedFrom(await prepareRun(h.deps, scheduled({ previousResult: previous })));
     expect(check.normalizedRequest.monitoringVerdictTool).toBe(true);
     expect(offered(check)).toBe(true);
-    expect(check.normalizedRequest.prompt.system).toContain("scheduled monitoring check");
+    expect(check.normalizedRequest.prompt.system).toContain("an automation's monitoring check");
     expect(check.normalizedRequest.prompt.system).toContain("last result the user was shown");
     // The instruction is server-owned: the user's turn keeps only the task prompt.
     expect(JSON.stringify(check.normalizedRequest.content)).not.toContain("report_monitoring_result");

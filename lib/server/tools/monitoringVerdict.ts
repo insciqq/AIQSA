@@ -14,7 +14,7 @@ export const MONITORING_VERDICT_TOOL_NAME = "report_monitoring_result";
 
 export const monitoringVerdictTool: RunTool = {
   capability: "session",
-  description: "Report the outcome of this scheduled monitoring check. Call it exactly once, after checking and before " +
+  description: "Report the outcome of this automation's monitoring check. Call it exactly once, after checking and before " +
     "your final answer: update (something the user watches changed since the last shown result), no_update (nothing " +
     "relevant changed) or goal_reached (what the user is waiting for has happened).",
   inputSchema: {
@@ -40,7 +40,7 @@ export function isMonitoringVerdictCall(request: Readonly<{ monitoringVerdictToo
  */
 export function monitoringCheckInstruction(input: Readonly<{ previousResult: boolean }>): string {
   return [
-    "This turn is a scheduled monitoring check of the user's saved request.",
+    "This turn is an automation's monitoring check of the user's saved request.",
     input.previousResult
       ? "The earlier exchange in this conversation is the last result the user was shown. Check again and compare what you find with that result."
       : "No earlier result has been shown: report the current state as the starting point later checks compare with.",
