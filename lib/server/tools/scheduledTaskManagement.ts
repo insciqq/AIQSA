@@ -25,7 +25,12 @@ import type {
   ScheduledTaskManagementOutcome
 } from "../runs/runRepositoryContract";
 import { isFetchUrlDigestList } from "./fetchUrlPlan";
-import { localInstant, scheduledTaskLinksPending, scheduledTaskToolHistoryText } from "./scheduledTaskCreation";
+import {
+  localInstant,
+  scheduledTaskLinksPending,
+  scheduledTaskModelWebhook,
+  scheduledTaskToolHistoryText
+} from "./scheduledTaskCreation";
 import { resolveScheduledTaskSkillReferences, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
@@ -59,10 +64,12 @@ const ACTIONS = ["list", "get", "update", "pause", "resume", "propose_delete"] a
   readonly ScheduledTaskManagementAction[];
 /**
  * The switches `update` may set, by their owner contract names. The schema,
- * the owner update body and every task the model reads follow this list.
+ * the owner update body and every task the model reads follow this list. The
+ * last two are the triggers, at least one of which stays on.
  */
 export const SCHEDULED_TASK_MANAGED_SWITCHES = [
-  "searchEnabled", "emailNotify", "telegramNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled"
+  "searchEnabled", "emailNotify", "telegramNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled", "scheduleEnabled",
+  "webhookEnabled"
 ] as const satisfies readonly (keyof ScheduledTaskDraft & keyof ScheduledTask)[];
 /**
  * Everything `update` may change; the model stays the editor's, and so does
@@ -123,19 +130,19 @@ export function manageScheduledTaskTool(settings: ScheduledTaskManagementSetting
       "schedule fields merge into the current schedule, so set schedule.kind only to change the kind. pause, resume.",
       "skills: pin the Skill an automation runs, by alias.",
       "propose_delete deletes nothing: the answer asks the user to confirm. Changes apply at once without confirmation;",
-      `one answer affects at most ${SCHEDULED_TASK_MANAGED_PER_ANSWER} automations. Times are in the automation's time zone. The model`,
+      `one answer affects at most ${SCHEDULED_TASK_MANAGED_PER_ANSWER} automations. The model`,
       "cannot be changed here; the user can use Edit. If a call fails, explain why; do not retry the same arguments."
     ].join(" ") + chatTask,
     inputSchema: {
       additionalProperties: false,
       properties: {
         action: { enum: [...ACTIONS], type: "string" },
-        taskId: { description: "Every action but list.", type: "string" },
+        taskId: { type: "string" },
         title: { maxLength: SCHEDULED_TASK_TITLE_MAX_LENGTH, minLength: 1, type: "string" },
         prompt: { maxLength: SCHEDULED_TASK_PROMPT_MAX_LENGTH, minLength: 1, type: "string" },
         kind: { enum: [...SCHEDULED_TASK_KINDS], type: "string" },
-        chatMode: { description: "same for hourly and monitoring automations.", enum: [...SCHEDULED_TASK_CHAT_MODES], type: "string" },
-        timeZone: { description: "IANA zone of the schedule.", type: "string" },
+        chatMode: { enum: [...SCHEDULED_TASK_CHAT_MODES], type: "string" },
+        timeZone: { description: "IANA zone of the schedule's times.", type: "string" },
         schedule: {
           additionalProperties: false,
           properties: {
@@ -263,11 +270,29 @@ export function mergeScheduledTaskSchedule(
   return merged;
 }
 
-/** The owner API's update body for the task as it is now, or why the arguments do not fit it. */
+/**
+ * The owner API's update body for the task as it is now, or why the arguments
+ * do not fit it. A schedule that is off reads as none to the model (its
+ * stored values may be the placeholder a webhook-only automation keeps), so
+ * a schedule given for it is a whole new one, with its kind and time, and
+ * turns it on unless `scheduleEnabled` is false; turning it on needs one.
+ */
 function updateBody(current: ScheduledTask, input: UpdateArguments): Record<string, unknown> | string {
-  if (!input.schedule) return { ...input.fields };
-  const schedule = mergeScheduledTaskSchedule(current.schedule, input.schedule);
-  return typeof schedule === "string" ? schedule : { ...input.fields, schedule };
+  const fields = { ...input.fields };
+  if (current.scheduleEnabled) {
+    if (!input.schedule) return fields;
+    const schedule = mergeScheduledTaskSchedule(current.schedule, input.schedule);
+    return typeof schedule === "string" ? schedule : { ...fields, schedule };
+  }
+  const change = input.schedule;
+  if (!change) {
+    return fields.scheduleEnabled === true
+      ? "This automation has no schedule: turning it on needs schedule with its kind and time." : fields;
+  }
+  if (!given(change.kind) || !given(change.time)) return "This automation has no schedule: give schedule with its kind and time.";
+  const schedule = mergeScheduledTaskSchedule({ kind: "daily", time: String(change.time) }, change);
+  if (typeof schedule === "string") return schedule;
+  return { ...fields, schedule, scheduleEnabled: fields.scheduleEnabled ?? true };
 }
 
 /**
@@ -290,12 +315,17 @@ function changeFor(input: ToolArguments): Pick<Parameters<ScheduledTaskCallManag
   }
 }
 
-/** A task as the model reads it: never its model, history or chats. */
-function modelTask(task: ScheduledTask) {
+/**
+ * A task as the model reads it: never its model, history or chats, and never
+ * a webhook token. A schedule that is off reads as none.
+ */
+function modelTask(task: ScheduledTask, explainWebhook = false) {
   return {
-    taskId: task.id, title: task.title, kind: task.kind, status: task.status, schedule: task.schedule, timeZone: task.timeZone,
+    taskId: task.id, title: task.title, kind: task.kind, status: task.status,
+    schedule: task.scheduleEnabled ? task.schedule : null, timeZone: task.timeZone,
     nextRun: localInstant(task.nextRunAt, task.timeZone), chatMode: task.chatMode,
     ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, task[key]])),
+    ...scheduledTaskModelWebhook(task, explainWebhook),
     skills: scheduledTaskModelSkills(task),
     // Read only: the owner changes it with Edit.
     oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays),
@@ -326,7 +356,9 @@ export function scheduledTaskManagementResult(
         note: "Nothing was deleted: the answer shows the automation with Delete; only the user's click deletes it." },
       { action: "delete_proposed", task: outcome.task });
     default: {
-      const task = { ...modelTask(outcome.task), scheduleText: describeScheduledTaskSchedule(outcome.task.schedule) };
+      const scheduleText = outcome.task.scheduleEnabled ? describeScheduledTaskSchedule(outcome.task.schedule)
+        : "none: runs only on its webhook";
+      const task = { ...modelTask(outcome.task, true), scheduleText };
       return outcome.changed
         ? result({ changed: true, task, note: "The answer shows this automation with Edit." },
           { action: CARD_ACTIONS[outcome.action], task: outcome.task })
@@ -355,6 +387,9 @@ function refusalText(code: Refusal, detail?: string): string {
       return "The schedule is invalid or never runs: check its kind, the HH:MM times, the days, the date or the day of the " +
         "month, and that an hourly window ends after it starts.";
     case "scheduled_task_chat_mode_invalid": return `${scheduledTaskErrorMessage(code)} Also set chatMode to "same".`;
+    case "scheduled_task_trigger_required":
+      return "An automation keeps at least one trigger on: give it a schedule (scheduleEnabled with schedule) or keep its " +
+        "webhook, or pause it instead.";
     case "scheduled_task_skills_need_tools":
       return "Pinned Skills need tools: set toolsEnabled to true, or skills to [] to turn tools off.";
     case "scheduled_task_skill_unavailable":

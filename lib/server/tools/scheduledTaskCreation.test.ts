@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledTask } from "../../contracts/scheduledTasks";
 import { logEvent } from "../observability";
 import type { ScheduledTaskCallCreation } from "../runs/runRepositoryContract";
 import {
   CREATE_SCHEDULED_TASK_TOOL_NAME,
+  SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE,
   createScheduledTaskTool,
   executeCreateScheduledTask,
   isScheduledTaskCreateCall,
@@ -58,9 +60,11 @@ describe("create_scheduled_task tool", () => {
   it("is a strict server-owned write offered only with the frozen marker, naming the run's zone", () => {
     const tool = createScheduledTaskTool("Europe/Moscow");
     expect(tool).toMatchObject({ capability: "session", name: "create_scheduled_task", strict: true, inputSchema: {
-      additionalProperties: false, required: ["title", "prompt", "kind", "chatMode", "schedule", "skills", "historyRetentionDays"],
-      properties: { schedule: { additionalProperties: false,
-        required: ["kind", "time", "date", "days", "dayOfMonth", "everyHours", "until"] },
+      additionalProperties: false,
+      required: ["title", "prompt", "kind", "chatMode", "schedule", "webhook", "telegram", "skills", "historyRetentionDays"],
+      properties: { schedule: { anyOf: [{ additionalProperties: false,
+        required: ["kind", "time", "date", "days", "dayOfMonth", "everyHours", "until"], type: "object" }, { type: "null" }] },
+      webhook: { type: "boolean" },
       historyRetentionDays: { enum: [30, 90, 365, 0, null], type: ["integer", "null"] } }
     } });
     for (const phrase of ["time zone Europe/Moscow", "\"monitoring\" when", "\"standard\" for reminders",
@@ -74,6 +78,13 @@ describe("create_scheduled_task tool", () => {
     expect(isScheduledTaskCreateCall({ scheduledTaskTool: settings }, CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe(true);
     expect(isScheduledTaskCreateCall({}, CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe(false);
     expect(isScheduledTaskCreateCall({ scheduledTaskTool: settings }, "get_session_status")).toBe(false);
+  });
+
+  it("stays small: every ordinary chat request carries it", () => {
+    const tool = createScheduledTaskTool("Europe/Moscow");
+    // About 80 tokens of it are the webhook and Telegram choices (2026-10-25).
+    expect(countTokens(tool.description) + countTokens(JSON.stringify(tool.inputSchema)) + countTokens(tool.name))
+      .toBeLessThanOrEqual(790);
   });
 
   it("pins Skills only from the run's own catalog, by alias or name, and tells the model which it pinned", async () => {
@@ -149,6 +160,24 @@ describe("create_scheduled_task tool", () => {
     vi.mocked(logEvent).mockClear();
   });
 
+  it("sends results to Telegram when the user asked for it, from any chat, and never when asked not to", async () => {
+    const origin = vi.fn(async ({ runId }: Readonly<{ runId: string; userId: string }>) => runId === "run-telegram");
+    const asked = creator(task({ telegramNotify: true }));
+    const result = await executeCreateScheduledTask(call({ ...reminder, telegram: true }), context(), asked, origin);
+    expect(asked.mock.calls[0]![0].body).toMatchObject({ telegramNotify: true });
+    // An explicit choice needs no lookup of where the run came from.
+    expect(origin).not.toHaveBeenCalled();
+    expect(result.content[0]).toMatchObject({ value: { telegram: true,
+      telegramNote: expect.stringContaining("Settings > Connections") } });
+    const declined = creator();
+    await executeCreateScheduledTask(call({ ...reminder, telegram: false }), context({ runId: "run-telegram" }), declined, origin);
+    expect(declined.mock.calls[0]![0].body).toMatchObject({ telegramNotify: false });
+    const unclear = creator();
+    expect(await executeCreateScheduledTask(call({ ...reminder, telegram: "yes" }), context(), unclear, origin))
+      .toMatchObject({ content: [{ value: { error: "scheduled_task_arguments_invalid" } }] });
+    expect(unclear).not.toHaveBeenCalled();
+  });
+
   it("uses the lookup the runner registered, and none before it starts", async () => {
     const unregistered = creator();
     await executeCreateScheduledTask(call(reminder), context(), unregistered);
@@ -177,8 +206,11 @@ describe("create_scheduled_task tool", () => {
     // Only the fields of the schedule's kind reach the owner contract.
     expect(Object.keys(create.mock.calls[0]![0].body as Record<string, Record<string, unknown>>).sort()).toEqual([
       "chatMode", "emailNotify", "historyRetentionDays", "kind", "memoryEnabled", "modelId", "pinnedSkillIds", "prompt", "provider",
-      "schedule", "searchEnabled", "telegramNotify", "timeZone", "title", "toolsEnabled", "workspaceEnabled"
+      "schedule", "scheduleEnabled", "searchEnabled", "telegramNotify", "timeZone", "title", "toolsEnabled", "webhookEnabled",
+      "workspaceEnabled"
     ]);
+    // A run accepted before webhooks sent no webhook: the schedule alone.
+    expect(create.mock.calls[0]![0].body).toMatchObject({ scheduleEnabled: true, webhookEnabled: false });
     // Left open, a new task keeps the default 90 days of old chats.
     expect(create.mock.calls[0]![0].body).toMatchObject({ historyRetentionDays: 90 });
     expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time", "days"]);
@@ -188,7 +220,7 @@ describe("create_scheduled_task tool", () => {
       artifacts: [{ type: "artifact", data: { artifactType: "scheduled_task", payload: {
         taskId: "task-1", title: "Check mail", kind: "standard", schedule: { kind: "weekly", time: "09:00",
           days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", timeZoneFallback: false, toolsEnabled: true,
-        workspaceEnabled: false, status: "active", nextRunAt: "2026-10-05T06:00:00.000Z"
+        workspaceEnabled: false, status: "active", nextRunAt: "2026-10-05T06:00:00.000Z", scheduleEnabled: true
       } } }],
       callId: "provider-call-1",
       content: [{ type: "json", value: expect.objectContaining({ created: true, title: "Check mail",
@@ -335,6 +367,72 @@ describe("create_scheduled_task tool", () => {
       const result = await executeCreateScheduledTask(call(reminder), context(overrides), creatorInput);
       expect(result).toMatchObject({ status: "error", content: [{ value: { error: "scheduled_task_call_unavailable" } }] });
     }
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("create_scheduled_task with a webhook trigger", () => {
+  const publicId = "AbCdEfGhIjKlMnOpQrSt_-";
+  const hook = { path: `/api/automations/hooks/${publicId}`, tokenIssuedAt: null, lastEventAt: null, queuedEvents: 0 };
+  const pipeline = { title: "Failed pipelines", prompt: "Explain why the pipeline in the event failed and how to fix it.",
+    kind: "standard", chatMode: null, skills: [], historyRetentionDays: null };
+
+  beforeEach(() => {
+    vi.stubEnv("AIQSA_APP_BASE_URL", "https://ai.example.test");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("runs only on its webhook without a schedule, keeping the off placeholder the owner contract stores", async () => {
+    const create = creator(task({ title: "Failed pipelines", scheduleEnabled: false, webhookEnabled: true, webhook: hook,
+      nextRunAt: null, schedule: { kind: "daily", time: "09:00" } }));
+    const result = await executeCreateScheduledTask(call({ ...pipeline, schedule: null, webhook: true }), context(), create);
+    expect(create.mock.calls[0]![0].body).toMatchObject({ scheduleEnabled: false, webhookEnabled: true,
+      schedule: SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE, chatMode: "new" });
+    expect(SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE).toEqual({ kind: "daily", time: "09:00" });
+    expect(result).toMatchObject({ status: "complete", content: [{ type: "json", value: {
+      created: true, schedule: "none: runs only on its webhook", nextRun: null,
+      webhook: { url: `https://ai.example.test/api/automations/hooks/${publicId}`, tokenIssued: false,
+        note: expect.stringContaining("the user clicks Get token on the answer's card") }
+    } }] });
+    const value = JSON.stringify(result.content);
+    for (const phrase of ["untrusted event data", "Authorization: Bearer", "X-Gitlab-Token", "never ask"]) {
+      expect(value).toContain(phrase);
+    }
+    // The card shows the trigger and the address; nothing carries a token.
+    expect(result.artifacts).toEqual([{ type: "artifact", data: { artifactType: "scheduled_task", payload: expect.objectContaining({
+      scheduleEnabled: false, webhook: { path: hook.path, tokenIssuedAt: null }, nextRunAt: null }) } }]);
+    expect(JSON.stringify(result)).not.toContain("aiqsa_wh_");
+  });
+
+  it("runs on its schedule and its webhook when both are given", async () => {
+    const create = creator(task({ webhookEnabled: true, webhook: { ...hook, tokenIssuedAt: "2026-10-04T10:30:00.000Z" } }));
+    const result = await executeCreateScheduledTask(call({ ...reminder, webhook: true }), context(), create);
+    expect(create.mock.calls[0]![0].body).toMatchObject({ scheduleEnabled: true, webhookEnabled: true,
+      schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] } });
+    expect(result.content[0]).toMatchObject({ value: { schedule: "Every weekday at 09:00", webhook: { tokenIssued: true,
+      note: expect.stringContaining("Rotate token") } } });
+    expect(JSON.stringify(result)).not.toContain("aiqsa_wh_");
+  });
+
+  it("runs on its schedule alone with webhook false, telling the model of no webhook", async () => {
+    const create = creator();
+    const result = await executeCreateScheduledTask(call({ ...reminder, webhook: false }), context(), create);
+    expect(create.mock.calls[0]![0].body).toMatchObject({ scheduleEnabled: true, webhookEnabled: false });
+    expect(result.content[0]).not.toHaveProperty("value.webhook");
+    expect(result.artifacts?.[0]).not.toHaveProperty("data.payload.webhook");
+  });
+
+  it("refuses an automation that would never run, and a webhook that is not a switch, before creating anything", async () => {
+    const create = creator();
+    for (const args of [{ ...pipeline, schedule: null, webhook: false }, { ...pipeline, schedule: null, webhook: null },
+      { ...pipeline, webhook: false }]) {
+      expect(await executeCreateScheduledTask(call(args), context(), create)).toMatchObject({ status: "error", content: [{ value: {
+        created: false, error: "scheduled_task_trigger_required", message: expect.stringContaining("webhook true") } }] });
+    }
+    expect(await executeCreateScheduledTask(call({ ...pipeline, schedule: null, webhook: "yes" }), context(), create))
+      .toMatchObject({ content: [{ value: { error: "scheduled_task_arguments_invalid", message: expect.stringContaining("webhook") } }] });
     expect(create).not.toHaveBeenCalled();
   });
 });
