@@ -3,7 +3,6 @@ paths:
   - "lib/server/runs/**"
   - "lib/server/tools/**"
   - "lib/server/toolObservations/**"
-  - "lib/server/knowledge/**"
   - "lib/server/mcp/**"
   - "lib/server/workspace/**"
   - "lib/server/scheduledTasks/**"

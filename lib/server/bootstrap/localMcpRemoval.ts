@@ -83,7 +83,6 @@ export async function removeLocalMcpLeftovers(
     connection.oauthClientId ? [connection.oauthClientId] : []
   ))];
 
-  await tx.projectMcpBinding.deleteMany({ where: { serverId: { in: localServerIds } } });
   // Every generation that would block a revision or OAuth connection removal.
   await tx.mcpRuntimeGeneration.deleteMany({
     where: {
@@ -91,7 +90,6 @@ export async function removeLocalMcpLeftovers(
         { revision: { serverId: { in: localServerIds } } },
         { revisionId: { in: otherRevisionIds } },
         { userServer: { serverId: { in: localServerIds } } },
-        { sharedServerId: { in: localServerIds } },
         { oauthConnection: { serverId: { in: localServerIds } } }
       ]
     }
@@ -114,8 +112,8 @@ export async function removeLocalMcpLeftovers(
     `;
     await tx.mcpActivationJob.deleteMany({ where: { serverId: { in: draftServerIds } } });
   }
-  // Cascades activation jobs, grants, tool policies, OAuth connections,
-  // member preferences and the shared Project runtime.
+  // Cascades activation jobs, grants, tool policies, OAuth connections and
+  // member preferences.
   await tx.mcpServer.deleteMany({ where: { id: { in: localServerIds } } });
   if (oauthClientIds.length > 0) {
     await tx.mcpOAuthClient.deleteMany({ where: { connections: { none: {} }, id: { in: oauthClientIds } } });

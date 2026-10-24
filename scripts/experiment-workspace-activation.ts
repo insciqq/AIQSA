@@ -146,14 +146,11 @@ async function main() {
     } });
     // Fresh Memory owners can inherit the ready installation embedding default
     // asynchronously even while the Memory utility model is unassigned.
-    const embeddingDefault = await client.knowledgeIndexProfile.findUnique({ where: { id: "installation" }, select: {
-      activeRevisionId: true, activeRevision: { select: {
-        embeddingProviderModelId: true, executionAuthority: true, preflightStatus: true
-      } }
+    const embeddingDefault = await client.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" }, select: {
+      embeddingDefaultProviderModelId: true
     } });
-    const revision = embeddingDefault?.activeRevision;
-    requireActivationBackgroundProfile({ system, memory, memoryEmbeddingDefault:
-      revision?.executionAuthority === "installation" && revision.preflightStatus === "ready" ? revision.embeddingProviderModelId : null });
+    requireActivationBackgroundProfile({ system, memory,
+      memoryEmbeddingDefault: embeddingDefault?.embeddingDefaultProviderModelId ?? null });
     // Active execution configurations contain no credential envelopes. IDs and
     // endpoints remain private: only their combined hash enters the report.
     const connectionSelect = { id: true, family: true, enabled: true, activeVersion: true, activeConfig: true,

@@ -3,7 +3,6 @@ import {
   adminUserDeletionInfo,
   adminUserOwnedDataCountWithMemory
 } from "./adminDeletionMetadata";
-import { loadAccountKnowledgeOwnedCounts } from "../knowledge/accountDeletion";
 import { loadAccountMemoryOwnedCounts } from "../memory/accountDeletion/inventory";
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
@@ -31,7 +30,6 @@ const adminDashboardUserSelect = {
       attachments: true,
       chats: true,
       folders: true,
-      knowledgeBases: true,
       mcpGrants: installationMcpRows,
       mcpOAuthConnections: installationMcpRows,
       mcpOwnedServers: true,
@@ -164,7 +162,6 @@ export async function listAdminDashboard(
     mcpServer,
     smtpConfiguration,
     memoryOwnedCounts,
-    knowledgeOwnedCounts,
     personalModelRunCounts
   ] = await Promise.all([
     prisma.user.findMany({
@@ -260,8 +257,7 @@ export async function listAdminDashboard(
       }
     }),
     loadAccountMemoryOwnedCounts(prisma),
-    loadAccountKnowledgeOwnedCounts(prisma),
-    // Personal chats only: chats of the removed Projects have no owner until retirement deletes them.
+    // Personal chats only: a chat a missed Project retirement left behind has no owner.
     prisma.modelRun.groupBy({
       _count: { _all: true },
       by: ["userId"],
@@ -297,7 +293,6 @@ export async function listAdminDashboard(
     );
     const activeGroupIds = activeMemberships.map((membership) => membership.groupId);
     const memoryOwnedCount = memoryOwnedCounts.get(user.id) ?? 0;
-    const knowledgeOwnedCount = knowledgeOwnedCounts.get(user.id) ?? 0;
     const totalCount = adminUserOwnedDataCountWithMemory(
       {
         ...user,
@@ -311,8 +306,8 @@ export async function listAdminDashboard(
 
     return {
       deletion: adminUserDeletionInfo({
-        ownedDataCount: Math.max(0, totalCount - user._count.knowledgeBases - memoryOwnedCount),
-        purgeableOwnedDataCount: knowledgeOwnedCount + memoryOwnedCount + user._count.mcpOwnedServers,
+        ownedDataCount: Math.max(0, totalCount - memoryOwnedCount),
+        purgeableOwnedDataCount: memoryOwnedCount + user._count.mcpOwnedServers,
         status: user.status
       }),
       directGrants: grants.filter((grant) => grant.userId === user.id && grant.groupId === null).map(visibleGrant),

@@ -334,16 +334,6 @@ async function cleanupProviderReferences(
         WHERE binding."credentialId" = version."credentialId"
           AND binding."credentialVersionId" = version."id"
       )
-      AND NOT EXISTS (
-        SELECT 1 FROM "KnowledgeRunBinding" AS binding
-        WHERE binding."embeddingCredentialId" = version."credentialId"
-          AND binding."embeddingCredentialVersionId" = version."id"
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM "KnowledgeRunProfileBinding" AS binding
-        WHERE binding."embeddingCredentialId" = version."credentialId"
-          AND binding."embeddingCredentialVersionId" = version."id"
-      )
   `);
 }
 

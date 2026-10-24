@@ -3,7 +3,6 @@ import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createPrismaAdminRepository } from "../../auth/adminRepository";
-import { createAccountKnowledgeDeletionHook } from "../../knowledge/accountDeletion";
 import { prisma } from "../../prisma";
 import { MemoryCoordinator } from "../coordinator/coordinator";
 import { createPrismaMemoryCoordinatorRepository } from
@@ -1080,56 +1079,6 @@ describe("Prisma account Memory deletion", () => {
       await expect(prisma.memoryDeletionOutbox.count({ where: { userId } }))
         .resolves.toBe(0);
     } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("rolls back Knowledge admission when another owned-data purge is unavailable", async () => {
-    const userId = await createOwner("disabled");
-    const memoryKick = vi.fn();
-    const knowledgeKick = vi.fn();
-    const memoryHook = createAccountMemoryDeletionHook({
-      admissionEnabled: () => false,
-      kick: memoryKick
-    });
-    const knowledgeHook = createAccountKnowledgeDeletionHook({ kick: knowledgeKick });
-    let knowledgeBaseId: string | null = null;
-    try {
-      await prisma.memoryScope.create({
-        data: { scopeType: "GLOBAL_USER", userId }
-      });
-      const base = await prisma.knowledgeBase.create({
-        data: {
-          description: "Atomic account deletion fixture",
-          name: "Account deletion rollback",
-          ownerUserId: userId
-        },
-        select: { id: true }
-      });
-      knowledgeBaseId = base.id;
-
-      await expect(createPrismaAdminRepository(prisma, {
-        accountKnowledgeDeletionHook: () => knowledgeHook,
-        accountMemoryDeletionHook: () => memoryHook
-      }).deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("user_has_owned_data");
-
-      expect(memoryKick).not.toHaveBeenCalled();
-      expect(knowledgeKick).not.toHaveBeenCalled();
-      await expect(prisma.knowledgeBase.findUniqueOrThrow({
-        select: { deletionRequestedAt: true, trashedAt: true, version: true },
-        where: { id: base.id }
-      })).resolves.toEqual({ deletionRequestedAt: null, trashedAt: null, version: 1 });
-      await expect(prisma.knowledgeDeletionJob.count({ where: { ownerUserId: userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.memoryDeletionOutbox.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      if (knowledgeBaseId) {
-        await prisma.knowledgeBase.deleteMany({ where: { id: knowledgeBaseId } });
-      }
       await cleanupOwner(userId);
     }
   });

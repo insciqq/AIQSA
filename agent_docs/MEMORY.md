@@ -21,7 +21,7 @@ Personal Memory: what it may learn, who may change it, how it is retrieved and f
 - Memory is global per user. Temporary chats neither create nor receive any Memory state. Public shares strip all of it. Legacy non-global data is never widened into Personal Memory.
 - Imported chats, their continuations and branch copies are Excluded and cannot be resumed (operator decision 2026-10-04); a database check in `prisma/migrations/20261005121500_chat_import_source/` enforces this for every writer.
 - Preferences default to on, and upgrades preserve choices and pauses. Pausing stops new use and work but deletes nothing. Resume admits only messages after its cutoff; there is never an automatic historical backfill.
-- Memory has its own Utility Model role; editing the System Model never changes it. A verified Memory Utility Model assignment authorizes Memory generation without a separate egress consent. The installation embedding default, frozen in the retired Knowledge profile row until a Memory-owned setting replaces it (`agent_docs/PERSISTENCE.md`), may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
+- Memory has its own Utility Model role; editing the System Model never changes it. A verified Memory Utility Model assignment authorizes Memory generation without a separate egress consent. The installation embedding default (`MemoryUtilityModelPolicy.embeddingDefaultProviderModelId`, moved from the retired Knowledge profile and set by nothing since) may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
 
 ## What Memory keeps
 

@@ -9,7 +9,6 @@ export type AdminUserDeletionSource = Readonly<{
 export type AdminGroupDeletionSource = Readonly<{
   _count: Readonly<{
     assistantPublications?: number;
-    knowledgeBasePublications?: number;
     providerCredentialAssignments?: number;
     skillPublications?: number;
     users: number;
@@ -36,7 +35,6 @@ export type AdminUserOwnedDataSource = Readonly<{
     attachments: number;
     chats: number;
     folders: number;
-    knowledgeBases: number;
     mcpGrants: number;
     mcpOAuthConnections: number;
     mcpUserServers: number;
@@ -55,7 +53,6 @@ export type AdminOwnedAppDataCounts = Readonly<{
   attachments: number;
   chats: number;
   folders: number;
-  knowledgeBases: number;
   memory: number;
   mcpGrants: number;
   mcpOAuthConnections: number;
@@ -151,15 +148,12 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
     group.mcpGrants.filter((grant) => grant.canUse).length;
   const credentialAssignmentCount = group._count.providerCredentialAssignments ?? 0;
   const assistantPublicationCount = group._count.assistantPublications ?? 0;
-  // Publications of removed Knowledge bases still guard their foreign key until retirement deletes them.
-  const knowledgeBasePublicationCount = group._count.knowledgeBasePublications ?? 0;
   const skillPublicationCount = group._count.skillPublications ?? 0;
   const block = adminGroupDeletionBlock({
     activeGrantCount:
       activeGrantCount +
       credentialAssignmentCount +
       assistantPublicationCount +
-      knowledgeBasePublicationCount +
       skillPublicationCount,
     memberCount: group._count.users
   });
@@ -190,9 +184,7 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
     return {
       canDelete: false,
       reason: "group_has_grants",
-      summary: accessSummary
-        ? `Remove ${accessSummary} before deleting this group.`
-        : "Publications of removed Knowledge bases are still being deleted; try again later."
+      summary: `Remove ${accessSummary} before deleting this group.`
     };
   }
 
@@ -247,7 +239,6 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.attachments +
     counts.chats +
     counts.folders +
-    counts.knowledgeBases +
     counts.memory +
     counts.mcpGrants +
     counts.mcpOAuthConnections +

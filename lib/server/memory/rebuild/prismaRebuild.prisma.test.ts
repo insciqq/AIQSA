@@ -1533,24 +1533,15 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     const pausedId = await createOwner("embedding-paused");
     const discoveredId = await createOwner("embedding-discovered");
     const provider = await configureEmbeddingProvider(userId, "setup-default");
-    const profile = await prisma.knowledgeIndexProfile.upsert({
+    const policy = await prisma.memoryUtilityModelPolicy.upsert({
       create: { id: "installation" }, update: {}, where: { id: "installation" }
     });
-    const revisionId = randomUUID();
     try {
       await prisma.userMemorySettings.update({ where: { userId }, data: { embeddingProviderModelId: null } });
       await prisma.userMemorySettings.update({ where: { userId: pausedId }, data: { useMemoryFacts: false } });
-      const highest = await prisma.knowledgeIndexProfileRevision.aggregate({
-        _max: { revisionNumber: true }, where: { profileId: "installation" }
+      await prisma.memoryUtilityModelPolicy.update({
+        data: { embeddingDefaultProviderModelId: provider.modelId }, where: { id: "installation" }
       });
-      await prisma.knowledgeIndexProfileRevision.create({ data: {
-        id: revisionId, profileId: "installation", revisionNumber: (highest._max.revisionNumber ?? 0) + 1,
-        embeddingProviderModelId: provider.modelId, embeddingConfiguration,
-        vectorSpaceFingerprint: provider.pin.vectorSpaceFingerprint, targetDimension: EMBEDDING_DIMENSION,
-        chunkingProfileVersion: 2, executionAuthority: "installation", profileConfiguration: {}, egressPolicy: {},
-        preflightStatus: "ready", preflightCheckedAt: new Date(), activatedAt: new Date()
-      } });
-      await prisma.knowledgeIndexProfile.update({ where: { id: "installation" }, data: { activeRevisionId: revisionId } });
       // reconcile() scans every active owner. Unscoped, it would select this
       // installation default for the seeded administrator (entitled through
       // Full access) and leave its settings, shadow and REBUILD_INDEX job.
@@ -1613,13 +1604,14 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         .toMatchObject({ embeddingProviderModelId: null, embeddingSelectionResolved: true });
       expect(await prisma.memoryIndexGeneration.count({ where: { userId, state: "CANCELLED", indexMode: "HYBRID" } })).toBe(1);
     } finally {
-      await prisma.knowledgeIndexProfile.update({ where: { id: "installation" }, data: { activeRevisionId: profile.activeRevisionId } });
+      await prisma.memoryUtilityModelPolicy.update({
+        data: { embeddingDefaultProviderModelId: policy.embeddingDefaultProviderModelId }, where: { id: "installation" }
+      });
       await cleanupOwner(userId);
       await cleanupOwner(deniedId);
       await cleanupOwner(pausedId);
       await cleanupOwner(discoveredId);
-      // Profile revisions are immutable even in disposable databases. Retire
-      // their synthetic provider; the test database owns final destruction.
+      // Retire the synthetic provider; the test database owns final destruction.
       await prisma.providerModel.update({ where: { id: provider.modelId }, data: { enabled: false } });
       await prisma.providerConnection.update({ where: { id: provider.pin.connectionId }, data: { enabled: false } });
     }

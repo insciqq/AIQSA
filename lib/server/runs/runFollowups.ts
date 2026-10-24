@@ -96,6 +96,4 @@ export type RunFollowupOperations = Readonly<{
   deliver(input: { runId: string; userId: string; revision: number; precedingText: string; budgetTokens: number }): Promise<boolean>;
   /** The final answer can settle only after this compare-and-close wins. */
   close(input: { runId: string; userId: string; revision: number }): Promise<boolean>;
-  /** New question, fresh review cohort; the original eight-operation ceiling remains. */
-  beginKnowledge(input: { runId: string; userId: string; revision: number }): Promise<number>;
 }>;

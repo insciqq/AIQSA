@@ -10,10 +10,6 @@ import type {
 import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
 import { lockActiveAdmins, lockAuthUser } from "./transactionLocks";
-import {
-  countAccountKnowledgeOwnedData,
-  type AccountKnowledgeDeletionHook
-} from "../knowledge/accountDeletion";
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
 import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
@@ -49,13 +45,11 @@ class AccountDeletionPurgeUnavailableError extends Error {
 export function createAdminUserSessionCommands(
   prisma: PrismaClient,
   options: Readonly<{
-    accountKnowledgeDeletionHook?: () => AccountKnowledgeDeletionHook | null;
     accountMemoryDeletionHook?: () => AccountMemoryDeletionHook | null;
     /** After commit: wakes MCP runtime revocation and finalization of archived personal servers. */
     accountMcpDeletionKick?: () => void;
   }> = {}
 ): AdminUserSessionCommands {
-  const accountKnowledgeDeletionHook = options.accountKnowledgeDeletionHook ?? (() => null);
   const accountMemoryDeletionHook = options.accountMemoryDeletionHook ?? (() => null);
   return {
     async approveUser(input) {
@@ -105,13 +99,9 @@ export function createAdminUserSessionCommands(
         return "self_delete_forbidden";
       }
 
-      let admittedKnowledgeDeletion = false;
       let admittedMemoryDeletion = false;
       let personalMcpPending = false;
-      const deletionKicks: {
-        knowledge: (() => void) | null;
-        memory: (() => void) | null;
-      } = { knowledge: null, memory: null };
+      const deletionKicks: { memory: (() => void) | null } = { memory: null };
       try {
         const result = await prisma.$transaction(async (tx) => {
           await lockAuthUser(tx, input.userId);
@@ -148,18 +138,11 @@ export function createAdminUserSessionCommands(
           if (ownedData.nonPurgeable > 0) {
             return "user_has_owned_data" as const;
           }
-          let knowledgeReady = ownedData.knowledge === 0;
           let memoryReady = ownedData.memory === 0;
-          const knowledgeHook = ownedData.knowledge > 0
-            ? accountKnowledgeDeletionHook()
-            : null;
           const memoryHook = ownedData.memory > 0
             ? accountMemoryDeletionHook()
             : null;
-          if (
-            (ownedData.knowledge > 0 && !knowledgeHook) ||
-            (ownedData.memory > 0 && !memoryHook)
-          ) {
+          if (ownedData.memory > 0 && !memoryHook) {
             throw new AccountDeletionPurgeUnavailableError();
           }
           if (ownedData.memory > 0) {
@@ -174,25 +157,13 @@ export function createAdminUserSessionCommands(
             memoryReady = advanced.readyForUserDeletion;
             deletionKicks.memory = memoryHook!.kick;
           }
-          if (ownedData.knowledge > 0) {
-            const advanced = await knowledgeHook!.advance(tx, {
-              now: new Date(),
-              userId: user.id
-            });
-            if (!advanced.deletionPending && !advanced.readyForUserDeletion) {
-              throw new AccountDeletionPurgeUnavailableError();
-            }
-            admittedKnowledgeDeletion = advanced.admitted;
-            knowledgeReady = advanced.readyForUserDeletion;
-            deletionKicks.knowledge = knowledgeHook!.kick;
-          }
           if (ownedData.personalMcp > 0) {
             // Fence like a user disconnect; runtime finalization revokes the
             // tokens and removes the archived servers before a later attempt.
             await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: user.id });
             personalMcpPending = true;
           }
-          if (!knowledgeReady || !memoryReady || personalMcpPending) {
+          if (!memoryReady || personalMcpPending) {
             return "deletion_pending" as const;
           }
 
@@ -213,9 +184,6 @@ export function createAdminUserSessionCommands(
         if (admittedMemoryDeletion) {
           deletionKicks.memory?.();
         }
-        if (admittedKnowledgeDeletion) {
-          deletionKicks.knowledge?.();
-        }
         if (personalMcpPending) {
           try {
             options.accountMcpDeletionKick?.();
@@ -226,7 +194,6 @@ export function createAdminUserSessionCommands(
         return result;
       } catch (error) {
         if (error instanceof AccountDeletionPurgeUnavailableError) {
-          admittedKnowledgeDeletion = false;
           admittedMemoryDeletion = false;
           return "user_has_owned_data";
         }
@@ -418,7 +385,7 @@ export function createAdminUserSessionCommands(
 async function countUserOwnedAppData(
   tx: Prisma.TransactionClient,
   userId: string
-): Promise<Readonly<{ knowledge: number; memory: number; nonPurgeable: number; personalMcp: number }>> {
+): Promise<Readonly<{ memory: number; nonPurgeable: number; personalMcp: number }>> {
   // Rows of a personal server can name only its owner (database fence); they
   // leave with its finalization. Installation MCP rows keep the account.
   const installationMcp = { server: { ownerUserId: null }, userId };
@@ -438,8 +405,7 @@ async function countUserOwnedAppData(
     settings,
     sharedSnapshots,
     usageEvents,
-    memory,
-    knowledge
+    memory
   ] = await Promise.all([
     tx.accessGrant.count({
       where: {
@@ -512,8 +478,7 @@ async function countUserOwnedAppData(
         userId
       }
     }),
-    countAccountMemoryOwnedData(tx, userId),
-    countAccountKnowledgeOwnedData(tx, userId)
+    countAccountMemoryOwnedData(tx, userId)
   ]);
 
   const nonPurgeable = adminOwnedAppDataCount({
@@ -522,7 +487,6 @@ async function countUserOwnedAppData(
     attachments,
     chats,
     folders,
-    knowledgeBases: 0,
     memory: 0,
     mcpGrants,
     mcpOAuthConnections,
@@ -534,7 +498,7 @@ async function countUserOwnedAppData(
     sharedSnapshots,
     usageEvents
   });
-  return { knowledge, memory, nonPurgeable, personalMcp };
+  return { memory, nonPurgeable, personalMcp };
 }
 
 /** Ends the account's sessions, inbound MCP grants and Telegram link; disable and reject inherit all three. */
