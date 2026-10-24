@@ -17,7 +17,7 @@ const empty: McpToolAccessPolicy = { name: "issue_update", restricted: false, us
 function server(policy = empty, updatedAt = "2026-09-11T19:00:00.000Z"): AdminMcpServer {
   return {
     id: "tracker", name: "Tracker", namespace: "tracker", description: "", enabled: true,
-    activation: null, activePersonalSlots: [], activeRevision: null, archivedAt: null,
+    activation: null, activePersonalSlots: [], activeRevision: null, archivedAt: null, autoApplyToolUpdates: true,
     draft: { auth: { mode: "none" }, runtime: { callTimeoutMs: 30000, startupTimeoutMs: 30000 },
       slots: [], source: { kind: "remote", url: "https://mcp.example.test/mcp" }, transport: "streamable_http" },
     draftTest: null, draftTested: false, grants: [], revisions: [], sharedValues: {}, updatedAt,

@@ -36,6 +36,7 @@ function adminServer(input: Readonly<{
       validationEvidence: { evidence: {}, testedAt: "2026-07-23T00:00:00.000Z", toolInventory: [] }
     } : null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "OAuth MCP",
     draft: {
       auth: {

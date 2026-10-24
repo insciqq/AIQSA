@@ -114,6 +114,7 @@ export type McpRepository = {
   updateServer(input: {
     toolAccess?: import("@/lib/contracts/mcp").McpToolAccessPolicy;
     tool?: { enabled: boolean; name: string };
+    autoApplyToolUpdates?: boolean;
     expectedUpdatedAt?: string;
     description?: string;
     draft?: McpDraftConfiguration;

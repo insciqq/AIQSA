@@ -27,7 +27,7 @@ function dashboardFixture(): AdminDashboard {
 
 function serverFixture(index: number): AdminMcpServer {
   return {
-    activePersonalSlots: [], activeRevision: null, activation: null, archivedAt: null, description: "Synthetic tools",
+    activePersonalSlots: [], activeRevision: null, activation: null, archivedAt: null, autoApplyToolUpdates: true, description: "Synthetic tools",
     draft: {
       auth: { mode: "none" }, runtime: { callTimeoutMs: 60000, startupTimeoutMs: 60000 }, slots: [],
       source: { kind: "remote", url: "https://synthetic.example.test/mcp" }, transport: "streamable_http"

@@ -740,7 +740,7 @@ describe("MCP published tool inventory", () => {
   it("queues one upgrade check across competing schedulers and removes the legacy warning after validated publication", async () => {
     const f = await fixture();
     await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
-    await Promise.all(Array.from({ length: 4 }, () => f.repository.enqueueLegacyToolRechecks()));
+    await Promise.all(Array.from({ length: 4 }, () => f.repository.enqueueAutomaticToolChecks()));
     const queued = await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } });
     expect(queued.stage).toBe("queued");
     const before = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
@@ -880,7 +880,7 @@ describe("MCP published tool inventory", () => {
       ...(state === "disabled" ? { enabled: false } : {}),
       ...(state === "archived" ? { archivedAt: new Date() } : {})
     }, where: { id: f.serverId } });
-    await f.repository.enqueueLegacyToolRechecks();
+    await f.repository.enqueueAutomaticToolChecks();
     expect(await prisma.mcpActivationJob.count({ where: { serverId: f.serverId } })).toBe(0);
   });
 
@@ -892,7 +892,7 @@ describe("MCP published tool inventory", () => {
     expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).legacyToolRecheckPending)
       .toBe(false);
     await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
-    await f.repository.enqueueLegacyToolRechecks();
+    await f.repository.enqueueAutomaticToolChecks();
     expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } })).toMatchObject({
       stage: "failed", issues: [{ code: "mcp_draft_changed", path: "draft" }]
     });
@@ -931,7 +931,7 @@ describe("MCP published tool inventory", () => {
     await f.repository.requestActivation({ serverId: f.serverId, validationUserId: f.userId });
     const existing = await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } });
     await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
-    await f.repository.enqueueLegacyToolRechecks();
+    await f.repository.enqueueAutomaticToolChecks();
     expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } })).toEqual(existing);
     expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).legacyToolRecheckPending).toBe(false);
   });
@@ -941,13 +941,13 @@ describe("MCP published tool inventory", () => {
     expect(await f.repository.testDraft({ serverId: f.serverId, expectedUpdatedAt: f.expectedUpdatedAt,
       oneTimeValues: {}, publish: true, validationUserId: f.userId })).toMatchObject({ kind: "ok" });
     await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
-    await f.repository.enqueueLegacyToolRechecks();
+    await f.repository.enqueueAutomaticToolChecks();
     expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } }))
       .toMatchObject({ stage: "queued", validationUserId: f.userId });
     await prisma.mcpActivationJob.deleteMany({ where: { serverId: f.serverId } });
     await prisma.mcpOAuthConnection.update({ data: { purpose: "user" }, where: { id: f.connection.id } });
     await prisma.mcpServer.update({ data: { legacyToolRecheckPending: true }, where: { id: f.serverId } });
-    await f.repository.enqueueLegacyToolRechecks();
+    await f.repository.enqueueAutomaticToolChecks();
     expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } }))
       .toMatchObject({ stage: "failed", validationUserId: null,
         issues: [{ code: "mcp_oauth_validation_unavailable", path: "auth.mode" }] });
@@ -985,6 +985,81 @@ describe("MCP published tool inventory", () => {
     await prisma.mcpUserServer.update({ data: { desiredRuntimeGenerationId: generation.id }, where: { id: preference.id } });
     return { generation, preference, userId };
   }
+
+  it("asks a trusted server for one automatic check when its runtime sees changed tools, and publishes it", async () => {
+    const f = await fixture();
+    f.validate.mockResolvedValue(checked);
+    const saved = await f.save(f.server);
+    if (saved.kind !== "ok") throw new Error(saved.kind);
+    expect(saved.value.autoApplyToolUpdates).toBe(true);
+    const runtime = createPrismaMcpRuntimeRepository({ encryptionKey: () => Buffer.alloc(32, 1), prisma });
+    const drift = { exclusions: [{ name: "write", reason: "definition_drift" as const }], tools: [], version: 1 as const };
+    const markReady = async (upstreamToolsHash: string, now: Date, inventory = drift) => {
+      const { activeRevisionId } = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
+      const { generation } = await readyGeneration({ exclusions: [], revisionId: activeRevisionId!, serverId: f.serverId });
+      expect(await runtime.markReady({ fingerprint: generation.fingerprint, generationId: generation.id, inventory, now, upstreamToolsHash }))
+        .toBe(true);
+    };
+    const flags = async () => prisma.mcpServer.findUniqueOrThrow({
+      select: { toolUpdateCheckHash: true, toolUpdateCheckPending: true, toolUpdateCheckRequestedAt: true }, where: { id: f.serverId }
+    });
+    const start = new Date();
+
+    // Only policy switches held back: nothing changed upstream.
+    await markReady("0".repeat(64), start, { ...drift, exclusions: [{ name: "write", reason: "disabled_by_policy" }] });
+    expect(await flags()).toMatchObject({ toolUpdateCheckPending: false, toolUpdateCheckHash: null });
+
+    await markReady("1".repeat(64), start);
+    expect(await flags()).toEqual({ toolUpdateCheckHash: "1".repeat(64), toolUpdateCheckPending: true, toolUpdateCheckRequestedAt: start });
+    // A pending request is not replaced by another runtime's listing.
+    await markReady("2".repeat(64), start);
+    expect((await flags()).toolUpdateCheckHash).toBe("1".repeat(64));
+
+    f.validate.mockClear().mockResolvedValue(checked);
+    const coordinator = new McpActivationCoordinator({ repository: f.repository, draftValidator: { validate: f.validate }, maxParallel: 1 });
+    await coordinator.reconcileNow();
+    expect(f.validate).toHaveBeenCalledOnce();
+    expect(f.validate.mock.calls[0]![0].values).toEqual({ api_key: "fixture-initial-key" });
+    expect(await prisma.mcpActivationJob.findUniqueOrThrow({ where: { serverId: f.serverId } })).toMatchObject({ stage: "ready" });
+    expect((await flags()).toolUpdateCheckPending).toBe(false);
+
+    // The same listing asks once; another listing waits for the spacing to pass.
+    const later = new Date(start.getTime() + 30 * 60_000);
+    await markReady("1".repeat(64), new Date(start.getTime() + 2 * 60 * 60_000));
+    await markReady("3".repeat(64), later);
+    expect((await flags()).toolUpdateCheckPending).toBe(false);
+    const hourLater = new Date(start.getTime() + 61 * 60_000);
+    await markReady("3".repeat(64), hourLater);
+    expect(await flags()).toMatchObject({ toolUpdateCheckHash: "3".repeat(64), toolUpdateCheckPending: true });
+    await prisma.mcpServer.update({ data: { toolUpdateCheckPending: false }, where: { id: f.serverId } });
+
+    // The administrator turns trust off: changes wait for their own Test & Save.
+    const current = (await f.repository.listAdminServers(f.userId)).find(({ id }) => id === f.serverId)!;
+    const untrusted = await f.repository.updateServer({
+      autoApplyToolUpdates: false, expectedUpdatedAt: current.updatedAt, serverId: f.serverId
+    });
+    if (untrusted.kind !== "ok") throw new Error(untrusted.kind);
+    expect(untrusted.value.autoApplyToolUpdates).toBe(false);
+    await markReady("4".repeat(64), new Date(start.getTime() + 3 * 60 * 60_000));
+    expect((await flags()).toolUpdateCheckPending).toBe(false);
+    // A request raised before the switch went off is consumed without a check.
+    await prisma.mcpServer.update({ data: { toolUpdateCheckPending: true }, where: { id: f.serverId } });
+    f.validate.mockClear();
+    await coordinator.reconcileNow();
+    expect(f.validate).not.toHaveBeenCalled();
+    expect((await flags()).toolUpdateCheckPending).toBe(false);
+  });
+
+  it("leaves a tool update to the administrator while the draft has unsaved edits", async () => {
+    const f = await fixture();
+    await f.repository.updateServer({ serverId: f.serverId, draft: {
+      ...draft, runtime: { ...draft.runtime, callTimeoutMs: 40_000 }
+    } });
+    await prisma.mcpServer.update({ data: { toolUpdateCheckPending: true }, where: { id: f.serverId } });
+    await f.repository.enqueueAutomaticToolChecks();
+    expect(await prisma.mcpActivationJob.findUnique({ where: { serverId: f.serverId } })).toBeNull();
+    expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } })).toolUpdateCheckPending).toBe(false);
+  });
 
   it("records exact definitions, keeps them through a tool switch and reports older checks as name-only", async () => {
     const f = await fixture();

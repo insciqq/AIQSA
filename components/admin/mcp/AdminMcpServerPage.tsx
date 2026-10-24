@@ -245,7 +245,9 @@ function ToolDifferences({ checking, disabled, onTestAndSave, server }: Readonly
     <McpNote data-testid="mcp-tool-differences" role="status" tone="warn">
       <p className="font-semibold text-ink">Server tools changed since the last check</p>
       <p className="mt-0.5 text-ink-secondary">
-        These tools are not offered in chats; the other tools keep working. Test &amp; Save checks the server again and applies what it finds.
+        {server.autoApplyToolUpdates
+          ? "These tools are not offered in chats until the automatic check applies them; the other tools keep working. Test & Save checks the server again now."
+          : "These tools are not offered in chats; the other tools keep working. Test & Save checks the server again and applies what it finds."}
       </p>
       <ul aria-label={`Tool changes on ${server.name}`} className="mt-2 grid gap-1">
         {differences.map((difference) => (
@@ -315,8 +317,24 @@ function ToolsSection({ checking, controller, groups, onTestAndSave, server, tes
         </span>
       </div>
       <McpNote tone="warn">
-        Tools that are on can act and change data without a per-call confirmation. A tool the server adds or changes later stays unavailable until Test &amp; Save checks it; tools found by a check are on until turned off.
+        {server.autoApplyToolUpdates
+          ? "Tools that are on can act and change data without a per-call confirmation. When the server adds or changes tools, AIQSA checks it again and applies them; tools found by a check are on until turned off."
+          : "Tools that are on can act and change data without a per-call confirmation. A tool the server adds or changes later stays unavailable until Test & Save checks it; tools found by a check are on until turned off."}
       </McpNote>
+      <div className={`${cardClass} flex min-w-0 items-start justify-between gap-4 px-4 py-3 sm:px-5`} data-testid="mcp-auto-apply-tool-updates">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-ink">Apply tool updates automatically</p>
+          <p className="mt-0.5 text-xs leading-5 text-ink-muted">
+            When this server adds, changes or removes tools, AIQSA checks it again and applies the result, as Test &amp; Save does. Turn off to review each change yourself.
+          </p>
+        </div>
+        <UiV2Switch
+          checked={server.autoApplyToolUpdates}
+          disabled={locked}
+          label="Apply tool updates automatically"
+          onChange={(next) => void controller.actions.update(server.id, { autoApplyToolUpdates: next, expectedUpdatedAt: server.updatedAt })}
+        />
+      </div>
       {verification === "invalid" ? (
         <McpNote data-testid="mcp-tool-verification" role="status" tone="critical">
           The last check of this server&apos;s tools could not be read, so none of its tools are offered in chats. Use Test &amp; Save to check the server again.

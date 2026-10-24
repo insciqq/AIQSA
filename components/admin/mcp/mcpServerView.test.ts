@@ -41,6 +41,7 @@ function server(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
     activeRevision: active,
     activation: null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "Team memory",
     draft: {
       auth: { mode: "none" },

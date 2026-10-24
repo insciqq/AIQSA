@@ -4189,6 +4189,12 @@ model McpServer {
   archivedAt           DateTime?
   activeRevisionId     String?              @unique
   legacyToolRecheckPending Boolean           @default(false)
+  /// Trusted: a runtime that sees changed tools asks for an automatic Test & Save (operator decision 2026-10-24).
+  autoApplyToolUpdates     Boolean              @default(true)
+  toolUpdateCheckPending   Boolean              @default(false)
+  /// The upstream listing and time of the last request, so one listing asks once.
+  toolUpdateCheckHash      String?
+  toolUpdateCheckRequestedAt DateTime?
   draft                Json                 @default("{}")
   testedDraftHash      String?
   draftTestEvidence    Json?

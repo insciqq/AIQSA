@@ -84,6 +84,7 @@ function workingServer(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer 
     activeRevision: active,
     activation: null,
     archivedAt: null,
+    autoApplyToolUpdates: true,
     description: "Team memory tools",
     draft: {
       auth: { mode: "none" },
@@ -209,6 +210,7 @@ function fakeApi(state: ApiState) {
       return json({ server: replace({
         ...current,
         ...(typeof update.enabled === "boolean" ? { enabled: update.enabled } : {}),
+        ...(typeof update.autoApplyToolUpdates === "boolean" ? { autoApplyToolUpdates: update.autoApplyToolUpdates } : {}),
         ...(update.draft ? { draft: update.draft, draftTested: false } : {}),
         ...(update.name ? { name: update.name } : {}),
         ...(update.description !== undefined ? { description: update.description } : {}),
@@ -447,6 +449,19 @@ describe("AdminMcpSection", () => {
       method: "PATCH",
       url: "/api/admin/mcp/server-1"
     });
+
+    // Trusted by default: tool changes the server makes are checked and applied automatically.
+    expect(within(page).getByTestId("mcp-auto-apply-tool-updates")).toHaveTextContent(/AIQSA checks it again and applies the result/u);
+    const automatic = within(page).getByRole("switch", { name: "Apply tool updates automatically" });
+    expect(automatic).toBeChecked();
+    fireEvent.click(automatic);
+    await waitFor(() => expect(within(page).getByRole("switch", { name: "Apply tool updates automatically" })).not.toBeChecked());
+    expect(calls.at(-1)).toMatchObject({
+      body: { autoApplyToolUpdates: false, expectedUpdatedAt: "2026-09-07T10:05:00.000Z" },
+      method: "PATCH",
+      url: "/api/admin/mcp/server-1"
+    });
+    expect(within(page).getByText(/stays unavailable until Test & Save checks it/u)).toBeInTheDocument();
     expect(within(page).getByTestId("mcp-tools-summary")).toHaveTextContent("1 of 2 on");
     expect(within(page).queryByTestId("mcp-tools-pending")).not.toBeInTheDocument();
 

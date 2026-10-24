@@ -15,6 +15,7 @@ const server: AdminMcpServer = {
   activeRevision: null,
   activation: null,
   archivedAt: null,
+  autoApplyToolUpdates: true,
   description: "Memory",
   draft: {
     auth: { mode: "static" },

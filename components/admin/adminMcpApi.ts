@@ -117,6 +117,7 @@ function isServer(value: unknown): value is AdminMcpServer {
     typeof value.namespace === "string" &&
     typeof value.description === "string" &&
     typeof value.enabled === "boolean" &&
+    typeof value.autoApplyToolUpdates === "boolean" &&
     (value.archivedAt === null || typeof value.archivedAt === "string") &&
     typeof value.draftTested === "boolean" &&
     isRecord(value.draft) && hasValidDisabledToolNames(value.draft) &&
