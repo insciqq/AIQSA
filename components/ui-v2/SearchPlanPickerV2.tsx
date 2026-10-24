@@ -49,16 +49,22 @@ export function SearchPlanPickerV2({
         const available = !availableIds || availableIds.has(option.strategyId);
         const atLimit = selectedIds.length >= MAX_SEARCH_PLAN_OPTIONS;
         const compatible = isSearchCombinationCompatible([...selectedIds, option.strategyId], sources, combineMode);
+        // A source that cannot join the selection replaces it, so Search
+        // never has to be turned off to switch sources.
+        const replaces = !selected && available && !compatible &&
+          isSearchCombinationCompatible([option.strategyId], sources, combineMode);
         const locked = selected && keepsLast;
         const reason = !available ? "Unavailable for this model"
-          : !selected && atLimit ? `Choose up to ${MAX_SEARCH_PLAN_OPTIONS} sources`
-            : !selected && !compatible ? "Can't be combined with the selected sources"
-              : locked ? lastSourceNote : undefined;
+          : replaces ? (selectedIds.length === 1 ? "Replaces the selected source" : "Replaces the selected sources")
+            : !selected && atLimit ? `Choose up to ${MAX_SEARCH_PLAN_OPTIONS} sources`
+              : !selected && !compatible ? "Can't be combined with the selected sources"
+                : locked ? lastSourceNote : undefined;
         return <label key={option.strategyId} className="v2-search-plan-source" data-locked={locked || undefined}>
-          <input type="checkbox" checked={selected} disabled={locked || (!selected && (!available || atLimit || !compatible))}
+          <input type="checkbox" checked={selected}
+            disabled={locked || (!selected && !replaces && (!available || atLimit || !compatible))}
             onChange={() => onChange(selected
               ? selectedIds.filter(id => id !== option.strategyId)
-              : [...selectedIds, option.strategyId])} />
+              : replaces ? [option.strategyId] : [...selectedIds, option.strategyId])} />
           <span><strong>{option.displayName}</strong>{reason ? <small>{reason}</small> : null}</span>
         </label>;
       })}

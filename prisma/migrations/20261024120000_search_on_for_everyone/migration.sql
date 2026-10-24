@@ -5,7 +5,8 @@
 -- Every statement is idempotent; a previous-release writer that saves a plan
 -- during the upgrade only writes values the new release still reads.
 
--- The DeepSeek Search API source that takes over, when it is working.
+-- The DeepSeek Search API source that takes over, when it is working: an
+-- active route whose key-carrying model and connection are enabled and live.
 CREATE TEMPORARY TABLE "aiqsa_search_replacement" AS
 SELECT (
   SELECT option."optionId"
@@ -15,10 +16,15 @@ SELECT (
     AND option."archivedAt" IS NULL
     AND EXISTS (
       SELECT 1 FROM "SearchStrategy" AS route
+      JOIN "ProviderModel" AS model ON model."id" = route."providerModelId"
+      JOIN "ProviderConnection" AS connection ON connection."id" = model."connectionId"
       WHERE route."searchOptionId" = option."id"
         AND route."enabled"
         AND route."archivedAt" IS NULL
         AND route."activeRevisionId" IS NOT NULL
+        AND model."enabled" AND model."activeVersion" > 0
+        AND connection."id" = option."sourceConnectionId"
+        AND connection."enabled" AND connection."activeVersion" > 0
     )
   ORDER BY option."createdAt", option."id"
   LIMIT 1
@@ -136,6 +142,18 @@ WHERE jsonb_typeof("searchPlan" -> 'optionIds') = 'array'
   AND aiqsa_search_plan_without_retired("searchPlan") IS DISTINCT FROM "searchPlan";
 ALTER TABLE "AssistantDefinition" ENABLE TRIGGER "AssistantDefinition_version";
 ALTER TABLE "AssistantDefinition" ENABLE TRIGGER "AssistantDefinition_project_invalidation";
+
+-- A chat's own choice on an adjustable Assistant row keeps its other sources;
+-- one left without a source falls back to the Assistant's row.
+UPDATE "Chat"
+SET "assistantOverrides" = CASE
+    WHEN jsonb_array_length(aiqsa_search_plan_without_retired("assistantOverrides" -> 'search') -> 'optionIds') = 0
+      THEN "assistantOverrides" - 'search'
+    ELSE jsonb_set("assistantOverrides", '{search}', aiqsa_search_plan_without_retired("assistantOverrides" -> 'search'))
+  END
+WHERE jsonb_typeof("assistantOverrides") = 'object'
+  AND jsonb_typeof("assistantOverrides" -> 'search' -> 'optionIds') = 'array'
+  AND aiqsa_search_plan_without_retired("assistantOverrides" -> 'search') IS DISTINCT FROM ("assistantOverrides" -> 'search');
 
 DROP FUNCTION aiqsa_search_plan_without_retired(JSONB);
 DROP TABLE "aiqsa_retired_search";

@@ -54,13 +54,20 @@ describe("Search source selection", () => {
     expect(onChange).toHaveBeenCalledWith([]);
   });
 
-  it("explains sources that cannot search together and retains unavailable choices until removed", () => {
+  it("replaces a selection a source cannot join, and retains unavailable choices until removed", () => {
     const onChange = vi.fn();
+    // One reaches this model only through its provider's own Search, so it searches alone.
     const source = { ...options[0], executionModes: ["model_choice" as const] };
     const { rerender } = render(<SearchPlanPickerV2 options={[source, options[1]]}
       selectedIds={["One"]} onChange={onChange} />);
-    expect(screen.getByRole("checkbox", { name: /Two/u })).toBeDisabled();
-    expect(screen.getByText("Can't be combined with the selected sources")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /Two/u })).toBeEnabled();
+    expect(screen.getByText("Replaces the selected source")).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Two/u }));
+    expect(onChange).toHaveBeenLastCalledWith(["Two"]);
+    // A last selected source that is no longer listed is replaced the same way.
+    rerender(<SearchPlanPickerV2 options={options.slice(1, 2)} selectedIds={["gone"]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Two/u }));
+    expect(onChange).toHaveBeenLastCalledWith(["Two"]);
     rerender(<SearchPlanPickerV2 options={options} availableIds={new Set()} selectedIds={["One", "missing"]} onChange={onChange} />);
     expect(screen.getByRole("checkbox", { name: /One/u })).toBeEnabled();
     expect(screen.getByRole("checkbox", { name: /One/u }).closest("label")).toHaveTextContent("Unavailable for this model");
