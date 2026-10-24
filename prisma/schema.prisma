@@ -4192,8 +4192,7 @@ model McpServer {
   /// Trusted: a runtime that sees changed tools asks for an automatic Test & Save (operator decision 2026-10-24).
   autoApplyToolUpdates     Boolean              @default(true)
   toolUpdateCheckPending   Boolean              @default(false)
-  /// The upstream listing and time of the last request, so one listing asks once.
-  toolUpdateCheckHash      String?
+  /// The last request, so a change that persists asks again only after a while.
   toolUpdateCheckRequestedAt DateTime?
   draft                Json                 @default("{}")
   testedDraftHash      String?

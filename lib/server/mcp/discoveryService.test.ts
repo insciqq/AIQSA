@@ -183,6 +183,7 @@ describe("per-server MCP discovery", () => {
       ["mcp_alpha_action_1"], ["mcp_beta_action_1"]
     ]);
     expect(discovered.unavailable).toEqual([]);
+    expect(discovered.notOffered.map((tool) => tool.namespacedName)).toEqual(["mcp_alpha_action_2"]);
 
     // Nothing left to load keeps the server unavailable, and other failures never fall back per tool.
     gone.add("mcp_alpha_action_1");
@@ -191,6 +192,22 @@ describe("per-server MCP discovery", () => {
     const network = vi.fn(async () => notReady({ errorCode: "mcp_network_failed", name: "A", readiness: "unavailable" }));
     await discover(network, "select:mcp_alpha_action_1,mcp_alpha_action_2");
     expect(network).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a probe's own failure instead of reading it as a tool the server dropped", async () => {
+    const probing = (failure: () => Promise<McpRunPlanResult>) => vi.fn(async (_userId: string, tools: readonly SelectedTool[]) =>
+      tools.length > 1 ? notReady({ errorCode: "mcp_tool_not_available", name: "Selected MCP tool", readiness: "unavailable" })
+        : tools[0]!.namespacedName === "mcp_alpha_action_2" ? failure() : plan(tools));
+
+    // An internal failure still fails discovery rather than checkpointing a partial server.
+    const internal = Object.assign(new Error("PRIVATE_DATABASE_FAILURE"), { code: "P1001" });
+    await expect(discover(probing(async () => { throw internal; }), "select:mcp_alpha_action_1,mcp_alpha_action_2"))
+      .rejects.toMatchObject({ code: "mcp_materialization_failed", name: "McpDiscoveryError" });
+    // A server that cannot run is reported unavailable as a whole.
+    const restarting = await discover(probing(async () =>
+      notReady({ errorCode: "mcp_runtime_not_live", name: "A", readiness: "restarting" })), "select:mcp_alpha_action_1,mcp_alpha_action_2");
+    expect(restarting.unavailable).toEqual([{ reason: "mcp_server_unavailable", serverId: "server-alpha" }]);
+    expect(restarting.plans).toEqual([]);
   });
 
   it("keeps the MCP Hub's per-tool partial mode", async () => {

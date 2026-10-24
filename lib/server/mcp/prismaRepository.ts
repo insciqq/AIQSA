@@ -1900,9 +1900,11 @@ export function createPrismaMcpRepository(input: {
           include: { activeRevision: true, activationJob: true },
           where: { id: candidate.id }
         });
-        await tx.mcpServer.update({
-          data: { legacyToolRecheckPending: false, toolUpdateCheckPending: false }, where: { id: server.id }
-        });
+        // A raw write keeps updatedAt, so an administrator's open page can still save.
+        await tx.$executeRaw`
+          UPDATE "McpServer" SET "legacyToolRecheckPending" = false, "toolUpdateCheckPending" = false
+          WHERE "id" = ${server.id}
+        `;
         if (!server.enabled || server.archivedAt || !server.activeRevision) return true;
         const legacy = server.legacyToolRecheckPending &&
           mcpPublishedToolDefinitions(server.activeRevision.validationEvidence).kind === "names";
@@ -2286,10 +2288,13 @@ export function createPrismaMcpRepository(input: {
           },
           where: { id: claim.serverId }
         });
-        await tx.mcpUserServer.updateMany({
-          data: { desiredRuntimeGenerationId: null },
-          where: { enabled: true, serverId: claim.serverId }
-        });
+        // A check that found the serving revision again leaves its runtimes running.
+        if (revisionId !== server.activeRevisionId) {
+          await tx.mcpUserServer.updateMany({
+            data: { desiredRuntimeGenerationId: null },
+            where: { enabled: true, serverId: claim.serverId }
+          });
+        }
         return { kind: "published" };
       }).catch((error) => {
         if (error instanceof McpEndpointBindingChangedError) {

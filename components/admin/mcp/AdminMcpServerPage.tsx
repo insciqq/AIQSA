@@ -246,7 +246,7 @@ function ToolDifferences({ checking, disabled, onTestAndSave, server }: Readonly
       <p className="font-semibold text-ink">Server tools changed since the last check</p>
       <p className="mt-0.5 text-ink-secondary">
         {server.autoApplyToolUpdates
-          ? "These tools are not offered in chats until the automatic check applies them; the other tools keep working. Test & Save checks the server again now."
+          ? "These tools are not offered in chats; the other tools keep working. AIQSA checks a changed server again on its own; Test & Save checks it now."
           : "These tools are not offered in chats; the other tools keep working. Test & Save checks the server again and applies what it finds."}
       </p>
       <ul aria-label={`Tool changes on ${server.name}`} className="mt-2 grid gap-1">
