@@ -92,3 +92,49 @@ export async function syntheticAnimatedWebp(): Promise<Buffer> {
   header.writeUInt32LE(body.length, 4);
   return Buffer.concat([header, body]);
 }
+
+export type Rgb = readonly [number, number, number];
+
+/** A bottom-up 24-bit BI_RGB Windows bitmap with a 40-byte header. */
+export function bitmap24(width: number, height: number, pixel: (x: number, y: number) => Rgb): Buffer {
+  const stride = Math.ceil(width * 3 / 4) * 4;
+  const bytes = Buffer.alloc(54 + stride * height);
+  bytes.write("BM", 0, "ascii");
+  bytes.writeUInt32LE(bytes.length, 2);
+  bytes.writeUInt32LE(54, 10);
+  bytes.writeUInt32LE(40, 14);
+  bytes.writeInt32LE(width, 18);
+  bytes.writeInt32LE(height, 22);
+  bytes.writeUInt16LE(1, 26);
+  bytes.writeUInt16LE(24, 28);
+  bytes.writeUInt32LE(stride * height, 34);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const [r, g, b] = pixel(x, y);
+      const at = 54 + (height - 1 - y) * stride + x * 3;
+      bytes[at] = b;
+      bytes[at + 1] = g;
+      bytes[at + 2] = r;
+    }
+  }
+  return bytes;
+}
+
+/** A single-page, losslessly compressed TIFF encoded by libvips from the given pixels. */
+export async function syntheticTiff(width: number, height: number, pixel: (x: number, y: number) => Rgb): Promise<Buffer> {
+  const raw = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) raw.set(pixel(x, y), (y * width + x) * 3);
+  }
+  return sharp(raw, { raw: { width, height, channels: 3 } }).tiff({ compression: "lzw" }).toBuffer();
+}
+
+/** Decoded image facts and its pixels as RGB(A) tuples in reading order. */
+export async function decodedPixels(bytes: Buffer): Promise<Readonly<{ format: string | undefined; width: number; height: number;
+  channels: number; pixels: number[][] }>> {
+  const metadata = await sharp(bytes).metadata();
+  const { data, info } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+  const pixels: number[][] = [];
+  for (let at = 0; at < data.length; at += info.channels) pixels.push([...data.subarray(at, at + info.channels)]);
+  return { format: metadata.format, width: info.width, height: info.height, channels: info.channels, pixels };
+}

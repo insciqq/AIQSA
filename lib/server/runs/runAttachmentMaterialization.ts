@@ -12,6 +12,12 @@ import {
   isStoredObjectTooLargeError,
   type StorageAdapter
 } from "../uploads/storage";
+import {
+  convertRasterForProvider,
+  ProviderRasterConversionError,
+  providerRasterNeedsConversion
+} from "../uploads/providerRasterConversion";
+import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import type { RunAttachmentRecord, RunRepository } from "./runRepositoryContract";
 
@@ -21,6 +27,7 @@ export type AttachmentMaterializationErrorCode =
   | "attachment_count_limit_exceeded"
   | "attachment_encoded_size_limit_exceeded"
   | "attachment_checksum_mismatch"
+  | "attachment_image_invalid"
   | "attachment_materialization_limit_exceeded"
   | "attachment_object_read_failed"
   | "attachment_object_size_mismatch"
@@ -223,6 +230,16 @@ type MaterializationPlanEntry = Readonly<{
   sourceBytes: number;
 }>;
 
+function encodedSizeLimitError(encodedBytes: number | null, maxEncodedBytes: number): AttachmentMaterializationError {
+  return new AttachmentMaterializationError({
+    actual: { encodedBytes: encodedBytes ?? Number.MAX_SAFE_INTEGER },
+    code: "attachment_encoded_size_limit_exceeded",
+    limits: { maxEncodedBytes },
+    message: `Selected attachments require about ${encodedBytes ?? "more than the supported number of"} encoded bytes; the limit is ${maxEncodedBytes}.`,
+    status: 413
+  });
+}
+
 function materializationPlan(
   records: readonly RunAttachmentRecord[],
   capabilities: ProviderModelCapabilities,
@@ -265,13 +282,7 @@ function materializationPlan(
     }
     const nextEncodedBytes = safeSum(encodedBytes, recordEncodedBytes);
     if (nextEncodedBytes === null || nextEncodedBytes > limits.maxEncodedBytes) {
-      throw new AttachmentMaterializationError({
-        actual: { encodedBytes: nextEncodedBytes ?? Number.MAX_SAFE_INTEGER },
-        code: "attachment_encoded_size_limit_exceeded",
-        limits: { maxEncodedBytes: limits.maxEncodedBytes },
-        message: `Selected attachments require about ${nextEncodedBytes ?? "more than the supported number of"} encoded bytes; the limit is ${limits.maxEncodedBytes}.`,
-        status: 413
-      });
+      throw encodedSizeLimitError(nextEncodedBytes, limits.maxEncodedBytes);
     }
     sourceBytes = nextSourceBytes;
     encodedBytes = nextEncodedBytes;
@@ -332,7 +343,7 @@ function objectReadFailed(): AttachmentMaterializationError {
 
 function providerAttachment(
   record: RunAttachmentRecord,
-  overrides: Partial<Pick<ProviderAttachment, "base64Data" | "dataUrl" | "extractedText">> = {}
+  overrides: Partial<Pick<ProviderAttachment, "base64Data" | "byteSize" | "dataUrl" | "extractedText" | "mimeType">> = {}
 ): ProviderAttachment {
   return {
     ...(record.preparedPdf || record.workspaceOriginalOnly ? { pdfDelivery: "prepared_text" as const } : {}),
@@ -348,10 +359,50 @@ function providerAttachment(
   };
 }
 
+/**
+ * A BMP or TIFF image is sent as PNG (`lib/server/uploads/providerRasterConversion.ts`)
+ * within the conversation image bounds; the stored object stays as it is.
+ */
+async function convertedImageAttachment(
+  record: RunAttachmentRecord,
+  body: Buffer,
+  mimeType: string,
+  maxEncodedBytes: number,
+  signal: AbortSignal
+): Promise<ProviderAttachment> {
+  let png: Buffer;
+  try {
+    png = await convertRasterForProvider(body, mimeType, WORKSPACE_IMAGE_LIMITS, signal);
+  } catch (error) {
+    if (signal.aborted) throw abortReason(signal);
+    if (error instanceof ProviderRasterConversionError && error.code === "raster_conversion_limit_exceeded") {
+      const { maxDimension, maxPixels } = WORKSPACE_IMAGE_LIMITS;
+      throw new AttachmentMaterializationError({
+        actual: { ...(error.facts.width ? { width: error.facts.width } : {}), ...(error.facts.height ? { height: error.facts.height } : {}) },
+        code: "attachment_materialization_limit_exceeded",
+        limits: { maxDimension, maxPixels },
+        message: `An attached image is too large to send to the model; the limit is ${maxPixels} pixels and ${maxDimension} pixels per side.`,
+        status: 413
+      });
+    }
+    throw new AttachmentMaterializationError({
+      code: "attachment_image_invalid",
+      message: "An attached image could not be converted for the model.",
+      status: 400
+    });
+  }
+  const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
+  // A PNG can outgrow its source: one that alone exceeds the request budget is
+  // refused before the others settle; the run total is checked once all have.
+  if (dataUrl.length > maxEncodedBytes) throw encodedSizeLimitError(dataUrl.length, maxEncodedBytes);
+  return providerAttachment(record, { byteSize: png.length, dataUrl, mimeType: "image/png" });
+}
+
 async function materializeOne(
   storage: Pick<StorageAdapter, "getObject">,
   entry: MaterializationPlanEntry,
   signal: AbortSignal,
+  maxEncodedBytes: number,
   pdfRoute?: ChatPdfRouteAdmission,
   admissions?: Map<string, ChatPdfAttachmentAdmission>
 ): Promise<ProviderAttachment> {
@@ -413,6 +464,9 @@ async function materializeOne(
   }
 
   const contentType = record.mimeType || object.contentType;
+  if (providerRasterNeedsConversion(contentType)) {
+    return convertedImageAttachment(record, object.body, contentType, maxEncodedBytes, signal);
+  }
   return providerAttachment(record, {
     dataUrl: `data:${contentType};base64,${object.body.toString("base64")}`
   });
@@ -575,7 +629,8 @@ export async function loadProviderAttachments(
       }
 
       try {
-        results[index] = await materializeOne(deps.storage!, entry, internalController.signal, pdfRoute, pdfAdmissions);
+        results[index] = await materializeOne(deps.storage!, entry, internalController.signal,
+          options.limits.maxEncodedBytes, pdfRoute, pdfAdmissions);
       } catch (error) {
         if (firstError === undefined) {
           firstError = error;
@@ -604,6 +659,18 @@ export async function loadProviderAttachments(
       message: "Attachment materialization did not settle every selected object.",
       status: 409
     });
+  }
+  // Converted images replace their source estimate with the exact PNG payload.
+  let encodedBytes: number | null = plan.encodedBytes;
+  for (const [index, record] of records.entries()) {
+    const entry = plan.binaryById.get(record.id);
+    const result = results[index]!;
+    if (!entry || result.mimeType === record.mimeType || !result.dataUrl) continue;
+    encodedBytes = safeSum(encodedBytes - entry.encodedBytes, result.dataUrl.length);
+    if (encodedBytes === null) break;
+  }
+  if (encodedBytes === null || encodedBytes > options.limits.maxEncodedBytes) {
+    throw encodedSizeLimitError(encodedBytes, options.limits.maxEncodedBytes);
   }
   options.onPdfAdmissions?.(records.flatMap(({ id }) => pdfAdmissions.has(id) ? [pdfAdmissions.get(id)!] : []));
   return results as ProviderAttachment[];

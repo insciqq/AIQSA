@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import sharp from "sharp";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { bitmap24, decodedPixels, syntheticTiff, type Rgb } from "@/tests/support/rasterFixtures";
 import { imageInputFailure, ImageInputError } from "./inputError";
 import { imageDispatchMustStop } from "./errors";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -189,6 +190,25 @@ describe("withConversationPixels", () => {
     const countLimited = await harness(rows).service.withConversationPixels(request([current("c1")], earlier, { modelCapabilities: {
       ...limits(1_000), imageInputLimits: { imageBytes: 1_000, imageCount: 1, imagePixels: 1_000_000, payloadBytes: 1_000 } } }), USER);
     expect(ids(countLimited)).toEqual(["c1"]);
+  });
+
+  it("sends an earlier BMP or TIFF as PNG and leaves an unconvertible one without pixels", async () => {
+    const pattern = (x: number, y: number): Rgb => [x * 200, y * 200, 7];
+    const bodies = { h1: await syntheticTiff(2, 1, pattern), h2: Buffer.from("BMgarbage"), h3: bitmap24(2, 1, pattern) };
+    const stored = (id: keyof typeof bodies, mimeType: string) => row(id, { byteSize: bodies[id].length,
+      checksum: createHash("sha256").update(bodies[id]).digest("hex"), fileName: `${id}.img`, mimeType });
+    const { service } = harness([stored("h1", "image/tiff"), stored("h2", "image/bmp"), stored("h3", "image/bmp")], bodies);
+    const result = await service.withConversationPixels(request([], history(3)), USER);
+
+    expect(ids(result)).toEqual(["h1", "h3"]);
+    for (const attachment of result.attachments) {
+      expect(attachment.mimeType).toBe("image/png");
+      expect(attachment.dataUrl!.startsWith("data:image/png;base64,")).toBe(true);
+      const png = Buffer.from(attachment.base64Data!, "base64");
+      expect(attachment.byteSize).toBe(png.length);
+      expect((await decodedPixels(png)).pixels.map((pixel) => pixel.slice(0, 3))).toEqual([pattern(0, 0), pattern(1, 0)]);
+    }
+    expect(system(result)).toContain("[\"h1\",\"h3\"]");
   });
 
   it("keeps the access and checksum fences", async () => {

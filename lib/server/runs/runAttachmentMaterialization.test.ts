@@ -6,6 +6,7 @@ import { StoredObjectTooLargeError } from "../uploads/storage";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
+import { bitmap24, decodedPixels, syntheticTiff, type Rgb } from "@/tests/support/rasterFixtures";
 
 const baseCapabilities: ProviderModelCapabilities = {
   nativePdfInput: false,
@@ -589,5 +590,90 @@ describe("run attachment materialization", () => {
       expect.anything()
     );
     expect(siblingCancelled).toHaveBeenCalledOnce();
+  });
+
+  describe("BMP and TIFF images", () => {
+    const pattern = (x: number, y: number): Rgb => [x * 100, y * 100, 50];
+    const imageRecord = (id: string, mimeType: string, body: Buffer): RunAttachmentRecord => ({
+      ...attachment(id, "image", body.length), fileName: `${id}.${mimeType.split("/")[1]}`, mimeType
+    });
+    function storageFor(bodies: Record<string, Buffer>) {
+      return { getObject: vi.fn(async (storageKey: string) => ({
+        body: bodies[storageKey.replace("private/", "")]!, contentType: "application/octet-stream", storageKey })) };
+    }
+    const encoded = (mimeType: string, bytes: number) => `data:${mimeType};base64,`.length + 4 * Math.ceil(bytes / 3);
+
+    it("sends a BMP and a TIFF as PNG and leaves other images as stored", async () => {
+      const bmp = bitmap24(2, 2, pattern);
+      const tiff = await syntheticTiff(2, 2, pattern);
+      const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+      const records = [imageRecord("bmp", "image/bmp", bmp), imageRecord("tiff", "image/tiff", tiff),
+        imageRecord("jpeg", "image/jpeg", jpeg)];
+      const storage = storageFor({ bmp, jpeg, tiff });
+
+      const result = await loadProviderAttachments({ repository: repository(records), storage }, "user-1", ["bmp", "tiff", "jpeg"],
+        { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 100_000, maxMaterializedBytes: 100_000 }) });
+
+      for (const converted of result.slice(0, 2)) {
+        expect(converted).toMatchObject({ kind: "image", mimeType: "image/png" });
+        expect(converted.dataUrl).toMatch(/^data:image\/png;base64,/u);
+        const png = Buffer.from(converted.dataUrl!.split(",")[1]!, "base64");
+        expect(converted.byteSize).toBe(png.length);
+        const decoded = await decodedPixels(png);
+        expect(decoded).toMatchObject({ format: "png", width: 2, height: 2 });
+        expect(decoded.pixels.map((pixel) => pixel.slice(0, 3))).toEqual([pattern(0, 0), pattern(1, 0), pattern(0, 1), pattern(1, 1)]);
+      }
+      expect(result.map(({ fileName }) => fileName)).toEqual(["bmp.bmp", "tiff.tiff", "jpeg.jpeg"]);
+      expect(result[2]).toMatchObject({ byteSize: jpeg.length, dataUrl: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+        mimeType: "image/jpeg" });
+      // Only reads: the stored objects are never rewritten.
+      expect(Object.keys(storage)).toEqual(["getObject"]);
+    });
+
+    it("refuses a converted PNG that outgrows the encoded budget its source fit", async () => {
+      // A 1x1 bitmap is smaller than its PNG, so the source estimate passes admission.
+      const bmp = bitmap24(1, 1, pattern);
+      const record = imageRecord("small", "image/bmp", bmp);
+      const maxEncodedBytes = encoded("image/bmp", bmp.length);
+      await expect(loadProviderAttachments({ repository: repository([record]), storage: storageFor({ small: bmp }) }, "user-1", ["small"],
+        { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes, maxMaterializedBytes: 1_000 }) }))
+        .rejects.toMatchObject({ code: "attachment_encoded_size_limit_exceeded", limits: { maxEncodedBytes }, status: 413 });
+
+      // Each image fits alone; the request total after conversion does not.
+      const png = Buffer.alloc(60, 1);
+      const records = [imageRecord("plain", "image/png", png), record];
+      const alone = (await loadProviderAttachments({ repository: repository([record]), storage: storageFor({ small: bmp }) }, "user-1",
+        ["small"], { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: 1_000 }) }))[0]!.dataUrl!.length;
+      const total = encoded("image/png", png.length) + encoded("image/bmp", bmp.length);
+      expect(alone).toBeLessThanOrEqual(total);
+      expect(alone + encoded("image/png", png.length)).toBeGreaterThan(total);
+      await expect(loadProviderAttachments({ repository: repository(records), storage: storageFor({ plain: png, small: bmp }) }, "user-1",
+        ["plain", "small"], { capabilities: baseCapabilities, limits: limits({ maxEncodedBytes: total }) }))
+        .rejects.toMatchObject({ code: "attachment_encoded_size_limit_exceeded", status: 413 });
+    });
+
+    it("refuses an image over the pixel bounds and one that cannot be decoded", async () => {
+      const bomb = bitmap24(1, 1, pattern);
+      bomb.writeInt32LE(20_000, 18);
+      bomb.writeInt32LE(20_000, 22);
+      await expect(loadProviderAttachments({ repository: repository([imageRecord("bomb", "image/bmp", bomb)]),
+        storage: storageFor({ bomb }) }, "user-1", ["bomb"], { capabilities: baseCapabilities, limits: limits() }))
+        .rejects.toMatchObject({ code: "attachment_materialization_limit_exceeded", actual: { width: 20_000, height: 20_000 }, status: 413 });
+
+      const broken = Buffer.from("BMgarbage");
+      await expect(loadProviderAttachments({ repository: repository([imageRecord("broken", "image/x-bmp", broken)]),
+        storage: storageFor({ broken }) }, "user-1", ["broken"], { capabilities: baseCapabilities, limits: limits() }))
+        .rejects.toMatchObject({ code: "attachment_image_invalid", status: 400 });
+    });
+
+    it("reads nothing for a model without vision", async () => {
+      const bmp = bitmap24(1, 1, pattern);
+      const storage = storageFor({ bmp });
+      const result = await loadProviderAttachments({ repository: repository([imageRecord("bmp", "image/bmp", bmp)]), storage },
+        "user-1", ["bmp"], { capabilities: { ...baseCapabilities, vision: false }, limits: limits() });
+      expect(storage.getObject).not.toHaveBeenCalled();
+      expect(result[0]).toMatchObject({ mimeType: "image/bmp" });
+      expect(result[0]).not.toHaveProperty("dataUrl");
+    });
   });
 });
