@@ -122,10 +122,9 @@ export function droppedRequestRetryNow(retry: ProviderDroppedRequestRetry): numb
 
 /** The wait before the next request after a dropped one, or null to keep the
  * failure: only a drop the binding recognizes, before any accepted output,
- * before Stop and within the request bound. A request that failed before any
- * output, text included, takes the binding's before-output window when it has
- * one; one that streamed text keeps the shared backoff and request bound.
- * Every decision on a recognized drop is recorded. */
+ * before Stop and within the request bound, which the binding's before-output
+ * window replaces when it has one. Every decision on a recognized drop is
+ * recorded. */
 export function droppedRequestRetryDelay(retry: ProviderDroppedRequestRetry, input: Readonly<{
   acceptedOutput: boolean;
   attempt: number;
@@ -133,12 +132,10 @@ export function droppedRequestRetryDelay(retry: ProviderDroppedRequestRetry, inp
   /** When the call's first request started, on the retry's clock. */
   firstRequestAt: number;
   signal: AbortSignal | undefined;
-  /** The failed request streamed text, which a re-send replaces. */
-  textOutput?: boolean;
 }>): number | null {
   const decision = retry.policy.decision(input.error);
   if (!decision) return null;
-  const window = input.textOutput === true ? undefined : retry.policy.beforeOutput;
+  const window = retry.policy.beforeOutput;
   const proposed = !input.acceptedOutput && input.signal?.aborted !== true &&
     input.attempt < (window?.maxAttempts ?? retry.policy.maxAttempts)
     ? providerRetryDelayMs(input.attempt, decision.retryAfterMs, retry.random, window) : null;
