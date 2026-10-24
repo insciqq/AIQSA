@@ -146,7 +146,7 @@ function quickSetupSearchSpec(
   if (provider === "gemini") {
     return {
       clientKind: "gemini_google_search",
-      description: "Google Search grounding for eligible Gemini models.",
+      description: "Web search provided by Google.",
       displayName: "Google Search",
       fallbackId: `gemini-search-client:${adminProviderQuickSetupPolicy("gemini").connection.id}`,
       hostedKind: "gemini_google_search",
