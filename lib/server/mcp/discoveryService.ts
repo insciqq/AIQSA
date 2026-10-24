@@ -123,7 +123,8 @@ function groupByServer(selected: McpDiscoverySelection): McpDiscoverySelection[]
  * one that fails. `partial: "server"` (Auto) materializes each selected server
  * alone and folds the plans onto `snapshot` in rank order: a server that
  * cannot run, or whose tools would exceed the snapshot's bounds or conflict
- * with its accepted binding, is reported unavailable with a stable reason.
+ * with its accepted binding, is reported unavailable with a stable reason;
+ * one that no longer offers some selected tools loads the others.
  * Cancellation and internal failures still reject the whole discovery. */
 export async function discoverMcpTools(input: Readonly<{
   assertActive?(): Promise<void>;
@@ -180,9 +181,23 @@ export async function discoverMcpTools(input: Readonly<{
     const capacity = Math.max(0, MCP_RUN_PLAN_LIMITS.maxTools - activeToolNames.size);
     const selected = ranked.filter((tool) => !activeToolNames.has(tool.namespacedName)).slice(0, capacity);
     const batches = input.partial === "tool" ? selected.map((tool) => [tool]) : groupByServer(selected);
+    const materialize = (batch: McpDiscoverySelection) =>
+      materializeMcpSelection({ materialize: input.materialize, selected: batch, signal, userId: input.userId });
     const settled = await Promise.allSettled(batches.map(async (batch) => {
       await assertActive();
-      return materializeMcpSelection({ materialize: input.materialize, selected: batch, signal, userId: input.userId });
+      try {
+        return await materialize(batch);
+      } catch (error) {
+        // The server dropped or changed some selected tools since the catalog
+        // was frozen: load the ones it still offers, as Admin promises.
+        if (input.partial !== "server" || batch.length < 2 || !(error instanceof McpDiscoveryError) ||
+          error.unavailable?.cause !== "mcp_tool_not_available") throw error;
+        const probes = await Promise.allSettled(batch.map((tool) => materialize([tool])));
+        const offered = batch.filter((_tool, index) => probes[index]!.status === "fulfilled");
+        if (offered.length === 0) throw error;
+        await assertActive();
+        return materialize(offered);
+      }
     }));
     await assertActive();
     const plans: ReadyPlan[] = [];

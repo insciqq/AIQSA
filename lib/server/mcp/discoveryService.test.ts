@@ -170,6 +170,29 @@ describe("per-server MCP discovery", () => {
     expect(changed.plans.map((ready) => ready.snapshot.servers[0]!.serverId)).toEqual(["server-beta"]);
   });
 
+  it("loads the selected tools a server still offers after its upstream dropped others", async () => {
+    const gone = new Set(["mcp_alpha_action_2"]);
+    const materialize = vi.fn(async (_userId: string, tools: readonly SelectedTool[]) =>
+      tools.some((tool) => gone.has(tool.namespacedName))
+        ? notReady({ errorCode: "mcp_tool_not_available", name: "Selected MCP tool", readiness: "unavailable" })
+        : plan(tools));
+
+    const discovered = await discover(materialize, "select:mcp_alpha_action_1,mcp_alpha_action_2,mcp_beta_action_1");
+
+    expect(discovered.plans.map((ready) => ready.snapshot.tools.map((tool) => tool.namespacedName))).toEqual([
+      ["mcp_alpha_action_1"], ["mcp_beta_action_1"]
+    ]);
+    expect(discovered.unavailable).toEqual([]);
+
+    // Nothing left to load keeps the server unavailable, and other failures never fall back per tool.
+    gone.add("mcp_alpha_action_1");
+    expect((await discover(materialize, "select:mcp_alpha_action_1,mcp_alpha_action_2")).unavailable)
+      .toEqual([{ reason: "mcp_server_unavailable", serverId: "server-alpha" }]);
+    const network = vi.fn(async () => notReady({ errorCode: "mcp_network_failed", name: "A", readiness: "unavailable" }));
+    await discover(network, "select:mcp_alpha_action_1,mcp_alpha_action_2");
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the MCP Hub's per-tool partial mode", async () => {
     const materialize = vi.fn(async (_userId: string, tools: readonly SelectedTool[]) =>
       tools[0]!.namespacedName === "mcp_alpha_action_2"
