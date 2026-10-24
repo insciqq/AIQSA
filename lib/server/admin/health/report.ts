@@ -17,7 +17,7 @@ import {
 import { adminHealthQueueCopy, type AdminHealthQueueRow } from "../../../contracts/adminHealthQueues";
 import type { AdminHealthRunSummary } from "../../../contracts/adminHealthRunLookup";
 import { normalizeRunReference, RUN_ID_LENGTH, runReferenceLabel } from "../../../contracts/runReference";
-import { healthAttentionItems, type HealthFinding } from "../attention/healthRules";
+import { healthAttentionItems, type HealthAttentionConnection, type HealthFinding } from "../attention/healthRules";
 import { queueAgeCopy, queueAttentionItems } from "../attention/queueRules";
 import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
 import { FAILURE_STREAK_MIN_RUNS, type FailureStreakLoad, type FailureStreakQuery } from "./failureStreaks";
@@ -148,14 +148,12 @@ export type HealthReportFailedRunCode = {
 
 export type HealthReportFailedRuns = { runs: number; users: number; rows: HealthReportFailedRunCode[]; truncated: boolean };
 
-/** A provider connection as the attention copy names it; a missing or disabled one stays quiet. */
-export type HealthReportConnection = Readonly<{ id: string; displayName: string; enabled: boolean }>;
-
 export type HealthReportSources = Readonly<{
   health: Pick<AdminHealthService, "incidents" | "read">;
   queues: Pick<AdminHealthQueuesService, "read">;
   findings(): Promise<readonly HealthFinding[]>;
-  connections(): Promise<readonly HealthReportConnection[]>;
+  /** Provider connections as the attention copy names them; a missing or disabled one stays quiet. */
+  connections(): Promise<readonly HealthAttentionConnection[]>;
   /** Every user's failed runs of a range by failure code (`readFailedRunLoad`). */
   failedRuns(query: Omit<FailedRunQuery, "statementTimeoutMs">): Promise<FailedRunLoad>;
   /** The `db_transaction` counters of a range (`HEALTH_SLOW_TRANSACTION_QUERY`). */

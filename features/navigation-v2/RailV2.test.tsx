@@ -6,7 +6,7 @@ import { RailV2 } from "./RailV2";
 
 const { attentionSummary, signOutCurrentSession } = vi.hoisted(() => ({
   attentionSummary: {
-    current: null as null | { bad: number; checkedAt: string; health: number | null; unavailable: []; warn: number },
+    current: null as null | { bad: number; checkedAt: string; unavailable: []; warn: number },
     hook: vi.fn()
   },
   signOutCurrentSession: vi.fn(async () => ({ ok: true as const }))
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("Control Center attention badge", () => {
-  const summary = (bad: number, warn: number) => ({ bad, checkedAt: "2026-10-07T12:00:00.000Z", health: 0, unavailable: [] as [], warn });
+  const summary = (bad: number, warn: number) => ({ bad, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [] as [], warn });
 
   it("marks the rail entry with the worst severity and names the count", () => {
     attentionSummary.current = summary(1, 2);

@@ -1,14 +1,8 @@
-import {
-  adminAttentionItemSource,
-  type AdminAttentionSource,
-  type AdminAttentionSummary
-} from "../../../contracts/adminAttention";
+import type { AdminAttentionSource, AdminAttentionSummary } from "../../../contracts/adminAttention";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { AdminHealthQueueFinding } from "../health/queues";
 import type { HealthFinding } from "./healthRules";
 import { deriveAdminAttentionItems } from "./service";
-
-const HEALTH_SECTION_SOURCES = new Set<AdminAttentionSource>(["health", "queues"]);
 
 /** The badge tolerates a minute of staleness; every administrator's shell shares one read. */
 export const ADMIN_ATTENTION_SUMMARY_TTL_MS = 60_000;
@@ -75,8 +69,6 @@ export function createAdminAttentionSummaryService(input: Readonly<{
     return {
       bad: items.filter((item) => item.severity === "bad").length,
       checkedAt: now().toISOString(),
-      // Stalled queues are Health items too, so they count on its navigation entry.
-      health: health === null ? null : items.filter((item) => HEALTH_SECTION_SOURCES.has(adminAttentionItemSource(item))).length,
       unavailable,
       warn: items.filter((item) => item.severity === "warn").length
     };

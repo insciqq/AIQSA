@@ -77,13 +77,14 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
       ] })
     },
     findings: vi.fn().mockResolvedValue([
-      { code: "provider_runtime_quota_exhausted", connectionId: "conn-openai", failures: 6 },
-      { code: "provider_runtime_key_rejected", connectionId: "conn-disabled", failures: 4 },
+      { code: "provider_runtime_quota_exhausted", connectionId: "conn-openai", failures: 6, lastFailureAt: new Date("2026-10-07T09:50:00.000Z") },
+      { code: "provider_runtime_key_rejected", connectionId: "conn-disabled", failures: 4, lastFailureAt: new Date("2026-10-07T09:50:00.000Z") },
       { code: "process_restarting", role: "app", starts: 3 }
     ]),
     connections: vi.fn().mockResolvedValue([
-      { id: "conn-openai", displayName: "OpenAI", enabled: true },
-      { id: "conn-disabled", displayName: "Old key", enabled: false }
+      { id: "conn-openai", displayName: "OpenAI", enabled: true,
+        credentials: [{ activeVersion: { activatedAt: "2026-10-01T00:00:00.000Z", revokedAt: null }, enabled: true }] },
+      { id: "conn-disabled", displayName: "Old key", enabled: false, credentials: [] }
     ]),
     failedRuns: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false }),
     slowTransactions: vi.fn().mockResolvedValue([]),

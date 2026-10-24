@@ -9,7 +9,7 @@ import {
 } from "./useAdminAttentionSummary";
 
 const summary = (bad: number, warn: number): AdminAttentionSummary =>
-  ({ bad, checkedAt: "2026-10-07T12:00:00.000Z", health: bad + warn, unavailable: [], warn });
+  ({ bad, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [], warn });
 
 let visibility: DocumentVisibilityState = "visible";
 

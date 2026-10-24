@@ -779,7 +779,7 @@ describe("createAdminAttentionService", () => {
 
   it("projects health findings with the provider's name, owned by the health source", async () => {
     const health = vi.fn().mockResolvedValue([
-      { code: "provider_runtime_key_rejected", connectionId: "conn-deepseek", failures: 2 },
+      { code: "provider_runtime_key_rejected", connectionId: "conn-deepseek", failures: 2, lastFailureAt: new Date(at) },
       { code: "server_errors_rising", errors: 14 }
     ]);
     const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ health }) });

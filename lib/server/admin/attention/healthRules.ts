@@ -121,8 +121,8 @@ export type HealthCounterRows = Readonly<{
 
 export type HealthFinding =
   | Readonly<{ code: "runs_failed"; runs: number; users: number }>
-  | Readonly<{ code: "provider_runtime_key_rejected"; connectionId: string; failures: number }>
-  | Readonly<{ code: "provider_runtime_quota_exhausted"; connectionId: string; failures: number }>
+  | Readonly<{ code: "provider_runtime_key_rejected"; connectionId: string; failures: number; lastFailureAt: Date }>
+  | Readonly<{ code: "provider_runtime_quota_exhausted"; connectionId: string; failures: number; lastFailureAt: Date }>
   | Readonly<{ code: "provider_runtime_failing"; connectionId: string; failures: number; total: number;
     kinds: Readonly<Record<ProviderFailureKind, number>> }>
   | Readonly<{ code: "server_errors_rising"; errors: number }>
@@ -302,7 +302,7 @@ function providerFindings(rows: readonly TelemetryCounterGroup[], thresholds: He
       // A later successful operation means the key works again.
       if (failed.length === 0 || latest(failed) <= lastCompleted) continue;
       keyFailure = true;
-      findings.push({ code, connectionId, failures: sum(failed) });
+      findings.push({ code, connectionId, failures: sum(failed), lastFailureAt: new Date(latest(failed)) });
     }
     if (keyFailure) continue;
     const failures = byOutcome.get("failure") ?? [];
@@ -498,6 +498,25 @@ function operationLabel(operation: HealthTimedOperation): string {
     : operation.name === "other" ? "Background jobs" : `${subsystemLabels[operation.name]} jobs`;
 }
 
+/** A provider connection as the health items name it, with the state of its keys. */
+export type HealthAttentionConnection = Pick<AdminProviderConnection, "displayName" | "enabled" | "id"> & Readonly<{
+  credentials: readonly Readonly<{
+    activeVersion: Readonly<{ activatedAt: string; revokedAt: string | null }> | null;
+    enabled: boolean;
+  }>[];
+}>;
+
+/**
+ * A rejected key or an exhausted quota is news only while the connection still
+ * has a key in use and none took effect after the last failure: a key revoked,
+ * deleted or replaced since then leaves nothing to check until it fails again.
+ */
+function keyFailureOpen(connection: HealthAttentionConnection, lastFailureAt: Date): boolean {
+  const activations = connection.credentials.flatMap(({ activeVersion, enabled }) =>
+    enabled && activeVersion && !activeVersion.revokedAt ? [Date.parse(activeVersion.activatedAt)] : []);
+  return activations.length > 0 && activations.every((activatedAt) => activatedAt <= lastFailureAt.getTime());
+}
+
 /**
  * Human copy and navigation for findings. Provider findings name the connection
  * from the administrator's provider list and jump to its page; a connection
@@ -505,7 +524,7 @@ function operationLabel(operation: HealthTimedOperation): string {
  */
 export function healthAttentionItems(
   findings: readonly HealthFinding[],
-  connections: readonly Pick<AdminProviderConnection, "displayName" | "enabled" | "id">[] | null
+  connections: readonly HealthAttentionConnection[] | null
 ): AdminAttentionItem[] {
   const items: AdminAttentionItem[] = [];
   for (const finding of findings) {
@@ -521,6 +540,7 @@ export function healthAttentionItems(
       case "provider_runtime_failing": {
         const connection = connections?.find(({ id }) => id === finding.connectionId);
         if (connections && (!connection || !connection.enabled)) continue;
+        if (connection && finding.code !== "provider_runtime_failing" && !keyFailureOpen(connection, finding.lastFailureAt)) continue;
         const name = connection?.displayName ?? "A provider connection";
         const base = { action: "Open provider", id: `${finding.code}:${finding.connectionId}`,
           target: { resource: finding.connectionId, section: "providers" as const } };
