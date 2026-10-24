@@ -8,6 +8,7 @@ import {
 } from "./boundedText";
 import type { ProviderStreamLimits } from "./network";
 import {
+  assertOpenAIChatFinished,
   assertOpenAIChatTerminalResponse,
   extractOpenAIChatUsage,
   firstOpenAIChatChoice,
@@ -428,12 +429,13 @@ const responseProfile = {
   truncatedError: "openrouter_stream_truncated",
   validateJsonTerminal: assertValidOpenRouterTerminalResponse,
   validateStreamTerminal(
-    _response: OpenRouterResponseRecord,
+    response: OpenRouterResponseRecord,
     result: Readonly<{
       rawToolCallCount: number;
       toolCalls: readonly ModelToolCall[];
     }>
   ) {
+    assertOpenAIChatFinished(response, invalidOpenRouterTerminalResponseError);
     if (result.rawToolCallCount !== result.toolCalls.length) {
       throw new Error(invalidOpenRouterTerminalResponseError);
     }

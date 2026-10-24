@@ -149,6 +149,16 @@ describe("native agent loop", () => {
     await expect(runAgentLoop(said.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
   });
 
+  it("treats a tool-free response the adapter stopped for native call markup as calls only (issue #56)", async () => {
+    const spent = { batch: () => ({ budgetExhausted: true }) };
+    const markup: ProviderRunResult = { ...response(""), synthesisToolCallForbidden: true };
+    const recovered = harness([response("", [call("c1")]), markup, response("Here is what I have")], spent);
+    await expect(runAgentLoop(recovered.ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    expect(recovered.asked).toEqual([3]);
+    const empty = harness([response("", [call("c1")]), markup, markup], spent);
+    await expect(runAgentLoop(empty.ports)).resolves.toEqual({ kind: "empty", rounds: 3 });
+  });
+
   it("takes a follow-up delivered between rounds or before the answer closes", async () => {
     const followup: TranscriptUserItem = { followup: true, id: "f1", kind: "user", text: "Also B" };
     const { items, ports } = harness([response("A"), response("A and B")], { closes: [false, true], followups: [[followup]] });

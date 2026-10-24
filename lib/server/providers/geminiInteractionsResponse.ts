@@ -33,6 +33,7 @@ import {
   type SearchSource
 } from "../search/evidence";
 import { PROVIDER_RESPONSE_MAX_CITATIONS } from "../../domain/answerCitations";
+import { markProviderStreamDrop } from "./streamDrop";
 
 const MAX_INTERACTION_ID_LENGTH = 512;
 const MAX_MODEL_LENGTH = 512;
@@ -1107,7 +1108,7 @@ export async function* parseGeminiInteractionsSse(
     }
     if (event.data === "[DONE]") {
       if (event.event !== "done" || !terminal) {
-        throw new GeminiInteractionsStreamError("gemini_interactions_stream_truncated");
+        throw markProviderStreamDrop(new GeminiInteractionsStreamError("gemini_interactions_stream_truncated"), "truncated");
       }
       done = true;
       continue;
@@ -1417,8 +1418,9 @@ export async function* parseGeminiInteractionsSse(
     throw new GeminiInteractionsStreamError("gemini_interactions_stream_event_unsupported");
   }
 
+  // A body that ended before its terminal events is a dropped stream, sent again unchanged (`agent_docs/PROVIDERS.md`).
   if (!created || !terminal || !done || !terminalStatus || activeSteps.size > 0) {
-    throw new GeminiInteractionsStreamError("gemini_interactions_stream_truncated");
+    throw markProviderStreamDrop(new GeminiInteractionsStreamError("gemini_interactions_stream_truncated"), "truncated");
   }
 
   const rawFinalText = textFromSteps(protectedSteps, maxOutputChars, latestSnapshot);

@@ -12,8 +12,12 @@ import {
 import {
   createFetchDeepSeekResponsesClient,
   DeepSeekHttpError,
+  deepSeekResponseError,
   type DeepSeekResponsesClient
 } from "./deepSeekResponsesTransport";
+import { modelCallRetryDecision } from "../engine/modelCall";
+import { providerResponseFailure } from "./responseFailure";
+import { markProviderStreamDrop } from "./streamDrop";
 import { ProviderSearchExecutionError, type ProviderRunRequest, type ProviderSearchRequest } from "./types";
 import { observedFailure } from "./providerObservability";
 import {
@@ -500,5 +504,18 @@ describe("DeepSeek non-completed responses", () => {
     expect(error).toBeInstanceOf(ProviderSearchExecutionError);
     expect(error).toMatchObject({ code: "deepseek_response_incomplete", providerStatus: "incomplete", reason: "max_output_tokens" });
     expect(observedFailure(error)).toMatchObject({ cause: "max_output_tokens", reason: "safety_limit" });
+  });
+});
+
+describe("DeepSeek failure naming", () => {
+  // Review finding: a new error lost the shared parser's recovery facts, so a dropped stream was not retried and a
+  // context-length refusal skipped compaction.
+  it("keeps the stream drop and the context-length code while naming the failure DeepSeek's", () => {
+    const signal = new AbortController().signal;
+    const drop = deepSeekResponseError(markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated"));
+    expect(drop.message).toBe("deepseek_stream_truncated");
+    expect(modelCallRetryDecision(drop, signal)).not.toBeNull();
+    const overflow = deepSeekResponseError(providerResponseFailure("openai_response_failed", { error: { code: "context_length_exceeded" } }));
+    expect(overflow).toMatchObject({ code: "provider_context_length_exceeded", message: "deepseek_response_failed" });
   });
 });

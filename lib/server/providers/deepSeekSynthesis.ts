@@ -1,7 +1,11 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderRunResult } from "./types";
 
-const nativeToolMarkup = "<｜DSML｜";
+/** An opening or closing tag of DeepSeek's native tool protocol, with one or
+ * more fullwidth bars around DSML (V4 writes two: `<｜｜DSML｜｜tool_calls>`, issue #56). */
+const nativeToolMarkup = /<\/?｜+DSML/u;
+/** The end of a chunk that may still become that delimiter. */
+const nativeToolMarkupPrefix = /<(?:\/?(?:｜+(?:D(?:S(?:M)?)?)?)?)?$/u;
 
 /** This delimiter belongs to DeepSeek's native tool protocol, not to the
  * structured Responses tool-call channel. Never interpret its arguments. */
@@ -12,7 +16,7 @@ class SynthesisTextGuard {
   append(delta: string): string {
     if (this.forbidden) return "";
     const text = this.pending + delta;
-    const marker = text.indexOf(nativeToolMarkup);
+    const marker = text.search(nativeToolMarkup);
     if (marker >= 0) {
       this.pending = "";
       this.forbidden = true;
@@ -20,8 +24,7 @@ class SynthesisTextGuard {
     }
     // Retain only a possible delimiter prefix, even when SSE splits it into
     // individual characters. Ordinary answer text streams immediately.
-    let retained = Math.min(text.length, nativeToolMarkup.length - 1);
-    while (retained > 0 && !text.endsWith(nativeToolMarkup.slice(0, retained))) retained--;
+    const retained = nativeToolMarkupPrefix.exec(text)?.[0].length ?? 0;
     this.pending = text.slice(text.length - retained);
     return text.slice(0, text.length - retained);
   }
@@ -55,7 +58,7 @@ export async function* guardDeepSeekSynthesis(
     const result = next.value;
     // Non-streaming responses and SSE terminal-only text need the same check.
     // The shared parser may normalize final text independently of its deltas.
-    const finalMarker = result.finalText.indexOf(nativeToolMarkup);
+    const finalMarker = result.finalText.search(nativeToolMarkup);
     if (guard.forbidden || finalMarker >= 0) {
       const finalText = finalMarker >= 0 ? result.finalText.slice(0, finalMarker) : publishedText;
       return {
