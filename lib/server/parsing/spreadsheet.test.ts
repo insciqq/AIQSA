@@ -111,6 +111,20 @@ describe("bounded spreadsheet parsing", () => {
     expect(sheet.cells.some((cell) => cell.address === "B3")).toBe(false);
     expect(document.workbook?.warnings).toContain("formula_like_text");
     expect(document.text).toContain("'=HYPERLINK");
+    expect(document.text).not.toContain("Sheet:");
+  });
+
+  it("names each sheet in the text a model reads", () => {
+    const workbook = utils.book_new();
+    utils.book_append_sheet(workbook, utils.aoa_to_sheet([["Month", "Revenue"], ["Jan", 10]]), "Sales 2026");
+    utils.book_append_sheet(workbook, utils.aoa_to_sheet([["Month", "Cost"], ["Jan", 4]]), "Costs");
+    const document = parseSpreadsheetDocument({
+      bytes: write(workbook, { bookType: "xlsx", type: "buffer" }),
+      fileName: "plan.xlsx",
+      mimeType: mimeByType.xlsx
+    });
+
+    expect(document.text).toBe("Sheet: Sales 2026\nMonth\tRevenue\nJan\t10\n\nSheet: Costs\nMonth\tCost\nJan\t4");
   });
 
   it("rejects workbook dimensions above the reviewed column bound", () => {
