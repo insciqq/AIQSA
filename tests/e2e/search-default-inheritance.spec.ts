@@ -33,11 +33,11 @@ test("one Search default serves every chat across navigation, reload and login",
     await prisma.providerConnection.update({ where: { id: authority.connectionId }, data: { family: "openai" } });
     await prisma.providerModelCredentialCheck.create({ data: { ...authority,
       connectionVersion: 1, modelVersion: 1, status: "available", checkedAt: new Date() } });
-    const option = await prisma.searchOption.create({ data: { optionId, displayName: "OpenAI Search",
-      description: "Synthetic catalog-only OpenAI Search", kind: "web_search", sourceConnectionId: authority.connectionId } });
+    const option = await prisma.searchOption.create({ data: { optionId, displayName: "Inheritance Search",
+      description: "Synthetic catalog-only Search", kind: "web_search", sourceConnectionId: authority.connectionId } });
     const draft = { ...normalizeSearchDraft(builtInSearchDraft({ kind: "openai_native_web_search", config: {} })) };
     const strategy = await prisma.searchStrategy.create({ data: { searchOptionId: option.id, strategyId: optionId,
-      provider: "openai", displayName: "OpenAI Search", kind: "openai_native_web_search", description: "Synthetic Search",
+      provider: "openai", displayName: "Inheritance Search", kind: "openai_native_web_search", description: "Synthetic Search",
       config: {}, draft, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider" } });
     const revision = await prisma.searchIntegrationRevision.create({ data: { searchStrategyId: strategy.id,
       revisionNumber: 1, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", configuration: draft,
@@ -71,13 +71,13 @@ test("one Search default serves every chat across navigation, reload and login",
     };
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "organization", searchPlan: chosen });
     await startNewChat(page);
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: OpenAI");
+    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Inheritance");
     await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: off } });
     await page.reload();
     await expectAutomatic("organization default without a source");
     await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: chosen } });
     await page.reload();
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: OpenAI");
+    await expect(page.getByRole("button", { name: /^Choose web search/ })).toHaveAccessibleDescription("Search: Inheritance");
     const created = await page.request.post("/api/chats", { data: { title: "Saved Search choices" } });
     expect(created.ok()).toBe(true);
     const chatId = (await created.json()).chat.id;
@@ -85,9 +85,9 @@ test("one Search default serves every chat across navigation, reload and login",
     // one an older release saved on a chat is ignored.
     expect((await page.request.patch(`/api/chats/${chatId}`, { data: { defaultSearchPlan: off } })).ok()).toBe(true);
     const searchChip = page.getByRole("button", { name: /^Choose web search/ });
-    const chipSource = page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /OpenAI Search/ });
+    const chipSource = page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Inheritance Search/ });
     await page.goto(`/c/${chatId}`);
-    await expect(searchChip).toHaveAccessibleDescription("Search: OpenAI");
+    await expect(searchChip).toHaveAccessibleDescription("Search: Inheritance");
     // The chip never turns Search off: its last source stays on.
     await searchChip.click();
     await expect(chipSource).toBeChecked();
@@ -130,20 +130,20 @@ test("one Search default serves every chat across navigation, reload and login",
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toEqual(chosen);
     expect((await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toEqual(off);
-    await expect(searchChip).toHaveAccessibleDescription("Search: OpenAI");
+    await expect(searchChip).toHaveAccessibleDescription("Search: Inheritance");
     await startNewChat(page);
-    await expect(searchChip).toHaveAccessibleDescription("Search: OpenAI");
+    await expect(searchChip).toHaveAccessibleDescription("Search: Inheritance");
     expect((await catalog()).defaults).toMatchObject({ searchPreferenceSource: "personal", searchPlan: chosen });
     await runAccountMenuAction(page, "Chat defaults");
     settings = page.getByTestId("library-v2");
-    await expect(settings.getByLabel("Web search default")).toHaveText("OpenAI Search");
+    await expect(settings.getByLabel("Web search default")).toHaveText("Inheritance Search");
     await settings.getByLabel("Web search default").click();
     await settings.getByRole("button", { name: "Use organization default" }).click();
     await expect.poll(async () => (await catalog()).defaults.searchPreferenceSource).toBe("organization");
     await settings.getByRole("button", { name: "Back to chat" }).click();
 
     // New and existing chats both follow the organization default now.
-    for (const [plan, label] of [[off, null], [chosen, "OpenAI"]] as const) {
+    for (const [plan, label] of [[off, null], [chosen, "Inheritance"]] as const) {
       await prisma.searchPolicy.update({ where: { id: "installation" }, data: { defaultPlan: plan } });
       await page.goto("/");
       if (label === null) {
@@ -161,7 +161,7 @@ test("one Search default serves every chat across navigation, reload and login",
     for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await searchChip.click();
-      await expect(page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /OpenAI Search/ })).toBeChecked();
+      await expect(page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Inheritance Search/ })).toBeChecked();
       await page.screenshot({ path: testInfo.outputPath(`saved-chat-search-${viewport.width}.png`) });
       await page.keyboard.press("Escape");
     }
