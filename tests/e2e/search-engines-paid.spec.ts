@@ -25,6 +25,7 @@ import { PrismaClient, type ModelRun } from "@prisma/client";
 import { expect, test, type Browser, type Page, type TestInfo } from "@playwright/test";
 import type { AdminSearchIntegration } from "../../lib/contracts/adminSearch";
 import { authenticateWithLocalToken } from "./support/localAuth";
+import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import {
   completedPaidTurn,
@@ -116,6 +117,7 @@ async function touchShot(browser: Browser, baseURL: string, testInfo: TestInfo, 
   try {
     await authenticateWithLocalToken(context.request);
     const phone = await context.newPage();
+    phone.setDefaultTimeout(60_000);
     await phone.goto(path, { timeout: 600_000 });
     await expect(phone.getByTestId("app-shell")).toBeVisible({ timeout: 120_000 });
     await prepare(phone);
@@ -189,8 +191,13 @@ test("two engines answer one search together, and the model searches a time-sens
 test("Search controls and answer sources at every size", async ({ page, browser, baseURL }, testInfo) => {
   test.setTimeout(30 * 60_000);
   test.skip(!shownChatId, "no answered chat to show");
+  // A missing control fails within a minute instead of holding the whole test.
+  page.setDefaultTimeout(60_000);
   await page.goto("/", { timeout: 600_000 });
   await authenticateWithLocalToken(page.request);
+  const defaults = (await (await page.request.get("/api/me/catalog")).json()).catalog.defaults;
+  process.stdout.write(`search_ui_defaults ${JSON.stringify({ optionCount: defaults.searchPlan.optionIds.length,
+    organizationOptionCount: defaults.organizationSearchPlan.optionIds.length, source: defaults.searchPreferenceSource })}\n`);
 
   // An answer with its sources.
   await shots(page, testInfo, "01-answer-sources", async (current) => {
@@ -211,7 +218,8 @@ test("Search controls and answer sources at every size", async ({ page, browser,
 
   // Chat defaults: the Web search row and the turn-off confirmation, which is cancelled.
   await shots(page, testInfo, "03-chat-defaults-turn-off", async (current) => {
-    await current.goto("/?library=defaults", { timeout: 600_000 });
+    await current.goto(`/c/${shownChatId}`, { timeout: 600_000 });
+    await runAccountMenuAction(current, "Chat defaults");
     const settings = current.getByTestId("library-v2");
     await expect(settings).toBeVisible({ timeout: 120_000 });
     const summary = settings.getByLabel("Web search default");
