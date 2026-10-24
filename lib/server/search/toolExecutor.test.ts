@@ -1777,7 +1777,7 @@ describe("Search engine retries", () => {
       action: { type: "search", sources: [{ url: "https://example.com" }] } },
     { type: "message", content: [{ type: "output_text", text: "Found it." }] }] });
 
-  function nativeRouter(fetchFn: typeof fetch, sleep = vi.fn(async (_delayMs: number, _signal: AbortSignal) => undefined)) {
+  function nativeRouter(fetchFn: typeof fetch, sleep = vi.fn(async (_delayMs: number, _signal: AbortSignal): Promise<void> => undefined)) {
     const searchAdapter = createOpenAIResponsesSearchAdapter({
       client: createFetchOpenAIResponsesClient({ apiKey: "fake", fetchFn }), provider: "openai"
     });
