@@ -1,6 +1,7 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadWorkspaceActivityEntry, WorkspaceActivityKind } from "../../contracts/workspace";
 import type { ArtifactService } from "../artifacts/service";
+import { imageNotSentFailure } from "../images/inputError";
 import type { ImageGenerationService } from "../images/service";
 import { MCP_FIND_TOOLS_NAME, mcpFindToolsTool } from "../mcp/discovery";
 import { executeDurableMcpDiscovery } from "../mcp/durableDiscovery";
@@ -318,7 +319,18 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const definition = imageGenerationTool(request.imagePlan);
     const service = input.services.images;
     add({ activity: named(definition, "Images"), definition, effects: "external", observationSource: "workspace",
-      execute: (execution) => service.execute(execution.call, context(execution), execution.signal) });
+      execute: async (execution) => {
+        try {
+          return await service.execute(execution.call, context(execution), execution.signal);
+        } catch (error) {
+          // A failure before the dispatch claim sent nothing: an ordinary error the model can correct or answer around,
+          // never an unknown effect. Any other failure, or a stop, is the batch's.
+          const failure = execution.signal.aborted ? null : imageNotSentFailure(error);
+          if (!failure) throw error;
+          return { callId: execution.call.id, content: [{ type: "json", value: { error: failure.code, message: failure.message } }],
+            name: execution.call.name, status: "error" };
+        }
+      } });
   }
 
   if (clientTools && request.artifactTool && input.services.artifacts) {

@@ -21,6 +21,12 @@ import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry
 import { TOOL_RESULT_LIMITS } from "./toolResults";
 import { createUnknownEffects } from "./unknownEffects";
 import { SearchToolCancelledError } from "../search/toolExecutor";
+import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
+import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
+import { ImageInputError, ImageToolError, markImageFailureNotSent } from "../images/inputError";
+import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { buildToolRegistry } from "./toolRegistry";
 
 function definition(name: string): RunTool {
   return { capability: "mcp", description: name, inputSchema: { type: "object" }, name };
@@ -381,6 +387,109 @@ describe("native tool batch", () => {
       ]);
     expect(records.filter((record) => record.outcome === "completed")[0]).toHaveProperty("duration_ms");
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE_|lookup|"write"|"c[1-7]"/u);
+  });
+
+  it("tells the model a Workspace time limit, keeps its effect unknown and logs a timeout, not an unexpected failure", async () => {
+    const observation = await captureRunObservation();
+    const workspaceTool = (name: string, execute: EngineTool["execute"]) =>
+      tool(name, "external", execute, { definition: { ...definition(name), capability: "workspace" } });
+    const registry = {
+      shell: workspaceTool("shell", async () => { throw new WorkspaceRuntimeError("workspace_tool_timeout"); }),
+      lost: workspaceTool("lost", async () => { throw new WorkspaceRuntimeError("workspace_tool_outcome_unknown"); })
+    };
+    const { store } = fakeStore();
+    const batch = deps(registry, store);
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [
+      { arguments: { command: "PRIVATE_COMMAND" }, id: "c1", name: "shell" }, { arguments: {}, id: "c2", name: "lost" }
+    ] });
+    expect(outcome.results[0]).toMatchObject({ outcome: "unknown",
+      output: expect.stringContaining(workspaceOperationFailureMessage("workspace_tool_timeout")) });
+    expect(outcome.results[0]!.output).not.toContain("may have been sent");
+    expect(outcome.results[1]).toMatchObject({ outcome: "unknown", output: expect.stringContaining("may have been sent") });
+    // The command may have changed files: an identical one is not sent again on its own.
+    expect(batch.unknownEffects.find({ arguments: { command: "PRIVATE_COMMAND" }, name: "shell" })).not.toBeNull();
+    const records = observation.records().filter((record) => record.event === "tool_call");
+    expect(records.map((record) => [record.level, record.outcome, record.code, record.error_category ?? null])).toEqual([
+      ["warn", "timeout", "workspace_tool_timeout", null],
+      ["error", "failed", "tool_call_outcome_unknown", "unexpected"]
+    ]);
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+  });
+
+  describe("image calls", () => {
+    const imageCall = (id: string, imageIds: string[] = []) =>
+      ({ arguments: { image_ids: imageIds, prompt: "PRIVATE_PROMPT" }, id, name: IMAGE_GENERATION_TOOL_NAME });
+
+    async function imageBatch(execute: (call: ModelToolCall) => Promise<ToolExecutionResult>) {
+      const registry = await buildToolRegistry({
+        chatId: "chat", followupTexts: () => [], mcpBindings: new Map(), onEvent: vi.fn(async () => undefined), onUsage: vi.fn(),
+        onWorkspaceActivity: vi.fn(async () => undefined), runId: "run", userId: "user",
+        request: { attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [] }, imagePlan: mixedToolsImagePlan,
+          modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
+          modelId: "model", params: {}, prompt: { developer: null, system: null }, provider: "codex",
+          searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto" },
+        services: { images: { execute: vi.fn(execute), withConversationPixels: vi.fn() }, repository: { createSearchRun: vi.fn() } as never,
+          savedResults: { read: vi.fn(async () => null) } }
+      });
+      const { store } = fakeStore();
+      return deps({ [IMAGE_GENERATION_TOOL_NAME]: registry.resolve(IMAGE_GENERATION_TOOL_NAME)! }, store);
+    }
+
+    it("settles refusals before the dispatch claim as error results the model can act on, never unknown effects", async () => {
+      const observation = await captureRunObservation();
+      const failures: Record<string, unknown> = {
+        reference: markImageFailureNotSent(new ImageInputError("image_reference_not_found", "PRIVATE_ID")),
+        budget: markImageFailureNotSent(new ImageInputError("image_tool_budget_exhausted")),
+        binding: markImageFailureNotSent(new ImageToolError("image_binding_unavailable")),
+        database: markImageFailureNotSent(new Error("PRIVATE_DATABASE_FAILURE"))
+      };
+      const batch = await imageBatch(async (call) => { throw failures[call.id]; });
+      // The model knows the limit before it reaches it.
+      expect(batch.registry.resolve(IMAGE_GENERATION_TOOL_NAME)!.definition.description)
+        .toContain(`At most ${IMAGE_GENERATION_CALLS_PER_ANSWER} images per answer.`);
+      const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: Object.keys(failures).map((id) => imageCall(id, [id])) });
+      const values = outcome.results.map((item) => JSON.parse(item.output) as { error: string; message: string; outcome?: string });
+      expect(outcome.results.map((item) => item.outcome)).toEqual(["error", "error", "error", "error"]);
+      expect(values.map((value) => value.error)).toEqual(["image_reference_not_found", "image_tool_budget_exhausted",
+        "image_binding_unavailable", "image_tool_unavailable"]);
+      for (const value of values) {
+        expect(value).not.toHaveProperty("outcome");
+        expect(value.message).toContain("Nothing was sent to the image provider.");
+        expect(value.message).not.toMatch(/may have been sent|effect is unknown/u);
+      }
+      expect(values[0]!.message).toContain("PRIVATE_ID");
+      expect(values[1]!.message).toContain(`maximum of ${IMAGE_GENERATION_CALLS_PER_ANSWER} image generations`);
+      expect(values[3]!.message).not.toContain("PRIVATE_DATABASE_FAILURE");
+      for (const id of Object.keys(failures)) expect(batch.unknownEffects.find(imageCall(id, [id]))).toBeNull();
+      const records = observation.records().filter((record) => record.event === "tool_call");
+      expect(records.map((record) => [record.tool_kind, record.level, record.outcome, record.code, record.error_category ?? null]))
+        .toEqual([
+          ["image_generation", "warn", "failed", "image_reference_not_found", null],
+          ["image_generation", "warn", "failed", "image_tool_budget_exhausted", null],
+          ["image_generation", "warn", "failed", "image_binding_unavailable", null],
+          ["image_generation", "warn", "failed", "image_tool_unavailable", null]
+        ]);
+      expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+    });
+
+    it("keeps a failure at or after the dispatch claim, and an unmarked one, unknown and never sent again", async () => {
+      const claimed = new ImageToolError("image_dispatch_claimed");
+      const batch = await imageBatch(async () => { throw claimed; });
+      const state = { calls: 0 };
+      const first = await runToolBatch(batch, state, { round: 1, calls: [imageCall("c1")] });
+      expect(first.results[0]).toMatchObject({ outcome: "unknown", output: expect.stringContaining("may have been sent") });
+      expect(batch.unknownEffects.find(imageCall("c1"))).not.toBeNull();
+      const again = await runToolBatch(batch, state, { round: 2, calls: [imageCall("c2")] });
+      expect(again.results[0]).toMatchObject({ outcome: "error", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT });
+      // A stop is the run's, whatever the failure: it is never turned into an ordinary result.
+      const controller = new AbortController();
+      const stopped = await imageBatch(async () => {
+        controller.abort();
+        throw markImageFailureNotSent(new DOMException("aborted", "AbortError"));
+      });
+      await expect(runToolBatch({ ...stopped, signal: controller.signal }, { calls: 0 }, { round: 1, calls: [imageCall("c3")] }))
+        .rejects.toBeDefined();
+    });
   });
 
   it("logs a call its run stopped as cancelled, once, and none for a call never recorded", async () => {

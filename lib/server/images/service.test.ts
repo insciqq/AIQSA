@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { bitmap24, decodedPixels, syntheticTiff, type Rgb } from "@/tests/support/rasterFixtures";
-import { imageInputFailure, ImageInputError } from "./inputError";
+import { imageInputFailure, ImageInputError, imageNotSentFailure } from "./inputError";
 import { imageDispatchMustStop } from "./errors";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatAccess } from "../chats/access";
@@ -247,7 +247,7 @@ describe("image edit preflight", () => {
     const context = { runId: "run", userId: USER, persistedToolCallId: "tool", request: {
       chatId: "chat", imagePlan: mixedToolsImagePlan,
       imageReferences: [{ attachmentId: reference.id, messageId: "message", fileName: "PRIVATE.png", origin: "upload" as const }] } };
-    return { reference, findMany, binding, usage, getObject, fetchFn, beforeDispatch, service, call, context };
+    return { reference, findMany, binding, usage, getObject, fetchFn, beforeDispatch, prisma, service, call, context };
   }
 
   it.each(["gif", "mime", "bytes", "kind", "checksum"])("refuses %s before the dispatch claim and usage", async (fault) => {
@@ -274,6 +274,38 @@ describe("image edit preflight", () => {
     h.getObject.mockResolvedValue({ body: image, contentType: "image/jpeg" });
     await expect(h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch })).rejects.toThrow("fixture_dispatch_boundary");
     expect(h.beforeDispatch).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a call over the answer's image budget as a correctable refusal before the dispatch claim", async () => {
+    const h = await editHarness();
+    const observation = await captureRunObservation();
+    h.prisma.modelRunToolCall.count.mockResolvedValue(5);
+    const error = await h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ImageInputError);
+    expect(imageNotSentFailure(error)).toEqual({ code: "image_tool_budget_exhausted", message: expect.stringMatching(
+      /^This answer already started the maximum of 4 image generations\. .* Nothing was sent to the image provider\.$/u) });
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "run",
+      code: "image_tool_budget_exhausted", outcome: "refused", level: "warn" }));
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference/);
+    expect(h.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("marks every failure before the dispatch claim as not sent, and none at or after it", async () => {
+    const missing = await editHarness();
+    missing.binding.mockResolvedValue(null as never);
+    const unbound = await missing.service.execute(missing.call, missing.context).catch((error: unknown) => error);
+    expect(imageNotSentFailure(unbound)).toEqual({ code: "image_binding_unavailable",
+      message: "The image tool could not run this call. Tell the user the image was not created. Nothing was sent to the image provider." });
+    const inactive = await editHarness();
+    inactive.prisma.modelRun.findFirst.mockResolvedValue({ assistantMessageId: "assistant", status: "completed" });
+    expect(imageNotSentFailure(await inactive.service.execute(inactive.call, inactive.context).catch((error: unknown) => error)))
+      .toMatchObject({ code: "image_run_inactive" });
+    const claimed = await editHarness();
+    const boundary = await claimed.service.execute(claimed.call, claimed.context, undefined, { beforeDispatch: claimed.beforeDispatch })
+      .catch((error: unknown) => error);
+    expect(boundary).toMatchObject({ message: "fixture_dispatch_boundary" });
+    expect(imageNotSentFailure(boundary)).toBeNull();
   });
 
   it("refuses invalid prompt and parameters before a dispatch claim", async () => {
@@ -315,6 +347,8 @@ describe("image edit preflight", () => {
     const error = new Error("PRIVATE exception with https://secret.example and sk-secret");
     h.binding.mockRejectedValue(error);
     await expect(h.service.execute(h.call, h.context)).rejects.toBe(error);
+    // Nothing was sent: the model reads a known failure by a code only, never the exception's text.
+    expect(imageNotSentFailure(error)).toMatchObject({ code: "image_tool_unavailable" });
     expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "binding", code: "tool_call_failed",
       outcome: "failed", level: "error" }));
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
@@ -352,6 +386,7 @@ describe("image edit preflight", () => {
     h.getObject.mockImplementation(async () => { controller.abort(reason); throw reason; });
     const observation = await captureRunObservation();
     await expect(h.service.execute(h.call, h.context, controller.signal, { beforeDispatch: h.beforeDispatch })).rejects.toBe(reason);
+    expect(imageNotSentFailure(reason)).toBeNull();
     expect(observation.records().filter((record) => record.event === "image_execution"))
       .toEqual([expect.objectContaining({ stage: "reference_read", outcome: "cancelled", level: "warn" })]);
     expect(h.beforeDispatch).not.toHaveBeenCalled();
