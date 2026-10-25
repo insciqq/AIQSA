@@ -145,6 +145,33 @@ describe("Telegram dispatcher: who the bot answers", () => {
     expect(textsTo(fake, stranger.id)).toEqual([TELEGRAM_COPY.notLinked, TELEGRAM_COPY.notLinked]);
   });
 
+  it("answers a stranger's refused link codes within the same hourly limit, a linked user's every time, and confirms a link always", async () => {
+    const { advance, deliver, fake, link, linking } = setup();
+    const expired = "This link has expired. Create a new one in AIQSA → Settings → Connections.";
+    const stranger = fake.inject.addUser();
+    for (let index = 0; index < 5; index += 1) await deliver(fake.inject.command(stranger, "start", `${"A".repeat(42)}${index}`));
+    await deliver(fake.inject.text(stranger, "hello?"));
+    expect(linking.linkFromStart).toHaveBeenCalledTimes(5);
+    expect(textsTo(fake, stranger.id)).toEqual([expired]);
+
+    // A valid code still links within the hour, and is confirmed.
+    vi.mocked(linking.linkFromStart).mockResolvedValueOnce({
+      accountName: "Alex Example", kind: "linked", link: {} as TelegramLinkRecord, replaced: null
+    });
+    await deliver(fake.inject.command(stranger, "start", "B".repeat(43)));
+    expect(textsTo(fake, stranger.id)).toHaveLength(2);
+    expect(textsTo(fake, stranger.id)[1]).toMatch(/^Connected to AIQSA as Alex Example/u);
+    advance(HOUR);
+    await deliver(fake.inject.command(stranger, "start", "C".repeat(43)));
+    expect(textsTo(fake, stranger.id).slice(2)).toEqual([expired]);
+
+    const owner = fake.inject.addUser();
+    link(owner);
+    await deliver(fake.inject.command(owner, "start", "D".repeat(43)));
+    await deliver(fake.inject.command(owner, "start", "E".repeat(43)));
+    expect(textsTo(fake, owner.id)).toEqual([expired, expired]);
+  });
+
   it("ignores groups and bots and leaves every group or channel it is added to", async () => {
     const { deliver, fake, link, registry } = setup();
     const owner = fake.inject.addUser();

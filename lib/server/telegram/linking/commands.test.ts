@@ -41,22 +41,25 @@ function setup(linking: Partial<TelegramLinkingService> = {}) {
 }
 
 describe("Telegram account commands", () => {
-  it("links from /start and confirms with the AIQSA account's name, or answers the refusal's text", async () => {
+  it("links from /start and confirms with the AIQSA account's name, or hands the refusal's text to the dispatcher", async () => {
     const { bot, commands, fake, message, service, user } = setup({
       linkFromStart: vi.fn()
         .mockResolvedValueOnce({ accountName: "Alex Example", kind: "linked", link: {} as TelegramLinkRecord, replaced: null })
         .mockResolvedValueOnce({ code: "telegram_link_code_invalid", kind: "refused" })
         .mockResolvedValueOnce({ code: "telegram_account_in_use", kind: "refused" })
     });
-    for (let index = 0; index < 3; index += 1) await commands.start({ bot, code: "A".repeat(43), message });
+    const refuse = vi.fn(async () => undefined);
+    for (let index = 0; index < 3; index += 1) await commands.start({ bot, code: "A".repeat(43), message, refuse });
     expect(service.linkFromStart).toHaveBeenCalledWith({
       code: "A".repeat(43),
       target: { botId: fake.bot.id, displayName: "Alex", telegramChatId: user.id, telegramUserId: user.id, telegramUsername: "alex_example" }
     });
     expect(fake.botMessages(user.id).map((sent) => sent.text)).toEqual([
-      "Connected to AIQSA as Alex Example. Send a message to start a new chat. /help lists commands.",
-      "This link has expired. Create a new one in AIQSA → Settings → Connections.",
-      "This Telegram account is connected to another AIQSA account. Disconnect it there first."
+      "Connected to AIQSA as Alex Example. Send a message to start a new chat. /help lists commands."
+    ]);
+    expect(refuse.mock.calls).toEqual([
+      ["This link has expired. Create a new one in AIQSA → Settings → Connections."],
+      ["This Telegram account is connected to another AIQSA account. Disconnect it there first."]
     ]);
   });
 

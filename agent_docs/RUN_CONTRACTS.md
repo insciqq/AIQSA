@@ -71,7 +71,7 @@ Code: `lib/server/scheduledTasks/`.
 
 Code: `lib/server/telegram/`.
 
-- A Telegram message is an interactive personal run of the linked user, sent through the ordinary send handler; access is rechecked for each message and each delivery, and revoking the linking session unlinks. Button approvals use the ordinary approval path. Telegram turns take no self-service tools, because the bridge shows only approval cards, so a confirmation or Undo would be out of reach (decision 2026-10-23).
+- A Telegram message is the linked user's interactive personal run through the ordinary send handler; access is rechecked per message and delivery. The link belongs to the account (operator decision 2026-10-19): revoking all sessions, a password change or reset, deactivation or rejection (SCIM included) and disconnecting (settings, admin, `/unlink`) remove it, and disconnecting voids pending link codes; signing out of one browser does not. Approval buttons use the ordinary path. Telegram turns take no self-service tools: the bridge shows only approval cards, never confirmations or Undo (decision 2026-10-23).
 - Tasks with Telegram notification send their results and files through a durable outbox and never repeat an ambiguous send.
 - Telegram is a content egress destination (operator decision 2026-10-19); see `agent_docs/ARCHITECTURE.md`.
 

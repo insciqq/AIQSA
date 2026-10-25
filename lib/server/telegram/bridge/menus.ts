@@ -1,6 +1,8 @@
 import type { TelegramCallbackKind } from "../../../contracts/telegram";
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
+import type { TelegramSendAuthority } from "../botApi";
+import { reachTelegramChat, type TelegramChatReachDeps } from "../control/reach";
 import {
   TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, telegramAssistantSelectedText, telegramCurrentChatText, telegramModelLabel, telegramToggleLabel
 } from "../copy";
@@ -19,7 +21,10 @@ import type { TelegramRunGateway } from "./gateway";
  * whose toggles edit it in place).
  * Choices that change where the next message goes run in order with the
  * messages around them; every choice is checked against the current catalog
- * and access before it is stored on the link.
+ * and access before it is stored on the link. Every menu send and edit asks
+ * again whether the link still reaches its chat right before it leaves (after
+ * the Bot API client's pacing or a 429's wait), since menus name chats and
+ * assistants.
  */
 
 export const TELEGRAM_MODELS_PER_PAGE = 8;
@@ -66,7 +71,7 @@ export function telegramSettingsKeyboard(link: TelegramLinkRecord, model: Telegr
   ];
 }
 
-export function createTelegramBridgeMenus(deps: Readonly<{
+export function createTelegramBridgeMenus(deps: TelegramChatReachDeps & Readonly<{
   conversation: Pick<TelegramConversation, "enqueue" | "stopRun">;
   gateway: Pick<TelegramRunGateway, "assistants" | "findChat" | "loadCatalog" | "recentChats">;
   links: Pick<TelegramLinkStore, "findByUserId" | "updatePreferences">;
@@ -75,21 +80,33 @@ export function createTelegramBridgeMenus(deps: Readonly<{
 }>): TelegramBridgeMenus {
   const now = deps.now ?? Date.now;
 
+  /** Whether the context's link still reaches this chat as the same link and bot, asked before each dispatch. */
+  function authority(context: TelegramMessageContext | TelegramCallbackContext, chatId: number): TelegramSendAuthority {
+    const binding = { botId: context.bot.botId, linkId: context.link.id, telegramChatId: chatId, userId: context.link.userId };
+    return async () => (await reachTelegramChat(deps, binding)).ok;
+  }
+
   async function send(context: TelegramMessageContext | TelegramCallbackContext, menu: Menu): Promise<void> {
     const chatId = "message" in context ? context.message.chat.id : context.chatId;
-    await context.bot.outbound.sendText({ chatId, text: menu.text, ...(menu.keyboard ? { keyboard: menu.keyboard, linkId: context.link.id } : {}) });
+    await context.bot.outbound.sendText({
+      authorize: authority(context, chatId), chatId, text: menu.text,
+      ...(menu.keyboard ? { keyboard: menu.keyboard, linkId: context.link.id } : {})
+    });
   }
 
   /** Replaces the pressed menu in place; a menu that can no longer be edited is sent anew. */
   async function edit(context: TelegramCallbackContext, menu: Menu, chatOwner?: string): Promise<void> {
+    const authorize = authority(context, context.chatId);
     const markup = menu.keyboard ? await context.bot.outbound.replyMarkup({ keyboard: menu.keyboard, linkId: context.link.id }) : undefined;
     const edited = context.messageId === null ? null : await context.bot.api.editMessageText({
       chat_id: context.chatId, message_id: context.messageId, text: menu.text, ...(markup ? { reply_markup: markup } : {})
-    });
+    }, { authorize });
     const owner = chatOwner ? { chatId: chatOwner, linkId: context.link.id, userId: context.link.userId } : undefined;
+    // The chat no longer receives it: no fallback either.
+    if (edited && !edited.ok && edited.kind === "unreachable") return;
     if (!edited?.ok) {
       await context.bot.outbound.sendText({
-        chatId: context.chatId, text: menu.text, ...(menu.keyboard ? { keyboard: menu.keyboard, linkId: context.link.id } : {}),
+        authorize, chatId: context.chatId, text: menu.text, ...(menu.keyboard ? { keyboard: menu.keyboard, linkId: context.link.id } : {}),
         ...(owner ? { owner } : {})
       });
       return;
