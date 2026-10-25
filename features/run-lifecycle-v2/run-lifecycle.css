@@ -149,12 +149,17 @@ div.v2-answer-process[data-pending],
   list-style: none;
 }
 
+/* A step's mark stays beside its first line when the label or meta wraps. */
 .v2-answer-process-steps li {
   display: flex;
   min-width: 0;
   min-height: 1.5rem;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
+}
+
+.v2-answer-process-steps li > .v2-answer-process-mark {
+  margin-top: 0.3125rem;
 }
 
 .v2-answer-process-mark {
@@ -214,6 +219,10 @@ div.v2-answer-process[data-pending],
   background: currentcolor;
 }
 
+.v2-answer-plan .v2-answer-process-step-name {
+  padding-block: 0.125rem;
+}
+
 .v2-answer-plan li[data-state="active"] .v2-answer-process-step-name {
   color: var(--v2-color-text);
 }
@@ -226,8 +235,9 @@ div.v2-answer-process[data-pending],
   display: flex;
   min-width: 0;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: 0 0.5rem;
   flex-wrap: wrap;
+  padding-block: 0.125rem;
 }
 
 .v2-answer-process-step-name {
@@ -307,15 +317,6 @@ div.v2-answer-process[data-pending],
   min-height: 0;
   align-items: baseline;
   flex-wrap: wrap;
-}
-
-/* The step's own mark stays on its first line, not beside the unavailable list. */
-.v2-answer-process-steps li:has(> .v2-answer-process-step .v2-answer-process-unavailable) {
-  align-items: flex-start;
-}
-
-.v2-answer-process-steps li:has(> .v2-answer-process-step .v2-answer-process-unavailable) > .v2-answer-process-mark {
-  margin-top: 0.3125rem;
 }
 
 .v2-answer-process-unavailable > .v2-answer-process-step-meta {

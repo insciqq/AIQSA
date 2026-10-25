@@ -327,25 +327,25 @@ describe("answer outputs v2", () => {
     expect(skipped).toHaveTextContent("Skipped www.shop.example/tariffs: only links from this chat or web search are read");
     expect(skipped).toHaveTextContent("94 ms");
     expect(skipped).not.toHaveTextContent("round");
-    expect(skipped).not.toHaveTextContent("Failed");
     expect(skipped!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "cancelled");
-    expect(failed).toHaveTextContent("Couldn't read down.example/page: the site is unreachable");
-    expect(failed).toHaveTextContent("Failed · 1.2 s");
+    // The label already names the failure; the meta is only its time.
+    expect(failed).toHaveTextContent(/^Couldn't read down\.example\/page: the site is unreachable1\.2 s$/u);
     expect(failed!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "error");
   });
 
-  it("shows successful search calls per engine with other outcomes separately", () => {
+  it("shows successful search calls per engine with other outcomes separately on the line, once", () => {
     render(<AnswerProcessV2 toolActivity={{ calls: [
       { origin: "web_search", round: 2, status: "complete", toolName: "search" }
     ], searchEngines: [
       { engine: 1, name: "Perplexity", requested: 3, settled: 2, complete: 2, error: 0, skipped: 0 },
       { engine: 2, name: "OpenAI (CodexLB)", requested: 3, settled: 3, complete: 1, error: 1, skipped: 1 }
     ] }} />);
-    expect(screen.getByText(/Web search · Perplexity ×2/iu)).toBeVisible();
+    const line = screen.getByTestId("tool-activity-disclosure").querySelector("summary");
+    expect(line).toHaveTextContent("Web search · Perplexity ×2 · 1 in progress · OpenAI (CodexLB) ×1 · 1 unsuccessful · 1 skipped");
     openProcess();
-    expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("Perplexity ×2 · 1 in progress");
-    expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("OpenAI (CodexLB) ×1 · 1 unsuccessful · 1 skipped");
-    expect(screen.getByTestId("search-engine-activity")).toHaveTextContent("Provider-internal searches and HTTP retries are excluded.");
+    // The fold lists the searches as steps and does not repeat the counts.
+    expect(screen.getAllByText(/Perplexity ×2/u)).toHaveLength(1);
+    expect(screen.getByText("Searched the web")).toBeVisible();
     // Rounds are the engine's bookkeeping, not something the user acts on.
     expect(screen.queryByText(/round/iu)).toBeNull();
   });
@@ -383,8 +383,7 @@ describe("answer outputs v2", () => {
 
     expect(screen.getByText(label)).toBeVisible();
     expect(screen.getByRole("listitem")).toHaveAttribute("data-status", status);
-    if (status === "error") expect(screen.getByText("Failed")).toBeVisible();
-    if (status === "cancelled") expect(screen.getByText("Stopped")).toBeVisible();
+    expect(screen.queryByText(/^(Failed|Stopped)$/u)).toBeNull();
     expect(document.body.textContent).not.toMatch(/Searched the web|Searching the web/iu);
   });
 

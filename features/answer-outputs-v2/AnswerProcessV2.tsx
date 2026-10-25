@@ -42,14 +42,13 @@ function toolDuration(durationMs: number | undefined): string | null {
     : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
 }
 
-/* Meta reads "0.8 s"; only a non-complete state adds a word. A skipped page
-   read already says so in its label. */
+/* Meta reads "0.8 s". A failed or stopped call already says so in its label
+   ("Couldn't read …", "Web search failed"), so only a call that was never sent
+   adds words. */
 function toolMeta(call: ToolCallV2): string {
   const parts: string[] = [];
   const duration = toolDuration(call.durationMs);
   if (call.approvalRequired) parts.push("Not sent · needs approval");
-  else if (call.status === "error" && !fetchCallSkippedV2(call)) parts.push("Failed");
-  else if (call.status === "cancelled") parts.push("Stopped");
   if (duration) parts.push(duration);
   return parts.join(" · ");
 }
@@ -284,8 +283,8 @@ export function AnswerProcessV2({
   // The plan tool's calls show as the plan itself.
   const calls = (toolActivity?.calls ?? []).filter((call) =>
     toolActivityOriginV2(call) !== "workspace" && !memorySearchCallHiddenV2(call) && !planCallHiddenV2(call));
-  const searchEngines = toolActivity?.searchEngines ?? [];
-  const searchSummary = searchActivitySummary(searchEngines);
+  // Per-engine search counts live on the line itself; each search is also a step.
+  const searchSummary = searchActivitySummary(toolActivity?.searchEngines ?? []);
   const plan = workspacePlanV2(workspaceActivity);
   const planSummary = plan ? workspacePlanSummaryV2(plan) : null;
   const timeline = visibleWorkspaceActivityV2(workspaceActivity, generatedFileCount);
@@ -334,8 +333,7 @@ export function AnswerProcessV2({
   if (!displayLabel) return warning;
   // Nothing to unfold yet (the thinking arrives with the settled answer): the
   // same row as plain text, so the line neither disappears nor moves.
-  if (!live && !compactionLabel && !timeline && !plan && !reasoning && searchEngines.length === 0 && calls.length === 0 &&
-    listedMemorySources.length === 0) {
+  if (!live && !compactionLabel && !timeline && !plan && !reasoning && calls.length === 0 && listedMemorySources.length === 0) {
     return (
       <>
         <div className="v2-answer-process" data-pending="true" data-testid="answer-process-pending">
@@ -410,17 +408,6 @@ export function AnswerProcessV2({
               ) : null}
             </section>
           ) : null}
-          {searchEngines.length > 0 ? (
-            <section className="v2-answer-process-section" data-testid="search-engine-activity">
-              <h3>Web search</h3>
-              <p className="v2-answer-process-step-meta">
-                ×N counts successful calls by this answer to each selected search engine. Provider-internal searches and HTTP retries are excluded.
-              </p>
-              <ul>
-                {searchEngines.map(engine => <li className="v2-answer-process-step-name" key={engine.engine}>{searchEngineOutcome(engine)}</li>)}
-              </ul>
-            </section>
-          ) : null}
           {calls.length > 0 ? (
             <section className="v2-answer-process-section">
               <h3>Steps</h3>
@@ -441,10 +428,7 @@ export function AnswerProcessV2({
                           <ToolCallMarkV2 status={status} />
                           <span className="v2-answer-process-call-group-chevron" aria-hidden="true" />
                           <span className="v2-answer-process-step-name">{group.label} ×{group.calls.length}</span>
-                          <span className="v2-answer-process-step-meta">
-                            {[status === "error" ? "Failed" : status === "cancelled" ? "Stopped" : null,
-                              total > 0 ? toolDuration(total) : null].filter(Boolean).join(" · ")}
-                          </span>
+                          <span className="v2-answer-process-step-meta">{total > 0 ? toolDuration(total) : null}</span>
                         </summary>
                         <ol className="v2-answer-process-steps">
                           {group.calls.map(({ call, index }, position) => (
