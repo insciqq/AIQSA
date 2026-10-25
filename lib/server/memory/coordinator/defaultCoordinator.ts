@@ -20,6 +20,7 @@ import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { probeMemoryStructuredOutputAuthority } from "../execution";
 import { createPrismaMemoryRebuildHandler } from "../rebuild/handler";
+import { reconcileSupersededMemorySearchEntries } from "../rebuild/supersededRetention";
 import { memoryHistoryClearDeletionHandler } from "../history/purge";
 import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
 import { healFailedMemoryFactExtractions } from "../learning/extractionHeal";
@@ -70,6 +71,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
   relations?: () => Promise<unknown>;
   maintenance?: () => Promise<unknown>;
   retiredSynthesis?: () => Promise<unknown>;
+  supersededGenerations?: () => Promise<unknown>;
 }>;
 
 const defaultMemoryEmbeddingSetup = createPrismaMemoryEmbeddingSetup(prisma);
@@ -101,7 +103,8 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
         role: "MEMORY_SYNTHESIZE", userId, versions: MEMORY_MAINTENANCE_VERSIONS });
       return true;
     }),
-    retiredSynthesis: () => reconcileRetiredMemorySynthesis(prisma, new Date())
+    retiredSynthesis: () => reconcileRetiredMemorySynthesis(prisma, new Date()),
+    supersededGenerations: () => reconcileSupersededMemorySearchEntries(prisma)
   });
 
 export async function reconcileDefaultMemoryWork(
@@ -126,7 +129,9 @@ export async function reconcileDefaultMemoryWork(
     work.reclassification,
     work.relations,
     work.maintenance,
-    work.retiredSynthesis
+    work.retiredSynthesis,
+    // Bounded per pass: search entries of superseded generations.
+    work.supersededGenerations
   ];
   for (const step of steps) {
     // Worker shutdown admits nothing more; every step commits on its own.

@@ -112,7 +112,7 @@ export function memoryRecallRoundSegmentsMatch(
 
 /**
  * Repairs the versioned child projection without publishing it into any index
- * generation. Search generations remain independently rebuildable/rollbackable.
+ * generation. Search generations remain independently rebuildable.
  */
 export async function persistMemoryRecallRoundSegmentProjection(
   tx: MemoryTransaction,
