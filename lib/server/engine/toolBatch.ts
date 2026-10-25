@@ -401,10 +401,21 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
         output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT };
     }
     executed += 1;
-    deps.onLiveEvent(liveToolCallStatus(call, { ...tool.activity(call), round: input.round }));
+    const activity = { ...tool.activity(call), round: input.round };
+    deps.onLiveEvent(liveToolCallStatus(call, activity, { ordinal }));
     const execution: EngineToolExecution = { call, ordinal, persistedToolCallId: begun.row.id, round: input.round, signal: deps.signal };
     const startedAt = performance.now();
-    const settled = (outcome: SettledToolCall) => recordToolCall({ durationMs: performance.now() - startedAt, kind, settled: outcome });
+    let durationMs = 0;
+    const settled = (outcome: SettledToolCall) => {
+      durationMs = performance.now() - startedAt;
+      recordToolCall({ durationMs, kind, settled: outcome });
+    };
+    // The live step settles once the call's record and outputs have; an unknown effect never reads as success, and a
+    // stopped call gets nothing here, since the run's end settles it.
+    const finished = (item: TranscriptToolResultItem, status: "complete" | "error"): TranscriptToolResultItem => {
+      deps.onLiveEvent(liveToolCallStatus(call, activity, { ordinal, settled: { durationMs, status } }));
+      return item;
+    };
     let result: ToolExecutionResult;
     try {
       result = await executeWithRetries(deps, tool, execution);
@@ -431,17 +442,17 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
         deps.unknownEffects.record(call, "unknown");
         settled(timedOut ? { code, kind: "timed_out" } : { effectUnknown: true, error, kind: "thrown", result });
         const item = await hooks.afterToolCall(execution, tool, begun.row, result);
-        return { ...item, outcome: "unknown" };
+        return finished({ ...item, outcome: "unknown" }, "error");
       }
       result = { callId: call.id, content: [{ type: "json", value: { error: code, message: "The tool failed; nothing changed." } }],
         name: call.name, status: "error" };
       settled({ effectUnknown: false, error, kind: "thrown", result });
       deps.unknownEffects.record(call, result.status);
-      return hooks.afterToolCall(execution, tool, begun.row, result);
+      return finished(await hooks.afterToolCall(execution, tool, begun.row, result), "error");
     }
     settled({ kind: "result", result });
     deps.unknownEffects.record(call, result.status);
-    return hooks.afterToolCall(execution, tool, begun.row, result);
+    return finished(await hooks.afterToolCall(execution, tool, begun.row, result), result.status);
   };
 
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);

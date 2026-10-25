@@ -389,6 +389,70 @@ describe("native tool batch", () => {
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE_|lookup|"write"|"c[1-7]"/u);
   });
 
+  it("settles each sent call's live step under its own identity, and none for a call that was never sent", async () => {
+    // Regression (#61): a step kept spinning until the whole run ended because only `requested` was ever sent.
+    const { store } = fakeStore({ gated: true });
+    const registry = {
+      lookup: tool("lookup", "none", async ({ call }) => ok(call, "PRIVATE_RESULT"), {
+        activity: () => ({ origin: "mcp", serverName: "Repository Tools" }) }),
+      failing: tool("failing", "none", async ({ call }) => ({ ...ok(call, "PRIVATE_RESULT"), status: "error" })),
+      broken: tool("broken", "none", async () => { throw new Error("PRIVATE_FAILURE"); }),
+      write: tool("write", "external", async () => { throw new Error("PRIVATE_FAILURE"); }),
+      shell: tool("shell", "external", async () => { throw new WorkspaceRuntimeError("workspace_tool_timeout"); }),
+      create: tool("create", "external", vi.fn(), { approval: () => approval }),
+      unbound: tool("unbound", "none", vi.fn(), { links: () => null })
+    };
+    const batch = deps(registry, store);
+    await runToolBatch(batch, { calls: 0 }, { firstOrdinal: 1, round: 2, calls: [
+      { arguments: { q: "PRIVATE_ARG" }, id: "c1", name: "lookup" },
+      { arguments: {}, id: "c2", name: "failing" },
+      { arguments: {}, id: "c3", name: "broken" },
+      { arguments: {}, id: "c4", name: "write" },
+      { arguments: {}, id: "c5", name: "shell" },
+      { arguments: {}, id: "c6", name: "create" },
+      { arguments: {}, id: "c7", name: "made_up" },
+      { arguments: invalidProviderToolArguments(), id: "c8", name: "lookup" },
+      { arguments: {}, id: "c9", name: "unbound" },
+      { arguments: { q: "other" }, id: "c10", name: "lookup" }
+    ] });
+    const live = vi.mocked(batch.onLiveEvent).mock.calls.map(([event]) => event)
+      .flatMap((event) => event.type === "artifact" && event.data.artifactType === "tool_call"
+        ? [event.data.payload as Record<string, unknown>] : []);
+    const byOrdinal = new Map<unknown, Record<string, unknown>[]>();
+    for (const payload of live) byOrdinal.set(payload.ordinal, [...byOrdinal.get(payload.ordinal) ?? [], payload]);
+    // Ordinals follow the round's order after `firstOrdinal`; refused, gated and unbound calls are never announced.
+    expect([...byOrdinal.keys()].map(Number).sort((left, right) => left - right)).toEqual([1, 2, 3, 4, 5, 10]);
+    expect(Object.fromEntries([...byOrdinal].map(([ordinal, events]) => [ordinal, events.map((event) => event.status)]))).toEqual({
+      1: ["requested", "complete"], 2: ["requested", "error"], 3: ["requested", "error"],
+      // An unknown effect and a time limit never read as success.
+      4: ["requested", "error"], 5: ["requested", "error"], 10: ["requested", "complete"]
+    });
+    for (const [requested, settled] of byOrdinal.values()) {
+      const { durationMs, status: _settledStatus, ...settledIdentity } = settled!;
+      const { status: _requestedStatus, ...requestedIdentity } = requested!;
+      expect(settledIdentity).toEqual(requestedIdentity);
+      expect(requested).not.toHaveProperty("durationMs");
+      expect(Number.isSafeInteger(durationMs) && Number(durationMs) >= 0).toBe(true);
+    }
+    // Two calls of the same tool on the same server in one round differ only by their ordinal.
+    expect(byOrdinal.get(1)![0]).toEqual({ name: "lookup", ordinal: 1, origin: "mcp", round: 2, serverName: "Repository Tools",
+      status: "requested" });
+    expect(JSON.stringify(live)).not.toMatch(/PRIVATE_|"c\d+"/u);
+  });
+
+  it("sends no settled step for a call its run stopped", async () => {
+    const controller = new AbortController();
+    const { store } = fakeStore();
+    const batch = deps({ slow: tool("slow", "none", async () => {
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    }) }, store, { signal: controller.signal });
+    await expect(runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "slow" }], round: 1 })).rejects.toBeDefined();
+    const statuses = vi.mocked(batch.onLiveEvent).mock.calls.flatMap(([event]) =>
+      event.type === "artifact" && event.data.artifactType === "tool_call" ? [(event.data.payload as { status: string }).status] : []);
+    expect(statuses).toEqual(["requested"]);
+  });
+
   it("tells the model a Workspace time limit, keeps its effect unknown and logs a timeout, not an unexpected failure", async () => {
     const observation = await captureRunObservation();
     const workspaceTool = (name: string, execute: EngineTool["execute"]) =>
