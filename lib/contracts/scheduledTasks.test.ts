@@ -277,7 +277,7 @@ describe("scheduled task wire contract", () => {
     const card = scheduledTaskCard(task, false);
     expect(card).toEqual({ taskId: "task-1", title: "Morning brief", kind: "standard", schedule: task.schedule,
       timeZone: "Europe/Moscow", timeZoneFallback: false, toolsEnabled: true, workspaceEnabled: false, status: "active",
-      nextRunAt: "2026-10-05T06:00:00.000Z" });
+      nextRunAt: "2026-10-05T06:00:00.000Z", scheduleEnabled: true });
     // Never the task's prompt, model or history.
     expect(JSON.stringify(card)).not.toMatch(/Summarize|model-1|connection-1|chat-1/u);
     expect(decodeScheduledTaskCard(card)).toEqual(card);
@@ -348,6 +348,30 @@ describe("scheduled task wire contract", () => {
       { ...hooked, webhook: { ...webhook, queuedEvents: -1 } }, { ...hooked, webhook: { ...webhook, lastEventAt: "recently" } }
     ]) {
       expect(decodeScheduledTask(candidate)).toBeNull();
+    }
+  });
+
+  it("shows an answer's card with its triggers and the webhook's address, never a token", () => {
+    const hooked = { ...task, scheduleEnabled: false, webhookEnabled: true, webhook, nextRunAt: null };
+    const card = scheduledTaskCard(hooked, false);
+    expect(card).toMatchObject({ scheduleEnabled: false, webhook: { path: webhook.path, tokenIssuedAt: webhook.tokenIssuedAt } });
+    // The card has no activity: no last event or queue.
+    expect(card.webhook).toEqual({ path: webhook.path, tokenIssuedAt: webhook.tokenIssuedAt });
+    expect(decodeScheduledTaskCard(card)).toEqual(card);
+    // A webhook whose trigger is off is not on the card; both triggers may be on.
+    expect(scheduledTaskCard({ ...task, webhook }, false)).not.toHaveProperty("webhook");
+    expect(scheduledTaskCard({ ...task, webhookEnabled: true, webhook }, false)).toMatchObject({ scheduleEnabled: true,
+      webhook: { path: webhook.path } });
+    // A card written before webhooks ran on its schedule.
+    const { scheduleEnabled: _scheduleEnabled, ...older } = scheduledTaskCard(task, false);
+    expect(decodeScheduledTaskCard(older)).toEqual(older);
+    for (const candidate of [
+      { ...card, webhook: undefined }, { ...card, nextRunAt: "2026-10-26T06:00:00.000Z" }, { ...card, scheduleEnabled: "no" },
+      { ...card, webhook: { ...card.webhook, token: `${SCHEDULED_TASK_WEBHOOK_TOKEN_PREFIX}${"A".repeat(43)}` } },
+      { ...card, webhook: { path: `/api/other/${publicId}`, tokenIssuedAt: null } },
+      { ...card, webhook: { path: webhook.path, tokenIssuedAt: "soon" } }, { ...card, webhook: null }
+    ]) {
+      expect(decodeScheduledTaskCard(candidate)).toBeNull();
     }
   });
 

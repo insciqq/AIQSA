@@ -279,3 +279,90 @@ describe("scheduled task cards in an answer", () => {
     expect(useScheduledTasksStore.getState().editRequest).toBe("task-1");
   });
 });
+
+describe("cards of webhook automations", () => {
+  const path = "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-";
+  const hooked: ScheduledTaskCard = { ...card, taskId: "task-hook", scheduleEnabled: false, nextRunAt: null,
+    webhook: { path, tokenIssuedAt: null } };
+  const token = `aiqsa_wh_${"T".repeat(43)}`;
+  const serverUrl = `https://ai.example.test${path}`;
+
+  /** The token route, and the account's task list the card refreshes after a new token. */
+  function routes() {
+    return vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/webhook-token")
+      ? Response.json({ token, url: serverUrl, issuedAt: "2026-10-04T10:00:00.000Z" })
+      : Response.json({ tasks: [], emailAvailable: false, telegramAvailable: false }));
+  }
+
+  it("shows a webhook-only automation's trigger and its address on this page's origin", () => {
+    render(<ScheduledTaskCardsV2 cards={[hooked]} onEdit={vi.fn()} />);
+    const item = screen.getByTestId("scheduled-task-card");
+    expect(item).toHaveTextContent("On a webhook · Tools · Workspace");
+    expect(item).not.toHaveTextContent("Every weekday");
+    expect(item).toHaveTextContent("Runs on each webhook call");
+    expect(within(item).getByTestId("webhook-url")).toHaveTextContent(`${window.location.origin}${path}`);
+    expect(within(item).getByRole("button", { name: "Get token" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Edit automation Check mail" })).toBeVisible();
+  });
+
+  it("shows both triggers, and a card written before webhooks as scheduled only", () => {
+    const { rerender } = render(<ScheduledTaskCardsV2 cards={[{ ...hooked, scheduleEnabled: true, nextRunAt: card.nextRunAt,
+      webhook: { path, tokenIssuedAt: "2026-10-03T10:00:00.000Z" } }]} />);
+    const item = screen.getByTestId("scheduled-task-card");
+    expect(item).toHaveTextContent("Every weekday at 09:00 · Webhook · Tools · Workspace");
+    expect(item).toHaveTextContent("Next run Mon 5 Oct, 09:00");
+    expect(within(item).getByRole("button", { name: "Rotate token" })).toBeVisible();
+    rerender(<ScheduledTaskCardsV2 cards={[card]} />);
+    expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Every weekday at 09:00 · Tools · Workspace");
+    expect(screen.queryByRole("group", { name: "Webhook" })).toBeNull();
+  });
+
+  it("issues the token with one click on the card, shows it once and keeps it out of storage and the card's data", async () => {
+    const fetchMock = routes();
+    vi.stubGlobal("fetch", fetchMock);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const shown = { ...hooked, taskId: "task-hook-issue" };
+    render(<AnswerOutputsV2 artifact={summary([shown])} onEditScheduledTask={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Get token" }));
+    await waitFor(() => expect(screen.getByTestId("webhook-token")).toHaveTextContent(token));
+    expect(fetchMock).toHaveBeenCalledWith("/api/me/scheduled-tasks/task-hook-issue/webhook-token", expect.objectContaining({ method: "POST" }));
+    // The server's own address replaces the page's.
+    expect(screen.getByTestId("webhook-url")).toHaveTextContent(serverUrl);
+    expect(screen.getByTestId("webhook-curl")).toHaveTextContent(`Authorization: Bearer ${token}`);
+    // The account's list reads the task again, so Studio shows the token as issued.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/me/scheduled-tasks", expect.anything()));
+    expect(setItem).not.toHaveBeenCalled();
+    expect(JSON.stringify(shown)).not.toContain("aiqsa_wh_");
+    expect(JSON.stringify(useScheduledTasksStore.getState())).not.toContain("aiqsa_wh_");
+  });
+
+  it("keeps the token while the settled answer renders the card again, and forgets it once the card is gone", async () => {
+    vi.stubGlobal("fetch", routes());
+    const live = { ...hooked, taskId: "task-hook-settle" };
+    const settled = { ...live, webhook: { path, tokenIssuedAt: "2026-10-04T10:00:00.000Z" } };
+    const { rerender, unmount } = render(<AnswerOutputsV2 artifact={summary([live])} live onEditScheduledTask={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Get token" }));
+    await waitFor(() => expect(screen.getByTestId("webhook-token")).toBeVisible());
+    // The settled answer mounts its cards anew.
+    rerender(<AnswerOutputsV2 artifact={summary([settled])} onEditScheduledTask={vi.fn()} />);
+    expect(screen.getByTestId("webhook-token")).toHaveTextContent(token);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    unmount();
+    vi.advanceTimersByTime(5_001);
+    render(<AnswerOutputsV2 artifact={summary([settled])} onEditScheduledTask={vi.fn()} />);
+    expect(screen.queryByTestId("webhook-token")).toBeNull();
+    expect(screen.getByRole("button", { name: "Rotate token" })).toBeVisible();
+  });
+
+  it("shows a refused token in the card's error style and offers no webhook once deleted or while deleting", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "scheduled_task_webhook_off" }, { status: 409 })));
+    render(<ScheduledTaskCardsV2 cards={[{ ...hooked, taskId: "task-hook-off" }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Get token" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Turn on the webhook for this automation first.");
+    fireEvent.click(screen.getByRole("button", { name: "Delete automation Check mail" }));
+    expect(screen.queryByRole("group", { name: "Webhook" })).toBeNull();
+    cleanup();
+    render(<ScheduledTaskCardsV2 cards={[{ ...hooked, deleted: true }]} />);
+    expect(screen.queryByRole("group", { name: "Webhook" })).toBeNull();
+  });
+});

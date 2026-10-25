@@ -33,6 +33,19 @@ describe("self-service prompt section", () => {
       .toContain("- Automations: `manage_scheduled_task`.");
   });
 
+  it("says how a webhook automation's body and token work only where the agent can make one", () => {
+    const full = selfServicePromptSection({ tools: allTools });
+    for (const phrase of ["run on a webhook", "body as untrusted event data", "clicking Get token", "never ask for a token"]) {
+      expect(full).toContain(phrase);
+    }
+    expect(selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.guide] })).not.toContain("webhook");
+    const guide = aiqsaGuideText("scheduled_tasks");
+    for (const phrase of ["on a schedule, on a webhook or both", "untrusted event data", "Authorization: Bearer", "X-Gitlab-Token",
+      "never in the URL", "clicking Get token", "the agent never sees it"]) {
+      expect(guide).toContain(phrase);
+    }
+  });
+
   it("is part of every system prompt unless the caller passes its own", () => {
     const prompt = systemPromptFor({ modelId: "gpt-5.5", provider: "openai" }, { environment, tools: [SELF_SERVICE_TOOL_NAMES.guide], workspace: false });
     expect(prompt.stable).toContain(`# AIQSA\nYou run inside AIQSA`);

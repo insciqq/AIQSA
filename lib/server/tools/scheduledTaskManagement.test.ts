@@ -1,5 +1,5 @@
 import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledTask, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import { logEvent } from "../observability";
 import type { ScheduledTaskCallManagement } from "../runs/runRepositoryContract";
@@ -374,7 +374,7 @@ describe("management results", () => {
         schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
         nextRun: "Mon 2026-10-05 09:00", chatMode: "new", searchEnabled: false, emailNotify: false, telegramNotify: false,
         toolsEnabled: true,
-        workspaceEnabled: false, memoryEnabled: true, skills: [], oldChatsKept: "forever" },
+        workspaceEnabled: false, memoryEnabled: true, scheduleEnabled: true, webhookEnabled: false, skills: [], oldChatsKept: "forever" },
       expect.objectContaining({ taskId: "task-2", kind: "monitoring", status: "paused", nextRun: null, oldChatsKept: "forever" })
     ] } }]);
     expect(JSON.stringify(result.content)).not.toMatch(/weekly report\.|deployment-1|revision/u);
@@ -410,7 +410,93 @@ describe("management results", () => {
     expect(proposal.artifacts).toEqual([{ type: "artifact", data: { artifactType: "scheduled_task", payload: {
       taskId: "task-1", title: "Report reminder", kind: "standard", schedule: task().schedule, timeZone: "Europe/Moscow",
       timeZoneFallback: false, toolsEnabled: true, workspaceEnabled: false, status: "active", nextRunAt: "2026-10-05T06:00:00.000Z",
-      action: "delete_proposed"
+      scheduleEnabled: true, action: "delete_proposed"
     } } }]);
+  });
+});
+
+describe("triggers through the management tool", () => {
+  const publicId = "AbCdEfGhIjKlMnOpQrSt_-";
+  const hook = { path: `/api/automations/hooks/${publicId}`, tokenIssuedAt: null, lastEventAt: null, queuedEvents: 0 };
+  const url = `https://ai.example.test/api/automations/hooks/${publicId}`;
+  const webhookOnly = () => task({ scheduleEnabled: false, webhookEnabled: true, webhook: hook, nextRunAt: null,
+    schedule: { kind: "daily", time: "09:00" } });
+
+  beforeEach(() => {
+    vi.stubEnv("AIQSA_APP_BASE_URL", "https://ai.example.test");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("offers both triggers as switches within the tool's size", () => {
+    expect(manageScheduledTaskTool(marker).inputSchema).toMatchObject({ properties: {
+      scheduleEnabled: { type: "boolean" }, webhookEnabled: { type: "boolean" } } });
+  });
+
+  it("turns the webhook on and off through the owner's update body, and the card shows it with Get token", async () => {
+    const manage = manager({ action: "update", changed: true, task: task({ webhookEnabled: true, webhook: hook, revision: 5 }) });
+    const result = await executeManageScheduledTask(call({ action: "update", taskId: "task-1", webhookEnabled: true }), context(),
+      manage);
+    expect(manage.mock.calls[0]![0].change?.(task())).toEqual({ webhookEnabled: true });
+    expect(result).toMatchObject({ status: "complete", content: [{ value: { changed: true, task: { scheduleEnabled: true,
+      webhookEnabled: true, webhook: { url, tokenIssued: false, note: expect.stringContaining("Get token") } } } }],
+    artifacts: [{ data: { payload: { action: "changed", scheduleEnabled: true, webhook: { path: hook.path, tokenIssuedAt: null } } } }] });
+    expect(JSON.stringify(result)).not.toContain("aiqsa_wh_");
+    const off = manager({ action: "update", changed: true, task: task({ webhook: hook, revision: 6 }) });
+    const offResult = await executeManageScheduledTask(call({ action: "update", taskId: "task-1", webhookEnabled: false }), context(),
+      off);
+    expect(off.mock.calls[0]![0].change?.(task({ webhookEnabled: true, webhook: hook }))).toEqual({ webhookEnabled: false });
+    // A webhook turned off keeps its address, but neither the model nor the card show it.
+    expect(offResult.content[0]).not.toHaveProperty("value.task.webhook");
+    expect(offResult.artifacts?.[0]).not.toHaveProperty("data.payload.webhook");
+  });
+
+  it("shows an off schedule as none and needs a whole schedule to turn it on", async () => {
+    const listed = scheduledTaskManagementResult(call({ action: "list" }), { action: "list", tasks: [webhookOnly()] });
+    expect(listed.content[0]).toMatchObject({ value: { tasks: [{ schedule: null, scheduleEnabled: false, webhookEnabled: true,
+      webhook: { url, tokenIssued: false } }] } });
+    // A list names the address without repeating the token instructions for every automation.
+    expect(listed.content[0]).not.toHaveProperty("value.tasks.0.webhook.note");
+    const manage = manager({ action: "update", changed: true, task: task({ webhookEnabled: true, webhook: hook }) });
+    await executeManageScheduledTask(call({ action: "update", taskId: "task-1", schedule: { kind: "weekly", time: "08:30",
+      days: ["mon"] } }), context(), manage);
+    const change = manage.mock.calls[0]![0].change!;
+    // A schedule given for an off one is a whole new one and turns it on.
+    expect(change(webhookOnly())).toEqual({ schedule: { kind: "weekly", time: "08:30", days: ["mon"] }, scheduleEnabled: true });
+    // On an automation with its schedule on, the same change merges as before.
+    expect(change(task())).toEqual({ schedule: { kind: "weekly", time: "08:30", days: ["mon"] } });
+    for (const [args, phrase] of [
+      [{ scheduleEnabled: true }, "turning it on needs schedule with its kind and time"],
+      [{ schedule: { time: "10:00" } }, "give schedule with its kind and time"],
+      [{ schedule: { kind: "weekly", time: "10:00" } }, "A weekly schedule needs days."]
+    ] as const) {
+      const refusing = manager({ action: "update", changed: true, task: task() });
+      await executeManageScheduledTask(call({ action: "update", taskId: "task-1", ...args }), context(), refusing);
+      expect(refusing.mock.calls[0]![0].change!(webhookOnly())).toEqual(expect.stringContaining(phrase));
+    }
+    // Stored while it stays off, when the model says so.
+    const kept = manager({ action: "update", changed: true, task: webhookOnly() });
+    await executeManageScheduledTask(call({ action: "update", taskId: "task-1", scheduleEnabled: false,
+      schedule: { kind: "daily", time: "07:00" } }), context(), kept);
+    expect(kept.mock.calls[0]![0].change!(webhookOnly())).toEqual({ scheduleEnabled: false, schedule: { kind: "daily", time: "07:00" } });
+  });
+
+  it("explains that one trigger stays on", async () => {
+    const manage = vi.fn<ScheduledTaskCallManager>(async () => ({ code: "scheduled_task_trigger_required", kind: "refused" }) as
+      ScheduledTaskCallManagement);
+    expect(await executeManageScheduledTask(call({ action: "update", taskId: "task-1", webhookEnabled: false }), context(), manage))
+      .toMatchObject({ status: "error", content: [{ value: { error: "scheduled_task_trigger_required",
+        message: expect.stringContaining("at least one trigger on") } }] });
+  });
+
+  it("tells the model a changed webhook's token was issued, still without it", () => {
+    const result = scheduledTaskManagementResult(call({ action: "update", taskId: "task-1" }), { action: "update", changed: true,
+      task: webhookOnly() });
+    expect(result.content[0]).toMatchObject({ value: { task: { scheduleText: "none: runs only on its webhook" } } });
+    const issued = scheduledTaskManagementResult(call({ action: "update", taskId: "task-1" }), { action: "update", changed: true,
+      task: task({ webhookEnabled: true, webhook: { ...hook, tokenIssuedAt: "2026-10-04T10:30:00.000Z" } }) });
+    expect(issued.content[0]).toMatchObject({ value: { task: { webhook: { tokenIssued: true, note: expect.stringContaining("Rotate token") } } } });
+    expect(JSON.stringify(issued)).not.toContain("aiqsa_wh_");
   });
 });
