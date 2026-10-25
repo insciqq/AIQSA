@@ -168,14 +168,16 @@ describe("an answer review recorded before the removal", () => {
 
   it("gives later turns the source answer when no revision completed, after a stopped step or an approval", async () => {
     await withUser(async (userId) => {
-      const { a1, chat, member, q, say, turn } = await sessionChat(userId);
+      const { a1, chat, member, q, say, setLeaf, turn } = await sessionChat(userId);
       const t1 = await say("user", "Review the previous answer.", a1, turn(1, 0, "answer_review_request"));
       // Stopped with partial text, which a path keeps for a stopped ordinary answer.
       const r1 = await say("assistant", "I checked the first figure and", t1, { ...member, status: "cancelled" });
       const t2 = await say("user", "Revise the answer.", r1, turn(1, 1, "answer_revision_request"));
       const stopped = await say("assistant", "The total is", t2, { ...member, status: "cancelled" });
       const runs = createPrismaRunRepository(prisma);
+      // The chat's stored leaf is the step a send compares (`storedExpectedLeaf`).
       for (const leaf of [r1, stopped]) {
+        await setLeaf(leaf);
         expect(idsOf(await runs.loadConversationContextForExpectedLeaf(chat, userId, leaf)), leaf).toEqual([q, a1]);
       }
       // A continuation after a step's approval card reads the path up to it: the step leaves whole.
