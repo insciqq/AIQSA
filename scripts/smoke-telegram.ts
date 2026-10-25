@@ -164,7 +164,7 @@ async function smoke(): Promise<void> {
 
   const keyboard: TelegramInlineKeyboardMarkup = {
     inline_keyboard: [
-      [{ text: "Open in AIQSA", url: "https://example.com/c/smoke" }],
+      [{ text: "Smoke link", url: "https://example.com/smoke" }],
       [{ text: "Smoke button", callback_data: `c:${"A".repeat(22)}` }]
     ]
   };

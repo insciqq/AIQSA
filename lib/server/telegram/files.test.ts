@@ -7,7 +7,6 @@ import type { StorageAdapter } from "../uploads/storage";
 import { createTelegramBotApi, createTelegramPacer } from "./botApi";
 import type { TelegramRunEventContext } from "./bridge/events";
 import type { TelegramAccessDecision } from "./control/access";
-import { TELEGRAM_COPY } from "./copy";
 import type { TelegramBotSession } from "./dispatcher";
 import {
   cleanTelegramFileName, createPrismaTelegramFileReader, createPrismaTelegramRunExportReader, createTelegramRunFiles, deliverTelegramFiles,
@@ -40,7 +39,7 @@ function setup() {
   });
   const refs: TelegramMessageRef[] = [];
   const outbound = createTelegramOutbound({
-    api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks: { create: async () => [] },
+    api, botId: fake.bot.id, callbacks: { create: async () => [] },
     messageRefs: { record: async (entries) => { refs.push(...entries); } }
   });
   const session: TelegramBotSession = { api, botId: fake.bot.id, botUsername: fake.bot.username, generation: 1, outbound };
@@ -173,7 +172,7 @@ describe("Telegram answer files: sending", () => {
     expect(h.reads.every((entry) => entry.userId === "user-1")).toBe(true);
     const summary = h.fake.botMessages(h.user.id).at(-1)!;
     expect(summary.text).toBe("2 more files are in AIQSA.");
-    expect(summary.reply_markup).toEqual({ inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: "https://aiqsa.example/c/chat-1" }]] });
+    expect(summary.reply_markup).toBeUndefined();
     expect(h.refs).toHaveLength(11);
     expect(h.refs.every((ref) => ref.chatId === "chat-1" && ref.linkId === "link-1")).toBe(true);
   });

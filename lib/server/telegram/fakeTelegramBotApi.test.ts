@@ -182,7 +182,7 @@ describe.each<Mode>(["fetch", "loopback"])("fake Bot API over %s", (mode) => {
   it("stores uploaded files and serves them back by file path", async () => {
     const { api, fake } = await connect(mode);
     const user = fake.inject.addUser();
-    const sent = await api.sendDocument({ chat_id: user.id, caption: "report", reply_markup: { inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/1" }]] } },
+    const sent = await api.sendDocument({ chat_id: user.id, caption: "report", reply_markup: { inline_keyboard: [[{ text: "Docs", url: "https://example.com/docs" }]] } },
       { filename: "report.pdf", contentType: "application/pdf", data: Buffer.from("%PDF-1.7 synthetic") });
     expect(sent).toMatchObject({ ok: true });
     const [message] = fake.botMessages(user.id);

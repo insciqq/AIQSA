@@ -124,16 +124,14 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
           citations: summary?.citations ?? [],
           sources: summary?.sources ?? []
         });
-        continued = take(await bot.outbound.sendContent({
-          authorize, chatId: input.telegramChatId, messages: rendered.messages, openInAiqsa: ending === null, owner
-        }));
+        continued = take(await bot.outbound.sendContent({ authorize, chatId: input.telegramChatId, messages: rendered.messages, owner }));
       }
       if (ending && continued) {
-        take(await bot.outbound.sendText({ authorize, chatId: input.telegramChatId, openInAiqsa: true, owner, text: ending }));
+        take(await bot.outbound.sendText({ authorize, chatId: input.telegramChatId, owner, text: ending }));
       }
     }
   } catch (error) {
-    // Thrown mid-send (a button row or reference write): whether Telegram got it is unknown.
+    // Thrown mid-send: whether Telegram got it is unknown.
     log({ code: "telegram_delivery_unknown", error, outcome: "failed", runId: input.runId });
     await settle("unknown");
     return { answer, bot, messageIds: sent.messageIds, state: "unknown" };
