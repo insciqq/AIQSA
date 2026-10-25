@@ -89,7 +89,7 @@ function runInput(chatId: string, userId: string, question: string): Parameters<
 
 function regenerationInput(chatId: string, userId: string, userMessageId: string, preSendAssistantMessageId: string):
   Parameters<RunRepository["createRegenerationRun"]>[0] {
-  const { content: _content, expectedActiveLeafId: _leaf, ...input } = runInput(chatId, userId, "Question");
+  const { content: _content, expectedActiveLeafId: _leaf, workspaceFollowup: _followup, ...input } = runInput(chatId, userId, "Question");
   return { ...input, preSendAssistantMessageId, userMessageId };
 }
 
