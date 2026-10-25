@@ -91,7 +91,9 @@ export function createPrismaScheduledTaskWebhookIntakeStore(
         });
         await tx.scheduledTaskWebhook.updateMany({ data: { lastEventAt: receivedAt }, where: { taskId, userId } });
         return { kind: "accepted" };
-      });
+      // The task row may be held by the runner's claim or a run being created: wait for it
+      // rather than refuse, yet answer within the 10 s a GitLab sender waits.
+      }, { maxWait: 5_000, timeout: 8_000 });
     }
   };
 }

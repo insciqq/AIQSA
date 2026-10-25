@@ -499,6 +499,11 @@ export function planClaimOverlap(input: Readonly<{
  */
 export const SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE = "workspace_carryover_unavailable";
 
+/** Why an occurrence past its lateness is skipped: a scheduled instant was missed, a webhook event waited too long. */
+export function scheduledTaskLateCode(trigger: string | undefined): "missed" | "webhook_event_expired" {
+  return trigger === "webhook" ? "webhook_event_expired" : "missed";
+}
+
 /**
  * A pending occurrence that may no longer be admitted, or null. Waiting for a
  * Workspace slot starts no window of its own: an occurrence that was never
@@ -507,12 +512,12 @@ export const SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE = "workspace_carryover_unav
  * still waiting at the end is skipped (`workspace_capacity`), never failed.
  */
 export function expiredPendingOutcome(
-  occurrence: Readonly<{ scheduledFor: Date; startedAt: Date | null; reasonCode: string | null }>,
+  occurrence: Readonly<{ scheduledFor: Date; startedAt: Date | null; reasonCode: string | null; trigger?: string }>,
   now: Date
 ): ScheduledTaskOutcome | null {
   const waiting = occurrence.reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE;
   if (now.getTime() - occurrence.scheduledFor.getTime() > SCHEDULED_TASK_LATENESS_MS) {
-    return { reasonCode: waiting ? SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE : "missed", state: "SKIPPED" };
+    return { reasonCode: waiting ? SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE : scheduledTaskLateCode(occurrence.trigger), state: "SKIPPED" };
   }
   if (occurrence.startedAt && now.getTime() - occurrence.startedAt.getTime() > SCHEDULED_TASK_RETRY_WINDOW_MS) {
     if (waiting) return { reasonCode: SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE, state: "SKIPPED" };

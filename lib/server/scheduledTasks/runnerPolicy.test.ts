@@ -415,6 +415,9 @@ describe("pending expiry and run outcomes", () => {
   it("skips late instants and ends retries thirty minutes after the first attempt", () => {
     expect(expiredPendingOutcome({ reasonCode: null, scheduledFor: at("2026-10-04T23:59:00Z"), startedAt: null }, now))
       .toEqual({ reasonCode: "missed", state: "SKIPPED" });
+    // A webhook event that waited as long says so instead of naming a scheduled time.
+    expect(expiredPendingOutcome({ reasonCode: null, scheduledFor: at("2026-10-04T23:59:00Z"), startedAt: null, trigger: "webhook" }, now))
+      .toEqual({ reasonCode: "webhook_event_expired", state: "SKIPPED" });
     expect(expiredPendingOutcome({ reasonCode: "chat_busy", scheduledFor: at("2026-10-05T11:00:00Z"), startedAt: at("2026-10-05T11:29:00Z") }, now))
       .toEqual({ reasonCode: "chat_busy", state: "SKIPPED" });
     expect(expiredPendingOutcome({ reasonCode: null, scheduledFor: at("2026-10-05T11:00:00Z"), startedAt: at("2026-10-05T11:29:00Z") }, now))

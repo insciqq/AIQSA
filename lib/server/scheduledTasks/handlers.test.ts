@@ -535,6 +535,12 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(goal)).toMatchObject({ nextRunAt: null, status: "completed" });
     await goal.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: true }), "task-1");
     expect(lastWrite(goal)).toMatchObject({ nextRunAt: new Date("2026-10-05T06:00:00.000Z"), status: "active" });
+    // So is one whose webhook turns on, for example a finished once reminder moved to a webhook; nothing is armed.
+    const reminder = fixture(task({ nextRunAt: null, schedule: { kind: "once", date: "2026-10-01", time: "09:00" },
+      status: "completed" }));
+    await reminder.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: false, webhookEnabled: true }), "task-1");
+    expect(lastWrite(reminder)).toMatchObject({ draft: { scheduleEnabled: false, webhookEnabled: true }, nextRunAt: null,
+      status: "active" });
   });
 
   it("issues the owner a webhook token with its whole address, once per call and never into logs", async () => {

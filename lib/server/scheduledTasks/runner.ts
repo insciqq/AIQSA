@@ -23,6 +23,7 @@ import {
   pausingOutcome,
   scheduledDispatchNotBefore,
   scheduledTaskDispatchOffsetMs,
+  scheduledTaskLateCode,
   settlementNotifiesOwner,
   type ScheduledTaskOutcome,
   type ScheduledTaskPauseReason
@@ -263,7 +264,7 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     const { occurrence, task } = execution;
     const now = clock();
     if (now.getTime() - occurrence.scheduledFor.getTime() > SCHEDULED_TASK_LATENESS_MS) {
-      return settlePending(execution, { reasonCode: "missed", state: "SKIPPED" });
+      return settlePending(execution, { reasonCode: scheduledTaskLateCode(occurrence.trigger), state: "SKIPPED" });
     }
     // Run now runs in any status; an instant or a webhook event of a paused task does not.
     if (occurrence.trigger !== "manual" && task.status === "PAUSED") {

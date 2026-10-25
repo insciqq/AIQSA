@@ -74,6 +74,12 @@ describe("scheduled task presentation", () => {
     // Every reason the runner records reads as words.
     expect(run("failed", "model_run_cancelled")).toBe("Last run Mon 5 Oct, 09:00 · Failed: it was stopped in the chat");
     expect(run("failed", "admission_failed")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the run could not start");
+    expect(run("skipped", "webhook_off")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the automation's webhook was turned off");
+    expect(run("skipped", "schedule_off")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the automation's schedule was turned off");
+    expect(run("skipped", "webhook_event_expired"))
+      .toBe("Last run Mon 5 Oct, 09:00 · Skipped: the webhook event waited too long for a free run");
+    expect(run("skipped", "webhook_event_dropped")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: its event was dropped when the " +
+      "automation was paused, completed or its webhook turned off");
     expect(run("skipped", "paused")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the automation was paused");
   });
 
@@ -549,6 +555,11 @@ describe("schedule and webhook triggers", () => {
     expect(scheduledTaskPreview({ ...off, webhookEnabled: true }, null, now)).toBe("Runs on each webhook call.");
     const paused = scheduledTaskFixture({ status: "paused", scheduleEnabled: false, webhookEnabled: true, webhook: hook, nextRunAt: null });
     expect(scheduledTaskPreview({ ...off, webhookEnabled: true }, paused, now)).toBe("Paused. Webhook calls are refused until you resume.");
+    // A completed task already on its webhook stays completed; one whose webhook turns on runs again once saved.
+    const done = scheduledTaskFixture({ status: "completed", scheduleEnabled: false, webhookEnabled: true, webhook: hook, nextRunAt: null });
+    expect(scheduledTaskPreview({ ...off, webhookEnabled: true }, done, now)).toBe("Completed. Webhook calls are refused until you resume.");
+    const reminder = scheduledTaskFixture({ status: "completed", nextRunAt: null });
+    expect(scheduledTaskPreview({ ...off, webhookEnabled: true }, reminder, now)).toBe("Runs on each webhook call.");
   });
 
   it("summarizes the triggers, a webhook-only status and waiting events", () => {
