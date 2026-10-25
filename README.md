@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download.
 - **Answers you can check.** Web search answers come with linked sources you can open.
 - **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
-- **Work that runs on its own.** Automations run a prompt daily, weekly or monthly and deliver the answer to its own chat, with an optional email.
+- **Work that runs on its own.** Automations run a prompt daily, weekly or monthly, or when another system such as GitLab calls their webhook, and deliver the answer to their own chat, with an optional email.
 - **Built for teams.** Role-based access control, shared Assistants and Skills, invitations, API keys per installation, group or person, and usage per user.
 
 ## Features
@@ -43,7 +43,7 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - Workspace: an isolated KVM virtual machine per chat, with file exports and personal secrets.
 - MCP: connect remote MCP servers with OAuth; Auto mode finds the right tool for the request.
 - Skills: reusable instructions and files that the model loads when they are relevant.
-- Automations: once, daily, weekly or monthly runs with optional email notifications.
+- Automations: once, daily, weekly or monthly runs, or a run for each webhook call with its request body as event data, with optional email notifications.
 
 **Memory**
 - Learns from what you say, never from model answers, quotes or documents; facts you save explicitly always take priority.
