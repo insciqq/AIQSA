@@ -186,4 +186,27 @@ describe("deleting from a chat with a recorded review", () => {
     expect(answerReviewDeletionPlan(plain, [], "a", "a")).toEqual({ leafId: "q", roots: ["a"] });
     expect(answerReviewDeletionPlan(plain, [], "a", "missing")).toBeNull();
   });
+
+  it("plans a deletion in a long reviewed chat well within a transaction's time", () => {
+    // 500 reviewed turns, each with a revision copy the previous release regenerated: 3,500 messages, 501 leaves.
+    const long: AnswerReviewTranscriptMessage[] = [];
+    const longSessions: Array<{ id: string; sourceAssistantMessageId: string }> = [];
+    let leaf: string | null = null;
+    for (let index = 0; index < 500; index += 1) {
+      const session = `s${index}`;
+      const step = (kind: "answer_review_request" | "answer_revision_request") => ({ answerReviewSessionId: session, systemTurnKind: kind });
+      long.push(message(`q${index}`, leaf, "user"), message(`a${index}`, `q${index}`, "assistant"),
+        message(`t${index}`, `a${index}`, "user", step("answer_review_request")),
+        message(`r${index}`, `t${index}`, "assistant", { answerReviewSessionId: session }),
+        message(`v${index}`, `r${index}`, "user", step("answer_revision_request")),
+        message(`b${index}`, `v${index}`, "assistant", { answerReviewSessionId: session }),
+        message(`c${index}`, `v${index}`, "assistant"));
+      longSessions.push({ id: session, sourceAssistantMessageId: `a${index}` });
+      leaf = `b${index}`;
+    }
+    const started = performance.now();
+    expect(answerReviewDeletionPlan(long, longSessions, leaf, leaf!)).toEqual({ leafId: "q499", roots: ["b499"] });
+    // Deletion plans under the chat lock inside a five-second transaction; a per-session scan of every path took ~9 s.
+    expect(performance.now() - started).toBeLessThan(3_000);
+  });
 });

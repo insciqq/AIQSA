@@ -70,16 +70,31 @@ export function collapseAnswerReviews(
     }
     return -1;
   };
+  /** The session whose revision request a message answers, if it answers one. */
+  const revisionSessionOf = (message: AnswerReviewTranscriptMessage): string | null => {
+    const parent = message.role === "assistant" && message.parentId ? byId.get(message.parentId) : undefined;
+    return parent?.answerReviewSessionId && parent.systemTurnKind === ANSWER_REVISION_REQUEST_KIND
+      ? parent.answerReviewSessionId : null;
+  };
+  // Each session's members in one pass, in `messages` order: a chat's tree reads one path per leaf, so a per-session
+  // scan of every message would grow with sessions × path length × leaves.
+  const membersOf = new Map<string, AnswerReviewTranscriptMessage[]>();
+  const addMember = (sessionId: string, message: AnswerReviewTranscriptMessage) => {
+    const list = membersOf.get(sessionId);
+    if (list) list.push(message);
+    else membersOf.set(sessionId, [message]);
+  };
+  for (const message of messages) {
+    const own = message.answerReviewSessionId ?? null;
+    const revision = revisionSessionOf(message);
+    if (own) addMember(own, message);
+    if (revision && revision !== own) addMember(revision, message);
+  }
   for (const session of sessions) {
     const source = byId.get(session.sourceAssistantMessageId);
     if (!source) continue;
-    const isRevisionAnswer = (message: AnswerReviewTranscriptMessage) => {
-      const parent = message.parentId ? byId.get(message.parentId) : undefined;
-      return message.role === "assistant" && parent?.answerReviewSessionId === session.id &&
-        parent.systemTurnKind === ANSWER_REVISION_REQUEST_KIND;
-    };
-    const members = messages.filter((message) => message.id !== source.id &&
-      (message.answerReviewSessionId === session.id || isRevisionAnswer(message)));
+    const isRevisionAnswer = (message: AnswerReviewTranscriptMessage) => revisionSessionOf(message) === session.id;
+    const members = (membersOf.get(session.id) ?? []).filter((message) => message.id !== source.id);
     let latest = source;
     let latestDepth = 0;
     for (const member of members) {
