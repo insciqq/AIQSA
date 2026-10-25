@@ -1247,5 +1247,7 @@
   "mcp_approved_tool_unavailable",
   "mcp_call_not_sent",
   "mcp_run_binding_unavailable",
-  "webhook_off"
+  "webhook_off",
+  "webhook_event_dropped",
+  "schedule_off"
 ]

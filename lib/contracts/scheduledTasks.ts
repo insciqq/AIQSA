@@ -985,6 +985,8 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "workspace_capacity": return "Skipped: no Workspace slot became free in time; other automation runs were using Workspace.";
     case "paused": return "Skipped: the automation was paused.";
     case "webhook_off": return "Skipped: the automation's webhook was turned off.";
+    case "webhook_event_dropped": return "Skipped: its event was dropped when the automation was paused, completed or its webhook turned off.";
+    case "schedule_off": return "Skipped: the automation's schedule was turned off.";
     case "admission_failed": return "The run could not start.";
     case "run_unavailable": return "The automation's chat was deleted before the run finished.";
     case "model_run_cancelled": return "Stopped in the chat.";

@@ -1886,7 +1886,9 @@ describe("webhook occurrences", () => {
     await h.tick();
     expect(h.sent).toHaveLength(0);
     expect(skipped).toMatchObject({ reasonCode: "paused", state: "SKIPPED" });
-    expect(eventless).toMatchObject({ reasonCode: "admission_failed", state: "FAILED" });
+    // Its event was dropped (a pause or the webhook off, maybe undone since): skipped, not failed.
+    expect(eventless).toMatchObject({ reasonCode: "webhook_event_dropped", state: "SKIPPED" });
+    expect(eventless.unseenAt).toBeNull();
     expect(cutOff).toMatchObject({ reasonCode: "webhook_off", state: "SKIPPED" });
     expect(switchedOff.status).toBe("ACTIVE");
   });
