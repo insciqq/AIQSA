@@ -13,7 +13,7 @@ import {
   ScheduledTaskApiError,
   updateScheduledTask
 } from "./scheduledTasksApi";
-import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
+import { scheduledTaskCatalogFixture, scheduledTaskFixture, scheduledTaskWebhookFixture } from "./scheduledTaskFixtures";
 import { applyScheduledTask, requestScheduledTaskEdit, useScheduledTasksStore } from "./scheduledTasksStore";
 
 vi.mock("./scheduledTasksApi", async (importOriginal) => {
@@ -667,5 +667,165 @@ describe("ScheduledTasksPanel", () => {
     const button = await screen.findByRole("button", { name: "New automation" });
     await waitFor(() => expect(button).toBeDisabled());
     expect(button).toHaveAccessibleDescription("You have 10 active automations. Pause or delete one to add another.");
+  });
+});
+
+describe("ScheduledTasksPanel webhook triggers", () => {
+  const hookUrl = "https://ai.example.test/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-";
+  const token = `aiqsa_wh_${"T".repeat(43)}`;
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stubTokenRoute(issuedAt = "2026-10-04T10:00:00.000Z") {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token, url: hookUrl, issuedAt }),
+      { headers: { "content-type": "application/json" }, status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function openNew() {
+    fireEvent.click(await screen.findByRole("button", { name: "New automation" }));
+    const sheet = screen.getByRole("dialog", { name: "New automation" });
+    // The Skill picker reads its options once it mounts.
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Pipeline review" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Explain why the pipeline failed." } });
+    return sheet;
+  }
+
+  it("refuses a save with neither trigger on, with the reason on both switches", async () => {
+    list.mockResolvedValue(listed([]));
+    renderPanel();
+    const sheet = await openNew();
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a schedule" }));
+    expect(within(sheet).queryByLabelText("Repeat")).toBeNull();
+    expect(within(sheet).getByTestId("scheduled-task-preview")).toHaveTextContent("Choose when it runs: on a schedule, on a webhook or both.");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create automation" }));
+    const error = within(sheet).getByRole("alert");
+    expect(error).toHaveTextContent("Turn on at least one way to run it: on a schedule or on a webhook.");
+    for (const name of ["On a schedule", "On a webhook"]) {
+      expect(within(sheet).getByRole("switch", { name }).getAttribute("aria-describedby")).toContain(error.id);
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("creates a webhook-only automation, keeps the hidden schedule and then offers Get token", async () => {
+    list.mockResolvedValue(listed([]));
+    const created = scheduledTaskFixture({ id: "hook", title: "Pipeline review", scheduleEnabled: false, webhookEnabled: true,
+      webhook: scheduledTaskWebhookFixture(), nextRunAt: null, schedule: { kind: "weekly", time: "17:00", days: ["fri"] } });
+    create.mockResolvedValue(created);
+    detail.mockResolvedValue({ task: created, recentRuns: [] });
+    const fetchMock = stubTokenRoute();
+    renderPanel();
+    const sheet = await openNew();
+    fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "weekly" } });
+    fireEvent.change(within(sheet).getByLabelText("Time"), { target: { value: "17:00" } });
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a webhook" }));
+    expect(within(sheet).getByTestId("scheduled-task-webhook-pending"))
+      .toHaveTextContent("The webhook URL and Get token appear after you create the automation.");
+    expect(within(sheet).queryByRole("button", { name: "Get token" })).toBeNull();
+    // Off keeps the schedule's values; on again shows them unchanged.
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a schedule" }));
+    expect(within(sheet).queryByLabelText("Repeat")).toBeNull();
+    expect(within(sheet).getByText("Off: it does not run at set times. The schedule settings are kept.")).toBeInTheDocument();
+    expect(within(sheet).getByTestId("scheduled-task-preview")).toHaveTextContent("Runs on each webhook call.");
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a schedule" }));
+    expect(within(sheet).getByLabelText("Repeat")).toHaveValue("weekly");
+    expect(within(sheet).getByLabelText("Time")).toHaveValue("17:00");
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a schedule" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create automation" }));
+
+    // The editor stays open on the saved automation, now with its webhook.
+    const edit = await screen.findByRole("dialog", { name: "Edit automation" });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      scheduleEnabled: false, webhookEnabled: true, schedule: { kind: "weekly", time: "17:00", days: ["sun"] }
+    }));
+    expect(within(edit).getByRole("status")).toHaveTextContent("“Pipeline review” is created. Get a token to let another system call its webhook.");
+    const webhook = within(edit).getByTestId("scheduled-task-webhook");
+    expect(webhook).toHaveTextContent("TokenNot issued yet");
+    expect(webhook).toHaveTextContent("Last eventNone yet");
+    expect(within(webhook).getByTestId("webhook-url")).toHaveTextContent(/\/api\/automations\/hooks\/AbCdEfGhIjKlMnOpQrSt_-$/u);
+    expectDirty(false);
+
+    fireEvent.click(within(webhook).getByRole("button", { name: "Get token" }));
+    expect(await within(webhook).findByTestId("webhook-token")).toHaveTextContent(token);
+    expect(fetchMock).toHaveBeenCalledWith("/api/me/scheduled-tasks/hook/webhook-token", expect.objectContaining({ method: "POST" }));
+    expect(webhook).toHaveTextContent("TokenIssued Sun 4 Oct, 11:00");
+    expect(within(webhook).getByRole("button", { name: "Rotate token" })).toBeEnabled();
+    // Issuing a token changes nothing to save.
+    expectDirty(false);
+  });
+
+  it("sends switch changes on update and keeps the editor open when the webhook was turned on", async () => {
+    const task = scheduledTaskFixture({ revision: 2 });
+    const saved = { ...task, revision: 3, scheduleEnabled: false, webhookEnabled: true, webhook: scheduledTaskWebhookFixture(), nextRunAt: null };
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValueOnce({ task, recentRuns: [] }).mockResolvedValue({ task: saved, recentRuns: [] });
+    update.mockResolvedValue(saved);
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a webhook" }));
+    expect(within(sheet).getByTestId("scheduled-task-webhook-pending")).toHaveTextContent("The webhook URL and Get token appear after you save.");
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a schedule" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(task.id, { expectedRevision: 2, scheduleEnabled: false, webhookEnabled: true }));
+    expect(await within(sheet).findByTestId("scheduled-task-webhook")).toBeInTheDocument();
+    expect(within(sheet).getByRole("status")).toHaveTextContent("Changes saved. Get a token to let another system call its webhook.");
+    expect(within(sheet).getByRole("button", { name: "Get token" })).toBeEnabled();
+  });
+
+  it("shows a webhook-only row and the saved webhook's token, last event, queue and webhook runs", async () => {
+    const task = scheduledTaskFixture({ id: "hook", title: "Pipeline review", scheduleEnabled: false, webhookEnabled: true, nextRunAt: null,
+      webhook: scheduledTaskWebhookFixture({ tokenIssuedAt: "2026-10-03T08:00:00.000Z", lastEventAt: "2026-10-04T09:30:00.000Z", queuedEvents: 3 }) });
+    const webhookRun: ScheduledTaskRun = { id: "run-1", scheduledFor: "2026-10-04T09:30:00.000Z", trigger: "webhook", state: "completed",
+      reasonCode: null, startedAt: "2026-10-04T09:30:02.000Z", finishedAt: "2026-10-04T09:31:00.000Z", chatId: null, unseen: false,
+      unavailableSources: [], skills: [] };
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [webhookRun] });
+    renderPanel();
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(row).toHaveTextContent("On a webhook");
+    expect(row).toHaveTextContent("Runs on each webhook call · 3 events waiting");
+    expect(row).not.toHaveTextContent(/Next run|No upcoming run/u);
+    expect(within(row).getByRole("switch", { name: "Run Pipeline review on webhook calls" })).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Pipeline review" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    expect(within(sheet).getByRole("switch", { name: "On a schedule" })).toHaveAttribute("aria-checked", "false");
+    expect(within(sheet).queryByLabelText("Repeat")).toBeNull();
+    const webhook = within(sheet).getByTestId("scheduled-task-webhook");
+    expect(webhook).toHaveTextContent("TokenIssued Sat 3 Oct, 09:00");
+    expect(webhook).toHaveTextContent("Last eventSun 4 Oct, 10:30");
+    expect(webhook).toHaveTextContent("Queue3 events waiting");
+    expect(within(webhook).getByRole("button", { name: "Rotate token" })).toBeEnabled();
+    const runs = await within(sheet).findByRole("region", { name: "Recent runs" });
+    expect(within(runs).getByRole("listitem")).toHaveTextContent("Webhook");
+
+    // Turning the webhook off hides it and says what stays; turning it back on shows it again.
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a webhook" }));
+    expect(within(sheet).queryByTestId("scheduled-task-webhook")).toBeNull();
+    expect(within(sheet).getByText("Off: calls to its URL are refused. The URL and token stay for when you turn it on again.")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a webhook" }));
+    expect(within(sheet).getByTestId("scheduled-task-webhook")).toBeInTheDocument();
+  });
+
+  it("says a webhook turned off before stays at its URL until the change is saved", async () => {
+    const task = scheduledTaskFixture({ webhookEnabled: false, webhook: scheduledTaskWebhookFixture({ tokenIssuedAt: "2026-10-03T08:00:00.000Z" }) });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    renderPanel();
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(row).toHaveTextContent("Every weekday at 09:00");
+    expect(row).not.toHaveTextContent("Webhook");
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    expect(within(sheet).getByText("Off: calls to its URL are refused. The URL and token stay for when you turn it on again.")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("switch", { name: "On a webhook" }));
+    expect(within(sheet).getByTestId("scheduled-task-webhook-pending")).toHaveTextContent("Save changes to turn the webhook on again. Its URL stays the same.");
+    expect(within(sheet).queryByRole("button", { name: /token/u })).toBeNull();
+    expect(await within(sheet).findByText("No runs yet.")).toBeInTheDocument();
   });
 });

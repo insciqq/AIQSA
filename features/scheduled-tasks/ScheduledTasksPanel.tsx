@@ -26,8 +26,8 @@ import {
   scheduledTaskFailureMessage,
   scheduledTaskHistoryLine,
   scheduledTaskLastRunLine,
-  scheduledTaskScheduleText,
   scheduledTaskStatusLine,
+  scheduledTaskTriggerText,
   sortScheduledTasks,
   WORKDAYS
 } from "./scheduledTaskPresentation";
@@ -88,6 +88,7 @@ const IDEAS: readonly Idea[] = [
 ];
 
 const FIELD_FOR_CODE: Readonly<Record<string, keyof ScheduledTaskFieldErrors>> = {
+  scheduled_task_trigger_required: "trigger",
   scheduled_task_schedule_invalid: "schedule",
   scheduled_task_once_in_past: "schedule",
   scheduled_task_time_zone_invalid: "timeZone",
@@ -124,6 +125,21 @@ function withLateDefaults(editor: Editor | null, catalog: Catalog | null, worksp
 
 function errorCode(error: unknown): string | null {
   return error instanceof ScheduledTaskApiError ? error.code : null;
+}
+
+/** The field a server code belongs to; a schedule field hidden by an off schedule reports on the form. */
+function errorField(code: string | null, draft: ScheduledTaskEditorDraft): keyof ScheduledTaskFieldErrors {
+  const field = code ? FIELD_FOR_CODE[code] : undefined;
+  if (!field) return "form";
+  return !draft.scheduleEnabled && (field === "schedule" || field === "timeZone") ? "form" : field;
+}
+
+/**
+ * Saved with the webhook turned on where it was not: the editor stays open on
+ * the saved task, so its address and Get token are at hand.
+ */
+function webhookTurnedOn(saved: ScheduledTask, original: ScheduledTask | null): boolean {
+  return saved.webhookEnabled && saved.webhook !== null && !(original?.webhookEnabled && original.webhook);
 }
 
 /** Studio › Scheduled: the account's tasks, their next runs and the editor sheet. */
@@ -290,10 +306,21 @@ export function ScheduledTasksPanel({
       const task = original ? await updateScheduledTask(original.id, update!) : await createScheduledTask(create!);
       if (!active.current) return;
       applyScheduledTask(task);
+      if (webhookTurnedOn(task, original)) {
+        const epoch = ++editorEpoch.current;
+        const draft = scheduledTaskDraftFromTask(task);
+        setEditor({
+          draft, errors: {}, initialDraft: draft, original: task,
+          notice: `${original ? "Changes saved." : `“${task.title}” is created.`} Get a token to let another system call its webhook.`,
+          recentRuns: original ? { state: "loading" } : { state: "ready", runs: [] }
+        });
+        if (original) loadRecentRuns(task, epoch);
+        return;
+      }
       restoreFocus.current = task.id;
       editorEpoch.current += 1;
       setEditor(null);
-      setNotice(original ? "Changes saved." : `“${task.title}” is scheduled.`);
+      setNotice(original ? "Changes saved." : task.scheduleEnabled ? `“${task.title}” is scheduled.` : `“${task.title}” is created.`);
     } catch (error) {
       if (!active.current) return;
       const code = errorCode(error);
@@ -306,8 +333,7 @@ export function ScheduledTasksPanel({
           : current));
         return;
       }
-      const field = code ? FIELD_FOR_CODE[code] : undefined;
-      setEditor((current) => current && { ...current, errors: { [field ?? "form"]: scheduledTaskFailureMessage(code) } });
+      setEditor((current) => current && { ...current, errors: { [errorField(code, current.draft)]: scheduledTaskFailureMessage(code) } });
     } finally {
       pending.current = false;
       if (active.current) setSaving(false);
@@ -382,7 +408,7 @@ export function ScheduledTasksPanel({
   return (
     <section className="v2-studio-settings-page v2-scheduled-page" aria-label="Automations" data-testid="scheduled-tasks-panel">
       <SectionHeading
-        description="Run a prompt on a schedule. Answers arrive in your chats."
+        description="Run a prompt on a schedule or when another system calls its webhook. Answers arrive in your chats."
         meta={loadState === "ready" ? <span className="v2-scheduled-meta">{activeCount} of {limits.maxActive} active</span> : undefined}
         action={<UiV2Button ref={newButton} type="button" tone="primary" icon="plus" disabled={busy || loadState !== "ready" || Boolean(limitReason)}
           aria-describedby={limitReason ? "v2-scheduled-limit" : undefined} onClick={() => openCreate()}>New automation</UiV2Button>}
@@ -459,6 +485,13 @@ export function ScheduledTasksPanel({
           onOpenRunChat={(chatId) => { if (editor.original) openRunChat(editor.original, chatId); }}
           onRunsShown={(runs) => { if (editor.original) runsShown(editor.original, runs); }}
           onSubmit={() => void save()}
+          onWebhookTokenIssued={(issuedAt) => {
+            // Only the issue time: the token itself stays inside the reveal.
+            setEditor((current) => current?.original?.webhook ? {
+              ...current, original: { ...current.original, webhook: { ...current.original.webhook, tokenIssuedAt: issuedAt } }
+            } : current);
+            void refreshScheduledTasks();
+          }}
         />
       ) : null}
     </section>
@@ -498,7 +531,7 @@ function ScheduledTaskRow({
           <span>{task.title}</span>
           {task.unseenResult ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result</span></> : null}
         </h3>
-        <p className="v2-scheduled-row-schedule">{scheduledTaskScheduleText(task.schedule, task.timeZone, viewerTimeZone)}</p>
+        <p className="v2-scheduled-row-schedule">{scheduledTaskTriggerText(task, viewerTimeZone)}</p>
         <p className="v2-scheduled-row-status" data-tone={status.tone}>
           {task.kind === "monitoring" ? <span className="v2-scheduled-row-kind">Monitoring · </span> : null}
           {status.text}
@@ -519,7 +552,7 @@ function ScheduledTaskRow({
             checked={task.status === "active"}
             disabled={busy}
             aria-busy={rowBusy || undefined}
-            label={`Run ${task.title} on schedule`}
+            label={`Run ${task.title} ${!task.scheduleEnabled ? "on webhook calls" : task.webhookEnabled ? "on schedule and webhook calls" : "on schedule"}`}
             onChange={onToggle}
           />
         ) : null}

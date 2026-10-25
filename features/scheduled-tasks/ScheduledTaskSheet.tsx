@@ -45,12 +45,15 @@ import {
   SCHEDULED_TASK_SPREAD_NOTE,
   WEEKDAY_LONG_LABELS,
   WEEKDAY_SHORT_LABELS,
+  formatScheduledInstant,
+  scheduledTaskQueuedEventsText,
   scheduledTaskRunRow,
   scheduledTaskTimeZoneOptions,
   timeZoneLabel
 } from "./scheduledTaskPresentation";
 import { ScheduledTaskSkillPicker } from "./ScheduledTaskSkillPicker";
 import type { ScheduledTaskSkillOption } from "./scheduledTasksApi";
+import { WebhookTokenReveal, useWebhookUrl } from "./WebhookTokenReveal";
 
 const field = "v2-scheduled-field w-full min-w-0 rounded-lg border border-trace bg-answer-paper px-3 py-2 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 const PROMPT_COUNTER_FROM = SCHEDULED_TASK_PROMPT_MAX_LENGTH - 1_000;
@@ -80,6 +83,8 @@ export type ScheduledTaskSheetProps = Readonly<{
   /** The runs the history rendered with unread results, once per load. */
   onRunsShown(runs: readonly ScheduledTaskRun[]): void;
   onSubmit(): void;
+  /** A token was issued for the saved task's webhook, with its issue time; never the token. */
+  onWebhookTokenIssued?(issuedAt: string): void;
   original: ScheduledTask | null;
   recentRuns: ScheduledTaskRecentRuns | null;
   viewerTimeZone: string;
@@ -127,14 +132,14 @@ function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekda
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
   busy, catalog, draft, emailAvailable, errors, initialDraft, loadSkillOptions, memory = "unknown", notice, onChange, onClose,
-  onOpenRunChat, onRunsShown, onSubmit, original, recentRuns, telegramAvailable = false, viewerTimeZone, workspace = "unknown"
+  onOpenRunChat, onRunsShown, onSubmit, onWebhookTokenIssued, original, recentRuns, telegramAvailable = false, viewerTimeZone, workspace = "unknown"
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
     title: useId(), prompt: useId(), promptCount: useId(), promptLinks: useId(), repeat: useId(), time: useId(), schedule: useId(),
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
     searchHelp: useId(), email: useId(), emailHelp: useId(), telegram: useId(), telegramHelp: useId(), form: useId(), monthHint: useId(),
-    scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
+    whenHeading: useId(), scheduleHelp: useId(), webhookHelp: useId(), trigger: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
     chatMode: useId(), chatModeHint: useId(), chatMonthHint: useId(), kind: useId(), kindHint: useId(), tools: useId(),
     toolsHelp: useId(), workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId(), history: useId(),
     historyHint: useId(), spreadHint: useId()
@@ -180,6 +185,11 @@ export function ScheduledTaskSheet({
   const memoryReason = memory === "paused" ? "Memory is paused, so runs read nothing. Turn it on in Studio › Memory."
     : memory === "needs_setup" ? "Memory needs administrator setup, so runs read nothing yet."
       : "Reads what Memory knows about you. Automations never add to Memory.";
+  // Turning the webhook off keeps its address and token; the endpoint refuses calls meanwhile.
+  const webhookHelp = draft.webhookEnabled
+    ? "Another system runs it by posting to its URL with a token. The request body reaches each run as incoming data."
+    : original?.webhook ? "Off: calls to its URL are refused. The URL and token stay for when you turn it on again."
+      : "Lets another system, such as GitLab, run it by calling a URL.";
   const leave = (proceed: () => void) => {
     if (busy) return;
     if (dirty) setPendingLeave(() => proceed);
@@ -227,7 +237,7 @@ export function ScheduledTaskSheet({
       width="wide"
       testId="scheduled-task-sheet"
       title={editing ? "Edit automation" : "New automation"}
-      description="Runs your instructions on a schedule and adds each answer to a chat."
+      description="Runs your instructions on a schedule or a webhook and adds each answer to a chat."
       closeBlocked={busy}
       onClose={requestClose}
       footer={<>
@@ -307,129 +317,167 @@ export function ScheduledTaskSheet({
             {errors.prompt ? <FieldError id={`${ids.prompt}-error`}>{errors.prompt}</FieldError> : null}
           </div>
 
-          <div className="v2-scheduled-group" role="group" aria-labelledby={ids.scheduleHeading}
-            aria-describedby={describedBy(draft.repeat !== "once" && ids.spreadHint, errors.schedule && ids.schedule)}>
-            <h3 id={ids.scheduleHeading}>Schedule</h3>
-            <div className="v2-scheduled-pair">
-              <div className="v2-scheduled-control">
-                <label htmlFor={ids.repeat}>Repeat</label>
-                <select id={ids.repeat} className={field} value={draft.repeat}
-                  onChange={(event) => onChange({ repeat: event.target.value as ScheduledTaskRepeat })}>
-                  {SCHEDULED_TASK_REPEAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-              </div>
-              {hourly ? (
-                <div className="v2-scheduled-control">
-                  <label htmlFor={ids.everyHours}>Interval</label>
-                  <select id={ids.everyHours} className={field} value={draft.everyHours}
-                    onChange={(event) => onChange({ everyHours: Number(event.target.value) as ScheduledTaskEveryHours })}>
-                    {SCHEDULED_TASK_EVERY_HOURS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
-                </div>
-              ) : timeInput(ids.time, "Time")}
+          <div className="v2-scheduled-group" role="group" aria-labelledby={ids.whenHeading}
+            aria-describedby={describedBy(errors.trigger && ids.trigger)}>
+            <h3 id={ids.whenHeading}>When to run</h3>
+            <div className="v2-scheduled-toggle">
+              <span className="v2-scheduled-toggle-copy">
+                <span className="v2-scheduled-label">On a schedule</span>
+                <span id={ids.scheduleHelp} className="v2-scheduled-hint">
+                  {draft.scheduleEnabled ? "Runs at the times you set below."
+                    : "Off: it does not run at set times. The schedule settings are kept."}
+                </span>
+              </span>
+              <UiV2Switch
+                checked={draft.scheduleEnabled}
+                disabled={busy}
+                label="On a schedule"
+                aria-describedby={describedBy(ids.scheduleHelp, errors.trigger && ids.trigger)}
+                onChange={(scheduleEnabled) => onChange({ scheduleEnabled })}
+              />
             </div>
-            {hourly ? (
-              <>
-                <fieldset className="v2-scheduled-choice">
-                  <legend className="v2-scheduled-label">Hours</legend>
-                  <div className="v2-scheduled-options" data-inline="">
-                    {HOURLY_WINDOWS.map((option) => (
-                      <label key={option.value} className="v2-scheduled-option">
-                        <input
-                          type="radio"
-                          name={`${formId}-window`}
-                          checked={draft.hourlyWindow === option.value}
-                          onChange={() => onChange({ hourlyWindow: option.value })}
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    ))}
+            {draft.scheduleEnabled ? (
+              <div className="v2-scheduled-trigger-fields" role="group" aria-label="Schedule"
+                aria-describedby={describedBy(draft.repeat !== "once" && ids.spreadHint, errors.schedule && ids.schedule)}>
+                <div className="v2-scheduled-pair">
+                  <div className="v2-scheduled-control">
+                    <label htmlFor={ids.repeat}>Repeat</label>
+                    <select id={ids.repeat} className={field} value={draft.repeat}
+                      onChange={(event) => onChange({ repeat: event.target.value as ScheduledTaskRepeat })}>
+                      {SCHEDULED_TASK_REPEAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
                   </div>
-                </fieldset>
-                {draft.hourlyWindow === "hours" ? (
-                  <div className="v2-scheduled-pair">
-                    {timeInput(ids.time, "From")}
+                  {hourly ? (
                     <div className="v2-scheduled-control">
-                      <label htmlFor={ids.until}>Until</label>
-                      <input
-                        id={ids.until}
-                        className={field}
-                        type="time"
-                        step={60}
-                        value={draft.until}
-                        aria-invalid={Boolean(errors.schedule) || undefined}
-                        aria-describedby={describedBy(!draft.until && ids.untilHint)}
-                        onChange={(event) => onChange({ until: event.target.value.slice(0, 5) })}
-                      />
+                      <label htmlFor={ids.everyHours}>Interval</label>
+                      <select id={ids.everyHours} className={field} value={draft.everyHours}
+                        onChange={(event) => onChange({ everyHours: Number(event.target.value) as ScheduledTaskEveryHours })}>
+                        {SCHEDULED_TASK_EVERY_HOURS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
                     </div>
-                    {!draft.until ? <p className="v2-scheduled-hint v2-scheduled-pair-hint" id={ids.untilHint}>Without an end time it runs until the end of the day.</p> : null}
+                  ) : timeInput(ids.time, "Time")}
+                </div>
+                {hourly ? (
+                  <>
+                    <fieldset className="v2-scheduled-choice">
+                      <legend className="v2-scheduled-label">Hours</legend>
+                      <div className="v2-scheduled-options" data-inline="">
+                        {HOURLY_WINDOWS.map((option) => (
+                          <label key={option.value} className="v2-scheduled-option">
+                            <input
+                              type="radio"
+                              name={`${formId}-window`}
+                              checked={draft.hourlyWindow === option.value}
+                              onChange={() => onChange({ hourlyWindow: option.value })}
+                            />
+                            <span>{option.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    {draft.hourlyWindow === "hours" ? (
+                      <div className="v2-scheduled-pair">
+                        {timeInput(ids.time, "From")}
+                        <div className="v2-scheduled-control">
+                          <label htmlFor={ids.until}>Until</label>
+                          <input
+                            id={ids.until}
+                            className={field}
+                            type="time"
+                            step={60}
+                            value={draft.until}
+                            aria-invalid={Boolean(errors.schedule) || undefined}
+                            aria-describedby={describedBy(!draft.until && ids.untilHint)}
+                            onChange={(event) => onChange({ until: event.target.value.slice(0, 5) })}
+                          />
+                        </div>
+                        {!draft.until ? <p className="v2-scheduled-hint v2-scheduled-pair-hint" id={ids.untilHint}>Without an end time it runs until the end of the day.</p> : null}
+                      </div>
+                    ) : null}
+                    <div className="v2-scheduled-control">
+                      <span id={ids.days} className="v2-scheduled-label">Days</span>
+                      <DayChips days={draft.hourlyDays} labelId={ids.days}
+                        onToggle={(day) => onChange({ hourlyDays: toggled(draft.hourlyDays, day) })} />
+                    </div>
+                  </>
+                ) : null}
+                {draft.repeat === "weekly" ? (
+                  <div className="v2-scheduled-control">
+                    <span id={ids.days} className="v2-scheduled-label">Days</span>
+                    <DayChips days={draft.days} labelId={ids.days} onToggle={(day) => onChange({ days: toggled(draft.days, day) })} />
                   </div>
                 ) : null}
+                {draft.repeat === "monthly" ? (
+                  <div className="v2-scheduled-control">
+                    <label htmlFor={ids.dayOfMonth}>Day of the month</label>
+                    <select
+                      id={ids.dayOfMonth}
+                      className={`${field} v2-scheduled-narrow`}
+                      value={draft.dayOfMonth}
+                      aria-describedby={ids.monthHint}
+                      onChange={(event) => onChange({ dayOfMonth: Number(event.target.value) })}
+                    >
+                      {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day}</option>)}
+                    </select>
+                    <p className="v2-scheduled-hint" id={ids.monthHint}>Shorter months use their last day.</p>
+                  </div>
+                ) : null}
+                {draft.repeat === "once" ? (
+                  <div className="v2-scheduled-control">
+                    <label htmlFor={ids.date}>Date</label>
+                    <input
+                      id={ids.date}
+                      className={`${field} v2-scheduled-narrow`}
+                      type="date"
+                      required
+                      min={scheduledTaskToday(draft.timeZone, now)}
+                      value={draft.date}
+                      aria-invalid={Boolean(errors.schedule) || undefined}
+                      onChange={(event) => onChange({ date: event.target.value })}
+                    />
+                  </div>
+                ) : null}
+                {draft.repeat !== "once"
+                  ? <p className="v2-scheduled-hint" id={ids.spreadHint} data-testid="scheduled-task-spread-hint">{SCHEDULED_TASK_SPREAD_NOTE}</p>
+                  : null}
+                {errors.schedule ? <FieldError id={ids.schedule}>{errors.schedule}</FieldError> : null}
                 <div className="v2-scheduled-control">
-                  <span id={ids.days} className="v2-scheduled-label">Days</span>
-                  <DayChips days={draft.hourlyDays} labelId={ids.days}
-                    onToggle={(day) => onChange({ hourlyDays: toggled(draft.hourlyDays, day) })} />
+                  <label htmlFor={ids.timeZone}>Time zone</label>
+                  <select
+                    id={ids.timeZone}
+                    className={field}
+                    value={draft.timeZone}
+                    aria-invalid={Boolean(errors.timeZone) || undefined}
+                    aria-describedby={describedBy(errors.timeZone && `${ids.timeZone}-error`)}
+                    onChange={(event) => onChange({ timeZone: event.target.value })}
+                  >
+                    {zones.map((zone) => (
+                      <option key={zone} value={zone}>
+                        {zone === viewerTimeZone ? `${timeZoneLabel(zone)} (this device)` : timeZoneLabel(zone)}
+                      </option>
+                    ))}
+                  </select>
+                  {errors.timeZone ? <FieldError id={`${ids.timeZone}-error`}>{errors.timeZone}</FieldError> : null}
                 </div>
-              </>
-            ) : null}
-            {draft.repeat === "weekly" ? (
-              <div className="v2-scheduled-control">
-                <span id={ids.days} className="v2-scheduled-label">Days</span>
-                <DayChips days={draft.days} labelId={ids.days} onToggle={(day) => onChange({ days: toggled(draft.days, day) })} />
               </div>
             ) : null}
-            {draft.repeat === "monthly" ? (
-              <div className="v2-scheduled-control">
-                <label htmlFor={ids.dayOfMonth}>Day of the month</label>
-                <select
-                  id={ids.dayOfMonth}
-                  className={`${field} v2-scheduled-narrow`}
-                  value={draft.dayOfMonth}
-                  aria-describedby={ids.monthHint}
-                  onChange={(event) => onChange({ dayOfMonth: Number(event.target.value) })}
-                >
-                  {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day}</option>)}
-                </select>
-                <p className="v2-scheduled-hint" id={ids.monthHint}>Shorter months use their last day.</p>
-              </div>
-            ) : null}
-            {draft.repeat === "once" ? (
-              <div className="v2-scheduled-control">
-                <label htmlFor={ids.date}>Date</label>
-                <input
-                  id={ids.date}
-                  className={`${field} v2-scheduled-narrow`}
-                  type="date"
-                  required
-                  min={scheduledTaskToday(draft.timeZone, now)}
-                  value={draft.date}
-                  aria-invalid={Boolean(errors.schedule) || undefined}
-                  onChange={(event) => onChange({ date: event.target.value })}
-                />
-              </div>
-            ) : null}
-            {draft.repeat !== "once"
-              ? <p className="v2-scheduled-hint" id={ids.spreadHint} data-testid="scheduled-task-spread-hint">{SCHEDULED_TASK_SPREAD_NOTE}</p>
-              : null}
-            {errors.schedule ? <FieldError id={ids.schedule}>{errors.schedule}</FieldError> : null}
-            <div className="v2-scheduled-control">
-              <label htmlFor={ids.timeZone}>Time zone</label>
-              <select
-                id={ids.timeZone}
-                className={field}
-                value={draft.timeZone}
-                aria-invalid={Boolean(errors.timeZone) || undefined}
-                aria-describedby={describedBy(errors.timeZone && `${ids.timeZone}-error`)}
-                onChange={(event) => onChange({ timeZone: event.target.value })}
-              >
-                {zones.map((zone) => (
-                  <option key={zone} value={zone}>
-                    {zone === viewerTimeZone ? `${timeZoneLabel(zone)} (this device)` : timeZoneLabel(zone)}
-                  </option>
-                ))}
-              </select>
-              {errors.timeZone ? <FieldError id={`${ids.timeZone}-error`}>{errors.timeZone}</FieldError> : null}
+            <div className="v2-scheduled-toggle">
+              <span className="v2-scheduled-toggle-copy">
+                <span className="v2-scheduled-label">On a webhook</span>
+                <span id={ids.webhookHelp} className="v2-scheduled-hint">{webhookHelp}</span>
+              </span>
+              <UiV2Switch
+                checked={draft.webhookEnabled}
+                disabled={busy}
+                label="On a webhook"
+                aria-describedby={describedBy(ids.webhookHelp, errors.trigger && ids.trigger)}
+                onChange={(webhookEnabled) => onChange({ webhookEnabled })}
+              />
             </div>
+            {draft.webhookEnabled ? (
+              <ScheduledTaskWebhookSection now={now} original={original} onTokenIssued={onWebhookTokenIssued} />
+            ) : null}
+            {errors.trigger ? <FieldError id={ids.trigger}>{errors.trigger}</FieldError> : null}
           </div>
 
           <div className="v2-scheduled-group" role="group" aria-labelledby={ids.answerHeading}>
@@ -631,6 +679,62 @@ export function ScheduledTaskSheet({
         </ConfirmationDialog>
       ) : null}
     </UiV2Sheet>
+  );
+}
+
+/**
+ * The webhook while its switch is on. A saved webhook shows its address,
+ * whether a token is issued and when, the last event and the events still
+ * waiting, with Get token or Rotate token. Before the first save, or while
+ * the saved automation keeps it off, the server has no usable address yet, so
+ * the section says when it appears.
+ */
+function ScheduledTaskWebhookSection({ now, onTokenIssued, original }: Readonly<{
+  now: Date;
+  onTokenIssued?(issuedAt: string): void;
+  original: ScheduledTask | null;
+}>) {
+  const hook = original?.webhookEnabled ? original.webhook : null;
+  if (!original || !hook) {
+    return (
+      <p className="v2-scheduled-hint v2-scheduled-webhook-pending" data-testid="scheduled-task-webhook-pending">
+        {!original ? "The webhook URL and Get token appear after you create the automation."
+          : original.webhook ? "Save changes to turn the webhook on again. Its URL stays the same."
+            : "The webhook URL and Get token appear after you save."}
+      </p>
+    );
+  }
+  return <SavedWebhook hook={hook} now={now} task={original} onTokenIssued={onTokenIssued} />;
+}
+
+function SavedWebhook({ hook, now, onTokenIssued, task }: Readonly<{
+  hook: NonNullable<ScheduledTask["webhook"]>;
+  now: Date;
+  onTokenIssued?(issuedAt: string): void;
+  task: ScheduledTask;
+}>) {
+  const url = useWebhookUrl(hook.path);
+  const when = (value: string) => formatScheduledInstant(value, task.timeZone, now);
+  return (
+    <div className="v2-scheduled-webhook" data-testid="scheduled-task-webhook">
+      <dl className="v2-scheduled-webhook-facts">
+        <div>
+          <dt>Token</dt>
+          <dd>{hook.tokenIssuedAt ? `Issued ${when(hook.tokenIssuedAt)}` : "Not issued yet"}</dd>
+        </div>
+        <div>
+          <dt>Last event</dt>
+          <dd>{hook.lastEventAt ? when(hook.lastEventAt) : "None yet"}</dd>
+        </div>
+        {hook.queuedEvents > 0 ? (
+          <div>
+            <dt>Queue</dt>
+            <dd>{scheduledTaskQueuedEventsText(hook.queuedEvents)}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <WebhookTokenReveal taskId={task.id} url={url} issued={hook.tokenIssuedAt !== null} onIssued={onTokenIssued} />
+    </div>
   );
 }
 
