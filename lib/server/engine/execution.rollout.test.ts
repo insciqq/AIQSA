@@ -5,7 +5,6 @@ import {
   scriptedNativeAdapter
 } from "@/tests/support/nativeRunExecution";
 import { resolveAssistantChatBaseline } from "../../domain/promptTemplates";
-import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { mergeMcpRunPlanSnapshots } from "../mcp/discovery";
 import type { McpCapabilityCatalog, McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
@@ -32,8 +31,8 @@ import { unknownEffectsOf } from "./unknownEffects";
  * The native engine on the runs the rollout moves to it: a scheduled
  * monitoring check reporting its verdict (through the reserved round when its
  * budget ran out), a scheduled run's flat context, a rotation's carried
- * Workspace, an answer review step's card, an Assistant's instructions, and
- * the tools each kind of run is offered.
+ * Workspace, an Assistant's instructions, and the tools each kind of run is
+ * offered.
  */
 const VERDICT = "report_monitoring_result";
 const created = { assistantMessageId: "answer-1", runId: "run-1", userMessageId: "question-1" };
@@ -175,11 +174,9 @@ describe("an unknown effect on the native engine", () => {
     { callId: "pc1", id: "u2", kind: "tool_result", name: SHELL, outcome: "unknown", output: "The command may have run; its exit is unknown." },
     { id: "u3", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: "The report may have been posted." }
   ];
-  const step = { kind: "review" as const, modelName: "Fake reviewer", reviewer: 1, round: 1, sessionId: "session-1", step: 1, version: 1 as const };
-
   /** One run whose model sends the same command again; `messages` is its frozen branch, the answer `answer-0` a native run's. */
   async function retry(messages: readonly ReturnType<typeof nativeSay>[], options: Readonly<{
-    extra?: Partial<ProviderRunRequest>; repo?: ReturnType<typeof nativeRunRepository>; scheduled?: boolean;
+    repo?: ReturnType<typeof nativeRunRepository>; scheduled?: boolean;
   }> = {}) {
     const { adapter, requests } = scriptedNativeAdapter([
       { calls: [{ arguments: { command: "post-report" }, id: "again", name: SHELL }] }, { text: "Done." }
@@ -198,7 +195,7 @@ describe("an unknown effect on the native engine", () => {
     };
     await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
       prepared: nativePrepared({ context: { messages: [...messages], mode: "branch_path" },
-        workspace: { enabled: true, syncToolTimeoutSeconds: 30, turnTimeoutSeconds: 600 } as ProviderRunRequest["workspace"], ...options.extra }),
+        workspace: { enabled: true, syncToolTimeoutSeconds: 30, turnTimeoutSeconds: 600 } as ProviderRunRequest["workspace"] }),
       repository: asRepository(options.repo ?? nativeRunRepository()), ...(options.scheduled ? { scheduled: true as const } : {}),
       services: {}, userId: "owner", workspace: workspace as unknown as WorkspaceCoordinator }));
     const result = requests[1]?.history?.find((item) => item.type === "tool_result" && item.callId === "again");
@@ -217,23 +214,23 @@ describe("an unknown effect on the native engine", () => {
     expect(asked.execute).toHaveBeenCalledTimes(1);
   });
 
-  it("stays blocked through an answer review step and the review turns the server wrote before it", async () => {
-    const review = [nativeSay("question", "user", "Post the daily report"), nativeSay("answer-0", "assistant", "Maybe posted."),
-      nativeSay("review-turn", "user", "Review the previous answer."), nativeSay("review-answer", "assistant", "It may be posted."),
-      nativeSay("current-user-message", "user", "Review the previous answer.")];
+  it("stays blocked through the turns the server wrote before the occurrence's prompt", async () => {
+    const written = [nativeSay("question", "user", "Post the daily report"), nativeSay("answer-0", "assistant", "Maybe posted."),
+      nativeSay("server-turn", "user", "Continue after the approval."), nativeSay("server-answer", "assistant", "It may be posted."),
+      nativeSay("current-user-message", "user", "Post the daily report")];
     const marked = nativeRunRepository();
-    marked.loadSystemTurnMessageIds.mockResolvedValue(new Set(["review-turn"]));
-    const blocked = await retry(review, { extra: { answerReviewStep: step }, repo: marked });
+    marked.loadSystemTurnMessageIds.mockResolvedValue(new Set(["server-turn"]));
+    const blocked = await retry(written, { repo: marked, scheduled: true });
     expect(blocked.execute).not.toHaveBeenCalled();
     expect(blocked.output).toBe(UNKNOWN_OUTCOME_REPEAT_OUTPUT);
     // Only the turns after the branch's first call are looked up.
-    expect(marked.loadSystemTurnMessageIds).toHaveBeenCalledWith({ chatId: "chat", messageIds: ["review-turn"], userId: "owner" });
+    expect(marked.loadSystemTurnMessageIds).toHaveBeenCalledWith({ chatId: "chat", messageIds: ["server-turn"], userId: "owner" });
     // Turns that cannot be told apart count as the server's.
     const unread = nativeRunRepository();
     unread.loadSystemTurnMessageIds.mockRejectedValue(new Error("database restarted"));
-    expect((await retry(review, { extra: { answerReviewStep: step }, repo: unread })).execute).not.toHaveBeenCalled();
+    expect((await retry(written, { repo: unread, scheduled: true })).execute).not.toHaveBeenCalled();
     // An unmarked turn after the effect would count as the user writing.
-    expect((await retry(review, { extra: { answerReviewStep: step } })).execute).toHaveBeenCalledTimes(1);
+    expect((await retry(written, { scheduled: true })).execute).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -488,30 +485,6 @@ describe("a monthly rotation's carried Workspace on the native engine", () => {
   });
 });
 
-describe("an answer review step on the native engine", () => {
-  const step = { kind: "review" as const, modelName: "Fake reviewer", reviewer: 0, round: 1, sessionId: "session-1", step: 0, version: 1 as const };
-
-  it("publishes the step's card from its first report and refuses a second one", async () => {
-    const review = { findings: [], verdict: "clean" };
-    const { adapter, requests } = scriptedNativeAdapter([
-      { calls: [{ arguments: review, id: "r1", name: "submit_answer_review" }, { arguments: review, id: "r2", name: "submit_answer_review" }] },
-      { text: "The answer holds." }
-    ]);
-    const memory = memoryNativeEngine();
-    const repo = nativeRunRepository();
-    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
-      prepared: nativePrepared({ answerReviewStep: step }), repository: asRepository(repo), services: {}, userId: "user" }));
-    expect(toolNames(requests[0])).toContain("submit_answer_review");
-    const cards = repo.appendRunOutputEvent.mock.calls.map(([, event]) => event as ModelRunSseEvent)
-      .filter((event) => event.type === "artifact" && event.data.artifactType === "answer_review");
-    expect(cards).toEqual([{ data: { artifactType: "answer_review", payload: { findings: [], reviewer: 0, reviewerName: "Fake reviewer",
-      round: 1, verdict: "clean", version: 1 } }, type: "artifact" }]);
-    const results = memory.transcriptRows.filter((item) => item.kind === "tool_result");
-    expect(results.map((item) => item.kind === "tool_result" && [item.callId, item.outcome])).toEqual([["r1", "complete"], ["r2", "error"]]);
-    expect(memory.published()).toBe("The answer holds.");
-  });
-});
-
 describe("the tools a native run is offered by kind", () => {
   const secrets: RunSecretSource = { list: vi.fn(async () => []), read: vi.fn() };
   const native = (memory: ReturnType<typeof memoryNativeEngine>): NativeEngineHandlerDeps => ({
@@ -667,6 +640,48 @@ describe("a native run interrupted before any answer text", () => {
     expect(run.history.some((item) => item.type === "tool_call" && item.callId === "call-1")).toBe(false);
     expect(run.callTool).toHaveBeenCalledTimes(1);
     expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.not.objectContaining({ approval: expect.anything() }));
+  });
+});
+
+// Regression: a follow-up sent after a stopped step of an answer review recorded before the feature's removal hangs from
+// that hidden step, so restoring stopped answers put the reviewer's critique back into the model's history.
+describe("a stopped step of a recorded answer review", () => {
+  const write = { arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" };
+  const critique = "Review: the total is 41, not 42.";
+
+  it("stays out of the next turn's history while its unknown write still waits for the user", async () => {
+    const step: TranscriptItem[] = [
+      { id: "rv1", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: critique },
+      { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "rv2", kind: "tool_call", name: write.name, origin: NATIVE_RUN_ORIGIN }
+    ];
+    // The context as the collapse reads it: the question and the reviewed answer, then the run's own message.
+    const messages = [...conversationMessagesFromPathRows([
+      { chatId: "chat", messageContent: textMessageContent("Check the total"), messageId: "user-1", messageRole: "user",
+        messageStatus: "complete" },
+      { chatId: "chat", messageContent: textMessageContent("The total is 42."), messageId: "answer-1", messageParentId: "user-1",
+        messageRole: "assistant", messageStatus: "complete" }
+    ]), nativeSay("current-user-message", "user", "And the median?")];
+    const { adapter, requests } = scriptedNativeAdapter([{ calls: [write] }, { text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.loadRuns.mockImplementation(async ({ runIds }) =>
+      new Map(runIds.map((runId): [string, TranscriptItem[]] => [runId, runId === "run-review" ? step : []])));
+    // As the database answers it: the stopped review answer is the parent of this turn.
+    memory.transcripts.nativeRunsBeforeTurns.mockResolvedValue([{ assistantMessageId: "review-1", nextUserMessageId: "next-1",
+      reviewStep: true, runId: "run-review" }]);
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2",
+      userMessageId: "next-1" }, engine: memory.engine,
+    mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+    prepared: nativePrepared({ context: { messages, mode: "branch_path" }, mcp: NATIVE_MCP_SNAPSHOT,
+      // Always allow: only the guard can hold the write back.
+      mcpApproval: mcpApprovalAdmission(["jira"]) }),
+    repository: asRepository(nativeRunRepository()), services: {}, userId: "owner" }));
+    const history = requests[0]!.history!;
+    expect(JSON.stringify(history)).not.toContain(critique);
+    expect(history.some((item) => item.type === "tool_call" && item.callId === "call-1")).toBe(false);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(),
+      toolName: write.name }));
   });
 });
 

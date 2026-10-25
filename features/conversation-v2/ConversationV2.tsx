@@ -56,9 +56,6 @@ export type ConversationMessageActionsV2 = Readonly<{
   onRegenerate?(): void;
   /** "Report a problem…" to administrators; lives in the More menu of settled answers. */
   onReportProblem?(): void;
-  /** "Review…" with another model; lives in the More menu, disabled with its reason. */
-  onReview?(): void;
-  reviewDisabledReason?: string | null;
   /** This answer is the one speaking: the menu item offers Stop reading. */
   readingAloud?: boolean;
   regenerateDisabled?: boolean;
@@ -261,10 +258,9 @@ export function ConversationTurnV2({
   const editing = isUser && Boolean(edit);
   const hasActions = Boolean(
     actions?.onBranchFromHere || actions?.onCopy || actions?.onDelete ||
-    actions?.onEdit || actions?.onMore || actions?.onReadAloud || actions?.onRegenerate || actions?.onReportProblem ||
-    actions?.onReview
+    actions?.onEdit || actions?.onMore || actions?.onReadAloud || actions?.onRegenerate || actions?.onReportProblem
   );
-  const hasMoreMenu = Boolean(actions?.onDelete || actions?.onBranchFromHere || actions?.onReadAloud || actions?.onReview ||
+  const hasMoreMenu = Boolean(actions?.onDelete || actions?.onBranchFromHere || actions?.onReadAloud ||
     actions?.onReportProblem);
   const label = ariaLabel ?? (isUser ? "Question" : "Answer");
   const bubbleClampCandidate = isUser && shouldClampUserBubbleV2(content);
@@ -528,19 +524,6 @@ export function ConversationTurnV2({
                       {actions.readingAloud ? "Stop reading" : "Read aloud"}
                     </UiV2MenuItem>
                   ) : null}
-                  {actions.onReview ? (
-                    <UiV2MenuItem
-                      disabled={Boolean(actions.reviewDisabledReason)}
-                      icon="shield"
-                      sub={actions.reviewDisabledReason ?? undefined}
-                      onClick={() => {
-                        closeMoreMenu();
-                        actions.onReview?.();
-                      }}
-                    >
-                      Review…
-                    </UiV2MenuItem>
-                  ) : null}
                   {/* Never disabled: a report concerns this settled answer only. */}
                   {actions.onReportProblem ? (
                     <UiV2MenuItem
@@ -553,7 +536,7 @@ export function ConversationTurnV2({
                       Report a problem…
                     </UiV2MenuItem>
                   ) : null}
-                  {(actions.onBranchFromHere || actions.onReadAloud || actions.onReview || actions.onReportProblem) &&
+                  {(actions.onBranchFromHere || actions.onReadAloud || actions.onReportProblem) &&
                     actions.onDelete ? <UiV2MenuSeparator /> : null}
                   {actions.onDelete ? (
                     <UiV2MenuItem

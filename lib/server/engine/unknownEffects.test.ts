@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptItem, TranscriptUserItem } from "./transcript";
-import { unknownEffectsOf, withRetiredEffects } from "./unknownEffects";
+import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 
 const create = (callId: string, title = "one issue"): TranscriptItem =>
   ({ arguments: JSON.stringify({ title }), callId, id: `call-${callId}`, kind: "tool_call", name: "mcp_jira_create" });
@@ -96,5 +96,16 @@ describe("unknown effects the old core left on a branch", () => {
     const withFollowup = withRetiredEffects([branch[0]!, question("f1"), ...branch.slice(1)],
       [messages[0]!, { contextTurnId: "q1", id: "f1", role: "user" }, ...messages.slice(1)], retired("q1"));
     expect(withFollowup.map((item) => item.id).slice(0, 5)).toEqual(["msg-q1", "msg-f1", "msg-a1", "call-r1", "result-r1-unknown"]);
+  });
+
+  it("puts a hidden review step's calls, never its text, before the turn that followed it", () => {
+    const step = [{ id: "critique", kind: "assistant_text", text: "x" } as TranscriptItem, create("s1")];
+    const items = withHiddenRunEffects(branch, [{ beforeItemId: "msg-current", items: step }]);
+    expect(items.map((item) => item.id).slice(-2)).toEqual(["call-s1", "msg-current"]);
+    // Cut off before the user's words: unknown, and spoken since.
+    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ userSpokeSince: true });
+    // A turn the conversation does not hold puts them last, unspoken.
+    expect(withHiddenRunEffects(branch, [{ beforeItemId: "msg-gone", items: step }]).map((item) => item.id).at(-1)).toBe("call-s1");
+    expect(withHiddenRunEffects(branch, [])).toEqual(branch);
   });
 });

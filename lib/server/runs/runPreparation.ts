@@ -79,7 +79,6 @@ import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import { skillSaveToolsForRequest } from "../tools/skillSave";
-import { answerReviewToolsForRequest, type AnswerReviewStepMarker } from "../tools/answerReview";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
 import {
@@ -108,6 +107,7 @@ import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { skillToolsForRequest } from "../tools/skill";
 import { AGENT_MODE_REMOVED, isRetiredAgentRequest } from "./retiredAgent";
+import { ANSWER_REVIEW_REMOVED, requestsAnswerReview } from "./retiredAnswerReview";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { applyProviderRequestContextBudget } from "./requestContextBudget";
 import {
@@ -270,16 +270,7 @@ export type RunPreparationDeps = Readonly<{
   workspace?: WorkspaceAdmissionService;
 }>;
 
-/**
- * Server-only: the answer review step a send admits (never a request field).
- * Its run reads its session's full chain, offers the step's report tool and
- * none of the owner's write exceptions, and needs a tool-calling model.
- */
-export type AnswerReviewStepPreparation = Readonly<Omit<AnswerReviewStepMarker, "modelName" | "version">>;
-
 export type SendRunPreparationSource = Readonly<{
-  /** Server-only: the answer review step this send admits. */
-  answerReviewStep?: AnswerReviewStepPreparation;
   chat: Readonly<{
     activeLeafMessageId: string | null;
     assistantId?: string | null;
@@ -1062,11 +1053,12 @@ export async function prepareRun(
   // occurrence, a regeneration by the task that posted the prompt (never in a branch copy).
   const scheduledMemoryRead = scheduledOccurrence ? scheduledOccurrence.memory === true
     : input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskMemory === true;
-  // An answer review step's run: a turn the server wrote, answered by the step's model.
-  const answerReviewStep = input.source.kind === "send" ? input.source.answerReviewStep : undefined;
   // The Codex Agent mode is removed (operator decision 2026-10-23): a client
   // that still asks for it is refused visibly, never answered without it.
   if (body?.agentEnabled !== undefined && body.agentEnabled !== false) return failure(AGENT_MODE_REMOVED, 409);
+  // So is Answer Review (operator decision 2026-10-25): a tab of the previous
+  // release that still asks for automatic review is told to reload.
+  if (requestsAnswerReview(body)) return failure(ANSWER_REVIEW_REMOVED, 409);
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
@@ -1075,8 +1067,6 @@ export async function prepareRun(
   // unbound chat or repeat the binding.
   const assistantSource = chatAssistantSource(body, chat);
   if (!assistantSource.ok) return failure(assistantSource.code, assistantSource.status);
-  // The Assistant fixes the model.
-  if (answerReviewStep && assistantSource.assistantId) return failure("answer_review_assistant_unsupported", 409);
 
   let assistantRun: AssistantRunMaterialization | null = null;
   let chatAssistant: ChatAssistantAdmission | null = null;
@@ -1341,8 +1331,7 @@ export async function prepareRun(
         : await deps.repository.loadConversationContextForExpectedLeaf(
             chat.id,
             input.userId,
-            input.source.chat.activeLeafMessageId,
-            { answerReviewSessionId: answerReviewStep?.sessionId ?? null }
+            input.source.chat.activeLeafMessageId
           )
       : null;
   if (input.source.kind === "send" && !branchContext) {
@@ -1371,11 +1360,6 @@ export async function prepareRun(
         );
   const skillToolsSupported = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
-  // A step reports through its built-in tool: a model that cannot call it is refused before anything is accepted.
-  if (answerReviewStep && (body?.tools === "none" || modelCapabilities.toolCalling !== true ||
-    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) !== true)) {
-    return failure("answer_review_model_unsupported", 409, "This model can't use tools, so it can't take part in a review.");
-  }
   // A monitoring check reports its outcome through one built-in tool, frozen
   // only from the server-only occurrence of a monitoring task. A check that
   // could not call it is refused before anything is accepted.
@@ -1522,14 +1506,14 @@ export async function prepareRun(
   // initiating user's effective image model. An unusable model is never
   // substituted: the run gets no image tool and the answer model is told why.
   // An installation without image generation stays silent.
-  const imageResolution = !answerReviewStep && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+  const imageResolution = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
     ? await deps.images?.resolveFor({ kind: "personal", userId: input.userId }) ?? null : null;
   const imagePlan = imageResolution?.ok ? imageResolution.plan : null;
   const imageUnavailableGuidance = imageResolution && !imageResolution.ok && imageResolution.reason !== "not_configured"
     ? imageGenerationUnavailableGuidance({ reason: imageResolution.reason, source: imageResolution.source })
     : null;
-  const artifactToolAvailable = !answerReviewStep && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
+  const artifactToolAvailable = resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   const artifactResourcePolicy = artifactToolAvailable ? getArtifactResourcePolicy() : undefined;
   const artifactToolDescription = artifactResourcePolicy ? describeArtifactTool(artifactResourcePolicy) : undefined;
@@ -1802,7 +1786,7 @@ export async function prepareRun(
   // Memory only when this run itself was admitted to read it: an eligible
   // chat, and the owner's Memory on (search admission, which every run that
   // may create a task attempts, reads exactly that).
-  const scheduledTaskSettings = !scheduledPromptAnswer && !answerReviewStep && !assistantRun &&
+  const scheduledTaskSettings = !scheduledPromptAnswer && !assistantRun &&
     resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
@@ -1820,7 +1804,7 @@ export async function prepareRun(
   // Workspace folder per answer as a personal Skill (operator exception,
   // 2026-10-07). Never an answer to a scheduled task's prompt, a temporary or
   // Assistant run: there the tool is absent, not refused late.
-  const skillSaveTool = !scheduledPromptAnswer && !answerReviewStep && !assistantRun &&
+  const skillSaveTool = !scheduledPromptAnswer && !assistantRun &&
     resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
     typeof deps.repository.saveSkillForCall === "function" && modelCapabilities.toolCalling === true &&
       toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
@@ -1860,9 +1844,7 @@ export async function prepareRun(
     if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
       instructionIds.add(input.source.source.userMessage.id);
     }
-    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds),
-      // A step's own turn is the server's text too.
-      ...(answerReviewStep ? [currentSendMessageId] : [])]);
+    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds)]);
     const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
     const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
     fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
@@ -1885,14 +1867,7 @@ export async function prepareRun(
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
         serverIds: approvalServerIds, userId: input.userId }) ?? [])
     : undefined;
-  // The step's facts, frozen with the admitted model's display name for its card and the transcript.
-  const answerReviewStepMarker: AnswerReviewStepMarker | undefined = answerReviewStep ? {
-    ...answerReviewStep,
-    modelName: Array.from(admissionPlan.answer.snapshot.modelDisplayName.trim() || "Model").slice(0, 160).join(""),
-    version: 1
-  } : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
-    ...(answerReviewStepMarker ? { answerReviewStep: answerReviewStepMarker } : {}),
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
     toolObservationVersion,
@@ -1986,7 +1961,6 @@ export async function prepareRun(
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
-    ...answerReviewToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskManagementToolsForRequest(baseNormalizedRequest),
     ...skillSaveToolsForRequest(baseNormalizedRequest),
@@ -2047,8 +2021,7 @@ export async function prepareRun(
   // Assistant-derived values never overwrite the user's ordinary manual
   // defaults or the chat's ordinary default columns, so an Assistant run
   // persists no accepted-defaults update; its chat changes are overrides.
-  // Nor does a review step: its model is the step's, not a composer choice.
-  const defaults: PreparedRunDefaultsData | null = assistantRun || answerReviewStep
+  const defaults: PreparedRunDefaultsData | null = assistantRun
     ? null
     : {
         controlDefaults: runControlDefaultsFromBody(body, parameterControls),

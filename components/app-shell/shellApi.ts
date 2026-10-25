@@ -246,7 +246,6 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     : null;
 
   return {
-    ...(message.answerReview ? { answerReview: message.answerReview } : {}),
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
     citationMessageId: message.citationMessageId ?? null,
@@ -283,8 +282,6 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     ...(chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
-    // Always present, so a merged summary never keeps a stale choice.
-    answerReview: chat.answerReview,
     ...(chat.assistantId !== undefined ? { assistantId: chat.assistantId } : {}),
     createdAt: chat.createdAt,
     ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),

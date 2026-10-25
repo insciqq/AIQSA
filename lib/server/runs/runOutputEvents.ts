@@ -20,12 +20,6 @@ import { decodeThreadSearchActivitySnapshot, type ThreadSearchActivitySnapshot }
 import { decodeScheduledTaskCard, type ScheduledTaskCard } from "../../contracts/scheduledTasks";
 import { decodeSkillSaveCard, type SkillSaveCard } from "../../contracts/skillSaves";
 import { decodeResourceChangeCard, type ResourceChangeCard } from "../../contracts/resourceChanges";
-import {
-  decodeAnswerReviewCard,
-  decodeAnswerReviewDecisionsCard,
-  type AnswerReviewCard,
-  type AnswerReviewDecisionsCard
-} from "../../contracts/answerReviews";
 
 type RunOutputGeneratedArtifact = {
   byteSize?: number;
@@ -51,10 +45,6 @@ export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "skill_save"; payload: SkillSaveCard } }
   /** A change to, or a proposal about, the user's own secret, Skill or Assistant, as its call left it. */
   | { type: "artifact"; data: { artifactType: "resource_change"; payload: ResourceChangeCard } }
-  /** A review step's review, as its `submit_answer_review` call left it. */
-  | { type: "artifact"; data: { artifactType: "answer_review"; payload: AnswerReviewCard } }
-  /** A revision step's decisions, as its `record_review_decisions` call left them. */
-  | { type: "artifact"; data: { artifactType: "answer_review_decisions"; payload: AnswerReviewDecisionsCard } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
@@ -237,16 +227,6 @@ export function projectRunOutputArtifactEvent(
     return payload ? { type: "artifact", data: { artifactType: "resource_change", payload } } : null;
   }
 
-  if (event.data.artifactType === "answer_review") {
-    const payload = decodeAnswerReviewCard(event.data.payload);
-    return payload ? { type: "artifact", data: { artifactType: "answer_review", payload } } : null;
-  }
-
-  if (event.data.artifactType === "answer_review_decisions") {
-    const payload = decodeAnswerReviewDecisionsCard(event.data.payload);
-    return payload ? { type: "artifact", data: { artifactType: "answer_review_decisions", payload } } : null;
-  }
-
   if (event.data.artifactType === "workspace_checkpoint") {
     const payload = decodeThreadWorkspaceCheckpointOutput(event.data.payload);
     return payload ? { type: "artifact", data: { artifactType: "workspace_checkpoint", payload } } : null;
@@ -333,14 +313,6 @@ export function isRunOutputArtifactEvent(
   }
   if (event.data.artifactType === "skill_save") {
     const decoded = decodeSkillSaveCard(event.data.payload);
-    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
-  }
-  if (event.data.artifactType === "answer_review") {
-    const decoded = decodeAnswerReviewCard(event.data.payload);
-    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
-  }
-  if (event.data.artifactType === "answer_review_decisions") {
-    const decoded = decodeAnswerReviewDecisionsCard(event.data.payload);
     return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
   }
   if (event.data.artifactType !== "search" || !isRecord(event.data.payload) ||

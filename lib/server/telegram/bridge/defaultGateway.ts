@@ -23,8 +23,8 @@ import { telegramRequestAuth } from "./requestAuth";
 
 /**
  * The bridge's AIQSA operations in this process, through the product's own
- * handlers exactly as the browser reaches them (and as scheduled tasks and
- * answer review admit their runs): a synthetic request as the linked user,
+ * handlers exactly as the browser reaches them (and as scheduled tasks admit
+ * their runs): a synthetic request as the linked user,
  * whose resolver re-reads the account and re-checks Telegram access on every
  * call (the handler calls it again during preparation). The session it
  * presents is `telegram`, never a browser session.

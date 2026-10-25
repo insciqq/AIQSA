@@ -44,7 +44,6 @@ export function serializeChatUpdate(
       role: message.role,
       status: message.status,
       ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
-      ...(message.answerReview ? { answerReview: message.answerReview } : {}),
       ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
       toolActivity: message.toolActivity ?? null,
       workspaceActivity: message.workspaceActivity ?? null

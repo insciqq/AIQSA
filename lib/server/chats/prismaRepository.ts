@@ -16,13 +16,13 @@ import {
 } from "../../contracts/scheduledTasks";
 import { foldSkillSaveCards } from "../../contracts/skillSaves";
 import { foldResourceChangeCards } from "../../contracts/resourceChanges";
+import { isMessageSystemTurnKind } from "../../contracts/mcpApprovals";
 import {
-  foldAnswerReviewCards,
-  foldAnswerReviewDecisionsCards,
-  type AnswerReviewMessageWire
-} from "../../contracts/answerReviews";
-import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answerReviews/repository";
-import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
+  collapseChatAnswerReviewTree,
+  isAnswerReviewStepToolCall,
+  loadAnswerReviewSessions
+} from "./legacyAnswerReviews";
+import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
 import { mcpApprovalGated } from "../runs/mcpApprovalGate";
 import { unknownToolCall } from "../runs/unknownToolCall";
@@ -271,10 +271,7 @@ const hydratedMessageSelect = {
     where: { scheduledOccurrenceId: { not: null } }
   },
   status: true,
-  systemTurnKind: true,
-  answerReviewRound: true,
-  answerReviewSessionId: true,
-  answerReviewStep: true
+  systemTurnKind: true
 } satisfies Prisma.MessageSelect;
 
 const chatSummarySelect = {
@@ -289,7 +286,6 @@ const chatSummarySelect = {
     }
   },
   activeLeafMessageId: true,
-  answerReviewConfig: true,
   assistantId: true,
   createdAt: true,
   defaultSearchPlan: true,
@@ -353,12 +349,12 @@ type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
 }>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
 type HydratedMessagePath = Readonly<{
-  /** Each message of an answer review session, with its session and step. */
-  answerReviews: ReadonlyMap<string, AnswerReviewMessageWire>;
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>;
   messages: HydratedMessageRow[];
+  /** The parent each message reads as on the visible branch (`loadActiveBranchPath`). */
+  parents: ReadonlyMap<string, string | null>;
   scheduledTasks: CurrentScheduledTasks;
 }>;
 /**
@@ -449,7 +445,10 @@ type ActiveBranchMessage = Readonly<{ id: string; parentMessageId: string | null
  * The active branch from its root to the leaf, walked in PostgreSQL along
  * the leaf's ancestors only, so other branches and every body stay unread. A
  * walk that ends before a root (a missing ancestor, or a cycle cut at the
- * chat's message count) yields no branch.
+ * chat's message count) yields no branch. An answer review recorded before
+ * the feature's removal reads as its question and latest version: its steps
+ * leave the branch, the version hangs from the question, and a leaf that is
+ * a step ends the branch at the version standing for it.
  */
 async function loadActiveBranchPath(
   tx: Prisma.TransactionClient,
@@ -457,30 +456,46 @@ async function loadActiveBranchPath(
   activeLeafMessageId: string | null
 ): Promise<ActiveBranchMessage[]> {
   if (!activeLeafMessageId) return [];
-  const rows = await tx.$queryRaw<ActiveBranchMessage[]>(Prisma.sql`
+  const rows = await tx.$queryRaw<Array<ActiveBranchMessage & {
+    answerReviewSessionId: string | null;
+    status: string;
+    systemTurnKind: string | null;
+  }>>(Prisma.sql`
     WITH RECURSIVE "bound" AS MATERIALIZED (
       SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
     ), "path" AS (
-      SELECT message."id", message."parentMessageId", message."role", 0 AS "depth"
+      SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
+        message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind", 0 AS "depth"
       FROM "Message" AS message
       WHERE message."chatId" = ${chatId} AND message."id" = ${activeLeafMessageId}
       UNION ALL
-      SELECT parent."id", parent."parentMessageId", parent."role", path."depth" + 1
+      SELECT parent."id", parent."parentMessageId", parent."role", parent."status", parent."answerReviewSessionId",
+        parent."systemTurnKind", path."depth" + 1
       FROM "path" AS path
       CROSS JOIN "bound"
       -- One primary-key probe per step; a join would re-read the chat's
       -- messages on every step of the walk.
       CROSS JOIN LATERAL (
-        SELECT message."id", message."parentMessageId", message."role"
+        SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
+          message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind"
         FROM "Message" AS message
         WHERE message."id" = path."parentMessageId" AND message."chatId" = ${chatId}
         LIMIT 1
       ) AS parent
       WHERE path."depth" < "bound"."messages"
     )
-    SELECT "id", "parentMessageId", "role" FROM "path" ORDER BY "depth" DESC
+    SELECT "id", "parentMessageId", "role", "status", "answerReviewSessionId", "systemTurnKind" FROM "path" ORDER BY "depth" DESC
   `);
-  return rows[0]?.parentMessageId === null ? rows : [];
+  if (rows[0]?.parentMessageId !== null) return [];
+  const sessionIds = rows.flatMap((row) => row.answerReviewSessionId ?? []);
+  const collapse = collapseAnswerReviews(rows.map((row) => ({ answerReviewSessionId: row.answerReviewSessionId, id: row.id,
+    parentId: row.parentMessageId, role: row.role, status: row.status, systemTurnKind: row.systemTurnKind })),
+  sessionIds.length > 0 ? await loadAnswerReviewSessions(tx, chatId, sessionIds) : []);
+  return rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{
+    id: row.id,
+    parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId,
+    role: row.role
+  }]);
 }
 
 type ChatHistoryCursor = {
@@ -579,16 +594,17 @@ function pageCursor(input: {
 async function hydrateMessagePath(
   tx: Prisma.TransactionClient,
   chatId: string,
-  messages: Array<{ id: string }>,
+  messages: readonly ActiveBranchMessage[],
   userId: string
 ): Promise<HydratedMessagePath> {
+  const parents = new Map(messages.map((message) => [message.id, message.parentMessageId]));
   if (messages.length === 0) {
     return {
-      answerReviews: new Map(),
       memoryActionsByRun: new Map(),
       memorySourcesByRun: new Map(),
       memoryStatusesByRun: new Map(),
       messages: [],
+      parents,
       scheduledTasks: new Map()
     };
   }
@@ -610,20 +626,14 @@ async function hydrateMessagePath(
       : message.branchSourceModelRun?.id
         ? [message.branchSourceModelRun.id]
         : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, answerReviews] = await Promise.all([
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
     loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
-      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
-    loadAnswerReviewProjection(tx, { chatId, messages: ordered.map((message) => ({
-      answerReviewRound: message.answerReviewRound, answerReviewSessionId: message.answerReviewSessionId,
-      answerReviewStep: message.answerReviewStep, id: message.id, parentMessageId: message.parentMessageId, role: message.role,
-      stepModelName: answerReviewStepModelName(message.assistantModelRuns[0]?.normalizedRequest),
-      systemTurnKind: message.systemTurnKind
-    })), viewerUserId: userId })
+      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId)
   ]);
-  return { answerReviews, memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, scheduledTasks };
+  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, parents, scheduledTasks };
 }
 
 /** The reader's current tasks among those the given answers' cards name; one read per page, none without cards. */
@@ -828,7 +838,8 @@ function serializeHydratedMessage(
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>,
   viewerUserId: string,
   scheduledTasks: CurrentScheduledTasks,
-  answerReviews: ReadonlyMap<string, AnswerReviewMessageWire> = new Map()
+  /** The parent each message reads as on the visible branch; its own parent when absent. */
+  parents: ReadonlyMap<string, string | null> = new Map()
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
@@ -846,9 +857,7 @@ function serializeHydratedMessage(
         message.assistantModelRuns.length ? viewerUserId : undefined
       )
     : null;
-  const answerReview = answerReviews.get(message.id);
   return {
-    ...(answerReview ? { answerReview } : {}),
     ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
@@ -869,7 +878,7 @@ function serializeHydratedMessage(
     id: message.id,
     modelId: message.modelId,
     modelRunId: modelRun?.id ?? null,
-    parentMessageId: message.parentMessageId,
+    parentMessageId: parents.has(message.id) ? parents.get(message.id) ?? null : message.parentMessageId,
     provider: message.provider,
     role: message.role,
     ...(scheduledRun ? { scheduledTask: {
@@ -877,7 +886,7 @@ function serializeHydratedMessage(
     } } : {}),
     ...(isScheduledTaskCheckOutcome(scheduledOutcome) ? { scheduledOutcome } : {}),
     status: message.status,
-    ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
+    ...(isMessageSystemTurnKind(message.systemTurnKind) ? { systemTurnKind: message.systemTurnKind } : {}),
     toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
   };
@@ -897,6 +906,15 @@ function chatWorkspaceProjection(input: Readonly<{
   });
 }
 
+/**
+ * The message the chat's leaf reads as: the visible branch's last message,
+ * which stands for a leaf that is a step of an answer review recorded before
+ * the feature's removal. A history cursor keeps the stored leaf.
+ */
+function visibleLeafMessageId(path: readonly ActiveBranchMessage[], activeLeafMessageId: string | null): string | null {
+  return path.at(-1)?.id ?? activeLeafMessageId;
+}
+
 function serializeChatDetail(input: {
   viewerUserId: string;
   availability: WorkspaceAvailabilityService;
@@ -905,12 +923,13 @@ function serializeChatDetail(input: {
   hasOlder: boolean;
   usageStats: ChatUsageStats;
   messages: HydratedMessagePath;
+  /** See `visibleLeafMessageId`. */
+  visibleLeafMessageId: string | null;
   workspaceSnapshot: WorkspaceAvailabilitySnapshot;
 }): ChatDetailRecord {
   const chat = input.chat;
   return {
-    activeLeafMessageId: chat.activeLeafMessageId,
-    ...storedAnswerReview(chat.answerReviewConfig),
+    activeLeafMessageId: input.visibleLeafMessageId,
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
@@ -930,10 +949,10 @@ function serializeChatDetail(input: {
         input.messages.memoryStatusesByRun,
         input.viewerUserId,
         input.messages.scheduledTasks,
-        input.messages.answerReviews
+        input.messages.parents
       )),
     pageInfo: {
-      activeLeafMessageId: chat.activeLeafMessageId,
+      activeLeafMessageId: input.visibleLeafMessageId,
       beforeCursor: pageCursor({
         activeLeafMessageId: chat.activeLeafMessageId,
         beforeMessageId: input.messages.messages[0]?.id,
@@ -975,20 +994,6 @@ function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSou
     : {};
 }
 
-/** A chat's stored automatic review choice; one that no longer decodes reads as off. */
-function storedAnswerReview(value: Prisma.JsonValue | null): { answerReview?: AnswerReviewAutoConfig } {
-  const decoded = value === null ? null : decodeAnswerReviewAutoConfig(value);
-  return decoded ? { answerReview: decoded } : {};
-}
-
-function answerReviewJson(value: AnswerReviewAutoConfig | null): Prisma.InputJsonValue | typeof Prisma.DbNull {
-  return value === null ? Prisma.DbNull : {
-    enabled: value.enabled,
-    maxRounds: value.maxRounds,
-    reviewers: value.reviewers.map(({ modelId, provider }) => ({ modelId, provider }))
-  };
-}
-
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -998,7 +1003,6 @@ function serializeChatSummary(
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     ...importProjection(chat),
     activeLeafMessageId: chat.activeLeafMessageId,
-    ...storedAnswerReview(chat.answerReviewConfig),
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
@@ -1044,6 +1048,7 @@ function serializeArchivedChatDetail(input: {
   hasOlder: boolean;
   usageStats: ChatUsageStats;
   messages: HydratedMessagePath;
+  visibleLeafMessageId: string | null;
   workspaceSnapshot: WorkspaceAvailabilitySnapshot;
 }): ArchivedChatDetailRecord {
   if (input.chat.memoryMode === "TEMPORARY" || !input.chat.archived) {
@@ -1122,11 +1127,14 @@ function toolBudgetWarning(
 
 /** Safe activity plus initiator-only MCP references; no arguments, results, or raw events. */
 export function summarizeMessageRunToolActivity(
-  run: ToolActivityRun,
+  stored: ToolActivityRun,
   viewerUserId?: string
 ): ThreadToolActivity | null {
   // Agent actions have one JSONL-backed Workspace feed, including MCP/search.
-  if (isRecord(run.normalizedRequest) && isRecord(run.normalizedRequest.agent)) return null;
+  if (isRecord(stored.normalizedRequest) && isRecord(stored.normalizedRequest.agent)) return null;
+  // A version an answer review recorded before its removal shows its work, not its step's report.
+  const run = { ...stored, toolCalls: stored.toolCalls.filter((call) =>
+    !isAnswerReviewStepToolCall(stored.normalizedRequest, call.toolName)) };
   const descriptors = toolActivityDescriptors(run.normalizedRequest);
   const calls = run.toolCalls.map((call) => {
     // A call of a tool its round did not declare never ran: a plain failed
@@ -1428,11 +1436,6 @@ export function summarizeMessageRunArtifacts(
     .map(artifactInnerPayload));
   const mcpApprovals = projectMcpApprovalCards(run.mcpToolApprovals ?? [],
     { initiator: viewerUserId !== undefined && run.userId === viewerUserId });
-  // A review step's report: the first valid card of its run.
-  const answerReviews = foldAnswerReviewCards(artifactPayloads.filter((payload) => artifactType(payload) === "answer_review")
-    .map(artifactInnerPayload));
-  const answerReviewDecisions = foldAnswerReviewDecisionsCards(artifactPayloads
-    .filter((payload) => artifactType(payload) === "answer_review_decisions").map(artifactInnerPayload));
 
   // Only work the reader can open (reasoning or tool steps) earns a duration.
   const workDurationMs = reasoningTexts.length > 0 || (run.toolCalls?.length ?? 0) > 0
@@ -1451,8 +1454,6 @@ export function summarizeMessageRunArtifacts(
     skillSaves.length === 0 &&
     resourceChanges.length === 0 &&
     mcpApprovals.length === 0 &&
-    answerReviews.length === 0 &&
-    answerReviewDecisions.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     !grounding &&
@@ -1483,8 +1484,6 @@ export function summarizeMessageRunArtifacts(
     ...(skillSaves.length > 0 ? { skillSaves } : {}),
     ...(resourceChanges.length > 0 ? { resourceChanges } : {}),
     ...(mcpApprovals.length > 0 ? { mcpApprovals } : {}),
-    ...(answerReviews.length > 0 ? { answerReviews } : {}),
-    ...(answerReviewDecisions.length > 0 ? { answerReviewDecisions } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})
@@ -1922,6 +1921,7 @@ export function createPrismaChatRepository(
           hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
           usageStats,
           messages,
+          visibleLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
           workspaceSnapshot
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
@@ -1970,10 +1970,10 @@ export function createPrismaChatRepository(
                 messages.memoryStatusesByRun,
                 userId,
                 messages.scheduledTasks,
-                messages.answerReviews
+                messages.parents
               )),
             pageInfo: {
-              activeLeafMessageId: chat.activeLeafMessageId,
+              activeLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
               beforeCursor: pageCursor({
                 activeLeafMessageId: chat.activeLeafMessageId,
                 beforeMessageId: messages.messages[0]?.id,
@@ -2018,6 +2018,7 @@ export function createPrismaChatRepository(
             hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
             usageStats,
             messages,
+            visibleLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
             workspaceSnapshot
           })
         };
@@ -2106,10 +2107,10 @@ export function createPrismaChatRepository(
                 messages.memoryStatusesByRun,
                 userId,
                 messages.scheduledTasks,
-                messages.answerReviews
+                messages.parents
               )),
             pageInfo: {
-              activeLeafMessageId: chat.activeLeafMessageId,
+              activeLeafMessageId: visibleLeafMessageId(activeMessages, chat.activeLeafMessageId),
               beforeCursor: pageCursor({
                 activeLeafMessageId: chat.activeLeafMessageId,
                 beforeMessageId: messages.messages[0]?.id,
@@ -2132,13 +2133,17 @@ export function createPrismaChatRepository(
         });
         if (!chat) return null;
         const rows = await tx.$queryRaw<Array<{
+          answerReviewSessionId: string | null;
           id: string;
           parentMessageId: string | null;
           preview: string;
           role: "assistant" | "user";
           status: "cancelled" | "complete" | "error" | "queued" | "streaming";
+          systemTurnKind: string | null;
         }>>(Prisma.sql`
           SELECT
+            m."answerReviewSessionId",
+            m."systemTurnKind"::text AS "systemTurnKind",
             m."id",
             m."parentMessageId",
             LEFT(regexp_replace(COALESCE((
@@ -2159,12 +2164,21 @@ export function createPrismaChatRepository(
           WHERE m."chatId" = ${chatId}
           ORDER BY m."createdAt" ASC, m."id" ASC
         `);
+        // The graph reads as the transcript does: an answer review recorded before the feature's
+        // removal shows only its version, among its question's answers.
+        const collapse = await collapseChatAnswerReviewTree(tx, chatId, rows.map((row) => ({
+          answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
+          status: row.status, systemTurnKind: row.systemTurnKind
+        })), chat.activeLeafMessageId);
         const graph: ChatBranchGraphRecord = {
-          activeLeafMessageId: chat.activeLeafMessageId,
-          nodes: rows.map((row) => ({
-            ...row,
-            preview: boundedChatBranchPreview(row.preview)
-          })),
+          activeLeafMessageId: collapse.activeLeafId,
+          nodes: rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{
+            id: row.id,
+            parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId,
+            preview: boundedChatBranchPreview(row.preview),
+            role: row.role,
+            status: row.status
+          }]),
           snapshotUpdatedAt: chat.updatedAt
         };
         return graph;
@@ -2447,7 +2461,6 @@ export function createPrismaChatRepository(
     },
     updateChat: async ({
       activeLeafMessageId,
-      answerReview,
       assistantId,
       assistantOverrides,
       chatId,
@@ -2559,12 +2572,11 @@ export function createPrismaChatRepository(
         }
 
         const hasMetadataUpdate = defaultSearchPlan !== undefined ||
-          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined || answerReview !== undefined ||
+          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined ||
           Object.keys(assistantData).length > 0;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
               data: {
-                ...(answerReview !== undefined ? { answerReviewConfig: answerReviewJson(answerReview) } : {}),
                 ...assistantData,
                 ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
                 ...(pinned !== undefined ? { pinned } : {}),

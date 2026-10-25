@@ -146,12 +146,7 @@ import {
   type PreparingRunRecoveryResult
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
-import {
-  admitAnswerReviewInTransaction,
-  answerReviewMessageFields,
-  createAutoAnswerReviewSession,
-  createClaimingMessage
-} from "../answerReviews/admission";
+import { loadAnswerReviewPathView, type AnswerReviewPathView } from "../chats/legacyAnswerReviews";
 import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
@@ -1012,12 +1007,10 @@ export async function admitPreparingRunWithClient(
       // posts now, or a stored one marked so (in its chat or a branch copy).
       let scheduledPrompt: boolean;
 
-      const answerReviewStep = input.admissionKind === "NORMAL_SEND" ? input.answerReviewStep : undefined;
       if (input.admissionKind === "NORMAL_SEND") {
         if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
           throw new ActiveLeafConflictError();
         }
-        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, step: answerReviewStep, userId: input.userId });
         const chat = await tx.chat.findFirst({
           select: {
             _count: { select: { messages: true } },
@@ -1112,7 +1105,7 @@ export async function admitPreparingRunWithClient(
         // The prompt a scheduled run posts keeps that fact on the message
         // itself, committed with the run's scheduled origin.
         scheduledPrompt = input.scheduledOccurrence !== undefined;
-        const userMessage = await createClaimingMessage(answerReviewStep, () => tx.message.create({
+        const userMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
             content: json(input.content),
@@ -1124,13 +1117,11 @@ export async function admitPreparingRunWithClient(
             provider: input.provider,
             role: "user",
             ...(scheduledPrompt ? { scheduledTaskPrompt: true } : {}),
-            // A continuation after an MCP approval or an answer review step:
-            // the server's turn, never the user's speech.
+            // A continuation after an MCP approval: the server's turn, never the user's speech.
             ...(input.systemTurnKind ? { systemTurnKind: input.systemTurnKind } : {}),
-            ...answerReviewMessageFields(answerReviewStep, "user"),
             status: "complete"
           }
-        }));
+        });
         const assistantMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
@@ -1142,7 +1133,6 @@ export async function admitPreparingRunWithClient(
             parentMessageId: userMessage.id,
             provider: input.provider,
             role: "assistant",
-            ...answerReviewMessageFields(answerReviewStep, "assistant"),
             status: "streaming"
           }
         });
@@ -1234,11 +1224,22 @@ export async function admitPreparingRunWithClient(
         const preSendSourceMessageId = userLeafWithoutAssistant
           ? input.userMessageId
           : input.preSendAssistantMessageId;
-        if (!preSendSourceMessageId ||
-          lockedChat.activeLeafMessageId !== preSendSourceMessageId) {
+        // An answer review recorded before the feature's removal reads as its question and latest
+        // version: the chat's leaf may be a step that version stands for, and the version's stored
+        // parent is the revision request, while it answers the source question.
+        const leafMessageId = lockedChat.activeLeafMessageId;
+        let reviewedPath: AnswerReviewPathView | null | undefined;
+        const reviewed = async (): Promise<AnswerReviewPathView | null> => {
+          if (reviewedPath === undefined) {
+            reviewedPath = leafMessageId ? await loadAnswerReviewPathView(tx, input.chatId, leafMessageId) : null;
+          }
+          return reviewedPath;
+        };
+        if (!preSendSourceMessageId || (leafMessageId !== preSendSourceMessageId &&
+          (userLeafWithoutAssistant || (await reviewed())?.standInId !== preSendSourceMessageId))) {
           throw new ActiveLeafConflictError();
         }
-        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, userId: input.userId });
+        let reviewedVersion = false;
         if (userLeafWithoutAssistant) {
           const [sourceUser] = await tx.$queryRaw<Array<{
             scheduledTaskPrompt: boolean;
@@ -1282,8 +1283,10 @@ export async function admitPreparingRunWithClient(
               AND assistant."id" = ${preSendSourceMessageId}
             FOR SHARE OF assistant, user_message
           `);
+          reviewedVersion = source !== undefined && source.assistantParentId !== input.userMessageId &&
+            (await reviewed())?.parentOf(preSendSourceMessageId) === input.userMessageId;
           if (!source || source.assistantRole !== "assistant" || source.userRole !== "user" ||
-            source.assistantParentId !== input.userMessageId ||
+            (source.assistantParentId !== input.userMessageId && !reviewedVersion) ||
             memoryPreparingHash(source.userContent) !==
               memoryPreparingHash(input.normalizedRequest.content)) {
             throw new ActiveLeafConflictError();
@@ -1305,7 +1308,9 @@ export async function admitPreparingRunWithClient(
           }
         });
         assistantMessageId = assistantMessage.id;
-        preSendActiveLeafMessageId = preSendSourceMessageId;
+        // Memory checks that the answer replaced hangs from the question; a reviewed version does
+        // only as every reader sees it, so it counts as the question's own leaf.
+        preSendActiveLeafMessageId = reviewedVersion ? input.userMessageId : preSendSourceMessageId;
         userMessageId = input.userMessageId;
         admittedSourceSnapshot = await applyMemorySourceMutations(tx, {
           chat: lockedChat,
@@ -1363,14 +1368,9 @@ export async function admitPreparingRunWithClient(
           taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
           unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
           userId: input.userId, userMessageId });
-      } else if (!answerReviewStep) {
-        // Message limits count interactive admissions in a log that outlives
-        // the chat; a review step's server-written turn is not a message.
+      } else {
+        // Message limits count interactive admissions in a log that outlives the chat.
         await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
-      }
-      if (!scheduledOccurrence) {
-        await createAutoAnswerReviewSession(tx, { auto: input.answerReviewAuto, chatId: input.chatId,
-          sourceAssistantMessageId: assistantMessageId, userId: input.userId, userMessageId });
       }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
@@ -1399,8 +1399,8 @@ export async function admitPreparingRunWithClient(
         userId: input.userId
       });
       await insertRunPdfAdmissions(tx, input, run.id);
-      // An unattended scheduled send, like a review step's model, is not a composer choice of the owner.
-      if (input.defaults && !scheduledOccurrence && !answerReviewStep) {
+      // An unattended scheduled send is not a composer choice of the owner.
+      if (input.defaults && !scheduledOccurrence) {
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
       }
       if (input.deferredPdf || workspaceFollowup) {

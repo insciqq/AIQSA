@@ -100,15 +100,6 @@ import {
   type McpApprovalCard,
   type MessageSystemTurnKind
 } from "./mcpApprovals";
-import {
-  decodeAnswerReviewAutoConfig,
-  decodeAnswerReviewMessageWire,
-  foldAnswerReviewCards,
-  foldAnswerReviewDecisionsCards,
-  type AnswerReviewCard,
-  type AnswerReviewDecisionsCard,
-  type AnswerReviewMessageWire
-} from "./answerReviews";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -217,8 +208,6 @@ import { decodeThreadSearchEngineActivity, type ThreadSearchEngineActivity } fro
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
-  /** See `ChatMessageWire.answerReview`. */
-  answerReview?: AnswerReviewMessageWire;
   followups?: RunFollowupState;
   workspacePreparation?: true;
   workspaceSettling?: true;
@@ -275,10 +264,6 @@ export type ThreadArtifactSummary = {
   resourceChanges?: ResourceChangeCard[];
   /** MCP calls the answer's run refused for its initiator's approval; see `McpApprovalCard`. */
   mcpApprovals?: McpApprovalCard[];
-  /** A review step's review (`submit_answer_review`); see `AnswerReviewCard`. */
-  answerReviews?: AnswerReviewCard[];
-  /** A revision step's decisions on the findings (`record_review_decisions`). */
-  answerReviewDecisions?: AnswerReviewDecisionsCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
   sourcesTruncated?: true;
@@ -382,8 +367,6 @@ export type ThreadCitation = {
 };
 
 export type WorkspaceChatSummary = {
-  /** The chat's automatic answer review; absent is off. */
-  answerReview?: import("./answerReviews").AnswerReviewAutoConfig;
   titlePending?: boolean;
   hasContinuationSource?: boolean;
   /**
@@ -455,12 +438,6 @@ export type ChatDetail = WorkspaceChatSummary & {
 };
 
 export type ChatMessageWire = {
-  /**
-   * The message belongs to an answer review session: its source answer, or a
-   * step's server-written turn or that turn's answer. The transcript shows the
-   * session as one answer with its review history.
-   */
-  answerReview?: AnswerReviewMessageWire;
   followups?: RunFollowupState;
   workspacePreparation?: true;
   workspaceSettling?: true;
@@ -489,7 +466,7 @@ export type ChatMessageWire = {
   status: string;
   /**
    * A user message the server wrote for the user (the continuation after an
-   * MCP approval, an answer review step): never shown as the user's speech.
+   * MCP approval): never shown as the user's speech.
    */
   systemTurnKind?: MessageSystemTurnKind;
   toolActivity?: ThreadToolActivity | null;
@@ -642,8 +619,6 @@ export type CreateChatRequestWire = {
 };
 
 export type UpdateChatRequestWire = {
-  /** The chat's automatic answer review choice; null turns it off. */
-  answerReview?: import("./answerReviews").AnswerReviewAutoConfig | null;
   /** Binds the Assistant for the next messages; null removes it. Either clears the overrides. */
   assistantId?: string | null;
   assistantOverrides?: ChatAssistantOverridesPatch;
@@ -667,7 +642,7 @@ export type ChatRouteServerErrorCode =
   | MutationOriginErrorCode
   | ChatAssistantErrorCode
   | "active_run_in_progress"
-  | "answer_review_invalid"
+  | "answer_review_removed"
   | "archived_chat_cursor_invalid"
   | "chat_page_cursor_invalid"
   | "chat_page_stale"
@@ -1134,9 +1109,6 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const skillSaves = Array.isArray(value.skillSaves) ? foldSkillSaveCards(value.skillSaves) : undefined;
   const resourceChanges = Array.isArray(value.resourceChanges) ? foldResourceChangeCards(value.resourceChanges) : undefined;
   const mcpApprovals = Array.isArray(value.mcpApprovals) ? foldMcpApprovalCards(value.mcpApprovals) : undefined;
-  const answerReviews = Array.isArray(value.answerReviews) ? foldAnswerReviewCards(value.answerReviews) : undefined;
-  const answerReviewDecisions = Array.isArray(value.answerReviewDecisions)
-    ? foldAnswerReviewDecisionsCards(value.answerReviewDecisions) : undefined;
   const scheduledTasks = Array.isArray(value.scheduledTasks)
     ? decodeOptionalItems(value.scheduledTasks, decodeScheduledTaskCard, SCHEDULED_TASK_CARDS_LIMIT, (card) => card.taskId).items
     : undefined;
@@ -1159,8 +1131,6 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(skillSaves?.length ? { skillSaves } : {}),
     ...(resourceChanges?.length ? { resourceChanges } : {}),
     ...(mcpApprovals?.length ? { mcpApprovals } : {}),
-    ...(answerReviews?.length ? { answerReviews } : {}),
-    ...(answerReviewDecisions?.length ? { answerReviewDecisions } : {}),
     sources: sources.items,
     ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})
@@ -1342,8 +1312,6 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ? value.scheduledOutcome : undefined;
   if (value.scheduledOutcome !== undefined && scheduledOutcome === undefined) return null;
   if (value.systemTurnKind !== undefined && (!isMessageSystemTurnKind(value.systemTurnKind) || role !== "user")) return null;
-  const answerReview = value.answerReview === undefined ? undefined : decodeAnswerReviewMessageWire(value.answerReview);
-  if (answerReview === null) return null;
   if (
     !id ||
     citationMessageId === undefined ||
@@ -1360,7 +1328,6 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     return null;
   }
   return {
-    ...(answerReview ? { answerReview } : {}),
     ...(pdfPreparation ? { pdfPreparation } : {}),
     ...(followups ? { followups } : {}),
     ...(value.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
@@ -1439,8 +1406,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   );
   const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
   if (search && !search.ok) return null;
-  const answerReview = value.answerReview === undefined ? undefined : decodeAnswerReviewAutoConfig(value.answerReview);
-  if (answerReview === null) return null;
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const title = requiredString(value.title);
@@ -1466,7 +1431,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
 
   return {
     activeLeafMessageId,
-    ...(answerReview ? { answerReview } : {}),
     ...(assistantId !== undefined ? { assistantId } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),

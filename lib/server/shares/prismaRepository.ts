@@ -6,7 +6,7 @@ import {
   projectPublicShareSnapshot
 } from "../../domain/shareSnapshot";
 import { prisma } from "../prisma";
-import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
+import { collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
 import type { ShareRepository } from "./handlers";
 
@@ -48,17 +48,15 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           select: { id: true, ...messageFollowupSelect } });
         const followups = new Map(history.map(message => [message.id, projectMessageFollowups(message)]));
         // Only the shared leaf's own path is read: a review that went on past
-        // it (a later version) stays out. On that path each answer review reads
-        // as its answer: the latest version stands in the source answer's
-        // place; the review turns stay out of the snapshot.
+        // it (a later version) stays out. On that path each answer review
+        // recorded before the feature's removal reads as its answer: the
+        // latest version stands in the source answer's place; the review
+        // turns stay out of the snapshot.
         const path = getVisibleMessagePath(chat.messages.map((message) => ({ ...message, role: message.role as MessageRole })), leaf);
-        const sessions = path.some((message) => message.answerReviewSessionId)
-          ? await tx.answerReviewSession.findMany({ select: { id: true, sourceAssistantMessageId: true }, where: { chatId: chat.id } })
-          : [];
-        const collapse = collapseAnswerReviews(path.map((message) => ({
+        const collapse = await collapseChatAnswerReviews(tx, chat.id, path.map((message) => ({
           answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
           role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
-        })), sessions);
+        })));
         const snapshot = buildPublicShareSnapshot({
           activeLeafMessageId: collapse.replacements.get(leaf) ?? leaf,
           messages: path.filter((message) => !collapse.removed.has(message.id)).map((message) => ({

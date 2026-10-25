@@ -120,8 +120,9 @@ for (const viewport of [
       await expect(answer).not.toContainText(/Change the request parameters|Searching the web|Searched the web|mcp_synthetic/);
       const process = answer.getByTestId("tool-activity-disclosure");
       await process.locator(":scope > summary").click();
-      await expect(process.getByRole("listitem")).toHaveCount(8);
-      await expect(process.getByText("Used Repository Tools: search", { exact: true })).toHaveCount(7);
+      // Consecutive finished calls alike read as one row.
+      await expect(process.getByRole("listitem")).toHaveCount(2);
+      await expect(process.getByText("Used Repository Tools: search ×7", { exact: true })).toBeVisible();
       await expect(process.getByText("Web search: search failed", { exact: true })).toBeVisible();
       await process.locator(":scope > summary").click();
       const regenerate = answer.getByRole("region", { name: "Final answer not completed" }).getByRole("button", { name: "Regenerate", exact: true });
@@ -141,3 +142,67 @@ for (const viewport of [
     await page.screenshot({ path: testInfo.outputPath("tool-budget-synthesis.png") });
   });
 }
+
+test("a settled tool call stops spinning while a later round still runs (#61)", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const settleChatId = "synthetic-tool-settle-chat";
+  const settleRunId = "synthetic-tool-settle-run";
+  const stream = createGatedRunStreamFixture({
+    abortMessage: "Synthetic tool settle stream stopped", key: "tool-call-settle", notReadyError: "synthetic_stream_not_ready"
+  });
+  await stream.install(page, settleChatId);
+  const emit = (event: ModelRunSseEvent) => stream.emit(page, event.type, event.data);
+  const chat: ChatDetailWire = {
+    activeLeafMessageId: null, assistant: null, contextStats: { approximateActiveBranchInputTokens: 0 },
+    createdAt: timestamp, defaultModelId: "gpt-5.5", defaultProvider: "openai", folderId: null,
+    id: settleChatId, messageCount: 0, messages: [], pinned: false, title: "Settled tool steps", updatedAt: timestamp,
+    pageInfo: { activeLeafMessageId: null, beforeCursor: null, hasOlder: false, snapshotUpdatedAt: timestamp },
+    usageStats: null
+  };
+  await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
+  await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
+  await page.route(`**/api/model-runs/${settleRunId}`, (route) => route.fulfill({
+    json: { version: 1, run: { id: settleRunId, status: "streaming" } } satisfies RunOutcomeResponse
+  }));
+
+  await signInWithLocalToken(page, `/c/${settleChatId}`);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill(question);
+  await composer.press("Enter");
+  await stream.waitForRequestCount(page, 1);
+  await emit({ type: "run_start", data: { modelId: "gpt-5.5", provider: "openai", runId: settleRunId, status: "streaming" } });
+  await emit({ type: "message_start", data: { assistantMessageId: "settle-answer", userMessageId: "settle-question" } });
+  const call = (name: string, round: number, ordinal: number, settled?: "complete" | "error") => emit({ type: "artifact", data: {
+    artifactType: "tool_call", payload: { name, ordinal, origin: "mcp", round, serverName: "Repository Tools",
+      ...(settled ? { durationMs: 40, status: settled } : { status: "requested" }) }
+  } });
+  // Round 1 runs two calls that settle; round 2 starts one that is still running.
+  await call("search", 1, 0);
+  await call("list_files", 1, 1);
+  await call("list_files", 1, 1, "error");
+  await call("search", 1, 0, "complete");
+  await emit({ type: "artifact", data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } } });
+  // A settled web search gives the live answer its step list (MCP calls alone keep the one status line),
+  // as Workspace or Search work does in a real multi-round run.
+  await emit({ type: "artifact", data: { artifactType: "search_activity", payload: { engines: [
+    { complete: 1, engine: 1, error: 0, name: "OpenAI", requested: 1, settled: 1, skipped: 0 }
+  ] } } });
+  await emit({ type: "token", data: { delta: "Checking the repository files." } });
+  await call("read_file", 2, 0);
+
+  const disclosure = page.getByTestId("tool-activity-disclosure");
+  await expect(disclosure).toBeVisible();
+  if (await disclosure.getAttribute("open") === null) await disclosure.locator(":scope > summary").click();
+  const marks = disclosure.locator(".v2-answer-process-mark");
+  await expect(marks).toHaveCount(3);
+  await expect(marks.nth(0)).toHaveAttribute("data-status", "complete");
+  await expect(marks.nth(1)).toHaveAttribute("data-status", "error");
+  await expect(marks.nth(2)).toHaveAttribute("data-status", "running");
+  // Only the call that is really running animates among the steps.
+  await expect(marks.and(page.locator(".v2-spinner"))).toHaveCount(1);
+
+  await call("read_file", 2, 0, "complete");
+  await expect(marks.and(page.locator(".v2-spinner"))).toHaveCount(0);
+  await expect(marks.nth(2)).toHaveAttribute("data-status", "complete");
+});

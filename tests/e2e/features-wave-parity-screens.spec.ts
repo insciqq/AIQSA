@@ -23,8 +23,7 @@ import { createWriteApprovalFixture, startMutableMcpEndpoint } from "./support/m
  * test's output directory. Layout checks run after each pair of shots and fail
  * softly, so a broken layout fails the spec without hiding the remaining
  * shots. Speech, the microphone and speech to text are local stubs; no turn is
- * sent and nothing reaches a provider. The answer review surfaces need their
- * own fixture stand: answer-review-screens.spec.ts.
+ * sent and nothing reaches a provider.
  */
 
 test.use({
