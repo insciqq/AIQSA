@@ -19,8 +19,9 @@ import type { TelegramReceiptStore } from "./store/receipts";
  * Updates of one chat run strictly in order (at most 20 waiting; more get
  * one "busy" reply), at most 8 chats at a time. Every message and button is
  * checked against the sender's link and access before anything acts on it;
- * strangers learn only that the bot serves this AIQSA's users, at most once
- * an hour. Later features plug in through the handler registry.
+ * strangers learn only that the bot serves this AIQSA's users (or why their
+ * link code was refused), at most once an hour. Later features plug in
+ * through the handler registry.
  */
 
 export type TelegramBotSession = Readonly<{
@@ -74,7 +75,13 @@ export type TelegramStopHandler = (context: TelegramStopContext) => Promise<void
 
 /** The core account commands (`linking/commands.ts`). */
 export type TelegramLinkCommands = Readonly<{
-  start(context: Readonly<{ bot: TelegramBotSession; message: TelegramMessage; code: string }>): Promise<void>;
+  /**
+   * `/start <code>` from anyone: confirms a link itself and hands a refusal's text to `refuse`,
+   * which answers a stranger only as often as any other stranger message.
+   */
+  start(context: Readonly<{
+    bot: TelegramBotSession; message: TelegramMessage; code: string; refuse(text: string): Promise<void>;
+  }>): Promise<void>;
   unlink(context: Readonly<{ bot: TelegramBotSession; message: TelegramMessage; link: TelegramLinkRecord }>): Promise<void>;
   help(context: Readonly<{ bot: TelegramBotSession; message: TelegramMessage }>): Promise<void>;
   confirmUnlink(context: TelegramCallbackContext): Promise<TelegramCallbackReply>;
@@ -318,13 +325,25 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
     await say(session, chatId, telegramReasonText(code) ?? TELEGRAM_COPY.notLinked);
   }
 
-  /** The same answer for every stranger, at most once an hour per Telegram user. */
-  async function answerStranger(session: TelegramBotSession, telegramUserId: number, chatId: number): Promise<void> {
+  /**
+   * At most one answer an hour per Telegram user that is not linked from this chat: the same
+   * text for every stranger, or the refusal of a link code they sent.
+   */
+  async function answerStranger(
+    session: TelegramBotSession, telegramUserId: number, chatId: number, text: string = TELEGRAM_COPY.notLinked
+  ): Promise<void> {
     const at = now();
     const last = unknownReplies.get(telegramUserId);
     if (last !== undefined && at - last < unknownInterval) return;
     remember(unknownReplies, telegramUserId, at);
-    await say(session, chatId, TELEGRAM_COPY.notLinked);
+    await say(session, chatId, text);
+  }
+
+  /** A refused `/start <code>`: the linked user always learns why; a stranger within the stranger limit. */
+  async function refuseStart(session: TelegramBotSession, telegramUserId: number, chatId: number, text: string): Promise<void> {
+    const link = await deps.links.findByTelegramUser(session.botId, telegramUserId);
+    if (link && link.telegramChatId === chatId) return say(session, chatId, text);
+    await answerStranger(session, telegramUserId, chatId, text);
   }
 
   async function handleMessage(updateId: number, message: TelegramMessage, session: TelegramBotSession): Promise<void> {
@@ -332,7 +351,9 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
     if (message.chat.type !== "private" || message.chat.id <= 0 || !sender || sender.is_bot) return;
     const command = parseTelegramCommand(message.text, session.botUsername);
     if (command?.name === "start" && command.args) {
-      await deps.commands.start({ bot: session, code: command.args, message });
+      await deps.commands.start({
+        bot: session, code: command.args, message, refuse: (text) => refuseStart(session, sender.id, message.chat.id, text)
+      });
       return;
     }
     const link = await deps.links.findByTelegramUser(session.botId, sender.id);

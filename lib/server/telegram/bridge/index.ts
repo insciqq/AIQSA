@@ -101,7 +101,9 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
     ...(deps.mergeWindowMs === undefined ? {} : { mergeWindowMs: deps.mergeWindowMs }),
     ...(deps.runWaitMs === undefined ? {} : { runWaitMs: deps.runWaitMs })
   });
-  const menus = createTelegramBridgeMenus({ conversation, gateway: deps.gateway, links: deps.links, messageRefs: deps.messageRefs, now });
+  const menus = createTelegramBridgeMenus({
+    access: deps.access, conversation, gateway: deps.gateway, links: deps.links, messageRefs: deps.messageRefs, now, sessions: deps.sessions
+  });
   const staleNotices = new Map<string, number>();
   const waitForRun = createTelegramRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) });
   /** The sweep in progress, and whether (and for which start) another one was asked for meanwhile. */

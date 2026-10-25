@@ -43,9 +43,9 @@ export type TelegramLinkingRepository = Readonly<{
   consumeCodeAndLink(input: Readonly<{
     codeHash: string; control: TelegramEffectiveControl; now: Date; target: TelegramLinkTarget;
   }>): Promise<TelegramLinkOutcome>;
-  /** Removes the user's link (its buttons, message references and run links go with it). */
+  /** Removes the user's link (its buttons, message references and run links go with it) and voids their unused codes. */
   unlink(userId: string): Promise<TelegramRemovedLink | null>;
-  /** Removes a link only while it is still the one the caller saw. */
+  /** Removes a link only while it is still the one the caller saw, voiding the user's unused codes with it. */
   unlinkLink(input: Readonly<{ linkId: string; userId: string }>): Promise<TelegramRemovedLink | null>;
 }>;
 
@@ -66,13 +66,26 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): TelegramLinkingRepository {
-  async function removeLink(where: Prisma.TelegramLinkWhereInput): Promise<TelegramRemovedLink | null> {
+  /**
+   * Disconnecting also voids the user's unused link codes, so a code minted before it cannot link
+   * another Telegram account afterwards. `always` voids them even when there was no link (the
+   * user's own or an administrator's disconnect); `with_link` only when the named link went (a
+   * stale `/unlink` button leaves the user's codes alone).
+   */
+  async function removeLink(
+    userId: string, where: Prisma.TelegramLinkWhereInput, voidCodes: "always" | "with_link"
+  ): Promise<TelegramRemovedLink | null> {
     return prisma.$transaction(async (tx) => {
+      // Same lock order as createCode and a /start: the account first, so a code made or redeemed
+      // concurrently either commits before this and is voided here, or waits and finds it gone.
+      await lockAccount(tx, userId);
       const link = await tx.telegramLink.findFirst({ select: { botId: true, id: true, telegramChatId: true }, where })
         .catch(retainDatabaseFailure);
-      if (!link) return null;
-      const removed = await tx.telegramLink.deleteMany({ where: { id: link.id } }).catch(retainDatabaseFailure);
-      return removed.count === 1 ? { botId: Number(link.botId), telegramChatId: Number(link.telegramChatId) } : null;
+      const removed = link ? await tx.telegramLink.deleteMany({ where: { id: link.id } }).catch(retainDatabaseFailure) : null;
+      if (voidCodes === "always" || removed?.count === 1) {
+        await tx.telegramLinkCode.deleteMany({ where: { consumedAt: null, userId } }).catch(retainDatabaseFailure);
+      }
+      return link && removed?.count === 1 ? { botId: Number(link.botId), telegramChatId: Number(link.telegramChatId) } : null;
     }).catch(retainDatabaseFailure);
   }
 
@@ -181,11 +194,11 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
     },
 
     unlink(userId) {
-      return removeLink({ userId });
+      return removeLink(userId, { userId }, "always");
     },
 
     unlinkLink(input) {
-      return removeLink({ id: input.linkId, userId: input.userId });
+      return removeLink(input.userId, { id: input.linkId, userId: input.userId }, "with_link");
     }
   });
 }

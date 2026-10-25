@@ -265,6 +265,30 @@ describe("Telegram link codes and links (stateful)", () => {
     await expect(repository.unlink(userId)).resolves.toBeNull();
   });
 
+  it("voids the user's unused code on every disconnect, with or without a link, but not on a stale /unlink button", async () => {
+    const { code, control, session, target, telegramUser, user } = fixture();
+    const userId = await user();
+    const sessionId = await session(userId);
+    // Disconnected with no link: the pending code cannot link anyone afterwards.
+    const pending = await code(userId, sessionId);
+    await expect(repository.unlink(userId)).resolves.toBeNull();
+    await expect(prisma.telegramLinkCode.count({ where: { codeHash: pending } })).resolves.toBe(0);
+    await expect(repository.consumeCodeAndLink({ codeHash: pending, control: control(), now: LATER, target: target(telegramUser()) }))
+      .resolves.toEqual({ code: "telegram_link_code_invalid", kind: "refused" });
+
+    const used = await code(userId, sessionId);
+    const linked = await repository.consumeCodeAndLink({ codeHash: used, control: control(), now: LATER, target: target(telegramUser()) });
+    if (linked.kind !== "linked") throw new Error("link refused");
+    const minted = await code(userId, sessionId);
+    // A stale button names a link that is no longer the user's: nothing changes.
+    await expect(repository.unlinkLink({ linkId: randomUUID(), userId })).resolves.toBeNull();
+    await expect(prisma.telegramLinkCode.count({ where: { codeHash: minted } })).resolves.toBe(1);
+    await expect(repository.unlinkLink({ linkId: linked.link.id, userId })).resolves.not.toBeNull();
+    await expect(prisma.telegramLinkCode.count({ where: { codeHash: minted } })).resolves.toBe(0);
+    // The consumed code stays as it was.
+    await expect(prisma.telegramLinkCode.findUniqueOrThrow({ where: { codeHash: used } })).resolves.toMatchObject({ consumedAt: LATER });
+  });
+
   it("enforces hashed codes, ordered expiry and private chats in the database", async () => {
     const { botId, session, user } = fixture();
     const userId = await user();
