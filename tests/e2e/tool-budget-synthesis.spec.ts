@@ -183,7 +183,11 @@ test("a settled tool call stops spinning while a later round still runs (#61)", 
   await call("list_files", 1, 1, "error");
   await call("search", 1, 0, "complete");
   await emit({ type: "artifact", data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } } });
-  // The model writes between rounds, so the answer's steps show as rows while the next round runs.
+  // A settled web search gives the live answer its step list (MCP calls alone keep the one status line),
+  // as Workspace or Search work does in a real multi-round run.
+  await emit({ type: "artifact", data: { artifactType: "search_activity", payload: { engines: [
+    { complete: 1, engine: 1, error: 0, name: "OpenAI", requested: 1, settled: 1, skipped: 0 }
+  ] } } });
   await emit({ type: "token", data: { delta: "Checking the repository files." } });
   await call("read_file", 2, 0);
 
@@ -195,10 +199,10 @@ test("a settled tool call stops spinning while a later round still runs (#61)", 
   await expect(marks.nth(0)).toHaveAttribute("data-status", "complete");
   await expect(marks.nth(1)).toHaveAttribute("data-status", "error");
   await expect(marks.nth(2)).toHaveAttribute("data-status", "running");
-  // Only the call that is really running animates.
-  await expect(disclosure.locator(".v2-spinner")).toHaveCount(1);
+  // Only the call that is really running animates among the steps.
+  await expect(marks.and(page.locator(".v2-spinner"))).toHaveCount(1);
 
   await call("read_file", 2, 0, "complete");
-  await expect(disclosure.locator(".v2-spinner")).toHaveCount(0);
+  await expect(marks.and(page.locator(".v2-spinner"))).toHaveCount(0);
   await expect(marks.nth(2)).toHaveAttribute("data-status", "complete");
 });
