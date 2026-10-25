@@ -643,6 +643,48 @@ describe("a native run interrupted before any answer text", () => {
   });
 });
 
+// Regression: a follow-up sent after a stopped step of an answer review recorded before the feature's removal hangs from
+// that hidden step, so restoring stopped answers put the reviewer's critique back into the model's history.
+describe("a stopped step of a recorded answer review", () => {
+  const write = { arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" };
+  const critique = "Review: the total is 41, not 42.";
+
+  it("stays out of the next turn's history while its unknown write still waits for the user", async () => {
+    const step: TranscriptItem[] = [
+      { id: "rv1", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: critique },
+      { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "rv2", kind: "tool_call", name: write.name, origin: NATIVE_RUN_ORIGIN }
+    ];
+    // The context as the collapse reads it: the question and the reviewed answer, then the run's own message.
+    const messages = [...conversationMessagesFromPathRows([
+      { chatId: "chat", messageContent: textMessageContent("Check the total"), messageId: "user-1", messageRole: "user",
+        messageStatus: "complete" },
+      { chatId: "chat", messageContent: textMessageContent("The total is 42."), messageId: "answer-1", messageParentId: "user-1",
+        messageRole: "assistant", messageStatus: "complete" }
+    ]), nativeSay("current-user-message", "user", "And the median?")];
+    const { adapter, requests } = scriptedNativeAdapter([{ calls: [write] }, { text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.loadRuns.mockImplementation(async ({ runIds }) =>
+      new Map(runIds.map((runId): [string, TranscriptItem[]] => [runId, runId === "run-review" ? step : []])));
+    // As the database answers it: the stopped review answer is the parent of this turn.
+    memory.transcripts.nativeRunsBeforeTurns.mockResolvedValue([{ assistantMessageId: "review-1", nextUserMessageId: "next-1",
+      reviewStep: true, runId: "run-review" }]);
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2",
+      userMessageId: "next-1" }, engine: memory.engine,
+    mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+    prepared: nativePrepared({ context: { messages, mode: "branch_path" }, mcp: NATIVE_MCP_SNAPSHOT,
+      // Always allow: only the guard can hold the write back.
+      mcpApproval: mcpApprovalAdmission(["jira"]) }),
+    repository: asRepository(nativeRunRepository()), services: {}, userId: "owner" }));
+    const history = requests[0]!.history!;
+    expect(JSON.stringify(history)).not.toContain(critique);
+    expect(history.some((item) => item.type === "tool_call" && item.callId === "call-1")).toBe(false);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(),
+      toolName: write.name }));
+  });
+});
+
 // Regression: a native answer's delivered follow-up and the text before it reached later turns twice, as the context's
 // follow-up messages and in the answer's own items.
 describe("a native answer that took follow-ups", () => {

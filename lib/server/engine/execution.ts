@@ -55,7 +55,7 @@ import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
 import { modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptTarget, type TranscriptUserItem } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
-import { unknownEffectsOf, withRetiredEffects } from "./unknownEffects";
+import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 
 /**
@@ -332,13 +332,17 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const nativeRuns = new Map(await engine.transcripts.nativeRunsForAnswers({ assistantMessageIds: answerIds,
           chatId: scope.chatId, userId: input.userId }));
         // A scheduled run's flat context is its prompt and previous shown result only.
-        const stoppedRuns = input.scheduled ? [] : (await engine.transcripts.nativeRunsBeforeTurns({ chatId: scope.chatId,
+        const beforeTurns = input.scheduled ? [] : (await engine.transcripts.nativeRunsBeforeTurns({ chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds })).filter((run) => !nativeRuns.has(run.assistantMessageId));
+        // A recorded answer review's stopped step stays off the branch; its calls still count for the effect guard below.
+        const stoppedRuns = beforeTurns.filter((run) => !run.reviewStep);
+        const hiddenSteps = beforeTurns.filter((run) => run.reviewStep);
         for (const run of stoppedRuns) nativeRuns.set(run.assistantMessageId, run.runId);
         // The run's own message is last in the branch, under the id a send gives it there.
         const conversationMessages = withStoppedNativeAnswers(contextMessages, stoppedRuns.map((run) =>
           run.nextUserMessageId === input.created.userMessageId ? { ...run, nextUserMessageId: contextMessages.at(-1)!.id } : run));
-        const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId, runIds: [...nativeRuns.values()], userId: input.userId });
+        const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId,
+          runIds: [...nativeRuns.values(), ...hiddenSteps.map((run) => run.runId)], userId: input.userId });
         // A scheduled run's flat context takes only its previous result's own work: never a compaction of what came before
         // it, nor user input that entered that answer (a follow-up).
         const answerItems = (answer: readonly TranscriptItem[]) => input.scheduled
@@ -378,7 +382,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
-        const effectItems = withRetiredEffects(conversation.items, contextMessages, retiredEffects);
+        const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects),
+          hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })));
         // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
         const firstCall = effectItems.findIndex((item) => item.kind === "tool_call");
         const laterItems = new Set(firstCall < 0 ? [] : effectItems.slice(firstCall).map((item) => item.id));

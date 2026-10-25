@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import { textMessageContent } from "../../domain/content";
@@ -205,6 +206,40 @@ describe("native transcript repository", () => {
       .resolves.toEqual([]);
     const other = await chatWithRun(userId);
     await expect(transcripts.nativeRunsBeforeTurns({ chatId: other.chatId, userId, userMessageIds: branch })).resolves.toEqual([]);
+  });
+
+  // Regression: a follow-up after a stopped step of an answer review recorded before the feature's removal hangs from it.
+  it("marks a stopped step of a recorded answer review, and a revision copy under one, as a review step", async () => {
+    const userId = await owner();
+    const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Reviewed", userId } });
+    const message = (role: "assistant" | "user", parentMessageId: string | null, extra: Partial<Prisma.MessageUncheckedCreateInput> = {}) =>
+      prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(role === "user" ? "Synthetic question" : ""), role,
+        status: "complete", ...(parentMessageId ? { parentMessageId } : {}), ...extra } });
+    const run = (questionId: string, answerId: string) => prisma.modelRun.create({ data: { assistantMessageId: answerId,
+      chatId: chat.id, engine: "native", modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "error", userId,
+      userMessageId: questionId } });
+    const question = await message("user", null);
+    const answer = await message("assistant", question.id);
+    const session = await prisma.answerReviewSession.create({ data: { authorModel: { modelId: "fake-qsa", name: "Fake QSA",
+      provider: "fake" }, chatId: chat.id, mode: "manual", reviewers: [{ modelId: "fixture-reviewer", name: "Reviewer",
+      provider: "fake" }], sourceAssistantMessageId: answer.id, userId } });
+    const reviewTurn = await message("user", answer.id, { answerReviewRound: 1, answerReviewSessionId: session.id,
+      answerReviewStep: 0, systemTurnKind: "answer_review_request" });
+    const review = await message("assistant", reviewTurn.id, { answerReviewSessionId: session.id, status: "cancelled" });
+    const reviewRun = await run(reviewTurn.id, review.id);
+    const afterReview = await message("user", review.id);
+    const revisionTurn = await message("user", review.id, { answerReviewRound: 1, answerReviewSessionId: session.id,
+      answerReviewStep: 1, systemTurnKind: "answer_revision_request" });
+    // The previous release's regeneration of a version: a copy under the revision request without its session.
+    const copy = await message("assistant", revisionTurn.id, { status: "error" });
+    const copyRun = await run(revisionTurn.id, copy.id);
+    const afterCopy = await message("user", copy.id);
+
+    await expect(transcripts.nativeRunsBeforeTurns({ chatId: chat.id, userId, userMessageIds: [question.id, afterReview.id,
+      afterCopy.id] })).resolves.toEqual([
+      { assistantMessageId: review.id, nextUserMessageId: afterReview.id, reviewStep: true, runId: reviewRun.id },
+      { assistantMessageId: copy.id, nextUserMessageId: afterCopy.id, reviewStep: true, runId: copyRun.id }
+    ]);
   });
 
   it("goes with its run", async () => {

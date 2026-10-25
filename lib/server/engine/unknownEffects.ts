@@ -76,6 +76,27 @@ export function withRetiredEffects(items: readonly TranscriptItem[], messages: r
   return [...items.flatMap((item, index) => [...(before.get(index) ?? []), item]), ...(before.get(items.length) ?? [])];
 }
 
+/**
+ * The guard's items with the calls of runs the conversation leaves out (a
+ * stopped step of an answer review recorded before the feature's removal,
+ * `NativeRunBeforeTurn.reviewStep`), for `unknownEffectsOf` only: each run's
+ * calls and results just before the user item that followed its answer, or
+ * last when that item is not in the conversation. The model never sees them.
+ */
+export function withHiddenRunEffects(items: readonly TranscriptItem[],
+  runs: readonly Readonly<{ beforeItemId: string; items: readonly TranscriptItem[] }>[]): TranscriptItem[] {
+  if (runs.length === 0) return [...items];
+  const before = new Map<string, TranscriptItem[]>();
+  const last: TranscriptItem[] = [];
+  const ids = new Set(items.map((item) => item.id));
+  for (const run of runs) {
+    const calls = run.items.filter((item) => item.kind === "tool_call" || item.kind === "tool_result");
+    if (ids.has(run.beforeItemId)) before.set(run.beforeItemId, [...(before.get(run.beforeItemId) ?? []), ...calls]);
+    else last.push(...calls);
+  }
+  return [...items.flatMap((item) => [...(before.get(item.id) ?? []), item]), ...last];
+}
+
 export function createUnknownEffects(): UnknownEffects {
   // Per effect: the user had spoken since it became unknown.
   const unknown = new Map<string, { userSpokeSince: boolean }>();
