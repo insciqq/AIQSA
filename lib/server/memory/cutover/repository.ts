@@ -8,7 +8,6 @@ import {
 } from "../persistence/lexical";
 import {
   createPrismaMemoryRebuildRepository,
-  type MemoryGenerationRollbackResult,
   type MemoryRetrievalCutoverInventory
 } from "../rebuild/repository";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
@@ -437,18 +436,6 @@ export function createPrismaMemoryRetrievalCutoverRepository(
         results.push(await ensure(candidate.userId, input.now ?? new Date()));
       }
       return results;
-    },
-
-    rollback(
-      userId: string,
-      targetGenerationId: string,
-      input: Readonly<{
-        expectedMemoryRevision: number;
-        expectedSettingsRevision: number;
-        now?: Date;
-      }>
-    ): Promise<MemoryGenerationRollbackResult> {
-      return rebuild.rollbackGeneration(userId, targetGenerationId, input);
     }
   });
 }

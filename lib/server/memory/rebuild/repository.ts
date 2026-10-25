@@ -265,15 +265,6 @@ export type MemoryRetrievalCutoverInventory = Readonly<{
   settingsRevision: number;
 }>;
 
-export type MemoryGenerationRollbackResult = Readonly<{
-  activeGenerationId: string | null;
-  kind:
-    | "generation_incompatible"
-    | "memory_revision_conflict"
-    | "ok"
-    | "settings_revision_conflict";
-}>;
-
 export type MemoryCompatibleActiveGenerationPromotion = Readonly<{
   generationId: string | null;
   kind: "already_current" | "busy" | "incompatible" | "promoted";
@@ -1208,22 +1199,10 @@ function generationAcceptsRoundSegments(generation: GenerationConfiguration): bo
       MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION;
 }
 
-type RebuildRoundProjection = "LEGACY" | "NONE" | "SEGMENTS";
-
-function rebuildRoundProjection(
-  generation: GenerationConfiguration
-): RebuildRoundProjection {
-  if (generationAcceptsRoundSegments(generation)) return "SEGMENTS";
-  if (generationAcceptsRounds(generation) &&
-    generation.roundSegmentProjectionVersion === null) return "LEGACY";
-  return "NONE";
-}
-
 async function enumerateEligibleItems(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
-  now: Date,
-  roundProjection: RebuildRoundProjection = "SEGMENTS"
+  now: Date
 ): Promise<readonly SearchIdentity[]> {
   const suppressionIdentities = await currentHistorySuppressionIdentities(
     tx,
@@ -1233,11 +1212,7 @@ async function enumerateEligibleItems(
   const [facts, chunks, rounds, toolEvents] = await Promise.all([
     eligibleFacts(tx, settings),
     eligibleChunks(tx, settings, suppressionIdentities),
-    roundProjection === "SEGMENTS"
-      ? eligibleRoundSegments(tx, settings, suppressionIdentities)
-      : roundProjection === "LEGACY"
-        ? eligibleRounds(tx, settings, suppressionIdentities)
-        : Promise.resolve([]),
+    eligibleRoundSegments(tx, settings, suppressionIdentities),
     eligibleToolEvents(tx, settings, suppressionIdentities, now)
   ]);
   return [...facts, ...chunks, ...rounds, ...toolEvents].sort((left, right) =>
@@ -2304,103 +2279,6 @@ export function createPrismaMemoryRebuildRepository(
     ): Promise<MemoryRetrievalCutoverInventory> {
       return withLockedMemoryTransaction(client, userId, (tx, settings) =>
         cutoverInventoryWith(tx, settings, now));
-    },
-
-    async rollbackGeneration(
-      userId: string,
-      targetGenerationId: string,
-      input: Readonly<{
-        expectedMemoryRevision: number;
-        expectedSettingsRevision: number;
-        now?: Date;
-      }>
-    ): Promise<MemoryGenerationRollbackResult> {
-      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
-        if (settings.settingsRevision !== input.expectedSettingsRevision) {
-          return { activeGenerationId: null, kind: "settings_revision_conflict" } as const;
-        }
-        if (settings.memoryRevision !== input.expectedMemoryRevision) {
-          return { activeGenerationId: null, kind: "memory_revision_conflict" } as const;
-        }
-        const active = settings.activeIndexGenerationId
-          ? await tx.memoryIndexGeneration.findFirst({
-              where: {
-                id: settings.activeIndexGenerationId,
-                state: "ACTIVE",
-                userId
-              }
-            }) as GenerationConfiguration | null
-          : null;
-        const target = await tx.memoryIndexGeneration.findFirst({
-          where: { id: targetGenerationId, state: "SUPERSEDED", userId }
-        }) as GenerationConfiguration | null;
-        const expectedPipeline = target?.indexMode === "HYBRID"
-          ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
-          : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION;
-        const targetProjectionCompatible = target !== null && (
-          rebuildRoundProjection(target) !== "NONE" || (
-            target.roundProjectionVersion === null &&
-            target.contextualKeyPolicyVersion === null &&
-            target.roundSegmentProjectionVersion === null
-          )
-        );
-        if (
-          !active || !target || active.id === target.id ||
-          !targetProjectionCompatible ||
-          target.languageProfile !== MEMORY_LEXICAL_ANALYSIS_PROFILE ||
-          target.normalizationVersion !== MEMORY_LEXICAL_NORMALIZATION_VERSION ||
-          target.chunkingVersion !== MEMORY_LEXICAL_CHUNKING_VERSION ||
-          target.retrievalPipelineVersion !== expectedPipeline ||
-          !await targetEmbeddingVectorSpaceIsCurrent(tx, settings, target)
-        ) {
-          return {
-            activeGenerationId: settings.activeIndexGenerationId,
-            kind: "generation_incompatible"
-          } as const;
-        }
-        const items = await enumerateEligibleItems(
-          tx,
-          settings,
-          input.now ?? new Date(),
-          rebuildRoundProjection(target)
-        );
-        const entries = await existingGenerationEntries(tx, userId, target.id);
-        if (!generationEntriesMatch(target, entries, items)) {
-          return {
-            activeGenerationId: settings.activeIndexGenerationId,
-            kind: "generation_incompatible"
-          } as const;
-        }
-        const now = input.now ?? new Date();
-        await advanceMemoryMutation(tx, settings, "INDEX_GENERATION_ACTIVATION");
-        const superseded = await tx.memoryIndexGeneration.updateMany({
-          data: { state: "SUPERSEDED", supersededAt: now },
-          where: { id: active.id, state: "ACTIVE", userId }
-        });
-        const activated = await tx.memoryIndexGeneration.updateMany({
-          data: {
-            activatedAt: now,
-            indexedThroughMemoryRevision: settings.memoryRevision,
-            state: "ACTIVE",
-            supersededAt: null
-          },
-          where: { id: target.id, state: "SUPERSEDED", userId }
-        });
-        const selected = await tx.userMemorySettings.updateMany({
-          data: { activeIndexGenerationId: target.id },
-          where: {
-            activeIndexGenerationId: active.id,
-            memoryGeneration: settings.memoryGeneration,
-            memoryRevision: settings.memoryRevision,
-            userId
-          }
-        });
-        if (superseded.count !== 1 || activated.count !== 1 || selected.count !== 1) {
-          throw new Error("memory_rebuild_rollback_fence_failed");
-        }
-        settings.activeIndexGenerationId = target.id;
-        return { activeGenerationId: target.id, kind: "ok" } as const;
-      });
     },
 
     async admit(
