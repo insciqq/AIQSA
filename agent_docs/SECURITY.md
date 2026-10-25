@@ -55,7 +55,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Automation webhooks
 
-- Webhook runs are not restricted (operator decision 2026-10-24): they carry a scheduled task's standing authority (Workspace, below). Accepted risk: whoever holds the token can steer the agent through the body with the owner's tools and secrets. The token is the only boundary, and Rotate replaces it at once.
+- Webhook runs are not restricted (operator decision 2026-10-24): they carry a scheduled task's standing authority (Workspace, below). Accepted risk: whoever holds the token can steer the agent through the body with the owner's tools and secrets, and the body stays in the automation's chat, so it travels wherever that chat's results go. The token is the only boundary; Rotate replaces it and turning the webhook off stops even events already taken up.
 - The token is accepted only in a header, never in the URL. Only its SHA-256 is stored, compared in constant time; the plaintext is shown once by the action that issues it and is never stored, logged, written into a chat or sent to a model, so the agent's card issues it outside the transcript.
 - The route takes no session and bypasses Next Proxy, so no unauthenticated body is buffered before the token check; it applies the personal MCP egress refusal, the same-origin guard (which passes senders without a browser origin) and the security headers itself (`lib/server/scheduledTasks/webhookIntake.ts`).
 

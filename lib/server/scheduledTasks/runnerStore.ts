@@ -108,6 +108,8 @@ export type ScheduledTaskExecution = Readonly<{
     /** The prompt's page-reading snapshot, read with `revision`. */
     promptUrlDigests: readonly string[];
     status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; workspaceEnabled: boolean;
+    /** A webhook occurrence runs only while the trigger is still on. */
+    webhookEnabled: boolean;
   }>;
   /**
    * A webhook occurrence's event while it still waits: the run carries it
@@ -724,8 +726,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
               baselineAssistantMessageId: true, baselineGeneration: true, baselineRunId: true, baselineUserMessageId: true,
               chatEpoch: true, chatMode: true, chatPeriod: true, generation: true, kind: true, memoryEnabled: true,
               modelId: true, prompt: true, pinnedSkillIds: true, promptUrlDigests: true, provider: true, revision: true,
-              searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, workspaceEnabled: true,
-              user: { select: { scimDeactivatedAt: true, status: true } },
+              searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, webhookEnabled: true,
+              workspaceEnabled: true, user: { select: { scimDeactivatedAt: true, status: true } },
               chat: {
                 select: {
                   activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true

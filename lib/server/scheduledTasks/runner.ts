@@ -269,6 +269,11 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     if (occurrence.trigger !== "manual" && task.status === "PAUSED") {
       return settlePending(execution, { reasonCode: "paused", state: "SKIPPED" });
     }
+    // Turning the webhook off stops even an event the runner already took up:
+    // the owner's switch is how a leaked token is cut off before a rotation.
+    if (occurrence.trigger === "webhook" && !task.webhookEnabled) {
+      return settlePending(execution, { reasonCode: "webhook_off", state: "SKIPPED" });
+    }
     // A webhook run always carries its event; one whose event no longer waits cannot start.
     if (occurrence.trigger === "webhook" && !execution.webhookEvent) {
       return settlePending(execution, { reasonCode: "admission_failed", state: "FAILED" });
