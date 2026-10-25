@@ -5,9 +5,16 @@ import {
   isScheduledTaskWebhookPublicId,
   type ScheduledTaskWebhookErrorCode
 } from "../../contracts/scheduledTasks";
+import { isAllowedMutationOrigin } from "../auth/csrf";
 import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/requestBody";
+import {
+  isPersonalMcpEgressRequest,
+  PERSONAL_MCP_EGRESS_HEADERS,
+  PERSONAL_MCP_EGRESS_REFUSAL_STATUS
+} from "../mcp/personalEgress";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
+import { applyRuntimeSecurityHeaders } from "../security/headers";
 import {
   scheduledWebhookEventBody,
   scheduledWebhookEventHeaders,
@@ -98,11 +105,36 @@ function unavailable(error: unknown, stage: "read" | "write"): Response {
  * work, a repeated delivery key included.
  */
 export function createScheduledTaskWebhookIntake(deps: Readonly<{
+  env?: Record<string, string | undefined>;
   /** Wakes the runner after an event is queued. */
   kick?: () => void;
   store: ScheduledTaskWebhookIntakeStore;
 }>) {
+  const env = deps.env ?? process.env;
+  /**
+   * The route bypasses Next Proxy (`proxy.ts` matcher), so that nothing buffers
+   * an unauthenticated body before the token check; it applies the Proxy's
+   * guards itself: personal MCP egress never reaches AIQSA, a cross-site
+   * browser post is refused, and every answer carries the security headers.
+   */
   return async function receive(request: Request, publicId: string): Promise<Response> {
+    const response = await guarded(request, publicId);
+    applyRuntimeSecurityHeaders(response.headers, env);
+    return response;
+  };
+
+  async function guarded(request: Request, publicId: string): Promise<Response> {
+    if (isPersonalMcpEgressRequest(request.headers)) {
+      return new Response(null, { headers: PERSONAL_MCP_EGRESS_HEADERS, status: PERSONAL_MCP_EGRESS_REFUSAL_STATUS });
+    }
+    if (!isAllowedMutationOrigin({
+      appBaseUrl: env.AIQSA_APP_BASE_URL,
+      origin: request.headers.get("origin"),
+      requestOrigin: new URL(request.url).origin,
+      secFetchSite: request.headers.get("sec-fetch-site")
+    })) {
+      return Response.json({ error: "invalid_origin" }, { headers: HEADERS, status: 403 });
+    }
     const token = scheduledWebhookRequestToken(request.headers);
     if (!isScheduledTaskWebhookPublicId(publicId) || token === null) return refusal();
     const tokenHash = scheduledWebhookTokenHash(token);
@@ -148,5 +180,5 @@ export function createScheduledTaskWebhookIntake(deps: Readonly<{
       case "rate_limited":
         return failure("webhook_rate_limited", { "retry-after": String(outcome.retryAfterSeconds) });
     }
-  };
+  }
 }

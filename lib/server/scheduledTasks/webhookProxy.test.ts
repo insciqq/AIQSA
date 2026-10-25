@@ -1,25 +1,20 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
-import { proxyWithEnv } from "../../../proxy";
+import { config, proxyWithEnv } from "../../../proxy";
 import { SESSION_COOKIE_NAME } from "../auth/constants";
 
 const env = { AIQSA_APP_BASE_URL: "https://aiqsa.example" };
 const hook = "https://aiqsa.example/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-";
 
 describe("automation webhook proxy boundary", () => {
-  it("passes a sender without a session or a browser origin to the route's own token check", () => {
-    for (const headers of [{}, { "x-gitlab-token": "aiqsa_wh_any" }, { "sec-fetch-site": "none" }]) {
-      const response = proxyWithEnv(new NextRequest(hook, { headers, method: "POST" }), env);
-      expect(response.headers.get("x-middleware-next")).toBe("1");
-      expect(response.headers.get("location")).toBeNull();
-    }
-  });
-
-  it("still refuses a cross-site browser post to it", async () => {
-    for (const headers of [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }]) {
-      const response = proxyWithEnv(new NextRequest(hook, { headers, method: "POST" }), env);
-      expect(response.status).toBe(403);
-      await expect(response.json()).resolves.toEqual({ error: "invalid_origin" });
+  it("leaves exactly the webhook path out of Proxy, so its body is never cloned before the token check", () => {
+    const [pattern] = config.matcher;
+    const proxied = (path: string) => new RegExp(`^${pattern}$`, "u").test(path);
+    expect(proxied(new URL(hook).pathname)).toBe(false);
+    expect(proxied(`${new URL(hook).pathname}/`)).toBe(false);
+    for (const path of ["/api/automations/hooks", "/api/automations/hooks/a/b", "/api/automations/hooks-private/x",
+      "/api/me/scheduled-tasks/task-1/webhook-token", "/c/chat-1"]) {
+      expect(proxied(path), path).toBe(true);
     }
   });
 
