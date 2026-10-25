@@ -300,6 +300,14 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    * adds to it. The task revision fence keeps it current.
    */
   memory?: true;
+  /**
+   * A webhook occurrence's event (`scheduledWebhookEventText`): the run's
+   * user turn holds it as its own text block after the prompt, labelled
+   * incoming data from the sender, never instructions or link authority.
+   * Run creation admits the event, which clears its stored body. Absent for
+   * other triggers.
+   */
+  webhookEvent?: Readonly<{ text: string }>;
 }>;
 
 /**
