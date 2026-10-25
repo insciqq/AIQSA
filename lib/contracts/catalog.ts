@@ -1,4 +1,3 @@
-import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "./answerReviews";
 import { decodeAnswerSoundPreferences, type AnswerSoundPreferences } from "./answerSound";
 import {
   decodeOptionalChatDefaults,
@@ -132,8 +131,6 @@ export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
 export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
-  /** Automatic answer review a new chat starts with; absent on older wires means off. */
-  answerReview?: AnswerReviewAutoConfig;
   /** Personal default Assistant while it is available; see `ChatDefaultAssistant`. */
   assistantId?: string | null;
   /** A saved default Assistant is no longer available and is not applied. */
@@ -503,9 +500,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     assistantId: defaults.assistantId,
     assistantUnavailable: defaults.assistantUnavailable
   });
-  const answerReview = defaults.answerReview === undefined ? undefined : decodeAnswerReviewAutoConfig(defaults.answerReview);
   if (
-    answerReview === null ||
     !chatDefaults ||
     !defaultAssistant ||
     (defaults.workspaceEnabled !== undefined && typeof defaults.workspaceEnabled !== "boolean") ||
@@ -543,7 +538,6 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     ...(dictation ? { dictation } : {}),
     defaults: {
       ...answerSound,
-      ...(answerReview ? { answerReview } : {}),
       assistantId: defaultAssistant.assistantId,
       assistantUnavailable: defaultAssistant.assistantUnavailable,
       browserNotificationsEnabled: defaults.browserNotificationsEnabled ?? true,

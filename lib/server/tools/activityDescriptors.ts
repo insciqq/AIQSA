@@ -116,10 +116,6 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   descriptors.set("manage_secret", { origin: "session", serverName: "Secrets", toolName: "manage_secret" });
   descriptors.set("manage_skill", { origin: "session", serverName: "Skills", toolName: "manage_skill" });
   descriptors.set("manage_assistant", { origin: "session", serverName: "Assistants", toolName: "manage_assistant" });
-  if (isRecord(normalizedRequest.answerReviewStep)) {
-    descriptors.set("submit_answer_review", { origin: "session", serverName: "Answer review", toolName: "submit_answer_review" });
-    descriptors.set("record_review_decisions", { origin: "session", serverName: "Answer review", toolName: "record_review_decisions" });
-  }
   if (normalizedRequest.fetchUrl) descriptors.set("fetch_url", { origin: "web_fetch", serverName: "Web", toolName: "fetch_url" });
   // The chat form of System Vision; Workspace analysis keeps its existing activity.
   if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {

@@ -335,7 +335,6 @@ describe("settings handler", () => {
       "answerSoundEnabled",
       "answerSoundId",
       "browserNotificationsEnabled",
-      "defaultAnswerReview",
       "defaultAssistantId",
       "defaultAssistantUnavailable",
       "defaultControlValues",
@@ -402,12 +401,11 @@ describe("settings handler", () => {
     expect((await send({ defaultKnowledgePlan: null })).status).toBe(400);
   });
 
-  it("persists the automatic review new chats start with, from the user's own tool-calling models only", async () => {
+  it("refuses the removed automatic review default as an unknown field and never reports a saved one", async () => {
     const data = baseSettingsData();
-    // Catalog identities as installations mint them (no dots); the fixture's templates carry upstream names.
-    const template = data.models.find((model) => model.modelId === "gpt-5.5")!;
-    data.models = [...data.models, { ...template, modelId: "model-review" }];
-    data.entitlements = { ...data.entitlements, modelKeys: new Set([...data.entitlements.modelKeys, "openai:model-review"]) };
+    // A settings row the previous release wrote still carries its retired default.
+    data.settings = { ...data.settings, defaultAnswerReview: { enabled: true, maxRounds: 2,
+      reviewers: [{ modelId: "gpt-5.5", provider: "openai" }] } } as UserSettingsRecord;
     let captured: UserSettingsUpdate | null = null;
     const PATCH = createUpdateSettingsHandler({
       resolveAuth: auth.resolveAuth,
@@ -422,36 +420,14 @@ describe("settings handler", () => {
       headers: { cookie: authCookie() },
       method: "PATCH"
     }));
-    const config = { enabled: true, maxRounds: 2, reviewers: [{ modelId: "model-review", provider: "openai" }] };
-    const saved = await send({ defaultAnswerReview: config });
+    // A tab of the previous release saving it is refused whole, never saved without it.
+    const refused = await send({ defaultAnswerReview: { enabled: false, maxRounds: 3, reviewers: [] }, sendWithEnter: true });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: "settings_update_required" });
+    expect(captured).toBeNull();
+    const saved = await send({ sendWithEnter: true });
     expect(saved.status).toBe(200);
-    expect(captured).toEqual({ defaultAnswerReview: config });
-    await expect(saved.json()).resolves.toMatchObject({ settings: { defaultAnswerReview: config } });
-
-    for (const invalid of [
-      { enabled: true, maxRounds: 2, reviewers: [{ modelId: "gpt-hidden", provider: "openai" }] },
-      { enabled: true, maxRounds: 2, reviewers: [] },
-      { enabled: true, maxRounds: 9, reviewers: [{ modelId: "model-review", provider: "openai" }] },
-      null
-    ]) {
-      const refused = await send({ defaultAnswerReview: invalid });
-      expect(refused.status, JSON.stringify(invalid)).toBe(400);
-      expect(await refused.json()).toEqual({ error: "default_answer_review_invalid" });
-    }
-  });
-
-  it("reports automatic review off for new chats until a default is saved", async () => {
-    const data = baseSettingsData();
-    const PATCH = createUpdateSettingsHandler({
-      resolveAuth: auth.resolveAuth,
-      loadSettingsData: async () => data,
-      updateSettings: async (_userId, update) => updated({ ...data.settings, ...update } as UserSettingsRecord)
-    });
-    const response = await PATCH(new Request("http://app.local/api/me/settings", {
-      body: JSON.stringify({ sendWithEnter: true }), headers: { cookie: authCookie() }, method: "PATCH"
-    }));
-    await expect(response.json()).resolves.toMatchObject({ settings: { defaultAnswerReview: { enabled: false, maxRounds: 3,
-      reviewers: [] } } });
+    expect(((await saved.json()) as { settings: Record<string, unknown> }).settings).not.toHaveProperty("defaultAnswerReview");
   });
 
   it("drops unsupported per-model draft fields without dropping valid fields", async () => {

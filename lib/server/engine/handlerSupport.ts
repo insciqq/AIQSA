@@ -13,8 +13,8 @@ import type { ToolRegistryServices } from "./toolRegistry";
 /**
  * The agent engine a send or regenerate handler runs its admitted runs on.
  * Every entry point that admits through the ordinary send handler carries it
- * (the chat routes, the scheduled task runner, Telegram and answer review,
- * through `createDefaultSendMessageDeps`), as do the document and Workspace
+ * (the chat routes, the scheduled task runner and Telegram, through
+ * `createDefaultSendMessageDeps`), as do the document and Workspace
  * follow-up jobs that start a run admitted behind them.
  */
 export type NativeEngineHandlerDeps = Readonly<{
@@ -29,8 +29,8 @@ export type NativeEngineHandlerDeps = Readonly<{
 
 /**
  * Whether a run takes the self-service tools: an interactive run of a
- * personal or temporary chat in the web. Assistant and review
- * runs, scheduled occurrences and Telegram turns (the bridge cannot show
+ * personal or temporary chat in the web. Assistant runs, scheduled
+ * occurrences and Telegram turns (the bridge cannot show
  * their confirmation cards or Undo) never take them, and every change fences
  * its run again as it commits (`selfServiceRunAllowedInTransaction`).
  */
@@ -38,7 +38,7 @@ export function selfServiceChat(prepared: MaterializedPreparedRunData,
   options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): boolean {
   const request = prepared.normalizedRequest;
   return options.scheduled !== true && options.telegram !== true && !prepared.assistant &&
-    !prepared.chatAssistant && !request.answerReviewStep && !request.monitoringVerdictTool;
+    !prepared.chatAssistant && !request.monitoringVerdictTool;
 }
 
 /**

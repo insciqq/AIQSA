@@ -14,8 +14,6 @@ import {
 } from "../search/toolResult";
 
 const artifactTypes = new Set([
-  "answer_review",
-  "answer_review_decisions",
   "workspace_checkpoint",
   "generated_artifact",
   "image",

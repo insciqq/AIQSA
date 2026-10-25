@@ -64,14 +64,17 @@ enum MessageStatus {
 }
 
 /// A user message the server wrote for the user, never the user's own
-/// speech: Memory, chat titles and message search skip it.
+/// speech: Memory, chat titles and message search skip it. The two answer
+/// review kinds are retired (Answer Review removed 2026-10-25): nothing writes
+/// them, and only the legacy collapse (`lib/domain/answerReviewTranscript.ts`)
+/// reads them.
 enum MessageSystemTurnKind {
   mcp_approval_continuation
   answer_review_request
   answer_revision_request
 }
 
-/// How an answer review session advances: by the user's actions or by itself.
+/// How a retired answer review session advanced (see `AnswerReviewSession`).
 enum AnswerReviewMode {
   manual
   auto
@@ -1507,7 +1510,8 @@ model UserSettings {
   defaultMcpMode          String         @default("auto")
   defaultSkillsMode       SkillsMode     @default(auto)
   defaultWorkspaceEnabled Boolean        @default(true)
-  /// Automatic answer review new chats start with (`AnswerReviewAutoConfig`); null is off.
+  /// Retired (Answer Review removed 2026-10-25): nothing reads or writes it;
+  /// dropped in a later release.
   defaultAnswerReview     Json?
   defaultAssistantId      String?
   /// Null follows the administrator default; only withdrawal resets a choice.
@@ -2408,7 +2412,8 @@ model Chat {
   /// task's history retention keeps such a chat.
   ownerKeptAt                     DateTime?
   workspaceEnabled                Boolean              @default(false)
-  /// The chat's automatic answer review (`AnswerReviewAutoConfig`); null is off.
+  /// Retired (Answer Review removed 2026-10-25): nothing reads or writes it;
+  /// dropped in a later release.
   answerReviewConfig              Json?
   totalInputTokens                Int                  @default(0)
   totalOutputTokens               Int                  @default(0)
@@ -2621,11 +2626,13 @@ model Message {
   scheduledTaskPrompt    Boolean           @default(false)
   /// A user message the server wrote (`MessageSystemTurnKind`); a CHECK keeps it on user messages.
   systemTurnKind         MessageSystemTurnKind?
-  /// A step of an answer review session: its server-written turn and that
-  /// turn's answer. Deleting the session clears only this column.
+  /// A step of a retired answer review session (Answer Review removed
+  /// 2026-10-25): its server-written turn and that turn's answer. Nothing
+  /// writes it; only the legacy collapse reads it. Deleting the session clears
+  /// only this column.
   answerReviewSessionId  String?
-  /// The step's round and ordinal in it (reviewers first, then the revision),
-  /// set on its turn only: one turn per step, a unique claim.
+  /// The step's round and ordinal in it, set on its turn only. Retired with
+  /// the session: nothing reads or writes them.
   answerReviewRound      Int?
   answerReviewStep       Int?
   createdAt              DateTime          @default(now())
@@ -2655,36 +2662,34 @@ model Message {
   @@index([branchSourceModelRunId])
 }
 
-/// Cross-model answer review of one answer: reviewer models critique it and
-/// its author model revises it, each step an ordinary run of a turn the
-/// server writes (`Message.answerReviewSessionId`). Model references are
-/// frozen `{ provider, modelId, name }` catalog identities with their display
-/// snapshot; `reviewers` holds the current round's one or two, in order.
+/// A cross-model answer review the previous release recorded: reviewer models
+/// critiqued an answer and its author model revised it, each step a run of a
+/// turn the server wrote (`Message.answerReviewSessionId`). Retired (Answer
+/// Review removed 2026-10-25): nothing writes it, and only the legacy collapse
+/// reads `id` and `sourceAssistantMessageId`, so the chat reads as the source
+/// question and the latest version (`lib/domain/answerReviewTranscript.ts`).
 model AnswerReviewSession {
   id                       String                  @id @default(uuid())
   chatId                   String
-  /// The initiator, who alone starts steps; null once the account is deleted.
+  /// The initiator; null once the account is deleted.
   userId                   String?
   sourceAssistantMessageId String
   mode                     AnswerReviewMode
   authorModel              Json
   reviewers                Json
-  /// Null for a manual session: the user adds rounds.
+  /// Null for a manual session.
   maxRounds                Int?
   round                    Int                     @default(1)
   state                    AnswerReviewState       @default(running)
   stopReason               AnswerReviewStopReason?
-  /// Automatic only: the controls the user's send froze for every step (its
-  /// Search, MCP, Workspace, Skills and time zone, with each reviewer's
-  /// Search as the composer reconciled it for that model).
+  /// Automatic only: the controls the send froze for every step.
   controls                 Json?
-  /// Automatic only: the driver handled the session's end (its one
-  /// notification) after it stopped running; at most once.
+  /// Automatic only: when the session's end was handled.
   endNotifiedAt            DateTime?
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   chat                     Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  /// A deleted initiator leaves the session and its steps, read-only, in their chat.
+  /// A deleted initiator leaves the session and its steps in their chat.
   user                     User?                   @relation("AnswerReviewInitiator", fields: [userId], references: [id], onDelete: SetNull)
   sourceAssistantMessage   Message                 @relation("AnswerReviewSource", fields: [chatId, sourceAssistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "AnswerReviewSession_source_fkey")
   messages                 Message[]               @relation("AnswerReviewSessionMessages")
