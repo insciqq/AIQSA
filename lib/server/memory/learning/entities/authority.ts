@@ -52,6 +52,14 @@ function globalSuppressionFence(userId: string | Prisma.Sql): Prisma.Sql {
  * Evidence support follows the row authority of its fact: a branch change
  * that keeps the source message on the active path (a regenerated answer, a
  * later edit) keeps the alias, whatever branch generation stamped the row.
+ *
+ * Each support check first finds the one version its support row names with
+ * plain column filters, fenced by `OFFSET 0`, and only then runs the costly
+ * evidence, dependency and source authority on that row; the outer `OFFSET 0`
+ * keeps the check correlated. Otherwise PostgreSQL may hash the EXISTS or
+ * filter every fact version of the owner with that authority first, which
+ * took most of a second per alias lookup on a production installation and
+ * pushed fact extraction past its transaction limit.
  */
 export function memoryAdmissibleEntityAliasPredicate(
   userId: string | Prisma.Sql,
@@ -98,6 +106,8 @@ export function memoryAdmissibleEntityAliasPredicate(
                 'EVIDENCE'::"MemoryEntityAliasSupportKind"
               AND EXISTS (
                 SELECT 1
+                FROM (
+                SELECT support."id" AS "supportId", version."id" AS "versionId"
                 FROM "MemoryEvidence" AS support
                 INNER JOIN "Chat" AS evidence_chat
                   ON evidence_chat."userId" = support."userId"
@@ -154,7 +164,21 @@ export function memoryAdmissibleEntityAliasPredicate(
                     version."expiresAt" IS NULL
                     OR version."expiresAt" > CURRENT_TIMESTAMP
                   )
-                  AND ${memoryExactVNextDirectAuthorityPredicate(userId, {
+                OFFSET 0
+                ) AS admitted
+                INNER JOIN "MemoryEvidence" AS support
+                  ON support."userId" = ${userId}
+                  AND support."id" = admitted."supportId"
+                INNER JOIN "Chat" AS evidence_chat
+                  ON evidence_chat."userId" = support."userId"
+                  AND evidence_chat."id" = support."chatId"
+                INNER JOIN "Message" AS evidence_message
+                  ON evidence_message."chatId" = support."chatId"
+                  AND evidence_message."id" = support."messageId"
+                INNER JOIN "MemoryFactVersion" AS version
+                  ON version."userId" = ${userId}
+                  AND version."id" = admitted."versionId"
+                WHERE ${memoryExactVNextDirectAuthorityPredicate(userId, {
                     factVersionId: Prisma.sql`version."id"`,
                     sourceMode: Prisma.sql`version."sourceMode"`,
                     version: Prisma.sql`version`
@@ -168,6 +192,7 @@ export function memoryAdmissibleEntityAliasPredicate(
                     ${userId},
                     version."id"
                   )
+                OFFSET 0
               )
             )
             OR (
@@ -175,6 +200,8 @@ export function memoryAdmissibleEntityAliasPredicate(
                 'FACT_VERSION'::"MemoryEntityAliasSupportKind"
               AND EXISTS (
                 SELECT 1
+                FROM (
+                SELECT version.*
                 FROM "MemoryFactVersion" AS version
                 INNER JOIN "MemoryFact" AS fact
                   ON fact."userId" = version."userId"
@@ -215,11 +242,14 @@ export function memoryAdmissibleEntityAliasPredicate(
                     version."expiresAt" IS NULL
                     OR version."expiresAt" > CURRENT_TIMESTAMP
                   )
-                  AND ${memoryExactVNextDirectAuthorityPredicate(userId, {
+                OFFSET 0
+                ) AS version
+                WHERE ${memoryExactVNextDirectAuthorityPredicate(userId, {
                     factVersionId: Prisma.sql`version."id"`,
                     sourceMode: Prisma.sql`version."sourceMode"`,
                     version: Prisma.sql`version`
                   })}
+                OFFSET 0
               )
             )
           )
