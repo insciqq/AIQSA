@@ -1,5 +1,4 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { KNOWLEDGE_INDEX_PROFILE_ID } from "../../knowledge/knowledgeProfile";
 import { MemoryExecutionError } from "../execution";
 import { MemoryPersistenceError } from "../persistence/errors";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
@@ -35,7 +34,7 @@ export type MemoryEmbeddingSetupOutcome =
   "current" | "disabled" | "pending" | "preserved" | "queued" | "unavailable";
 
 /** Initial installation defaults are not a live fallback. Once selected, the
- * owner's embedding space remains independent of later Knowledge changes.
+ * owner's embedding space remains independent of later default changes.
  * The default is adopted only while no settings patch, this bootstrap's own
  * included, has set or cleared the selection; other revisions do not count. */
 export async function ensureMemoryEmbeddingSetup(
@@ -87,17 +86,12 @@ export function createPrismaMemoryEmbeddingSetup(client: PrismaClient) {
   });
   const dependencies: MemoryEmbeddingSetupDependencies = {
     readSettings: userId => settings.get(userId),
-    readDefault: async () => {
-      const profile = await client.knowledgeIndexProfile.findUnique({
-        select: { activeRevision: { select: {
-          embeddingProviderModelId: true, executionAuthority: true, preflightStatus: true
-        } } },
-        where: { id: KNOWLEDGE_INDEX_PROFILE_ID }
-      });
-      const revision = profile?.activeRevision;
-      return revision?.executionAuthority === "installation" && revision.preflightStatus === "ready"
-        ? revision.embeddingProviderModelId : null;
-    },
+    // The installation default moved here from the retired Knowledge profile,
+    // which already required an installation revision whose preflight passed.
+    readDefault: async () => (await client.memoryUtilityModelPolicy.findUnique({
+      select: { embeddingDefaultProviderModelId: true },
+      where: { id: "installation" }
+    }))?.embeddingDefaultProviderModelId ?? null,
     readGeneration: (userId, id) => client.memoryIndexGeneration.findFirst({
       select: { embeddingProviderModelId: true, indexMode: true },
       where: { id, state: "ACTIVE", userId }

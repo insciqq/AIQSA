@@ -154,14 +154,13 @@ const subsystemLabels = {
   configuration: "Configuration",
   database: "Database",
   email: "Email",
-  // Knowledge was removed; its remaining data is deleted in the background until its tables are dropped.
+  // Knowledge and Projects were removed; incidents recorded while they were retired keep these labels.
   knowledge: "Knowledge removal",
   mcp: "MCP servers",
   memory: "Memory",
   memory_search: "Memory search",
   object_storage: "File storage",
   pdf: "PDF processing",
-  // Projects were removed; the upgrade's fenced Projects are deleted in the background.
   projects: "Project removal",
   push: "Push notifications",
   run_recovery: "Chat run recovery",

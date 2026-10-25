@@ -808,10 +808,10 @@ export function createPrismaMcpRuntimeRepository(input: {
           SET "toolUpdateCheckPending" = true,
               "toolUpdateCheckRequestedAt" = ${now}
           FROM "McpRuntimeGeneration" AS generation
-          LEFT JOIN "McpUserServer" AS preference ON preference."id" = generation."userServerId"
+          JOIN "McpUserServer" AS preference ON preference."id" = generation."userServerId"
           WHERE generation."id" = ${generationId}
             AND generation."fingerprint" = ${fingerprint}
-            AND server."id" = COALESCE(preference."serverId", generation."sharedServerId")
+            AND server."id" = preference."serverId"
             AND server."ownerUserId" IS NULL
             AND server."autoApplyToolUpdates" = true
             AND server."enabled" = true

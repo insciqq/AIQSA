@@ -343,34 +343,16 @@ async function assertConstraintCatalog(): Promise<void> {
   ) {
     throw new Error("Expected one active physical Search route per adapter kind.");
   }
-  const knowledgeIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
+  // Historical Knowledge indexing usage keeps its idempotency key after the
+  // Knowledge tables were dropped.
+  const knowledgeUsageIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
     SELECT indexname
     FROM pg_indexes
     WHERE schemaname = current_schema()
-      AND indexname IN (
-        'KnowledgeChunk_embedding_1024_hnsw_idx',
-        'KnowledgeChunk_embedding_1536_hnsw_idx',
-        'KnowledgeChunk_searchVector_gin_idx'
-      )
-    ORDER BY indexname
+      AND indexname = 'UsageEvent_knowledgeIndexGenerationId_knowledgeDocumentVers_key'
   `;
-  if (knowledgeIndexes.length !== 3) {
-    throw new Error("Expected both committed Knowledge HNSW profiles and the FTS index.");
-  }
-  const knowledgeIngestionIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
-    SELECT indexname
-    FROM pg_indexes
-    WHERE schemaname = current_schema()
-      AND indexname IN (
-        'KnowledgeGenerationDocument_state_nextAttemptAt_claimedAt_c_idx',
-        'KnowledgeIndexGeneration_one_building_reindex_idx',
-        'KnowledgeDocumentVersion_one_active_ingest_idx',
-        'UsageEvent_knowledgeIndexGenerationId_knowledgeDocumentVers_key'
-      )
-    ORDER BY indexname
-  `;
-  if (knowledgeIngestionIndexes.length !== 4) {
-    throw new Error("Expected Knowledge ingestion queue and idempotency indexes.");
+  if (knowledgeUsageIndexes.length !== 1) {
+    throw new Error("Expected the historical Knowledge usage idempotency index.");
   }
   const fairnessQueueIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
     SELECT indexname
@@ -378,13 +360,11 @@ async function assertConstraintCatalog(): Promise<void> {
     WHERE schemaname = current_schema()
       AND indexname IN (
         'AttachmentProcessingJob_owner_due_idx',
-        'AttachmentProcessingJob_due_owner_idx',
-        'KnowledgeDocumentVersion_owner_due_active_idx',
-        'KnowledgeGenerationDocument_owner_due_active_idx'
+        'AttachmentProcessingJob_due_owner_idx'
       )
     ORDER BY indexname
   `;
-  if (fairnessQueueIndexes.length !== 4) {
+  if (fairnessQueueIndexes.length !== 2) {
     throw new Error("Expected tenant-fair document-processing queue indexes.");
   }
   const memorySearchColumns = await prisma.$queryRaw<Array<{
@@ -944,7 +924,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, historical Knowledge usage index, six grant shapes, and lifecycle enums."
   );
 }
 

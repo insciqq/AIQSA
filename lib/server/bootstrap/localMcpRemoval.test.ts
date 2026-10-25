@@ -24,8 +24,7 @@ function transaction(leftovers: LocalMcpLeftovers) {
     },
     mcpRevision: { deleteMany: deleteMany("mcpRevision") },
     mcpRuntimeGeneration: { deleteMany: deleteMany("mcpRuntimeGeneration") },
-    mcpServer: { deleteMany: deleteMany("mcpServer") },
-    projectMcpBinding: { deleteMany: deleteMany("projectMcpBinding") }
+    mcpServer: { deleteMany: deleteMany("mcpServer") }
   };
   return { calls, tx: tx as unknown as Prisma.TransactionClient };
 }
@@ -65,12 +64,10 @@ describe("local MCP removal gate", () => {
         select: { oauthClientId: true },
         where: { oauthClientId: { not: null }, serverId: { in: ["local"] } }
       }],
-      ["projectMcpBinding", { where: { serverId: { in: ["local"] } } }],
       ["mcpRuntimeGeneration", { where: { OR: [
         { revision: { serverId: { in: ["local"] } } },
         { revisionId: { in: ["revision"] } },
         { userServer: { serverId: { in: ["local"] } } },
-        { sharedServerId: { in: ["local"] } },
         { oauthConnection: { serverId: { in: ["local"] } } }
       ] } }],
       ["mcpRevision", { where: { OR: [{ serverId: { in: ["local"] } }, { id: { in: ["revision"] } }] } }],
@@ -86,7 +83,6 @@ describe("local MCP removal gate", () => {
 
     await expect(applyLocalMcpRemovalGate(tx, { acknowledged: true, refuse })).resolves.toEqual({ removedCount: 1 });
     expect(calls.map(([name]) => name)).toEqual([
-      "projectMcpBinding",
       "mcpRuntimeGeneration",
       "mcpRevision",
       "mcpServer"

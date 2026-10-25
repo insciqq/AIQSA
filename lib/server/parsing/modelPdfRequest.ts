@@ -6,8 +6,9 @@ import type { PdfModelProcessingMode, PreparedPdfBatch } from "./pdfPreparation"
 
 export type PdfVisionDetail = "auto" | "original";
 
-// Keep the original request labels and digests stable for accepted Knowledge
-// generations. Callers own storage, authority, dispatch, and accounting.
+// Keep the original request labels (named when Knowledge first used them) and
+// digests stable: recorded chat PDF attempts compare them. Callers own storage,
+// authority, dispatch, and accounting.
 export function digestPreparedPdfBatch(input: Readonly<{
   batch: PreparedPdfBatch;
   mode: PdfModelProcessingMode;
@@ -146,7 +147,7 @@ export function modelPdfProviderRequest(input: Readonly<{
   prompt: string;
   snapshot: ProviderExecutionSnapshot;
   supplement: AdaptivePdfVisionSupplement | null;
-  /** The cap for a model that declares no output default; Knowledge keeps 16,384. */
+  /** The cap for a model that declares no output default; 16,384 when omitted. */
   undeclaredMaxOutputTokens?: number;
   visionDetail: PdfVisionDetail;
 }>): ProviderRunRequest {
@@ -159,7 +160,7 @@ export function modelPdfProviderRequest(input: Readonly<{
   return {
     attachmentIds: files.map((attachment) => attachment.id),
     attachments: files,
-    chatId: "knowledge-pdf-transcription",
+    chatId: "pdf-transcription",
     content: { blocks: [{ text: input.prompt, type: "text" }] },
     forceNonStreaming: true,
     modelCapabilities: {

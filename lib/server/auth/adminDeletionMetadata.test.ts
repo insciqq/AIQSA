@@ -178,19 +178,6 @@ describe("admin deletion metadata", () => {
 
     expect(
       adminGroupDeletionInfo({
-        _count: { knowledgeBasePublications: 2, users: 0 },
-        accessGrants: [],
-        mcpGrants: [],
-        systemRole: null
-      })
-    ).toEqual({
-      canDelete: false,
-      reason: "group_has_grants",
-      summary: "Publications of removed Knowledge bases are still being deleted; try again later."
-    });
-
-    expect(
-      adminGroupDeletionInfo({
         _count: { skillPublications: 2, users: 0 },
         accessGrants: [],
         mcpGrants: [],

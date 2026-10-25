@@ -32,19 +32,6 @@ const avatar = {
   rotations: [0, 2]
 };
 
-/** A Project left from before Projects were removed, with its Owner grant. */
-async function createLeftoverProject(userId: string, name: string): Promise<string> {
-  const created = await prisma.project.create({
-    data: {
-      createdByDisplayName: "Assistant owner",
-      createdByUserId: userId,
-      grants: { create: { role: "OWNER", userId } },
-      name
-    }
-  });
-  return created.id;
-}
-
 async function mutateMemorySource(
   userId: string,
   chatId: string,
@@ -118,7 +105,6 @@ describe("Prisma Assistant deletion", () => {
     const consumerUserId = `assistant-delete-consumer-${suffix}`;
     const managerUserId = `assistant-delete-manager-${suffix}`;
     const userIds = [ownerUserId, consumerUserId, managerUserId];
-    const projectIds: string[] = [];
     const skillIds: string[] = [];
     const chatIds: string[] = [];
     const outboxId = `assistant-delete-outbox-${suffix}`;
@@ -168,23 +154,14 @@ describe("Prisma Assistant deletion", () => {
         where: { userId: consumerUserId }
       });
 
-      // A binding a Project left before Projects were removed restricts the
-      // definition; deletion removes it first.
-      const leftoverProjectId = await createLeftoverProject(ownerUserId, `Leftover ${suffix}`);
-      projectIds.push(leftoverProjectId);
-      await prisma.projectAssistantBinding.create({
-        data: { addedByUserId: ownerUserId, assistantId, projectId: leftoverProjectId }
-      });
-
-      // Bound chats: the owner's with an accepted run, a consumer's, a
-      // leftover Project chat, and one awaiting permanent deletion. An
-      // earlier-unbound chat keeps its own overrides.
+      // Bound chats: the owner's with an accepted run, a consumer's, and one
+      // awaiting permanent deletion. An earlier-unbound chat keeps its own
+      // overrides.
       const ownerChat = `assistant-delete-owner-chat-${suffix}`;
       const consumerChat = `assistant-delete-consumer-chat-${suffix}`;
-      const projectChat = `assistant-delete-project-chat-${suffix}`;
       const deletingChat = `assistant-delete-deleting-chat-${suffix}`;
       const unboundChat = `assistant-delete-unbound-chat-${suffix}`;
-      chatIds.push(ownerChat, consumerChat, projectChat, deletingChat, unboundChat);
+      chatIds.push(ownerChat, consumerChat, deletingChat, unboundChat);
       const runId = `assistant-delete-run-${suffix}`;
       const identity = { avatar, name: "Doomed Assistant" };
       await prisma.$transaction(async (tx) => {
@@ -194,7 +171,6 @@ describe("Prisma Assistant deletion", () => {
           VALUES
             (${ownerChat}, ${ownerUserId}, NULL, NULL, '', 'Owner chat', 'EXCLUDED', ${assistantId}, '{"model":{"value":"x"}}'::jsonb, '2026-01-02 00:00:00'),
             (${consumerChat}, ${consumerUserId}, NULL, NULL, '', 'Consumer chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
-            (${projectChat}, NULL, ${leftoverProjectId}, ${ownerUserId}, 'Assistant owner', 'Project chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
             (${deletingChat}, ${ownerUserId}, NULL, NULL, '', 'Deleting chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
             (${unboundChat}, ${ownerUserId}, NULL, NULL, '', 'Removed earlier', 'EXCLUDED', NULL, '{"search":{"mode":"off"}}'::jsonb, '2026-01-02 00:00:00')
         `;
@@ -284,17 +260,16 @@ describe("Prisma Assistant deletion", () => {
       const consequences = await repository.loadConsequences(ownerUserId, assistantId);
       expect(consequences).toEqual({
         audiences: { groupNames: [group.name], installation: true },
-        chatCount: 3,
+        chatCount: 2,
         pendingListingRequest: true,
         version
       });
-      expect(JSON.stringify(consequences)).not.toMatch(new RegExp(`${leftoverProjectId}|Leftover|${consumerUserId}`));
+      expect(JSON.stringify(consequences)).not.toMatch(new RegExp(consumerUserId));
 
       await expect(repository.delete(ownerUserId, assistantId, version - 1)).resolves.toEqual({ kind: "version_conflict" });
       await expect(repository.delete(consumerUserId, assistantId, version)).resolves.toEqual({ kind: "not_found" });
       await expect(repository.delete(managerUserId, assistantId, version)).resolves.toEqual({ kind: "not_found" });
       await expect(prisma.assistantPublication.count({ where: { assistantId } })).resolves.toBe(2);
-      await expect(prisma.projectAssistantBinding.count({ where: { assistantId } })).resolves.toBe(1);
 
       await expect(repository.delete(ownerUserId, assistantId, version)).resolves.toEqual({ kind: "deleted" });
 
@@ -304,7 +279,6 @@ describe("Prisma Assistant deletion", () => {
         prisma.assistantListingRequest.count({ where: { assistantId } }),
         prisma.assistantPin.count({ where: { assistantId } }),
         prisma.assistantSkill.count({ where: { assistantId } }),
-        prisma.projectAssistantBinding.count({ where: { assistantId } }),
         prisma.chat.count({ where: { assistantId } }),
         prisma.modelRun.count({ where: { assistantId } })
       ]) {
@@ -313,12 +287,11 @@ describe("Prisma Assistant deletion", () => {
 
       const chats = await prisma.chat.findMany({
         select: { assistantId: true, assistantOverrides: true, id: true, updatedAt: true },
-        where: { id: { in: [ownerChat, consumerChat, projectChat, deletingChat, unboundChat] } }
+        where: { id: { in: [ownerChat, consumerChat, deletingChat, unboundChat] } }
       });
       expect(Object.fromEntries(chats.map((chat) => [chat.id, chat.assistantOverrides]))).toEqual({
         [ownerChat]: CHAT_ASSISTANT_DELETED_MARKER,
         [consumerChat]: CHAT_ASSISTANT_DELETED_MARKER,
-        [projectChat]: CHAT_ASSISTANT_DELETED_MARKER,
         [deletingChat]: CHAT_ASSISTANT_DELETED_MARKER,
         [unboundChat]: { search: { mode: "off" } }
       });
@@ -354,7 +327,6 @@ describe("Prisma Assistant deletion", () => {
         }));
         await prisma.assistantListingRequest.deleteMany({ where: { assistantId: id } });
         await prisma.assistantPublication.deleteMany({ where: { assistantId: id } });
-        await prisma.projectAssistantBinding.deleteMany({ where: { assistantId: id } });
         await prisma.assistantPin.deleteMany({ where: { assistantId: id } });
         await prisma.assistantSkill.deleteMany({ where: { assistantId: id } });
         await prisma.assistantDefinition.deleteMany({ where: { id } });
@@ -362,7 +334,6 @@ describe("Prisma Assistant deletion", () => {
       await prisma.modelRun.deleteMany({ where: { chatId: { in: chatIds } } });
       await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: userIds } } });
-      await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
       await prisma.skillDefinition.updateMany({
         data: { currentRevisionId: null, sharedRevisionId: null },
         where: { id: { in: skillIds } }

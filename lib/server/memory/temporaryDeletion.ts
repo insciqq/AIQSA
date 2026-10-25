@@ -315,18 +315,10 @@ async function deleteExclusiveObjects(
         storageKey
       }
     });
-    const knowledgeReferences = await client.knowledgeDocumentVersion.count({
-      where: {
-        OR: [
-          { normalizedTextStorageKey: storageKey },
-          { originalStorageKey: storageKey }
-        ]
-      }
-    });
     const pdfReferences = await client.chatPdfArtifact.count({
       where: { attachmentId: { notIn: attachmentIds }, storageKey }
     });
-    const shared = otherAttachments + knowledgeReferences + pdfReferences > 0;
+    const shared = otherAttachments + pdfReferences > 0;
     if (!shared) {
       try {
         await storage.deleteObject(storageKey);
@@ -414,18 +406,10 @@ async function applyAggregateDeletion(
         storageKey: disposition.storageKey
       }
     });
-    const knowledgeReferences = await tx.knowledgeDocumentVersion.count({
-      where: {
-        OR: [
-          { normalizedTextStorageKey: disposition.storageKey },
-          { originalStorageKey: disposition.storageKey }
-        ]
-      }
-    });
     const pdfReferences = await tx.chatPdfArtifact.count({
       where: { attachmentId: { notIn: attachmentIds }, storageKey: disposition.storageKey }
     });
-    if (otherAttachments + knowledgeReferences + pdfReferences === 0) {
+    if (otherAttachments + pdfReferences === 0) {
       throw new MemoryCoordinatorError(
         "memory_temporary_object_reference_changed",
         true

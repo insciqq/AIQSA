@@ -147,21 +147,13 @@ async function deleteExclusiveObjects(
   const dispositions: ObjectDisposition[] = [];
   for (const storageKey of keys) {
     throwIfAborted(signal);
-    const [otherAttachments, knowledgeReferences, pdfReferences] = await Promise.all([
+    const [otherAttachments, pdfReferences] = await Promise.all([
       client.attachment.count({
         where: { id: { notIn: attachmentIds }, storageKey }
       }),
-      client.knowledgeDocumentVersion.count({
-        where: {
-          OR: [
-            { normalizedTextStorageKey: storageKey },
-            { originalStorageKey: storageKey }
-          ]
-        }
-      }),
       client.chatPdfArtifact.count({ where: { attachmentId: { notIn: attachmentIds }, storageKey } })
     ]);
-    const shared = otherAttachments + knowledgeReferences + pdfReferences > 0;
+    const shared = otherAttachments + pdfReferences > 0;
     if (!shared) {
       try {
         await storage.deleteObject(storageKey);
@@ -543,21 +535,13 @@ async function applyAggregateDeletion(
   const attachmentIds = currentAttachments.map(({ id }) => id);
   for (const disposition of dispositions) {
     if (disposition.deleted) continue;
-    const [otherAttachments, knowledgeReferences, pdfReferences] = await Promise.all([
+    const [otherAttachments, pdfReferences] = await Promise.all([
       tx.attachment.count({
         where: { id: { notIn: attachmentIds }, storageKey: disposition.storageKey }
       }),
-      tx.knowledgeDocumentVersion.count({
-        where: {
-          OR: [
-            { normalizedTextStorageKey: disposition.storageKey },
-            { originalStorageKey: disposition.storageKey }
-          ]
-        }
-      }),
       tx.chatPdfArtifact.count({ where: { attachmentId: { notIn: attachmentIds }, storageKey: disposition.storageKey } })
     ]);
-    if (otherAttachments + knowledgeReferences + pdfReferences === 0) {
+    if (otherAttachments + pdfReferences === 0) {
       throw new MemoryCoordinatorError(
         "memory_permanent_chat_object_reference_changed",
         true

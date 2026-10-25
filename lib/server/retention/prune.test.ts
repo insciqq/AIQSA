@@ -18,17 +18,9 @@ function fakeRepository(input: {
   inboundMcpClientIds?: string[];
   inboundMcpGrantIds?: string[];
   inboundMcpTokenFamilyIds?: string[];
-  knowledgeMatched?: number;
-  knowledgeObjects?: number;
-  knowledgeStageJobs?: number;
-  knowledgeVersionsPurged?: number;
   orphanMatched?: number;
   orphanShared?: number;
   stageJobs?: number;
-  uploadItemsMatched?: number;
-  uploadItemsReleased?: number;
-  uploadJobsStaged?: number;
-  uploadMultipartSessions?: number;
 } = {}) {
   const mutations: string[] = [];
   const repository: RetentionRepository = {
@@ -98,29 +90,6 @@ function fakeRepository(input: {
         shared: input.orphanShared ?? 0
       };
     },
-    async inspectStaleKnowledgePayloads() {
-      return {
-        matched: input.knowledgeMatched ?? 0,
-        objects: input.knowledgeObjects ?? 0
-      };
-    },
-    async inspectExpiredKnowledgeTrash() {
-      return { bases: 0, sources: 0 };
-    },
-    async inspectExpiredKnowledgeUploadSessions() {
-      return {
-        items: input.uploadItemsMatched ?? 0,
-        multipartSessions: input.uploadMultipartSessions ?? 0
-      };
-    },
-    async drainKnowledgeDeletionJobs() {
-      mutations.push("drain-knowledge-deletions");
-      return { blocked: 0, claimed: 0, completed: 0, failed: 0, waitingForObjects: 0 };
-    },
-    async finalizeKnowledgeDeletionJobs() {
-      mutations.push("finalize-knowledge-deletions");
-      return 0;
-    },
     async releaseAttachmentDeletionJob({ id }) {
       mutations.push(`release-job:${id}`);
       return true;
@@ -132,30 +101,6 @@ function fakeRepository(input: {
         matched: input.orphanMatched ?? 0,
         rowsDeleted: input.orphanMatched ?? 0,
         sharedRowsDeleted: input.orphanShared ?? 0
-      };
-    },
-    async stageStaleKnowledgePayloads() {
-      mutations.push("stage-knowledge-payloads");
-      return {
-        jobsStaged: input.knowledgeStageJobs ?? 0,
-        matched: input.knowledgeMatched ?? 0,
-        objectsReleased: input.knowledgeObjects ?? 0,
-        sharedObjects: 0,
-        versionsPurged: input.knowledgeVersionsPurged ?? 0
-      };
-    },
-    async stageExpiredKnowledgeTrash() {
-      mutations.push("stage-knowledge-trash");
-      return { bases: 0, jobsStaged: 0, sources: 0 };
-    },
-    async stageExpiredKnowledgeUploadSessions() {
-      mutations.push("stage-knowledge-upload-sessions");
-      return {
-        items: input.uploadItemsMatched ?? 0,
-        itemsReleased: input.uploadItemsReleased ?? input.uploadItemsMatched ?? 0,
-        jobsStaged: input.uploadJobsStaged ?? 0,
-        multipartSessions: input.uploadMultipartSessions ?? 0,
-        multipartSessionsReleased: input.uploadMultipartSessions ?? 0
       };
     }
   };
@@ -178,12 +123,8 @@ describe("retention prune rules", () => {
       inboundMcpClientIds: ["mcp-client-1"],
       inboundMcpGrantIds: ["mcp-grant-1"],
       inboundMcpTokenFamilyIds: ["mcp-family-1"],
-      knowledgeMatched: 1,
-      knowledgeObjects: 2,
       orphanMatched: 2,
-      orphanShared: 1,
-      uploadItemsMatched: 2,
-      uploadMultipartSessions: 1
+      orphanShared: 1
     });
     const deletedObjects: string[] = [];
 
@@ -204,20 +145,6 @@ describe("retention prune rules", () => {
       authSessions: { deleted: 0, matched: 1 },
       connectPairings: { deleted: 0, matched: 2 },
       dryRun: true,
-      knowledgePayloads: {
-        jobsStaged: 0,
-        matched: 1,
-        objects: 2,
-        objectsReleased: 0,
-        versionsPurged: 0
-      },
-      knowledgeUploadSessions: {
-        itemsMatched: 2,
-        itemsReleased: 0,
-        jobsStaged: 0,
-        multipartSessionsMatched: 1,
-        multipartSessionsReleased: 0
-      },
       inboundMcpOAuth: {
         authorizationCodes: { deleted: 0, matched: 1 },
         clients: { deleted: 0, matched: 1 },
@@ -256,16 +183,8 @@ describe("retention prune rules", () => {
       inboundMcpClientIds: ["mcp-client-1"],
       inboundMcpGrantIds: ["mcp-grant-1"],
       inboundMcpTokenFamilyIds: ["mcp-family-1"],
-      knowledgeMatched: 1,
-      knowledgeObjects: 2,
-      knowledgeStageJobs: 2,
-      knowledgeVersionsPurged: 1,
       orphanMatched: 2,
-      stageJobs: 2,
-      uploadItemsMatched: 2,
-      uploadItemsReleased: 2,
-      uploadJobsStaged: 2,
-      uploadMultipartSessions: 1
+      stageJobs: 2
     });
 
     const abortedUploads: Array<{ storageKey: string; uploadId: string }> = [];
@@ -312,20 +231,6 @@ describe("retention prune rules", () => {
         tokenFamilies: { deleted: 1, matched: 1 }
       },
       modelRunEvents: { deleted: 1, matched: 1 },
-      knowledgePayloads: {
-        jobsStaged: 2,
-        matched: 1,
-        objects: 2,
-        objectsReleased: 2,
-        versionsPurged: 1
-      },
-      knowledgeUploadSessions: {
-        itemsMatched: 2,
-        itemsReleased: 2,
-        jobsStaged: 2,
-        multipartSessionsMatched: 1,
-        multipartSessionsReleased: 1
-      },
       orphanedAttachments: { jobsStaged: 2, matched: 2, rowsDeleted: 2 }
     });
     expect(JSON.stringify(summary)).not.toContain("private/user");
@@ -358,10 +263,6 @@ function passRepository(batches: AttachmentDeletionClaim[][]) {
       calls.push(`complete:${id}`);
       return true;
     },
-    async finalizeKnowledgeDeletionJobs() {
-      calls.push("finalize-knowledge-deletions");
-      return 1;
-    },
     async releaseAttachmentDeletionJob({ errorCode, id }: {
       claimToken: string;
       errorCode: "object_delete_failed";
@@ -378,7 +279,7 @@ function passRepository(batches: AttachmentDeletionClaim[][]) {
 describe("background object deletion pass", () => {
   const now = new Date("2026-10-05T12:00:00.000Z");
 
-  it("drains due jobs in small leased batches and settles waiting Knowledge deletions once", async () => {
+  it("drains due jobs in small leased batches", async () => {
     const state = passRepository([
       [deletionClaim("a"), deletionClaim("b")],
       [deletionClaim("c"), deletionClaim("d")],
@@ -394,15 +295,13 @@ describe("background object deletion pass", () => {
       storage: { async deleteObject(storageKey) { deleted.push(storageKey); } }
     });
 
-    expect(summary).toEqual({ batches: 3, claimed: 5, completed: 5, failed: 0, knowledgeJobsFinalized: 1 });
+    expect(summary).toEqual({ batches: 3, claimed: 5, completed: 5, failed: 0 });
     expect(deleted).toEqual(["a", "b", "c", "d", "e"].map((id) => `private/user/${id}`));
     expect(state.claimInputs).toEqual(Array.from({ length: 3 }, () => ({
       claimableBefore: new Date(now.getTime() - 15 * 60 * 1000),
       limit: 2,
       now
     })));
-    expect(state.calls.filter((call) => call === "finalize-knowledge-deletions")).toHaveLength(1);
-    expect(state.calls.at(-1)).toBe("finalize-knowledge-deletions");
   });
 
   it("bounds one pass while due work remains for the next", async () => {
@@ -439,13 +338,12 @@ describe("background object deletion pass", () => {
       }
     });
 
-    expect(summary).toEqual({ batches: 1, claimed: 2, completed: 0, failed: 2, knowledgeJobsFinalized: 1 });
+    expect(summary).toEqual({ batches: 1, claimed: 2, completed: 0, failed: 2 });
     // Without an abort adapter a recorded multipart upload is never orphaned by deleting only its key.
     expect(state.calls).toEqual([
       "claim",
       "release:broken:object_delete_failed",
-      "release:multipart:object_delete_failed",
-      "finalize-knowledge-deletions"
+      "release:multipart:object_delete_failed"
     ]);
     expect(state.batches).toEqual([[deletionClaim("later")]]);
     expect(JSON.stringify(summary)).not.toMatch(/private|storage failed/u);
@@ -470,23 +368,6 @@ describe("background object deletion pass", () => {
     expect(operations).toEqual(["abort:private/user/multipart:upload-1", "delete:private/user/multipart"]);
   });
 
-  it("retries a Knowledge finalization lost after the last object was deleted", async () => {
-    const state = passRepository([[deletionClaim("last")]]);
-    let attempts = 0;
-    const repository = { ...state.repository, async finalizeKnowledgeDeletionJobs() {
-      attempts += 1;
-      if (attempts === 1) throw new Error("serialization failure");
-      return 1;
-    } };
-
-    await expect(runObjectDeletionPass({ repository, storage: { async deleteObject() {} } }))
-      .rejects.toThrow("serialization failure");
-    // The next pass claims nothing but still settles the waiting Knowledge deletion.
-    await expect(runObjectDeletionPass({ repository, storage: { async deleteObject() {} } }))
-      .resolves.toEqual({ batches: 1, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 1 });
-    expect(attempts).toBe(2);
-  });
-
   it("claims nothing once its worker is stopping", async () => {
     const state = passRepository([[deletionClaim("a")]]);
     const controller = new AbortController();
@@ -496,7 +377,7 @@ describe("background object deletion pass", () => {
       repository: state.repository,
       signal: controller.signal,
       storage: { async deleteObject() {} }
-    })).resolves.toEqual({ batches: 0, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 0 });
+    })).resolves.toEqual({ batches: 0, claimed: 0, completed: 0, failed: 0 });
     expect(state.calls).toEqual([]);
   });
 });

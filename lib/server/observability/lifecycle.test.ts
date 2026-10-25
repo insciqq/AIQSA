@@ -126,7 +126,7 @@ describe("process and job diagnostics", () => {
   it("does not report a retry timestamp as persisted for a lost or rejected write", () => {
     const retryAt = "2026-09-13T15:00:00.000Z";
     for (const outcome of ["confirmed", "not_applied", "unconfirmed"] as const) {
-      const line = serializeEvent("job_persistence", { subsystem: "knowledge", stage: "retry", outcome, retry_at: retryAt, prisma_code: outcome === "unconfirmed" ? "P1001" : undefined })!;
+      const line = serializeEvent("job_persistence", { subsystem: "attachments", stage: "retry", outcome, retry_at: retryAt, prisma_code: outcome === "unconfirmed" ? "P1001" : undefined })!;
       const record = JSON.parse(line);
       if (outcome === "confirmed") expect(record.retry_at).toBe(retryAt);
       else expect(record).not.toHaveProperty("retry_at");

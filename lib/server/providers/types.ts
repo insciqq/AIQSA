@@ -546,11 +546,10 @@ export type ProviderSearchOptions = {
  * request and waits with the shared provider backoff.
  */
 export type ProviderDroppedRoundRetry = Readonly<{
-  /** Requests of one round, the first included, when the dropped one
-   * streamed text (or always, without `beforeOutput`). */
+  /** Requests of one round, the first included, without `beforeOutput`. */
   maxAttempts: number;
   /** The window, request bound and backoff for a request dropped before any
-   * output, text included. */
+   * output, text included; it replaces `maxAttempts`. */
   beforeOutput?: import("./providerRetry").ProviderRetryWindow;
   /** Null keeps the failure; otherwise the provider's Retry-After, if any. */
   decision(error: unknown): import("./providerRetry").ProviderRetryDecision | null;

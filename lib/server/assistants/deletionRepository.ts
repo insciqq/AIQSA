@@ -94,10 +94,6 @@ export function createPrismaAssistantDeletionRepository(
 
             await tx.assistantListingRequest.deleteMany({ where: { assistantId } });
             await tx.assistantPublication.deleteMany({ where: { assistantId } });
-            // Projects were removed (operator decision 2026-10-23); a binding a
-            // retired Project still holds restricts the definition until the
-            // Project's own deletion removes it, so it goes first.
-            await tx.projectAssistantBinding.deleteMany({ where: { assistantId } });
 
             await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
               kind: "ASSISTANT_DELETE",

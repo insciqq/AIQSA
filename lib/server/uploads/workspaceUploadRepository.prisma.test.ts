@@ -70,37 +70,6 @@ describe("durable Workspace uploads", () => {
     } finally { await fixture.cleanup(); }
   });
 
-  it("never completes an upload a removed Project started and keeps its deletion obligations", async () => {
-    const fixture = await owner();
-    const project = await prisma.project.create({ data: { name: "Upload test", createdByDisplayName: "Test",
-      grants: { create: [{ userId: fixture.user.id, role: "OWNER" }] } } });
-    let uploadId: string | null = null;
-    try {
-      // Written as Project uploads were before Projects were removed.
-      const now = new Date();
-      const row = await prisma.attachmentUpload.create({ data: {
-        userId: fixture.user.id, projectId: project.id, projectScoped: true, idempotencyKey: randomUUID(),
-        byteSize: 3, fileName: "original.bin", mimeType: "application/octet-stream",
-        expiresAt: new Date(now.getTime() + 60_000), deadlineAt: new Date(now.getTime() + 3_600_000),
-        objects: { create: { partNumber: 1, checksum, byteSize: 3, ready: true, storageKey: `uploads/stream/${randomUUID()}/parts/1` } }
-      } });
-      uploadId = row.id;
-      await expect(repository.get(row.id, fixture.user.id)).rejects.toMatchObject({ code: "upload_not_found" });
-      await expect(repository.complete(row.id, fixture.user.id)).rejects.toMatchObject({ code: "upload_not_found" });
-      await prisma.project.delete({ where: { id: project.id } });
-      const cleanup = await repository.claimCleanup();
-      expect(cleanup?.row.id).toBe(row.id);
-      expect(cleanup?.row).toMatchObject({ projectScoped: true, state: "expired" });
-      expect(cleanup?.objects).toHaveLength(1);
-      await repository.finishCleanup(row.id, cleanup!.row.claimToken!);
-      expect(await prisma.attachmentUploadObject.count({ where: { uploadId: row.id } })).toBe(0);
-    } finally {
-      await prisma.project.deleteMany({ where: { id: project.id } });
-      if (uploadId) await prisma.attachmentUpload.deleteMany({ where: { id: uploadId } });
-      await fixture.cleanup();
-    }
-  });
-
   it("recovers an expired claim with a fresh output key and rejects the stale publisher", async () => {
     const fixture = await owner();
     try {
