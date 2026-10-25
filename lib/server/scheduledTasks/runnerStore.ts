@@ -9,6 +9,8 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { SMTP_CONTROL_ID } from "../email/repository";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { applyMemorySourceMutations, type LockedMemorySourceChat } from "../memory/sourceState";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
 import type { ScheduledTaskNotification } from "./notifications";
 import {
@@ -595,8 +597,17 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         }
         return { claimed: rows.length, settlements };
       }, { maxWait: 10_000, timeout: 60_000 });
-      const events = await claimWebhookEvents(prisma, limit);
-      await pruneScheduledTaskWebhookEvents(prisma, now, WEBHOOK_PRUNE_BATCH);
+      // Webhook events stay local to their feature: a failure here never holds the schedules' dispatch.
+      let events = 0;
+      try {
+        events = await claimWebhookEvents(prisma, limit);
+        await pruneScheduledTaskWebhookEvents(prisma, now, WEBHOOK_PRUNE_BATCH);
+      } catch (error) {
+        logEvent("job_attempt", {
+          action: "retry", code: "scheduled_tasks_unavailable", error, outcome: "failed", prisma_code: databaseFailureCode(error),
+          stage: "claim", subsystem: "scheduled_tasks"
+        });
+      }
       return { claimed: scheduled.claimed + events, settlements: scheduled.settlements };
     },
 
