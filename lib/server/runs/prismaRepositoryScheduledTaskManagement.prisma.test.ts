@@ -265,4 +265,37 @@ describe("a chat answer's scheduled task management", () => {
     expect(await store.delete(turn.userId, task!.id)).toBe(true);
     expect(await cards()).toEqual([expect.objectContaining({ taskId: task!.id, action: "delete_proposed", deleted: true })]);
   });
+
+  it("turns the webhook on through the owner's rules, keeps one trigger on, and turns it off keeping the address", async () => {
+    const turn = await answer();
+    const [task] = turn.tasks;
+    const on = await turn.manage({ action: "update", change: () => ({ webhookEnabled: true, scheduleEnabled: false }),
+      taskId: task!.id });
+    expect(on.outcome).toMatchObject({ kind: "managed", result: { content: [{ value: { changed: true, task: {
+      schedule: null, scheduleEnabled: false, webhookEnabled: true, webhook: { tokenIssued: false } } } }] } });
+    const hook = await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: task!.id } });
+    expect(hook.tokenHash).toBeNull();
+    expect(await storedTask(turn.userId, task!.id)).toMatchObject({ nextRunAt: null, scheduleEnabled: false, webhookEnabled: true });
+    expect(JSON.stringify((await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: on.call.id } })).result))
+      .not.toContain("aiqsa_wh_");
+    const chats = createPrismaChatRepository(prisma);
+    const cards = async () => (await chats.getChat({ chatId: turn.chatId, userId: turn.userId }))?.messages
+      .find((message) => message.id === turn.answerId)?.artifactSummary?.scheduledTasks;
+    expect(await cards()).toEqual([expect.objectContaining({ taskId: task!.id, action: "changed", scheduleEnabled: false,
+      webhook: { path: `/api/automations/hooks/${hook.publicId}`, tokenIssuedAt: null } })]);
+
+    // Neither trigger on is refused with nothing applied.
+    const none = await turn.manage({ action: "update", change: () => ({ webhookEnabled: false }), taskId: task!.id });
+    expect(none.outcome).toEqual({ code: "scheduled_task_trigger_required", kind: "refused" });
+    expect(await storedTask(turn.userId, task!.id)).toMatchObject({ revision: 2, webhookEnabled: true });
+
+    // Back on a schedule with the webhook off: the address stays for a later turn-on.
+    const back = await turn.manage({ action: "update", change: () => ({ scheduleEnabled: true, webhookEnabled: false,
+      schedule: { kind: "daily", time: "08:00" } }), taskId: task!.id });
+    expect(back.outcome).toMatchObject({ kind: "managed" });
+    expect(await storedTask(turn.userId, task!.id)).toMatchObject({ scheduleEnabled: true, webhookEnabled: false });
+    expect((await storedTask(turn.userId, task!.id)).nextRunAt).not.toBeNull();
+    expect(await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: task!.id } })).toMatchObject({ publicId: hook.publicId });
+    expect(await cards()).toEqual([expect.not.objectContaining({ webhook: expect.anything() })]);
+  });
 });

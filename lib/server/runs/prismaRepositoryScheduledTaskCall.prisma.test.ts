@@ -7,7 +7,12 @@ import { createPrismaMessageBranchRepository } from "../messages/prismaRepositor
 import { prisma } from "../prisma";
 import { createPrismaScheduledTaskPinnedSkillLoader } from "../scheduledTasks/pinnedSkills";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "../scheduledTasks/store";
-import { CREATE_SCHEDULED_TASK_TOOL_NAME, scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
+import { scheduledTaskWebhookUrl } from "../scheduledTasks/webhookUrl";
+import {
+  CREATE_SCHEDULED_TASK_TOOL_NAME,
+  SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE,
+  scheduledTaskCreatedResult
+} from "../tools/scheduledTaskCreation";
 import { appendRunOutputEvents } from "./prismaRepositoryToolLoop";
 import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
@@ -211,5 +216,28 @@ describe("a chat answer's scheduled task creation", () => {
     expect(await card()).toEqual([expect.objectContaining({ taskId: outcome.task.id, title: "Synthetic reminder", status: "active" })]);
     await createPrismaScheduledTaskStore(prisma).delete(turn.userId, outcome.task.id);
     expect(await card()).toEqual([expect.objectContaining({ taskId: outcome.task.id, deleted: true })]);
+  });
+
+  it("creates a webhook-only automation with its address and no token, and the card shows the trigger on reload", async () => {
+    const turn = await answer();
+    const outcome = await createScheduledTaskForToolCall(prisma, deps, {
+      body: { ...body, schedule: SCHEDULED_TASK_WEBHOOK_ONLY_SCHEDULE, scheduleEnabled: false, webhookEnabled: true },
+      callId: turn.callIds[0]!, runId: turn.runId, userId: turn.userId,
+      result: (task) => scheduledTaskCreatedResult({ id: "provider-call-0", name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false),
+      userUrlDigests: []
+    });
+    if (outcome.kind !== "created") throw new Error("expected a created task");
+    const hook = await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: outcome.task.id } });
+    expect(hook).toMatchObject({ tokenHash: null, tokenIssuedAt: null, userId: turn.userId });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: outcome.task.id } }))
+      .toMatchObject({ nextRunAt: null, scheduleEnabled: false, webhookEnabled: true });
+    const settled = await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: turn.callIds[0]! } });
+    expect(JSON.stringify(settled.result)).toContain(scheduledTaskWebhookUrl(hook.publicId));
+    expect(JSON.stringify(settled.result)).not.toContain("aiqsa_wh_");
+    const chats = createPrismaChatRepository(prisma);
+    const cards = (await chats.getChat({ chatId: turn.chatId, userId: turn.userId }))?.messages
+      .find((message) => message.id === turn.answerId)?.artifactSummary?.scheduledTasks;
+    expect(cards).toEqual([expect.objectContaining({ taskId: outcome.task.id, scheduleEnabled: false, nextRunAt: null,
+      webhook: { path: `/api/automations/hooks/${hook.publicId}`, tokenIssuedAt: null } })]);
   });
 });

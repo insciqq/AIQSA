@@ -972,7 +972,7 @@ describe("scheduled task cards", () => {
     const run = { events: [{ eventType: "artifact", payload: created.data }], searchRuns: [] };
     const edited = new Map([["task-1", { ...task, title: "Inbox", status: "paused" as const, nextRunAt: null, workspaceEnabled: true }]]);
     expect(summarizeMessageRunArtifacts(run, null, [], undefined, edited)?.scheduledTasks)
-      .toEqual([{ ...card, title: "Inbox", status: "paused", nextRunAt: null, workspaceEnabled: true }]);
+      .toEqual([{ ...card, title: "Inbox", status: "paused", nextRunAt: null, workspaceEnabled: true, scheduleEnabled: true }]);
     expect(summarizeMessageRunArtifacts(run, null, [], undefined, new Map())?.scheduledTasks)
       .toEqual([{ ...card, deleted: true }]);
     // A run's own chat update has no current read: the task shows as created.
