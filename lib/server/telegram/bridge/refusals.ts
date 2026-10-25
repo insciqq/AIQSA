@@ -4,9 +4,11 @@ import { TELEGRAM_COPY, TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, t
 
 /**
  * Every refusal of the send handler as a short text and the one recovery
- * action that fits it: choose another model, open the bot settings, or open
- * the chat in AIQSA. Codes are mapped by family, so a code added later still
- * gets its family's text, and an unknown one the generic text with AIQSA.
+ * action that fits it: choose another model, open the bot settings, or
+ * continue in AIQSA (`open`: the text says so, with no button, and the reply
+ * is referenced to the chat so answering it continues there). Codes are
+ * mapped by family, so a code added later still gets its family's text, and
+ * an unknown one the generic text pointing to AIQSA.
  */
 
 /** Why a message was not admitted, as the send handler (or the bridge before it) answered. */

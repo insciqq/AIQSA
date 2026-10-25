@@ -21,7 +21,7 @@ it.each(["pacing", "429"])("an approval request is not sent after the link ends 
       sleep: async () => { h.links.records.delete(link.userId); }
     });
     const outbound = createTelegramOutbound({
-      api, botId: h.fake.bot.id, appBaseUrl: "https://aiqsa.example",
+      api, botId: h.fake.bot.id,
       callbacks: { create: async ({ buttons }) => buttons.map((_, index) => `c:${index}`) },
       messageRefs: { record: async () => undefined }
     });

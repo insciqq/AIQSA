@@ -1,4 +1,3 @@
-import { formatChatRoutePath } from "../../domain/chatRoute";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type {
@@ -6,7 +5,6 @@ import type {
   TelegramReplyParameters, TelegramSendAuthority, TelegramSentMessage
 } from "./botApi";
 import { telegramFailureCode } from "./codes";
-import { TELEGRAM_COPY } from "./copy";
 import { plainTelegramMessage } from "./render";
 import type { TelegramCallbackInput, TelegramCallbackStore } from "./store/callbacks";
 import type { TelegramMessageRefOwner, TelegramMessageRefStore } from "./store/messageRefs";
@@ -40,8 +38,6 @@ export type TelegramDelivery =
 type Placement = Readonly<{
   chatId: number;
   keyboard?: TelegramKeyboard;
-  /** Adds an Open in AIQSA button for the owner's chat when the installation is served over https. */
-  openInAiqsa?: boolean;
   /** The user's message this answers; sent even if that message is gone. */
   replyTo?: number;
   /** Whether the chat may still receive it, asked before every dispatch (see `TelegramSendAuthority`). */
@@ -62,9 +58,7 @@ export type TelegramOutbound = Readonly<{
     kind: "document" | "photo"; file: Extract<TelegramFileInput, { data: Buffer }>; caption?: string; owner: TelegramMessageRefOwner;
   }>): Promise<TelegramDelivery>;
   /** Builds an inline keyboard, storing its callback rows for `linkId`. */
-  replyMarkup(input: Readonly<{ keyboard?: TelegramKeyboard; linkId?: string; openChatId?: string }>): Promise<TelegramInlineKeyboardMarkup | undefined>;
-  /** `<appBaseUrl>/c/<chatId>`, only for an https installation. */
-  openInAiqsaUrl(chatId: string): string | null;
+  replyMarkup(input: Readonly<{ keyboard?: TelegramKeyboard; linkId?: string }>): Promise<TelegramInlineKeyboardMarkup | undefined>;
 }>;
 
 /** Content-free: codes and HTTP status only. */
@@ -121,7 +115,6 @@ function isRichRefusal(failure: TelegramFailure): boolean {
 
 export function createTelegramOutbound(deps: Readonly<{
   api: TelegramBotApi;
-  appBaseUrl: string;
   botId: number;
   callbacks: Pick<TelegramCallbackStore, "create">;
   messageRefs: Pick<TelegramMessageRefStore, "record">;
@@ -129,16 +122,7 @@ export function createTelegramOutbound(deps: Readonly<{
 }>): TelegramOutbound {
   const now = deps.now ?? (() => new Date());
 
-  function openInAiqsaUrl(chatId: string): string | null {
-    try {
-      const base = new URL(deps.appBaseUrl);
-      return base.protocol === "https:" ? new URL(formatChatRoutePath({ chatId }), base).toString() : null;
-    } catch {
-      return null;
-    }
-  }
-
-  async function replyMarkup(input: Readonly<{ keyboard?: TelegramKeyboard; linkId?: string; openChatId?: string }>) {
+  async function replyMarkup(input: Readonly<{ keyboard?: TelegramKeyboard; linkId?: string }>) {
     const rows = (input.keyboard ?? []).filter((row) => row.length > 0);
     const callbacks = rows.flat().flatMap((button) => "callback" in button ? [button.callback] : []);
     if (callbacks.length > 0 && !input.linkId) throw new Error("telegram_keyboard_link_missing");
@@ -147,8 +131,6 @@ export function createTelegramOutbound(deps: Readonly<{
       const text = boundedText(button.text, BUTTON_TEXT_MAX_LENGTH);
       return "callback" in button ? { callback_data: data.shift()!, text } : { text, url: httpUrl(button.url) };
     }));
-    const open = input.openChatId ? openInAiqsaUrl(input.openChatId) : null;
-    if (open) inline.push([{ text: TELEGRAM_COPY.openInAiqsa, url: open }]);
     return inline.length > 0 ? { inline_keyboard: inline } : undefined;
   }
 
@@ -194,13 +176,10 @@ export function createTelegramOutbound(deps: Readonly<{
   }
 
   return Object.freeze({
-    openInAiqsaUrl,
     replyMarkup,
 
     async sendContent(input) {
-      const markup = await replyMarkup({
-        keyboard: input.keyboard, linkId: input.owner.linkId, openChatId: input.openInAiqsa ? input.owner.chatId : undefined
-      });
+      const markup = await replyMarkup({ keyboard: input.keyboard, linkId: input.owner.linkId });
       const sent: number[] = [];
       const options = { authorize: input.authorize };
       let fallback = false;
@@ -236,10 +215,7 @@ export function createTelegramOutbound(deps: Readonly<{
     },
 
     async sendText(input) {
-      const markup = await replyMarkup({
-        keyboard: input.keyboard, linkId: input.linkId ?? input.owner?.linkId,
-        openChatId: input.openInAiqsa ? input.owner?.chatId : undefined
-      });
+      const markup = await replyMarkup({ keyboard: input.keyboard, linkId: input.linkId ?? input.owner?.linkId });
       const sent: number[] = [];
       const failure = await sendPlain({
         authorize: input.authorize, chatId: input.chatId, chunks: [input.text], markup, owner: input.owner, replyTo: input.replyTo
@@ -248,9 +224,7 @@ export function createTelegramOutbound(deps: Readonly<{
     },
 
     async sendFile(input) {
-      const markup = await replyMarkup({
-        keyboard: input.keyboard, linkId: input.owner.linkId, openChatId: input.openInAiqsa ? input.owner.chatId : undefined
-      });
+      const markup = await replyMarkup({ keyboard: input.keyboard, linkId: input.owner.linkId });
       const params = {
         chat_id: input.chatId,
         ...(input.caption?.trim() ? { caption: truncated(input.caption.trim(), TELEGRAM_CAPTION_MAX_LENGTH) } : {}),

@@ -79,7 +79,6 @@ function mediaServices(options: Readonly<{ role?: SpeechToTextRoleResolution; tr
     workspaceScopeAvailable: async () => true
   });
   const services: TelegramMediaServices = {
-    appBaseUrl: () => "https://aiqsa.example",
     async attachmentStatus({ attachmentId, userId }) {
       const attachment = attachments.get(attachmentId);
       if (!attachment || attachment.userId !== userId) return null;
@@ -279,7 +278,7 @@ describe("Telegram media: photos, documents and albums", () => {
     expect(h.aiqsa.sent).toHaveLength(0);
   });
 
-  it("refuses a 25 MB file before downloading, with the upload hint and Open in AIQSA", async () => {
+  it("refuses a 25 MB file before downloading, with the upload hint and no button", async () => {
     const h = harness();
     const raw = h.fake.inject.document(h.user, { bytes: Buffer.from("%PDF-1.4"), fileName: "big.pdf", mimeType: "application/pdf" });
     (message(raw).document as Record<string, unknown>).file_size = 25_000_000;
@@ -288,7 +287,7 @@ describe("Telegram media: photos, documents and albums", () => {
 
     const [refusal] = h.fake.botMessages(h.user.id);
     expect(refusal!.text).toBe("Files over 20 MB can't come through Telegram. Upload it in AIQSA.");
-    expect(refusal!.reply_markup).toEqual({ inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: "https://aiqsa.example/" }]] });
+    expect(refusal!.reply_markup).toBeUndefined();
     expect(h.fake.calls("getFile")).toHaveLength(0);
   });
 

@@ -19,7 +19,7 @@ import type { TelegramFailure } from "./transport";
  * anything else up to 50 MB as a document. The bytes are read through the
  * download route's authority (a ready file the user may open now), the shown
  * name is cleaned, and what stays in AIQSA (more or larger files) or could
- * not be sent is named once, in one line under Open in AIQSA. A Workspace
+ * not be sent is named once, in one line after them. A Workspace
  * run's output files are published after its answer: their export is waited
  * for, at most two minutes. Logs carry codes and counts, never names or content.
  */
@@ -236,9 +236,9 @@ export async function sendTelegramFile(input: Readonly<{
 
 /**
  * An answer's files after its final message, in order, then the one line
- * naming what stayed in AIQSA, with Open in AIQSA. A chat that refuses a send
- * ends the files: the rest is counted in that line. A chat that may no longer
- * receive them (`authorize`) ends them without that line.
+ * naming what stayed in AIQSA. A chat that refuses a send ends the files: the
+ * rest is counted in that line. A chat that may no longer receive them
+ * (`authorize`) ends them without that line.
  */
 export async function deliverTelegramFiles(input: Readonly<{
   outbound: Pick<TelegramOutbound, "sendFile" | "sendText">;
@@ -276,7 +276,7 @@ export async function deliverTelegramFiles(input: Readonly<{
   const summary = telegramFilesSummaryText({ failed, left: plan.left, ...(input.outputs ? { outputs: input.outputs } : {}) });
   if (summary && (!input.authorize || await input.authorize())) {
     await input.outbound.sendText({
-      chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary, ...(input.authorize ? { authorize: input.authorize } : {})
+      chatId: input.chatId, owner: input.owner, text: summary, ...(input.authorize ? { authorize: input.authorize } : {})
     });
   }
   return { failed, left: plan.left, sent };

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TELEGRAM_COPY } from "../copy";
 import { renderTelegramAnswer } from "../render";
 import { createBridgeHarness, createFakeGateway } from "@/tests/support/telegramChatBridge";
 import type { TelegramRunEvent, TelegramRunEventContext } from "./events";
@@ -36,10 +35,8 @@ describe("Telegram delivery recovery after a restart", () => {
     await Promise.all([h.bridge.recover(startedAt), h.bridge.recover(startedAt)]);
     await h.bridge.recover(startedAt);
     expect(h.fake.botMessages(user.id)).toHaveLength(1);
-    expect(h.fake.botMessages(user.id)[0]).toMatchObject({
-      reply_markup: { inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: `https://aiqsa.example/c/${run.chatId}` }]] },
-      rich_message: renderTelegramAnswer("The recovered answer").messages[0]
-    });
+    expect(h.fake.botMessages(user.id)[0]).toMatchObject({ rich_message: renderTelegramAnswer("The recovered answer").messages[0] });
+    expect(h.fake.botMessages(user.id)[0]!.reply_markup).toBeUndefined();
     expect(h.runLinks.rows.get(run.id)).toMatchObject({ deliveredAt: expect.any(Date), deliveryState: "delivered" });
     expect(events).toEqual([{ messageIds: [h.fake.botMessages(user.id)[0]!.message_id], sent: true, status: "complete", type: "delivered" }]);
   });

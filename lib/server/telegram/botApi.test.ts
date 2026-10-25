@@ -216,7 +216,7 @@ describe("Telegram Bot API client against the fake", () => {
       .resolves.toMatchObject({ ok: true });
     await expect(api.editMessageText({ chat_id: user.id, message_id: sent.result.message_id, text: "Plain", link_preview_options: { is_disabled: true } }))
       .resolves.toMatchObject({ ok: false, kind: "telegram", errorCode: 400 });
-    await expect(api.editMessageReplyMarkup({ chat_id: user.id, message_id: sent.result.message_id, reply_markup: { inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/1" }]] } }))
+    await expect(api.editMessageReplyMarkup({ chat_id: user.id, message_id: sent.result.message_id, reply_markup: { inline_keyboard: [[{ text: "Docs", url: "https://example.com/docs" }]] } }))
       .resolves.toMatchObject({ ok: true });
     await expect(api.sendChatAction({ chat_id: user.id, action: "typing" })).resolves.toEqual({ ok: true, result: true });
     const press = fake.inject.callback(user, sent.result.message_id, "c:BBBBBBBBBBBBBBBBBBBBBB");

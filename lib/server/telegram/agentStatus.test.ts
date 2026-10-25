@@ -49,7 +49,7 @@ async function setup() {
   });
   let rows = 0;
   const outbound = createTelegramOutbound({
-    api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id,
+    api, botId: fake.bot.id,
     callbacks: { create: async ({ buttons }) => buttons.map(() => `c:${String(rows += 1).padStart(22, "B")}`) },
     messageRefs: { record: async () => undefined }
   });

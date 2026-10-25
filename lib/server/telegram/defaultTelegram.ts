@@ -63,11 +63,10 @@ function createDefaults(): TelegramDefaults {
   const messageRefs = createPrismaTelegramMessageRefStore(prisma);
   const receipts = createPrismaTelegramReceiptStore(prisma);
   const access = createTelegramAccessResolver({ control, links, users: createPrismaTelegramAccessUserSource(prisma) });
-  const appBaseUrl = getAuthConfig().appBaseUrl;
   const sessions = createTelegramSessionProvider({
     control,
     createApi,
-    createOutbound: ({ api, botId }) => createTelegramOutbound({ api, appBaseUrl, botId, callbacks, messageRefs })
+    createOutbound: ({ api, botId }) => createTelegramOutbound({ api, botId, callbacks, messageRefs })
   });
   const linking = createTelegramLinkingService({
     access,

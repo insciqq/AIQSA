@@ -82,7 +82,8 @@ describe("Telegram chat bridge: a message becomes an ordinary chat", () => {
     expect(thinking!.params).toEqual({ can_stop: true, chat_id: h.user.id, draft_id: expect.any(Number), keep_on_stop: false, text: "" });
     const [answer] = h.fake.botMessages(h.user.id);
     expect(answer).toMatchObject({ kind: "rich", rich_message: renderTelegramAnswer("Answer: Compare X and Y as a table").messages[0] });
-    expect(answer!.reply_markup).toEqual({ inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: `https://aiqsa.example/c/${chatId}` }]] });
+    // No link back to AIQSA (operator decision 2026-10-25): the final answer carries no button at all.
+    expect(answer!.reply_markup).toBeUndefined();
     expect(h.fake.calls("sendRichMessage")).toHaveLength(1);
 
     const run = h.aiqsa.runs[0]!;
@@ -314,10 +315,8 @@ describe("Telegram chat bridge: a run in progress", () => {
     const [partial, stopped] = h.fake.botMessages(h.user.id);
     expect(partial).toMatchObject({ kind: "rich", rich_message: renderTelegramAnswer("Once upon a time").messages[0] });
     expect(partial!.reply_markup).toBeUndefined();
-    expect(stopped).toMatchObject({
-      reply_markup: { inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: `https://aiqsa.example/c/${first.chatId}` }]] },
-      text: TELEGRAM_COPY.stopped
-    });
+    expect(stopped).toMatchObject({ text: TELEGRAM_COPY.stopped });
+    expect(stopped!.reply_markup).toBeUndefined();
 
     await say(h, h.fake.inject.text(h.user, "another one"));
     const second = await runStarted(gateway, 2);
@@ -411,10 +410,8 @@ describe("Telegram chat bridge: refusals", () => {
     h.aiqsa.respondNext(() => Response.json({ error: "active_run_in_progress", run: { id: "run-web", status: "streaming" } }, { status: 409 }));
     await say(h, h.fake.inject.text(h.user, "and also"));
     await h.settle();
-    expect(h.fake.botMessages(h.user.id).at(-1)).toMatchObject({
-      reply_markup: { inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: "https://aiqsa.example/c/chat-web" }]] },
-      text: TELEGRAM_RUN_REFUSAL_COPY.replyRunning
-    });
+    expect(h.fake.botMessages(h.user.id).at(-1)).toMatchObject({ text: TELEGRAM_RUN_REFUSAL_COPY.replyRunning });
+    expect(h.fake.botMessages(h.user.id).at(-1)!.reply_markup).toBeUndefined();
 
     h.aiqsa.respondNext(() => {
       web.activeLeafMessageId = "web-answer-2";

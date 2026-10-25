@@ -413,7 +413,7 @@ export function createBridgeHarness(options: Readonly<{
   const access = createTelegramAccessResolver({ control: async () => control, links: links.store, users: async () => user });
   const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => undefined, token: fake.token, transport: fake.transport });
   const outbound = createTelegramOutbound({
-    api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks, messageRefs: messageRefs.store
+    api, botId: fake.bot.id, callbacks, messageRefs: messageRefs.store
   });
   const session: TelegramBotSession = { api, botId: fake.bot.id, botUsername: fake.bot.username, generation: 1, outbound };
   let sessionOn = true;
