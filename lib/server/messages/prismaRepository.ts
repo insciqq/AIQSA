@@ -11,7 +11,7 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { answerReviewDeletionRoot, collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
+import { collapseChatAnswerReviews, loadAnswerReviewDeletionPlan } from "../chats/legacyAnswerReviews";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -627,9 +627,6 @@ export function createPrismaMessageBranchRepository(
         }
         await assertChatHasNoActiveRun(tx, lockedChat.id);
 
-        // A reviewed answer recorded before Answer Review was removed reads as
-        // one answer: deleting its version deletes it from its source answer.
-        const rootId = await answerReviewDeletionRoot(tx, lockedChat.id, messageId);
         const root = await tx.message.findFirst({
           select: {
             chatId: true,
@@ -638,13 +635,19 @@ export function createPrismaMessageBranchRepository(
           },
           where: {
             chatId: lockedChat.id,
-            id: rootId
+            id: messageId
           }
         });
 
         if (!root) {
           return null;
         }
+        // A chat holding an answer review recorded before Answer Review was
+        // removed deletes what its reader deletes; any other chat deletes the
+        // message's subtree.
+        const reviewPlan = await loadAnswerReviewDeletionPlan(tx, lockedChat, root.id);
+        if (reviewPlan === null) throw new MessageDeleteConflictError();
+        const rootIds = reviewPlan ? reviewPlan.roots : [root.id];
 
         const chatMessages = await tx.message.findMany({
           select: {
@@ -668,8 +671,8 @@ export function createPrismaMessageBranchRepository(
           ]);
         }
 
-        const deletedDepths = new Map<string, number>([[root.id, 0]]);
-        const queue = [root.id];
+        const deletedDepths = new Map<string, number>(rootIds.map((id) => [id, 0]));
+        const queue = [...rootIds];
         while (queue.length > 0) {
           const parentId = queue.shift()!;
           const parentDepth = deletedDepths.get(parentId) ?? 0;
@@ -694,8 +697,8 @@ export function createPrismaMessageBranchRepository(
           });
         }
         const activeLeafMessageId = lockedChat.activeLeafMessageId;
-        const nextActiveLeafMessageId =
-          activeLeafMessageId && deletedDepths.has(activeLeafMessageId) ? root.parentMessageId : activeLeafMessageId;
+        const nextActiveLeafMessageId = reviewPlan ? reviewPlan.leafId
+          : activeLeafMessageId && deletedDepths.has(activeLeafMessageId) ? root.parentMessageId : activeLeafMessageId;
 
         const deletedRunScope: Prisma.ModelRunWhereInput = { chatId: root.chatId,
           OR: [{ assistantMessageId: { in: deletedMessageIds } }, { userMessageId: { in: deletedMessageIds } }] };

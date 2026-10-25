@@ -10,7 +10,7 @@ import {
 
 type LegacyReview = Readonly<{
   messages: readonly Readonly<Record<string, string | null>>[];
-  sessions: readonly Readonly<{ id: string; sourceAssistantMessageId: string }>[];
+  sessions: readonly Readonly<{ chatId: string; id: string; sourceAssistantMessageId: string }>[];
 }>;
 
 function client(rows: unknown[] | Error, review: LegacyReview = { messages: [], sessions: [] }) {
@@ -25,9 +25,12 @@ function client(rows: unknown[] | Error, review: LegacyReview = { messages: [], 
     return rows;
   });
   const sessions = vi.fn(async () => review.sessions);
+  const chats = vi.fn(async () => [...new Set(review.sessions.map((session) => session.chatId))]
+    .map((id) => ({ activeLeafMessageId: null, id })));
   const messages = vi.fn(async () => review.messages);
   const transaction = vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation({
-    $executeRaw: executeRaw, $queryRaw: queryRaw, answerReviewSession: { findMany: sessions }, message: { findMany: messages }
+    $executeRaw: executeRaw, $queryRaw: queryRaw, answerReviewSession: { findMany: sessions }, chat: { findMany: chats },
+    message: { findMany: messages }
   }));
   return { client: { $transaction: transaction } as unknown as MessageSearchClient, sessions, statements };
 }
@@ -138,17 +141,19 @@ describe("message content search", () => {
 
   it("never matches the steps or superseded versions of an answer review recorded before the removal", async () => {
     const step = (id: string, parentMessageId: string, role: string, systemTurnKind: string | null = null) =>
-      ({ answerReviewSessionId: "session-1", id, parentMessageId, role, status: "complete", systemTurnKind });
+      ({ answerReviewSessionId: "session-1", chatId: "chat-1", id, parentMessageId, role, status: "complete", systemTurnKind });
     const { client: fake, sessions, statements } = client([], {
       messages: [
-        { answerReviewSessionId: null, id: "answer-1", parentMessageId: "question-1", role: "assistant", status: "complete",
+        { answerReviewSessionId: null, chatId: "chat-1", id: "question-1", parentMessageId: null, role: "user", status: "complete",
           systemTurnKind: null },
+        { answerReviewSessionId: null, chatId: "chat-1", id: "answer-1", parentMessageId: "question-1", role: "assistant",
+          status: "complete", systemTurnKind: null },
         step("review-turn", "answer-1", "user", "answer_review_request"),
         step("review", "review-turn", "assistant"),
         step("revision-turn", "review", "user", "answer_revision_request"),
         step("answer-2", "revision-turn", "assistant")
       ],
-      sessions: [{ id: "session-1", sourceAssistantMessageId: "answer-1" }]
+      sessions: [{ chatId: "chat-1", id: "session-1", sourceAssistantMessageId: "answer-1" }]
     });
 
     await findMessageMatches(fake, { after: null, limit: 31, query: "total", userId: "user-1" });

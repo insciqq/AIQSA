@@ -2,12 +2,14 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
-  answerReviewDeletionRoot,
   answerReviewStandIn,
   answerReviewVersionQuestion,
   collapseChatAnswerReviewTree,
+  hiddenActivePathMessageIds,
   hiddenAnswerReviewMessageIds,
+  hiddenOnActivePath,
   isAnswerReviewStepToolCall,
+  loadAnswerReviewDeletionPlan,
   loadAnswerReviewPathView
 } from "./legacyAnswerReviews";
 
@@ -35,9 +37,14 @@ const rows = [
   row("other-q", null, "user"), row("other-a", "other-q", "assistant")
 ];
 
-/** The reads the module makes, over `rows`: a message, the path to one (by its id among the query's values) and the sessions. */
-function client(messages: readonly Row[] = rows) {
-  const byId = new Map(messages.map((message) => [message.id, message]));
+/**
+ * The reads the module makes over one chat (`chat`, its leaf as given): a
+ * message, the path to one (by its id among the query's values), the chat's
+ * messages, the chat row and its sessions.
+ */
+function client(messages: readonly Row[] = rows, options: Readonly<{ leaf?: string; sessions?: boolean }> = {}) {
+  const byId = new Map(messages.map((message) => [message.id, { ...message, chatId: "chat" }]));
+  const sessions = options.sessions === false ? [] : [{ chatId: "chat", id: "s1", sourceAssistantMessageId: "a1" }];
   return {
     $queryRaw: async (query: Prisma.Sql) => {
       let current = byId.get(String(query.values.find((value) => byId.has(String(value)))));
@@ -49,15 +56,14 @@ function client(messages: readonly Row[] = rows) {
       return path;
     },
     answerReviewSession: {
-      findMany: async ({ where }: { where: { id?: { in: string[] } } }) => [{ id: "s1", sourceAssistantMessageId: "a1" }]
-        .filter((session) => !where.id || where.id.in.includes(session.id))
+      findFirst: async () => sessions[0] ?? null,
+      findMany: async ({ where }: { where: { id?: { in: string[] } } }) =>
+        sessions.filter((session) => !where.id || where.id.in.includes(session.id))
     },
+    chat: { findMany: async () => [{ activeLeafMessageId: options.leaf ?? "r2", id: "chat" }] },
     message: {
       findFirst: async ({ where }: { where: { id: string } }) => byId.get(where.id) ?? null,
-      // A session's rows: its steps, and its source answer by id.
-      findMany: async ({ where }: { where: { OR: [{ answerReviewSessionId: { in: string[] } }, { id: { in: string[] } }] } }) =>
-        messages.filter((message) => where.OR[0].answerReviewSessionId.in.includes(message.answerReviewSessionId ?? "") ||
-          where.OR[1].id.in.includes(message.id))
+      findMany: async () => [...byId.values()]
     }
   } as unknown as Prisma.TransactionClient;
 }
@@ -86,11 +92,19 @@ describe("legacy answer review reads", () => {
     expect([view?.standInId, view?.parentOf("a2"), view?.parentOf("r1"), view?.parentOf("q")]).toEqual(["a2", "q", undefined, null]);
   });
 
-  it("deletes a step from its source answer, and anything else from itself", async () => {
-    const db = client();
-    expect(await answerReviewDeletionRoot(db, "chat", "a2")).toBe("a1");
-    expect(await answerReviewDeletionRoot(db, "chat", "a1")).toBe("a1");
-    expect(await answerReviewDeletionRoot(db, "chat", "other-a")).toBe("other-a");
+  it("reads a version the previous release regenerated without its session as an answer of the source question", async () => {
+    const db = client([...rows.slice(0, 5), row("a2-again", "t2", "assistant")], { leaf: "a2-again" });
+    expect(await answerReviewVersionQuestion(db, "chat", "a2-again")).toBe("q");
+    expect(await answerReviewStandIn(db, "chat", "a2-again")).toBe("a2-again");
+    // The source answer it superseded is hidden for search too.
+    expect(new Set(await hiddenAnswerReviewMessageIds(db, "user-1"))).toEqual(new Set(["a1", "t1", "r1", "t2"]));
+  });
+
+  it("deletes as the chat reads, and leaves a chat without a session to its stored subtree", async () => {
+    const chat = { activeLeafMessageId: "r2", id: "chat" };
+    await expect(loadAnswerReviewDeletionPlan(client(), chat, "a2")).resolves.toEqual({ leafId: "q", roots: ["a1"] });
+    await expect(loadAnswerReviewDeletionPlan(client(), chat, "other-a")).resolves.toEqual({ leafId: "r2", roots: ["other-a"] });
+    await expect(loadAnswerReviewDeletionPlan(client(rows, { sessions: false }), chat, "a2")).resolves.toBeUndefined();
   });
 
   it("reads the branch graph without steps and maps its active leaf to the version standing for it", async () => {
@@ -104,10 +118,16 @@ describe("legacy answer review reads", () => {
     expect([plain.removed.size, plain.activeLeafId]).toEqual([0, "other-a"]);
   });
 
-  it("names every step and superseded version of the user's sessions for message search", async () => {
+  it("names what no path shows for search, and what the active path does not show for its readers", async () => {
     expect(new Set(await hiddenAnswerReviewMessageIds(client(), "user-1"))).toEqual(new Set(["a1", "t1", "r1", "t2", "t3", "r2"]));
-    const unrevised = client(rows.slice(0, 4));
-    expect(new Set(await hiddenAnswerReviewMessageIds(unrevised, "user-1"))).toEqual(new Set(["t1", "r1"]));
+    expect(new Set(await hiddenAnswerReviewMessageIds(client(rows.slice(0, 4)), "user-1"))).toEqual(new Set(["t1", "r1"]));
+    // A question asked under the review shows the source answer on its own path, which the active path follows.
+    const later = client([...rows, row("later", "r1", "user")], { leaf: "later" });
+    expect(new Set(await hiddenAnswerReviewMessageIds(later, "user-1"))).toEqual(new Set(["t1", "r1", "t2", "t3", "r2"]));
+    expect(new Set(await hiddenActivePathMessageIds(later, "user-1"))).toEqual(new Set(["t1", "r1"]));
+    expect(new Set(await hiddenOnActivePath(later, "chat", "later"))).toEqual(new Set(["t1", "r1"]));
+    expect(await hiddenAnswerReviewMessageIds(client(rows, { sessions: false }), "user-1")).toEqual([]);
+    expect(await hiddenOnActivePath(client(rows, { sessions: false }), "chat", "r2")).toEqual([]);
   });
 
   it("hides only a step run's own report from its activity", () => {
