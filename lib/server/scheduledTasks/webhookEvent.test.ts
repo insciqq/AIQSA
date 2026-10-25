@@ -69,9 +69,10 @@ describe("webhook event headers", () => {
   });
 
   it("refuses an oversized or non-printable delivery key or event name", () => {
-    for (const headers of [{ "idempotency-key": "k".repeat(201) }, { "x-gitlab-event": "e".repeat(101) },
+    const cases: Record<string, string>[] = [{ "idempotency-key": "k".repeat(201) }, { "x-gitlab-event": "e".repeat(101) },
       // Headers carry bytes: one past ASCII arrives as a Latin-1 character.
-      { "x-github-delivery": "café" }, { "x-github-event": "tab\there" }]) {
+      { "x-github-delivery": "café" }, { "x-github-event": "tab\there" }];
+    for (const headers of cases) {
       expect(scheduledWebhookEventHeaders(new Headers(headers))).toBeNull();
     }
     expect(scheduledWebhookEventHeaders(new Headers({ "idempotency-key": "k".repeat(200), "x-gitlab-event": "e".repeat(100) })))

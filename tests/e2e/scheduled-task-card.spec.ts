@@ -423,8 +423,11 @@ test("a webhook card shows its trigger and issues its token once, with Copy and 
     await captureState(page, info, "scheduled-card-webhook", {
       anchor: hook,
       atEachSize: async () => {
-        await expectWithinViewport(page, reveal.getByRole("button", { name: "Get token", exact: true }));
-        await expectWithinViewport(page, editButton(hook, webhookCard.title));
+        // On a short landscape phone the card is taller than the thread: each control is reached by scrolling.
+        for (const control of [reveal.getByRole("button", { name: "Get token", exact: true }), editButton(hook, webhookCard.title)]) {
+          await control.scrollIntoViewIfNeeded();
+          await expectWithinViewport(page, control);
+        }
         await expectNoHorizontalOverflow(page);
       }
     });
@@ -442,8 +445,11 @@ test("a webhook card shows its trigger and issues its token once, with Copy and 
     await captureState(page, info, "scheduled-card-webhook-token", {
       anchor: reveal,
       atEachSize: async () => {
-        await expectWithinViewport(page, reveal.getByRole("button", { name: "Copy webhook token", exact: true }));
-        await expectWithinViewport(page, reveal.getByRole("button", { name: "Rotate token", exact: true }));
+        for (const name of ["Copy webhook token", "Rotate token"]) {
+          const control = reveal.getByRole("button", { name, exact: true });
+          await control.scrollIntoViewIfNeeded();
+          await expectWithinViewport(page, control);
+        }
         // The long request scrolls inside its own box.
         await expectNoHorizontalOverflow(page);
       }
