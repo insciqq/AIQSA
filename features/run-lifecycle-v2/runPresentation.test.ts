@@ -513,6 +513,76 @@ describe("run lifecycle v2 presentation", () => {
     ]);
   });
 
+  describe("live tool call settlement (#61)", () => {
+    const call = (payload: Record<string, unknown>): RunEventView => ({ type: "artifact", data: { artifactType: "tool_call",
+      payload: { name: "search", origin: "mcp", serverName: "Repository Tools", ...payload } } });
+    const requested = (round: number, ordinal: number) => call({ ordinal, round, status: "requested" });
+    const settled = (round: number, ordinal: number, status: "complete" | "error", durationMs = 40) =>
+      call({ durationMs, ordinal, round, status });
+    const statuses = (activity: ThreadToolActivity | null) => activity?.calls.map((row) => [row.round, row.status, row.durationMs]);
+
+    it("settles each row by its own identity, also between calls of one tool on one server in one round", () => {
+      const events = [requested(1, 0), requested(1, 1), settled(1, 1, "error", 75), settled(1, 0, "complete", 120), requested(2, 0)];
+      expect(statuses(presentToolActivityV2(events.slice(0, 3)))).toEqual([[1, "running", undefined], [1, "error", 75]]);
+      // Round 1 stops spinning while round 2 still runs.
+      expect(statuses(presentToolActivityV2(events))).toEqual([[1, "complete", 120], [1, "error", 75], [2, "running", undefined]]);
+      // A replayed settlement changes nothing.
+      expect(presentToolActivityV2([...events, settled(1, 1, "complete", 1)])).toEqual(presentToolActivityV2(events));
+    });
+
+    it("settles a running persisted row by the name match and never overrides a persisted outcome", () => {
+      const persisted: ThreadToolActivity = { calls: [
+        { origin: "mcp", round: 1, serverName: "Repository Tools", status: "complete", toolName: "search", durationMs: 9 },
+        { origin: "mcp", round: 1, serverName: "Repository Tools", status: "running", toolName: "search" }
+      ] };
+      expect(statuses(presentToolActivityV2([settled(1, 1, "error", 30)], persisted))).toEqual([[1, "complete", 9], [1, "error", 30]]);
+      // Its live start was seen: the requested identity owns the row it matched.
+      expect(statuses(presentToolActivityV2([requested(1, 0), requested(1, 1), settled(1, 1, "error", 30)], persisted)))
+        .toEqual([[1, "complete", 9], [1, "error", 30]]);
+      // The initiator's MCP details name the exact persisted row.
+      const detailed: ThreadToolActivity = { calls: persisted.calls.map((row, ordinal) => ({ ...row, details: { ordinal, roundIndex: 1 } })) };
+      expect(statuses(presentToolActivityV2([requested(1, 1), settled(1, 1, "complete", 30)], detailed)))
+        .toEqual([[1, "complete", 9], [1, "complete", 30]]);
+    });
+
+    it("stops a row the ended run never settled without claiming success or failure", () => {
+      const events = [requested(1, 0), requested(1, 1), settled(1, 0, "complete")];
+      expect(statuses(presentToolActivityV2(events))).toEqual([[1, "complete", 40], [1, "running", undefined]]);
+      const ended = presentToolActivityV2(events, null, true);
+      expect(statuses(ended)).toEqual([[1, "complete", 40], [1, "cancelled", undefined]]);
+      expect(describeToolCallV2(ended!.calls[1]!, "cancelled")).not.toMatch(/fail|used/iu);
+    });
+
+    it("ignores a malformed or unknown settlement", () => {
+      const events = [requested(1, 0)];
+      for (const malformed of [
+        call({ durationMs: -1, ordinal: 0, round: 1, status: "complete" }),
+        call({ durationMs: "5", ordinal: 0, round: 1, status: "complete" }),
+        call({ durationMs: 1.5, ordinal: 0, round: 1, status: "complete" }),
+        call({ ordinal: 0, round: 1, status: "done" }),
+        call({ ordinal: 0, status: "complete" }),
+        call({ name: "<script>", ordinal: 0, round: 1, status: "complete" }),
+        // Another identity never settles a row a live identity owns.
+        settled(1, 7, "complete"),
+        settled(2, 0, "complete"),
+        { type: "artifact", data: { artifactType: "tool_call", payload: null } } satisfies RunEventView
+      ]) {
+        expect(statuses(presentToolActivityV2([...events, malformed]))).toEqual([[1, "running", undefined]]);
+        expect(presentRunLifecycleV2(state({ events: [...events, malformed] })).activity?.label).toBe("Using Repository Tools: search…");
+      }
+    });
+
+    it("stops naming a settled call in the live status", () => {
+      const other = call({ name: "list_files", ordinal: 1, round: 1, status: "requested" });
+      const events = [requested(1, 0), other, call({ durationMs: 3, name: "list_files", ordinal: 1, round: 1, status: "complete" })];
+      expect(presentRunLifecycleV2(state({ events: events.slice(0, 2), runId: "run" })).activity?.label)
+        .toBe("Using Repository Tools: list files…");
+      expect(presentRunLifecycleV2(state({ events, runId: "run" })).activity?.label).toBe("Using Repository Tools: search…");
+      expect(presentRunLifecycleV2(state({ events: [...events, settled(1, 0, "error")], runId: "run" })).activity)
+        .toMatchObject({ kind: "provider", label: runWaitingPhraseV2("run") });
+    });
+  });
+
   it("keeps ambiguous EOF distinct until terminal server truth arrives", () => {
     const partial = state({
       connectionLost: true,
