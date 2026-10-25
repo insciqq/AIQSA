@@ -16,8 +16,7 @@ export type ComposerPaletteSectionId = typeof COMPOSER_PALETTE_SECTIONS[number][
  * availability. The palette adds no actions of its own.
  *
  * A feature outside the composer registers entries of this shape through the
- * composer's `commandPaletteEntries` prop (for example a later answer review
- * command) without changing the palette.
+ * composer's `commandPaletteEntries` prop without changing the palette.
  */
 export type ComposerPaletteEntry = Readonly<{
   /** Unique within the palette, stable across renders. */

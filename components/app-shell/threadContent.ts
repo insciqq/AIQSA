@@ -5,7 +5,6 @@ import { foldScheduledTaskCards } from "@/lib/contracts/scheduledTasks";
 import { foldSkillSaveCards } from "@/lib/contracts/skillSaves";
 import { foldResourceChangeCards } from "@/lib/contracts/resourceChanges";
 import { foldMcpApprovalCards } from "@/lib/contracts/mcpApprovals";
-import { foldAnswerReviewCards, foldAnswerReviewDecisionsCards } from "@/lib/contracts/answerReviews";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
@@ -120,11 +119,6 @@ export function summarizeThreadArtifacts(
   // Live approval cards; the saved answer's cards carry their decisions.
   const mcpApprovals = foldMcpApprovalCards(events.filter((event) => artifactTypeFromEvent(event) === "mcp_approval")
     .map(artifactPayload));
-  // A review step's live report: the same first-card fold as a reload.
-  const answerReviews = foldAnswerReviewCards(events.filter((event) => artifactTypeFromEvent(event) === "answer_review")
-    .map(artifactPayload));
-  const answerReviewDecisions = foldAnswerReviewDecisionsCards(events
-    .filter((event) => artifactTypeFromEvent(event) === "answer_review_decisions").map(artifactPayload));
   // The same projections and folds as a reload, so a finished live answer
   // shows the thinking, citations and sources its saved summary will show.
   const reasoning = foldReasoningEntries(events.map((event) =>
@@ -157,8 +151,6 @@ export function summarizeThreadArtifacts(
     skillSaves.length === 0 &&
     resourceChanges.length === 0 &&
     mcpApprovals.length === 0 &&
-    answerReviews.length === 0 &&
-    answerReviewDecisions.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
     reasoning.entries.length === 0 &&
@@ -183,8 +175,6 @@ export function summarizeThreadArtifacts(
     ...(skillSaves.length ? { skillSaves } : {}),
     ...(resourceChanges.length ? { resourceChanges } : {}),
     ...(mcpApprovals.length ? { mcpApprovals } : {}),
-    ...(answerReviews.length ? { answerReviews } : {}),
-    ...(answerReviewDecisions.length ? { answerReviewDecisions } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})

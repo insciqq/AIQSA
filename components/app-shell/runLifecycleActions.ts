@@ -556,15 +556,9 @@ export function useRunLifecycleActions({
       return;
     }
 
-    const resumedMessages = selectThreadSnapshot(useThreadStore.getState(), chat.id).messages;
-    let answerNotified = resumedMessages.some((message) => message.runId === runId && message.workspaceSettling);
+    let answerNotified = selectThreadSnapshot(useThreadStore.getState(), chat.id).messages.some(
+      (message) => message.runId === runId && message.workspaceSettling);
     if (answerNotified) useRunLifecycleStore.getState().answerCompleted({ chatId: chat.id, runId });
-    // A running automatic answer review announces only its end: neither the
-    // answer it reviews nor any of its steps rings on its own.
-    const review = resumedMessages.find((message) => message.runId === runId)?.answerReview;
-    const notify = review?.session.mode === "auto" && review.session.state === "running"
-      ? async () => undefined
-      : notifyAnswerReady;
     const resumeWake = createResumeWake(chat.id);
     try {
       let startedAt = Date.now();
@@ -587,14 +581,14 @@ export function useRunLifecycleActions({
         const outcome = await inspectResumedRun(chat, runId);
         if (outcome.kind === "found" && outcome.run.answerComplete && !answerNotified) {
           answerNotified = true;
-          void notify();
+          void notifyAnswerReady();
         }
         if (outcome.kind === "found" && outcome.run.pdfPreparation &&
           (outcome.run.status === "queued" || outcome.run.pdfPreparation.some((item) =>
             ["checking", "preparing", "assembling"].includes(item.phase)))) startedAt = Date.now();
         if (isTerminalRunFetchOutcome(outcome)) {
           if (outcome.kind === "found" && outcome.run.status === "complete" && !answerNotified) {
-            void notify();
+            void notifyAnswerReady();
           }
           return;
         }

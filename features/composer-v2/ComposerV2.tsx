@@ -300,13 +300,6 @@ export type ComposerV2Props = Readonly<{
   /** Scopes transient notices without remounting the draft or its controls. */
   sessionKey?: string;
   activeRun?: boolean;
-  /**
-   * The chat's automatic answer review, configured from the model picker's
-   * row (no chip of its own): its summary, and why it is unavailable here.
-   */
-  answerReview?: Readonly<{ disabledReason?: string | null; onOpen(): void; summary: string }> | null;
-  /** Why the running work cannot be stopped from here (another member's review); Stop stays disabled with it. */
-  stopUnavailableReason?: string | null;
   artifactEdit?: ComposerArtifactEdit | null;
   artifactCreate?: boolean;
   artifactUnavailableReason?: string | null;
@@ -517,8 +510,6 @@ function CapabilityRow({
 export function ComposerV2({
   sessionKey = "composer",
   activeRun = false,
-  answerReview = null,
-  stopUnavailableReason = null,
   artifactEdit = null,
   artifactCreate = false,
   artifactUnavailableReason = null,
@@ -1493,7 +1484,6 @@ export function ComposerV2({
                 runId={runId}
                 sendDisabled={sendDisabled}
                 sendDisabledReason={sendDisabledReason}
-                stopUnavailableReason={stopUnavailableReason}
                 stopping={stopping}
               />
             </span>
@@ -1560,13 +1550,6 @@ export function ComposerV2({
 
               {layer === "model" ? (
                 <ModelLayer
-                  answerReview={answerReview ? {
-                    ...answerReview,
-                    onOpen: () => {
-                      answerReview.onOpen();
-                      closeLayer();
-                    }
-                  } : null}
                   config={config}
                   groups={groupedModels}
                   parametersSummary={modelParametersSummary}
@@ -1960,7 +1943,6 @@ function ModelProvenanceLine({
 }
 
 function ModelLayer({
-  answerReview = null,
   config,
   groups,
   onMakeDefault,
@@ -1975,7 +1957,6 @@ function ModelLayer({
   selectedModelId,
   selectedProvider
 }: Readonly<{
-  answerReview?: ComposerV2Props["answerReview"];
   config: ComposerConfig | null;
   groups: Array<{ models: CatalogModel[]; provider: CatalogProvider }>;
   onMakeDefault?(model: CatalogModel): void;
@@ -2014,25 +1995,6 @@ function ModelLayer({
           ) : null}
           <UiV2Icon name="chevron-right" />
         </button>
-      ) : null}
-      {answerReview ? (
-        <button
-          className="v2-composer-model-parameters v2-focusable"
-          data-testid="composer-v2-model-answer-review"
-          disabled={Boolean(answerReview.disabledReason)}
-          type="button"
-          onClick={answerReview.onOpen}
-        >
-          <UiV2Icon name="shield" />
-          <span>Answer review</span>
-          <span className="v2-composer-model-parameters-summary">
-            {answerReview.disabledReason ? "Unavailable" : answerReview.summary}
-          </span>
-          <UiV2Icon name="chevron-right" />
-        </button>
-      ) : null}
-      {answerReview?.disabledReason ? (
-        <p className="v2-composer-model-note" data-testid="composer-v2-model-answer-review-reason">{answerReview.disabledReason}</p>
       ) : null}
       <p className="v2-composer-model-note">
         Applies to your next message.
