@@ -13,6 +13,7 @@ import {
   type ScheduledTaskCheckOutcome,
   type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskRun,
+  type ScheduledTaskRunTrigger,
   type ScheduledTaskSchedule,
   type ScheduledTaskWeekday
 } from "@/lib/contracts/scheduledTasks";
@@ -92,6 +93,24 @@ export function timeZoneLabel(zone: string): string {
 export function scheduledTaskScheduleText(schedule: ScheduledTaskSchedule, timeZone: string, viewerZone: string): string {
   const summary = describeScheduledTaskSchedule(schedule);
   return timeZone === viewerZone ? summary : `${summary} · ${timeZoneLabel(timeZone)}`;
+}
+
+/**
+ * How a task runs, as its row says it: "Every day at 09:00 · Webhook" with
+ * both triggers on, the schedule alone, or "On a webhook" without a schedule.
+ */
+export function scheduledTaskTriggerText(
+  task: Pick<ScheduledTask, "schedule" | "scheduleEnabled" | "timeZone" | "webhookEnabled">,
+  viewerZone: string
+): string {
+  if (!task.scheduleEnabled) return "On a webhook";
+  const schedule = scheduledTaskScheduleText(task.schedule, task.timeZone, viewerZone);
+  return task.webhookEnabled ? `${schedule} · Webhook` : schedule;
+}
+
+/** Events waiting for their run, as "1 event waiting" or "3 events waiting". */
+export function scheduledTaskQueuedEventsText(count: number): string {
+  return `${count} ${count === 1 ? "event" : "events"} waiting`;
 }
 
 type PauseCopy = Readonly<{ reason: string; hint: string }>;
@@ -191,12 +210,18 @@ export type ScheduledTaskStatusLine = Readonly<{
 }>;
 
 /**
- * The one status sentence a row shows: next run, running (or waiting for a
- * free Workspace slot), paused (with reason) or completed, and why when a
- * monitoring check reached its goal.
+ * The one status sentence a row shows: next run (or, without a schedule, that
+ * webhook calls run it), running (or waiting for a free Workspace slot),
+ * paused (with reason) or completed, and why when a monitoring check reached
+ * its goal. Webhook events waiting for their run follow a running or active
+ * task's sentence.
  */
 export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Date()): ScheduledTaskStatusLine {
-  if (task.running) return { text: task.waitingForWorkspace ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Running now", tone: "live" };
+  const queued = task.webhookEnabled && task.webhook && task.webhook.queuedEvents > 0
+    ? ` · ${scheduledTaskQueuedEventsText(task.webhook.queuedEvents)}` : "";
+  if (task.running) {
+    return { text: `${task.waitingForWorkspace ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Running now"}${queued}`, tone: "live" };
+  }
   if (task.status === "completed") {
     return { text: task.completionReason === "goal_reached" ? "Goal reached — completed" : "Completed", tone: "neutral" };
   }
@@ -205,9 +230,8 @@ export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Dat
     const copy = scheduledTaskPauseCopy(task.pauseReason, task);
     return { text: `Paused: ${copy.reason}. ${copy.hint}`, tone: "attention" };
   }
-  return task.nextRunAt
-    ? { text: `Next run ${formatScheduledInstant(task.nextRunAt, task.timeZone, now)}`, tone: "neutral" }
-    : { text: "No upcoming run", tone: "neutral" };
+  if (task.nextRunAt) return { text: `Next run ${formatScheduledInstant(task.nextRunAt, task.timeZone, now)}${queued}`, tone: "neutral" };
+  return { text: !task.scheduleEnabled && task.webhookEnabled ? `Runs on each webhook call${queued}` : `No upcoming run${queued}`, tone: "neutral" };
 }
 
 /** Short labels of monitoring check outcomes, for the list's last-run line. */
@@ -278,6 +302,13 @@ export function scheduledTaskResultNotice(task: ScheduledTask): ScheduledTaskRes
     : null;
 }
 
+/** What started a run, as its history row names it. */
+export const SCHEDULED_TASK_RUN_TRIGGER_LABELS: Readonly<Record<ScheduledTaskRunTrigger, string>> = {
+  schedule: "Scheduled",
+  manual: "Run now",
+  webhook: "Webhook"
+};
+
 export type ScheduledTaskRunRow = Readonly<{
   outcome: string;
   /** One line per source the run could not reach. */
@@ -308,7 +339,7 @@ export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now
 
     time: formatScheduledInstant(run.startedAt ?? run.scheduledFor, timeZone, now),
     tone: runTone(run),
-    trigger: run.trigger === "manual" ? "Run now" : "Scheduled"
+    trigger: SCHEDULED_TASK_RUN_TRIGGER_LABELS[run.trigger]
   };
 }
 

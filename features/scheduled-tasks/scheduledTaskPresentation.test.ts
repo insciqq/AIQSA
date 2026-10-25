@@ -16,7 +16,7 @@ import {
   scheduledTaskWorkspaceAvailability,
   validateScheduledTaskDraft
 } from "./scheduledTaskDraft";
-import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
+import { scheduledTaskCatalogFixture, scheduledTaskFixture, scheduledTaskWebhookFixture } from "./scheduledTaskFixtures";
 import {
   formatScheduledDay,
   formatScheduledInstant,
@@ -29,6 +29,7 @@ import {
   scheduledTaskScheduleText,
   scheduledTaskStatusLine,
   scheduledTaskTimeZoneOptions,
+  scheduledTaskTriggerText,
   sortScheduledTasks
 } from "./scheduledTaskPresentation";
 
@@ -497,5 +498,80 @@ describe("scheduled task history", () => {
       scheduledFor: "2026-11-01T06:00:00.000Z", skills: [], startedAt: "2026-11-01T06:00:00.000Z", state: "failed",
       trigger: "schedule", unavailableSources: [], unseen: false }, "UTC", now))
       .toMatchObject({ outcome: expect.stringContaining("turn Workspace off for the automation"), tone: "attention" });
+  });
+});
+
+describe("schedule and webhook triggers", () => {
+  const hook = scheduledTaskWebhookFixture();
+  const base = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Pipeline review", prompt: "Explain the failure." });
+
+  it("starts on a schedule and sends both switches on create", () => {
+    expect(base).toMatchObject({ scheduleEnabled: true, webhookEnabled: false });
+    expect(scheduledTaskCreateRequest(base))
+      .toMatchObject({ scheduleEnabled: true, webhookEnabled: false, schedule: { kind: "daily", time: "09:00" } });
+    expect(scheduledTaskCreateRequest({ ...base, webhookEnabled: true })).toMatchObject({ scheduleEnabled: true, webhookEnabled: true });
+    expect(scheduledTaskCreateRequest({ ...base, scheduleEnabled: false, webhookEnabled: true, repeat: "monthly", dayOfMonth: 12 }))
+      .toMatchObject({ scheduleEnabled: false, webhookEnabled: true, schedule: { kind: "monthly", time: "09:00", dayOfMonth: 12 } });
+  });
+
+  it("requires one trigger and never checks a schedule that is off", () => {
+    expect(validateScheduledTaskDraft({ ...base, scheduleEnabled: false }, catalog, null, now))
+      .toEqual({ trigger: "Turn on at least one way to run it: on a schedule or on a webhook." });
+    expect(validateScheduledTaskDraft({ ...base, webhookEnabled: true, scheduleEnabled: false }, catalog, null, now)).toEqual({});
+    // Hidden, incomplete schedule fields neither block a webhook-only save nor reach the wire.
+    const hidden = { ...base, scheduleEnabled: false, webhookEnabled: true, repeat: "weekly" as const, days: [] };
+    expect(validateScheduledTaskDraft(hidden, catalog, null, now)).toEqual({});
+    expect(scheduledTaskCreateRequest(hidden)?.schedule).toEqual({ kind: "daily", time: "09:00" });
+    expect(validateScheduledTaskDraft({ ...hidden, repeat: "once", date: "2026-10-01" }, catalog, null, now)).toEqual({});
+    expect(scheduledTaskCreateRequest({ ...hidden, scheduleEnabled: true })).toBeNull();
+  });
+
+  it("sends only the switches that changed and keeps the saved schedule while it is off", () => {
+    const task = scheduledTaskFixture({ revision: 3 });
+    const draft = scheduledTaskDraftFromTask(task, now);
+    expect(draft).toMatchObject({ scheduleEnabled: true, webhookEnabled: false });
+    expect(scheduledTaskUpdateRequest({ ...draft, webhookEnabled: true }, task)).toEqual({ expectedRevision: 3, webhookEnabled: true });
+    expect(scheduledTaskUpdateRequest({ ...draft, webhookEnabled: true, scheduleEnabled: false, repeat: "weekly", days: [] }, task))
+      .toEqual({ expectedRevision: 3, scheduleEnabled: false, webhookEnabled: true });
+    const webhookOnly = scheduledTaskFixture({ revision: 5, scheduleEnabled: false, webhookEnabled: true, webhook: hook, nextRunAt: null });
+    const fromHook = scheduledTaskDraftFromTask(webhookOnly, now);
+    expect(fromHook).toMatchObject({ scheduleEnabled: false, webhookEnabled: true, repeat: "weekdays" });
+    expect(sameScheduledTaskDraft(fromHook, { ...fromHook, scheduleEnabled: true })).toBe(false);
+    expect(scheduledTaskUpdateRequest({ ...fromHook, scheduleEnabled: true }, webhookOnly))
+      .toEqual({ expectedRevision: 5, scheduleEnabled: true });
+    expect(scheduledTaskUpdateRequest({ ...fromHook, webhookEnabled: false }, webhookOnly))
+      .toEqual({ expectedRevision: 5, webhookEnabled: false });
+  });
+
+  it("previews how a task without a schedule runs", () => {
+    const off = { ...base, scheduleEnabled: false };
+    expect(scheduledTaskPreview(off, null, now)).toBe("Choose when it runs: on a schedule, on a webhook or both.");
+    expect(scheduledTaskPreview({ ...off, webhookEnabled: true }, null, now)).toBe("Runs on each webhook call.");
+    const paused = scheduledTaskFixture({ status: "paused", scheduleEnabled: false, webhookEnabled: true, webhook: hook, nextRunAt: null });
+    expect(scheduledTaskPreview({ ...off, webhookEnabled: true }, paused, now)).toBe("Paused. Webhook calls are refused until you resume.");
+  });
+
+  it("summarizes the triggers, a webhook-only status and waiting events", () => {
+    const schedule = scheduledTaskFixture({ schedule: { kind: "daily", time: "09:00" } });
+    expect(scheduledTaskTriggerText(schedule, "Europe/London")).toBe("Every day at 09:00");
+    expect(scheduledTaskTriggerText({ ...schedule, webhookEnabled: true }, "Europe/London")).toBe("Every day at 09:00 · Webhook");
+    expect(scheduledTaskTriggerText({ ...schedule, webhookEnabled: true }, "Asia/Tokyo")).toBe("Every day at 09:00 · Europe/London · Webhook");
+    expect(scheduledTaskTriggerText({ ...schedule, scheduleEnabled: false, webhookEnabled: true }, "Asia/Tokyo")).toBe("On a webhook");
+    const webhookOnly = scheduledTaskFixture({ scheduleEnabled: false, webhookEnabled: true, webhook: hook, nextRunAt: null });
+    expect(scheduledTaskStatusLine(webhookOnly, now)).toEqual({ text: "Runs on each webhook call", tone: "neutral" });
+    const queued = { ...webhookOnly, webhook: scheduledTaskWebhookFixture({ queuedEvents: 3 }) };
+    expect(scheduledTaskStatusLine(queued, now).text).toBe("Runs on each webhook call · 3 events waiting");
+    expect(scheduledTaskStatusLine({ ...queued, running: true }, now)).toEqual({ text: "Running now · 3 events waiting", tone: "live" });
+    expect(scheduledTaskStatusLine({ ...queued, webhook: scheduledTaskWebhookFixture({ queuedEvents: 1 }), scheduleEnabled: true,
+      nextRunAt: "2026-10-06T08:00:00.000Z" }, now).text).toBe("Next run Tue 6 Oct, 09:00 · 1 event waiting");
+  });
+
+  it("labels each run by what started it", () => {
+    const run: ScheduledTaskRun = { id: "run", scheduledFor: "2026-10-04T09:00:00.000Z", trigger: "webhook", state: "completed",
+      reasonCode: null, startedAt: "2026-10-04T09:00:01.000Z", finishedAt: "2026-10-04T09:01:00.000Z", chatId: null, unseen: false,
+      unavailableSources: [], skills: [] };
+    expect(scheduledTaskRunRow(run, "Europe/London", now).trigger).toBe("Webhook");
+    expect(scheduledTaskRunRow({ ...run, trigger: "manual" }, "Europe/London", now).trigger).toBe("Run now");
+    expect(scheduledTaskRunRow({ ...run, trigger: "schedule" }, "Europe/London", now).trigger).toBe("Scheduled");
   });
 });
