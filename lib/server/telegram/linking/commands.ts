@@ -35,10 +35,8 @@ export function createTelegramLinkCommands(deps: Readonly<{ linking: TelegramLin
           telegramUsername: sender.username ?? null
         }
       });
-      const text = outcome.kind === "linked"
-        ? telegramConnectedText(outcome.accountName)
-        : telegramReasonText(outcome.code) ?? TELEGRAM_COPY.notLinked;
-      await bot.outbound.sendText({ chatId: message.chat.id, text });
+      if (outcome.kind !== "linked") return context.refuse(telegramReasonText(outcome.code) ?? TELEGRAM_COPY.notLinked);
+      await bot.outbound.sendText({ chatId: message.chat.id, text: telegramConnectedText(outcome.accountName) });
     },
 
     async unlink(context) {
