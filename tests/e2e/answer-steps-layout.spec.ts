@@ -20,6 +20,15 @@ const listCommits = (index: number): ThreadToolActivityCall => {
 
 const section = (text: string) => ({ byteSize: Buffer.byteLength(text), text, truncated: false });
 
+// A web-search answer: four searches between page reads, one of which failed
+// on a long address. The per-engine count is said once, on the line.
+const searchChatId = "answer-steps-search-chat";
+const failedTarget = "github.com/example-org/sample-repository/blob/main/paper/conference_submission_2027_final.pdf";
+const searched = (durationMs: number): ThreadToolActivityCall =>
+  ({ durationMs, origin: "web_search", round: 1, status: "complete", toolName: "web_search" });
+const read = (fetchTarget: string, durationMs: number): ThreadToolActivityCall =>
+  ({ durationMs, fetchOutcome: "read", fetchTarget, origin: "web_fetch", round: 1, status: "complete", toolName: "fetch_url" });
+
 async function height(locator: Locator): Promise<number> {
   return (await locator.boundingBox())!.height;
 }
@@ -107,6 +116,65 @@ for (const viewport of [
       await expectNoHorizontalOverflow(page);
       await python.scrollIntoViewIfNeeded();
       await page.screenshot({ path: testInfo.outputPath("steps-command-open.png") });
+    });
+
+    test(`web search steps say the count once and keep a wrapped failure's mark on its first line at ${viewport.width}px`, async ({ context, page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
+      await installMatrixCatalogFixture(page, { folders: [], chats: [{
+        id: searchChatId, title: "Answer search steps", activeLeafMessageId: "search-answer",
+        createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
+        folderId: null, pinned: false, messageCount: 1,
+        messages: [{ id: "search-answer", role: "assistant", status: "complete", parentMessageId: null,
+          createdAt: timestamp, content: "The synthetic summary is ready.", errorMessage: null,
+          citationMessageId: null, modelId: "gpt-5.5", modelRunId: "answer-steps-search-run", provider: "openai",
+          toolActivity: { calls: [
+            read("github.com/example-org/sample-repository", 1_500),
+            searched(13_000),
+            { durationMs: 427, fetchHttpStatus: 404, fetchOutcome: "fetch_http_status", fetchTarget: failedTarget,
+              origin: "web_fetch", round: 1, status: "error", toolName: "fetch_url" },
+            searched(23_000),
+            read("github.com/example-org/sample-repository/blob/main/paper/latest.pdf", 1_800),
+            searched(26_000),
+            read("papers.example/2608.00001", 1_200),
+            searched(27_000)
+          ], searchEngines: [
+            { engine: 1, name: "OpenAI (CodexLB) Search", requested: 4, settled: 4, complete: 4, error: 0, skipped: 0 }
+          ] }
+        }]
+      }] });
+      await signInWithLocalToken(page, `/c/${searchChatId}`);
+
+      const disclosure = page.getByTestId("tool-activity-disclosure");
+      await expect(disclosure.locator(":scope > summary")).toContainText("Web search · OpenAI (CodexLB) Search ×4 · Worked for");
+      if (await disclosure.getAttribute("open") === null) await disclosure.locator(":scope > summary").click();
+      await expect(disclosure).toHaveAttribute("open");
+      await expect(disclosure.getByText(/Search ×4/u)).toHaveCount(1);
+      await expect(disclosure).not.toContainText("counts successful calls");
+      await expect(disclosure.getByText("Searched the web")).toHaveCount(4);
+
+      const rows = disclosure.locator(".v2-answer-process-steps > li");
+      const failed = rows.filter({ hasText: "Couldn't read" });
+      await expect(failed).toContainText(`Couldn't read ${failedTarget}: the site returned 404`);
+      await expect(failed).not.toContainText("Failed");
+      // Whether the label wraps or not, the mark sits on the first line.
+      const row = (await failed.boundingBox())!;
+      const mark = (await failed.locator(".v2-answer-process-mark").boundingBox())!;
+      const firstLine = (await failed.locator(".v2-answer-process-step-name").evaluate((name) => {
+        const range = document.createRange();
+        range.selectNodeContents(name);
+        const box = range.getClientRects()[0]!;
+        return { top: box.top, bottom: box.bottom };
+      }));
+      const markCentre = mark.y + mark.height / 2;
+      expect(markCentre).toBeGreaterThanOrEqual(firstLine.top);
+      expect(markCentre).toBeLessThanOrEqual(firstLine.bottom);
+      expect(mark.y - row.y).toBeLessThanOrEqual(8);
+      // A short step stays one even row; a long address may wrap at phone width.
+      for (const index of [1, 3]) expect(await height(rows.nth(index))).toBeLessThanOrEqual(28);
+      await expectNoHorizontalOverflow(page);
+      await failed.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("search-steps.png") });
     });
   });
 }

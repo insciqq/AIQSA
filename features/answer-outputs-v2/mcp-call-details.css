@@ -88,16 +88,9 @@
     min-width: 2.75rem;
   }
 }
-.v2-answer-process-steps li.v2-mcp-call-row {
-  align-items: flex-start;
-}
-
-.v2-mcp-call-row > .v2-answer-process-mark {
-  margin-top: 0.3125rem;
-}
-
+/* The touch toggle's first line is 44px tall; the mark centres on it. */
 @media (pointer: coarse) {
-  .v2-mcp-call-row > .v2-answer-process-mark {
+  .v2-answer-process-steps li.v2-mcp-call-row > .v2-answer-process-mark {
     margin-top: 0.9375rem;
   }
 }
