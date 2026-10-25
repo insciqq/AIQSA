@@ -46,7 +46,8 @@ describe("automation webhook intake", () => {
     const f = fixture();
     const egress = await f.receive(post({ headers: { ...bearer, "x-aiqsa-egress": "personal-mcp" } }), PUBLIC_ID);
     expect([egress.status, await egress.text()]).toEqual([421, ""]);
-    for (const headers of [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }]) {
+    const crossSiteHeaders: Record<string, string>[] = [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }];
+    for (const headers of crossSiteHeaders) {
       const crossSite = await f.receive(post({ headers: { ...bearer, ...headers } }), PUBLIC_ID);
       expect([crossSite.status, await crossSite.json()]).toEqual([403, { error: "invalid_origin" }]);
     }

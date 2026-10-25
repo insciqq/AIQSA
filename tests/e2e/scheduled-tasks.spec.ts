@@ -385,7 +385,8 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   expect(api.writes).toEqual([{ method: "POST", path: "", body: {
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, scheduleEnabled: true, webhookEnabled: false, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
+    // New automations start with Search on where the model can search (v0.4.1).
+    modelId: model.modelId, provider: model.provider, searchEnabled: true, emailNotify: false, telegramNotify: false,
     toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90,
     pinnedSkillIds: []
   } }]);
