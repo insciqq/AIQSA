@@ -1,5 +1,10 @@
 import type { Catalog } from "@/lib/contracts/catalog";
-import type { ScheduledTask } from "@/lib/contracts/scheduledTasks";
+import type { ScheduledTask, ScheduledTaskWebhook } from "@/lib/contracts/scheduledTasks";
+
+/** A synthetic webhook projection: no token issued and no event yet unless overridden. */
+export function scheduledTaskWebhookFixture(overrides: Partial<ScheduledTaskWebhook> = {}): ScheduledTaskWebhook {
+  return { path: "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-", tokenIssuedAt: null, lastEventAt: null, queuedEvents: 0, ...overrides };
+}
 
 /** Synthetic tasks and catalog for scheduled-task component and unit tests. */
 export function scheduledTaskFixture(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
