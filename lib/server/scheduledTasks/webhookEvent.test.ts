@@ -24,9 +24,10 @@ describe("webhook request token", () => {
     expect(scheduledWebhookRequestToken(new Headers({ authorization: `bearer  ${TOKEN}` }))).toBe(TOKEN);
     expect(scheduledWebhookRequestToken(new Headers({ "x-gitlab-token": TOKEN }))).toBe(TOKEN);
     // Never another header, another scheme or a malformed value.
-    for (const headers of [{}, { "x-api-key": TOKEN }, { authorization: TOKEN }, { authorization: `Basic ${TOKEN}` },
+    const refused: Record<string, string>[] = [{}, { "x-api-key": TOKEN }, { authorization: TOKEN }, { authorization: `Basic ${TOKEN}` },
       { authorization: `Bearer ${TOKEN} extra` }, { authorization: "Bearer aiqsa_wh_short" }, { "x-gitlab-token": `${TOKEN}=` },
-      { "x-gitlab-token": "" }]) {
+      { "x-gitlab-token": "" }];
+    for (const headers of refused) {
       expect(scheduledWebhookRequestToken(new Headers(headers))).toBeNull();
     }
   });
