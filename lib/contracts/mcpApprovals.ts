@@ -1,5 +1,3 @@
-import { isAnswerReviewTurnKind, type AnswerReviewTurnKind } from "./answerReviews";
-
 /**
  * Client-safe contract of MCP write approval (operator decision 2026-10-08).
  * An interactive run never dispatches an MCP tool that may change data
@@ -42,11 +40,15 @@ export type McpApprovalCard = Readonly<{
 
 /** The kind of the server-written user turn that continues after an approval. */
 export const MCP_APPROVAL_CONTINUATION_KIND = "mcp_approval_continuation";
-/** Every kind of user turn the server writes for the user (`Message.systemTurnKind`). */
-export type MessageSystemTurnKind = typeof MCP_APPROVAL_CONTINUATION_KIND | AnswerReviewTurnKind;
+/**
+ * Every kind of user turn the server writes for the user that a reader sees
+ * (`Message.systemTurnKind`). The retired answer review turns never reach a
+ * reader (`lib/domain/answerReviewTranscript.ts`).
+ */
+export type MessageSystemTurnKind = typeof MCP_APPROVAL_CONTINUATION_KIND;
 
 export function isMessageSystemTurnKind(value: unknown): value is MessageSystemTurnKind {
-  return value === MCP_APPROVAL_CONTINUATION_KIND || isAnswerReviewTurnKind(value);
+  return value === MCP_APPROVAL_CONTINUATION_KIND;
 }
 /** The send refusal of a continuation whose approval expired or was used. */
 export const MCP_APPROVAL_CONTINUATION_UNAVAILABLE = "mcp_approval_continuation_unavailable";

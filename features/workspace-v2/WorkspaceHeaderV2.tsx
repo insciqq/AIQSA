@@ -177,12 +177,6 @@ export type WorkspaceHeaderModelSelectorV2 = Readonly<{
   /** The model name only; provenance lives in the dot and the tooltip. */
   name: string;
   onToggle(anchor: HTMLButtonElement): void;
-  /**
-   * The chat's automatic answer review while it is on: a compact glyph with
-   * the reviewers' count (the glyph alone on phones), and its label for the
-   * tooltip and screen readers. `unavailable` says review will not run now.
-   */
-  review?: Readonly<{ count: number; label: string; state: "on" | "unavailable" }> | null;
   /** Tooltip; defaults to "Choose model", or `lockedReason` while locked. */
   title?: string;
 }>;
@@ -200,7 +194,6 @@ export function HeaderModelSelectorV2({ selector, triggerRef }: Readonly<{
   triggerRef?: RefObject<HTMLButtonElement | null>;
 }>) {
   const locked = Boolean(selector.locked);
-  const review = selector.review ?? null;
   const title = selector.title ?? (locked ? selector.lockedReason ?? "Managed by the Assistant" : "Choose model");
   return (
     <button
@@ -212,20 +205,13 @@ export function HeaderModelSelectorV2({ selector, triggerRef }: Readonly<{
       data-testid="header-model-trigger"
       disabled={selector.disabled}
       ref={triggerRef}
-      title={review ? `${title} · ${review.label}` : title}
+      title={title}
       type="button"
       onClick={(event) => selector.onToggle(event.currentTarget)}
     >
       {selector.fromAssistant ? <span aria-hidden="true" className="v2-live-model-dot" /> : null}
       <UiV2ProviderMark family={selector.family} label={selector.label} />
       <span className="v2-live-model-name">{selector.name}</span>
-      {review ? (
-        <span className="v2-live-model-review" data-state={review.state} data-testid="header-model-review">
-          <UiV2Icon name="shield" />
-          <span aria-hidden="true" className="v2-live-model-review-count">{review.count}</span>
-          <span className="v2-sr-only">{review.label}</span>
-        </span>
-      ) : null}
       <UiV2Icon name={locked ? "lock" : "chevron-down"} />
     </button>
   );

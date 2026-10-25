@@ -642,6 +642,19 @@ describe("summarizeMessageRunToolActivity", () => {
     });
   });
 
+  it("shows a reviewed version recorded before Answer Review was removed with its work but never its step's report", () => {
+    const call = (toolName: string, ordinal: number) => ({ completedAt: null, ordinal, roundIndex: 1, startedAt: null,
+      state: "complete", toolName });
+    // The revision step's run as the previous release stored it: its request carries the step's marker.
+    const normalizedRequest = { answerReviewStep: { findingKeys: ["R1.1.F1"], kind: "revision", modelName: "Author", round: 1,
+      sessionId: "session-1", step: 1, version: 1 } };
+    const activity = summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest, status: "complete",
+      toolCalls: [call("read_tool_result", 0), call("record_review_decisions", 1)] });
+    expect(activity?.calls.map((entry) => entry.toolName)).toEqual(["read_tool_result"]);
+    expect(summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest, status: "complete",
+      toolCalls: [call("record_review_decisions", 0)] })).toBeNull();
+  });
+
   it("projects ordered safe labels, status, duration, and an exhausted round warning", () => {
     const activity = summarizeMessageRunToolActivity({
       errorPayload: null,

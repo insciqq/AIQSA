@@ -143,7 +143,6 @@ export type RunChatUpdateRecord = {
     role: string;
     status: string;
     systemTurnKind?: ChatMessageWire["systemTurnKind"];
-    answerReview?: ChatMessageWire["answerReview"];
     toolActivity?: ThreadToolActivity | null;
     workspaceActivity?: ThreadWorkspaceActivity | null;
   }[];
@@ -388,42 +387,6 @@ export class ScheduledOccurrenceConflictError extends Error {
   }
 }
 
-/** An answer review step's admission found its session no longer running, or its step already claimed. */
-export class AnswerReviewStepConflictError extends Error {
-  readonly code: "answer_review_ended" | "answer_review_step_unavailable";
-
-  constructor(code: "answer_review_ended" | "answer_review_step_unavailable") {
-    super(code);
-    this.code = code;
-    this.name = "AnswerReviewStepConflictError";
-  }
-}
-
-/**
- * A send that is a step of an answer review session (server-only, never a
- * request field): its turn claims the step once, both of its messages carry
- * the session, and the session must still be running.
- */
-export type AnswerReviewStepAdmission = Readonly<{ round: number; sessionId: string; step: number }>;
-
-/** Which answer review session a run belongs to: its own chain stays whole in its context. */
-export type ConversationContextOptions = Readonly<{ answerReviewSessionId?: string | null }>;
-
-/**
- * A send or regeneration with automatic answer review on, resolved on the
- * server before admission: the answer's model and the admitted reviewers with
- * their display snapshots, the rounds, and the controls frozen for every step.
- * The admitting transaction creates the answer's automatic session with them
- * and stores the chat's choice.
- */
-export type AnswerReviewAutoAdmission = Readonly<{
-  authorModel: Readonly<{ modelId: string; name: string; provider: string }>;
-  /** `AnswerReviewAutoControls`: the send's step controls and each reviewer's Search. */
-  controls: Readonly<Record<string, unknown>>;
-  maxRounds: 1 | 2 | 3;
-  reviewers: readonly Readonly<{ modelId: string; name: string; provider: string }>[];
-}>;
-
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
@@ -536,22 +499,12 @@ export type CreateRunInput = {
   signal?: AbortSignal;
   /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
   systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
-  /**
-   * An answer review step: the turn claims its step in the admitting
-   * transaction, writes no message-window row, keeps the owner's saved
-   * composer controls and queues no Memory command. Set with `systemTurnKind`.
-   */
-  answerReviewStep?: AnswerReviewStepAdmission;
-  /** Automatic answer review of this send's answer. */
-  answerReviewAuto?: AnswerReviewAutoAdmission;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
 };
 
 export type CreateRegenerationRunInput = {
-  /** Automatic answer review of the new answer (never of a turn the server wrote). */
-  answerReviewAuto?: AnswerReviewAutoAdmission;
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: never;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
@@ -791,22 +744,26 @@ export type RunRepository = {
     };
   } | null>;
   /**
-   * The branch path to the leaf as the model reads it: every answer review
-   * session on it but `options.answerReviewSessionId` reads as its source
-   * question followed by the group's latest version.
+   * The branch path to the leaf as the model reads it: an answer review
+   * recorded before the feature's removal reads as its source question
+   * followed by its latest version (`lib/server/chats/legacyAnswerReviews.ts`).
    */
   loadConversationContextForExpectedLeaf(
     chatId: string,
     userId: string,
-    expectedActiveLeafMessageId: string | null,
-    options?: ConversationContextOptions
+    expectedActiveLeafMessageId: string | null
   ): Promise<ProviderConversationMessage[] | null>;
   loadConversationContextForLeaf(
     chatId: string,
     userId: string,
-    leafMessageId: string,
-    options?: ConversationContextOptions
+    leafMessageId: string
   ): Promise<ProviderConversationMessage[]>;
+  /**
+   * The message the browser reads `leafMessageId` as: a step of an answer
+   * review recorded before the feature's removal reads as the version that
+   * replaces it, any other message as itself.
+   */
+  loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
    * initiating user's current chat access. */

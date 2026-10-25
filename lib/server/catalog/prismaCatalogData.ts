@@ -51,7 +51,6 @@ type CatalogPrismaClient = Pick<
 >;
 
 type UserSettingsRow = {
-  defaultAnswerReview: unknown;
   defaultAssistantId: string | null;
   defaultControlValues: unknown;
   defaultMcpMode: string;
@@ -619,7 +618,6 @@ export function filterExposedSearchOptions(input: {
 }
 
 const catalogSettingsSelect = {
-  defaultAnswerReview: true,
   defaultAssistantId: true,
   defaultControlValues: true,
   defaultMcpMode: true,
@@ -796,7 +794,6 @@ export function createPrismaCatalogDataLoader({
       searchStrategies: exposedSearchOptions,
       settings: {
         ...(defaultAssistantAvailable === undefined ? {} : { defaultAssistantAvailable }),
-        defaultAnswerReview: user.settings.defaultAnswerReview,
         defaultAssistantId,
         defaultControlValues: user.settings.defaultControlValues,
         defaultMcpMode: user.settings.defaultMcpMode,

@@ -2,7 +2,7 @@
 
 AIQSA is a self-hosted, multi-user, model-agnostic agent workspace under the AGPL, built for the operator's colleagues on two production installations; there is no work for a hypothetical outside audience (operator decision 2026-10-22). A chat is an agent with web search, MCP tools, the sandboxed Workspace, image generation, artifacts, Personal Memory, Skills, Assistants, scheduled tasks and saved secrets; administration makes providers, models and tools available and trustworthy. Coding agents write all of the code; the operator sets scope and makes product decisions.
 
-Scope (operator decisions 2026-10-22 and 2026-10-23): Projects and Knowledge (document retrieval) are removed with their data; the Codex Agent mode and OpenSearch are removed. Native Anthropic stays. Memory is kept but frozen: simplify and stabilize only. Assistants, Telegram and Skills stay. The native agent engine replaced the old run core ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
+Scope (operator decisions 2026-10-22 and 2026-10-23): Projects and Knowledge (document retrieval) are removed with their data; the Codex Agent mode and OpenSearch are removed. Answer Review is removed (operator decision 2026-10-25). Native Anthropic stays. Memory is kept but frozen: simplify and stabilize only. Assistants, Telegram and Skills stay. The native agent engine replaced the old run core ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
 
 Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL with pgvector (also the search store), S3-compatible private object storage, a Tika parser sidecar, a KVM Microsandbox Workspace runner, and single-host Docker Compose. `connect/` is a separate Go client.
 

@@ -218,13 +218,6 @@ import {
   loadWorkspaceAvailability,
   resetChatWorkspace
 } from "@/components/app-shell/workspaceClient";
-import { ANSWER_REVIEW_AUTO_DEFAULT, type AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
-import { answerReviewReviewerCandidatesV2 } from "@/features/answer-review-v2/answerReviewModel";
-import {
-  stopAnswerReviewSessionV2,
-  useAnswerReviewAutoV2,
-  useAnswerReviewFollowV2
-} from "@/features/answer-review-v2/useAnswerReviewAutoV2";
 
 export {
   runCatalogLoadDeduped,
@@ -524,8 +517,6 @@ export function PowerAppShellV2({
     accountId
   }), [accountId]);
   const runCatalogRef = useRef<Catalog | null>(catalog);
-  /** The chat's automatic review a send carries now; set from the composer's state below. */
-  const answerReviewSendRef = useRef<() => AnswerReviewAutoConfig | null>(() => null);
   const workspaceRefreshPromiseRef = useRef<Promise<ChatDetail | null> | null>(null);
   const workspaceCapabilityMutationRef = useRef(false);
   const sessionExpiredHandledRef = useRef(false);
@@ -695,7 +686,6 @@ export function PowerAppShellV2({
     selectMcpMode,
     selectModel,
     selectSearchPlan,
-    setDefaultAnswerReview,
     setDefaultAssistant,
     setDefaultMcpMode,
     setDefaultSkillsMode,
@@ -1254,12 +1244,10 @@ export function PowerAppShellV2({
   });
 
   const {
-    continueAnswerReview,
     refreshInterruptedRun,
     regenerateMessage,
     sendContinueTurn,
     sendMcpApprovalContinuation,
-    startAnswerReview,
     sendStarterPrompt,
     submitMessageEdit,
     submitComposer,
@@ -1267,7 +1255,6 @@ export function PowerAppShellV2({
     submitFollowup
   } = useMessageRunActions({
     activeChat,
-    answerReviewForSend: () => answerReviewSendRef.current(),
     activeChatDetailLoading,
     activeChatId,
     activeChatIdRef,
@@ -1567,13 +1554,8 @@ export function PowerAppShellV2({
     handleThreadScroll,
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
-    continueAnswerReview,
     sendContinueTurn,
     sendMcpApprovalContinuation,
-    startAnswerReview,
-    stopAnswerReview: (sessionId: string) => activeChatId
-      ? stopAnswerReviewSessionV2({ chatId: activeChatId, refreshActiveChat, sessionId, setNotice })
-      : Promise.resolve(),
     problemReport: activeChatId ? {
       chatId: activeChatId,
       confirmSent: (outcome: "created" | "updated") => setNotice({
@@ -1652,29 +1634,6 @@ export function PowerAppShellV2({
     if (activeSessionWorkspaceEnabled === workspaceUsable) return;
     useComposerSessionStore.getState().updateSession(activeComposerSessionKey, { workspaceEnabled: workspaceUsable });
   }, [activeComposerSessionKey, activeSessionWorkspaceEnabled, workspaceUsable]);
-  // Automatic answer review of the chat: the next send's frozen choice, the header glyph and the picker's row.
-  const answerReview = useAnswerReviewAutoV2({
-    activeChat,
-    assistantChat: Boolean(composerAssistantState),
-    authorModel: currentModel,
-    defaults: catalog?.defaults.answerReview ?? ANSWER_REVIEW_AUTO_DEFAULT,
-    draftConfig: composerSession.answerReview,
-    models: catalog?.models ?? [],
-    sessionKey: activeComposerSessionKey
-  });
-  useEffect(() => {
-    answerReviewSendRef.current = answerReview.forSend;
-  });
-  // A running automatic review shows live in the open chat and announces its end once. Like the other
-  // background reads, it never races a foreground send, stream or branch change; it reads again later.
-  useAnswerReviewFollowV2({
-    chatId: activeChatId,
-    notifyAnswerReady,
-    refreshActiveChat: (chatId, options) => chatId && (stopping || activeStreamAbortRef.current.has(chatId) ||
-      useRunLifecycleStore.getState().activeStreams[chatId] || pendingBranchCheckouts.has(chatId) ||
-      pendingThreadMutations.has(chatId)) ? Promise.resolve(null) : refreshActiveChat(chatId, options)
-  });
-
   const attachmentLimitContextsRef = useRef(new Map<string, string>());
 
   // Reconcile against the model this message will use.
@@ -1959,11 +1918,6 @@ export function PowerAppShellV2({
       toggleTemporary: toggleTemporaryComposer
     },
     makeModelDefault,
-    answerReview: {
-      save: answerReview.save,
-      saving: answerReview.saving,
-      state: answerReview.state
-    },
     chatDefaults: !catalog ? undefined : {
       assistant: {
         assistantId: catalog.defaults.assistantId ?? null,
@@ -1983,11 +1937,6 @@ export function PowerAppShellV2({
           if (!saved || !settings || useWorkspaceStore.getState().catalogAccountId !== accountId) return;
           setCatalog((current) => current && catalogWithImageEditing(current, effectiveImageEditing(settings)));
         })
-      },
-      answerReview: {
-        candidates: answerReviewReviewerCandidatesV2(catalog.models, []),
-        config: catalog.defaults.answerReview ?? ANSWER_REVIEW_AUTO_DEFAULT,
-        set: setDefaultAnswerReview
       },
       mcpMode: catalog.defaults.mcpMode ?? "auto",
       skillsMode: catalog.defaults.skillsMode ?? "auto",

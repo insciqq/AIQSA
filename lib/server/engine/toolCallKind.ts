@@ -1,6 +1,5 @@
 import type { ToolCallKind } from "../observability";
 import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
-import { RECORD_REVIEW_DECISIONS_TOOL_NAME, SUBMIT_ANSWER_REVIEW_TOOL_NAME } from "../tools/answerReview";
 import { MONITORING_VERDICT_TOOL_NAME } from "../tools/monitoringVerdict";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskCreation";
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskManagement";
@@ -18,9 +17,7 @@ const NAMED_KINDS: ReadonlyMap<string, ToolCallKind> = new Map([
   [CREATE_SCHEDULED_TASK_TOOL_NAME, "scheduled_task"],
   [MANAGE_SCHEDULED_TASK_TOOL_NAME, "scheduled_task"],
   [MONITORING_VERDICT_TOOL_NAME, "monitoring"],
-  [RECORD_REVIEW_DECISIONS_TOOL_NAME, "answer_review"],
-  [SAVE_SKILL_TOOL_NAME, "skill"],
-  [SUBMIT_ANSWER_REVIEW_TOOL_NAME, "answer_review"]
+  [SAVE_SKILL_TOOL_NAME, "skill"]
 ]);
 
 /**

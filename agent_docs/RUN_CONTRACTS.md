@@ -7,7 +7,6 @@ paths:
   - "lib/server/workspace/**"
   - "lib/server/scheduledTasks/**"
   - "lib/server/telegram/**"
-  - "lib/server/answerReviews/**"
   - "lib/server/webFetch/**"
   - "lib/server/engine/**"
 ---
@@ -15,7 +14,7 @@ paths:
 
 How an accepted message becomes an answer: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery and outputs. The pipeline lives in `lib/server/runs/`; tools in `lib/server/tools/`.
 
-The native agent engine (`lib/server/engine/`) replaced the old run core and runs every turn, whichever entry point admits it: personal, temporary and Assistant chats from the web or Telegram, scheduled occurrences, answer review steps, document and Workspace continuations (operator decision 2026-10-23). Admission, preparation and the tool executors stay in `lib/server/runs/` and `lib/server/tools/`. A model the engine cannot run is refused at admission, never answered another way: without tool calling as `model_tool_calling_required`, with an adapter the engine does not render as `model_adapter_unsupported` (`lib/server/engine/handlerSupport.ts`).
+The native agent engine (`lib/server/engine/`) replaced the old run core and runs every turn, whichever entry point admits it: personal, temporary and Assistant chats from the web or Telegram, scheduled occurrences, document and Workspace continuations (operator decision 2026-10-23). Admission, preparation and the tool executors stay in `lib/server/runs/` and `lib/server/tools/`. A model the engine cannot run is refused at admission, never answered another way: without tool calling as `model_tool_calling_required`, with an adapter the engine does not render as `model_adapter_unsupported` (`lib/server/engine/handlerSupport.ts`).
 
 The engine writes the rows the UI, exports, limits and deletion read (`Message`, `ModelRun`, `ModelRunToolCall`, `UsageEvent`). `RunTranscriptItem` adds only the provider-neutral transcript: it holds tool results, stays private to its chat, is never exported and is deleted with its run. Memory search results stay within the run that searched and later turns search again, because Memory rechecks authority before every disclosure (`agent_docs/MEMORY.md`). Answers the old core completed stay ordinary history and enter context as text; a turn it left running ends once as interrupted, with Continue, and is never replayed (`lib/server/runs/retiredEngineRuns.ts`).
 
@@ -38,13 +37,12 @@ Answering the user is the top priority (operator decision 2026-10-22).
 - Admission freezes every non-secret binding the run will use: model, credential, tools, Skills, Search sources, budgets, Workspace runtime. Retries use these bindings, never current settings or browser claims.
 - An Assistant run takes its fixed settings only from the Assistant definition; a chat bound to an Assistant rejects request fields that would override them.
 - Regeneration is an ordinary run through the same pipeline.
-- Context follows the active branch's ancestors, never siblings. A reviewed answer is read as its question plus latest version. User turns stay in context after an error or a partial answer.
+- Context follows the active branch's ancestors, never siblings. An answer review recorded before Answer Review was removed (operator decision 2026-10-25) reads as its question plus latest version, in context as in the chat (`lib/domain/answerReviewTranscript.ts`). User turns stay in context after an error or a partial answer.
 - Context size is measured from the provider's reported usage, so opaque reasoning counts only through provider figures. Compaction runs near the model's real window and writes a summary on every route (decision 2026-10-23: on the quality evaluation summaries kept 21 of 23 facts and 4 of 5 continuations, the provider's native compaction 17 and 2; it stays behind `COMPACTION_LIFECYCLE.native`). Summaries never contain provider reasoning, signatures or attachment identifiers, and the tool results they replace stay readable by reference. A request that cannot fit even after compaction fails visibly.
 - The native system prompt and tool list stay byte-identical across a chat's turns on one day, so provider prompt caches keep reading them: the time of day and what admission records as one turn's own (`prompt.turnGuidance`) ride in run context just before the input and are never recorded (`lib/server/engine/systemPrompt.ts`).
 - The user does not wait for compaction: it runs in the background and its item enters the transcript at a request boundary. Only a request past the swap threshold or rejected for its size waits for it or compacts itself (`lib/server/engine/runContext.ts`). A run never waits after its answer, since a run still open holds off the chat's next message: a compaction still running goes on detached under its own deadline, stops when its chat or account is deleted or the process stops, and its run records the item and marker when it finishes, in one write under the chat lock deletion takes, so nothing lands after the deletion fence; a later run of the chat joins it rather than compacting the same span again (`lib/server/engine/detachedCompactions.ts`). A compaction reads the transcript as later turns read it, so Memory results enter it only as their note, and it never covers the run's own context (Skills index, pinned Skills).
 - Personal presets apply only to personal and temporary chats, never to Assistants. Instructions are never Memory facts.
 - Once accepted, execution belongs to the server: closing the browser does not cancel the run, while Stop, deadlines and deleting the chat or account still end it. A Memory preparation failure answers without Memory instead of failing the run.
-- Automatic answer review steps are ordinary server-driven runs of the initiator, each claimed once.
 
 ## Agent-initiated changes
 

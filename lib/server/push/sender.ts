@@ -4,14 +4,7 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import type { PushServiceClass, PushTransportFailureCategory } from "../observability/events";
 import { browserPushMessage } from "./payload";
 import { PushTransportError, type PushPost } from "./pushTransport";
-import type { AnswerReviewEndedEvent } from "../answerReviews/autoDriver";
-import type {
-  AnswerReviewPushEvent,
-  BrowserPushDeliveryOutcome,
-  BrowserPushEvent,
-  BrowserPushStore,
-  BrowserPushTarget
-} from "./store";
+import type { BrowserPushDeliveryOutcome, BrowserPushEvent, BrowserPushStore, BrowserPushTarget } from "./store";
 import { encryptWebPushPayload, vapidAuthorization, type VapidKeyPair } from "./webPushCrypto";
 
 export type BrowserPushSenderDeps = Readonly<{
@@ -27,9 +20,7 @@ export type BrowserPushSenderDeps = Readonly<{
   subject: string;
 }>;
 
-type QueuedEvent =
-  | Readonly<{ dueAt: number; id: string; kind: "occurrence" | "run" }>
-  | Readonly<{ dueAt: number; ended: AnswerReviewEndedEvent; id: string; kind: "answer_review" }>;
+type QueuedEvent = Readonly<{ dueAt: number; id: string; kind: "occurrence" | "run" }>;
 
 /** Events waiting for the one delivery slot; beyond this a burst drops its pushes (they are best effort). */
 const QUEUE_LIMIT = 500;
@@ -168,16 +159,12 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
       const wait = queued.dueAt - clock().getTime();
       if (wait > 0) await sleep(wait);
       const now = clock();
-      const event = queued.kind === "answer_review"
-        ? await answerReviewEvent(queued.ended, now)
-        : queued.kind === "run"
+      const event = queued.kind === "run"
         ? await deps.store.claimRun(queued.id, now)
         : await deps.store.claimOccurrence(queued.id, now);
       if (!event) return;
       const listed = await deps.store.listTargets(event.userId, clock());
-      // A device that showed the session's last step end on screen saw the result.
-      const shownRunId = queued.kind === "answer_review" ? queued.ended.lastRunId : event.kind === "run" ? queued.id : null;
-      const shown = shownRunId ? takeShownSessions(shownRunId) : new Set<string>();
+      const shown = event.kind === "run" ? takeShownSessions(queued.id) : new Set<string>();
       const targets = listed.filter((target) => !shown.has(target.sessionId));
       if (targets.length < listed.length) {
         log({ action: "skip", code: "push_run_shown_on_device", count: listed.length - targets.length,
@@ -189,14 +176,6 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
       log({ action: "skip", code: "push_repository_failed", job_id: queued.id, outcome: "failed",
         prisma_code: databaseFailureCode(error), stage: "claim" });
     }
-  }
-
-  async function answerReviewEvent(ended: AnswerReviewEndedEvent, now: Date): Promise<AnswerReviewPushEvent | null> {
-    const chat = await deps.store.loadAnswerReviewChat({ chatId: ended.chatId, userId: ended.userId }, now);
-    return chat ? {
-      answerFailed: ended.answerFailed, chatId: ended.chatId, kind: "answer_review", rounds: ended.rounds, state: ended.state,
-      stopReason: ended.stopReason, title: chat.title, userId: ended.userId
-    } : null;
   }
 
   function pump(): void {
@@ -264,14 +243,6 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
     /** A settled scheduled occurrence that notifies its owner. */
     notifyOccurrence(occurrenceId: string): void {
       enqueue({ dueAt: 0, id: occurrenceId, kind: "occurrence" });
-    },
-    /**
-     * The end of an automatic answer review, once per session (its driver
-     * claims it). Sent after `RUN_PUSH_GRACE_MS`, skipping devices that
-     * showed the session's last step end on screen.
-     */
-    notifyAnswerReview(ended: AnswerReviewEndedEvent): void {
-      enqueue({ dueAt: clock().getTime() + RUN_PUSH_GRACE_MS, ended, id: ended.sessionId, kind: "answer_review" });
     },
     /** The page of this session showed the run's end while visible; its push skips the session's devices. */
     runShown(runId: string, sessionId: string): void {

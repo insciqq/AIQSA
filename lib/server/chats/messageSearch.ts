@@ -4,6 +4,7 @@ import {
   type ChatMessageMatchWire
 } from "../../contracts/chats";
 import type { prisma } from "../prisma";
+import { hiddenAnswerReviewMessageIds } from "./legacyAnswerReviews";
 
 /**
  * Bound on one content query. A query matching a large share of an
@@ -110,6 +111,9 @@ export async function findMessageMatches(
   try {
     rows = await client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(MESSAGE_SEARCH_STATEMENT_TIMEOUT_MS)}, true)`;
+      // An answer review recorded before the removal reads as its latest
+      // version: its steps and superseded versions never match.
+      const hidden = await hiddenAnswerReviewMessageIds(tx, input.userId);
       return tx.$queryRaw<MessageMatchRow[]>(Prisma.sql`
         WITH matched AS (
           SELECT message."chatId", message."id", message."createdAt"
@@ -122,6 +126,7 @@ export async function findMessageMatches(
             ${after}
             -- A turn the server wrote for the user is not the user's text.
             AND message."systemTurnKind" IS NULL
+            ${hidden.length > 0 ? Prisma.sql`AND NOT (message."id" = ANY(${hidden}::text[]))` : Prisma.empty}
             AND aiqsa_message_search_text(message."content") ILIKE ${messageSearchPattern(input.query)} ESCAPE '\\'
         ),
         grouped AS (

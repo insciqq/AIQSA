@@ -19,10 +19,10 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * how (issue #54). A tool-free round that still answered only with calls is
  * asked once more for the answer, and an answer that stays empty fails
  * visibly instead of completing (issue #55). A run's one reserved report (a
- * monitoring check's verdict, an answer review step's report) is offered
- * alone once more when its call budget, tool rounds or tool time ran out
- * before it was made; past tool time that round runs inside the answer
- * reserve, and the turn's deadline still ends it.
+ * monitoring check's verdict) is offered alone once more when its call
+ * budget, tool rounds or tool time ran out before it was made; past tool time
+ * that round runs inside the answer reserve, and the turn's deadline still
+ * ends it.
  * Everything the loop knows is the transcript; every effect goes through
  * its ports.
  */

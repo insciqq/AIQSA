@@ -23,12 +23,15 @@ import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
 import type { ProviderConversationMessage } from "../providers/types";
 import {
-  type ConversationContextOptions,
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
-import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
-import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answerReviews/repository";
+import { isAnswerReviewTurnKind } from "../../domain/answerReviewTranscript";
+import {
+  answerReviewStandIn,
+  answerReviewVersionQuestion,
+  collapseChatAnswerReviews
+} from "../chats/legacyAnswerReviews";
 import {
   createPrismaMemoryRunRetrievalService,
   type MemoryRunRetrievalService
@@ -46,7 +49,7 @@ import {
   boundedMemoryAdmissionDeadlineMs,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../memory/admissionDeadline";
-import { signalRunCancelled, signalRunTerminal } from "../push/runTerminalSignal";
+import { signalRunTerminal } from "../push/runTerminalSignal";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
   admitPreparingRunWithClient,
@@ -108,6 +111,7 @@ import { measureTransaction } from "../observability/transactionTiming";
 import { createPrismaRunFollowupOperations, runFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectRunFollowups } from "./runFollowups";
 import { decodeRunFollowupState } from "../../contracts/runFollowups";
+import { isMessageSystemTurnKind } from "../../contracts/mcpApprovals";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -231,8 +235,7 @@ export function createPrismaRunRepository(
   async function loadConversationPath(
     chatId: string,
     userId: string,
-    selector: ConversationPathSelector,
-    options: ConversationContextOptions = {}
+    selector: ConversationPathSelector
   ): Promise<{ chatMatched: boolean; messages: ProviderConversationMessage[] }> {
     const access = await resolveChatAccess(prismaClient, {
       chatId,
@@ -335,43 +338,25 @@ export function createPrismaRunRepository(
     }
     return {
       chatMatched: rows.length > 0,
-      // Only an explicit leaf is the run's own turn (a regeneration answers it
-      // again); a send's expected leaf is the previous message and collapses.
-      messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(rows, chatId, options,
-        selector.kind === "explicit"))
+      messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(rows, chatId))
     };
   }
 
   /**
-   * The path as runs read it (Run contracts): each answer review session
-   * other than the run's own collapses to its source question followed by
-   * the group's latest version. `keepLeaf` keeps the path's leaf when it is
-   * the run's own turn, which a regeneration answers again even inside a
-   * session; any other leaf collapses like every member.
+   * The path as runs read it (Run contracts): an answer review recorded
+   * before the feature's removal reads as its source question followed by
+   * its latest version, never its steps.
    */
-  async function collapsedAnswerReviewRows(
-    rows: ConversationPathRow[],
-    chatId: string,
-    options: ConversationContextOptions,
-    keepLeaf: boolean
-  ): Promise<ConversationPathRow[]> {
+  async function collapsedAnswerReviewRows(rows: ConversationPathRow[], chatId: string): Promise<ConversationPathRow[]> {
     if (!rows.some((row) => row.messageAnswerReviewSessionId)) return rows;
-    const sessions = await prismaClient.answerReviewSession.findMany({
-      select: { id: true, sourceAssistantMessageId: true },
-      where: { chatId, id: { in: [...new Set(rows.flatMap((row) => row.messageAnswerReviewSessionId ?? []))] } }
-    }).catch(retainRunPrismaCode);
-    const leaf = keepLeaf ? rows.at(-1)?.messageId : undefined;
-    const collapse = collapseAnswerReviews(rows.flatMap((row) => row.messageId ? [{
+    const collapse = await collapseChatAnswerReviews(prismaClient, chatId, rows.flatMap((row) => row.messageId ? [{
       answerReviewSessionId: row.messageAnswerReviewSessionId ?? null,
       id: row.messageId,
       parentId: row.messageParentId ?? null,
       role: row.messageRole ?? "",
       status: row.messageStatus ?? "",
       systemTurnKind: row.messageSystemTurnKind ?? null
-    }] : []), sessions, {
-      ...(leaf ? { keepMessageIds: new Set([leaf]) } : {}),
-      keepSessionId: options.answerReviewSessionId ?? null
-    });
+    }] : [])).catch(retainRunPrismaCode);
     return rows.filter((row) => !row.messageId || !collapse.removed.has(row.messageId));
   }
 
@@ -445,7 +430,7 @@ export function createPrismaRunRepository(
     ...mcpDiscoveryOperations,
     ...toolLoopOperations,
     cancelRun: async (input) => {
-      const cancellation = await measureTransaction({ subsystem: "runs", operation: "run_cancel" }, async (tx) => {
+      return measureTransaction({ subsystem: "runs", operation: "run_cancel" }, async (tx) => {
         const lockedRun = await lockPreparingRun(tx, input.runId, input.userId);
         const updatedCount = lockedRun?.status === "preparing"
           ? Number(await settlePreparingRunInTransaction(tx, {
@@ -538,9 +523,6 @@ export function createPrismaRunRepository(
           }
         } as const;
       }, (body) => prismaClient.$transaction(body)).catch(retainRunPrismaCode);
-      // After commit; browser push never notifies the user's own cancellation.
-      if (cancellation.kind === "cancelled") signalRunCancelled(input.runId);
-      return cancellation;
     },
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input,
@@ -835,7 +817,8 @@ export function createPrismaRunRepository(
               content: true,
               id: true,
               role: true,
-              scheduledTaskPrompt: true
+              scheduledTaskPrompt: true,
+              systemTurnKind: true
             }
           }
         },
@@ -849,7 +832,8 @@ export function createPrismaRunRepository(
         }
       }).catch(retainRunPrismaCode);
 
-      if (!sourceMessage) {
+      // A turn the server wrote for an answer review step is never answered again.
+      if (!sourceMessage || isAnswerReviewTurnKind(sourceMessage.systemTurnKind)) {
         return null;
       }
 
@@ -895,7 +879,18 @@ export function createPrismaRunRepository(
         };
       }
 
-      if (!sourceMessage.parent || sourceMessage.parent.role !== "user") {
+      // A version of an answer review recorded before the feature's removal
+      // answers its source question, as every reader sees it: regenerating it
+      // answers that question again, never the revision request.
+      const question = sourceMessage.parent && isAnswerReviewTurnKind(sourceMessage.parent.systemTurnKind)
+        ? await answerReviewVersionQuestion(prismaClient, sourceMessage.chat.id, sourceMessage.id).then((questionId) => questionId
+          ? prismaClient.message.findFirst({
+            select: { content: true, id: true, role: true, scheduledTaskPrompt: true, systemTurnKind: true },
+            where: { chatId: sourceMessage.chat.id, id: questionId }
+          })
+          : null).catch(retainRunPrismaCode)
+        : sourceMessage.parent;
+      if (!question || question.role !== "user" || isAnswerReviewTurnKind(question.systemTurnKind)) {
         return null;
       }
 
@@ -923,7 +918,7 @@ export function createPrismaRunRepository(
       const normalizedRequest = sourceRun?.normalizedRequest;
       const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
         ? normalizedRequest.artifactEdit : undefined;
-      const memory = await scheduledTaskMemory({ ...sourceMessage.parent, chatId: sourceMessage.chat.id }, userId);
+      const memory = await scheduledTaskMemory({ ...question, chatId: sourceMessage.chat.id }, userId);
 
       return {
         ...(regenerationFollowups?.entries.length ? { followups: { messageId: sourceMessage.id,
@@ -937,9 +932,9 @@ export function createPrismaRunRepository(
         },
         chat,
         userMessage: {
-          content: sourceMessage.parent.content,
-          id: sourceMessage.parent.id,
-          scheduledTaskPrompt: sourceMessage.parent.scheduledTaskPrompt,
+          content: question.content,
+          id: question.id,
+          scheduledTaskPrompt: question.scheduledTaskPrompt,
           ...(memory ? { scheduledTaskMemory: true as const } : {})
         }
       };
@@ -1141,13 +1136,10 @@ export function createPrismaRunRepository(
 
         const runIds = chat.messages.flatMap((message) =>
           message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
-        // A review step's turn and answer carry their session for the live transcript.
-        const answerReviews = await loadAnswerReviewProjection(tx, { chatId, messages: chat.messages.map((message) => ({
-          answerReviewRound: message.answerReviewRound, answerReviewSessionId: message.answerReviewSessionId,
-          answerReviewStep: message.answerReviewStep, id: message.id, parentMessageId: message.parentMessageId, role: message.role,
-          stepModelName: answerReviewStepModelName(message.assistantModelRuns[0]?.normalizedRequest),
-          systemTurnKind: message.systemTurnKind
-        })), viewerUserId: userId });
+        // A send after an answer review recorded before the feature's removal may follow one of its steps,
+        // which the transcript reads as the version standing for it.
+        const userParentId = chat.messages.find((message) => message.id === userMessageId)?.parentMessageId ?? null;
+        const visibleUserParentId = userParentId ? await answerReviewStandIn(tx, chatId, userParentId) : null;
         const [
           { contextStats, usageStats },
           memoryActionsByRun,
@@ -1208,12 +1200,11 @@ export function createPrismaRunRepository(
               id: message.id,
               modelId: message.modelId,
               modelRunId: modelRun?.id ?? null,
-              parentMessageId: message.parentMessageId,
+              parentMessageId: message.id === userMessageId ? visibleUserParentId : message.parentMessageId,
               provider: message.provider,
               role: message.role,
               status: message.status,
-              ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
-              ...(answerReviews.get(message.id) ? { answerReview: answerReviews.get(message.id) } : {}),
+              ...(isMessageSystemTurnKind(message.systemTurnKind) ? { systemTurnKind: message.systemTurnKind } : {}),
               ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
                 projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
                   ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
@@ -1228,22 +1219,23 @@ export function createPrismaRunRepository(
     loadConversationContextForExpectedLeaf: async (
       chatId,
       userId,
-      expectedActiveLeafMessageId,
-      options
+      expectedActiveLeafMessageId
     ) => {
       const context = await loadConversationPath(chatId, userId, {
         kind: "expected",
         leafMessageId: expectedActiveLeafMessageId
-      }, options);
+      });
       return context.chatMatched ? context.messages : null;
     },
-    loadConversationContextForLeaf: async (chatId, userId, leafMessageId, options) => {
+    loadConversationContextForLeaf: async (chatId, userId, leafMessageId) => {
       const context = await loadConversationPath(chatId, userId, {
         kind: "explicit",
         leafMessageId
-      }, options);
+      });
       return context.messages;
     },
+    loadVisibleLeafMessageId: (chatId, leafMessageId) =>
+      answerReviewStandIn(prismaClient, chatId, leafMessageId).catch(retainRunPrismaCode),
     loadSystemTurnMessageIds: async ({ chatId, messageIds }) => {
       const ids = [...new Set(messageIds)];
       if (ids.length === 0) return new Set();

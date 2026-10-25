@@ -27,7 +27,6 @@ import {
   useComposerControlStore
 } from "@/components/app-shell/composerControlStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import type { AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { isSearchCombinationCompatible, reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
@@ -599,11 +598,6 @@ export function useRunControlsActions({
     void persistUserDefaults({ skillsMode: mode }, { noticeScope: "settings" });
   }
 
-  /** The automatic answer review new personal chats start with; open chats keep their own. */
-  function setDefaultAnswerReview(config: AnswerReviewAutoConfig) {
-    void persistUserDefaults({ answerReview: config }, { noticeScope: "settings" });
-  }
-
   /** Choosing or clearing the default Assistant also clears its unavailable mark. */
   function setDefaultAssistant(assistantId: string | null) {
     void persistUserDefaults({ assistantId, assistantUnavailable: false }, { noticeScope: "settings" });
@@ -721,7 +715,6 @@ export function useRunControlsActions({
     selectMcpMode,
     selectModel,
     selectSearchPlan,
-    setDefaultAnswerReview,
     setDefaultAssistant,
     setDefaultMcpMode,
     setDefaultSkillsMode,

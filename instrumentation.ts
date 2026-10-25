@@ -65,15 +65,6 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ error, subsystem: "telegram", stage: "startup", code: "telegram_startup_failed", action: "degrade" });
     }
     try {
-      const { startDefaultAnswerReviewDriver } = await import("./lib/server/answerReviews/defaultAutoDriver");
-      startDefaultAnswerReviewDriver();
-      reportSubsystemHealthy("answer_review", "startup");
-    } catch (error) {
-      // Automatic review is feature-local: running sessions wait in PostgreSQL
-      // and resume when the driver starts; chats and manual review keep working.
-      reportSubsystemFailure({ error, subsystem: "answer_review", stage: "startup", code: "answer_review_driver_failed", action: "degrade" });
-    }
-    try {
       const { startDefaultUsageLimitAlerts } = await import("./lib/server/usageLimits/defaultAlerts");
       startDefaultUsageLimitAlerts();
       reportSubsystemHealthy("usage_alerts", "startup");
