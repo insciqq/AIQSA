@@ -1098,8 +1098,11 @@
  * the reading area and above the composer, so it never covers readable thread
  * content where the column leaves no side gutter for it (a phone on its side,
  * a tablet upright, a narrow window beside the sidebar). It paints over the
- * band; an open composer layer still lifts the dock above it. Phones keep the
- * control over the reserved left lane: their band is too short for it.
+ * band; an open composer layer still lifts the dock above it. A phone's band
+ * is shorter (1.5rem, see the max-width: 767px block), so there the band grows
+ * upward to the same 2.75rem only while the control is shown: a paint-only
+ * fade above the dock that changes neither its measured height nor the
+ * thread's layout, and the control rests on the composer's top edge.
  */
 @media (min-width: 768px) {
   .v2-live-conversation .v2-conversation-jump-latest {
@@ -1112,6 +1115,33 @@
   /* The 44px touch control fills the band exactly. */
   .v2-live-conversation .v2-conversation-jump-latest {
     bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band) + (var(--v2-live-dock-band) - 2.75rem) / 2));
+  }
+}
+
+@media (max-width: 767px) {
+  .v2-live-conversation .v2-conversation-jump-latest {
+    z-index: 16;
+    bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band) + (2.75rem - 2rem) / 2));
+  }
+
+  /* The phone's fade, shifted up to span 2.75rem above the composer. It sits
+     under the dock's own children (z-index -1 in the dock's context). */
+  .v2-live-conversation:has(.v2-conversation-jump-latest) .v2-live-composer-dock::before {
+    position: absolute;
+    z-index: -1;
+    top: calc(var(--v2-live-dock-band) - 2.75rem);
+    right: 0;
+    left: 0;
+    height: 2.75rem;
+    background: linear-gradient(to bottom, transparent, var(--v2-color-canvas) 1.25rem);
+    content: "";
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
+  .v2-live-conversation .v2-conversation-jump-latest {
+    bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band)));
   }
 }
 
