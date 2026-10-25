@@ -61,10 +61,6 @@ function repository(
       generationId: null,
       kind: "incompatible" as const
     })),
-    rollbackGeneration: vi.fn(async () => ({
-      activeGenerationId: null,
-      kind: "generation_incompatible" as const
-    })),
     status: vi.fn(async () => status),
     wakeShadow: vi.fn(async () => 1),
     ...overrides

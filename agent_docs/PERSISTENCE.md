@@ -31,7 +31,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - Release database locks before guest or file I/O.
 - A side-effecting call whose outcome is unknown stays unknown, after recovery and after a restore (`agent_docs/RUN_CONTRACTS.md`).
 - Derived Memory and history data re-proves owner, source, lifecycle and generation authority when used, including during purge. Projection and deletion obligations outlive their source, so a stale retry cannot resurrect deleted content.
-- Index replacement keeps the serving index until the new one passes a full integrity proof. Memory cutover and rollback switch one immutable generation, never repair pointers piecemeal.
+- Index replacement keeps the serving index until the new one passes a full integrity proof. A Memory cutover switches one immutable generation, never repairing pointers piecemeal.
 - Workspace originals and outputs survive runtime loss. Expiry or cancellation does not prove cleanup, so uncertainty blocks the session. Completed exports never downgrade, and lack of capacity may reject an export but never evicts another answer's files.
 
 ## Migrations And Bootstrap

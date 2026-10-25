@@ -63,7 +63,7 @@ Maintenance runs whenever Memory and automatic learning are on (`lib/server/memo
 
 - Forget, edit, exclusion, pause and reset fence synchronously before cleanup, so old jobs, vectors or evidence cannot resurrect content. Deletion stays retryable.
 - Legacy rows never gain new authority, and identity migration never rewrites accepted keys (`lib/server/memory/learning/identity/compatibility.ts`).
-- Retrieval revisions are separate from content generations, so reindexing cannot orphan semantic evidence. A cutover builds a shadow generation, proves coverage, switches one pointer and keeps an exact rollback, never replaying learning or tool effects.
+- Retrieval revisions are separate from content generations, so reindexing cannot orphan semantic evidence. A cutover builds a shadow generation, proves coverage and switches one pointer, never replaying learning or tool effects. There is no rollback: nothing reads a superseded generation, so Memory maintenance deletes its search entries in bounded batches right away and keeps only the generation row, which bindings and attempts reference (decision 2026-10-25, `lib/server/memory/rebuild/supersededRetention.ts`).
 - A full rebuild re-embeds the owner's whole Memory and costs money, so only a configuration change or a genuinely lagging index may start one, with a logged reason (`lib/server/memory/rebuild/admissionReason.ts`).
 - Backup and restore duties are in `agent_docs/PERSISTENCE.md`.
 
