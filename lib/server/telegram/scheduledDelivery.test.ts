@@ -105,7 +105,7 @@ function setup(options: Readonly<{
   });
   const refs: TelegramMessageRef[] = [];
   const outbound = createTelegramOutbound({
-    api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks: { create: async () => [] },
+    api, botId: fake.bot.id, callbacks: { create: async () => [] },
     messageRefs: { record: async (entries) => { refs.push(...entries); } }
   });
   const session: TelegramBotSession = { api, botId: fake.bot.id, botUsername: fake.bot.username, generation: 1, outbound };
@@ -149,7 +149,7 @@ function richText(message: TelegramInputRichMessage): string {
 }
 
 describe("Telegram scheduled delivery", () => {
-  it("sends a result as one message: the heading, the rendered result and Open in AIQSA, referenced to the run's chat", async () => {
+  it("sends a result as one message: the heading and the rendered result, with no button, referenced to the run's chat", async () => {
     const capture = await captureRunObservation();
     const h = setup();
     await h.sender.queue("occurrence-1");
@@ -161,7 +161,8 @@ describe("Telegram scheduled delivery", () => {
     expect(validateTelegramRichMessage(message)).toMatchObject({ ok: true });
     expect(message.blocks[0]).toEqual({ type: "paragraph", text: [{ type: "bold", text: "Morning brief" }, "\nAutomation finished"] });
     expect(richText(message)).toContain(SENTINEL);
-    expect(sent!.params.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] });
+    // No link back to AIQSA (operator decision 2026-10-25): the result carries no button at all.
+    expect(sent!.params).not.toHaveProperty("reply_markup");
     // A reply to it continues the run's chat from its answer.
     expect(h.refs).toEqual([{ botId: h.fake.bot.id, chatId: "chat-1", linkId: "link-1", messageId: "answer-1",
       telegramChatId: h.user.id, telegramMessageId: 1, userId: "user-1" }]);
@@ -186,7 +187,7 @@ describe("Telegram scheduled delivery", () => {
     expect(h.fake.calls("sendRichMessage")).toHaveLength(0);
     const [sent] = h.fake.calls("sendMessage");
     expect(sent!.params.text).toMatch(/^Morning brief\nAutomation paused\n\S/u);
-    expect(sent!.params.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] });
+    expect(sent!.params).not.toHaveProperty("reply_markup");
     expect(h.refs).toEqual([expect.objectContaining({ chatId: "chat-1", messageId: null })]);
     expect(h.row().state).toBe("sent");
   });
@@ -478,7 +479,7 @@ describe("Telegram scheduled delivery", () => {
     ]);
     const last = h.fake.botMessages(h.user.id).at(-1)!;
     expect(last.text).toBe("1 file couldn't be sent here; it's in AIQSA.");
-    expect(last.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] });
+    expect(last.reply_markup).toBeUndefined();
     expect(h.row().state).toBe("sent");
   });
 
@@ -514,10 +515,9 @@ describe("Telegram scheduled delivery", () => {
     slow.advance(TELEGRAM_FILES_EXPORT_WAIT_MS);
     slow.timers[0]!.wake();
     await slow.sender.idle();
-    expect(slow.fake.botMessages(slow.user.id).at(-1)).toMatchObject({
-      reply_markup: { inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] },
-      text: "More files are still being prepared in AIQSA."
-    });
+    const prepared = slow.fake.botMessages(slow.user.id).at(-1)!;
+    expect(prepared.text).toBe("More files are still being prepared in AIQSA.");
+    expect(prepared.reply_markup).toBeUndefined();
     expect(slow.row().state).toBe("sent");
   });
 
@@ -526,8 +526,7 @@ describe("Telegram scheduled delivery", () => {
     const messages = parts.flatMap((part) => part.kind === "content" ? [part.message] : []);
     expect(messages.length).toBeGreaterThanOrEqual(2);
     for (const message of messages) expect(validateTelegramRichMessage(message)).toMatchObject({ ok: true });
-    expect(parts.filter((part) => part.kind === "content" && part.openInAiqsa)).toHaveLength(1);
-    expect(parts.at(-1)).toMatchObject({ kind: "content", openInAiqsa: true });
+    expect(parts.at(-1)).toMatchObject({ kind: "content" });
   });
 
   it("registers its codes among the sorted failure codes", () => {

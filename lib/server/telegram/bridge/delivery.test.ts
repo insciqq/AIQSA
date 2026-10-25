@@ -38,7 +38,7 @@ async function setup(answer: TelegramRunAnswer, afterRich: (h: Readonly<{ revoke
   };
   const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {}, token: fake.token, transport });
   const outbound = createTelegramOutbound({
-    api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks: { create: async ({ buttons }) => buttons.map(() => "c:x") },
+    api, botId: fake.bot.id, callbacks: { create: async ({ buttons }) => buttons.map(() => "c:x") },
     messageRefs: { record: async () => undefined }
   });
   const session: TelegramBotSession = { api, botId: fake.bot.id, botUsername: fake.bot.username, generation: 1, outbound };

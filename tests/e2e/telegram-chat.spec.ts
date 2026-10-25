@@ -34,7 +34,6 @@ const CHAT_BOT_TOKEN = "100000003:AAFakeTelegramChatBotTokenForTests_0000";
 const CHAT_BOT_USERNAME = "aiqsa_chat_test_bot";
 const FIRST_UPDATE_ID = Math.floor(Date.now() / 1_000);
 const TELEGRAM_ID_BASE = 950_000_000_000 + (Date.now() % 10_000_000_000) * 10;
-const HTTPS_INSTALLATION = (process.env.AIQSA_E2E_APP_BASE_URL?.trim() ?? "").startsWith("https://");
 /** Four Telegram-sized parts the merge window joins into one long question: the fake answer streams for many seconds. */
 const LONG_PARTS = Array.from({ length: 4 }, (_, index) => `Part ${index + 1}. ${"synthetic ".repeat(390).trim()}`);
 
@@ -217,11 +216,9 @@ test("a text message becomes a new personal chat: a Thinking… draft, paced dra
   const answerText = messageText(messages[1]!);
   expect(answerText).toContain("Fake answer:");
 
-  // The final message is the renderer's output for the persisted answer, with Open in AIQSA on https.
+  // The final message is the renderer's output for the persisted answer, with no button.
   expect(answer.params.rich_message).toEqual(renderTelegramAnswer(answerText).messages[0]);
-  expect(answer.params.reply_markup).toEqual(HTTPS_INSTALLATION
-    ? { inline_keyboard: [[{ text: TELEGRAM_COPY.openInAiqsa, url: expect.stringMatching(new RegExp(`/c/${chatId}$`, "u")) }]] }
-    : undefined);
+  expect(answer.params.reply_markup).toBeUndefined();
 
   // Thinking… first, then the answer so far, one draft id with Telegram's own Stop, at most one draft per 1.1 s.
   const drafts = [...callsSince(since, "sendMessageDraft", tgAlice.id), ...callsSince(since, "sendRichMessageDraft", tgAlice.id)];

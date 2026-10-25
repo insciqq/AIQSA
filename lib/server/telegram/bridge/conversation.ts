@@ -195,7 +195,7 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
   }
 
   async function say(bot: TelegramBotSession, chatId: number, text: string, extra: Readonly<{
-    chatId?: string; keyboard?: TelegramKeyboard; linkId?: string; openInAiqsa?: boolean; replyTo?: number; userId?: string;
+    chatId?: string; keyboard?: TelegramKeyboard; linkId?: string; replyTo?: number; userId?: string;
   }> = {}): Promise<void> {
     try {
       await bot.outbound.sendText({
@@ -203,7 +203,7 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
         ...(extra.keyboard ? { keyboard: extra.keyboard, linkId: extra.linkId } : {}),
         ...(extra.replyTo ? { replyTo: extra.replyTo } : {}),
         ...(extra.chatId && extra.linkId && extra.userId
-          ? { openInAiqsa: extra.openInAiqsa === true, owner: { chatId: extra.chatId, linkId: extra.linkId, userId: extra.userId } }
+          ? { owner: { chatId: extra.chatId, linkId: extra.linkId, userId: extra.userId } }
           : {})
       });
     } catch (error) {
@@ -333,7 +333,7 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
       : reply.action === "settings" ? [[{ callback: { kind: "open_settings" }, text: TELEGRAM_COPY.openSettings }]] : undefined;
     await say(request.bot, link.telegramChatId, reply.text, {
       ...(keyboard ? { keyboard } : {}), linkId: link.id, ...(request.replyTo === null ? {} : { replyTo: request.replyTo }),
-      ...(reply.action === "open" && chatId && !reply.chatGone ? { chatId, openInAiqsa: true, userId: link.userId } : {})
+      ...(reply.action === "open" && chatId && !reply.chatGone ? { chatId, userId: link.userId } : {})
     });
   }
 
