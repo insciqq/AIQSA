@@ -230,6 +230,27 @@ describe("durable Memory command worker", () => {
     }) }));
   });
 
+  it.each([
+    [false, "SAVE"],
+    [true, "UNKNOWN"]
+  ] as const)("records a rejected save (this chat only: %s) as operation %s", async (thisChatOnly, operation) => {
+    const saved = { ...intent, action: "SAVE" as const, statement: "I prefer green",
+      reasonCode: "save_request" as const, thisChatOnly };
+    const f = fixture();
+    f.control.decide.mockResolvedValueOnce({ bindingId: "binding", intent: saved, status: "READY" });
+    mocks.execute.mockResolvedValueOnce(thisChatOnly
+      ? { operation: "SAVE", statement: "I prefer green", status: "THIS_CHAT_ONLY" }
+      : { operation: "SAVE", status: "REJECTED" });
+    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_rejected" });
+    expect(f.client.memoryJob.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      commandOperation: operation
+    }) }));
+    // Neither releases automatic learning: only a conclusive NONE does.
+    expect(f.client.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      commandStatus: "REJECTED", commandResult: Prisma.DbNull
+    }) }));
+  });
+
   it("releases automatic learning for a real NONE decision without a confidence field", async () => {
     const decoded = decodeMemoryActionControlDecision({ decision: {
       action: "NONE", reasonCode: "no_memory_request"

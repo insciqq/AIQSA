@@ -173,9 +173,12 @@ export function createPrismaMemoryCommandHandler(
         const saved = await withLockedMemoryTransaction(client, job.userId, async (tx) => {
           await requireMemoryCommandSource(tx, job.userId, job.id, job.claimToken, context.now());
           const action = accepted.intent.action;
+          // A this-chat-only save never writes Memory, so it is no SAVE the
+          // user should hear was not saved; extraction stays excluded.
+          const operation = action === "SAVE" && accepted.intent.thisChatOnly ? "UNKNOWN" : action;
           await tx.memoryJob.update({ where: { id: job.id }, data: {
             commandIntent: checkpoint as unknown as Prisma.InputJsonValue,
-            commandOperation: action === "SAVE" || action === "UPDATE" || action === "FORGET" ? action : "UNKNOWN"
+            commandOperation: operation === "SAVE" || operation === "UPDATE" || operation === "FORGET" ? operation : "UNKNOWN"
           } });
           return true;
         }).catch(() => false);
