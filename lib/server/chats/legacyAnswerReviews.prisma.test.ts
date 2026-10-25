@@ -13,8 +13,9 @@ import { createPrismaChatRepository } from "./prismaRepository";
 /**
  * An answer review the previous release recorded before Answer Review was
  * removed (operator decision 2026-10-25) reads as its question and latest
- * version wherever the browser looks, and every action on that version acts
- * on an answer of the question.
+ * version wherever the chat is read, and every action on that version acts
+ * on an answer of the question. The fixtures write the rows as that release
+ * did; nothing here dispatches to a provider.
  */
 
 afterAll(() => prisma.$disconnect());
@@ -35,31 +36,41 @@ async function withUser<T>(run: (userId: string) => Promise<T>): Promise<T> {
   }
 }
 
-/** Question, answer, a review and the revision (round 1), then a second round's review; the chat's leaf as given. */
-async function reviewedChat(userId: string, leaf: "a2" | "r2") {
+type Say = (role: "assistant" | "user", text: string, parentMessageId: string | null,
+  extra?: Partial<Prisma.MessageUncheckedCreateInput>) => Promise<string>;
+
+/** A personal chat with a question, its answer and that answer's session, as the previous release wrote them. */
+async function sessionChat(userId: string) {
   const chat = await prisma.chat.create({ data: { answerReviewConfig: storedAutoReview,
     defaultProviderModelId: providerTemplateIds.fakeModel, title: "Reviewed", userId } });
-  const say = (role: "assistant" | "user", text: string, parentMessageId: string | null,
-    extra: Partial<Prisma.MessageUncheckedCreateInput> = {}) => prisma.message.create({ data: {
-    chatId: chat.id, content: textMessageContent(text), parentMessageId, role, status: "complete", ...extra } });
+  const say: Say = async (role, text, parentMessageId, extra = {}) => (await prisma.message.create({ data: {
+    chatId: chat.id, content: textMessageContent(text), parentMessageId, role, status: "complete", ...extra
+  }, select: { id: true } })).id;
   const q = await say("user", "Question", null);
-  const a1 = await say("assistant", "First answer", q.id);
+  const a1 = await say("assistant", "First answer", q);
   const session = await prisma.answerReviewSession.create({ data: {
     authorModel: { modelId: "fake-qsa", name: "Fake QSA", provider: "fake" }, chatId: chat.id, mode: "manual",
-    reviewers: [{ modelId: "fixture-reviewer", name: "Reviewer", provider: "fake" }], sourceAssistantMessageId: a1.id, userId
+    reviewers: [{ modelId: "fixture-reviewer", name: "Reviewer", provider: "fake" }], sourceAssistantMessageId: a1, userId
   } });
   const turn = (round: number, step: number, kind: "answer_review_request" | "answer_revision_request") =>
     ({ answerReviewRound: round, answerReviewSessionId: session.id, answerReviewStep: step, systemTurnKind: kind });
   const member = { answerReviewSessionId: session.id };
-  const t1 = await say("user", "Review the previous answer.", a1.id, turn(1, 0, "answer_review_request"));
-  const r1 = await say("assistant", "Review submitted: one finding.", t1.id, member);
-  const t2 = await say("user", "Revise the answer.", r1.id, turn(1, 1, "answer_revision_request"));
-  const a2 = await say("assistant", "Revised answer", t2.id, member);
-  const t3 = await say("user", "Review the previous answer.", a2.id, turn(2, 0, "answer_review_request"));
-  const r2 = await say("assistant", "Review submitted: no substantive issues.", t3.id, member);
-  const ids = { a1: a1.id, a2: a2.id, chat: chat.id, q: q.id, r1: r1.id, r2: r2.id, t1: t1.id, t2: t2.id, t3: t3.id };
-  await prisma.chat.update({ data: { activeLeafMessageId: ids[leaf] }, where: { id: chat.id } });
-  return ids;
+  const setLeaf = (messageId: string) => prisma.chat.update({ data: { activeLeafMessageId: messageId }, where: { id: chat.id } });
+  return { a1, chat: chat.id, member, q, say, setLeaf, turn };
+}
+
+/** Then a review and the revision (round 1) and a second round's review; the chat's leaf as given. */
+async function reviewedChat(userId: string, leaf: "a2" | "r2") {
+  const { a1, chat, member, q, say, setLeaf, turn } = await sessionChat(userId);
+  const t1 = await say("user", "Review the previous answer.", a1, turn(1, 0, "answer_review_request"));
+  const r1 = await say("assistant", "Review submitted: one finding.", t1, member);
+  const t2 = await say("user", "Revise the answer.", r1, turn(1, 1, "answer_revision_request"));
+  const a2 = await say("assistant", "Revised answer", t2, member);
+  const t3 = await say("user", "Review the previous answer.", a2, turn(2, 0, "answer_review_request"));
+  const r2 = await say("assistant", "Review submitted: no substantive issues.", t3, member);
+  const ids = { a1, a2, chat, q, r1, r2, t1, t2, t3 };
+  await setLeaf(ids[leaf]);
+  return { ...ids, say };
 }
 
 function runInput(chatId: string, userId: string, question: string): Parameters<RunRepository["createRun"]>[0] {
@@ -84,6 +95,7 @@ function regenerationInput(chatId: string, userId: string, userMessageId: string
 
 const leafOf = async (chatId: string) => (await prisma.chat.findUniqueOrThrow({ select: { activeLeafMessageId: true },
   where: { id: chatId } })).activeLeafMessageId;
+const idsOf = (messages: readonly Readonly<{ id?: string }>[] | null) => messages?.map((message) => message.id) ?? null;
 
 describe("an answer review recorded before the removal", () => {
   it("reads as its question and latest version in the chat and its branch graph", async () => {
@@ -132,21 +144,69 @@ describe("an answer review recorded before the removal", () => {
     });
   });
 
-  it("takes a send after a step under that step and shows it under the version", async () => {
+  it("takes a send after a step under that step, shows it under the version and gives it the version as context", async () => {
     await withUser(async (userId) => {
       const ids = await reviewedChat(userId, "r2");
       const runs = createPrismaRunRepository(prisma);
       expect(await runs.loadVisibleLeafMessageId?.(ids.chat, ids.r2)).toBe(ids.a2);
       expect(await runs.loadVisibleLeafMessageId?.(ids.chat, ids.q)).toBe(ids.q);
+      expect(idsOf(await runs.loadConversationContextForExpectedLeaf(ids.chat, userId, ids.r2))).toEqual([ids.q, ids.a2]);
       const created = await runs.createRun({ ...runInput(ids.chat, userId, "Next question"), expectedActiveLeafId: ids.r2 });
       await expect(prisma.message.findUniqueOrThrow({ select: { parentMessageId: true }, where: { id: created.userMessageId } }))
         .resolves.toEqual({ parentMessageId: ids.r2 });
+      expect(idsOf(await runs.loadConversationContextForLeaf(ids.chat, userId, created.userMessageId)))
+        .toEqual([ids.q, ids.a2, created.userMessageId]);
       const update = await runs.getChatUpdateForRun({ assistantMessageId: created.assistantMessageId, chatId: ids.chat, userId,
         userMessageId: created.userMessageId });
       expect(update?.messages.find((message) => message.id === created.userMessageId)?.parentMessageId).toBe(ids.a2);
       const detail = await createPrismaChatRepository(prisma).getChat({ chatId: ids.chat, userId });
       expect(detail?.messages.map((message) => [message.id, message.parentMessageId])).toEqual([[ids.q, null], [ids.a2, ids.q],
         [created.userMessageId, ids.a2], [created.assistantMessageId, created.userMessageId]]);
+    });
+  });
+
+  it("gives later turns the source answer when no revision completed, after a stopped step or an approval", async () => {
+    await withUser(async (userId) => {
+      const { a1, chat, member, q, say, turn } = await sessionChat(userId);
+      const t1 = await say("user", "Review the previous answer.", a1, turn(1, 0, "answer_review_request"));
+      // Stopped with partial text, which a path keeps for a stopped ordinary answer.
+      const r1 = await say("assistant", "I checked the first figure and", t1, { ...member, status: "cancelled" });
+      const t2 = await say("user", "Revise the answer.", r1, turn(1, 1, "answer_revision_request"));
+      const stopped = await say("assistant", "The total is", t2, { ...member, status: "cancelled" });
+      const runs = createPrismaRunRepository(prisma);
+      for (const leaf of [r1, stopped]) {
+        expect(idsOf(await runs.loadConversationContextForExpectedLeaf(chat, userId, leaf)), leaf).toEqual([q, a1]);
+      }
+      // A continuation after a step's approval card reads the path up to it: the step leaves whole.
+      const continuation = await say("user", "The user approved `lookup` on `Records`. Continue the task.", r1,
+        { systemTurnKind: "mcp_approval_continuation" });
+      expect(idsOf(await runs.loadConversationContextForLeaf(chat, userId, continuation))).toEqual([q, a1, continuation]);
+    });
+  });
+
+  it("copies a path through the reviewed answer as its question, the latest version and what followed", async () => {
+    await withUser(async (userId) => {
+      const ids = await reviewedChat(userId, "r2");
+      // What the user asked after the version: under the stored leaf, as a send after a step is taken.
+      const next = await ids.say("user", "Next question", ids.r2);
+      const answer = await ids.say("assistant", "Next answer", next);
+      const branches = createPrismaMessageBranchRepository(prisma);
+      const copied = async (sourceMessageId: string) => {
+        const branch = await branches.createChatBranchFromMessage({ sourceMessageId, userId });
+        const rows = await prisma.message.findMany({ orderBy: { createdAt: "asc" }, select: { answerReviewSessionId: true,
+          content: true, id: true, parentMessageId: true, systemTurnKind: true }, where: { chatId: branch!.id } });
+        expect(rows.every((row) => row.answerReviewSessionId === null && row.systemTurnKind === null)).toBe(true);
+        expect(await prisma.answerReviewSession.count({ where: { chatId: branch!.id } })).toBe(0);
+        // One linear chain ending on the chat's leaf.
+        expect(rows.map((row) => row.parentMessageId)).toEqual(rows.map((_row, index) => index === 0 ? null : rows[index - 1]!.id));
+        expect(await leafOf(branch!.id)).toBe(rows.at(-1)!.id);
+        return rows.map((row) => (row.content as { blocks: Array<{ text: string }> }).blocks.map((block) => block.text).join(""));
+      };
+      expect(await copied(answer)).toEqual(["Question", "Revised answer", "Next question", "Next answer"]);
+      // The version itself, and a step as the version it stood for.
+      expect(await copied(ids.a2)).toEqual(["Question", "Revised answer"]);
+      expect(await copied(ids.r2)).toEqual(["Question", "Revised answer"]);
+      expect(await copied(ids.r1)).toEqual(["Question", "First answer"]);
     });
   });
 
@@ -157,6 +217,15 @@ describe("an answer review recorded before the removal", () => {
       expect(new Set(deleted?.deletedMessageIds)).toEqual(new Set([ids.a1, ids.t1, ids.r1, ids.t2, ids.a2, ids.t3, ids.r2]));
       expect(deleted?.activeLeafMessageId).toBe(ids.q);
       expect(await prisma.answerReviewSession.count({ where: { chatId: ids.chat } })).toBe(0);
+    });
+  });
+
+  it("deletes a chat with its recorded sessions and steps", async () => {
+    await withUser(async (userId) => {
+      const ids = await reviewedChat(userId, "r2");
+      await prisma.chat.delete({ where: { id: ids.chat } });
+      expect(await prisma.answerReviewSession.count({ where: { chatId: ids.chat } })).toBe(0);
+      expect(await prisma.message.count({ where: { chatId: ids.chat } })).toBe(0);
     });
   });
 });
