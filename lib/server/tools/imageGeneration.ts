@@ -4,6 +4,8 @@ import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelR
 import type { RunTool } from "./types";
 
 export const IMAGE_GENERATION_TOOL_NAME = "generate_image";
+/** Image generations one answer may start; the image service refuses any further call before it is sent. */
+export const IMAGE_GENERATION_CALLS_PER_ANSWER = 4;
 
 export const IMAGE_EDITING_GUIDANCE =
   "Choose image operations by the intended change and required fidelity, in any language. " +
@@ -29,6 +31,7 @@ export function imageGenerationTool(plan: AcceptedImageGenerationPlan): RunTool 
       "Infer the user's intent in any language. Supply a complete visual prompt. For an edit, include the exact image_ids from the conversation's image references or earlier image tool results. " +
       "Describe the requested changes and which reference details should remain; exact pixel preservation is not guaranteed. Ask for clarification if the target image is ambiguous. " +
       "Use empty image_ids for a new image. Return one image. The resulting image is displayed in chat automatically. " +
+      `At most ${IMAGE_GENERATION_CALLS_PER_ANSWER} images per answer. ` +
       "Only override output settings that the user explicitly requests; otherwise omit parameters. " +
       (model.image.profile === "gemini" ? "This image model outputs JPEG only; transparent output is unavailable. PNG reference images are supported. Explain this limitation when the requested output requires PNG or transparency. " : "") +
       `Generation ${model.capabilities.imageGeneration ? "available" : "unavailable"}; editing ${model.capabilities.imageEditing ? "available" : "unavailable"}.`,

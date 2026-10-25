@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { logEvent } from "../observability";
 import { isRetryableProviderHttpStatus, isRetryableProviderNetworkError, sleepWithSignal } from "../providers/providerRetry";
@@ -22,6 +23,7 @@ import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import { recordToolCall, type SettledToolCall } from "./toolCallTelemetry";
@@ -417,13 +419,17 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       }
       const code = safeCode(error);
       if (tool.effects === "external") {
-        // It may have taken effect: never sent again, and the model is told so.
-        const message = "The call failed after it may have been sent; its effect is unknown and it was not repeated. " +
-          "Check its effect before trying again.";
+        // It may have taken effect: never sent again, and the model is told so. A Workspace operation that reached its
+        // time limit is an expected outcome of the command the model chose, not a failure of AIQSA, but the command may
+        // still have changed files, so its effect stays unknown too.
+        const timedOut = error instanceof WorkspaceRuntimeError && error.code === "workspace_tool_timeout";
+        const message = timedOut ? workspaceOperationFailureMessage("workspace_tool_timeout")
+          : "The call failed after it may have been sent; its effect is unknown and it was not repeated. " +
+            "Check its effect before trying again.";
         result = { callId: call.id, content: [{ type: "json", value: { error: code, message, outcome: "unknown" } }], name: call.name,
           status: "error" };
         deps.unknownEffects.record(call, "unknown");
-        settled({ effectUnknown: true, error, kind: "thrown", result });
+        settled(timedOut ? { code, kind: "timed_out" } : { effectUnknown: true, error, kind: "thrown", result });
         const item = await hooks.afterToolCall(execution, tool, begun.row, result);
         return { ...item, outcome: "unknown" };
       }

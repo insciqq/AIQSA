@@ -76,6 +76,9 @@ describe("bounded observability runtime", () => {
     expect(record("tool_execution", { tool_kind: "workspace", stage: "result", outcome: "failed", code: "workspace_operation_failed" }))
       .toMatchObject({ level: "error" });
     expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed" })).toMatchObject({ level: "error" });
+    // A command that reached the Workspace time limit warns rather than counting as an error.
+    expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed", code: "workspace_tool_timeout",
+      reason: "deadline" })).toMatchObject({ level: "warn", code: "workspace_tool_timeout" });
   });
 
   it("keeps only the sizes of a truncated MCP result on tool records", () => {
