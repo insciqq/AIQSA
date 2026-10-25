@@ -55,9 +55,6 @@ const publicPrefixes = [
   "/api/test/telegram",
   "/api/public-shares",
   "/api/artifact-public",
-  // Automation webhooks: the header token is the only credential, checked by the route
-  // before it reads anything else. The mutation origin guard still applies; senders
-  // without a browser origin pass it.
   // Session-free for the Workspace runner relay only: the route refuses any
   // request without the relay's proof before it looks up the run bearer.
   // Never rely on this path being publicly reachable; proxies may block it.

@@ -44,7 +44,8 @@ type Task = {
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
   revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
-  status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; userId: string; workspaceEnabled: boolean;
+  status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; userId: string; webhookEnabled: boolean;
+  workspaceEnabled: boolean;
 };
 type Occurrence = {
   chatEpoch?: number | null;
@@ -244,7 +245,7 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
           promptUrlDigests: task.promptUrlDigests,
           provider: task.provider, revision: task.revision,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
-          toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled },
+          toolsEnabled: task.toolsEnabled, webhookEnabled: task.webhookEnabled, workspaceEnabled: task.workspaceEnabled },
         ...(row.trigger === "webhook" && webhookEvents.has(row.id) ? { webhookEvent: webhookEvents.get(row.id)! } : {})
       };
     },
@@ -414,7 +415,7 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
       nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
       promptUrlDigests: [], provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
       searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", toolsEnabled: false,
-      userId: "owner-1", workspaceEnabled: false, ...overrides
+      userId: "owner-1", webhookEnabled: false, workspaceEnabled: false, ...overrides
     };
     tasks.set(task.id, task);
     return task;
@@ -1852,7 +1853,7 @@ describe("webhook occurrences", () => {
 
   it("run at once, despite a recurring task's spread, with the event after the prompt as labelled data", async () => {
     const h = harness({ dispatchOffsetMs: () => 2 * MINUTE });
-    const task = h.addTask({ nextRunAt: null });
+    const task = h.addTask({ nextRunAt: null, webhookEnabled: true });
     const occurrence = h.addOccurrence(task, { scheduledFor: event.receivedAt, trigger: "webhook" });
     h.webhookEvents.set(occurrence.id, event);
     await h.tick();
@@ -1873,21 +1874,27 @@ describe("webhook occurrences", () => {
 
   it("skip while the task is paused and never start without their event", async () => {
     const h = harness();
-    const paused = h.addTask({ nextRunAt: null, status: "PAUSED" });
+    const paused = h.addTask({ nextRunAt: null, status: "PAUSED", webhookEnabled: true });
     const skipped = h.addOccurrence(paused, { scheduledFor: event.receivedAt, trigger: "webhook" });
     h.webhookEvents.set(skipped.id, event);
-    const active = h.addTask({ nextRunAt: null, userId: "owner-2" });
+    const active = h.addTask({ nextRunAt: null, userId: "owner-2", webhookEnabled: true });
     const eventless = h.addOccurrence(active, { scheduledFor: event.receivedAt, trigger: "webhook" });
+    // The owner turned the webhook off after the runner took up the event: it never runs.
+    const switchedOff = h.addTask({ nextRunAt: null, userId: "owner-3", webhookEnabled: false });
+    const cutOff = h.addOccurrence(switchedOff, { scheduledFor: event.receivedAt, trigger: "webhook" });
+    h.webhookEvents.set(cutOff.id, event);
     await h.tick();
     expect(h.sent).toHaveLength(0);
     expect(skipped).toMatchObject({ reasonCode: "paused", state: "SKIPPED" });
     expect(eventless).toMatchObject({ reasonCode: "admission_failed", state: "FAILED" });
+    expect(cutOff).toMatchObject({ reasonCode: "webhook_off", state: "SKIPPED" });
+    expect(switchedOff.status).toBe("ACTIVE");
   });
 
   it("pause their task on lost authority, like a scheduled run", async () => {
     const h = harness();
     h.setCatalog(() => null);
-    const task = h.addTask({ nextRunAt: null });
+    const task = h.addTask({ nextRunAt: null, webhookEnabled: true });
     const occurrence = h.addOccurrence(task, { scheduledFor: event.receivedAt, trigger: "webhook" });
     h.webhookEvents.set(occurrence.id, event);
     await h.tick();
