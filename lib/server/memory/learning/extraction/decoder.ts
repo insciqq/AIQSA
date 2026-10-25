@@ -395,7 +395,8 @@ function parseEntities(
   quote: string,
   frame: MemorySemanticFrame,
   identity: MemoryIdentityProposal,
-  allowUnresolvedAnnotations: boolean
+  allowUnresolvedAnnotations: boolean,
+  explicitRemember: boolean
 ): ParsedEntities {
   if (!Array.isArray(value) || value.length > 6) fail();
   const parsed: MemoryFactCandidateEntity[] = [];
@@ -414,7 +415,11 @@ function parseEntities(
       entity.qualifier_supports.length > 4) fail();
     const role = enumValue<MemoryFactCandidateEntity["role"]>(entity.role, entityRoles);
     const proposedType = enumValue(entity.entity_type, entityTypes);
-    if (proposedType === "PERSON" && role !== "SUBJECT") {
+    // A person annotation outside its allowed shape is optional navigation.
+    // Ordinary learning refuses the fact; an explicit remember request keeps
+    // it and drops only that annotation after validating its sources.
+    let invalidPersonAnnotation = proposedType === "PERSON" && role !== "SUBJECT";
+    if (invalidPersonAnnotation && !explicitRemember) {
       fail("memory_fact_entity_unsupported");
     }
     const proposedLabel = nullableString(entity.canonical_label, 512);
@@ -434,7 +439,8 @@ function parseEntities(
         identity.predicateKey === null
       ));
     if (proposedType === "PERSON_SELF" && !directSelfAnnotation) {
-      fail("memory_fact_entity_unsupported");
+      if (!explicitRemember) fail("memory_fact_entity_unsupported");
+      invalidPersonAnnotation = true;
     }
 
     let sourceSupported = true;
@@ -457,7 +463,7 @@ function parseEntities(
       fail("memory_fact_entity_unsupported");
     }
     if ((mentionKind === "PRONOMINAL" || mentionKind === "ELLIPSIS") &&
-      context === null && !directSelfAnnotation) {
+      context === null && !directSelfAnnotation && !invalidPersonAnnotation) {
       fail("memory_fact_dependency_unsupported");
     }
 
@@ -498,6 +504,7 @@ function parseEntities(
       entityAnnotationReviewRequired = true;
       continue;
     }
+    if (invalidPersonAnnotation) continue;
     for (const text of entitySupports) addSupport(proposedType, text);
     const entityType = memoryEntityType(proposedType);
     if (!entityType || proposedType === "PERSON_SELF") continue;
@@ -664,6 +671,12 @@ function frameCanEnterPacket(
     frame.polarity === "UNKNOWN";
 }
 
+/** Structural pre-scan only; `parseEntities` validates every annotation. */
+function namesPersonSubject(value: unknown): boolean {
+  return Array.isArray(value) && value.some((entity) =>
+    isRecord(entity) && entity.entity_type === "PERSON" && entity.role === "SUBJECT");
+}
+
 function groundedRelationshipSubject(
   entities: readonly MemoryFactCandidateEntity[]
 ): boolean {
@@ -777,16 +790,26 @@ function decodeObservation(
     fail("memory_fact_secret");
   }
   const admission = usefulnessAdmission(value.usefulness, frame, rawIdentity, valueProposal);
+  const explicitRemember = frame.memoryDirective === "EXPLICIT_REMEMBER";
+  // A fact about another person can never bind one of the user's own SLOTs.
+  // Ordinary learning refuses such a proposal; an explicit remember request
+  // keeps the whole statement as a proposition with its person subject.
+  const proposedIdentity: MemoryIdentityProposal = explicitRemember &&
+    rawIdentity.mode === "SLOT" && (frame.subjectScope === "USER_RELATIONSHIP_CONTEXT" ||
+      namesPersonSubject(value.entities))
+    ? { ...rawIdentity, mode: "PROPOSITION" }
+    : rawIdentity;
   const parsedEntities = parseEntities(
     value.entities,
     input,
     quote,
     frame,
-    rawIdentity,
-    rawIdentity.mode === "PROPOSITION"
+    proposedIdentity,
+    proposedIdentity.mode === "PROPOSITION",
+    explicitRemember
   );
   const identityProposal = groundIdentity(
-    rawIdentity,
+    proposedIdentity,
     valueProposal,
     parsedEntities.supportsByType,
     input,
@@ -830,7 +853,7 @@ function decodeObservation(
     fail("memory_fact_entity_unsupported");
   }
   if (frame.subjectScope === "USER_RELATIONSHIP_CONTEXT" && (
-    rawIdentity.mode !== "PROPOSITION" ||
+    proposedIdentity.mode !== "PROPOSITION" ||
     resolvedIdentity.identityKind !== "PROPOSITION" ||
     !groundedRelationshipSubject(parsedEntities.entities)
   )) fail("memory_fact_entity_unsupported");
@@ -865,7 +888,7 @@ function decodeObservation(
     negated: false,
     occurredAt: temporal.occurredAt,
     predicateKey: resolvedIdentity.predicateKey,
-    proposedIdentityKind: rawIdentity.mode,
+    proposedIdentityKind: proposedIdentity.mode,
     proposedValue: unicodeProposedValue,
     quote,
     rawTemporalExpression: temporal.rawExpression,

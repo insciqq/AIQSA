@@ -1977,6 +1977,134 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
     expect(plan.candidates[0]).not.toHaveProperty("changeOnly");
   });
 
+  describe("an explicit remember request with an invalid person annotation", () => {
+    const remember = { ...frame, memory_directive: "EXPLICIT_REMEMBER", speech_act: "COMMAND" };
+    const person = (name: string, role: string) => ({
+      aliases: [], canonical_label: name, context_entity_ref: null, entity_type: "PERSON",
+      mention: textRef(name), mention_kind: "NAMED", qualifier_supports: [], role
+    });
+    const place = {
+      aliases: [], canonical_label: "Porto", context_entity_ref: null, entity_type: "PLACE",
+      mention: textRef("Porto"), mention_kind: "NAMED", qualifier_supports: [], role: "OBJECT"
+    };
+
+    it("keeps the fact and drops only a non-subject PERSON annotation", () => {
+      const quote = "Remember this: I owe Ivan 38 rubles.";
+      const proposed = (semanticFrame: typeof frame, entities: readonly unknown[]) => observation(quote, {
+        entities, semantic_frame: semanticFrame, statement: "The user owes Ivan 38 rubles.",
+        usefulness: semanticFrame.memory_directive === "EXPLICIT_REMEMBER" ? "SHORT_TERM" : "DURABLE"
+      });
+      const kept = decode(quote, [proposed(remember, [person("Ivan", "OBJECT")])]);
+      expect(kept.rejections).toEqual([]);
+      expect(kept.candidates).toHaveLength(1);
+      const candidate = kept.candidates[0]!;
+      expect(candidate).toMatchObject({
+        entities: [], identityKind: "PROPOSITION", statement: "The user owes Ivan 38 rubles."
+      });
+      expect(candidate).not.toHaveProperty("entityAnnotationReviewRequired");
+      // The dropped annotation leaves the fact exactly as if it was never proposed.
+      expect(candidate.id).toBe(decode(quote, [proposed(remember, [])]).candidates[0]!.id);
+      expect(decode(quote, [proposed(remember, [person("Ivan", "MENTION")])]).candidates[0]?.entities)
+        .toEqual([]);
+      // Malformed annotations still fail the fact; only the shape is forgiven.
+      expect(decode(quote, [proposed(remember, [{ ...person("Ivan", "OBJECT"), context_entity_ref: "missing" }])]))
+        .toMatchObject({ candidates: [], rejections: [{ candidateOrdinal: 0, reasonCode: "REJECT_DEPENDENCY_UNSUPPORTED" }] });
+      // Ordinary learning still refuses the whole fact.
+      expect(decode(quote, [proposed({ ...frame }, [person("Ivan", "OBJECT")])])).toMatchObject({
+        candidates: [], rejections: [{ candidateOrdinal: 0, reasonCode: "REJECT_ENTITY_UNSUPPORTED" }]
+      });
+    });
+
+    it("drops a non-direct PERSON_SELF annotation but keeps the related person", () => {
+      const quote = "Remember this: my brother Milo lent me his car.";
+      const relationship = { ...remember, subject_scope: "USER_RELATIONSHIP_CONTEXT" };
+      const self = {
+        aliases: [], canonical_label: null, context_entity_ref: null, entity_type: "PERSON_SELF",
+        mention: textRef("me"), mention_kind: "PRONOMINAL", qualifier_supports: [], role: "OBJECT"
+      };
+      const proposed = (semanticFrame: Record<string, unknown>) => observation(quote, {
+        entities: [person("Milo", "SUBJECT"), self], semantic_frame: semanticFrame,
+        statement: "The user's brother Milo lent the user his car."
+      });
+      const plan = decode(quote, [proposed(relationship)]);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates[0]).toMatchObject({
+        entities: [expect.objectContaining({ canonicalLabel: "Milo", entityType: "PERSON", role: "SUBJECT" })],
+        identityKind: "PROPOSITION"
+      });
+      expect(plan.candidates[0]!.entities).toHaveLength(1);
+      expect(decode(quote, [proposed({ ...relationship, memory_directive: "NONE", speech_act: "ASSERTION" })]))
+        .toMatchObject({ candidates: [], rejections: [{ candidateOrdinal: 0, reasonCode: "REJECT_ENTITY_UNSUPPORTED" }] });
+    });
+
+    it("keeps a SLOT proposal about another person as a proposition, never the user's SLOT", () => {
+      const quote = "Remember this: Ivan lives in Porto.";
+      const proposed = (semanticFrame: typeof frame) => observation(quote, {
+        entities: [person("Ivan", "SUBJECT"), place],
+        identity: { dimension_key: "primary", mode: "SLOT", predicate_key: "residence",
+          subject: { canonical_label: null, entity_type: "PERSON_SELF", qualifiers: { brand: null, model: null } } },
+        semantic_frame: semanticFrame, statement: "Ivan lives in Porto.",
+        value: { ...nullValue, kind: "primary", place: "Porto" }
+      });
+      const plan = decode(quote, [proposed(remember)]);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates[0]).toMatchObject({
+        entities: [expect.objectContaining({ canonicalLabel: "Ivan", entityType: "PERSON", role: "SUBJECT" }),
+          expect.objectContaining({ canonicalLabel: "Porto", entityType: "PLACE" })],
+        identityKind: "PROPOSITION", predicateKey: null, proposedIdentityKind: "PROPOSITION", subjectKey: null
+      });
+      expect(decode(quote, [proposed({ ...frame })])).toMatchObject({
+        candidates: [], rejections: [{ candidateOrdinal: 0, reasonCode: "REJECT_ENTITY_UNSUPPORTED" }]
+      });
+    });
+
+    it("admits a remembered proposition across the two personal scopes and nothing else", () => {
+      const quote = "Remember this: I owe Ivan 38 rubles.";
+      const decision = {
+        assertionStatus: "ASSERTED" as const, candidateRef: "C1", confidenceBand: "HIGH" as const,
+        entailment: "ENTAILED" as const, entityRef: null, operation: "NO_RELATION" as const,
+        reasonCode: "explicit_remember", subjectScope: "USER_RELATIONSHIP_CONTEXT" as const,
+        targetRef: null, temporalPerspective: "CURRENT" as const
+      };
+      const candidate = (semanticFrame: Record<string, unknown>) => decode(quote, [observation(quote, {
+        semantic_frame: semanticFrame, statement: "The user owes Ivan 38 rubles."
+      })]).candidates[0]!;
+      const remembered = candidate(remember);
+      expect(memoryCandidateRequiresSemanticAdjudication(remembered)).toBe(true);
+      expect(memorySemanticAuthorityAdmitsCandidate(remembered, decision)).toBe(true);
+      expect(memorySemanticAuthorityAdmitsCandidate(remembered, { ...decision, subjectScope: "CURRENT_USER" }))
+        .toBe(true);
+      for (const denied of [
+        { ...decision, subjectScope: "THIRD_PARTY" as const },
+        { ...decision, subjectScope: "UNKNOWN" as const },
+        { ...decision, entailment: "UNKNOWN" as const },
+        { ...decision, confidenceBand: "MEDIUM" as const },
+        // A relation to an existing fact keeps exact scope agreement.
+        { ...decision, operation: "REINFORCE" as const, targetRef: "F1" },
+        { ...decision, operation: "SUPERSEDE_TARGET" as const, targetRef: "F1" }
+      ]) expect(memorySemanticAuthorityAdmitsCandidate(remembered, denied)).toBe(false);
+      // Ordinary learning is not loosened.
+      const ordinary = candidate({ ...frame });
+      expect(memorySemanticAuthorityAdmitsCandidate(ordinary, decision)).toBe(false);
+      expect(memorySemanticAuthorityAdmitsCandidate(ordinary, { ...decision, subjectScope: "CURRENT_USER" }))
+        .toBe(true);
+      // A grounded relationship remember request may be judged the user's own.
+      const relationshipQuote = "Remember this: my brother Milo works night shifts.";
+      const relationship = decode(relationshipQuote, [personalContextObservation(relationshipQuote, {
+        entityType: "PERSON", name: "Milo", statement: "The user's brother Milo works night shifts."
+      })].map((proposed) => ({ ...proposed, semantic_frame: { ...remember, subject_scope: "USER_RELATIONSHIP_CONTEXT" } })))
+        .candidates[0]!;
+      expect(memorySemanticAuthorityAdmitsCandidate(relationship, { ...decision, subjectScope: "CURRENT_USER" }))
+        .toBe(true);
+      // A remembered SLOT keeps exact agreement.
+      const productQuote = "Remember this: I own MacBook Air M4.";
+      const slot = decode(productQuote, [{ ...productObservation(productQuote), semantic_frame: remember }]).candidates[0]!;
+      expect(slot.identityKind).toBe("SLOT");
+      expect(memorySemanticAuthorityAdmitsCandidate(slot, { ...decision, subjectScope: "CURRENT_USER" })).toBe(true);
+      expect(memorySemanticAuthorityAdmitsCandidate(slot, decision)).toBe(false);
+    });
+  });
+
   it("judges a product status by its closed state token", () => {
     const quote = "MacBook Air M4 status.";
     for (const state of ["considering", "planned", "ordered"]) {
