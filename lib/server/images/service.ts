@@ -6,7 +6,7 @@ import { createImageGenerationAdapter, ImageGenerationError, validateImageRefere
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../secrets/envelope";
 import { resolveChatAccess } from "../chats/access";
-import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 import { convertRasterForProvider, ProviderRasterConversionError, providerRasterNeedsConversion } from "../uploads/providerRasterConversion";
@@ -14,12 +14,11 @@ import { WORKSPACE_IMAGE_LIMITS } from "../workspace/imageCapture";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
-import { ImageInputError } from "./inputError";
+import { ImageInputError, ImageToolError, markImageFailureNotSent } from "./inputError";
 import { logEvent, type EventFields } from "../observability";
 import { observedFailureCode } from "../providers/providerObservability";
 import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
 
-const MAX_IMAGE_CALLS_PER_RUN = 4;
 const USAGE_WRITE_RETRY_DELAYS_MS = [100, 250] as const;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -167,11 +166,13 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
     },
     async execute(call: ModelToolCall, context: ImageToolContext, signal?: AbortSignal, execution?: ImageExecutionOptions): Promise<ToolExecutionResult> {
       let stage: EventFields["image_execution"]["stage"] = "input";
+      // Until the dispatch claim nothing can have reached the image provider.
+      let claimed = false;
       const startedAt = performance.now();
       try {
         const { runId, userId, persistedToolCallId: toolCallId, request } = context;
         const plan = request.imagePlan;
-        if (!runId || !userId || !toolCallId || !plan || call.name !== IMAGE_GENERATION_TOOL_NAME) throw new Error("image_tool_unavailable");
+        if (!runId || !userId || !toolCallId || !plan || call.name !== IMAGE_GENERATION_TOOL_NAME) throw new ImageToolError("image_tool_unavailable");
         const args = call.arguments;
         if (!object(args) || Object.keys(args).some((key) => !["prompt", "image_ids", "parameters"].includes(key)) ||
           typeof args.prompt !== "string" || !args.prompt.trim() || args.prompt.length > IMAGE_MAX_PROMPT_CHARACTERS || args.prompt.includes("\u0000") ||
@@ -183,11 +184,11 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         const binding = await prisma.providerRunBinding.findFirst({ where: { modelRunId: runId, bindingKey: "image", role: "image",
           connectionId: plan.authority.connectionId, providerModelId: plan.authority.providerModelId,
           credentialId: plan.authority.credentialId, credentialVersionId: plan.authority.credentialVersionId }, select: { executionSnapshot: true } });
-        if (!binding) throw new Error("image_binding_unavailable");
+        if (!binding) throw new ImageToolError("image_binding_unavailable");
         const snapshot = normalizeProviderExecutionSnapshot(binding.executionSnapshot);
         const model = snapshot.model;
         if (model.adapterKind === "fake" || !model.image || !(ids.length ? model.capabilities.imageEditing : model.capabilities.imageGeneration)) {
-          throw new Error(ids.length ? "image_editing_unavailable" : "image_generation_unavailable");
+          throw new ImageToolError(ids.length ? "image_editing_unavailable" : "image_generation_unavailable");
         }
         stage = "input";
         let parameters: ImageGenerationParameters;
@@ -200,14 +201,14 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         if (existing) return existing;
         const run = await prisma.modelRun.findFirst({ where: { id: runId, userId, chatId: request.chatId },
           select: { assistantMessageId: true, status: true } });
-        if (!run?.assistantMessageId || !["streaming", "in_progress"].includes(run.status)) throw new Error("image_run_inactive");
+        if (!run?.assistantMessageId || !["streaming", "in_progress"].includes(run.status)) throw new ImageToolError("image_run_inactive");
         const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId });
-        if (!access) throw new Error("image_access_revoked");
+        if (!access) throw new ImageToolError("image_access_revoked");
         const tool = await prisma.modelRunToolCall.findFirst({ where: { id: toolCallId, modelRunId: runId,
           state: execution?.beforeDispatch ? "pending" : "running", toolName: call.name } });
-        if (!tool) throw new Error("image_tool_not_claimed");
-        if (await prisma.modelRunToolCall.count({ where: { modelRunId: runId, toolName: call.name, startedAt: { not: null } } }) > MAX_IMAGE_CALLS_PER_RUN) {
-          throw new Error("image_tool_budget_exhausted");
+        if (!tool) throw new ImageToolError("image_tool_not_claimed");
+        if (await prisma.modelRunToolCall.count({ where: { modelRunId: runId, toolName: call.name, startedAt: { not: null } } }) > IMAGE_GENERATION_CALLS_PER_ANSWER) {
+          throw new ImageInputError("image_tool_budget_exhausted");
         }
         stage = "references";
         const admitted = new Set(request.imageReferences?.map((reference) => reference.attachmentId) ?? []);
@@ -246,7 +247,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
           images.push({ bytes: stored.body, mimeType: row.mimeType as ImageGenerationInput["mimeType"] });
         }
         stage = "authorization";
-        if (!await service.authorize(plan)) throw new Error("image_provider_revoked");
+        if (!await service.authorize(plan)) throw new ImageToolError("image_provider_revoked");
         const adapter = createImageGenerationAdapter({ connection: snapshot.connection, model,
           observationIdentity: { adapterKind: model.adapterKind, connectionId: snapshot.connectionId,
             providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId },
@@ -254,18 +255,19 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             const credential = await prisma.providerCredentialVersion.findFirst({ where: {
               id: plan.authority.credentialVersionId, credentialId: plan.authority.credentialId, revokedAt: null
             }, select: { id: true, credentialId: true, secretEnvelope: true } });
-            if (!credential?.secretEnvelope || !await service.authorize(plan)) throw new Error("image_provider_revoked");
+            if (!credential?.secretEnvelope || !await service.authorize(plan)) throw new ImageToolError("image_provider_revoked");
             return decryptProviderCredentialSecret({ credentialId: credential.credentialId, valueId: credential.id,
               envelope: credential.secretEnvelope, key: (options.encryptionKey ?? getSecretEncryptionKey)() });
           } });
         signal?.throwIfAborted();
+        claimed = true;
         stage = "dispatch_claim";
         await execution?.beforeDispatch?.();
         signal?.throwIfAborted();
         // Image usage rows are immutable once written. A receipt for this tool
         // call proves an earlier paid dispatch, so a lost upload is never
         // regenerated.
-        if (await prisma.usageEvent.findUnique({ where: { imageToolCallId: toolCallId }, select: { id: true } })) throw new Error("image_dispatch_claimed");
+        if (await prisma.usageEvent.findUnique({ where: { imageToolCallId: toolCallId }, select: { id: true } })) throw new ImageToolError("image_dispatch_claimed");
         // Read before dispatch, so only the usage write follows the paid call.
         stage = "usage";
         const costBasis = await loadProviderModelCostBasis(prisma, plan.authority.providerModelId);
@@ -327,8 +329,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             await execution?.beforeSettlement?.(tx);
             await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
             const jobs = await tx.$queryRaw<Array<{ claimToken: string | null }>>`SELECT "claimToken" FROM "AttachmentDeletionJob" WHERE "storageKey" = ${storageKey} FOR UPDATE`;
-            if (jobs[0]?.claimToken !== token) throw new Error("image_publication_stale");
-            if (!await resolveChatAccess(tx, { chatId: request.chatId, userId })) throw new Error("image_access_revoked");
+            if (jobs[0]?.claimToken !== token) throw new ImageToolError("image_publication_stale");
+            if (!await resolveChatAccess(tx, { chatId: request.chatId, userId })) throw new ImageToolError("image_access_revoked");
             await tx.attachment.create({ data: {
               id: attachmentId, imageToolCallId: toolCallId, producerModelRunId: runId, chatId: request.chatId,
               messageId: run.assistantMessageId, origin: "IMAGE_OUTPUT", status: "ready", kind: "image",
@@ -354,7 +356,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
           ...(error instanceof ImageGenerationError && error.rejection ? { image_bound: error.rejection.bound, byte_size: error.rejection.byteSize,
             width: error.rejection.width, height: error.rejection.height,
             declared_mime: error.rejection.declaredMime, detected_mime: error.rejection.detectedMime } : {}) });
-        throw error;
+        // A failure before the claim has a known effect: nothing was sent, so the model may correct it or go on.
+        throw claimed || signal?.aborted === true ? error : markImageFailureNotSent(error);
       }
     }
   };

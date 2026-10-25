@@ -67,6 +67,19 @@ describe("tool_call telemetry", () => {
     expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
   });
 
+  it("records a tool's own time limit as a warned timeout with its code, never an unexpected failure", async () => {
+    const observation = await captureRunObservation();
+    recordToolCall({ durationMs: 1, kind: "workspace", settled: { code: "workspace_tool_timeout", kind: "timed_out" } });
+    recordToolCall({ durationMs: 1, kind: "workspace", settled: { code: "PRIVATE_unregistered", kind: "timed_out" } });
+    const records = observation.records().filter((record) => record.event === "tool_call");
+    expect(records.map((record) => [record.level, record.outcome, record.code, record.error_category])).toEqual([
+      ["warn", "timeout", "workspace_tool_timeout", undefined],
+      ["warn", "timeout", "tool_call_timeout", undefined]
+    ]);
+    expect(records.every((record) => !("error_fingerprint" in record))).toBe(true);
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+  });
+
   it("never throws into the batch", () => {
     const hostile = new Proxy({}, { getOwnPropertyDescriptor: () => { throw new Error("trap"); } });
     expect(() => recordToolCall({ kind: "other", settled: { kind: "result", result: hostile } })).not.toThrow();

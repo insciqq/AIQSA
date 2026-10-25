@@ -109,6 +109,8 @@ export type SettledToolCall =
   | Readonly<{ kind: "awaiting_approval" }>
   /** The tool threw after its retries, settled as `result`; an external one may have taken effect. */
   | Readonly<{ kind: "thrown"; error: unknown; effectUnknown: boolean; result: unknown }>
+  /** The tool's own time limit ended it (a Workspace operation's): an expected outcome, not an unexpected failure. */
+  | Readonly<{ kind: "timed_out"; code: string }>
   /** The run stopped (Stop or its deadline, by the run signal's reason) while it ran. */
   | Readonly<{ kind: "aborted"; reason: unknown }>;
 
@@ -123,6 +125,8 @@ function fieldsOf(settled: SettledToolCall, kind: ToolCallKind) {
     case "thrown":
       return { outcome: "failed" as const, error_category: "unexpected" as const, error: settled.error,
         code: settled.effectUnknown ? TOOL_CALL_OUTCOME_UNKNOWN_CODE : toolResultFailureCode(settled.result) };
+    case "timed_out":
+      return { outcome: "timeout" as const, code: registered(settled.code) ?? TOOL_CALL_TIMEOUT_CODE };
     case "aborted":
       return own(settled.reason, "code") === RUN_TIME_LIMIT_FAILURE.code
         ? { outcome: "timeout" as const, code: TOOL_CALL_TIMEOUT_CODE }
@@ -134,8 +138,9 @@ function fieldsOf(settled: SettledToolCall, kind: ToolCallKind) {
  * One content-free terminal record per settled model tool call: its family,
  * outcome, a registered failure code and, for MCP, the sizes of a truncated
  * result. An exception the tool threw (not a structured error result) is
- * unexpected and carries its content-free error site. It never throws into
- * the batch, so telemetry never changes a call's settlement.
+ * unexpected and carries its content-free error site, except the tool's own
+ * time limit, which is a timeout. It never throws into the batch, so
+ * telemetry never changes a call's settlement.
  */
 export function recordToolCall(input: Readonly<{ durationMs?: number; kind: ToolCallKind; settled: SettledToolCall }>): void {
   try {
