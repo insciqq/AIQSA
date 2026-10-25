@@ -60,6 +60,25 @@ describe("claim planning", () => {
       .toMatchObject({ occurrences: [{ missed: true, scheduledFor: instant }], status: "COMPLETED" });
   });
 
+  it("turns only a once schedule off, keeping the task active, while its webhook is on", () => {
+    const once = { date: "2026-10-12", kind: "once", time: "10:00" } as const;
+    const instant = at("2026-10-12T07:00:00Z");
+    expect(planScheduledTaskClaim({ nextRunAt: instant, schedule: once, timeZone: "Europe/Moscow", webhookEnabled: true },
+      at("2026-10-12T07:00:05Z"))).toEqual({
+      nextRunAt: null, occurrences: [{ missed: false, scheduledFor: instant }], pauseReason: null, scheduleOff: true, status: "ACTIVE"
+    });
+    expect(planScheduledTaskClaim({ nextRunAt: instant, schedule: once, timeZone: "Mars/Olympus_Mons", webhookEnabled: true },
+      at("2026-10-12T07:00:05Z"))).toMatchObject({ scheduleOff: true, status: "ACTIVE" });
+    // Without it, the task completes; a recurring schedule never turns itself off.
+    expect(planScheduledTaskClaim({ nextRunAt: instant, schedule: once, timeZone: "Europe/Moscow", webhookEnabled: false },
+      at("2026-10-12T07:00:05Z"))).not.toHaveProperty("scheduleOff");
+    expect(planScheduledTaskClaim({ nextRunAt: at("2026-10-05T06:00:00Z"), schedule: daily, timeZone: "Europe/Moscow",
+      webhookEnabled: true }, at("2026-10-05T06:00:10Z"))).toEqual({
+      nextRunAt: at("2026-10-06T06:00:00Z"), occurrences: [{ missed: false, scheduledFor: at("2026-10-05T06:00:00Z") }],
+      pauseReason: null, status: "ACTIVE"
+    });
+  });
+
   it("runs only the newest due hourly instant and records the older backlog quietly as one missed instant", () => {
     // Moscow (+03:00): 06:00, 07:00 and 08:00 local were due by 08:30.
     expect(planScheduledTaskClaim({ nextRunAt: at("2026-10-05T03:00:00Z"), schedule: hourly, timeZone: "Europe/Moscow" },
@@ -118,6 +137,16 @@ describe("settlement bookkeeping", () => {
       .toEqual({ ...quiet, consecutiveFailures: 1, pauseReason: "model_unavailable" });
     expect(planTaskSettlement({ observedRevision: 3, outcome: refused, task: active, trigger: "schedule" }))
       .toEqual({ ...quiet, consecutiveFailures: 1, pauseReason: null });
+  });
+
+  it("counts and pauses a webhook run like a scheduled one: nobody is there to see it fail", () => {
+    const refused = { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } as const;
+    expect(planTaskSettlement({ observedRevision: 4, outcome: refused, task: active, trigger: "webhook" }))
+      .toEqual({ ...quiet, consecutiveFailures: 1, pauseReason: "model_unavailable" });
+    expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveFailures: 2 }, trigger: "webhook" }))
+      .toEqual({ ...quiet, consecutiveFailures: 3, pauseReason: "repeated_failures" });
+    expect(planTaskSettlement({ outcome: completed, sourcesIncomplete: true, task: active, trigger: "webhook" }))
+      .toEqual({ ...quiet, consecutiveFailures: 0, consecutiveIncompleteRuns: 1, pauseReason: null, sourceAlert: true });
   });
 
   it("never counts or pauses for manual runs and skips", () => {
@@ -367,6 +396,14 @@ describe("claims over open runs", () => {
     });
   });
 
+  it("never supersedes a webhook event's occurrence: a recurring instant skips, a once instant queues", () => {
+    const event = open({ id: "event", reasonCode: "chat_busy", trigger: "webhook" });
+    expect(planClaimOverlap({ now, open: [event], recurring: true })).toEqual({ previousRunning: true, superseded: [] });
+    expect(planClaimOverlap({ now, open: [event], recurring: false })).toEqual({ previousRunning: false, superseded: [] });
+    expect(planClaimOverlap({ now, open: [event, open({ id: "manual", trigger: "manual" })], recurring: true }))
+      .toEqual({ previousRunning: true, superseded: [{ id: "manual", reasonCode: "superseded" }] });
+  });
+
   it("executes at most five scheduled runs installation-wide and one per owner", () => {
     expect([SCHEDULED_TASK_MAX_EXECUTING, SCHEDULED_TASK_MAX_EXECUTING_PER_USER]).toEqual([5, 1]);
   });
@@ -499,6 +536,7 @@ describe("scheduled Workspace capacity and dispatch spread", () => {
     const candidate = { recurring: true, scheduledFor, taskId: "task-a", trigger: "schedule" as const };
     expect(scheduledDispatchNotBefore(candidate, () => 90_000)).toEqual(at("2026-10-05T06:01:30Z"));
     expect(scheduledDispatchNotBefore({ ...candidate, trigger: "manual" }, () => 90_000)).toEqual(scheduledFor);
+    expect(scheduledDispatchNotBefore({ ...candidate, trigger: "webhook" }, () => 90_000)).toEqual(scheduledFor);
     expect(scheduledDispatchNotBefore({ ...candidate, recurring: false }, () => 90_000)).toEqual(scheduledFor);
     expect(scheduledDispatchNotBefore(candidate).getTime() - scheduledFor.getTime()).toBe(scheduledTaskDispatchOffsetMs("task-a"));
   });

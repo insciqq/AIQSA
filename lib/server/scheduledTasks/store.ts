@@ -49,6 +49,7 @@ import { loadScheduledTaskPinnedSkillMap, loadScheduledTaskRunSkills, scheduledT
 import { scheduledPromptLinksPending, type ScheduledPromptUrlDigests } from "./promptUrls";
 import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
 import { unavailableSourcesWire } from "./sourceHealth";
+import { discardWaitingScheduledTaskWebhookEvents, replaceScheduledTaskWebhookToken } from "./webhookStore";
 
 export class ScheduledTaskError extends Error {
   constructor(readonly code: ScheduledTaskErrorCode) {
@@ -114,7 +115,8 @@ export interface ScheduledTaskStore {
    * starts a new generation without a baseline. Activation counts against the
    * active limits. A schedule that is off clears the due time; a webhook
    * trigger that is on gets its webhook if it has none, and one turned off
-   * keeps it.
+   * keeps it. A task left unable to run webhook events (not active, or the
+   * trigger off) discards the events still waiting.
    */
   update(userId: string, taskId: string, write: ScheduledTaskUpdateWrite): Promise<ScheduledTask>;
   /**
@@ -132,6 +134,13 @@ export interface ScheduledTaskStore {
    * `scheduled_task_running` while one is pending or running.
    */
   requestRun(userId: string, taskId: string, now: Date): Promise<ScheduledTask>;
+  /**
+   * Issues a new token for the task's webhook in any status, replacing any
+   * earlier one at once; throws `scheduled_task_webhook_off` while the
+   * webhook trigger is off. Only its hash is stored: the returned plaintext
+   * is the one copy.
+   */
+  issueWebhookToken(userId: string, taskId: string, now: Date): Promise<Readonly<{ issuedAt: Date; publicId: string; token: string }>>;
 }
 
 const STATUS_WIRE = { ACTIVE: "active", PAUSED: "paused", COMPLETED: "completed" } as const satisfies Record<StatusColumn, ScheduledTaskStatus>;
@@ -512,6 +521,8 @@ export async function updateScheduledTask(
   if (updated.count !== 1) throw new ScheduledTaskError("scheduled_task_stale");
   // Turning the trigger off keeps the webhook, so its address survives turning it on again.
   if (write.draft.webhookEnabled) await ensureScheduledTaskWebhook(tx, userId, taskId);
+  // Paused, or no longer on its webhook: the events still waiting never run.
+  if (write.status !== "active" || !write.draft.webhookEnabled) await discardWaitingScheduledTaskWebhookEvents(tx, taskId);
   // A result carried into a rotated chat belongs to the old question as well.
   if (newGeneration) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId, userId } });
   const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
@@ -613,6 +624,21 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient, options: Sc
         await pruneScheduledTaskOccurrences(tx, taskId);
         const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
         return project(tx, userId, row);
+      });
+    },
+    async issueWebhookToken(userId, taskId, now) {
+      return prisma.$transaction(async (tx) => {
+        // The task row serializes the new token with events being accepted under the old one.
+        const tasks = await tx.$queryRaw<Array<{ webhookEnabled: boolean }>>`
+          SELECT task."webhookEnabled" FROM "ScheduledTask" AS task
+          JOIN "User" AS account ON account."id" = task."userId" AND account."status" = 'active'::"UserStatus"
+          WHERE task."id" = ${taskId} AND task."userId" = ${userId}
+          FOR NO KEY UPDATE OF task
+        `;
+        if (tasks.length !== 1) throw new ScheduledTaskError("scheduled_task_not_found");
+        if (!tasks[0]!.webhookEnabled) throw new ScheduledTaskError("scheduled_task_webhook_off");
+        await ensureScheduledTaskWebhook(tx, userId, taskId);
+        return replaceScheduledTaskWebhookToken(tx, { now, taskId, userId });
       });
     }
   };

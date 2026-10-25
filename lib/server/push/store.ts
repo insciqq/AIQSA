@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AnswerReviewStopReason } from "../../contracts/answerReviews";
-import type { ScheduledTaskRunTrigger, ScheduledTaskUnavailableSource } from "../../contracts/scheduledTasks";
+import {
+  scheduledTaskRunTrigger as trigger,
+  type ScheduledTaskRunTrigger,
+  type ScheduledTaskUnavailableSource
+} from "../../contracts/scheduledTasks";
 import type { ScheduledTaskSettledState } from "../scheduledTasks/runnerPolicy";
 import { unavailableSourcesWire } from "../scheduledTasks/sourceHealth";
 import { notAutoReviewRunSql, notScheduledRunSql } from "./scheduledRunExclusion";
@@ -105,10 +109,6 @@ function ownerAcceptsSql(userId: Prisma.Sql, now: Date): Prisma.Sql {
           AND push_session."revokedAt" IS NULL AND push_session."expiresAt" > ${now}
       )
   )`;
-}
-
-function trigger(value: string): ScheduledTaskRunTrigger {
-  return value === "manual" ? "manual" : "schedule";
 }
 
 export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushStore {
