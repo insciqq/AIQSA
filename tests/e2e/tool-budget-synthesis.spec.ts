@@ -120,8 +120,9 @@ for (const viewport of [
       await expect(answer).not.toContainText(/Change the request parameters|Searching the web|Searched the web|mcp_synthetic/);
       const process = answer.getByTestId("tool-activity-disclosure");
       await process.locator(":scope > summary").click();
-      await expect(process.getByRole("listitem")).toHaveCount(8);
-      await expect(process.getByText("Used Repository Tools: search", { exact: true })).toHaveCount(7);
+      // Consecutive finished calls alike read as one row.
+      await expect(process.getByRole("listitem")).toHaveCount(2);
+      await expect(process.getByText("Used Repository Tools: search ×7", { exact: true })).toBeVisible();
       await expect(process.getByText("Web search: search failed", { exact: true })).toBeVisible();
       await process.locator(":scope > summary").click();
       const regenerate = answer.getByRole("region", { name: "Final answer not completed" }).getByRole("button", { name: "Regenerate", exact: true });
@@ -182,11 +183,12 @@ test("a settled tool call stops spinning while a later round still runs (#61)", 
   await call("list_files", 1, 1, "error");
   await call("search", 1, 0, "complete");
   await emit({ type: "artifact", data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } } });
+  // The model writes between rounds, so the answer's steps show as rows while the next round runs.
+  await emit({ type: "token", data: { delta: "Checking the repository files." } });
   await call("read_file", 2, 0);
 
-  const live = page.getByTestId("run-status-line");
-  await expect(live).toHaveText("Using Repository Tools: read file…");
   const disclosure = page.getByTestId("tool-activity-disclosure");
+  await expect(disclosure).toBeVisible();
   if (await disclosure.getAttribute("open") === null) await disclosure.locator(":scope > summary").click();
   const marks = disclosure.locator(".v2-answer-process-mark");
   await expect(marks).toHaveCount(3);
@@ -198,5 +200,5 @@ test("a settled tool call stops spinning while a later round still runs (#61)", 
 
   await call("read_file", 2, 0, "complete");
   await expect(disclosure.locator(".v2-spinner")).toHaveCount(0);
-  await expect(live).not.toContainText("read file");
+  await expect(marks.nth(2)).toHaveAttribute("data-status", "complete");
 });

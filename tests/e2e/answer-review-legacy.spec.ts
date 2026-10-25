@@ -44,6 +44,7 @@ test.afterAll(async () => {
       await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: ids }, userId } });
       await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: ids } } });
       await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: ids } } });
+      await tx.workspaceSession.deleteMany({ where: { chatId: { in: ids } } });
       await tx.chat.deleteMany({ where: { id: { in: ids }, userId } });
     });
   }
