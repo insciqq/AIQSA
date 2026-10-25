@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ScheduledTask, ScheduledTaskDraft, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import {
+  decodeScheduledTaskWebhookTokenResponse,
+  type ScheduledTask,
+  type ScheduledTaskDraft,
+  type ScheduledTaskSchedule
+} from "../../contracts/scheduledTasks";
 import type { ScheduledTaskCatalog } from "./catalog";
 import { createScheduledTaskHandlers } from "./handlers";
 import { ScheduledTaskError, type ScheduledTaskUpdateWrite } from "./store";
@@ -44,7 +49,10 @@ function fixture(current: ScheduledTask | null = task()) {
       task({ ...write.draft, status: write.status, revision: write.expectedRevision + 1 })),
     delete: vi.fn().mockResolvedValue(true),
     markSeen: vi.fn().mockResolvedValue(true),
-    requestRun: vi.fn(async () => task({ ...current, running: true }))
+    requestRun: vi.fn(async () => task({ ...current, running: true })),
+    issueWebhookToken: vi.fn(async (_userId: string, _taskId: string, now: Date) => ({
+      issuedAt: now, publicId: "AbCdEfGhIjKlMnOpQrSt_-", token: `aiqsa_wh_${"T".repeat(43)}`
+    }))
   };
   const loadCatalog = vi.fn().mockResolvedValue(catalog);
   const resolveAuth = vi.fn().mockResolvedValue({ userId: "owner", user: { id: "owner", status: "active" } });
@@ -56,7 +64,8 @@ function fixture(current: ScheduledTask | null = task()) {
     hasExecutables: id === "skill-shared"
   })));
   const handlers = createScheduledTaskHandlers({
-    kick, loadCatalog, loadPinnedSkills, now: () => NOW, resolveAuth, store, workspacePolicy
+    kick, loadCatalog, loadPinnedSkills, now: () => NOW, resolveAuth, store, workspacePolicy,
+    webhookUrl: (publicId) => `https://aiqsa.example/api/automations/hooks/${publicId}`
   });
   return { handlers, kick, loadCatalog, loadPinnedSkills, resolveAuth, store, workspacePolicy };
 }
@@ -526,5 +535,45 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(goal)).toMatchObject({ nextRunAt: null, status: "completed" });
     await goal.handlers.update(patch({ expectedRevision: 2, scheduleEnabled: true }), "task-1");
     expect(lastWrite(goal)).toMatchObject({ nextRunAt: new Date("2026-10-05T06:00:00.000Z"), status: "active" });
+  });
+
+  it("issues the owner a webhook token with its whole address, once per call and never into logs", async () => {
+    const writes: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      const f = fixture(task({ webhookEnabled: true, webhook: hook }));
+      const issue = (id = "task-1") => f.handlers.issueWebhookToken(
+        new Request(`http://localhost/api/me/scheduled-tasks/${id}/webhook-token`, { method: "POST" }), id);
+      const response = await issue();
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      const body = await response.json();
+      expect(body).toEqual({ issuedAt: NOW.toISOString(), token: `aiqsa_wh_${"T".repeat(43)}`,
+        url: "https://aiqsa.example/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-" });
+      expect(decodeScheduledTaskWebhookTokenResponse(body)).toEqual(body);
+      expect(f.store.issueWebhookToken).toHaveBeenCalledWith("owner", "task-1", NOW);
+      // Rotate is the same call: every call asks the store for a new token.
+      await issue();
+      expect(f.store.issueWebhookToken).toHaveBeenCalledTimes(2);
+
+      f.store.issueWebhookToken.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_webhook_off"));
+      const off = await issue();
+      expect([off.status, await off.json()]).toEqual([409, { error: "scheduled_task_webhook_off" }]);
+      f.store.issueWebhookToken.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_not_found"));
+      const foreign = await issue();
+      expect([foreign.status, await foreign.json()]).toEqual([404, { error: "scheduled_task_not_found" }]);
+      expect(await (await issue("bad/id")).json()).toEqual({ error: "scheduled_task_not_found" });
+      f.store.issueWebhookToken.mockRejectedValueOnce(new Error(`database down near aiqsa_wh_${"T".repeat(43)}`));
+      expect((await issue()).status).toBe(503);
+      f.resolveAuth.mockResolvedValueOnce(null);
+      expect((await issue()).status).toBe(401);
+      expect(f.store.issueWebhookToken).toHaveBeenCalledTimes(5);
+      expect(writes.join("")).not.toContain("aiqsa_wh_");
+    } finally {
+      writer.mockRestore();
+    }
   });
 });

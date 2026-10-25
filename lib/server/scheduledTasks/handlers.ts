@@ -1,4 +1,8 @@
-import { decodeScheduledTaskSeenRequest, type ScheduledTaskErrorCode } from "../../contracts/scheduledTasks";
+import {
+  decodeScheduledTaskSeenRequest,
+  type ScheduledTaskErrorCode,
+  type ScheduledTaskWebhookTokenResponse
+} from "../../contracts/scheduledTasks";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import { logEvent } from "../observability";
@@ -8,6 +12,7 @@ import { planScheduledTaskUpdate } from "./mutations";
 import { scheduledPromptUrlDigests } from "./promptUrls";
 import { decodeScheduledTaskUpdateRequest } from "./requests";
 import { ScheduledTaskError, type ScheduledTaskStore } from "./store";
+import { scheduledTaskWebhookUrl } from "./webhookUrl";
 
 export type ScheduledTaskHandlerDeps = ScheduledTaskDraftAdmissionDeps & Readonly<{
   /** Wakes the runner after a change that may make an occurrence due. */
@@ -15,6 +20,8 @@ export type ScheduledTaskHandlerDeps = ScheduledTaskDraftAdmissionDeps & Readonl
   now?: () => Date;
   resolveAuth: RequestAuthResolver;
   store: ScheduledTaskStore;
+  /** A webhook's absolute address; defaults to the installation's public origin. */
+  webhookUrl?: (publicId: string) => string;
 }>;
 
 const headers = { "cache-control": "private, no-store" };
@@ -122,6 +129,19 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       const task = await deps.store.requestRun(userId, taskId, now());
       deps.kick?.();
       return Response.json({ task }, { headers });
+    }),
+
+    /**
+     * Get token and Rotate token: a new webhook token replaces any earlier one
+     * at once. The only response that carries the plaintext, never stored,
+     * logged or sent anywhere else; the webhook trigger must be on.
+     */
+    issueWebhookToken: (request: Request, taskId: string) => handle(request, "write", taskId, async (userId) => {
+      const issued = await deps.store.issueWebhookToken(userId, taskId, now());
+      const body: ScheduledTaskWebhookTokenResponse = {
+        issuedAt: issued.issuedAt.toISOString(), token: issued.token, url: (deps.webhookUrl ?? scheduledTaskWebhookUrl)(issued.publicId)
+      };
+      return Response.json(body, { headers });
     }),
 
     remove: (request: Request, taskId: string) => handle(request, "write", taskId, async (userId) =>
