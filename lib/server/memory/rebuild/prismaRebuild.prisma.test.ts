@@ -83,6 +83,7 @@ import {
 import { createMemoryRebuildHandler } from "./handler";
 import { parseMemoryRebuildJobFingerprint } from "./contract";
 import { createPrismaMemoryRebuildRepository } from "./repository";
+import { createPrismaMemorySupersededEntryPruneStore } from "./supersededRetention";
 import { wakeCurrentMemoryShadowRebuildInTransaction } from "./wake";
 import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
 
@@ -2127,8 +2128,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
-  it("cuts over content-free identities idempotently and rolls back an exact generation", async () => {
-    const userId = await createOwner("cutover-rollback");
+  it("cuts over content-free identities idempotently", async () => {
+    const userId = await createOwner("cutover-identities");
     const { explicit } = services();
     const rebuild = createPrismaMemoryRebuildRepository(prisma);
     const cutover = createPrismaMemoryRetrievalCutoverRepository(prisma);
@@ -2197,70 +2198,37 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         kind: "already_current"
       });
 
-      const firstCurrentGenerationId = current.activeGenerationId;
-      if (!firstCurrentGenerationId) throw new Error("cutover_generation_missing");
-      const beforeSecond = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
+      // Retention: the superseded legacy generation loses its entries and
+      // keeps its row; the active generation stays exactly as it was.
+      const currentGenerationId = current.activeGenerationId;
+      if (!currentGenerationId) throw new Error("cutover_generation_missing");
+      const activeEntries = await prisma.memorySearchEntry.count({
+        where: { indexGenerationId: currentGenerationId, userId }
       });
-      const second = await rebuild.admit(userId, {
-        expectedMemoryRevision: beforeSecond.memoryRevision,
-        expectedSettingsRevision: beforeSecond.settingsRevision,
-        operation: "REBUILD_SEARCH_INDEX",
-        requestIdentity: { nonce: "cutover-second-generation" }
-      });
-      if (second.kind !== "ok") throw new Error(second.kind);
-      await processRebuildJob(second.jobId, rebuild);
-
-      const beforeRollback = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      expect(beforeRollback.activeIndexGenerationId).not.toBe(firstCurrentGenerationId);
-      const secondCurrentGenerationId = beforeRollback.activeIndexGenerationId;
-      if (!secondCurrentGenerationId) throw new Error("cutover_generation_missing");
-      await expect(cutover.rollback(userId, firstCurrentGenerationId, {
-        expectedMemoryRevision: beforeRollback.memoryRevision,
-        expectedSettingsRevision: beforeRollback.settingsRevision
-      })).resolves.toEqual({
-        activeGenerationId: firstCurrentGenerationId,
-        kind: "ok"
-      });
-      const afterRollback = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      expect(afterRollback).toMatchObject({
-        activeIndexGenerationId: firstCurrentGenerationId,
-        memoryGeneration: beforeRollback.memoryGeneration,
-        memoryRevision: beforeRollback.memoryRevision + 1
+      expect(activeEntries).toBe(1);
+      const legacyEntries = await prisma.memorySearchEntry.count({
+        where: { indexGenerationId: legacyGeneration.id, userId }
       });
       await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
-        where: { id: firstCurrentGenerationId }
-      })).resolves.toMatchObject({
-        indexedThroughMemoryRevision: afterRollback.memoryRevision
-      });
+        where: { id: legacyGeneration.id }
+      })).resolves.toMatchObject({ state: "SUPERSEDED" });
+      const retention = createPrismaMemorySupersededEntryPruneStore(prisma);
+      await expect(retention.pruneBatch(userId, 500)).resolves.toBe(legacyEntries);
+      await expect(retention.pruneBatch(userId, 500)).resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.count({
+        where: { indexGenerationId: legacyGeneration.id, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.count({
+        where: { indexGenerationId: currentGenerationId, userId }
+      })).resolves.toBe(activeEntries);
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: legacyGeneration.id }
+      })).resolves.toMatchObject({ state: "SUPERSEDED" });
       await expect(cutover.inventory(userId)).resolves.toMatchObject({
-        activeGenerationId: firstCurrentGenerationId,
-        eligibleItems: 1,
+        activeGenerationId: currentGenerationId,
         ready: true
       });
-      await saveExplicit(
-        explicit,
-        userId,
-        "I also prefer exact-set rollback fences.",
-        "cutover-rollback-source-set-change"
-      );
-      const afterSourceSetChange = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      await expect(cutover.rollback(userId, secondCurrentGenerationId, {
-        expectedMemoryRevision: afterSourceSetChange.memoryRevision,
-        expectedSettingsRevision: afterSourceSetChange.settingsRevision
-      })).resolves.toEqual({
-        activeGenerationId: firstCurrentGenerationId,
-        kind: "generation_incompatible"
-      });
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      })).resolves.toMatchObject({ activeIndexGenerationId: firstCurrentGenerationId });
+
       expect(JSON.stringify({ admitted, before, current })).not.toContain(statement);
     } finally {
       await cleanupOwner(userId);

@@ -17,7 +17,6 @@ import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRe
 import { MEMORY_RECOVERY_DELAYS_MS } from "../coordinator/recoveryPolicy";
 import { readMemoryRecoveryStatus } from "../coordinator/recoveryStatus";
 import type { MemoryJobClaim } from "../coordinator/types";
-import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import { defaultMemorySourceMutationHooks } from "../sourceHooks";
 import {
@@ -3190,7 +3189,6 @@ describe("Memory lexical history index persistence", () => {
       }
 
       const rebuild = createPrismaMemoryRebuildRepository(prisma);
-      const cutover = createPrismaMemoryRetrievalCutoverRepository(prisma);
       const beforeRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
@@ -3233,29 +3231,6 @@ describe("Memory lexical history index persistence", () => {
         }
       })).resolves.toBe(rebuiltSegments);
 
-      const second = await rebuild.admit(userId, {
-        expectedMemoryRevision: afterFirst.memoryRevision,
-        expectedSettingsRevision: afterFirst.settingsRevision,
-        operation: "REBUILD_SEARCH_INDEX",
-        requestIdentity: { nonce: `segment-second-${randomUUID()}` }
-      });
-      if (second.kind !== "ok") throw new Error(`segment_second_${second.kind}`);
-      await processRebuildJob(userId, second.jobId);
-      const beforeRollback = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      expect(beforeRollback.activeIndexGenerationId).not.toBe(firstGenerationId);
-      await expect(cutover.rollback(userId, firstGenerationId, {
-        expectedMemoryRevision: beforeRollback.memoryRevision,
-        expectedSettingsRevision: beforeRollback.settingsRevision
-      })).resolves.toEqual({
-        activeGenerationId: firstGenerationId,
-        kind: "ok"
-      });
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      })).resolves.toMatchObject({ activeIndexGenerationId: firstGenerationId });
-
       const activeSegmentGeneration = await prisma.memoryIndexGeneration
         .findUniqueOrThrow({ where: { id: firstGenerationId } });
       const embeddingModel = await prisma.providerModel.findUniqueOrThrow({
@@ -3266,7 +3241,7 @@ describe("Memory lexical history index persistence", () => {
         _max: { generation: true },
         where: { userId }
       });
-      const afterRollback = await prisma.userMemorySettings.findUniqueOrThrow({
+      const beforeHybrid = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
       const hybridGeneration = await prisma.memoryIndexGeneration.create({
@@ -3280,7 +3255,7 @@ describe("Memory lexical history index persistence", () => {
           embeddingProviderModelId: providerTemplateIds.fakeModel,
           generation: (nextGeneration._max.generation ?? -1) + 1,
           indexMode: "HYBRID",
-          indexedThroughMemoryRevision: afterRollback.memoryRevision,
+          indexedThroughMemoryRevision: beforeHybrid.memoryRevision,
           languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
           normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
           retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
@@ -3289,7 +3264,7 @@ describe("Memory lexical history index persistence", () => {
             MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
           sourceIndexGenerationId: firstGenerationId,
           state: "BUILDING",
-          targetMemoryRevision: afterRollback.memoryRevision,
+          targetMemoryRevision: beforeHybrid.memoryRevision,
           userId,
           vectorSpaceFingerprint: "c".repeat(64)
         }

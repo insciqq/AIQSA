@@ -552,6 +552,7 @@
   "memory_source_path_invalid",
   "memory_source_stale",
   "memory_statement_invalid",
+  "memory_superseded_entries_pruned",
   "memory_suppression_fingerprint_invalid",
   "memory_suppression_historical_key_missing",
   "memory_suppression_keyring_invalid",

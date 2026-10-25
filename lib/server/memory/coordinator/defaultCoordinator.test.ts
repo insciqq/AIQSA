@@ -43,7 +43,8 @@ describe("default Memory coordinator composition", () => {
       reclassification: step("reclassification"),
       relations: step("relations"),
       maintenance: step("maintenance"),
-      retiredSynthesis: step("retired-synthesis")
+      retiredSynthesis: step("retired-synthesis"),
+      supersededGenerations: step("superseded-generations")
     });
 
     expect(maximumActive).toBe(1);
@@ -69,7 +70,9 @@ describe("default Memory coordinator composition", () => {
       "maintenance:start",
       "maintenance:end",
       "retired-synthesis:start",
-      "retired-synthesis:end"
+      "retired-synthesis:end",
+      "superseded-generations:start",
+      "superseded-generations:end"
     ]);
   });
 
