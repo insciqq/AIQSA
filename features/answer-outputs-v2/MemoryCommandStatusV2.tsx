@@ -2,18 +2,20 @@
 
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { UiV2Button } from "@/components/ui-v2";
-import type { MemoryCommandFeedback } from "@/lib/contracts/memoryCommand";
+import { memoryCommandSaveNotCommitted, type MemoryCommandFeedback } from "@/lib/contracts/memoryCommand";
 
 type VisibleMemoryCommand = MemoryCommandFeedback & Readonly<{
-  status: "AMBIGUOUS" | "COMMITTED" | "PENDING" | "RUNNING";
+  status: "AMBIGUOUS" | "COMMITTED" | "FAILED" | "PENDING" | "REJECTED" | "RUNNING" | "STALE" | "UNKNOWN";
 }>;
 
-/** Users see only recognized pending work, a committed receipt or a needed
- * choice; failed, unknown, stale and rejected outcomes stay silent. */
+/** Users see recognized pending work, a committed receipt, a needed choice,
+ * and an explicit save that committed nothing (operator decision 2026-10-25).
+ * Every other failed, unknown, stale and rejected outcome stays silent. */
 export function memoryCommandIsVisible(command: MemoryCommandFeedback): command is VisibleMemoryCommand {
   return command.operation !== "UNKNOWN" &&
     (command.status === "PENDING" || command.status === "RUNNING" ||
-      command.status === "COMMITTED" || command.status === "AMBIGUOUS");
+      command.status === "COMMITTED" || command.status === "AMBIGUOUS" ||
+      memoryCommandSaveNotCommitted(command));
 }
 
 function message(command: VisibleMemoryCommand): string {
@@ -23,6 +25,10 @@ function message(command: VisibleMemoryCommand): string {
     case "COMMITTED": return memoryUiCopy(command.operation === "SAVE"
       ? "action.saved" : command.operation === "UPDATE" ? "action.updated" : "action.forgotten");
     case "AMBIGUOUS": return memoryUiCopy("command.ambiguous");
+    case "FAILED":
+    case "REJECTED":
+    case "STALE":
+    case "UNKNOWN": return memoryUiCopy("command.notSaved");
   }
 }
 

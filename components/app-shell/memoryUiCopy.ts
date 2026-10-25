@@ -91,6 +91,7 @@ const EN = {
   "action.forgotten": "Forgotten.",
   "command.pending": "Memory change is being processed in the background.",
   "command.ambiguous": "Several memories match. Open Memory to choose the exact one.",
+  "command.notSaved": "Not saved to Memory.",
   "action.ambiguous": "Choose the exact saved memory before AIQSA changes anything.",
   "action.statusDone": "Done",
   "action.statusReady": "Ready",

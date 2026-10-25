@@ -49,3 +49,12 @@ export function decodeMemoryCommandListResponse(value: unknown): MemoryCommandLi
 export function memoryCommandIsPending(command: MemoryCommandFeedback): boolean {
   return command.status === "PENDING" || command.status === "RUNNING";
 }
+
+/** A recognized save whose outcome is settled without a commit. The commit
+ * receipt shares the fact write's transaction and is never overwritten, so a
+ * rejected, failed, unknown or stale SAVE committed nothing. A classification
+ * that never resolved the operation stays `UNKNOWN` and is not a save. */
+export function memoryCommandSaveNotCommitted(command: MemoryCommandFeedback): boolean {
+  return command.operation === "SAVE" && (command.status === "REJECTED" ||
+    command.status === "FAILED" || command.status === "UNKNOWN" || command.status === "STALE");
+}
