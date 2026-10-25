@@ -31,13 +31,40 @@ function post(init: Readonly<{ body?: BodyInit | null; headers?: Record<string, 
 
 const bearer = { authorization: `Bearer ${TOKEN}` };
 
+/** The headers the intake itself sets; the runtime security headers are checked on their own below. */
+const OWN_HEADERS = new Set(["cache-control", "content-type", "retry-after"]);
+
 async function shape(response: Response) {
-  return { body: await response.text(), headers: [...response.headers.entries()], status: response.status };
+  return { body: await response.text(), headers: [...response.headers.entries()].filter(([name]) => OWN_HEADERS.has(name)),
+    status: response.status };
 }
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("automation webhook intake", () => {
+  it("applies the Proxy's guards itself, since the route bypasses Proxy body cloning", async () => {
+    const f = fixture();
+    const egress = await f.receive(post({ headers: { ...bearer, "x-aiqsa-egress": "personal-mcp" } }), PUBLIC_ID);
+    expect([egress.status, await egress.text()]).toEqual([421, ""]);
+    for (const headers of [{ origin: "https://attacker.example" }, { "sec-fetch-site": "cross-site" }]) {
+      const crossSite = await f.receive(post({ headers: { ...bearer, ...headers } }), PUBLIC_ID);
+      expect([crossSite.status, await crossSite.json()]).toEqual([403, { error: "invalid_origin" }]);
+    }
+    expect(f.store.find).not.toHaveBeenCalled();
+    expect(f.store.accept).not.toHaveBeenCalled();
+    // Senders without a browser origin pass, and every answer carries the runtime security headers.
+    const answers = [await f.receive(post({ headers: { ...bearer, "sec-fetch-site": "none" } }), PUBLIC_ID),
+      await fixture(null).receive(post({ headers: bearer }), PUBLIC_ID), egress];
+    expect(answers.map((response) => response.status)).toEqual([202, 404, 421]);
+    for (const response of answers) {
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+    }
+    const [accepted, refused] = answers;
+    const security = (response: Response) => [...response.headers.entries()].filter(([name]) => !OWN_HEADERS.has(name));
+    expect(security(refused!)).toEqual(security(accepted!));
+  });
+
   it("refuses every unauthenticated request with one response, before reading the body", async () => {
     const refusals: Array<[string, ScheduledTaskWebhookTarget | null, Request, string?]> = [
       ["unknown webhook", null, post({ headers: bearer })],

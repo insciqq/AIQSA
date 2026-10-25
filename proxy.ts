@@ -58,7 +58,6 @@ const publicPrefixes = [
   // Automation webhooks: the header token is the only credential, checked by the route
   // before it reads anything else. The mutation origin guard still applies; senders
   // without a browser origin pass it.
-  "/api/automations/hooks",
   // Session-free for the Workspace runner relay only: the route refuses any
   // request without the relay's proof before it looks up the run bearer.
   // Never rely on this path being publicly reachable; proxies may block it.
@@ -233,5 +232,7 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/uploads/sessions/[a-zA-Z0-9-]+/parts/[0-9]+/?$).*)"]
+  // Upload parts and automation webhooks bypass Proxy body cloning; their
+  // handlers apply the origin, egress and header guards before reading a body.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/uploads/sessions/[a-zA-Z0-9-]+/parts/[0-9]+/?$|api/automations/hooks/[A-Za-z0-9_-]+/?$).*)"]
 };
