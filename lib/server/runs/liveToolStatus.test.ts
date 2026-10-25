@@ -33,4 +33,17 @@ describe("live tool call status", () => {
     });
     expect(JSON.stringify(event)).not.toMatch(/unexposed|mcp_repository/iu);
   });
+
+  it("settles a call under its requested identity with a whole, non-negative duration", () => {
+    const call = { arguments: { query: "unexposed argument" }, id: "unexposed call id", name: "search" };
+    const activity = { origin: "mcp" as const, round: 2, serverName: "Repository Tools" };
+    const payload = (event: ReturnType<typeof liveToolCallStatus>) =>
+      event.type === "artifact" ? event.data.payload : null;
+    expect(payload(liveToolCallStatus(call, activity, { ordinal: 3 }))).toEqual({
+      name: "search", ordinal: 3, origin: "mcp", round: 2, serverName: "Repository Tools", status: "requested" });
+    expect(payload(liveToolCallStatus(call, activity, { ordinal: 3, settled: { durationMs: 1234.6, status: "error" } }))).toEqual({
+      durationMs: 1235, name: "search", ordinal: 3, origin: "mcp", round: 2, serverName: "Repository Tools", status: "error" });
+    expect(payload(liveToolCallStatus(call, activity, { ordinal: -1, settled: { durationMs: -5, status: "complete" } })))
+      .toEqual({ durationMs: 0, name: "search", origin: "mcp", round: 2, serverName: "Repository Tools", status: "complete" });
+  });
 });

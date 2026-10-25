@@ -12,6 +12,7 @@ import {
   isThreadToolActivityOrigin,
   decodeThreadToolBudgetWarning,
   type ThreadToolActivity,
+  type ThreadToolActivityCall,
   type ThreadToolActivityOrigin,
   type ThreadToolBudgetWarning
 } from "@/lib/contracts/chats";
@@ -152,6 +153,21 @@ function toolActivityMetadata(payload: Record<string, unknown>) {
     ...(serverName ? { serverName } : {}),
     ...(toolName ? { toolName } : {})
   };
+}
+
+/** A live call's identity in its run (`liveToolCallStatus`): its round and its position in that round. */
+function liveToolCallKey(payload: Record<string, unknown>): string | null {
+  const { ordinal, round } = payload;
+  return Number.isSafeInteger(round) && Number(round) > 0 && Number.isSafeInteger(ordinal) && Number(ordinal) >= 0
+    ? `${Number(round)}:${Number(ordinal)}` : null;
+}
+
+/** A live call's settlement: its outcome and whole duration; anything malformed is ignored. */
+function liveToolCallSettlement(payload: Record<string, unknown>): Readonly<{ durationMs?: number; status: "complete" | "error" }> | null {
+  if (payload.status !== "complete" && payload.status !== "error") return null;
+  const { durationMs } = payload;
+  if (durationMs !== undefined && !(Number.isSafeInteger(durationMs) && Number(durationMs) >= 0)) return null;
+  return { status: payload.status, ...(durationMs !== undefined ? { durationMs: Number(durationMs) } : {}) };
 }
 
 function safeErrorCode(value: unknown): string | null {
@@ -790,6 +806,9 @@ export function presentToolActivityV2(
   let searchEngines = [...(persisted?.searchEngines ?? [])];
   let warning = persisted?.warning;
   const matched = new Set<number>();
+  // Rows of live calls by identity (`round:ordinal`) until they settle, and every row a live identity owns.
+  const live = new Map<string, number>();
+  const claimed = new Set<number>();
   for (const event of events) {
     const payload = eventPayload(event);
     if (event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "search_activity") {
@@ -814,8 +833,9 @@ export function presentToolActivityV2(
       warning = decodeThreadToolBudgetWarning(payload) ?? warning;
       continue;
     }
-    if (event.type !== "artifact" || !isRecord(event.data) ||
-      event.data.artifactType !== "tool_call" || payload?.status !== "requested") continue;
+    if (event.type !== "artifact" || !isRecord(event.data) || event.data.artifactType !== "tool_call" || !payload) continue;
+    const settlement = payload.status === "requested" ? null : liveToolCallSettlement(payload);
+    if (payload.status !== "requested" && !settlement) continue;
     const metadata = toolActivityMetadata(payload);
     const { origin, toolName, serverName } = metadata;
     const round = Number.isSafeInteger(payload.round) && Number(payload.round) > 0
@@ -824,14 +844,40 @@ export function presentToolActivityV2(
     if (!toolName || round === null) continue;
     // Native search has ordinal-bound snapshots, including terminal outcomes.
     if (origin === "memory" && toolName === "memory_search") continue;
-    const existing = calls.findIndex((call, index) =>
-      !matched.has(index) && call.round === round && safeToolName(call.toolName) === toolName &&
-      safeServerName(call.serverName) === (serverName ?? null) &&
-      (!call.origin || !origin || call.origin === origin));
+    const key = liveToolCallKey(payload);
+    const sameCall = (call: ThreadToolActivityCall) => call.round === round && safeToolName(call.toolName) === toolName &&
+      safeServerName(call.serverName) === (serverName ?? null) && (!call.origin || !origin || call.origin === origin);
+    if (settlement) {
+      // Its own row by identity; a persisted row its live start was not seen for by the name match.
+      const index = key !== null && live.has(key) ? live.get(key)!
+        : calls.findIndex((call, candidate) => !claimed.has(candidate) && call.status === "running" && sameCall(call));
+      const call = calls[index];
+      // A persisted outcome stays authoritative.
+      if (!call || call.status !== "running" || !sameCall(call)) continue;
+      calls[index] = { ...call, status: settlement.status,
+        ...(settlement.durationMs !== undefined ? { durationMs: settlement.durationMs } : {}) };
+      if (key !== null) live.delete(key);
+      continue;
+    }
+    if (key !== null && live.has(key)) continue;
+    // The persisted row of exactly this call when the projection names it, else the first unmatched one alike.
+    const byIdentity = key === null ? -1 : calls.findIndex((call, index) => !matched.has(index) &&
+      call.details !== undefined && `${call.details.roundIndex}:${call.details.ordinal}` === key && sameCall(call));
+    // A row another live identity owns is another call, not a replay of this one.
+    const existing = byIdentity >= 0 ? byIdentity : calls.findIndex((call, index) => !matched.has(index) &&
+      !(key !== null && claimed.has(index)) && sameCall(call));
     if (existing >= 0) {
       if (origin && !calls[existing]!.origin) calls[existing] = { ...calls[existing]!, origin };
       matched.add(existing);
+      if (key !== null) {
+        live.set(key, existing);
+        claimed.add(existing);
+      }
       continue;
+    }
+    if (key !== null) {
+      live.set(key, calls.length);
+      claimed.add(calls.length);
     }
     calls.push({
       ...metadata,
@@ -840,7 +886,12 @@ export function presentToolActivityV2(
       toolName
     });
   }
-  if (terminal) searchEngines = searchEngines.map(row => ({ ...row, settled: row.requested }));
+  if (terminal) {
+    searchEngines = searchEngines.map(row => ({ ...row, settled: row.requested }));
+    // A call the ended run never settled has no outcome to show: it reads as stopped, as the saved projection
+    // reads such a call, never as done or failed, and it no longer spins.
+    for (const [index, call] of calls.entries()) if (call.status === "running") calls[index] = { ...call, status: "cancelled" };
+  }
   const visibleCalls = calls.filter(call => !memorySearchCallHiddenV2(call));
   return visibleCalls.length > 0 || warning || searchEngines.length > 0
     ? { calls: visibleCalls, ...(searchEngines.length ? { searchEngines } : {}), ...(warning ? { warning } : {}) }
@@ -948,6 +999,7 @@ export function presentRunLifecycleV2(
   let eventFailure: RunFailureV2 | null = null;
   const settledMemorySearchCalls = new Set<string>();
   const activeMemorySearchCalls = new Set<string>();
+  const activeToolCalls = new Map<string, Omit<ActivitySignal, "index">>();
 
   for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {
@@ -973,9 +1025,24 @@ export function presentRunLifecycleV2(
         activeMemorySearchCalls.delete(nativeKey);
       } else if (!lateNativeStart) activeMemorySearchCalls.add(nativeKey);
     }
-    const activity: ActivitySignal | null = lateNativeStart ? null : nativeSearch && activeMemorySearchCalls.size > 0
+    // A settled call no longer names the line: a call still running does, else the run's wait.
+    const toolCall = event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "tool_call"
+      ? eventPayload(event) : null;
+    const toolKey = toolCall ? liveToolCallKey(toolCall) : null;
+    const toolSettled = toolCall !== null && toolKey !== null && liveToolCallSettlement(toolCall) !== null &&
+      activeToolCalls.has(toolKey) &&
+      (activeToolCalls.get(toolKey)!.toolName ?? null) === (toolActivityMetadata(toolCall).toolName ?? null) &&
+      activeToolCalls.delete(toolKey);
+    const stillRunning = toolSettled ? [...activeToolCalls.values()].at(-1) : undefined;
+    const activity: ActivitySignal | null = lateNativeStart ? null
+      : toolSettled ? stillRunning ? { ...stillRunning, index } : { index, kind: "provider" }
+      : nativeSearch && activeMemorySearchCalls.size > 0
       ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
       : activityFromEvent(event, index, resultsPending);
+    if (activity?.kind === "tool" && toolCall?.status === "requested" && toolKey !== null) {
+      const { index: _index, ...signal } = activity;
+      activeToolCalls.set(toolKey, signal);
+    }
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
     resultsPending ||= activity?.kind === "tool";
 

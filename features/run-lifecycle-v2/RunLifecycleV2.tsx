@@ -339,9 +339,9 @@ export function RunAnswerV2({
   const liveLabel = presentation.kind === "activity"
     ? activity?.kind === "synthesis" || activity?.kind === "compaction" ? activity.label
       : workspaceActiveLabelV2(workspaceActivity) ??
-      // Live tool calls read as running until the settled answer replaces
-      // them, so a server phase that began after them supersedes their label
-      // and the generic Workspace one.
+      // A live tool call reads as running until it settles, so a server
+      // phase that began after it supersedes its label and the generic
+      // Workspace one.
       (activity && livePhaseKinds.has(activity.kind) ? activityLabel : null) ??
       workspaceLiveLabelV2(workspaceActivity) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??

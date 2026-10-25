@@ -2,7 +2,13 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadToolActivityOrigin } from "../../contracts/chats";
 import type { ModelToolCall } from "../tools/types";
 
-/** Minimal factual tool status for the active SSE response; never persisted. */
+/**
+ * Minimal factual tool status for the active SSE response; never persisted.
+ * A sent call is announced as `requested` and, once it settled, again with
+ * its outcome and duration under the same identity (`ordinal`, its position
+ * in its round), so its step stops when it finished. Content-free: no
+ * arguments, results or error text.
+ */
 export function liveToolCallStatus(
   call: ModelToolCall,
   activity: Readonly<{
@@ -15,8 +21,13 @@ export function liveToolCallStatus(
     skillPath?: string;
     /** A page read's "host/path"; carried only with the `web_fetch` origin. */
     fetchTarget?: string;
+  }> = {},
+  progress: Readonly<{
+    ordinal?: number;
+    settled?: Readonly<{ durationMs: number; status: "complete" | "error" }>;
   }> = {}
 ): ModelRunSseEvent {
+  const { ordinal, settled } = progress;
   return {
     data: {
       artifactType: "tool_call",
@@ -33,7 +44,11 @@ export function liveToolCallStatus(
           ...(activity.skillPath ? { skillPath: activity.skillPath } : {})
         } : {}),
         ...(activity.origin === "web_fetch" && activity.fetchTarget ? { fetchTarget: activity.fetchTarget } : {}),
-        status: "requested"
+        ...(Number.isSafeInteger(ordinal) && Number(ordinal) >= 0 ? { ordinal } : {}),
+        ...(settled
+          ? { durationMs: Number.isFinite(settled.durationMs) ? Math.max(0, Math.round(settled.durationMs)) : 0,
+            status: settled.status }
+          : { status: "requested" })
       }
     },
     type: "artifact"
