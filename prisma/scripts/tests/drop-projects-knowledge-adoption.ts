@@ -43,7 +43,7 @@ INSERT INTO "Project" (id, name, "createdByDisplayName", status, "deletionReques
 VALUES ('drop-project', 'Synthetic Project', 'Synthetic owner', 'DELETING', now(), now());
 INSERT INTO "Chat" (id, "userId", "projectId", "createdByUserId", "createdByDisplayName", title, "memoryMode", "updatedAt") VALUES
   ('drop-project-chat', NULL, 'drop-project', 'drop-owner', 'Synthetic owner', 'Synthetic Project chat', 'EXCLUDED', now()),
-  ('drop-personal-chat', 'drop-owner', NULL, NULL, NULL, 'Synthetic personal chat', 'NORMAL', now());
+  ('drop-personal-chat', 'drop-owner', NULL, NULL, '', 'Synthetic personal chat', 'NORMAL', now());
 INSERT INTO "AssistantDefinition" (id, "ownerUserId", name, avatar, "systemPrompt", "searchPlan", "modelPolicy",
   "knowledgePolicy", "knowledgeSelection", "updatedAt")
 VALUES ('drop-assistant', 'drop-owner', 'Synthetic helper', ${avatar}, 'Answer.', '{"mode":"all_selected","optionIds":[]}',
