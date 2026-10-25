@@ -8,7 +8,12 @@ import {
   type MessageSearchClient
 } from "./messageSearch";
 
-function client(rows: unknown[] | Error) {
+type LegacyReview = Readonly<{
+  messages: readonly Readonly<Record<string, string | null>>[];
+  sessions: readonly Readonly<{ id: string; sourceAssistantMessageId: string }>[];
+}>;
+
+function client(rows: unknown[] | Error, review: LegacyReview = { messages: [], sessions: [] }) {
   const statements: Prisma.Sql[] = [];
   const executeRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     statements.push(Prisma.sql(strings, ...values));
@@ -19,9 +24,12 @@ function client(rows: unknown[] | Error) {
     if (rows instanceof Error) throw rows;
     return rows;
   });
-  const transaction = vi.fn(async (operation: (tx: unknown) => Promise<unknown>) =>
-    operation({ $executeRaw: executeRaw, $queryRaw: queryRaw }));
-  return { client: { $transaction: transaction } as unknown as MessageSearchClient, statements };
+  const sessions = vi.fn(async () => review.sessions);
+  const messages = vi.fn(async () => review.messages);
+  const transaction = vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation({
+    $executeRaw: executeRaw, $queryRaw: queryRaw, answerReviewSession: { findMany: sessions }, message: { findMany: messages }
+  }));
+  return { client: { $transaction: transaction } as unknown as MessageSearchClient, sessions, statements };
 }
 
 describe("message content search", () => {
@@ -125,6 +133,32 @@ describe("message content search", () => {
     expect(query.sql).toMatch(/chat\."archived" = false/u);
     expect(query.sql).toMatch(/chat\."memoryMode" <> 'TEMPORARY'/u);
     expect(query.sql).toMatch(/chat\."permanentDeletionAt" IS NULL/u);
+    expect(query.sql).not.toContain("ANY(");
+  });
+
+  it("never matches the steps or superseded versions of an answer review recorded before the removal", async () => {
+    const step = (id: string, parentMessageId: string, role: string, systemTurnKind: string | null = null) =>
+      ({ answerReviewSessionId: "session-1", id, parentMessageId, role, status: "complete", systemTurnKind });
+    const { client: fake, sessions, statements } = client([], {
+      messages: [
+        { answerReviewSessionId: null, id: "answer-1", parentMessageId: "question-1", role: "assistant", status: "complete",
+          systemTurnKind: null },
+        step("review-turn", "answer-1", "user", "answer_review_request"),
+        step("review", "review-turn", "assistant"),
+        step("revision-turn", "review", "user", "answer_revision_request"),
+        step("answer-2", "revision-turn", "assistant")
+      ],
+      sessions: [{ id: "session-1", sourceAssistantMessageId: "answer-1" }]
+    });
+
+    await findMessageMatches(fake, { after: null, limit: 31, query: "total", userId: "user-1" });
+
+    expect(sessions).toHaveBeenCalledWith(expect.objectContaining({ where: { chat: { userId: "user-1" } } }));
+    const query = statements[1]!;
+    expect(query.sql).toContain("AND NOT (message.\"id\" = ANY(");
+    // The revised answer stays searchable as the answer the chat shows.
+    const hidden = query.values.find((value): value is string[] => Array.isArray(value));
+    expect(new Set(hidden)).toEqual(new Set(["answer-1", "review-turn", "review", "revision-turn"]));
   });
 
   it("reports a statement timeout as its own outcome and rethrows other failures", async () => {

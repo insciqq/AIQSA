@@ -13,7 +13,6 @@ describe("engine tool call family", () => {
     ["generate_image", "image", "image_generation"], ["analyze_image", "workspace", "vision"], ["analyze_image", "vision", "vision"],
     ["checkpoint_outputs", "workspace", "workspace"], ["workspace_exec", "workspace", "workspace"], ["apply_patch", "workspace", "workspace"],
     ["memory_search", "memory", "memory"], ["report_monitoring_result", "session", "monitoring"],
-    ["submit_answer_review", "session", "answer_review"], ["record_review_decisions", "session", "answer_review"],
     ["web_search", "web_search", "search"], [MCP_FIND_TOOLS_NAME, "mcp", "mcp"],
     ["read_tool_result", "session", "other"], ["update_plan", "session", "other"], ["read_secret", "session", "other"]
   ] as const)("maps %s (%s) to %s", (name, capability, kind) => {

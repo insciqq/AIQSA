@@ -47,12 +47,10 @@ import {
   engineAdmissionRefusal, nativeRunResponse, nativeRunServices, recoverUserNativeRuns, type NativeEngineHandlerDeps
 } from "../engine/handlerSupport";
 import { NATIVE_RUN_STALE_MS } from "../engine/recovery";
-import { resolveAnswerReviewAuto } from "../answerReviews/autoAdmission";
 import {
   materializePreparedRunData,
   preparePdfRetry,
   prepareRun,
-  type AnswerReviewStepPreparation,
   type RunPreparationDeps,
   type MaterializedPreparedRunData,
   type RunPreparationFailure
@@ -60,7 +58,6 @@ import {
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
-  AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
   McpRunPlanConflictError,
@@ -90,19 +87,7 @@ export type {
   RunRepository
 } from "./runRepositoryContract";
 
-/**
- * Server-only: the answer review step a send of this handler admits. The
- * send body is the server's own (its turn's text, the step's model, the
- * chat's controls); the turn carries `turnKind` and claims the step.
- */
-export type AnswerReviewStepSendAdmission = Readonly<{
-  preparation: AnswerReviewStepPreparation;
-  turnKind: import("../../contracts/answerReviews").AnswerReviewTurnKind;
-}>;
-
 export type RunHandlerDeps = {
-  /** Server-only: the answer review step a send of this handler admits. */
-  answerReviewStep?: AnswerReviewStepSendAdmission;
   memorySearchAdmission?: RunPreparationDeps["memorySearchAdmission"];
   memorySearch?: import("../memory/search/runtime").MemorySearchService;
   workspaceFollowup?: Readonly<{
@@ -131,7 +116,7 @@ export type RunHandlerDeps = {
   /**
    * The agent engine every admitted run executes on
    * (`createDefaultSendMessageDeps` gives it to the chat routes, the
-   * scheduled task runner, Telegram and answer review).
+   * scheduled task runner and Telegram).
    */
   nativeEngine: NativeEngineHandlerDeps;
   providerAdmission?: RunPreparationDeps["providerAdmission"];
@@ -379,11 +364,6 @@ function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConfl
     (error instanceof Error && error.name === "WorkspaceRunConflictError");
 }
 
-function isAnswerReviewStepConflictError(error: unknown): error is AnswerReviewStepConflictError {
-  return error instanceof AnswerReviewStepConflictError ||
-    (error instanceof Error && error.name === "AnswerReviewStepConflictError" && "code" in error);
-}
-
 function isScheduledOccurrenceConflictError(error: unknown): error is ScheduledOccurrenceConflictError {
   return error instanceof ScheduledOccurrenceConflictError ||
     (error instanceof Error && error.name === "ScheduledOccurrenceConflictError");
@@ -434,6 +414,22 @@ async function acceptedRuntimeBinding(
       throw error;
     }
   });
+}
+
+/**
+ * The stored leaf a send's expected leaf names. The browser names the message
+ * it was shown, and a leaf that is a step of an answer review recorded before
+ * the feature's removal reads as the version standing for it
+ * (`lib/server/chats/legacyAnswerReviews.ts`); anything else is compared as is.
+ */
+async function storedExpectedLeaf(
+  deps: Pick<RunHandlerDeps, "repository">,
+  chat: Readonly<{ activeLeafMessageId: string | null; id: string }>,
+  expected: string | null
+): Promise<string | null> {
+  const stored = chat.activeLeafMessageId;
+  if (!expected || !stored || expected === stored || !deps.repository.loadVisibleLeafMessageId) return expected;
+  return await deps.repository.loadVisibleLeafMessageId(chat.id, stored) === expected ? stored : expected;
 }
 
 function expectedActiveLeafFromBody(
@@ -587,10 +583,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "personal_draft_conflict" }, { status: 409 });
       }
     }
-    // A review step's body is the server's own; it never also names an approval.
-    if (deps.answerReviewStep && body && Object.hasOwn(body, "systemTurn")) {
-      return Response.json({ error: "system_turn_invalid" }, { status: 400 });
-    }
     const continuationBody = await approvalContinuationBody(deps, body, chat.id, auth.userId);
     if (continuationBody === "invalid") return Response.json({ error: "system_turn_invalid" }, { status: 400 });
     if (continuationBody === "unavailable") {
@@ -611,13 +603,14 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       } }, { status: 409 });
     }
 
-    const expectedActiveLeaf = expectedActiveLeafFromBody(body, chat.activeLeafMessageId);
-    if (!expectedActiveLeaf.ok) {
+    const requestedActiveLeaf = expectedActiveLeafFromBody(body, chat.activeLeafMessageId);
+    if (!requestedActiveLeaf.ok) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
     }
+    const expectedActiveLeafId = await storedExpectedLeaf(deps, chat, requestedActiveLeaf.value);
     // Budgets bind every run; message windows count only the user's own messages.
     const usageRefusal = await usageLimitRefusal(deps, {
-      interactive: !deps.scheduledOccurrence && !deps.answerReviewStep, stage: "send", userId: auth.userId
+      interactive: !deps.scheduledOccurrence, stage: "send", userId: auth.userId
     });
     if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, memoryMode: chat.memoryMode ?? null });
@@ -632,7 +625,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
             ? await deps.repository.loadPersonalFirstSend?.({ chatId: params.chatId,
                 folderId: personalDraft.folderId, memoryMode: personalDraft.memoryMode, userId: auth.userId })
             : await deps.repository.findOwnedChat(params.chatId, auth.userId);
-          if (!current || current.activeLeafMessageId !== expectedActiveLeaf.value ||
+          if (!current || current.activeLeafMessageId !== expectedActiveLeafId ||
             chatPdfFingerprint({ chatId: current.id, memoryMode: current.memoryMode ?? null }) !== scopeFingerprint) {
             throw new SkillCatalogAuthorityChangedError();
           }
@@ -642,12 +635,11 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       source: {
         chat: {
           ...chat,
-          activeLeafMessageId: expectedActiveLeaf.value
+          activeLeafMessageId: expectedActiveLeafId
         },
         ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send",
-        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {}),
-        ...(deps.answerReviewStep ? { answerReviewStep: deps.answerReviewStep.preparation } : {})
+        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})
       },
       userId: auth.userId
     });
@@ -656,12 +648,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     }
 
     let preparedData = materializePreparedRunData(preparation.prepared);
-    // Automatic review of the answer: only a user's own send, never a review
-    // step, a scheduled run or an approval continuation.
-    const answerReview = deps.answerReviewStep || deps.scheduledOccurrence || continuationBody
-      ? { ok: true as const }
-      : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
-    if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     const engineRefusal = engineAdmissionRefusal(preparedData);
     if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
     const systemTurn = continuationBody && body?.systemTurn && typeof body.systemTurn === "object"
@@ -674,7 +660,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
-        ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: followupSnapshot()
         } } : {}),
@@ -719,14 +704,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         } : {}),
         signal: request.signal,
         ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
-        ...(deps.answerReviewStep ? {
-          answerReviewStep: {
-            round: deps.answerReviewStep.preparation.round,
-            sessionId: deps.answerReviewStep.preparation.sessionId,
-            step: deps.answerReviewStep.preparation.step
-          },
-          systemTurnKind: deps.answerReviewStep.turnKind
-        } : {}),
         userId: auth.userId
       });
     } catch (error) {
@@ -736,7 +713,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       if (isScheduledOccurrenceConflictError(error)) {
         return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
       }
-      if (isAnswerReviewStepConflictError(error)) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
@@ -907,17 +883,12 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const chatAssistant = preparedData.chatAssistant && retry
       ? { assistantId: preparedData.chatAssistant.assistantId, bind: false, overridesPatch: {} }
       : preparedData.chatAssistant;
-    // A regeneration or an edit with automatic review on reviews its new answer; a document retry keeps its run.
-    const answerReview = retry ? { ok: true as const }
-      : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
-    if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     // A document retry runs its frozen preparation again, so the model it froze must still be one the agent can run.
     const engineRefusal = engineAdmissionRefusal(preparedData);
     if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
-        ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),

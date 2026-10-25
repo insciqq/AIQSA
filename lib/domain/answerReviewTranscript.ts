@@ -1,4 +1,17 @@
-import { ANSWER_REVISION_REQUEST_KIND } from "../contracts/answerReviews";
+/**
+ * Answer Review is removed (operator decision 2026-10-25). A session recorded
+ * before then (`AnswerReviewSession`, its steps' `Message.answerReviewSessionId`)
+ * stays readable through this one read-only projection: it reads as its
+ * source question followed only by its latest version, never its steps.
+ */
+
+/** The server-written turns of a session's steps (`MessageSystemTurnKind`); nothing writes them any more. */
+export const ANSWER_REVIEW_REQUEST_KIND = "answer_review_request";
+export const ANSWER_REVISION_REQUEST_KIND = "answer_revision_request";
+
+export function isAnswerReviewTurnKind(value: unknown): boolean {
+  return value === ANSWER_REVIEW_REQUEST_KIND || value === ANSWER_REVISION_REQUEST_KIND;
+}
 
 export type AnswerReviewTranscriptMessage = Readonly<{
   answerReviewSessionId?: string | null;
@@ -26,14 +39,12 @@ export type AnswerReviewCollapse = Readonly<{
  * followed only by the group's latest version, the newest complete revision
  * or else the source answer. The session's server-written turns, its review
  * answers and superseded versions leave; a later message whose parent left
- * hangs from the version. `keepSessionId` is left whole (a step of that
- * session sees its full chain) and `keepMessageIds` never leave (a run's own
- * current turn). A source answer outside `messages` leaves its session whole.
+ * hangs from the version. A source answer outside `messages` leaves its
+ * session whole.
  */
 export function collapseAnswerReviews(
   messages: readonly AnswerReviewTranscriptMessage[],
-  sessions: readonly AnswerReviewTranscriptSession[],
-  options: Readonly<{ keepMessageIds?: ReadonlySet<string>; keepSessionId?: string | null }> = {}
+  sessions: readonly AnswerReviewTranscriptSession[]
 ): AnswerReviewCollapse {
   const byId = new Map(messages.map((message) => [message.id, message]));
   const removed = new Set<string>();
@@ -53,7 +64,6 @@ export function collapseAnswerReviews(
     return -1;
   };
   for (const session of sessions) {
-    if (session.id === options.keepSessionId) continue;
     const source = byId.get(session.sourceAssistantMessageId);
     if (!source) continue;
     const members = messages.filter((message) => message.answerReviewSessionId === session.id);
@@ -72,7 +82,7 @@ export function collapseAnswerReviews(
       }
     }
     for (const member of [source, ...members]) {
-      if (member.id === latest.id || options.keepMessageIds?.has(member.id)) continue;
+      if (member.id === latest.id) continue;
       removed.add(member.id);
       replacements.set(member.id, latest.id);
     }
@@ -83,4 +93,43 @@ export function collapseAnswerReviews(
     parents.set(message.id, replacements.get(message.parentId) ?? null);
   }
   return { parents, removed, replacements };
+}
+
+/**
+ * A whole message tree read as its paths read: a message stays when the path
+ * to some leaf, or to one of `leafIds` (the chat's active leaf, which may lie
+ * above a leaf), keeps it, and each kept message hangs from the parent those
+ * paths give it. A session's version thus stands in its source answer's
+ * place among its question's answers.
+ */
+export function collapseAnswerReviewTree(
+  messages: readonly AnswerReviewTranscriptMessage[],
+  sessions: readonly AnswerReviewTranscriptSession[],
+  leafIds: readonly string[] = []
+): Omit<AnswerReviewCollapse, "replacements"> {
+  const kept = new Set<string>();
+  const parents = new Map<string, string | null>();
+  if (sessions.length === 0) {
+    return { parents, removed: new Set() };
+  }
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const withChildren = new Set(messages.flatMap((message) => message.parentId ? [message.parentId] : []));
+  const ends = new Set([...messages.filter((message) => !withChildren.has(message.id)).map((message) => message.id),
+    ...leafIds.filter((id) => byId.has(id))]);
+  for (const end of ends) {
+    const path: AnswerReviewTranscriptMessage[] = [];
+    const seen = new Set<string>();
+    for (let current = byId.get(end); current && !seen.has(current.id);
+      current = current.parentId ? byId.get(current.parentId) : undefined) {
+      seen.add(current.id);
+      path.push(current);
+    }
+    const collapse = collapseAnswerReviews(path.reverse(), sessions);
+    for (const message of path) {
+      if (collapse.removed.has(message.id)) continue;
+      kept.add(message.id);
+      if (collapse.parents.has(message.id)) parents.set(message.id, collapse.parents.get(message.id) ?? null);
+    }
+  }
+  return { parents, removed: new Set(messages.flatMap((message) => kept.has(message.id) ? [] : [message.id])) };
 }

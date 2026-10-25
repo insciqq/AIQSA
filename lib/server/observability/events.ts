@@ -4,7 +4,7 @@ export type ObservabilityContext = Readonly<{
   user_id?: string;
 }>;
 export type ProcessRole = "app" | "memory_coordinator" | "workspace_runner" | "maintenance" | "bootstrap" | "storage_relay";
-export type Subsystem = "attachments" | "pdf" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation" | "answer_review" | "connect" | "telegram";
+export type Subsystem = "attachments" | "pdf" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation" | "connect" | "telegram";
 export type SubsystemState = "disabled" | "starting" | "unknown" | "ready" | "failed";
 export type LifecycleStage = "startup" | "discover" | "reconcile" | "claim" | "drain" | "preflight" | "prepare" | "process" | "parse" | "chunk" | "embed" | "validate" | "publish" | "progress" | "retry" | "complete" | "fail" | "release" | "settle" | "refresh" | "probe" | "evict" | "initialize" | "quiesce" | "resume" | "collect" | "seal" | "export" | "restore" | "recovery" | "continuation" | "cleanup" | "projection" | "integrity" | "rebuild" | "dispatch" | "shutdown" | "read" | "write" | "delete" | "multipart_start" | "multipart_complete" | "multipart_abort" | "multipart_sign" | "health" | "heartbeat";
 export type LifecycleOutcome = "started" | "completed" | "failed" | "degraded" | "cancelled" | "stale" | "waiting" | "skipped" | "lost_lease" | "blocked";
@@ -38,7 +38,7 @@ export type ToolKind = "search" | "mcp" | "workspace" | "vision";
 /** The family of one model tool call (`tool_call` only); the families with
  * their own executor records keep the narrower `ToolKind`. */
 export type ToolCallKind = ToolKind | "fetch_url" | "artifact" | "image_generation" | "skill" | "scheduled_task" |
-  "session_status" | "workspace_image" | "answer_review" | "memory" | "monitoring" | "other";
+  "session_status" | "workspace_image" | "memory" | "monitoring" | "other";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;

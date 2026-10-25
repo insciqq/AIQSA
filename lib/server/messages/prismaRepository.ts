@@ -11,7 +11,7 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
+import { answerReviewDeletionRoot, collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -269,16 +269,14 @@ export function createPrismaMessageBranchRepository(
         if (ancestors.some((message) => isActiveMessageStatus(message.status))) {
           throw new ActiveMessageMutationConflictError();
         }
-        // The copy holds no answer review session: each one on the path is
-        // copied as its question followed by the group's latest version, and
-        // a later message hangs from that version (as exports read it).
-        const reviewSessionIds = [...new Set(ancestors.flatMap((message) => message.answerReviewSessionId ?? []))];
-        const reviewCollapse = collapseAnswerReviews(ancestors.map((message) => ({
+        // The copy holds no answer review session: each one recorded before
+        // the feature's removal is copied as its question followed by the
+        // group's latest version, and a later message hangs from that version
+        // (as exports read it).
+        const reviewCollapse = await collapseChatAnswerReviews(tx, lockedChat.id, ancestors.map((message) => ({
           answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
           role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
-        })), reviewSessionIds.length ? await tx.answerReviewSession.findMany({
-          select: { id: true, sourceAssistantMessageId: true }, where: { chatId: lockedChat.id, id: { in: reviewSessionIds } }
-        }) : []);
+        })));
         const path = ancestors.filter((message) => !reviewCollapse.removed.has(message.id));
         // The branch's last message stands for its source when the source was a review step.
         const branchLeaf = path.at(-1)!;
@@ -629,6 +627,9 @@ export function createPrismaMessageBranchRepository(
         }
         await assertChatHasNoActiveRun(tx, lockedChat.id);
 
+        // A reviewed answer recorded before Answer Review was removed reads as
+        // one answer: deleting its version deletes it from its source answer.
+        const rootId = await answerReviewDeletionRoot(tx, lockedChat.id, messageId);
         const root = await tx.message.findFirst({
           select: {
             chatId: true,
@@ -637,7 +638,7 @@ export function createPrismaMessageBranchRepository(
           },
           where: {
             chatId: lockedChat.id,
-            id: messageId
+            id: rootId
           }
         });
 
@@ -667,8 +668,8 @@ export function createPrismaMessageBranchRepository(
           ]);
         }
 
-        const deletedDepths = new Map<string, number>([[messageId, 0]]);
-        const queue = [messageId];
+        const deletedDepths = new Map<string, number>([[root.id, 0]]);
+        const queue = [root.id];
         while (queue.length > 0) {
           const parentId = queue.shift()!;
           const parentDepth = deletedDepths.get(parentId) ?? 0;

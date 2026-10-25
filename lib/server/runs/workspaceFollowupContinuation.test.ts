@@ -21,14 +21,15 @@ const admitted = { assistantMessageId: "answer-2", runId: "follow-run", userMess
 const workspaceRequest = { workspace: { enabled: true, syncToolTimeoutSeconds: 30, turnTimeoutSeconds: 600 } as ProviderRunRequest["workspace"] };
 
 function loadedFollowup(input: Readonly<{ engine?: "native" | "v1"; native?: Readonly<{ approvalId?: string; telegram?: true }>;
-  status?: "preparing" | "streaming" }> = {}): WorkspaceFollowupLoaded {
+  request?: Readonly<Record<string, unknown>>; status?: "preparing" | "streaming" }> = {}): WorkspaceFollowupLoaded {
   return {
     admissionResult: { ...admitted },
     deadlineAt: new Date(Date.now() + 60_000),
     modelRun: { chatId: "chat", createdAt: new Date(), engine: input.engine ?? "native", normalizedRequest: null, status: input.status ?? "preparing",
       workspaceWaitPending: true },
     predecessor: { status: "complete" },
-    snapshot: { ...(input.native ? { native: input.native } : {}), prepared: nativePrepared(workspaceRequest), version: 1 }
+    snapshot: { ...(input.native ? { native: input.native } : {}),
+      prepared: nativePrepared({ ...workspaceRequest, ...input.request } as Partial<ProviderRunRequest>), version: 1 }
   } as unknown as WorkspaceFollowupLoaded;
 }
 
@@ -145,6 +146,18 @@ describe("a successor behind the previous answer's Workspace hand-off", () => {
     const { continueRun, repository } = continuation({ adapter, memory, order });
     await expect(continueRun({ claim, loaded: loadedFollowup({ engine: "v1" }), releaseRegistry: vi.fn(),
       signal: new AbortController().signal })).rejects.toEqual(new WorkspaceFollowupError("workspace_followup_unavailable"));
+    expect(repository.continueWorkspacePreparedRun).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
+  });
+
+  it("ends interrupted, starting nothing, when it is an answer review step the previous release admitted", async () => {
+    const order: string[] = [];
+    const memory = memoryNativeEngine();
+    const { adapter, requests } = scriptedNativeAdapter([{ text: "Reviewed." }]);
+    const { continueRun, repository } = continuation({ adapter, memory, order });
+    const step = { kind: "review", modelName: "Reviewer", reviewer: 0, round: 1, sessionId: "session-1", step: 0, version: 1 };
+    await expect(continueRun({ claim, loaded: loadedFollowup({ request: { answerReviewStep: step } }), releaseRegistry: vi.fn(),
+      signal: new AbortController().signal })).rejects.toEqual(new WorkspaceFollowupError("workspace_followup_interrupted"));
     expect(repository.continueWorkspacePreparedRun).not.toHaveBeenCalled();
     expect(requests).toEqual([]);
   });

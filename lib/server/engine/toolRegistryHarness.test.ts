@@ -67,14 +67,12 @@ describe("native harness and self-service tools", () => {
     expect(personal).toEqual(expect.arrayContaining(["update_plan", "read_secret", ...selfServiceNames]));
     // No Workspace, no patch: it is the only harness tool that needs the VM.
     expect(personal).not.toContain("apply_patch");
-    // A chat the handler gives no self-service owners (Project, Assistant, review, monitoring) keeps the harness tools.
+    // A chat the handler gives no self-service owners (Project, Assistant, monitoring) keeps the harness tools.
     const other = await names(input(request(), { secrets: secrets() }));
     expect(other).toEqual(expect.arrayContaining(["update_plan", "read_secret"]));
     expect(other.filter((name) => selfServiceNames.includes(name))).toEqual([]);
-    for (const marker of [{ answerReviewStep: {} }, { monitoringVerdictTool: true }] as const) {
-      const ruled = await names(input(request(marker as Partial<ProviderRunRequest>), { secrets: secrets(), selfService: selfService().services }));
-      expect(ruled.filter((name) => selfServiceNames.includes(name))).toEqual([]);
-    }
+    const monitoring = await names(input(request({ monitoringVerdictTool: true }), { secrets: secrets(), selfService: selfService().services }));
+    expect(monitoring.filter((name) => selfServiceNames.includes(name))).toEqual([]);
     // Without saved secrets there is neither `read_secret` nor the self-service tools, whose Skill save guard reads them.
     const unsupported = await names(input(request(), { selfService: selfService().services }));
     expect(unsupported).not.toContain("read_secret");

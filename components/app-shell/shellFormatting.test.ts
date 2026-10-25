@@ -63,6 +63,11 @@ describe("shell error formatting", () => {
       .toBe("Agent mode was removed. Reload the page and send again (agent_mode_removed)");
   });
 
+  it("asks for a reload when a send or regeneration still carries the removed answer review", async () => {
+    expect(await responseErrorMessage(Response.json({ error: "answer_review_removed" }, { status: 409 }), "regenerate_failed_409"))
+      .toBe("Answer review was removed. Reload the page and send again (answer_review_removed)");
+  });
+
   it("names the recovery when the chosen model cannot run the agent", async () => {
     expect(await responseErrorMessage(Response.json({ error: "model_tool_calling_required" }, { status: 409 }), "send_failed_409"))
       .toBe("This model cannot use tools, which chats need. Choose a model with tool support (model_tool_calling_required)");

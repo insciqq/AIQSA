@@ -172,10 +172,9 @@ function parsedArguments(value: string): Record<string, unknown> {
 
 /**
  * Which of these earlier user messages of the chat are turns the server
- * wrote: answer review steps and approval continuations (`systemTurnKind`)
- * and scheduled task prompts. When they cannot be read, every one counts as
- * the server's, so no turn the engine cannot tell apart releases an unknown
- * effect.
+ * wrote (`systemTurnKind`) and scheduled task prompts. When they cannot be
+ * read, every one counts as the server's, so no turn the engine cannot tell
+ * apart releases an unknown effect.
  */
 async function serverWrittenTurns(repository: Pick<RunRepository, "loadScheduledPromptMessageIds" | "loadSystemTurnMessageIds">,
   input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
@@ -374,9 +373,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         /** The sequence each compaction recorded after the run took, kept for a repeated write. */
         const detachedSequences = new Map<string, number>();
         // Effects of the branch's earlier calls that are still unknown. Only the user's own words count as them speaking, never
-        // a turn the server wrote: an approval continuation, an answer review step or a scheduled task's prompt.
-        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true ||
-          normalizedRequest.answerReviewStep !== undefined;
+        // a turn the server wrote: an approval continuation or a scheduled task's prompt.
+        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true;
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });

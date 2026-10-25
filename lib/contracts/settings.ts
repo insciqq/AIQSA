@@ -1,4 +1,3 @@
-import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "./answerReviews";
 import { decodeAnswerSoundPreferences, type AnswerSoundPreferences } from "./answerSound";
 import {
   decodeOptionalChatDefaults,
@@ -8,8 +7,6 @@ import {
 import { decodeSearchPlan, type SearchPlan } from "./search";
 
 export type UserSettingsWire = AnswerSoundPreferences & {
-  /** Automatic answer review new chats start with; absent on older wires means off. */
-  defaultAnswerReview?: AnswerReviewAutoConfig;
   /** Browser push notifications for this account; each device still needs browser permission. */
   browserNotificationsEnabled: boolean;
   /** Personal default Assistant while it is available; see `ChatDefaultAssistant`. */
@@ -69,10 +66,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     assistantId: settings.defaultAssistantId,
     assistantUnavailable: settings.defaultAssistantUnavailable
   });
-  const defaultAnswerReview = settings.defaultAnswerReview === undefined
-    ? undefined : decodeAnswerReviewAutoConfig(settings.defaultAnswerReview);
   if (
-    defaultAnswerReview === null ||
     !answerSound ||
     (settings.browserNotificationsEnabled !== undefined && typeof settings.browserNotificationsEnabled !== "boolean") ||
     !chatDefaults ||
@@ -99,7 +93,6 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   return {
     settings: {
       ...answerSound,
-      ...(defaultAnswerReview ? { defaultAnswerReview } : {}),
       browserNotificationsEnabled: settings.browserNotificationsEnabled ?? true,
       defaultAssistantId: defaultAssistant.assistantId,
       defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,

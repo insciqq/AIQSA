@@ -156,6 +156,7 @@ export function humanizeErrorCode(code: string): string {
     usage_budget_exhausted: "Your monthly budget is used up. Send again after it resets",
     usage_limits_unavailable: "Usage limits could not be checked. Try again in a moment",
     agent_mode_removed: "Agent mode was removed. Reload the page and send again",
+    answer_review_removed: "Answer review was removed. Reload the page and send again",
     model_adapter_unsupported: "This model cannot answer in chats. Choose another model",
     model_tool_calling_required: "This model cannot use tools, which chats need. Choose a model with tool support",
     upload_malformed: "Upload response was malformed",
