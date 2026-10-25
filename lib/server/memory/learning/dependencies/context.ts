@@ -4,6 +4,7 @@ import { memoryExactVNextDirectAuthorityPredicate } from
   "../../persistence/eligibility";
 import type { MemoryTransaction } from "../../persistence/transaction";
 import {
+  type AdmissibleMemoryEntityAlias,
   loadAdmissibleMemoryEntityAliases,
   memoryEntityRootIdSql
 } from "../entities/authority";
@@ -64,7 +65,8 @@ function messageRefs(
 async function factEntity(
   tx: MemoryTransaction,
   userId: string,
-  factVersionId: string
+  factVersionId: string,
+  aliasesByEntity: Map<string, readonly AdmissibleMemoryEntityAlias[]>
 ): Promise<Readonly<{
   aliases: readonly string[];
   displayName: string;
@@ -94,12 +96,17 @@ async function factEntity(
   // An own action can introduce a named object for a later reference. Keep
   // subject priority and expose that object only when its root is unique.
   if (!row || (row.role === "OBJECT" && rows.length !== 1)) return null;
-  const aliases = await loadAdmissibleMemoryEntityAliases(
-    tx,
-    userId,
-    [row.canonicalId],
-    4
-  );
+  // Facts about one entity share its aliases; each authority check is costly.
+  let aliases = aliasesByEntity.get(row.canonicalId);
+  if (!aliases) {
+    aliases = await loadAdmissibleMemoryEntityAliases(
+      tx,
+      userId,
+      [row.canonicalId],
+      4
+    );
+    aliasesByEntity.set(row.canonicalId, aliases);
+  }
   if (aliases.length === 0) return null;
   return {
     aliases: aliases.map(({ displayAlias }) => displayAlias),
@@ -195,8 +202,9 @@ async function factRefs(
         return fact ? [fact] : [];
       });
   const refs: MemoryFactContextRef[] = [];
+  const aliasesByEntity = new Map<string, readonly AdmissibleMemoryEntityAlias[]>();
   for (const fact of orderedFacts) {
-    const entity = await factEntity(tx, userId, fact.factVersionId);
+    const entity = await factEntity(tx, userId, fact.factVersionId, aliasesByEntity);
     refs.push({
       aliases: entity?.aliases ?? [],
       displayName: entity?.displayName ?? null,
