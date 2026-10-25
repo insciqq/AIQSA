@@ -14,7 +14,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Answers show content, sources, generated files, factual progress and actionable failures. Inspecting internal execution is not a product goal: no diagnostic panels, raw payloads, retrieval scores, event histories, private identifiers or receipts.
 - Each answer has one process disclosure above the body (thinking, friendly tool names, outcomes, duration), actions below it, then sources and downloads.
 - Counts must be true. Search ×N counts successful calls per engine; failures show separately. Memory and Past chats counts describe what entered the context, not proven influence.
-- Users never see Memory failures, limits or unavailability; those are for the model and administrators.
+- Users never see Memory failures, limits or unavailability; those are for the model and administrators. The one exception is an explicit remember request that was not saved: its answer says so and links to Memory (operator decision 2026-10-25).
 - Only the person who started a run may expand its bounded, redacted MCP request and response details. No other raw payload is shown.
 - Per-answer usage is never shown. Users see their own monthly allowance in Settings and a composer warning near the limit, never installation amounts.
 - Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result.

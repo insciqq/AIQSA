@@ -12,7 +12,9 @@ import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
 // Users never see Memory failures, limits, unavailability or load errors; the
-// states stay in the data, for models and for administrators.
+// states stay in the data, for models and for administrators. The one
+// exception is an explicit save that committed nothing (operator decision
+// 2026-10-25): its answer says "Not saved to Memory." and links to Memory.
 const timestamp = "2026-10-01T10:00:00.000Z";
 const failureCopy = /could not be (?:confirmed|completed|loaded|opened)|no longer applies|was not changed|not applied|temporarily unavailable|was unavailable|with limitations|too long for Memory|Source unavailable|source is unavailable|Memory search unavailable|limited results|memory_[a-z_]+/iu;
 
@@ -91,7 +93,7 @@ async function expectNoMemoryFailure(page: Page) {
   await expect(appAlerts(page)).toHaveCount(0);
 }
 
-test("reopening a chat with historical Memory command outcomes shows no failure notice", async ({ page }) => {
+test("reopening a chat with historical Memory command outcomes shows no failure notice except an unsaved save", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
   const chat = conversation("chat-memory-history", "Memory history", [
     { id: "user-failed", role: "user", text: "Remember that I cycle to work." },
@@ -124,16 +126,19 @@ test("reopening a chat with historical Memory command outcomes shows no failure 
   await expect(page.getByText("Tea noted.")).toBeVisible();
   await expect.poll(() => commandReads).toBeGreaterThan(0);
   const notices = page.getByTestId("memory-command-status");
-  await expect(notices).toHaveCount(1);
+  await expect(notices).toHaveCount(2);
   await expect(page.locator('[data-message-id="assistant-saved"]').getByTestId("memory-command-status"))
     .toContainText("Memory saved.");
-  for (const id of ["assistant-failed", "assistant-unknown", "assistant-stale", "assistant-rejected"]) {
+  const unsaved = page.locator('[data-message-id="assistant-failed"]').getByTestId("memory-command-status");
+  await expect(unsaved).toContainText("Not saved to Memory.");
+  await expect(unsaved.getByRole("button", { name: "Manage memory" })).toBeVisible();
+  for (const id of ["assistant-unknown", "assistant-stale", "assistant-rejected"]) {
     await expect(page.locator(`[data-message-id="${id}"]`).getByTestId("memory-command-status")).toHaveCount(0);
   }
   await expectNoMemoryFailure(page);
   await page.reload();
   await expect(page.getByText("Tea noted.")).toBeVisible();
-  await expect(notices).toHaveCount(1);
+  await expect(notices).toHaveCount(2);
   await expectNoMemoryFailure(page);
   await expectNoHorizontalOverflow(page);
 });
