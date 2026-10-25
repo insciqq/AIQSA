@@ -28,6 +28,7 @@ import {
   type ScheduledTaskPauseReason
 } from "./runnerPolicy";
 import type { ScheduledTaskExecution, ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
+import { scheduledWebhookEventText } from "./webhookEvent";
 import type { ScheduledWorkspaceCarryover } from "./workspaceCarryover";
 
 export type ScheduledTaskRunnerDeps = Readonly<{
@@ -264,8 +265,13 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     if (now.getTime() - occurrence.scheduledFor.getTime() > SCHEDULED_TASK_LATENESS_MS) {
       return settlePending(execution, { reasonCode: "missed", state: "SKIPPED" });
     }
-    if (occurrence.trigger === "schedule" && task.status === "PAUSED") {
+    // Run now runs in any status; an instant or a webhook event of a paused task does not.
+    if (occurrence.trigger !== "manual" && task.status === "PAUSED") {
       return settlePending(execution, { reasonCode: "paused", state: "SKIPPED" });
+    }
+    // A webhook run always carries its event; one whose event no longer waits cannot start.
+    if (occurrence.trigger === "webhook" && !execution.webhookEvent) {
+      return settlePending(execution, { reasonCode: "admission_failed", state: "FAILED" });
     }
     if (!execution.ownerActive) return settlePending(execution, pausingOutcome("account_inactive"));
     // Current catalog and entitlement, the exact saved model and no substitute;
@@ -339,7 +345,9 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         ...(rotation ? { rotation: { fromChatId: rotation.fromChatId, seedId } } : {}),
         ...(previousResultCopy ? { previousResultCopy } : {}),
         ...(task.kind === "monitoring" ? { monitoring: true as const } : {}),
-        ...(task.memoryEnabled ? { memory: true as const } : {})
+        ...(task.memoryEnabled ? { memory: true as const } : {}),
+        // The event follows the prompt as labelled incoming data; its admission clears the stored body.
+        ...(execution.webhookEvent ? { webhookEvent: { text: scheduledWebhookEventText(execution.webhookEvent) } } : {})
       },
       userId: occurrence.userId
     });

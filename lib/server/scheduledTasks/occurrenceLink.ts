@@ -4,6 +4,7 @@ import {
   type ScheduledOccurrenceAdmission,
   type ScheduledUnavailableSource
 } from "../runs/runRepositoryContract";
+import { admitScheduledTaskWebhookEvent } from "./webhookStore";
 
 type LinkedTask = {
   baselineAssistantMessageId: string | null; baselineGeneration: number | null; chatId: string | null; chatPeriod: string | null;
@@ -29,6 +30,7 @@ type LinkedTask = {
  * new epoch instead, so the comparison basis survives. A run that sees a
  * carried copy rechecks it here: still the task's copy for this epoch and
  * generation, its source answer still there and its chat not being deleted.
+ * A webhook occurrence's waiting event becomes admitted, its body cleared.
  * A missing, already linked or fenced occurrence, or any of these checks
  * failing, throws, rolling the whole admission (its new chat included) back,
  * so an occurrence without a run proves that no run was created for it; the
@@ -65,7 +67,7 @@ export async function linkScheduledTaskOccurrence(
   if (input.rotation && (!moved || task.chatId !== input.rotation.fromChatId)) throw new ScheduledOccurrenceConflictError();
   const copy = input.previousResultCopy;
   const copySource = copy ? await assertCopyCurrent(tx, input, task, copy, readEpoch) : null;
-  const linked = await tx.$executeRaw(Prisma.sql`
+  const linked = await tx.$queryRaw<Array<{ scheduledFor: Date; trigger: string }>>(Prisma.sql`
     UPDATE "ScheduledTaskOccurrence"
     SET "state" = 'RUNNING'::"ScheduledTaskOccurrenceState", "runId" = ${input.runId}, "chatId" = ${input.chatId},
       "userMessageId" = ${input.userMessageId}, "startedAt" = COALESCE("startedAt", ${input.now}),
@@ -73,8 +75,14 @@ export async function linkScheduledTaskOccurrence(
       "taskRevision" = ${input.taskRevision}, "chatEpoch" = ${epoch}, "unavailableSources" = ${unavailableSources}::jsonb
     WHERE "id" = ${input.occurrenceId} AND "taskId" = ${input.taskId} AND "userId" = ${input.userId}
       AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
+    RETURNING "trigger", "scheduledFor"
   `);
-  if (linked !== 1) throw new ScheduledOccurrenceConflictError();
+  const occurrence = linked[0];
+  if (linked.length !== 1 || !occurrence) throw new ScheduledOccurrenceConflictError();
+  // A webhook run admits its event, whose body from now on lives only in this run's chat.
+  if (occurrence.trigger === "webhook" && !await admitScheduledTaskWebhookEvent(tx, {
+    id: input.occurrenceId, scheduledFor: occurrence.scheduledFor, taskId: input.taskId, userId: input.userId
+  })) throw new ScheduledOccurrenceConflictError();
   const period = input.chatPeriod ?? null;
   if (input.rotation) {
     // The old chat's ids never reach the new one: its carried copy takes their place.

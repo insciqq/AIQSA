@@ -27,9 +27,14 @@ describe("scheduled task result email", () => {
       .toMatchObject({ subject: "Automation skipped", text: expect.stringMatching(/Skipped: the scheduled time passed[^\n]*\n\nOpen AIQSA:\nhttps:\/\/aiqsa\.example\.test\/$/u) });
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "model_unavailable", state: "FAILED", taskPauseReason: "model_unavailable" }))
       .toMatchObject({ subject: "Automation paused", text: expect.stringContaining("The model is no longer available.") });
-    // A manual run never reports the task's pause as its own outcome.
+    // A manual run never reports the task's pause as its own outcome; a webhook run, which pauses like a scheduled one, does.
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "run_orphaned", state: "FAILED", taskPauseReason: "model_unavailable",
       trigger: "manual" })).toMatchObject({ subject: "Automation did not complete" });
+    expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "model_unavailable", state: "FAILED",
+      taskPauseReason: "model_unavailable", trigger: "webhook" }))
+      .toMatchObject({ subject: "Automation paused", text: expect.stringContaining("The model is no longer available.") });
+    expect(scheduledTaskResultEmail({ ...base, appBaseUrl, taskPauseReason: "source_unavailable", trigger: "webhook",
+      unavailableSources: [{ name: "Tracker", reason: "mcp_server_unavailable" }] })).toMatchObject({ subject: "Automation paused" });
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, title: "Line\u0000one\u007f" }).text).toContain("\"Line one\"");
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "run_deadline", state: "FAILED" }))
       .toMatchObject({ subject: "Automation did not complete", text: expect.stringContaining("Stopped after running for 30 minutes.") });

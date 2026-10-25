@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { ScheduledTaskRunTrigger, ScheduledTaskUnavailableSource } from "../../contracts/scheduledTasks";
+import {
+  scheduledTaskRunTrigger as trigger,
+  type ScheduledTaskRunTrigger,
+  type ScheduledTaskUnavailableSource
+} from "../../contracts/scheduledTasks";
 import { summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import { logEvent, runInBackground } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -550,10 +554,6 @@ export type TelegramScheduledDeliverySender = ReturnType<typeof createTelegramSc
 // PostgreSQL
 
 const SETTLED_STATES: ReadonlySet<string> = new Set(["COMPLETED", "FAILED", "SKIPPED"]);
-
-function trigger(value: string): ScheduledTaskRunTrigger {
-  return value === "manual" ? "manual" : "schedule";
-}
 
 export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
   prisma: PrismaClient;

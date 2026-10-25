@@ -135,6 +135,8 @@ export type ScheduledTaskClaimPlan = Readonly<{
   status: ScheduledTaskStatusColumn;
   nextRunAt: Date | null;
   pauseReason: "schedule_invalid" | null;
+  /** A once schedule's claim turns the schedule off (a revision change) and leaves the task on its webhook. */
+  scheduleOff?: true;
 }>;
 
 const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
@@ -154,10 +156,10 @@ export function scheduledTaskDispatchOffsetMs(taskId: string): number {
 
 /**
  * When a pending occurrence may first be admitted. A scheduled occurrence of
- * a recurring task waits for its task's offset; Run now and a once task's
- * chosen moment start at once. Only dispatch moves: the occurrence keeps its
- * instant, which still decides its lateness, its chat's month and the run's
- * local date.
+ * a recurring task waits for its task's offset; Run now, a webhook event and
+ * a once task's chosen moment start at once. Only dispatch moves: the
+ * occurrence keeps its instant, which still decides its lateness, its chat's
+ * month and the run's local date.
  */
 export function scheduledDispatchNotBefore(
   candidate: Readonly<{ recurring: boolean; scheduledFor: Date; taskId: string; trigger: ScheduledTaskRunTrigger }>,
@@ -182,13 +184,17 @@ function latestInstantIn(schedule: ScheduledTaskSchedule, timeZone: string, afte
  * were due too, the oldest one is recorded as missed for the whole backlog
  * (quietly), and when no instant lies within the window only that missed
  * record remains. The next instant is taken strictly after `now`; a once task
- * completes. A schedule that can no longer be computed (an unknown zone)
- * pauses the task after recording the due instant.
+ * completes, unless its webhook trigger is on: then only its schedule turns
+ * off and the task stays active for its events. A schedule that can no
+ * longer be computed (an unknown zone) pauses the task after recording the
+ * due instant.
  */
 export function planScheduledTaskClaim(
-  task: Readonly<{ schedule: ScheduledTaskSchedule; timeZone: string; nextRunAt: Date }>,
+  task: Readonly<{ schedule: ScheduledTaskSchedule; timeZone: string; nextRunAt: Date; webhookEnabled?: boolean }>,
   now: Date
 ): ScheduledTaskClaimPlan {
+  const onceEnds = { nextRunAt: null, pauseReason: null,
+    ...(task.webhookEnabled === true ? { scheduleOff: true as const, status: "ACTIVE" as const } : { status: "COMPLETED" as const }) };
   const windowStart = new Date(now.getTime() - SCHEDULED_TASK_LATENESS_MS);
   const due = task.nextRunAt;
   const dueMissed = due.getTime() < windowStart.getTime();
@@ -200,17 +206,16 @@ export function planScheduledTaskClaim(
     const occurrences = runAt === null ? [{ missed: true, scheduledFor: due }]
       : runAt === due ? [{ missed: false, scheduledFor: due }]
         : [{ missed: true, scheduledFor: due }, { missed: false, scheduledFor: runAt }];
-    if (once) return { nextRunAt: null, occurrences, pauseReason: null, status: "COMPLETED" };
+    if (once) return { ...onceEnds, occurrences };
     const nextRunAt = nextOccurrenceAfter(task.schedule, task.timeZone, now);
     return nextRunAt
       ? { nextRunAt, occurrences, pauseReason: null, status: "ACTIVE" }
       : { nextRunAt: null, occurrences, pauseReason: "schedule_invalid", status: "PAUSED" };
   } catch (error) {
     if (!(error instanceof RangeError)) throw error;
-    return {
-      nextRunAt: null, occurrences: [{ missed: dueMissed, scheduledFor: due }],
-      pauseReason: once ? null : "schedule_invalid", status: once ? "COMPLETED" : "PAUSED"
-    };
+    const occurrences = [{ missed: dueMissed, scheduledFor: due }];
+    return once ? { ...onceEnds, occurrences }
+      : { nextRunAt: null, occurrences, pauseReason: "schedule_invalid", status: "PAUSED" };
   }
 }
 
@@ -228,7 +233,8 @@ export type ScheduledTaskBookkeeping = Readonly<{
  * Task bookkeeping for a settled occurrence. Success resets the failure count;
  * a failed scheduled run counts and pauses an active task at the threshold or
  * on a permanent refusal decided under the current revision (a concurrent
- * owner edit wins). Manual runs never count or pause; skips change nothing.
+ * owner edit wins). A webhook run is unattended like a scheduled one and
+ * counts the same. Manual runs never count or pause; skips change nothing.
  *
  * Source health is separate from results: a completed run whose admission
  * lacked a relevant source (`sourcesIncomplete`) still completes and resets
@@ -435,6 +441,8 @@ export type ScheduledTaskOpenOccurrence = Readonly<{
   reasonCode: string | null;
   runId: string | null;
   state: string;
+  /** Absent: a schedule or manual occurrence. */
+  trigger?: string;
 }>;
 
 /**
@@ -457,10 +465,11 @@ function skipReason(reasonCode: string | null): ScheduledTaskSkipReason | null {
  * that holds no run and no live admission lease is fresh no longer: it ends
  * skipped (with its skip reason, `chat_busy` or a used-up budget, after such
  * retries, `workspace_capacity` while waiting for a Workspace slot, else
- * `superseded`) and the new instant takes its place. Any other open
- * occurrence of a recurring task is a run still in progress, and the new
- * instant is skipped `previous_running` instead of queuing. A once task's
- * only instant always queues.
+ * `superseded`) and the new instant takes its place. A webhook event's
+ * occurrence is never superseded, since no instant replaces its event's
+ * data. Any other open occurrence of a recurring task is a run still in
+ * progress, and the new instant is skipped `previous_running` instead of
+ * queuing. A once task's only instant always queues.
  */
 export function planClaimOverlap(input: Readonly<{
   now: Date;
@@ -470,7 +479,8 @@ export function planClaimOverlap(input: Readonly<{
   previousRunning: boolean;
   superseded: readonly Readonly<{ id: string; reasonCode: ScheduledTaskSkipReason | "superseded" | "workspace_capacity" }>[];
 }> {
-  const waiting = (occurrence: ScheduledTaskOpenOccurrence) => occurrence.state === "PENDING" && occurrence.runId === null &&
+  const waiting = (occurrence: ScheduledTaskOpenOccurrence) => occurrence.trigger !== "webhook" &&
+    occurrence.state === "PENDING" && occurrence.runId === null &&
     (occurrence.leaseExpiresAt === null || occurrence.leaseExpiresAt.getTime() <= input.now.getTime());
   return {
     previousRunning: input.recurring && input.open.some((occurrence) => !waiting(occurrence)),
