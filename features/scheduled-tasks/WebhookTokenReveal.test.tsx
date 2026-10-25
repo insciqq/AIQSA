@@ -9,10 +9,10 @@ const tokenB = `aiqsa_wh_${"B".repeat(43)}`;
 const issued = (token: string, issuedAt = "2026-10-25T08:00:00.000Z") =>
   new Response(JSON.stringify({ token, url, issuedAt }), { headers: { "content-type": "application/json" }, status: 200 });
 
-let storageWrites: ReturnType<typeof vi.fn>;
+let storageWrites: ReturnType<typeof vi.fn<(key: string, value: string) => void>>;
 
 beforeEach(() => {
-  storageWrites = vi.fn();
+  storageWrites = vi.fn<(key: string, value: string) => void>();
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(storageWrites);
 });
 afterEach(() => {

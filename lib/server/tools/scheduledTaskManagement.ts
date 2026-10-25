@@ -348,7 +348,7 @@ export function scheduledTaskManagementResult(
   });
   switch (outcome.action) {
     case "list":
-      return result({ tasks: outcome.tasks.map(modelTask), note: "The ids are for this tool, not for the user." });
+      return result({ tasks: outcome.tasks.map((task) => modelTask(task)), note: "The ids are for this tool, not for the user." });
     case "get":
       return result({ task: { ...modelTask(outcome.task), prompt: outcome.task.prompt } });
     case "propose_delete":
