@@ -96,6 +96,10 @@ export type ScheduledTaskHourlyWindow = "all_day" | "hours";
 export type ScheduledTaskEditorDraft = Readonly<{
   title: string;
   prompt: string;
+  /** Runs on the schedule below; off, the schedule fields keep their values and never run. */
+  scheduleEnabled: boolean;
+  /** Runs on each event its webhook accepts; at least one of the two triggers is on. */
+  webhookEnabled: boolean;
   repeat: ScheduledTaskRepeat;
   /** The run time, or the start of an hourly window. */
   time: string;
@@ -130,7 +134,7 @@ export type ScheduledTaskEditorDraft = Readonly<{
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
-  "title" | "prompt" | "kind" | "schedule" | "timeZone" | "model" | "search" | "tools" | "workspace" | "skills" | "chatMode" |
+  "title" | "prompt" | "kind" | "trigger" | "schedule" | "timeZone" | "model" | "search" | "tools" | "workspace" | "skills" | "chatMode" |
   "form",
   string
 >>;
@@ -180,7 +184,7 @@ export function scheduledTaskStartingTools(
   return { toolsEnabled: defaults.toolsEnabled, workspaceEnabled: defaults.workspaceEnabled && workspace !== "installation_disabled" };
 }
 
-/** A new task: daily at 09:00 in the viewer's zone with the catalog's default model, a new chat per run. */
+/** A new task: on a schedule, daily at 09:00 in the viewer's zone, with the catalog's default model and a new chat per run. */
 export function blankScheduledTaskDraft(
   catalog: Catalog | null,
   timeZone: string,
@@ -194,6 +198,8 @@ export function blankScheduledTaskDraft(
   return {
     title: "",
     prompt: "",
+    scheduleEnabled: true,
+    webhookEnabled: false,
     repeat: "daily",
     time: "09:00",
     days: [SCHEDULED_TASK_WEEKDAYS[isoIndex]!],
@@ -231,6 +237,8 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     ...base,
     title: task.title,
     prompt: task.prompt,
+    scheduleEnabled: task.scheduleEnabled,
+    webhookEnabled: task.webhookEnabled,
     repeat,
     // An all-day hourly schedule starts at midnight; another kind chosen later starts from the default time.
     time: hourly && hourlyWindow === "all_day" ? base.time : schedule.time,
@@ -388,10 +396,14 @@ export function validateScheduledTaskDraft(
   else if (codePoints(draft.prompt) > SCHEDULED_TASK_PROMPT_MAX_LENGTH) {
     errors.prompt = `Shorten the instructions to ${SCHEDULED_TASK_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters.`;
   }
-  const zone = validScheduledTaskTimeZone(draft.timeZone);
-  if (!zone) errors.timeZone = "Choose a time zone.";
-  const schedule = scheduleError(draft, zone, original, now);
-  if (schedule) errors.schedule = schedule;
+  if (!draft.scheduleEnabled && !draft.webhookEnabled) errors.trigger = scheduledTaskErrorMessage("scheduled_task_trigger_required");
+  // An off schedule never runs, so its kept fields are not checked (a save keeps a complete one, below).
+  if (draft.scheduleEnabled) {
+    const zone = validScheduledTaskTimeZone(draft.timeZone);
+    if (!zone) errors.timeZone = "Choose a time zone.";
+    const schedule = scheduleError(draft, zone, original, now);
+    if (schedule) errors.schedule = schedule;
+  }
   const model = catalogModel(catalog, draft);
   const keptModel = original && original.modelId === draft.modelId && original.provider === draft.provider;
   if (!draft.modelId || (!model && !keptModel)) errors.model = "Choose a model.";
@@ -415,15 +427,31 @@ function changedSchedule(draft: ScheduledTaskEditorDraft, original: ScheduledTas
   return !schedule || !sameScheduledTaskSchedule(schedule, original.schedule) || draft.timeZone !== original.timeZone;
 }
 
-export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): ScheduledTaskDraft | null {
-  const schedule = scheduledTaskDraftSchedule(draft);
-  return schedule ? {
+/** The schedule an off schedule keeps when its fields are incomplete and nothing was saved: the new-task default. */
+const KEPT_SCHEDULE_DEFAULT: ScheduledTaskSchedule = { kind: "daily", time: "09:00" };
+
+/**
+ * The create body. The wire needs a schedule even while the schedule is off:
+ * the draft's own when complete, otherwise `kept` (the saved one on an edit),
+ * so incomplete hidden fields never block a webhook-only save; a zone the
+ * draft cannot use falls back the same way. Null while an on schedule is
+ * incomplete.
+ */
+export function scheduledTaskCreateRequest(
+  draft: ScheduledTaskEditorDraft,
+  kept: Readonly<{ schedule: ScheduledTaskSchedule; timeZone: string }> | null = null
+): ScheduledTaskDraft | null {
+  const own = scheduledTaskDraftSchedule(draft);
+  if (!own && draft.scheduleEnabled) return null;
+  const schedule = own ?? kept?.schedule ?? KEPT_SCHEDULE_DEFAULT;
+  const timeZone = draft.scheduleEnabled || validScheduledTaskTimeZone(draft.timeZone) ? draft.timeZone : kept?.timeZone ?? "UTC";
+  return {
     title: draft.title.trim(),
     prompt: draft.prompt,
     schedule,
-    scheduleEnabled: true,
-    webhookEnabled: false,
-    timeZone: draft.timeZone,
+    scheduleEnabled: draft.scheduleEnabled,
+    webhookEnabled: draft.webhookEnabled,
+    timeZone,
     modelId: draft.modelId,
     provider: draft.provider,
     searchEnabled: draft.searchEnabled,
@@ -436,7 +464,7 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     chatMode: scheduledTaskDraftChatMode(draft),
     kind: draft.kind,
     historyRetentionDays: draft.historyRetentionDays
-  } : null;
+  };
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
@@ -450,11 +478,13 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
  * are sent even unchanged: the owner saving them allows those links.
  */
 export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, original: ScheduledTask): ScheduledTaskUpdateRequest | null {
-  const next = scheduledTaskCreateRequest(draft);
+  const next = scheduledTaskCreateRequest(draft, original);
   if (!next) return null;
   const patch: ScheduledTaskUpdateRequest = { expectedRevision: original.revision };
   if (next.title !== original.title) patch.title = next.title;
   if (next.prompt !== original.prompt || original.promptLinksPending) patch.prompt = next.prompt;
+  if (next.scheduleEnabled !== original.scheduleEnabled) patch.scheduleEnabled = next.scheduleEnabled;
+  if (next.webhookEnabled !== original.webhookEnabled) patch.webhookEnabled = next.webhookEnabled;
   if (!sameScheduledTaskSchedule(next.schedule, original.schedule)) patch.schedule = next.schedule;
   if (next.timeZone !== original.timeZone) patch.timeZone = next.timeZone;
   if (next.modelId !== original.modelId || next.provider !== original.provider) {
@@ -476,6 +506,7 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
 
 export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: ScheduledTaskEditorDraft): boolean {
   return left.title === right.title && left.prompt === right.prompt && left.repeat === right.repeat &&
+    left.scheduleEnabled === right.scheduleEnabled && left.webhookEnabled === right.webhookEnabled &&
     left.time === right.time && left.dayOfMonth === right.dayOfMonth && left.date === right.date &&
     left.timeZone === right.timeZone && left.modelId === right.modelId && left.provider === right.provider &&
     left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify &&
@@ -485,17 +516,20 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
     left.memoryEnabled === right.memoryEnabled && left.kind === right.kind &&
     left.historyRetentionDays === right.historyRetentionDays &&
     sameIds(left.pinnedSkills.map((skill) => skill.id), right.pinnedSkills.map((skill) => skill.id)) &&
-
     scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days) &&
     scheduledTaskWeekdayMask(left.hourlyDays) === scheduledTaskWeekdayMask(right.hourlyDays);
 }
 
-/** The footer's live sentence about when the saved task will run next. */
+/** The footer's live sentence about when the saved task will run next, or how it runs without a schedule. */
 export function scheduledTaskPreview(
   draft: ScheduledTaskEditorDraft,
   original: ScheduledTask | null,
   now: Date = new Date()
 ): string {
+  if (!draft.scheduleEnabled) {
+    if (!draft.webhookEnabled) return "Choose when it runs: on a schedule, on a webhook or both.";
+    return original?.status === "paused" ? "Paused. Webhook calls are refused until you resume." : "Runs on each webhook call.";
+  }
   const zone = validScheduledTaskTimeZone(draft.timeZone);
   const schedule = scheduledTaskDraftSchedule(draft);
   if (!zone) return "Choose a time zone to see the next run.";

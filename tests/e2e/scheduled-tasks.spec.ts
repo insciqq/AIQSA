@@ -107,6 +107,10 @@ const runsFixture: Readonly<Record<string, readonly ScheduledTaskRun[]>> = {
     { id: "brief-run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "missed",
       startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] }
   ],
+  pipeline: [
+    { id: "pipeline-run-1", scheduledFor: "2026-10-04T09:30:00.000Z", trigger: "webhook", state: "completed", reasonCode: null,
+      startedAt: "2026-10-04T09:30:02.000Z", finishedAt: "2026-10-04T09:31:00.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] }
+  ],
   inbox: [
     { id: "inbox-run-2", scheduledFor: "2026-10-02T15:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "previous_running",
       startedAt: null, finishedAt: "2026-10-02T15:00:01.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] },
@@ -117,10 +121,30 @@ const runsFixture: Readonly<Record<string, readonly ScheduledTaskRun[]>> = {
 
 type Write = Readonly<{ method: string; path: string; body: unknown }>;
 
+/** A synthetic webhook address: no token issued and no event yet unless overridden. */
+function webhookFixture(overrides: Partial<NonNullable<ScheduledTask["webhook"]>> = {}): NonNullable<ScheduledTask["webhook"]> {
+  return { path: "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-", tokenIssuedAt: null, lastEventAt: null, queuedEvents: 0, ...overrides };
+}
+
+/** The nth synthetic token, in the token's own shape. */
+function syntheticToken(nth: number): string {
+  return `aiqsa_wh_${String.fromCharCode(64 + nth).repeat(43)}`;
+}
+
+// Webhook triggers: one automation only on its webhook with events waiting, one on both.
+const webhookListFixture: ScheduledTask[] = [
+  task({ id: "pipeline", title: "Pipeline failure review", scheduleEnabled: false, webhookEnabled: true, nextRunAt: null,
+    webhook: webhookFixture({ tokenIssuedAt: "2026-10-02T08:00:00.000Z", lastEventAt: "2026-10-04T09:30:00.000Z", queuedEvents: 2 }),
+    lastRun: { scheduledFor: "2026-10-04T09:30:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T09:31:00.000Z", unseen: false } }),
+  task({ id: "deploys", title: "Deploy digest", webhookEnabled: true,
+    webhook: webhookFixture({ path: "/api/automations/hooks/ZyXwVuTsRqPoNmLkJiHg_-" }) })
+];
+
 async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]) {
   const state = {
     runs: structuredClone(runsFixture) as Record<string, ScheduledTaskRun[]>,
     tasks: initial.map((entry) => structuredClone(entry)),
+    tokens: 0,
     writes: [] as Write[]
   };
   await page.route(/\/api\/me\/scheduled-tasks(\/[^?]*)?(\?.*)?$/u, async (route) => {
@@ -133,7 +157,9 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
         emailAvailable: true, telegramAvailable: false } });
     }
     if (!path && method === "POST") {
-      const created = task({ ...request.postDataJSON() as Partial<ScheduledTask>, id: "created", nextRunAt: "2026-10-05T16:00:00.000Z" });
+      const body = request.postDataJSON() as Partial<ScheduledTask>;
+      const created = task({ ...body, id: "created", nextRunAt: body.scheduleEnabled === false ? null : "2026-10-05T16:00:00.000Z",
+        webhook: body.webhookEnabled ? webhookFixture() : null });
       state.tasks.unshift(created);
       return route.fulfill({ status: 201, json: { task: created } });
     }
@@ -154,6 +180,14 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
       state.tasks[index] = { ...current, running: true };
       return route.fulfill({ json: { task: state.tasks[index] } });
     }
+    if (action === "webhook-token") {
+      // Every call replaces the token; the task keeps only the issue time.
+      if (!current.webhookEnabled || !current.webhook) return route.fulfill({ status: 409, json: { error: "scheduled_task_webhook_off" } });
+      state.tokens += 1;
+      const issuedAt = new Date(now.getTime() + state.tokens * 60_000).toISOString();
+      state.tasks[index] = { ...current, webhook: { ...current.webhook, tokenIssuedAt: issuedAt } };
+      return route.fulfill({ json: { token: syntheticToken(state.tokens), url: `${new URL(request.url()).origin}${current.webhook.path}`, issuedAt } });
+    }
     if (method === "GET") return route.fulfill({ json: { task: current, recentRuns: state.runs[current.id] ?? [] } });
     if (method === "DELETE") {
       state.tasks.splice(index, 1);
@@ -161,6 +195,8 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
     }
     const { expectedRevision: _revision, status, ...patch } = request.postDataJSON() as Record<string, unknown>;
     const next: ScheduledTask = { ...current, ...patch as Partial<ScheduledTask>, revision: current.revision + 1,
+      ...(patch.webhookEnabled === true && !current.webhook ? { webhook: webhookFixture() } : {}),
+      ...(patch.scheduleEnabled === false ? { nextRunAt: null } : {}),
       ...(status === "paused" ? { status: "paused", nextRunAt: null, pauseReason: null } : {}),
       ...(status === "active" ? { status: "active", nextRunAt: "2026-10-05T08:00:00.000Z", pauseReason: null } : {}) };
     state.tasks[index] = next;
@@ -348,7 +384,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   await expect(sheet).toHaveCount(0);
   expect(api.writes).toEqual([{ method: "POST", path: "", body: {
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
-    schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
+    schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, scheduleEnabled: true, webhookEnabled: false, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
     toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90,
     pinnedSkillIds: []
@@ -469,6 +505,114 @@ test("the empty state offers ideas that prefill the sheet", async ({ page }, inf
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
   expect(api.writes).toEqual([]);
+});
+
+test("webhook automations show their triggers, create without a schedule and issue and rotate a token at every size in both themes", async ({ page }, info) => {
+  const api = await prepare(page, webhookListFixture);
+  await runAccountMenuAction(page, "Automations");
+  const panel = page.getByTestId("scheduled-tasks-panel");
+  const rows = panel.getByRole("list", { name: "Automations" }).getByRole("listitem");
+  const pipeline = rows.filter({ hasText: "Pipeline failure review" });
+  await expect(pipeline).toContainText("On a webhook");
+  await expect(pipeline).toContainText("Runs on each webhook call · 2 events waiting");
+  await expect(pipeline).not.toContainText(/Next run|No upcoming run/u);
+  await expect(pipeline.getByRole("switch", { name: "Run Pipeline failure review on webhook calls", exact: true }))
+    .toHaveAttribute("aria-checked", "true");
+  const deploys = rows.filter({ hasText: "Deploy digest" });
+  await expect(deploys).toContainText("Every day at 09:00 · Webhook");
+  await expect(deploys).toContainText("Next run Mon 5 Oct, 09:00");
+  await expect(deploys.getByRole("switch", { name: "Run Deploy digest on schedule and webhook calls", exact: true })).toBeVisible();
+  await captureState(page, info, "scheduled-webhook-list", {
+    atEachSize: async () => {
+      await expectNoHorizontalOverflow(page);
+      await expectWithinViewport(page, pipeline.getByRole("switch"));
+    }
+  });
+
+  // A saved webhook: when its token was issued, its last event, the queue, and runs labelled Webhook.
+  await panel.getByRole("button", { name: "More actions for Pipeline failure review", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  const sheet = page.getByTestId("scheduled-task-sheet");
+  const savedHook = sheet.getByTestId("scheduled-task-webhook");
+  await expect(sheet.getByRole("switch", { name: "On a schedule", exact: true })).toHaveAttribute("aria-checked", "false");
+  await expect(sheet.getByLabel("Repeat", { exact: true })).toHaveCount(0);
+  await expect(savedHook).toContainText("Issued Fri 2 Oct, 09:00");
+  await expect(savedHook).toContainText("Sun 4 Oct, 10:30");
+  await expect(savedHook).toContainText("2 events waiting");
+  await expect(sheet.getByRole("region", { name: "Recent runs", exact: true }).getByRole("listitem").nth(0)).toContainText("Webhook");
+  await expect(sheet.getByTestId("scheduled-task-preview")).toHaveText("Runs on each webhook call.");
+  const savedRotate = savedHook.getByRole("button", { name: "Rotate token", exact: true });
+  await captureState(page, info, "scheduled-webhook-edit", {
+    anchor: savedRotate,
+    atEachSize: async () => {
+      await expectWithinViewport(page, savedRotate);
+      await expectWithinViewport(page, sheet.getByRole("button", { name: "Save changes", exact: true }));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+
+  // Create one that runs only on its webhook: the address appears once it exists.
+  await panel.getByRole("button", { name: "New automation", exact: true }).click();
+  const dialog = sheet.getByRole("dialog", { name: "New automation", exact: true });
+  await sheet.getByLabel("Name", { exact: true }).fill("Failed pipeline triage");
+  await sheet.getByLabel("Instructions", { exact: true }).fill("Explain why the pipeline in the event failed and what to fix first.");
+  const when = sheet.getByRole("group", { name: "When to run", exact: true });
+  await when.getByRole("switch", { name: "On a webhook", exact: true }).click();
+  await when.getByRole("switch", { name: "On a schedule", exact: true }).click();
+  await expect(sheet.getByLabel("Repeat", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByTestId("scheduled-task-webhook-pending"))
+    .toHaveText("The webhook URL and Get token appear after you create the automation.");
+  await expect(sheet.getByTestId("scheduled-task-preview")).toHaveText("Runs on each webhook call.");
+  await captureState(page, info, "scheduled-webhook-create", {
+    anchor: when,
+    atEachSize: async (step) => {
+      await expectWithinViewport(page, dialog);
+      expect(Math.round((await dialog.boundingBox())!.width)).toBe(sheetWidth(step));
+      await expectWithinViewport(page, when.getByRole("switch", { name: "On a webhook", exact: true }));
+      await expectWithinViewport(page, sheet.getByRole("button", { name: "Create automation", exact: true }));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  await sheet.getByRole("button", { name: "Create automation", exact: true }).click();
+  const edit = sheet.getByRole("dialog", { name: "Edit automation", exact: true });
+  await expect(edit).toBeVisible();
+  expect(api.writes.filter((write) => write.method === "POST" && write.path === "")).toEqual([{ method: "POST", path: "", body: expect.objectContaining({
+    title: "Failed pipeline triage", scheduleEnabled: false, webhookEnabled: true, schedule: { kind: "daily", time: "09:00" }
+  }) }]);
+  await expect(edit.getByRole("status")).toHaveText("“Failed pipeline triage” is created. Get a token to let another system call its webhook.");
+  const hook = edit.getByTestId("scheduled-task-webhook");
+  await expect(hook).toContainText("Not issued yet");
+  await expect(hook.getByTestId("webhook-url")).toHaveText(/\/api\/automations\/hooks\/AbCdEfGhIjKlMnOpQrSt_-$/u);
+
+  // Get token shows it once with its curl request; Rotate replaces it.
+  await hook.getByRole("button", { name: "Get token", exact: true }).click();
+  await expect(hook.getByTestId("webhook-token")).toHaveText(syntheticToken(1));
+  await expect(hook.getByTestId("webhook-curl")).toContainText(`Authorization: Bearer ${syntheticToken(1)}`);
+  await expect(hook).toContainText("Issued Sun 4 Oct, 11:01");
+  const rotate = hook.getByRole("button", { name: "Rotate token", exact: true });
+  const copyToken = hook.getByRole("button", { name: "Copy webhook token", exact: true });
+  await captureState(page, info, "scheduled-webhook-token", {
+    anchor: rotate,
+    atEachSize: async () => {
+      await expectWithinViewport(page, rotate);
+      // The request scrolls inside itself; neither the section nor the page scrolls sideways.
+      const [curlBox, hookBox] = await Promise.all([hook.getByTestId("webhook-curl").boundingBox(), hook.boundingBox()]);
+      expect(curlBox!.x + curlBox!.width).toBeLessThanOrEqual(hookBox!.x + hookBox!.width + 1);
+      await expectNoHorizontalOverflow(page);
+      await copyToken.scrollIntoViewIfNeeded();
+      await expectWithinViewport(page, copyToken);
+    }
+  });
+  await rotate.click();
+  await expect(hook.getByTestId("webhook-token")).toHaveText(syntheticToken(2));
+  expect(api.writes.filter((write) => write.path === "/created/webhook-token")).toHaveLength(2);
+  // The token never entered the draft or any task write, so Cancel closes without a question.
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(JSON.stringify(api.writes)).not.toContain("aiqsa_wh_");
+  await expect(rows.filter({ hasText: "Failed pipeline triage" })).toContainText("On a webhook");
 });
 
 test("an unread scheduled chat shows a dot, clears only its rendered result and its task's chat says how to change the task", async ({ page }, info) => {
@@ -733,6 +877,38 @@ test.describe("touch controls", () => {
       }
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`scheduled-sheet-monitoring-touch-${size.width}x${size.height}.png`) });
+      await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(sheet).toHaveCount(0);
+      await page.getByRole("button", { name: "Back to chat", exact: true }).click();
+    }
+  });
+
+  test("the trigger switches and the webhook's actions stay touch-safe in both phone orientations", async ({ page }, info) => {
+    await prepare(page, webhookListFixture);
+    for (const size of touchSizes) {
+      await page.setViewportSize(size);
+      await runAccountMenuAction(page, "Automations");
+      const panel = page.getByTestId("scheduled-tasks-panel");
+      await expectTouchSafe(panel.getByRole("listitem").filter({ hasText: "Pipeline failure review" }).getByRole("switch"));
+      await panel.getByRole("button", { name: "More actions for Pipeline failure review", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+      const sheet = page.getByTestId("scheduled-task-sheet");
+      for (const name of ["On a schedule", "On a webhook"]) {
+        const control = sheet.getByRole("switch", { name, exact: true });
+        await control.scrollIntoViewIfNeeded();
+        await expectTouchSafe(control);
+        await expectWithinViewport(page, control);
+      }
+      const hook = sheet.getByTestId("scheduled-task-webhook");
+      for (const name of ["Copy webhook URL", "Rotate token"]) {
+        const button = hook.getByRole("button", { name, exact: true });
+        await button.scrollIntoViewIfNeeded();
+        await expectTouchSafe(button);
+        await expectWithinViewport(page, button);
+      }
+      await expectWithinViewport(page, sheet.getByRole("button", { name: "Save changes", exact: true }));
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`scheduled-webhook-touch-${size.width}x${size.height}.png`) });
       await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
       await expect(sheet).toHaveCount(0);
       await page.getByRole("button", { name: "Back to chat", exact: true }).click();
