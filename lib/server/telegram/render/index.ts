@@ -2,11 +2,11 @@ import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "@/lib/do
 import type {
   TelegramInputRichBlock, TelegramInputRichMessage, TelegramRichListItem, TelegramRichTableCell, TelegramRichText
 } from "../botApi";
-import { citationRenderer, safeTelegramHref, type TelegramAnswerOptions } from "./citations";
+import { citationLinks, safeTelegramHref, type TelegramAnswerOptions } from "./citations";
 import { limitBlockDepth, plainBlock, plainText, RICH_LIMITS, TEXT_LIMIT } from "./richText";
 import { draftMessage, packBlocks, splitText } from "./split";
 
-export type { TelegramAnswerCitation, TelegramAnswerOptions, TelegramAnswerSource } from "./citations";
+export type { TelegramAnswerOptions } from "./citations";
 export type TelegramRenderedAnswer = Readonly<{
   messages: TelegramInputRichMessage[];
   /** Send verbatim, with no parse mode; empty answers have no fallback chunks. */
@@ -15,15 +15,15 @@ export type TelegramRenderedAnswer = Readonly<{
 
 /** Model Markdown is data: only this allowlisted block conversion reaches Telegram. */
 export function renderTelegramAnswer(markdown: string, options: TelegramAnswerOptions = {}): TelegramRenderedAnswer {
-  const citations = citationRenderer(options);
+  const citations = citationLinks(options.citations);
   const inline = (nodes: readonly MarkdownInline[], inLink = false): TelegramRichText => {
     const parts = nodes.map((node): TelegramRichText => {
       switch (node.type) {
-        case "text": return inLink ? node.value : citations.text(node.value);
+        case "text": return inLink ? node.value : citations(node.value);
         case "break": return "\n";
         case "inlineCode": return { type: "code", text: node.value };
         case "inlineMath": return { type: "mathematical_expression", expression: node.source };
-        case "citation": return (!inLink && citations.reference(node.handle)) || node.source;
+        case "citation": return node.source;
         case "strong": return { type: "bold", text: inline(node.children, inLink) };
         case "emphasis": return { type: "italic", text: inline(node.children, inLink) };
         case "delete": return { type: "strikethrough", text: inline(node.children, inLink) };
@@ -70,7 +70,6 @@ export function renderTelegramAnswer(markdown: string, options: TelegramAnswerOp
   const document = parseMarkdown(markdown, { streaming: options.streaming });
   const answer = document ? blocks(document.blocks) : [{ type: "paragraph" as const, text: markdown }];
   if (document?.overflow) answer.push({ type: "paragraph", text: document.overflow });
-  answer.push(...citations.footer());
   const plainFallback = splitText(answer.map(block => plainBlock(block, true)).join("\n\n"), TEXT_LIMIT);
   const bounded = answer.map(block => limitBlockDepth(block));
   return {

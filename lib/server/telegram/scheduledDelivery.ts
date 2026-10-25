@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import type { ThreadCitation } from "../../contracts/chats";
 import {
   scheduledTaskRunTrigger as trigger,
   type ScheduledTaskRunTrigger,
@@ -26,7 +27,7 @@ import {
   telegramAnswerFiles, telegramRunExport, type TelegramAnswerFile, type TelegramPlannedFile
 } from "./files";
 import type { TelegramDelivery } from "./outbound";
-import { plainTelegramMessage, renderTelegramAnswer, type TelegramAnswerCitation, type TelegramAnswerSource } from "./render";
+import { plainTelegramMessage, renderTelegramAnswer } from "./render";
 import { packBlocks } from "./render/split";
 import type { TelegramMessageRefOwner } from "./store/messageRefs";
 import type { TelegramFailure } from "./transport";
@@ -110,8 +111,7 @@ export type TelegramScheduledDeliveryContext = Readonly<{
   result: Readonly<{
     messageId: string;
     markdown: string;
-    citations: readonly TelegramAnswerCitation[];
-    sources: readonly TelegramAnswerSource[];
+    citations: readonly ThreadCitation[];
     files: readonly TelegramScheduledFile[];
     /** The run's Workspace files are still being exported, or their export failed. */
     outputs?: "pending" | "failed";
@@ -210,7 +210,7 @@ export function telegramScheduledParts(context: TelegramScheduledDeliveryContext
   const heading: TelegramInputRichBlock = {
     type: "paragraph", text: [{ type: "bold", text: head.title }, `\n${head.lines.join("\n")}`]
   };
-  const answer = renderTelegramAnswer(result.markdown, { citations: result.citations, sources: result.sources });
+  const answer = renderTelegramAnswer(result.markdown, { citations: result.citations });
   const [first, ...rest] = answer.messages;
   const joined = first ? packBlocks([heading, ...first.blocks]) : [{ blocks: [heading], skip_entity_detection: true }];
   // The heading shares the first message when it fits there, and leads alone otherwise.
@@ -642,7 +642,7 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
         ...base,
         chat: { id: message.chat.id, usable: message.chat.permanentDeletionAt === null },
         result: markdown || files.length > 0 || outputs ? {
-          citations: summary?.citations ?? [], files, markdown, messageId: message.id, sources: summary?.sources ?? [],
+          citations: summary?.citations ?? [], files, markdown, messageId: message.id,
           ...(outputs ? { outputs } : {})
         } : null
       };

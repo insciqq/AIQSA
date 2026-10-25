@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
 import { TELEGRAM_TEXT_MAX_LENGTH, validateTelegramRichMessage } from "@/tests/support/fakeTelegramBotApi";
 import { renderTelegramAnswer, type TelegramAnswerOptions } from "./index";
 import { hostileMarkdown } from "./hostile.fixtures";
@@ -23,7 +22,7 @@ describe("renderTelegramAnswer", () => {
   it("renders an explicit representative tree and readable fallback", () => {
     const markdown = [
       '# Answer',
-      '**Bold** *soft* ~~old~~ `x` [web](https://example.com) $a+b$ [K2] [K1] [K2]',
+      '**Bold** *soft* ~~old~~ `x` [web](https://example.com) $a+b$ [2] [1] [7]',
       '3. First\n   - Nested\n4. Second',
       '> Quoted',
       '| A | B |\n| --- | --- |\n| one | two |',
@@ -31,20 +30,20 @@ describe("renderTelegramAnswer", () => {
       '$$x^2$$',
       '---'
     ].join('\n\n');
-    const result = valid(markdown, {
-      citations: [{ handle: 'K1' }, { handle: 'K2' }],
-      sources: [
-        { handle: 'K1', title: 'Local note' },
-        { handle: 'K2', title: 'Guide', url: 'https://example.com/guide' }
-      ]
-    });
+    const result = valid(markdown, { citations: [
+      { index: 1, title: 'Note', url: 'https://example.com/note' },
+      { index: 2, title: 'Guide', url: 'https://example.com/guide' }
+    ] });
     expect(result.messages).toEqual([{ skip_entity_detection: true, blocks: [
       { type: 'heading', size: 1, text: 'Answer' },
       { type: 'paragraph', text: [
         { type: 'bold', text: 'Bold' }, ' ', { type: 'italic', text: 'soft' }, ' ',
         { type: 'strikethrough', text: 'old' }, ' ', { type: 'code', text: 'x' }, ' ',
         { type: 'url', text: 'web', url: 'https://example.com' }, ' ',
-        { type: 'mathematical_expression', expression: 'a+b' }, ' ', '[1]', ' ', '[2]', ' ', '[1]'
+        { type: 'mathematical_expression', expression: 'a+b' }, [
+          ' ', { type: 'url', text: '[2]', url: 'https://example.com/guide' },
+          ' ', { type: 'url', text: '[1]', url: 'https://example.com/note' }, ' [7]'
+        ]
       ] },
       { type: 'list', items: [
         { type: '1', value: 3, blocks: [
@@ -60,14 +59,10 @@ describe("renderTelegramAnswer", () => {
       ] },
       { type: 'pre', language: 'ts', text: 'const x = 1;\n' },
       { type: 'mathematical_expression', expression: 'x^2' },
-      { type: 'divider' },
-      { type: 'footer', text: [
-        { type: 'bold', text: 'Sources' }, '\n[1] ',
-        { type: 'url', text: 'Guide', url: 'https://example.com/guide' }, '\n[2] ', 'Local note'
-      ] }
+      { type: 'divider' }
     ] }]);
     expect(result.plainFallback).toEqual([
-      'Answer\n\nBold soft old x web (https://example.com) a+b [1] [2] [1]\n\n3. First\n\n- Nested\n4. Second\n\nQuoted\n\nA | B\none | two\n\nconst x = 1;\n\n\nx^2\n\n---\n\nSources\n[1] Guide (https://example.com/guide)\n[2] Local note'
+      'Answer\n\nBold soft old x web (https://example.com) a+b [2] (https://example.com/guide) [1] (https://example.com/note) [7]\n\n3. First\n\n- Nested\n4. Second\n\nQuoted\n\nA | B\none | two\n\nconst x = 1;\n\n\nx^2\n\n---'
     ]);
   });
 
@@ -84,31 +79,21 @@ describe("renderTelegramAnswer", () => {
     ] }]);
   });
 
-  it("resolves artifact search citations by their actual indices, and handles by exact identity", () => {
-    const artifact: Pick<ThreadArtifactSummary, 'citations' | 'sources'> = {
-      citations: [{ index: 9, title: 'Ninth', url: 'https://example.com/9' }, { index: 2, title: 'Second', url: 'https://example.com/2' }],
-      sources: [{ rank: 1, title: 'Ninth', url: 'https://example.com/9' }]
-    };
-    const result = valid('[9] then [2] again [9]. [K9] [K2] [K3] [99]', {
-      citations: [...artifact.citations, { handle: 'K9' }, { handle: 'K2', deleted: true }], sources: artifact.sources
-    });
-    expect(result.plainFallback.join('')).toBe('[1] then [2] again [1]. [3] [K2] [K3] [99]\n\nSources\n[1] Ninth (https://example.com/9)\n[2] Second (https://example.com/2)\n[3] Source K9');
-  });
-
-  it("uses literal titles and safe source links without interpreting source markup", () => {
-    expect(valid('[K1] [K2]', {
-      citations: [{ handle: 'K1', title: '**Title**', url: 'tg://user?id=1' }, { handle: 'K2' }],
-      sources: [{ handle: 'K2', title: '<tg-button>Source</tg-button>', url: 'javascript:alert(1)' }]
-    }).messages[0].blocks.at(-1)).toEqual({ type: 'footer', text: [
-      { type: 'bold', text: 'Sources' }, '\n[1] ', '**Title**', '\n[2] ', '<tg-button>Source</tg-button>'
+  it("links search citations by their actual indices with no Sources list, leaving other brackets as written", () => {
+    const result = valid('[9] then [2] again [9]. [3] [4] [K2] [99]', { citations: [
+      { index: 9, title: 'Ninth', url: 'https://example.com/9' },
+      { index: 2, title: 'Second', url: 'https://example.com/2' },
+      { index: 3, title: 'Unsafe', url: 'javascript:alert(1)' },
+      { index: 4, title: 'Telegram', url: 'tg://user?id=1' }
     ] });
+    expect(result.messages.flatMap(message => message.blocks).map(block => block.type)).toEqual(['paragraph']);
+    expect(result.plainFallback.join('')).toBe(
+      '[9] (https://example.com/9) then [2] (https://example.com/2) again [9] (https://example.com/9). [3] [4] [K2] [99]');
   });
 
-  it("does not resolve coded, escaped or linked handle citations", () => {
-    const result = valid('`[K1]` \\[K1] [[K1]](https://example.com) [K1.2]', {
-      citations: [{ handle: 'K1' }, { handle: 'K1.2', title: 'Passage' }]
-    });
-    expect(result.plainFallback.join('')).toBe('[K1] [K1] [K1] (https://example.com) [1]\n\nSources\n[1] Passage');
+  it("does not link coded or linked citations", () => {
+    const result = valid('`[1]` [[1]](https://example.com) [1]', { citations: [{ index: 1, title: 'One', url: 'https://example.com/1' }] });
+    expect(result.plainFallback.join('')).toBe('[1] [1] (https://example.com) [1] (https://example.com/1)');
   });
 
   it("renders wide tables as monospace text without dropping cells", () => {
@@ -146,13 +131,6 @@ describe("renderTelegramAnswer", () => {
     expect(block.text).toMatch(/LATEST$/u);
     expect(source.endsWith(String(block.text).slice(1))).toBe(true);
     expect(result.plainFallback.join('')).toBe(source);
-  });
-
-  it("splits large resolved source metadata without loss", () => {
-    const title = 'Title '.repeat(12_000);
-    const result = valid('[K1]', { citations: [{ handle: 'K1', title, url: 'https://example.com' }] });
-    expect(result.messages.length).toBeGreaterThan(1);
-    expect(result.plainFallback.join('')).toBe(`[1]\n\nSources\n[1] ${title} (https://example.com)`);
   });
 
   it("preserves literal overflow beyond the parser bounds", () => {
