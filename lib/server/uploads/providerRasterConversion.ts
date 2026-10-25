@@ -195,12 +195,8 @@ function isTiff(bytes: Buffer): boolean {
 async function tiffToPng(bytes: Buffer, bounds: ProviderRasterConversionBounds): Promise<Buffer> {
   // libvips enforces limitInputPixels while reading the header and reports it
   // as a decode failure, so the bound is read from a header-only pass first.
-  let metadata: sharp.Metadata;
-  try {
-    metadata = await sharp(bytes, { limitInputPixels: false, failOn: "error" }).metadata();
-  } catch {
-    throw invalid();
-  }
+  const metadata = await sharp(bytes, { limitInputPixels: false, failOn: "error" }).metadata()
+    .catch(() => { throw invalid(); });
   if (metadata.format !== "tiff" || !metadata.width || !metadata.height) throw invalid();
   checkBounds(metadata.width, metadata.height, bounds);
   try {
