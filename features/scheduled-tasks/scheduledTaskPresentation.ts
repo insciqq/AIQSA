@@ -178,6 +178,10 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "account_inactive": return "the account was not active";
     case "schedule_invalid": return "the schedule could not be calculated";
     case "paused": return "the automation was paused";
+    case "webhook_off": return "the automation's webhook was turned off";
+    case "webhook_event_dropped": return "its event was dropped when the automation was paused, completed or its webhook turned off";
+    case "webhook_event_expired": return "the webhook event waited too long for a free run";
+    case "schedule_off": return "the automation's schedule was turned off";
     case "admission_failed": return "the run could not start";
     case "run_unavailable": return "the run was removed before it finished";
     case "model_run_cancelled": return "it was stopped in the chat";

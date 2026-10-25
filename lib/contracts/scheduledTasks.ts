@@ -64,8 +64,12 @@ export function isScheduledTaskHistoryRetentionDays(value: unknown): value is Sc
  * schedule, on its webhook or both, and every event the webhook accepts runs
  * the saved prompt with the event as incoming data.
  */
-/** Bytes of a request body the endpoint reads; a longer body is refused (413). */
-export const SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * Bytes of a request body the endpoint reads; a longer body is refused (413).
+ * As large as the kept text: a GitLab Pipeline Hook lists every job, and a
+ * sender disables a hook that keeps getting 4xx (decision 2026-10-25).
+ */
+export const SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES = 128 * 1024;
 /**
  * UTF-8 bytes of the text an event keeps: JSON pretty-printed while that stays
  * within this bound, otherwise the body as received.
@@ -987,6 +991,7 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "webhook_off": return "Skipped: the automation's webhook was turned off.";
     case "webhook_event_dropped": return "Skipped: its event was dropped when the automation was paused, completed or its webhook turned off.";
     case "schedule_off": return "Skipped: the automation's schedule was turned off.";
+    case "webhook_event_expired": return "Skipped: the webhook event waited too long for a free run.";
     case "admission_failed": return "The run could not start.";
     case "run_unavailable": return "The automation's chat was deleted before the run finished.";
     case "model_run_cancelled": return "Stopped in the chat.";

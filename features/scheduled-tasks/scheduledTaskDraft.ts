@@ -528,7 +528,10 @@ export function scheduledTaskPreview(
 ): string {
   if (!draft.scheduleEnabled) {
     if (!draft.webhookEnabled) return "Choose when it runs: on a schedule, on a webhook or both.";
-    return original?.status === "paused" ? "Paused. Webhook calls are refused until you resume." : "Runs on each webhook call.";
+    if (original?.status === "paused") return "Paused. Webhook calls are refused until you resume.";
+    // Saving turns a completed task whose webhook was off back on; one already on its webhook stays completed.
+    if (original?.status === "completed" && original.webhookEnabled) return "Completed. Webhook calls are refused until you resume.";
+    return "Runs on each webhook call.";
   }
   const zone = validScheduledTaskTimeZone(draft.timeZone);
   const schedule = scheduledTaskDraftSchedule(draft);

@@ -1883,6 +1883,11 @@ describe("webhook occurrences", () => {
     const switchedOff = h.addTask({ nextRunAt: null, userId: "owner-3", webhookEnabled: false });
     const cutOff = h.addOccurrence(switchedOff, { scheduledFor: event.receivedAt, trigger: "webhook" });
     h.webhookEvents.set(cutOff.id, event);
+    // An event that waited past the lateness bound is skipped as such, not as a missed scheduled time.
+    const waited = h.addTask({ nextRunAt: null, userId: "owner-4", webhookEnabled: true });
+    const stale = new Date(h.now().getTime() - SCHEDULED_TASK_LATENESS_MS - 60_000);
+    const expired = h.addOccurrence(waited, { scheduledFor: stale, trigger: "webhook" });
+    h.webhookEvents.set(expired.id, { ...event, receivedAt: stale });
     await h.tick();
     expect(h.sent).toHaveLength(0);
     expect(skipped).toMatchObject({ reasonCode: "paused", state: "SKIPPED" });
@@ -1890,6 +1895,7 @@ describe("webhook occurrences", () => {
     expect(eventless).toMatchObject({ reasonCode: "webhook_event_dropped", state: "SKIPPED" });
     expect(eventless.unseenAt).toBeNull();
     expect(cutOff).toMatchObject({ reasonCode: "webhook_off", state: "SKIPPED" });
+    expect(expired).toMatchObject({ reasonCode: "webhook_event_expired", state: "SKIPPED" });
     expect(switchedOff.status).toBe("ACTIVE");
   });
 

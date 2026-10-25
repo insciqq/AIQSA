@@ -428,7 +428,7 @@ describe("scheduled task wire contract", () => {
   });
 
   it("keeps the endpoint's bounds and refusals stable", () => {
-    expect(SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES).toBe(65_536);
+    expect(SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES).toBe(131_072);
     expect(SCHEDULED_TASK_WEBHOOK_TEXT_MAX_BYTES).toBeGreaterThanOrEqual(SCHEDULED_TASK_WEBHOOK_BODY_MAX_BYTES);
     expect([SCHEDULED_TASK_WEBHOOK_QUEUE_LIMIT, SCHEDULED_TASK_WEBHOOK_RATE_LIMIT, SCHEDULED_TASK_WEBHOOK_RATE_WINDOW_MS])
       .toEqual([20, 60, 3_600_000]);

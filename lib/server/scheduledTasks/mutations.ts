@@ -44,10 +44,10 @@ export function firstScheduledTaskRunAt(
 
 /**
  * Owner edit rules. At least one trigger stays on. Explicit status wins;
- * otherwise the status is kept, except that a schedule change reactivates a
- * completed task. Pausing clears the due time, and so does turning the
- * schedule off: an off schedule never runs, and changing its values neither
- * arms nor reactivates. Turning it on is a schedule change. Arming (resume,
+ * otherwise the status is kept, except that a schedule change or turning the
+ * webhook on reactivates a completed task. Pausing clears the due time, and
+ * so does turning the schedule off: an off schedule never runs, and changing
+ * its values neither arms nor reactivates. Turning it on is a schedule change. Arming (resume,
  * reactivation or a changed active schedule) takes the next occurrence from
  * now; an unchanged active schedule keeps its due time so that an edit never
  * skips a run that is already due. A changed once schedule that is on must lie
@@ -96,7 +96,10 @@ export function planScheduledTaskUpdate(
     draft.searchEnabled !== current.searchEnabled || draft.kind !== current.kind ||
     (draft.toolsEnabled && !current.toolsEnabled) || (draft.workspaceEnabled && !current.workspaceEnabled) || skillsChanged;
 
-  const status = patch.status ?? (current.status === "completed" && scheduleChanged ? "active" : current.status);
+  // Turning the webhook on is the other way to give a completed task work again.
+  const webhookTurnedOn = draft.webhookEnabled && !current.webhookEnabled;
+  const status = patch.status ??
+    (current.status === "completed" && (scheduleChanged || webhookTurnedOn) ? "active" : current.status);
   // A claimed once task has no due time left to keep; a recurring one always needs one.
   const keepsDueTime = current.status === "active" && !scheduleChanged &&
     (current.nextRunAt !== null || draft.schedule.kind === "once");

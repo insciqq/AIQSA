@@ -1249,5 +1249,6 @@
   "mcp_run_binding_unavailable",
   "webhook_off",
   "webhook_event_dropped",
-  "schedule_off"
+  "schedule_off",
+  "webhook_event_expired"
 ]
