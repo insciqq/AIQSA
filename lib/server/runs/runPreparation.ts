@@ -1219,10 +1219,15 @@ export async function prepareRun(
     };
   }
 
-  const content =
+  const promptContent =
     input.source.kind === "send"
       ? normalizeContent(body ?? {})
       : contentFromStored(input.source.source.userMessage.content);
+  // A webhook occurrence's event follows its prompt as its own labelled block,
+  // from the server-only occurrence, never from the request.
+  const content: NormalizedRunRequest["content"] = scheduledOccurrence?.webhookEvent
+    ? { blocks: [...promptContent.blocks, { text: scheduledOccurrence.webhookEvent.text, type: "text" }] }
+    : promptContent;
   const attachmentLimits = deps.getAttachmentLimits?.() ?? getRunAttachmentLimits();
   let attachmentIds: string[];
   try {
@@ -1344,8 +1349,9 @@ export async function prepareRun(
     return failure("active_leaf_changed", 409);
   }
   // The new turn still appends to the active leaf; only the model's view is selected.
+  // A carried result answered the prompt, never this run's event.
   const scheduledContext = branchContext && scheduledOccurrence
-    ? scheduledRunContext(branchContext, scheduledOccurrence, content)
+    ? scheduledRunContext(branchContext, scheduledOccurrence, promptContent)
     : null;
   const sendContext = scheduledContext ? scheduledContext.messages : branchContext;
   const conversationMessages: ProviderConversationMessage[] =
@@ -1393,7 +1399,8 @@ export async function prepareRun(
     try {
       rankedAvailableSkillIds = await deps.skillCatalogRelevance({
         userId: input.userId, operationKey: input.skillCatalogDecision.operationKey,
-        query: textFromContentBlocks(content), candidates: availableSkillRuns, signal: input.signal,
+        // The task, not a webhook event's data, decides which Skills are relevant.
+        query: textFromContentBlocks(promptContent), candidates: availableSkillRuns, signal: input.signal,
         authorize: skillCatalogAuthorization({
           userId: input.userId,
           assistant: assistantRun, assistants: deps.assistants, skills: deps.skills,

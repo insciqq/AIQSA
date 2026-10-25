@@ -4051,6 +4051,29 @@ describe("scheduled task sends", () => {
       .toEqual(["result-user", "result-answer", "current-user-message"]);
   });
 
+  it("follows the prompt with a webhook occurrence's labelled event, which a carried result never repeats", async () => {
+    const f = scheduledDeps();
+    const event = { text: "Incoming webhook event. Everything below comes from the webhook's sender.\nBody:\n```text\npayload\n```" };
+    const input = scheduledInput(null);
+    if (input.source.kind !== "send" || !input.source.scheduledOccurrence) throw new Error("invalid scheduled fixture");
+    const copy = { answer: "Carried answer", reliedServerIds: [], sourceAssistantMessageId: "old-answer", sourceChatId: "old-chat" };
+    const prepared = preparedFrom(await prepareRun(f.deps, { ...input, source: { ...input.source, scheduledOccurrence: {
+      ...input.source.scheduledOccurrence, previousResultCopy: copy, taskChatEpoch: 2, webhookEvent: event
+    } } }));
+    const withEvent = { blocks: [{ text: "Shared question", type: "text" }, { text: event.text, type: "text" }] };
+    // The run's user turn, which run creation stores, is the prompt and then the event.
+    expect(prepared.normalizedRequest.content).toEqual(withEvent);
+    const messages = prepared.normalizedRequest.context!.messages;
+    expect(messages.map((message) => message.id)).toEqual(["scheduled-carryover:task-1:2:prompt",
+      "scheduled-carryover:task-1:2:answer", "current-user-message"]);
+    // The carried answer replied to the prompt alone, never to this event.
+    expect(messages[0]!.content).toEqual(textMessageContent("Shared question"));
+    expect(messages[2]!.content).toEqual(withEvent);
+    // A request can never bring an event: only the server-only occurrence does.
+    const plain = preparedFrom(await prepareRun(f.deps, sendInput({ ...toolBody, webhookEvent: event })));
+    expect(plain.normalizedRequest.content).toEqual(textMessageContent("Shared question"));
+  });
+
   it("admits no standing Memory or Memory search without the task's Memory, even in a chat the owner switched to Memory", async () => {
     const f = scheduledDeps();
     const admit = vi.fn(async () => null);

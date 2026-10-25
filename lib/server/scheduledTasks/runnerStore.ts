@@ -1,5 +1,10 @@
 import { Prisma, type PrismaClient, type ScheduledTaskKind as TaskKindColumn } from "@prisma/client";
-import type { ScheduledTaskChatMode, ScheduledTaskKind, ScheduledTaskRunTrigger } from "../../contracts/scheduledTasks";
+import {
+  scheduledTaskRunTrigger as trigger,
+  type ScheduledTaskChatMode,
+  type ScheduledTaskKind,
+  type ScheduledTaskRunTrigger
+} from "../../contracts/scheduledTasks";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { SMTP_CONTROL_ID } from "../email/repository";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
@@ -40,6 +45,13 @@ import {
   scheduledTaskScheduleFromColumns,
   type ScheduledTaskScheduleColumns
 } from "./store";
+import type { ScheduledWebhookEvent } from "./webhookEvent";
+import {
+  discardScheduledTaskWebhookOccurrenceEvent,
+  discardWaitingScheduledTaskWebhookEvents,
+  loadScheduledTaskWebhookEvent,
+  pruneScheduledTaskWebhookEvents
+} from "./webhookStore";
 
 export type ScheduledTaskSettlement = Readonly<{
   occurrenceId: string;
@@ -95,6 +107,12 @@ export type ScheduledTaskExecution = Readonly<{
     promptUrlDigests: readonly string[];
     status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; workspaceEnabled: boolean;
   }>;
+  /**
+   * A webhook occurrence's event while it still waits: the run carries it
+   * after the prompt. Absent for other triggers, and for a webhook occurrence
+   * whose event no longer waits, which must not run.
+   */
+  webhookEvent?: ScheduledWebhookEvent;
 }>;
 
 /** An admitted scheduled run past its deadline, by the origin the run carries. */
@@ -132,7 +150,10 @@ export interface ScheduledTaskRunnerStore {
   /**
    * Records the occurrences of due active tasks and advances them; tasks
    * locked elsewhere wait. Its settlements (missed, superseded and
-   * previous_running skips) are history only.
+   * previous_running skips) are history only. Then each task without an open
+   * occurrence gets one for its oldest waiting webhook event, or, when it can
+   * no longer take events, its waiting events are discarded; and a bounded
+   * batch of expired bodyless events is deleted.
    */
   claimDue(now: Date, limit: number): Promise<Readonly<{ claimed: number; settlements: readonly ScheduledTaskSettlement[] }>>;
   /** Settles running occurrences whose run ended or vanished. */
@@ -196,11 +217,11 @@ type LockedOccurrence = {
   userMessageId: string | null; verdict: string | null;
 };
 type Locked = Readonly<{ occurrence: LockedOccurrence; task: LockedTask }>;
-type ClaimRow = ScheduledTaskScheduleColumns & { id: string; nextRunAt: Date; timeZone: string; userId: string };
-
-function trigger(value: string): ScheduledTaskRunTrigger {
-  return value === "manual" ? "manual" : "schedule";
-}
+type ClaimRow = ScheduledTaskScheduleColumns & {
+  id: string; nextRunAt: Date; timeZone: string; userId: string; webhookEnabled: boolean;
+};
+/** Expired bodyless webhook events one tick deletes. */
+const WEBHOOK_PRUNE_BATCH = 500;
 
 /** Code points a carried copy keeps of the previous answer, its database bound. */
 export const SCHEDULED_CARRYOVER_ANSWER_MAX_LENGTH = 100_000;
@@ -263,7 +284,9 @@ function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSe
  * baseline the next same-chat run sees, only under the chat epoch its run was
  * admitted under, which retires a result carried into a rotated chat. A
  * monitoring check's outcome is also kept on its run, where the transcript
- * reads it after the occurrence history is pruned.
+ * reads it after the occurrence history is pruned. A webhook occurrence that
+ * ends without a run discards its event, and a pause or completion discards
+ * the task's waiting events.
  */
 async function applySettlement(
   tx: Prisma.TransactionClient,
@@ -310,6 +333,12 @@ async function applySettlement(
   });
   // The rotated chat has its own shown result now: the carried copy has served.
   if (baseline) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId: occurrence.taskId } });
+  // An event whose occurrence ended without a run never runs; one with a run was admitted with it.
+  if (occurrence.trigger === "webhook" && occurrence.runId === null) {
+    await discardScheduledTaskWebhookOccurrenceEvent(tx, occurrence);
+  }
+  // A task this settlement paused or completed takes no more of its waiting events.
+  if (plan.pauseReason || plan.goalCompletes) await discardWaitingScheduledTaskWebhookEvents(tx, occurrence.taskId);
   if (check && occurrence.runId) {
     await tx.$executeRaw(Prisma.sql`
       UPDATE "ModelRun" SET "scheduledOutcome" = ${check.outcome}
@@ -425,6 +454,64 @@ async function skipQuietly(
   } : null;
 }
 
+/**
+ * Turns waiting webhook events into occurrences, one at a time per task: a
+ * task without an open occurrence, of any trigger, gets the occurrence of its
+ * oldest waiting event, whose instant is that event's `receivedAt`, so later
+ * events wait in order while a run is open. A task that can no longer take
+ * events (not active, or its trigger off) has its waiting events discarded
+ * instead; one whose owner is not active still gets the occurrence, and its
+ * admission pauses the task visibly. Tasks locked elsewhere wait, as for
+ * schedules. Returns the occurrences recorded.
+ */
+async function claimWebhookEvents(prisma: PrismaClient, limit: number): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    const tasks = await tx.$queryRaw<Array<{ id: string; runnable: boolean; userId: string }>>(Prisma.sql`
+      SELECT task."id", task."userId", (task."status" = 'ACTIVE'::"ScheduledTaskStatus" AND task."webhookEnabled") AS "runnable"
+      FROM "ScheduledTask" AS task
+      WHERE EXISTS (
+          SELECT 1 FROM "ScheduledTaskWebhookEvent" AS event
+          WHERE event."taskId" = task."id" AND event."state" = 'QUEUED'::"ScheduledTaskWebhookEventState")
+        AND NOT EXISTS (
+          SELECT 1 FROM "ScheduledTaskOccurrence" AS occurrence
+          WHERE occurrence."taskId" = task."id"
+            AND occurrence."state" IN ('PENDING'::"ScheduledTaskOccurrenceState", 'RUNNING'::"ScheduledTaskOccurrenceState"))
+      ORDER BY task."id" ASC
+      LIMIT ${limit}
+      FOR NO KEY UPDATE OF task SKIP LOCKED
+    `);
+    let claimed = 0;
+    for (const task of tasks) {
+      // Rechecked under the task row lock, which every writer of its occurrences holds.
+      if (await tx.scheduledTaskOccurrence.count({ where: { state: { in: ["PENDING", "RUNNING"] }, taskId: task.id } }) > 0) continue;
+      if (!task.runnable) {
+        await discardWaitingScheduledTaskWebhookEvents(tx, task.id);
+        continue;
+      }
+      const [event] = await tx.$queryRaw<Array<{ receivedAt: Date }>>(Prisma.sql`
+        SELECT "receivedAt" FROM "ScheduledTaskWebhookEvent"
+        WHERE "taskId" = ${task.id} AND "state" = 'QUEUED'::"ScheduledTaskWebhookEventState"
+        ORDER BY "receivedAt" ASC
+        LIMIT 1
+      `);
+      if (!event) continue;
+      const inserted = await tx.scheduledTaskOccurrence.createManyAndReturn({
+        data: [{ scheduledFor: event.receivedAt, taskId: task.id, trigger: "webhook", userId: task.userId }],
+        select: { id: true },
+        skipDuplicates: true
+      });
+      if (inserted.length === 0) {
+        // Its occurrence already settled without admitting it: it can no longer run.
+        await discardScheduledTaskWebhookOccurrenceEvent(tx, { scheduledFor: event.receivedAt, taskId: task.id });
+        continue;
+      }
+      await pruneScheduledTaskOccurrences(tx, task.id);
+      claimed += 1;
+    }
+    return claimed;
+  }, { maxWait: 10_000, timeout: 60_000 });
+}
+
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
   function settleLinked(occurrenceId: string, now: Date) {
     return prisma.$transaction(async (tx) => {
@@ -447,10 +534,10 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
 
   return {
     async claimDue(now, limit) {
-      return prisma.$transaction(async (tx) => {
+      const scheduled = await prisma.$transaction(async (tx) => {
         const rows = await tx.$queryRaw<ClaimRow[]>(Prisma.sql`
           SELECT "id", "userId", "scheduleKind"::text AS "scheduleKind", "timeOfDayMinutes", "daysOfWeekMask",
-            "dayOfMonth", "onceLocalDate", "everyHours", "untilMinutes", "timeZone", "nextRunAt"
+            "dayOfMonth", "onceLocalDate", "everyHours", "untilMinutes", "timeZone", "nextRunAt", "webhookEnabled"
           FROM "ScheduledTask"
           WHERE "status" = 'ACTIVE'::"ScheduledTaskStatus" AND "nextRunAt" <= ${now}
           ORDER BY "nextRunAt" ASC, "id" ASC
@@ -460,11 +547,13 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         const settlements: ScheduledTaskSettlement[] = [];
         for (const row of rows) {
           const schedule = scheduledTaskScheduleFromColumns(row);
-          const plan = planScheduledTaskClaim({ nextRunAt: row.nextRunAt, schedule, timeZone: row.timeZone }, now);
+          const plan = planScheduledTaskClaim({
+            nextRunAt: row.nextRunAt, schedule, timeZone: row.timeZone, webhookEnabled: row.webhookEnabled
+          }, now);
           const runnable = plan.occurrences.find((occurrence) => !occurrence.missed);
           // The task row is locked first, then its open occurrences, like every settlement.
           const open = runnable ? await tx.$queryRaw<ScheduledTaskOpenOccurrence[]>(Prisma.sql`
-            SELECT "id", "state"::text AS "state", "runId", "leaseExpiresAt", "reasonCode"
+            SELECT "id", "state"::text AS "state", "runId", "leaseExpiresAt", "reasonCode", "trigger"
             FROM "ScheduledTaskOccurrence"
             WHERE "taskId" = ${row.id}
               AND "state" IN ('PENDING'::"ScheduledTaskOccurrenceState", 'RUNNING'::"ScheduledTaskOccurrenceState")
@@ -489,12 +578,15 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
           await tx.scheduledTask.update({
             data: {
               nextRunAt: plan.nextRunAt,
+              // A once run of a task on its webhook ends only the schedule: a runner change of the task.
+              ...(plan.scheduleOff ? { revision: { increment: 1 }, scheduleEnabled: false } : {}),
               ...(plan.status === "ACTIVE"
                 ? {}
                 : { pauseReason: plan.pauseReason, revision: { increment: 1 }, status: plan.status })
             },
             where: { id: row.id }
           });
+          if (plan.status !== "ACTIVE") await discardWaitingScheduledTaskWebhookEvents(tx, row.id);
           await pruneScheduledTaskOccurrences(tx, row.id);
           settlements.push(...inserted.filter((occurrence) => occurrence.state === "SKIPPED").map((occurrence) => ({
             occurrenceId: occurrence.id, reasonCode: occurrence.reasonCode, runId: null, sourceAlert: false,
@@ -503,6 +595,9 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         }
         return { claimed: rows.length, settlements };
       }, { maxWait: 10_000, timeout: 60_000 });
+      const events = await claimWebhookEvents(prisma, limit);
+      await pruneScheduledTaskWebhookEvents(prisma, now, WEBHOOK_PRUNE_BATCH);
+      return { claimed: scheduled.claimed + events, settlements: scheduled.settlements };
     },
 
     async settleFinishedRuns(now, limit) {
@@ -653,6 +748,10 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         ? { answer: carryover.answerText, reliedServerIds: [...carryover.reliedServerIds],
           sourceAssistantMessageId: carryover.sourceAssistantMessageId, sourceChatId: carryover.sourceChatId }
         : null;
+      // The event a webhook occurrence carries, by its instant, while it still waits.
+      const webhookEvent = row.trigger === "webhook"
+        ? await loadScheduledTaskWebhookEvent(prisma, { scheduledFor: row.scheduledFor, taskId: row.taskId, userId: row.userId })
+        : null;
       return {
         carriedResult,
         chat: usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: chat.id } : null,
@@ -665,7 +764,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
           : baseline?.generation === task.generation
             ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })
             : carriedResult ? carriedResult.reliedServerIds : null,
-        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode), kind: scheduledTaskKindFromColumn(kind) }
+        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode), kind: scheduledTaskKindFromColumn(kind) },
+        ...(webhookEvent ? { webhookEvent } : {})
       };
     },
 

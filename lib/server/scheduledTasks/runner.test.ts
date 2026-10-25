@@ -30,6 +30,7 @@ import {
 } from "./runnerPolicy";
 import type { ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
 import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
+import { scheduledWebhookEventText, type ScheduledWebhookEvent } from "./webhookEvent";
 import type { ScheduledWorkspaceCarryoverResult } from "./workspaceCarryover";
 
 type Carryover = { answer: string; chatEpoch: number; reliedServerIds: readonly string[]; sourceAssistantMessageId: string;
@@ -84,6 +85,8 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
   const telegram: string[] = [];
   let telegramFails = false;
   const sent: Array<{ body: Record<string, unknown>; chatId: string; occurrence: ScheduledOccurrenceAdmission }> = [];
+  /** The waiting event each webhook occurrence carries, as the store reads it by the occurrence's instant. */
+  const webhookEvents = new Map<string, ScheduledWebhookEvent>();
   const catalog: ScheduledTaskRunCatalog = {
     models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
       openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
@@ -241,7 +244,8 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
           promptUrlDigests: task.promptUrlDigests,
           provider: task.provider, revision: task.revision,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
-          toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled }
+          toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled },
+        ...(row.trigger === "webhook" && webhookEvents.has(row.id) ? { webhookEvent: webhookEvents.get(row.id)! } : {})
       };
     },
     async readOccurrence(id) {
@@ -430,7 +434,7 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
   }
   return {
     addOccurrence, addTask, answers, availableSkills, carried, chats, emails, inactiveUsers, kick, occurrences, pushes, runs, seeds,
-    sent, settled, stops, store, sweeps, tasks, telegram, tick,
+    sent, settled, stops, store, sweeps, tasks, telegram, tick, webhookEvents,
     failTelegram() { telegramFails = true; },
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
     now: () => clock,
@@ -1839,5 +1843,56 @@ describe("scheduled dispatch spread", () => {
     expect(h.sent[0]!.occurrence).toMatchObject({ chatPeriod: "2026-10", taskChatEpoch: 1 });
     expect(h.sent[0]!.occurrence).not.toHaveProperty("rotation");
     expect(task).toMatchObject({ chatId: october, chatPeriod: "2026-10" });
+  });
+});
+
+describe("webhook occurrences", () => {
+  const event: ScheduledWebhookEvent = { bodyText: "{\n  \"status\": \"failed\"\n}", contentType: "application/json",
+    eventName: "Pipeline Hook", receivedAt: new Date("2026-10-05T06:00:04.000Z") };
+
+  it("run at once, despite a recurring task's spread, with the event after the prompt as labelled data", async () => {
+    const h = harness({ dispatchOffsetMs: () => 2 * MINUTE });
+    const task = h.addTask({ nextRunAt: null });
+    const occurrence = h.addOccurrence(task, { scheduledFor: event.receivedAt, trigger: "webhook" });
+    h.webhookEvents.set(occurrence.id, event);
+    await h.tick();
+    expect(h.sent).toHaveLength(1);
+    // The request is the prompt alone; the event rides only on the server-only occurrence.
+    expect(h.sent[0]!.body).toMatchObject({ content: { blocks: [{ text: "Summarize the synthetic fixture", type: "text" }] } });
+    expect(h.sent[0]!.occurrence.webhookEvent).toEqual({ text: scheduledWebhookEventText(event) });
+    expect(occurrence).toMatchObject({ state: "COMPLETED", trigger: "webhook" });
+    // A result is news, like a scheduled one.
+    expect(occurrence.unseenAt).not.toBeNull();
+    expect(h.pushes).toEqual([occurrence.id]);
+    // Other triggers carry no event.
+    const manual = h.addOccurrence(task);
+    await h.tick();
+    expect(manual.state).toBe("COMPLETED");
+    expect(h.sent[1]!.occurrence).not.toHaveProperty("webhookEvent");
+  });
+
+  it("skip while the task is paused and never start without their event", async () => {
+    const h = harness();
+    const paused = h.addTask({ nextRunAt: null, status: "PAUSED" });
+    const skipped = h.addOccurrence(paused, { scheduledFor: event.receivedAt, trigger: "webhook" });
+    h.webhookEvents.set(skipped.id, event);
+    const active = h.addTask({ nextRunAt: null, userId: "owner-2" });
+    const eventless = h.addOccurrence(active, { scheduledFor: event.receivedAt, trigger: "webhook" });
+    await h.tick();
+    expect(h.sent).toHaveLength(0);
+    expect(skipped).toMatchObject({ reasonCode: "paused", state: "SKIPPED" });
+    expect(eventless).toMatchObject({ reasonCode: "admission_failed", state: "FAILED" });
+  });
+
+  it("pause their task on lost authority, like a scheduled run", async () => {
+    const h = harness();
+    h.setCatalog(() => null);
+    const task = h.addTask({ nextRunAt: null });
+    const occurrence = h.addOccurrence(task, { scheduledFor: event.receivedAt, trigger: "webhook" });
+    h.webhookEvents.set(occurrence.id, event);
+    await h.tick();
+    expect(occurrence).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED" });
+    expect(task).toMatchObject({ pauseReason: "model_unavailable", status: "PAUSED" });
+    expect(h.pushes).toEqual([occurrence.id]);
   });
 });
