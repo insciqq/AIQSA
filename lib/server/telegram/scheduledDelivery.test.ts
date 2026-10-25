@@ -34,7 +34,7 @@ type StoredRow = {
 };
 
 function result(markdown: string, files: readonly TelegramScheduledFile[] = []): NonNullable<TelegramScheduledDeliveryContext["result"]> {
-  return { citations: [], files, markdown, messageId: "answer-1", sources: [] };
+  return { citations: [], files, markdown, messageId: "answer-1" };
 }
 
 function completed(markdown = `Morning brief\n\n- ${SENTINEL}`): TelegramScheduledDeliveryContext {

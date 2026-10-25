@@ -14,7 +14,7 @@ import type { TelegramRunAnswer, TelegramRunGateway } from "./gateway";
 /**
  * The one final message of a run started from Telegram, live or after a
  * restart: access is checked again (D-04), the persisted answer is read with
- * its citations and sources, delivery is claimed before anything is sent so a
+ * its citations, delivery is claimed before anything is sent so a
  * restart never sends it twice, and the claim settles `delivered`, `failed`,
  * or `unknown` when Telegram may have received it (never resent). A run that
  * was stopped or failed sends what it wrote, then why it ended. Every message
@@ -119,11 +119,7 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
           : text ? null : TELEGRAM_BRIDGE_COPY.answerInAiqsa;
       let continued = true;
       if (text) {
-        const summary = answer.artifactSummary;
-        const rendered = renderTelegramAnswer(answer.text, {
-          citations: summary?.citations ?? [],
-          sources: summary?.sources ?? []
-        });
+        const rendered = renderTelegramAnswer(answer.text, { citations: answer.artifactSummary?.citations ?? [] });
         continued = take(await bot.outbound.sendContent({ authorize, chatId: input.telegramChatId, messages: rendered.messages, owner }));
       }
       if (ending && continued) {

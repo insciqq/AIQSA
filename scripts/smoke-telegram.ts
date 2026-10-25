@@ -134,8 +134,7 @@ function longAnswer(): string {
 
 async function sendRendered(label: string, markdown: string, keyboard?: TelegramInlineKeyboardMarkup): Promise<number | undefined> {
   const rendered = renderTelegramAnswer(markdown, {
-    citations: [{ index: 1, title: "Example source", url: "https://example.com/source" }],
-    sources: [{ title: "Example source", url: "https://example.com/source" }]
+    citations: [{ index: 1, title: "Example source", url: "https://example.com/source" }]
   });
   say(`${label} messages=${rendered.messages.length} plain_chunks=${rendered.plainFallback.length}`);
   let lastId: number | undefined;
