@@ -26,7 +26,7 @@ import { planTelegramMedia, telegramAttachmentTypeNames, TELEGRAM_VOICE_MAX_BYTE
  *   and size checks), awaited until processed, then sent as image or file
  *   blocks after the caption.
  * A refused part adds nothing to the request and says why, with the action
- * that helps (`/settings`, Open in AIQSA). Content is never logged.
+ * that helps (`/settings`, or doing it in AIQSA). Content is never logged.
  */
 
 export const TELEGRAM_MEDIA_READY_TIMEOUT_MS = 90_000;
@@ -56,8 +56,6 @@ export type TelegramMediaServices = Readonly<{
   /** The user's own attachment's processing status; null when it is gone. */
   attachmentStatus(input: Readonly<{ userId: string; attachmentId: string }>): Promise<string | null>;
   uploadMaxBytes(): number;
-  /** The installation's base URL, for Open in AIQSA (only over https). */
-  appBaseUrl(): string;
 }>;
 
 export type TelegramMediaDeps = Readonly<{
@@ -71,7 +69,7 @@ export type TelegramMediaDeps = Readonly<{
 }>;
 
 type UploadedAttachment = Readonly<{ id: string; kind: string; status: string; fileName: string }>;
-type Refusal = Readonly<{ text: string; keyboard?: "settings" | "open" }>;
+type Refusal = Readonly<{ text: string; keyboard?: "settings" }>;
 
 /** Content-free: stable codes and statuses only. */
 function log(fields: Readonly<{ code: string; error?: unknown; httpStatus?: number; outcome: "failed" | "skipped" }>): void {
@@ -111,7 +109,7 @@ function planRefusal(refusal: TelegramMediaRefusal): Refusal {
   switch (refusal.reason) {
     case "voice_too_long": return { text: telegramReasonText("telegram_voice_too_long")! };
     case "voice_too_large": return { text: TELEGRAM_MEDIA_COPY.voiceTooLarge };
-    case "file_too_large": return { keyboard: "open", text: telegramReasonText("telegram_file_too_large")! };
+    case "file_too_large": return { text: telegramReasonText("telegram_file_too_large")! };
     case "unsupported_file": return {
       ...(refusal.workspaceHint ? { keyboard: "settings" as const } : {}),
       text: telegramUnsupportedFileText(telegramAttachmentTypeNames(), refusal.workspaceHint)
@@ -151,12 +149,12 @@ function voiceRefusal(result: TranscriptionRefusal, downloadFailed: boolean): Re
 function uploadRefusal(code: string, status: number, workspaceEnabled: boolean): Refusal {
   switch (code) {
     case "file_too_large":
-    case "image_limit_exceeded": return { keyboard: "open", text: telegramReasonText("telegram_file_too_large")! };
+    case "image_limit_exceeded": return { text: telegramReasonText("telegram_file_too_large")! };
     case "unsupported_type":
     case "file_required": return planRefusal({ reason: "unsupported_file", workspaceHint: !workspaceEnabled });
     case "workspace_runtime_unavailable": return { keyboard: "settings", text: TELEGRAM_RUN_REFUSAL_COPY.workspaceUnavailable };
     case "pdf_invalid": return { text: TELEGRAM_MEDIA_COPY.pdfInvalid };
-    case "pdf_page_limit_exceeded": return { keyboard: "open", text: TELEGRAM_MEDIA_COPY.pdfTooManyPages };
+    case "pdf_page_limit_exceeded": return { text: TELEGRAM_MEDIA_COPY.pdfTooManyPages };
     case "upload_busy": return { text: TELEGRAM_MEDIA_COPY.uploadBusy };
     default: return status === 401 ? { text: telegramReasonText("telegram_access_off")! } : { text: TELEGRAM_MEDIA_COPY.fileFailed };
   }
@@ -175,16 +173,6 @@ function uploadedAttachment(body: unknown): UploadedAttachment | null {
     : null;
 }
 
-/** Open in AIQSA for the installation, only over https. */
-function openUrl(appBaseUrl: string): string | null {
-  try {
-    const base = new URL(appBaseUrl);
-    return base.protocol === "https:" ? new URL("/", base).toString() : null;
-  } catch {
-    return null;
-  }
-}
-
 type Download = Readonly<{ ok: true; data: Buffer }> | Readonly<{ ok: false; tooLarge: boolean }>;
 
 export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMessageHandler {
@@ -193,11 +181,10 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
   const readyTimeoutMs = deps.readyTimeoutMs ?? TELEGRAM_MEDIA_READY_TIMEOUT_MS;
   const transfer = createLimiter(deps.transferConcurrency ?? TELEGRAM_MEDIA_TRANSFER_CONCURRENCY);
 
-  async function say(context: TelegramMessageContext, services: TelegramMediaServices, refusal: Refusal): Promise<void> {
-    const url = refusal.keyboard === "open" ? openUrl(services.appBaseUrl()) : null;
+  async function say(context: TelegramMessageContext, refusal: Refusal): Promise<void> {
     const keyboard: TelegramKeyboard | undefined = refusal.keyboard === "settings"
       ? [[{ callback: { kind: "open_settings" }, text: TELEGRAM_COPY.openSettings }]]
-      : url ? [[{ text: TELEGRAM_COPY.openInAiqsa, url }]] : undefined;
+      : undefined;
     try {
       await context.bot.outbound.sendText({
         chatId: context.message.chat.id, replyTo: context.message.message_id, text: refusal.text,
@@ -263,12 +250,12 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
     });
     if ("refusal" in result) {
       log({ code: result.refusal === "dictation_unavailable" ? "telegram_voice_unavailable" : "telegram_voice_refused", outcome: "skipped" });
-      await say(context, services, voiceRefusal(result, downloadFailed));
+      await say(context, voiceRefusal(result, downloadFailed));
       return [];
     }
     const transcript = result.text.trim();
     if (!transcript) {
-      await say(context, services, { text: TELEGRAM_MEDIA_COPY.voiceEmpty });
+      await say(context, { text: TELEGRAM_MEDIA_COPY.voiceEmpty });
       return [];
     }
     try {
@@ -327,13 +314,13 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
   ): Promise<ContentBlock[]> {
     const uploaded = await transfer(() => upload(context, services, plan));
     if ("text" in uploaded) {
-      await say(context, services, uploaded);
+      await say(context, uploaded);
       return [];
     }
     const state = await settled(services, context.link.userId, uploaded);
     if (state !== "ready") {
       log({ code: "telegram_media_not_ready", outcome: "skipped" });
-      await say(context, services, { text: state === "timeout" ? TELEGRAM_MEDIA_COPY.fileStillProcessing : TELEGRAM_MEDIA_COPY.fileProcessingFailed });
+      await say(context, { text: state === "timeout" ? TELEGRAM_MEDIA_COPY.fileStillProcessing : TELEGRAM_MEDIA_COPY.fileProcessingFailed });
       return [];
     }
     const block: ContentBlock = uploaded.kind === "image"
@@ -349,7 +336,7 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
       return [];
     } catch (error) {
       log({ code: "telegram_media_failed", error, outcome: "failed" });
-      await say(context, services, { text: plan.kind === "audio" ? TELEGRAM_MEDIA_COPY.voiceFailed : TELEGRAM_MEDIA_COPY.fileFailed });
+      await say(context, { text: plan.kind === "audio" ? TELEGRAM_MEDIA_COPY.voiceFailed : TELEGRAM_MEDIA_COPY.fileFailed });
       return [];
     }
   }
@@ -369,7 +356,7 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
     if (!plan) return false;
     if (plan.kind === "refused") {
       log({ code: planRefusalCode(plan.refusal), outcome: "skipped" });
-      await say(context, services, planRefusal(plan.refusal));
+      await say(context, planRefusal(plan.refusal));
       return true;
     }
     deps.conversation.queue(context, prepare(context, services, plan));

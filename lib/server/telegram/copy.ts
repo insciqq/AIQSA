@@ -40,7 +40,6 @@ export const TELEGRAM_COPY = {
   stopped: "Stopped",
   buttonExpired: "This button has expired",
   buttonFailed: "Something went wrong. Try again.",
-  openInAiqsa: "Open in AIQSA",
   allowOnce: "Allow once",
   deny: "Deny",
   allowedOnce: "Allowed once",

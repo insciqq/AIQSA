@@ -35,13 +35,13 @@ import type { TelegramFailure } from "./transport";
  * Scheduled task results in Telegram (D-19). The runner records one durable
  * outbox row per notifying occurrence of a task with Telegram delivery on;
  * this sender delivers it outside the runner's tick: the task title, the
- * outcome and its reason, the result text rendered as explicit blocks (D-10),
- * the run's files (D-16) and an Open in AIQSA button, every message
- * referenced to the run's chat (D-11) so a reply continues it. Before every
- * attempt it rechecks Telegram access (D-04), the task's switch, the chat and
- * the occurrence; the attempt is bound to the user's exact link (link, chat
- * and bot), and every part, a file again after its bytes were read, first
- * checks that this link still reaches the chat, and every message and upload
+ * outcome and its reason, the result text rendered as explicit blocks (D-10)
+ * and the run's files (D-16), every message referenced to the run's chat
+ * (D-11) so a reply continues it. Before every attempt it rechecks Telegram
+ * access (D-04), the task's switch, the chat and the occurrence; the attempt
+ * is bound to the user's exact link (link, chat and bot), and every part, a
+ * file again after its bytes were read, first checks that this link still
+ * reaches the chat, and every message and upload
  * checks again right before it leaves the Bot API (after its pacing or a
  * 429's wait): once it does not, nothing more goes out and the row settles
  * with the access reason. Only a send that provably never reached Telegram
@@ -141,8 +141,8 @@ export type TelegramScheduledDeliveryStore = Readonly<{
 
 /** One message (or one file) a delivery sends, in order. */
 export type TelegramScheduledPart =
-  | Readonly<{ kind: "content"; message: TelegramInputRichMessage; plainFallback: readonly string[]; openInAiqsa: boolean }>
-  | Readonly<{ kind: "text"; text: string; openInAiqsa: boolean }>
+  | Readonly<{ kind: "content"; message: TelegramInputRichMessage; plainFallback: readonly string[] }>
+  | Readonly<{ kind: "text"; text: string }>
   | Readonly<{ kind: "file"; item: TelegramPlannedFile }>;
 type Part = TelegramScheduledPart;
 
@@ -199,16 +199,14 @@ function headline(context: TelegramScheduledDeliveryContext, filesLeft: number):
  * result (split into messages within Telegram's limits; the heading goes
  * alone when the first message has no room for it), then the files as every
  * answer sends them (`files.ts`: at most ten, photos and documents within
- * Telegram's bounds; the heading names the rest). Open in AIQSA goes on the
- * last text message.
+ * Telegram's bounds; the heading names the rest).
  */
 export function telegramScheduledParts(context: TelegramScheduledDeliveryContext): readonly Part[] {
   const result = context.occurrence.state === "COMPLETED" ? context.result : null;
   const files = planTelegramFiles(result?.files ?? []);
   const head = headline(context, files.left);
-  const openInAiqsa = Boolean(context.chat?.usable);
   const fileParts: Part[] = files.items.map((item) => ({ item, kind: "file" }));
-  if (!result) return [{ kind: "text", openInAiqsa, text: [head.title, ...head.lines].join("\n") }, ...fileParts];
+  if (!result) return [{ kind: "text", text: [head.title, ...head.lines].join("\n") }, ...fileParts];
   const heading: TelegramInputRichBlock = {
     type: "paragraph", text: [{ type: "bold", text: head.title }, `\n${head.lines.join("\n")}`]
   };
@@ -218,9 +216,7 @@ export function telegramScheduledParts(context: TelegramScheduledDeliveryContext
   // The heading shares the first message when it fits there, and leads alone otherwise.
   const messages = joined.length === 1 ? [joined[0]!, ...rest] : [{ blocks: [heading], skip_entity_detection: true }, ...answer.messages];
   return [
-    ...messages.map((message, index): Part => ({
-      kind: "content", message, openInAiqsa: openInAiqsa && index === messages.length - 1, plainFallback: plainTelegramMessage(message)
-    })),
+    ...messages.map((message): Part => ({ kind: "content", message, plainFallback: plainTelegramMessage(message) })),
     ...fileParts
   ];
 }
@@ -356,15 +352,11 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
       ? { partly: delivery.messageIds.length > 0, refused: recheck.reasonCode }
       : delivery;
     if (part.kind === "text") {
-      return sent(await outbound.sendText({
-        authorize: recheck.authorize, chatId, openInAiqsa: part.openInAiqsa && Boolean(owner), text: part.text, ...(owner ? { owner } : {})
-      }));
+      return sent(await outbound.sendText({ authorize: recheck.authorize, chatId, text: part.text, ...(owner ? { owner } : {}) }));
     }
     if (part.kind === "content") {
       if (!owner) return sent(await outbound.sendText({ authorize: recheck.authorize, chatId, text: part.plainFallback.join("\n\n") }));
-      return sent(await outbound.sendContent({
-        authorize: recheck.authorize, chatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner
-      }));
+      return sent(await outbound.sendContent({ authorize: recheck.authorize, chatId, messages: [part.message], owner }));
     }
     // Only a result in a usable chat has files; they stay in AIQSA otherwise.
     if (!owner) return "skipped";
@@ -377,7 +369,7 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
   }
 
   /**
-   * The files Telegram did not get, named once under Open in AIQSA; the result itself is delivered
+   * The files Telegram did not get, named once after the last part; the result itself is delivered
    * either way. The access reason when the plan's link no longer reaches the chat.
    */
   async function summarizeFiles(row: TelegramScheduledDeliveryRow, plan: Plan, skipped: number): Promise<TelegramAccessRefusal | null> {
@@ -387,9 +379,7 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     const reached = await reachTelegramChat(deps, plan.binding);
     if (!reached.ok) return reached.reasonCode;
     const recheck = authority(plan.binding);
-    const delivery = await reached.bot.outbound.sendText({
-      authorize: recheck.authorize, chatId: plan.binding.telegramChatId, openInAiqsa: true, owner: plan.owner, text
-    });
+    const delivery = await reached.bot.outbound.sendText({ authorize: recheck.authorize, chatId: plan.binding.telegramChatId, owner: plan.owner, text });
     return !delivery.ok && delivery.failure.kind === "unreachable" ? recheck.reasonCode : null;
   }
 

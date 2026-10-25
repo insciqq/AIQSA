@@ -25,7 +25,7 @@ function setup(linking: Partial<TelegramLinkingService> = {}) {
       return `c:${"B".repeat(21)}${index}`;
     })
   };
-  const outbound = createTelegramOutbound({ api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks, messageRefs: { record: vi.fn() } });
+  const outbound = createTelegramOutbound({ api, botId: fake.bot.id, callbacks, messageRefs: { record: vi.fn() } });
   const bot: TelegramBotSession = { api, botId: fake.bot.id, botUsername: fake.bot.username, generation: 1, outbound };
   const service = {
     linkFromStart: vi.fn(),

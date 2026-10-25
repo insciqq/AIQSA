@@ -1,4 +1,3 @@
-import { getAuthConfig } from "../../auth/config";
 import { prisma } from "../../prisma";
 import { transcriptionHandlerDeps } from "../../speechToText/defaults";
 import { transcribeUserAudio } from "../../speechToText/transcribeUserAudio";
@@ -25,7 +24,6 @@ export function createDefaultTelegramMediaServices(deps: Readonly<{
       const attachment = await prisma.attachment.findFirst({ select: { status: true }, where: { id: attachmentId, userId } });
       return attachment?.status ?? null;
     },
-    uploadMaxBytes: () => defaultUploadMaxBytes(),
-    appBaseUrl: () => getAuthConfig().appBaseUrl
+    uploadMaxBytes: () => defaultUploadMaxBytes()
   } satisfies TelegramMediaServices);
 }
