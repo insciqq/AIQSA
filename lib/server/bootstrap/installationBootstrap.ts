@@ -330,20 +330,6 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
-  await tx.knowledgeAnswerPolicy.upsert({
-    create: { id: "installation" },
-    // Bootstrap repairs only a missing singleton. Answer-routing limits are
-    // administrator-owned and must survive every adoption rerun.
-    update: {},
-    where: { id: "installation" }
-  });
-  await tx.knowledgeIndexProfile.upsert({
-    create: { id: "installation" },
-    // Profile activation is an administrator-owned egress decision. Bootstrap
-    // repairs only a missing singleton and never selects or replaces a route.
-    update: {},
-    where: { id: "installation" }
-  });
   await tx.systemModelPolicy.upsert({
     create: {
       id: "installation",
@@ -353,11 +339,6 @@ async function synchronizeInstallationFoundation(
     },
     // Bootstrap adoption repairs missing code-owned foundation only. It never
     // replaces an administrator's selected system utility deployment.
-    update: {},
-    where: { id: "installation" }
-  });
-  await tx.agentPolicy.upsert({
-    create: { id: "installation" },
     update: {},
     where: { id: "installation" }
   });

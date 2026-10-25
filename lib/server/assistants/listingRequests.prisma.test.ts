@@ -117,29 +117,6 @@ describe("Assistant listing persistence", () => {
     } finally { await f.cleanup(); }
   });
 
-  it("ignores a Knowledge selection stored before Knowledge was removed", async () => {
-    const f = await fixture();
-    try {
-      const retiredBaseId = randomUUID();
-      const assistant = await prisma.assistantDefinition.create({ data: { ownerUserId: f.owner, name: "Handbook helper", avatar,
-        systemPrompt: "Answer from the handbook.", modelPolicy: "adjustable", providerModelId: null,
-        searchPolicy: "adjustable", searchPlan: { mode: "inherit" }, toolsPolicy: "adjustable", mcpMode: "inherit", knowledgePolicy: "fixed",
-        knowledgeSelection: { mode: "explicit", baseIds: [retiredBaseId], sourceIds: [], version: 1 } } });
-      await f.requests.request(f.owner, assistant.id, 1);
-      const review = await f.requests.detail(f.admin, (await f.pending(assistant.id)).id);
-      expect(review.definition).toMatchObject({
-        rows: {
-          model: { policy: "adjustable", value: { mode: "inherit" } },
-          search: { policy: "adjustable", value: { mode: "inherit" } },
-          tools: { policy: "adjustable", value: { mode: "inherit" } }
-        },
-        names: { models: [] }
-      });
-      expect(review.definition?.rows).not.toHaveProperty("knowledge");
-      expect(JSON.stringify(review)).not.toContain(retiredBaseId);
-    } finally { await f.cleanup(); }
-  });
-
   it("makes approval versus withdrawal a single winner", async () => {
     const f = await fixture();
     try {

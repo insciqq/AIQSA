@@ -51,7 +51,7 @@ type ProjectionFixture = Readonly<{
     own: string;
     ownArchived: string;
   }>;
-  hidden: Readonly<{ knowledgeBaseId: string; mcpServerId: string }>;
+  hidden: Readonly<{ mcpServerId: string }>;
   userId: string;
 }>;
 
@@ -59,7 +59,7 @@ async function withProjectionFixture<T>(run: (fixture: ProjectionFixture) => Pro
   const suffix = randomUUID();
   const userId = `chat-projection-user-${suffix}`;
   const ownerId = `chat-projection-owner-${suffix}`;
-  const hidden = { knowledgeBaseId: `kb-hidden-${suffix}`, mcpServerId: `mcp-hidden-${suffix}` };
+  const hidden = { mcpServerId: `mcp-hidden-${suffix}` };
   const assistantIds: string[] = [];
   await prisma.user.create({
     data: {
@@ -99,10 +99,7 @@ async function withProjectionFixture<T>(run: (fixture: ProjectionFixture) => Pro
       toolsPolicy: "adjustable"
     });
     const ownArchived = await define(userId, "Own archived helper", { archivedAt: new Date() });
-    // A Knowledge selection stored before Knowledge was removed stays in its column and is never read.
     const foreignFixedTools = await define(ownerId, "Published helper", {
-      knowledgePolicy: "adjustable",
-      knowledgeSelection: { baseIds: [hidden.knowledgeBaseId], mode: "explicit", sourceIds: [], version: 1 },
       mcpMode: "exact",
       mcpServerIds: [hidden.mcpServerId]
     });
@@ -228,7 +225,7 @@ describe("chat detail Assistant projection", () => {
         value: { hiddenCount: 1, mode: "exact", serverIds: [] }
       });
       expect(consumer.rows).not.toHaveProperty("knowledge");
-      expect(JSON.stringify(consumer)).not.toMatch(new RegExp(`${hidden.mcpServerId}|${hidden.knowledgeBaseId}`, "u"));
+      expect(JSON.stringify(consumer)).not.toMatch(new RegExp(hidden.mcpServerId, "u"));
 
       await expect(projectionOf(userId, { assistantId: assistants.ownArchived })).resolves.toMatchObject({
         availability: { ok: false, reason: "archived" },

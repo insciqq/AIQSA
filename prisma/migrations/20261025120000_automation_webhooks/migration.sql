@@ -3,7 +3,7 @@
 -- events the webhook accepted. Defaulted columns and new tables only: every
 -- existing task keeps running on its schedule with the webhook off, and the
 -- previous release, which never reads the new columns, never fires a task
--- whose next run is null, so it stays safe to roll back to.
+-- whose next run is null, so its writers stay safe during the upgrade.
 CREATE TYPE "ScheduledTaskWebhookEventState" AS ENUM ('QUEUED', 'ADMITTED', 'DISCARDED');
 
 -- At least one trigger is on, and a schedule that is off has no due run, so

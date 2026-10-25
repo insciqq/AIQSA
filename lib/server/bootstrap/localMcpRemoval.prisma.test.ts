@@ -16,7 +16,7 @@ import {
 // test first proves that no other local MCP row exists there.
 const key = Buffer.alloc(32, 23);
 const owned = {
-  chats: [] as string[], oauthClients: [] as string[], projects: [] as string[], servers: [] as string[], users: [] as string[]
+  chats: [] as string[], oauthClients: [] as string[], servers: [] as string[], users: [] as string[]
 };
 const remoteDraft = {
   auth: { mode: "none" },
@@ -56,14 +56,11 @@ afterEach(async () => {
   await prisma.memoryDeletionOutbox.deleteMany({ where: { targetId: { in: chatIds }, userId: { in: userIds } } });
   await prisma.mcpRuntimeGeneration.deleteMany({ where: { OR: [
     { revision: { serverId: { in: serverIds } } },
-    { userServer: { serverId: { in: serverIds } } },
-    { sharedServerId: { in: serverIds } }
+    { userServer: { serverId: { in: serverIds } } }
   ] } });
-  await prisma.projectMcpBinding.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpRevision.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpServer.deleteMany({ where: { id: { in: serverIds } } });
   await prisma.mcpOAuthClient.deleteMany({ where: { id: { in: owned.oauthClients.splice(0) } } });
-  await prisma.project.deleteMany({ where: { id: { in: owned.projects.splice(0) } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 });
 
@@ -117,13 +114,11 @@ async function server(input: Readonly<{
   return { id: created.id, revisionIds };
 }
 
-/** Member preference, grant, tool policy, Project binding and a runtime generation. */
+/** Member preference, grant, tool policy and a runtime generation. */
 async function children(input: Readonly<{
   oauth?: boolean;
-  projectId?: string;
   revisionId: string;
   serverId: string;
-  shared?: boolean;
   userId: string;
 }>): Promise<{ generationId: string; fingerprint: string; oauthClientId?: string }> {
   const preference = await prisma.mcpUserServer.create({ data: { enabled: true, serverId: input.serverId, userId: input.userId } });
@@ -131,7 +126,6 @@ async function children(input: Readonly<{
   await prisma.mcpToolAccessPolicy.create({ data: {
     restricted: true, serverId: input.serverId, toolName: "read", users: { create: { userId: input.userId } }
   } });
-  if (input.projectId) await prisma.projectMcpBinding.create({ data: { projectId: input.projectId, serverId: input.serverId } });
   const oauthClient = input.oauth
     ? await prisma.mcpOAuthClient.create({ data: {
       clientId: "local-removal-client", clientMetadata: {}, registrationKey: `local-removal-${randomUUID()}`
@@ -143,12 +137,6 @@ async function children(input: Readonly<{
       oauthClientId: oauthClient.id, policyFingerprint: "local-removal", purpose: "user", serverId: input.serverId, userId: input.userId
     } })
     : null;
-  if (input.shared) {
-    await prisma.mcpSharedRuntime.create({ data: { serverId: input.serverId } });
-    await prisma.mcpRuntimeGeneration.create({ data: {
-      fingerprint: fingerprint(), revisionId: input.revisionId, sharedServerId: input.serverId, state: "ready"
-    } });
-  }
   const generation = await prisma.mcpRuntimeGeneration.create({ data: {
     fingerprint: fingerprint(),
     ...(connection ? { oauthConnectionId: connection.id } : {}),
@@ -184,8 +172,6 @@ async function snapshot(serverIds: readonly string[]): Promise<unknown> {
       'toolUsers', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY "policyId", "userId") FROM "McpToolUserGrant" AS row_value
         WHERE "policyId" IN (SELECT "id" FROM "McpToolAccessPolicy" WHERE "serverId" = ANY(${ids}::text[]))),
       'userServers', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY "id") FROM "McpUserServer" AS row_value WHERE "serverId" = ANY(${ids}::text[])),
-      'sharedRuntimes', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY "serverId") FROM "McpSharedRuntime" AS row_value WHERE "serverId" = ANY(${ids}::text[])),
-      'projectBindings', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY "projectId") FROM "ProjectMcpBinding" AS row_value WHERE "serverId" = ANY(${ids}::text[])),
       'activationJobs', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY "id") FROM "McpActivationJob" AS row_value WHERE "serverId" = ANY(${ids}::text[])),
       'oauthConnections', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY "id") FROM "McpOAuthConnection" AS row_value WHERE "serverId" = ANY(${ids}::text[]))
     ) AS "snapshot"
@@ -199,18 +185,11 @@ describe("local MCP removal bootstrap gate", () => {
 
     const adminId = await user("admin");
     const memberId = await user("user");
-    const project = await prisma.project.create({ data: {
-      createdByDisplayName: "Local MCP removal fixture",
-      createdByUserId: adminId,
-      grants: { create: { role: "OWNER", userId: adminId } },
-      name: "Local MCP removal fixture"
-    }, select: { id: true } });
-    owned.projects.push(project.id);
 
     // Untouched: remote servers with and without an active revision.
     const remote = await server({ activeRevision: 0, draft: remoteDraft, revisions: [remoteDraft] });
     const remoteBinding = await children({
-      projectId: project.id, revisionId: remote.revisionIds[0]!, serverId: remote.id, shared: true, userId: memberId
+      revisionId: remote.revisionIds[0]!, serverId: remote.id, userId: memberId
     });
     await prisma.mcpActivationJob.create({ data: {
       draftHash: "d".repeat(64), serverId: remote.id, sharedConfigVersion: 0, stage: "connecting"
@@ -218,14 +197,15 @@ describe("local MCP removal bootstrap gate", () => {
     const unpublished = await server({ draft: remoteDraft });
 
     // Local servers: local active revision over remote history (OAuth-bound
-    // generation and a Project binding), local draft without a revision,
-    // archived, and personal.
+    // generation, and another member's generation of the remote revision),
+    // local draft without a revision, archived, and personal.
     const localActive = await server({ activeRevision: 1, draft: localDraft("npm"), revisions: [remoteDraft, localDraft("npm")] });
     const localActiveGeneration = await children({
-      oauth: true, projectId: project.id, revisionId: localActive.revisionIds[1]!, serverId: localActive.id, shared: true, userId: memberId
+      oauth: true, revisionId: localActive.revisionIds[1]!, serverId: localActive.id, userId: memberId
     });
+    const adminPreference = await prisma.mcpUserServer.create({ data: { enabled: true, serverId: localActive.id, userId: adminId } });
     const localHistoryGeneration = await prisma.mcpRuntimeGeneration.create({ data: {
-      fingerprint: fingerprint(), revisionId: localActive.revisionIds[0]!, sharedServerId: localActive.id, state: "idle"
+      fingerprint: fingerprint(), revisionId: localActive.revisionIds[0]!, state: "idle", userServerId: adminPreference.id
     } });
     const localDraftOnly = await server({ draft: localDraft("pypi") });
     const archivedLocal = await server({ archived: true, draft: localDraft("oci") });
@@ -292,8 +272,6 @@ describe("local MCP removal bootstrap gate", () => {
       expect(await prisma.mcpToolAccessPolicy.count({ where })).toBe(0);
       expect(await prisma.mcpUserServer.count({ where })).toBe(0);
       expect(await prisma.mcpOAuthConnection.count({ where })).toBe(0);
-      expect(await prisma.projectMcpBinding.count({ where })).toBe(0);
-      expect(await prisma.mcpSharedRuntime.count({ where })).toBe(0);
     }
     // The OAuth client of the removed connection goes with it.
     expect(await prisma.mcpOAuthClient.count({ where: { id: localActiveGeneration.oauthClientId! } })).toBe(0);

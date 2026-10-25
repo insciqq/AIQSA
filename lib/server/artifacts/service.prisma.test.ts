@@ -618,8 +618,6 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
   it("refuses files outside the run's authority and unverifiable files without writing anything", async () => {
     const f = await fixture();
     const stranger = await prisma.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Stranger", status: "active" } });
-    const project = await prisma.project.create({ data: { name: "Synthetic artifact Project", createdByUserId: f.owner.id,
-      createdByDisplayName: "Artifact test", grants: { create: { userId: f.owner.id, role: "OWNER" } } } });
     try {
       const run = await acceptedRun(f);
       const html = Buffer.from("<p>synthetic</p>");
@@ -627,10 +625,6 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
       const foreign = await attach(f, { bytes: html, mimeType: "text/html", userId: stranger.id, chatId: strangerChat.id });
       const otherChat = await prisma.chat.create({ data: { userId: f.owner.id, title: "Other chat" } });
       const elsewhere = await attach(f, { bytes: html, mimeType: "text/html", chatId: otherChat.id });
-      const projectKey = `source/${f.owner.id}/${randomUUID()}`;
-      f.objects.set(projectKey, { body: html, contentType: "text/html", storageKey: projectKey });
-      const projectFile = await prisma.attachment.create({ data: { projectId: project.id, uploaderUserId: f.owner.id, uploaderDisplayName: "Artifact test",
-        fileName: "project.html", mimeType: "text/html", kind: "document", status: "ready", byteSize: html.length, checksum: sha(html), storageKey: projectKey, metadata: {} } });
       const otherMessage = await prisma.message.create({ data: { chatId: f.chat.id, role: "user", content: textMessageContent("Earlier request") } });
       const otherRun = await prisma.modelRun.create({ data: { chatId: f.chat.id, userId: f.owner.id, userMessageId: otherMessage.id,
         provider: "fake", modelId: "fixture", status: "complete", normalizedRequest: {} } });
@@ -650,7 +644,6 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
         ["another owner's file", refer(foreign.id, "text/html", "page.html"), [foreign.id], "artifact_asset_unavailable"],
         ["another chat's file, even when listed", refer(elsewhere.id, "text/html", "page.html"), [elsewhere.id], "artifact_asset_unavailable"],
         ["another chat's file", refer(elsewhere.id, "text/html", "page.html"), [], "artifact_asset_unavailable"],
-        ["a Project file", refer(projectFile.id, "text/html", "page.html"), [projectFile.id], "artifact_asset_unavailable"],
         ["another run's output", refer(otherOutput.id, "text/html", "page.html"), [], "artifact_asset_unavailable"],
         ["a different declared type", refer(mismatched.id, "text/html", "page.html"), [mismatched.id], "artifact_asset_mime_mismatch", '"application/pdf"'],
         ["corrupted stored bytes", refer(corrupted.id, "application/pdf"), [corrupted.id], "artifact_asset_invalid"],
@@ -672,7 +665,6 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
       expect([...f.objects.keys()].filter(key => key.startsWith("artifact"))).toEqual([]);
     } finally {
       await cleanupRuns(f);
-      await prisma.project.deleteMany({ where: { id: project.id } });
       await prisma.user.deleteMany({ where: { id: stranger.id } });
       await f.cleanup();
     }

@@ -737,8 +737,7 @@ describe("Prisma admin provider repository", () => {
       | { strings?: readonly string[] }
       | undefined;
     const cleanupSql = cleanupQuery?.strings?.join(" ") ?? "";
-    expect(cleanupSql).toContain('FROM "KnowledgeRunBinding"');
-    expect(cleanupSql).toContain('FROM "KnowledgeRunProfileBinding"');
+    expect(cleanupSql).toContain('FROM "MemoryExecutionBinding"');
     expect(createSearchOption).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: scenario.optionRowId,

@@ -38,6 +38,7 @@ import { DECISION_UPGRADE_MIGRATION, decisionUpgradeFixtureSql, decisionUpgradeP
 import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUtilityModelProofSql, memoryUtilityModelRepeatProofSql } from "./memory-utility-model-adoption";
 import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
 import { MEMORY_EGRESS_RECEIPT_MIGRATION, memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql } from "./memory-egress-receipt-adoption";
+import { DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION, dropMemoryToolEgressReceiptFixtureSql, dropMemoryToolEgressReceiptProofSql } from "./drop-memory-tool-egress-receipt-adoption";
 import { MEMORY_RECOMMENDATION_MIGRATION, memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql } from "./memory-recommendation-adoption";
 import { MEMORY_RECOMMENDATION_V2_MIGRATION, memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql } from "./memory-recommendation-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
@@ -75,6 +76,14 @@ import {
   searchOnForEveryoneWithoutApiFixtureSql,
   searchOnForEveryoneWithoutApiProofSql
 } from "./search-on-for-everyone-adoption";
+import {
+  CODEX_AGENT_RETIREMENT_MIGRATION, codexAgentRetirementFixtureSql, codexAgentRetirementProofSql
+} from "./codex-agent-retirement-adoption";
+import { DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION, dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql } from "./drop-memory-lexical-projection-adoption";
+import {
+  DROP_PROJECTS_KNOWLEDGE_MIGRATION, dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql,
+  dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql
+} from "./drop-projects-knowledge-adoption";
 import { AUTOMATION_WEBHOOKS_MIGRATION, automationWebhooksFixtureSql, automationWebhooksProofSql } from "./automation-webhooks-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -538,17 +547,6 @@ function deployAndVerify(
     app(database, ["npx", "prisma", "migrate", "status"]),
     /Database schema is up to date!/u,
   );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT character_maximum_length
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'KnowledgeProviderAttempt'
-        AND column_name = 'purpose';
-    `),
-    "64",
-    "Knowledge provider operation identifiers do not fit the active versioned purposes",
-  );
   const schemaDatamodelDiff = app(database, [
     "npx",
     "prisma",
@@ -681,11 +679,6 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(jsonb_build_array(id, "providerModelId", "reasoningEffort", version, "updatedByUserId") ORDER BY id)
         FROM "SystemModelPolicy"
       ), '[]'::jsonb),
-      'agent_policy', COALESCE((
-        SELECT jsonb_agg(jsonb_build_array(id, "limitsEnabled", "timeoutSeconds", "maxModelCalls",
-          "maxToolCalls", "tokenBudget", "maxOutputTokens", version, "updatedByUserId") ORDER BY id)
-        FROM "AgentPolicy"
-      ), '[]'::jsonb),
       'memory_utility_model_policy', COALESCE((
         SELECT jsonb_agg(to_jsonb(policy) - 'createdAt' - 'updatedAt' ORDER BY policy.id)
         FROM "MemoryUtilityModelPolicy" AS policy
@@ -725,8 +718,6 @@ function runBootstrapProof(database: string): void {
     "30", "fresh installation must use the Memory search time limit default");
   assert.equal(psqlScalar(database, `SELECT "maxToolCalls" || ':' || "maxToolRounds" FROM "ModelPolicy" WHERE id = 'installation';`),
     "80:32", "fresh installation must receive the increased tool budgets");
-  assert.equal(psqlScalar(database, `SELECT "limitsEnabled" FROM "AgentPolicy" WHERE id = 'installation';`), "f",
-    "Agent budgets must be disabled by default");
   assert.equal(
     psqlScalar(database, `SELECT enabled FROM "WorkspacePolicy" WHERE id = 'installation';`),
     "t",
@@ -794,7 +785,6 @@ function runBootstrapProof(database: string): void {
     "adopted bootstrap changed the settled fresh-install foundation",
   );
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
-    UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
     UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';
     UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';
     UPDATE "ConnectPolicy" SET enabled = true, version = version + 1 WHERE id = 'installation';
@@ -5013,51 +5003,6 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
   }
 }
 
-function runKnowledgeValidatorRestoreSafetyProof(database: string): void {
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname = 'knowledge_document_context_valid'
-        AND provolatile = 'i'
-        AND proparallel = 'r'
-        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
-    `),
-    "1",
-    "H5 document context validator lacks its immutable restore-safe contract",
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname IN (
-          'knowledge_discovery_receipt_valid',
-          'knowledge_exact_receipt_valid'
-        )
-        AND provolatile = 'i'
-        AND proparallel = 'r'
-        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
-    `),
-    "2",
-    "H3 receipt validators lack their immutable restore-safe contracts",
-  );
-  assert.equal(
-    psqlScalar(database, `
-      SELECT count(*)
-      FROM pg_proc
-      WHERE proname IN (
-          'knowledge_structured_receipt_valid',
-          'knowledge_visual_receipt_valid'
-        )
-        AND provolatile = 'i'
-        AND proparallel = 's'
-        AND proconfig @> ARRAY['search_path=pg_catalog, public']::TEXT[];
-    `),
-    "2",
-    "H3 auxiliary receipt validators lack restore-safe helper resolution",
-  );
-}
-
 function runKnowledgeH5DocumentContextMigrationProof(
   database: string,
   committed: readonly string[],
@@ -6184,7 +6129,14 @@ function runKnowledgeBasicRuntimeCleanupMigrationProof(
     SELECT 'knowledge-basic-legacy-analysis-ready';
   `);
 
-  app(database, ["npx", "prisma", "migrate", "deploy"]);
+  // `committed` ends before the Project and Knowledge drop: the rest of this
+  // proof and the search health proof after it read the Knowledge tables.
+  const historyRoot = migrationPrefixTree(database, committed);
+  try {
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", `${historyRoot}/schema.prisma`]);
+  } finally {
+    app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", historyRoot]);
+  }
   assertDeployedMigrations(database, committed);
 
   psqlScalar(database, `
@@ -7693,20 +7645,24 @@ function main(
       "independent clean installs produced different schema catalogs",
     );
   }
-  runKnowledgeProfileBackfillProof(shadowDatabase, migrations);
-  runKnowledgeSourceMigrationProof(shadowDatabase, migrations);
-  runKnowledgeReadReceiptMigrationProof(shadowDatabase, migrations);
-  runKnowledgeH2DurableDispatchMigrationProof(shadowDatabase, migrations);
-  runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, migrations);
-  runKnowledgeValidatorRestoreSafetyProof(databases[0]!);
-  runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, migrations);
-  runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, migrations);
-  runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, migrations);
-  runKnowledgeToolCoexistenceMigrationProof(migrations);
-  runKnowledgeSearchHealthMigrationProof(shadowDatabase, migrations);
+  // The historical Knowledge proofs deploy the history after their migration
+  // and then read Knowledge tables, so it ends before they are dropped.
+  const beforeKnowledgeDrop = migrations.slice(0, migrations.indexOf(DROP_PROJECTS_KNOWLEDGE_MIGRATION));
+  assert.ok(beforeKnowledgeDrop.length > 0, "Project and Knowledge drop migration is missing");
+  runKnowledgeProfileBackfillProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeSourceMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeReadReceiptMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH2DurableDispatchMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH4StrategyExecutionMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH5DocumentContextMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeH6SemanticShadowMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, beforeKnowledgeDrop);
+  runKnowledgeToolCoexistenceMigrationProof(beforeKnowledgeDrop);
+  runKnowledgeSearchHealthMigrationProof(shadowDatabase, beforeKnowledgeDrop);
   runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
+  // Its proof reads the Project bindings the Project and Knowledge drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANT_LIVE_MIGRATION,
-    assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql);
+    assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql, undefined, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_SHARING_MIGRATION,
     skillsSharingFixtureSql, skillsSharingProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_PROGRESSIVE_MIGRATION,
@@ -7719,9 +7675,10 @@ function main(
     skillImportSourceFixtureSql, skillImportSourceProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, PERPLEXITY_LEGACY_REASONING_MIGRATION,
     perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql);
+  // Its proof reads the Agent policy the Codex Agent retirement later drops.
   for (const { fixture, proof, repeatProof } of toolBudgetDefaultsFixtures) {
     runForwardAdoptionProof(shadowDatabase, migrations, TOOL_BUDGET_DEFAULTS_MIGRATION,
-      fixture, proof, repeatProof);
+      fixture, proof, repeatProof, CODEX_AGENT_RETIREMENT_MIGRATION);
   }
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_TIMEOUT_MIGRATION,
     memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql);
@@ -7737,14 +7694,20 @@ function main(
     memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_BUDGET_MIGRATION,
     memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql);
+  // Its proof reads the table the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_EGRESS_RECEIPT_MIGRATION,
-    memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql, memoryEgressReceiptProofSql);
+    memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql, memoryEgressReceiptProofSql,
+    DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, NATIVE_ROUTING_MIGRATION,
     nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql);
+  // Both proofs compare whole policy rows, which the Project and Knowledge drop
+  // extends with the Memory embedding default.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_MIGRATION,
-    memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql);
+    memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql,
+    DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_V2_MIGRATION,
-    memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql);
+    memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql,
+    DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
     memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
   for (const { fixture, proof } of mcpModelOutputBudgetFixtures) {
@@ -7850,7 +7813,7 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, SCHEDULED_TASK_CHAT_ROTATION_MIGRATION,
     scheduledTaskChatRotationFixtureSql, scheduledTaskChatRotationProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION,
-    knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql);
+    knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql, undefined, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MCP_TOOL_UPDATE_TRUST_MIGRATION,
     mcpToolUpdateTrustFixtureSql, mcpToolUpdateTrustProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION,
@@ -7871,8 +7834,10 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION,
     dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql,
     dropRetiredMemoryDigestSynthesisStorageProofSql);
+  // Its proof reads the Knowledge relevance owner check the Project and Knowledge drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, USAGE_EVENT_PURPOSE_MIGRATION,
-    usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql);
+    usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql,
+    DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, WEB_SEARCH_PRICES_MIGRATION,
     webSearchPricesFixtureSql, webSearchPricesProofSql, webSearchPricesProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_REFRESH_PRICES_MIGRATION,
@@ -7910,19 +7875,39 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_RUN_ENGINE_MIGRATION,
     modelRunEngineFixtureSql, modelRunEngineProofSql, modelRunEngineProofSql);
   // Retirement step one: capture stops, rows and the previous release's enqueue path stay.
+  // Its proof reads the tables the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, STOP_MEMORY_LEXICAL_PROJECTION_CAPTURE_MIGRATION,
     stopMemoryLexicalProjectionCaptureFixtureSql, stopMemoryLexicalProjectionCaptureProofSql,
-    stopMemoryLexicalProjectionCaptureProofSql);
+    stopMemoryLexicalProjectionCaptureProofSql, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION);
   // Projects are fenced for deletion, never deleted by the migration itself;
-  // Workspace maintenance deletes them through the Project deletion path.
+  // the previous release deleted them through the Project deletion path.
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_PROJECTS_MIGRATION,
-    retireProjectsFixtureSql, retireProjectsProofSql, retireProjectsProofSql);
+    retireProjectsFixtureSql, retireProjectsProofSql, retireProjectsProofSql, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   // Search turns on for everyone, and DeepSeek's hosted Search hands its
   // selections and grants to a working DeepSeek Search API, or drops out.
   runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
     searchOnForEveryoneFixtureSql, searchOnForEveryoneProofSql, searchOnForEveryoneProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
     searchOnForEveryoneWithoutApiFixtureSql, searchOnForEveryoneWithoutApiProofSql, searchOnForEveryoneWithoutApiProofSql);
+  // The Codex Agent's storage goes, including rows earlier releases left; the
+  // values its old approval cards and Telegram buttons name stay.
+  runForwardAdoptionProof(shadowDatabase, migrations, CODEX_AGENT_RETIREMENT_MIGRATION,
+    codexAgentRetirementFixtureSql, codexAgentRetirementProofSql, codexAgentRetirementProofSql);
+  // Retirement step two: the projection tables, their types and routines go.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION,
+    dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql,
+    dropMemoryLexicalProjectionProofSql);
+  // Project and Knowledge storage goes, including rows a missed retirement
+  // left; the Memory embedding default moves and core routines stay.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
+    dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql, dropProjectsKnowledgeProofSql);
+  // After a completed retirement every Project check holds, and a deleted
+  // Project's scoped upload stays writable for its cleanup.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
+    dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql, dropProjectsKnowledgeRetiredProofSql);
+  // Only the old run core wrote these receipts; the releases since stopped every write.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION,
+    dropMemoryToolEgressReceiptFixtureSql, dropMemoryToolEgressReceiptProofSql, dropMemoryToolEgressReceiptProofSql);
   // Expand only: tasks saved before the trigger switches, and by a previous-release
   // writer during the upgrade, keep running on their schedule with the webhook off.
   runForwardAdoptionProof(shadowDatabase, migrations, AUTOMATION_WEBHOOKS_MIGRATION,

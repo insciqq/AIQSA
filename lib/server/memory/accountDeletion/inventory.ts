@@ -102,8 +102,6 @@ export async function loadAccountMemoryOwnedCounts(
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryOperationReceipt" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryIndexGeneration" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemorySearchEntry" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
-      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryLexicalProjectionEvent" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
-      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryLexicalProjectionState" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryEmbeddingBatchItem" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryJob" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryDeletionOutbox" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
@@ -113,7 +111,6 @@ export async function loadAccountMemoryOwnedCounts(
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ModelRunMemoryBinding" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ModelRunMemoryItem" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryHistoryRun" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
-      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryToolEgressReceipt" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
     )
     SELECT inventory."userId", SUM(inventory.records)::text AS "recordCount"
     FROM inventory
