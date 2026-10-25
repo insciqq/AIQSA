@@ -11,6 +11,7 @@ import {
   timeZoneLabel
 } from "@/features/scheduled-tasks/scheduledTaskPresentation";
 import { deleteScheduledTask, ScheduledTaskApiError } from "@/features/scheduled-tasks/scheduledTasksApi";
+import { useWebhookUrl, WebhookTokenReveal } from "@/features/scheduled-tasks/WebhookTokenReveal";
 import {
   refreshScheduledTasksAfterChange,
   removeScheduledTask,
@@ -38,7 +39,9 @@ const keptTaskIds = new Set<string>();
 function listedAsShown(task: ScheduledTask | undefined, card: ScheduledTaskCard): boolean {
   return task !== undefined && task.title === card.title && task.kind === card.kind && task.status === card.status &&
     task.nextRunAt === card.nextRunAt && task.timeZone === card.timeZone && task.toolsEnabled === card.toolsEnabled &&
-    task.workspaceEnabled === card.workspaceEnabled && sameScheduledTaskSchedule(task.schedule, card.schedule);
+    task.workspaceEnabled === card.workspaceEnabled && sameScheduledTaskSchedule(task.schedule, card.schedule) &&
+    task.scheduleEnabled === (card.scheduleEnabled ?? true) &&
+    (task.webhookEnabled ? task.webhook?.path ?? null : null) === (card.webhook?.path ?? null);
 }
 
 const ACTION_HEADINGS = {
@@ -60,11 +63,17 @@ export async function openScheduledTaskEditorV2(
   openScheduled(() => requestScheduledTaskEdit(taskId));
 }
 
-/** "Every weekday at 09:00 · Monitoring · Tools · Workspace", with the zone when it is not the viewer's or was a fallback. */
+/**
+ * "Every weekday at 09:00 · Webhook · Monitoring · Tools · Workspace", with
+ * the zone when it is not the viewer's or was a fallback; "On a webhook" for
+ * one without a schedule. A card written before webhooks ran on its schedule.
+ */
 function scheduleLine(card: ScheduledTaskCard, viewerZone: string): string {
+  const scheduled = card.scheduleEnabled !== false;
   return [
-    describeScheduledTaskSchedule(card.schedule),
-    ...(card.timeZoneFallback || card.timeZone !== viewerZone ? [timeZoneLabel(card.timeZone)] : []),
+    ...(scheduled ? [describeScheduledTaskSchedule(card.schedule)] : []),
+    ...(scheduled && (card.timeZoneFallback || card.timeZone !== viewerZone) ? [timeZoneLabel(card.timeZone)] : []),
+    ...(card.webhook ? [scheduled ? "Webhook" : "On a webhook"] : []),
     ...(card.kind === "monitoring" ? ["Monitoring"] : []),
     ...(card.toolsEnabled ? ["Tools"] : []),
     ...(card.workspaceEnabled ? ["Workspace"] : [])
@@ -74,7 +83,23 @@ function scheduleLine(card: ScheduledTaskCard, viewerZone: string): string {
 function statusLine(card: ScheduledTaskCard): string {
   if (card.status === "paused") return "Paused";
   if (card.status === "completed") return "Completed";
-  return card.nextRunAt ? `Next run ${formatScheduledInstant(card.nextRunAt, card.timeZone)}` : "No upcoming run";
+  if (card.nextRunAt) return `Next run ${formatScheduledInstant(card.nextRunAt, card.timeZone)}`;
+  return card.webhook && card.scheduleEnabled === false ? "Runs on each webhook call" : "No upcoming run";
+}
+
+/**
+ * The webhook of a card's automation: its address with Get token. A token
+ * issued here asks the account's list to read the task again; the token
+ * itself stays inside the reveal.
+ */
+function CardWebhook({ taskId, webhook }: Readonly<{ taskId: string; webhook: NonNullable<ScheduledTaskCard["webhook"]> }>) {
+  const url = useWebhookUrl(webhook.path);
+  return (
+    <div className="v2-scheduled-task-card-webhook">
+      <WebhookTokenReveal taskId={taskId} url={url} issued={webhook.tokenIssuedAt !== null}
+        onIssued={() => void refreshScheduledTasksAfterChange()} />
+    </div>
+  );
 }
 
 function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
@@ -195,6 +220,7 @@ function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
           </UiV2Button>
         </div>
       )}
+      {card.webhook && !deleted && !confirming ? <CardWebhook taskId={card.taskId} webhook={card.webhook} /> : null}
       {confirming ? (
         <div className="v2-scheduled-task-card-confirm" role="group" aria-label={`Delete ${card.title}`}>
           <p>Delete “{card.title}”? Its chats and answers stay in your history.</p>
@@ -214,8 +240,9 @@ function ScheduledTaskCardV2({ card, live = false, onEdit }: Readonly<{
 
 /**
  * The tasks an answer created or managed through its scheduled task calls:
- * what it last did to each, frequency, capabilities and next run, with Edit
- * (the task's editor) and Delete (after an inline confirmation). A deletion
+ * what it last did to each, frequency, triggers, capabilities and next run,
+ * with Edit (the task's editor), Delete (after an inline confirmation) and,
+ * for a webhook, its address with Get token. A deletion
  * proposal asks that confirmation at once; only the owner's click deletes. A
  * deleted task keeps a quiet line. `live`: the answer is still running.
  */

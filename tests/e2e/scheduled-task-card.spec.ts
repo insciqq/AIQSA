@@ -48,6 +48,13 @@ const managed = {
   proposalGone: card({ taskId: "gone-card", title: "Gone reminder", action: "delete_proposed", deleted: true })
 } satisfies Record<string, ScheduledTaskCard>;
 
+/** A webhook-only automation the chat tool created, before its first token. */
+const webhookPath = "/api/automations/hooks/AbCdEfGhIjKlMnOpQrSt_-";
+const webhookCard = card({ taskId: "pipeline-card", title: "Failed pipeline review", toolsEnabled: true, scheduleEnabled: false,
+  nextRunAt: null, webhook: { path: webhookPath, tokenIssuedAt: null } });
+/** Synthetic tokens in the issued shape; each Get token or Rotate token answers the next one. */
+const webhookTokens = [`aiqsa_wh_${"A".repeat(43)}`, `aiqsa_wh_${"B".repeat(43)}`];
+
 const turns: readonly Readonly<{ ask: string; answer: string; card: ScheduledTaskCard }>[] = [
   { card: cards.weekly, ask: "Every weekday at 9, send me a short morning brief.", answer: "Done: your weekday morning brief is scheduled." },
   { card: cards.monitoring, ask: "Watch the project every hour and tell me when a release ships.", answer: "I will check every hour and report only a new release." },
@@ -57,14 +64,17 @@ const turns: readonly Readonly<{ ask: string; answer: string; card: ScheduledTas
   { card: managed.moved, ask: "Move my report reminder to 10:00.", answer: "Moved your report reminder to 10:00." },
   { card: managed.stopped, ask: "Stop the price monitor.", answer: "Paused the price monitor." },
   { card: managed.proposal, ask: "Delete the old weekly report.", answer: "Confirm the deletion in the card below." },
-  { card: managed.proposalGone, ask: "Delete the gone reminder.", answer: "Confirm the deletion in the card below." }
+  { card: managed.proposalGone, ask: "Delete the gone reminder.", answer: "Confirm the deletion in the card below." },
+  { card: webhookCard, ask: "Make a webhook that sends me a review of a failed pipeline.",
+    answer: "Created: get its token with Get token on the card." }
 ];
 
 /** The owner's stored task behind a card. */
 function task(source: ScheduledTaskCard): ScheduledTask {
   return {
     id: source.taskId, title: source.title, prompt: "Synthetic scheduled instructions.",
-    schedule: source.schedule, scheduleEnabled: true, webhookEnabled: false, webhook: null, timeZone: source.timeZone,
+    schedule: source.schedule, scheduleEnabled: source.scheduleEnabled ?? true, webhookEnabled: source.webhook !== undefined,
+    webhook: source.webhook ? { ...source.webhook, lastEventAt: null, queuedEvents: 0 } : null, timeZone: source.timeZone,
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
     toolsEnabled: source.toolsEnabled,
     workspaceEnabled: source.workspaceEnabled, memoryEnabled: true, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: source.kind, status: source.status,
@@ -79,7 +89,7 @@ function task(source: ScheduledTaskCard): ScheduledTask {
 type Write = Readonly<{ method: string; path: string; body: unknown }>;
 
 async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]) {
-  const state = { tasks: initial.map((entry) => structuredClone(entry)), writes: [] as Write[] };
+  const state = { issued: 0, tasks: initial.map((entry) => structuredClone(entry)), writes: [] as Write[] };
   await page.route(/\/api\/me\/scheduled-tasks(\/[^?]*)?(\?.*)?$/u, async (route) => {
     const request = route.request();
     const method = request.method();
@@ -98,6 +108,14 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
     if (method === "DELETE" && !action) {
       state.tasks.splice(index, 1);
       return route.fulfill({ status: 204, body: "" });
+    }
+    if (method === "POST" && action === "webhook-token" && current.webhook) {
+      const token = webhookTokens[state.issued % webhookTokens.length]!;
+      state.issued += 1;
+      const issuedAt = now.toISOString();
+      current.webhook = { ...current.webhook, tokenIssuedAt: issuedAt };
+      return route.fulfill({ headers: { "cache-control": "no-store" },
+        json: { token, url: `http://127.0.0.1:3000${current.webhook.path}`, issuedAt } });
     }
     // No other write belongs to these flows.
     return route.fulfill({ status: 409, json: { error: "unexpected_fixture_write" } });
@@ -393,6 +411,54 @@ test("a deletion proposal deletes only on the owner's click, and Keep leaves the
   });
 });
 
+test("a webhook card shows its trigger and issues its token once, with Copy and a curl request, at every size in both themes",
+  async ({ page }, info) => {
+    const api = await prepare(page);
+    const hook = cardOf(page, webhookCard.title);
+    const reveal = hook.getByRole("group", { name: "Webhook", exact: true });
+    await expect(hook).toContainText("On a webhook · Tools");
+    await expect(hook).toContainText("Runs on each webhook call");
+    await expect(hook.getByTestId("webhook-url")).toHaveText(`http://127.0.0.1:3000${webhookPath}`);
+    await expect(hook.getByTestId("webhook-token")).toHaveCount(0);
+    await captureState(page, info, "scheduled-card-webhook", {
+      anchor: hook,
+      atEachSize: async () => {
+        await expectWithinViewport(page, reveal.getByRole("button", { name: "Get token", exact: true }));
+        await expectWithinViewport(page, editButton(hook, webhookCard.title));
+        await expectNoHorizontalOverflow(page);
+      }
+    });
+    // Reading the transcript issues nothing.
+    expect(api.writes).toEqual([]);
+
+    await reveal.getByRole("button", { name: "Get token", exact: true }).click();
+    await expect(hook.getByTestId("webhook-token")).toHaveText(webhookTokens[0]!);
+    await expect(hook.getByTestId("webhook-curl")).toContainText(`Authorization: Bearer ${webhookTokens[0]}`);
+    await expect(hook).toContainText("X-Gitlab-Token");
+    expect(api.writes).toEqual([{ method: "POST", path: `/${webhookCard.taskId}/webhook-token`, body: null }]);
+    // The token never reaches browser storage.
+    const stored = await page.evaluate(() => JSON.stringify({ ...window.localStorage, ...window.sessionStorage }));
+    expect(stored).not.toContain("aiqsa_wh_");
+    await captureState(page, info, "scheduled-card-webhook-token", {
+      anchor: reveal,
+      atEachSize: async () => {
+        await expectWithinViewport(page, reveal.getByRole("button", { name: "Copy webhook token", exact: true }));
+        await expectWithinViewport(page, reveal.getByRole("button", { name: "Rotate token", exact: true }));
+        // The long request scrolls inside its own box.
+        await expectNoHorizontalOverflow(page);
+      }
+    });
+
+    // Rotate token issues a new one at once; a reload forgets the shown token.
+    await reveal.getByRole("button", { name: "Rotate token", exact: true }).click();
+    await expect(hook.getByTestId("webhook-token")).toHaveText(webhookTokens[1]!);
+    expect(api.writes).toHaveLength(2);
+    await page.reload();
+    await expect(page.getByTestId("scheduled-task-card")).toHaveCount(turns.length, { timeout: 30_000 });
+    await expect(cardOf(page, webhookCard.title).getByTestId("webhook-token")).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText("aiqsa_wh_");
+  });
+
 test.describe("touch controls", () => {
   test.use({ hasTouch: true });
   test("card actions and the delete question stay touch-safe in both phone orientations", async ({ page }, info) => {
@@ -422,6 +488,28 @@ test.describe("touch controls", () => {
       await page.screenshot({ path: info.outputPath(`scheduled-card-confirm-touch-${size.width}x${size.height}.png`) });
       await confirm.getByRole("button", { name: "Keep automation", exact: true }).click();
       await expect(confirm).toHaveCount(0);
+    }
+  });
+
+  test("the webhook's Get token, Copy and Hide stay touch-safe in both phone orientations", async ({ page }, info) => {
+    await prepare(page);
+    const reveal = cardOf(page, webhookCard.title).getByRole("group", { name: "Webhook", exact: true });
+    for (const size of touchSizes) {
+      await page.setViewportSize(size);
+      const action = reveal.getByRole("button", { name: /^(Get|Rotate) token$/u });
+      await action.scrollIntoViewIfNeeded();
+      await expectTouchSafe(action);
+      await action.click();
+      for (const name of ["Copy webhook URL", "Copy webhook token", "Copy curl", "Hide token"]) {
+        const control = reveal.getByRole("button", { name, exact: true });
+        await control.scrollIntoViewIfNeeded();
+        await expectTouchSafe(control);
+        await expectWithinViewport(page, control);
+      }
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`scheduled-card-webhook-touch-${size.width}x${size.height}.png`) });
+      await reveal.getByRole("button", { name: "Hide token", exact: true }).click();
+      await expect(reveal.getByTestId("webhook-token")).toHaveCount(0);
     }
   });
 });
