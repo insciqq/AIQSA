@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
+import { hiddenActivePathMessageIds } from "../chats/legacyAnswerReviews";
 import type {
   AttachmentLibraryRecord,
   AttachmentLibraryRepository
@@ -10,7 +11,8 @@ import type {
  * on the chat's current active path. The recursive query applies that same DAG
  * projection before the global recency limit. Explicitly saved independent
  * copies remain available without a source chat. Temporary chats never enter
- * this durable personal catalog.
+ * this durable personal catalog. A step of an answer review recorded before
+ * the feature's removal is on no active path as its reader sees it.
  */
 export function createPrismaAttachmentLibraryRepository(
   prismaClient: PrismaClient = prisma
@@ -22,6 +24,7 @@ export function createPrismaAttachmentLibraryRepository(
         where: { id: cursor, userId }
       }) : null;
       if (cursor && !before) return [];
+      const hidden = await hiddenActivePathMessageIds(prismaClient, userId);
       return prismaClient.$queryRaw<AttachmentLibraryRecord[]>(Prisma.sql`
         WITH RECURSIVE "active_messages" AS (
           SELECT
@@ -66,7 +69,8 @@ export function createPrismaAttachmentLibraryRepository(
         LEFT JOIN "Chat" AS chat
           ON chat."id" = attachment."chatId"
         WHERE attachment."userId" = ${userId}
-          AND (attachment."savedAt" IS NOT NULL OR active_message."id" IS NOT NULL)
+          AND (attachment."savedAt" IS NOT NULL OR active_message."id" IS NOT NULL${hidden.length > 0
+            ? Prisma.sql` AND NOT (active_message."id" = ANY(${hidden}::text[]))` : Prisma.empty})
           ${before ? Prisma.sql`AND (
             (attachment."savedAt" IS NOT NULL)::int, COALESCE(attachment."savedAt", attachment."createdAt"), attachment."id"
           ) < (${before.savedAt ? 1 : 0}, ${before.savedAt ?? before.createdAt}, ${before.id})` : Prisma.empty}

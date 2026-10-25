@@ -1,8 +1,10 @@
 import { Prisma } from "@prisma/client";
 import {
+  answerReviewDeletionPlan,
   collapseAnswerReviews,
   collapseAnswerReviewTree,
   type AnswerReviewCollapse,
+  type AnswerReviewDeletionPlan,
   type AnswerReviewTranscriptMessage,
   type AnswerReviewTranscriptSession
 } from "../../domain/answerReviewTranscript";
@@ -13,13 +15,33 @@ import { isRetiredAnswerReviewStep } from "../runs/retiredAnswerReview";
  * its storage. A session recorded before then reads as its source question
  * followed only by its latest version (`lib/domain/answerReviewTranscript.ts`)
  * wherever a chat is read: the browser's transcript and branch graph, message
- * search, exports, shares, branch copies and run context. The browser
+ * search, the Files library, Workspace export history, exports, shares,
+ * branch copies, continuation into a new chat and run context. The browser
  * therefore only ever names a message it was shown; the reads below say which
  * stored message stands behind it.
  */
 
 type SessionClient = Pick<Prisma.TransactionClient, "answerReviewSession">;
 type PathClient = Pick<Prisma.TransactionClient, "$queryRaw" | "answerReviewSession" | "message">;
+type ChatsClient = Pick<Prisma.TransactionClient, "answerReviewSession" | "chat" | "message">;
+
+const transcriptSelect = {
+  answerReviewSessionId: true, id: true, parentMessageId: true, role: true, status: true, systemTurnKind: true
+} satisfies Prisma.MessageSelect;
+
+type TranscriptRow = Readonly<{
+  answerReviewSessionId: string | null;
+  id: string;
+  parentMessageId: string | null;
+  role: string;
+  status: string;
+  systemTurnKind: string | null;
+}>;
+
+function transcriptMessage(row: TranscriptRow): AnswerReviewTranscriptMessage {
+  return { answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
+    status: row.status, systemTurnKind: row.systemTurnKind };
+}
 
 /** The one session read the collapse needs: each session's id and source answer, within the chat. */
 export async function loadAnswerReviewSessions(
@@ -44,6 +66,21 @@ export async function collapseChatAnswerReviews(
   return collapseAnswerReviews(messages, sessionIds.length > 0 ? await loadAnswerReviewSessions(db, chatId, sessionIds) : []);
 }
 
+/** The path collapse of the stored path to the chat's active leaf. */
+function activePathCollapse(messages: readonly AnswerReviewTranscriptMessage[], sessions: readonly AnswerReviewTranscriptSession[],
+  activeLeafMessageId: string | null): AnswerReviewCollapse {
+  if (!activeLeafMessageId) return { parents: new Map(), removed: new Set(), replacements: new Map() };
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const path: AnswerReviewTranscriptMessage[] = [];
+  const seen = new Set<string>();
+  for (let current = byId.get(activeLeafMessageId); current && !seen.has(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined) {
+    seen.add(current.id);
+    path.push(current);
+  }
+  return collapseAnswerReviews(path.reverse(), sessions);
+}
+
 /** A branch graph as its paths read; `activeLeafId` is the message standing for the chat's leaf. */
 export async function collapseChatAnswerReviewTree(
   db: SessionClient,
@@ -55,42 +92,42 @@ export async function collapseChatAnswerReviewTree(
   const sessions = sessionIds.length > 0 ? await loadAnswerReviewSessions(db, chatId, sessionIds) : [];
   const tree = collapseAnswerReviewTree(messages, sessions, activeLeafMessageId ? [activeLeafMessageId] : []);
   if (!activeLeafMessageId || sessions.length === 0) return { ...tree, activeLeafId: activeLeafMessageId };
-  const byId = new Map(messages.map((message) => [message.id, message]));
-  const path: AnswerReviewTranscriptMessage[] = [];
-  const seen = new Set<string>();
-  for (let current = byId.get(activeLeafMessageId); current && !seen.has(current.id);
-    current = current.parentId ? byId.get(current.parentId) : undefined) {
-    seen.add(current.id);
-    path.push(current);
-  }
-  const collapse = collapseAnswerReviews(path.reverse(), sessions);
+  const collapse = activePathCollapse(messages, sessions, activeLeafMessageId);
   return { ...tree, activeLeafId: collapse.replacements.get(activeLeafMessageId) ?? activeLeafMessageId };
 }
 
-/**
- * Every message of the user's recorded sessions that no path shows (steps
- * and superseded versions), for message search, which reads every branch of
- * every chat. A session's rows (its source answer and its steps) decide what
- * its paths keep, so nothing else of the chat is read.
- */
-export async function hiddenAnswerReviewMessageIds(
-  db: Pick<Prisma.TransactionClient, "answerReviewSession" | "message">,
-  userId: string
-): Promise<string[]> {
+/** Each of the user's chats that holds a recorded session, read whole: its active leaf, messages and sessions. */
+async function loadReviewedChats(db: ChatsClient, userId: string) {
   const sessions = await db.answerReviewSession.findMany({
-    select: { id: true, sourceAssistantMessageId: true },
+    select: { chatId: true, id: true, sourceAssistantMessageId: true },
     where: { chat: { userId } }
   });
   if (sessions.length === 0) return [];
-  const rows = await db.message.findMany({
-    select: { answerReviewSessionId: true, id: true, parentMessageId: true, role: true, status: true, systemTurnKind: true },
-    where: { OR: [
-      { answerReviewSessionId: { in: sessions.map((session) => session.id) } },
-      { id: { in: sessions.map((session) => session.sourceAssistantMessageId) } }
-    ] }
-  });
-  return [...collapseAnswerReviewTree(rows.map((row) => ({ answerReviewSessionId: row.answerReviewSessionId, id: row.id,
-    parentId: row.parentMessageId, role: row.role, status: row.status, systemTurnKind: row.systemTurnKind })), sessions).removed];
+  const chatIds = [...new Set(sessions.map((session) => session.chatId))];
+  const chats = await db.chat.findMany({ select: { activeLeafMessageId: true, id: true }, where: { id: { in: chatIds }, userId } });
+  const rows = await db.message.findMany({ select: { ...transcriptSelect, chatId: true }, where: { chatId: { in: chatIds } } });
+  return chats.map((chat) => ({
+    activeLeafMessageId: chat.activeLeafMessageId,
+    messages: rows.filter((row) => row.chatId === chat.id).map(transcriptMessage),
+    sessions: sessions.filter((session) => session.chatId === chat.id)
+  }));
+}
+
+/**
+ * Every message of the user's chats that no path shows (the recorded
+ * sessions' steps and superseded versions), for message search, which reads
+ * every branch of every chat: each chat with a session reads as its branch
+ * graph does.
+ */
+export async function hiddenAnswerReviewMessageIds(db: ChatsClient, userId: string): Promise<string[]> {
+  return (await loadReviewedChats(db, userId)).flatMap((chat) => [...collapseAnswerReviewTree(chat.messages, chat.sessions,
+    chat.activeLeafMessageId ? [chat.activeLeafMessageId] : []).removed]);
+}
+
+/** The messages of the user's active paths that those paths do not show, for readers of the active paths only. */
+export async function hiddenActivePathMessageIds(db: ChatsClient, userId: string): Promise<string[]> {
+  return (await loadReviewedChats(db, userId)).flatMap((chat) =>
+    [...activePathCollapse(chat.messages, chat.sessions, chat.activeLeafMessageId).removed]);
 }
 
 /** How a reader sees the path ending at a stored step. */
@@ -101,26 +138,10 @@ export type AnswerReviewPathView = Readonly<{
   parentOf(messageId: string): string | null | undefined;
 }>;
 
-/**
- * The path from `messageId` to its root as a reader sees it, or null when
- * the message is no step of a session, so it stands for itself with its own
- * parents (the common case costs one primary-key read).
- */
-export async function loadAnswerReviewPathView(
-  db: PathClient,
-  chatId: string,
-  messageId: string
-): Promise<AnswerReviewPathView | null> {
-  const message = await db.message.findFirst({ select: { answerReviewSessionId: true }, where: { chatId, id: messageId } });
-  if (!message?.answerReviewSessionId) return null;
-  const rows = await db.$queryRaw<Array<{
-    answerReviewSessionId: string | null;
-    id: string;
-    parentMessageId: string | null;
-    role: string;
-    status: string;
-    systemTurnKind: string | null;
-  }>>(Prisma.sql`
+/** The stored path from the root to `messageId`, root first, bounded by the chat's message count. */
+async function loadStoredPath(db: Pick<Prisma.TransactionClient, "$queryRaw">, chatId: string, messageId: string):
+  Promise<AnswerReviewTranscriptMessage[]> {
+  const rows = await db.$queryRaw<TranscriptRow[]>(Prisma.sql`
     WITH RECURSIVE "bound" AS MATERIALIZED (
       SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
     ), "path" AS (
@@ -144,8 +165,30 @@ export async function loadAnswerReviewPathView(
     )
     SELECT "id", "parentMessageId", "role", "status", "answerReviewSessionId", "systemTurnKind" FROM "path" ORDER BY "depth" DESC
   `);
-  const path = rows.map((row) => ({ answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId,
-    role: row.role, status: row.status, systemTurnKind: row.systemTurnKind }));
+  return rows.map(transcriptMessage);
+}
+
+/**
+ * The path from `messageId` to its root as a reader sees it, or null when
+ * the message is no step of a session, so it stands for itself with its own
+ * parents (the common case costs a primary-key read of it and its parent). A
+ * message whose parent carries a session counts as a step: the previous
+ * release regenerated a version as a copy without its session.
+ */
+export async function loadAnswerReviewPathView(
+  db: PathClient,
+  chatId: string,
+  messageId: string
+): Promise<AnswerReviewPathView | null> {
+  const message = await db.message.findFirst({ select: { answerReviewSessionId: true, parentMessageId: true },
+    where: { chatId, id: messageId } });
+  if (!message) return null;
+  if (!message.answerReviewSessionId) {
+    const parent = message.parentMessageId ? await db.message.findFirst({ select: { answerReviewSessionId: true },
+      where: { chatId, id: message.parentMessageId } }) : null;
+    if (!parent?.answerReviewSessionId) return null;
+  }
+  const path = await loadStoredPath(db, chatId, messageId);
   const collapse = await collapseChatAnswerReviews(db, chatId, path);
   const parents = new Map(path.map((entry) => [entry.id, entry.parentId]));
   return {
@@ -170,16 +213,27 @@ export async function answerReviewVersionQuestion(db: PathClient, chatId: string
   return view && view.standInId === answerId ? view.parentOf(answerId) ?? null : null;
 }
 
-/** Deleting a step deletes the answer it reads as: its session from the source answer down. */
-export async function answerReviewDeletionRoot(
+/** The stored messages of the active path to `leafMessageId` that the path does not show; none in a chat without a session. */
+export async function hiddenOnActivePath(db: PathClient, chatId: string, leafMessageId: string | null): Promise<string[]> {
+  if (!leafMessageId || !await db.answerReviewSession.findFirst({ select: { id: true }, where: { chatId } })) return [];
+  return [...(await collapseChatAnswerReviews(db, chatId, await loadStoredPath(db, chatId, leafMessageId))).removed];
+}
+
+/**
+ * What deleting `messageId` removes in a chat with a recorded session, as
+ * the chat reads (`answerReviewDeletionPlan`); undefined in a chat without
+ * one, where a deletion is its stored subtree, and null when no deletion
+ * reads as deleting that message.
+ */
+export async function loadAnswerReviewDeletionPlan(
   db: Pick<Prisma.TransactionClient, "answerReviewSession" | "message">,
-  chatId: string,
+  chat: Readonly<{ activeLeafMessageId: string | null; id: string }>,
   messageId: string
-): Promise<string> {
-  const message = await db.message.findFirst({ select: { answerReviewSessionId: true }, where: { chatId, id: messageId } });
-  if (!message?.answerReviewSessionId) return messageId;
-  const [session] = await loadAnswerReviewSessions(db, chatId, [message.answerReviewSessionId]);
-  return session?.sourceAssistantMessageId ?? messageId;
+): Promise<AnswerReviewDeletionPlan | null | undefined> {
+  const sessions = await loadAnswerReviewSessions(db, chat.id);
+  if (sessions.length === 0) return undefined;
+  const rows = await db.message.findMany({ select: transcriptSelect, where: { chatId: chat.id } });
+  return answerReviewDeletionPlan(rows.map(transcriptMessage), sessions, chat.activeLeafMessageId, messageId);
 }
 
 const STEP_TOOL_NAMES: ReadonlySet<string> = new Set(["submit_answer_review", "record_review_decisions"]);

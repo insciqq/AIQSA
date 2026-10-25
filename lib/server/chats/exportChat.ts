@@ -10,7 +10,7 @@ import {
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
-import { collapseChatAnswerReviews } from "./legacyAnswerReviews";
+import { collapseChatAnswerReviewTree } from "./legacyAnswerReviews";
 
 export const chatExportChatSelect = {
   activeLeafMessageId: true,
@@ -46,18 +46,17 @@ type ChatExportReadClient = Pick<Prisma.TransactionClient, "answerReviewSession"
  */
 export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatExportChatRow): Promise<ChatExportSource> {
   const loaded = await db.message.findMany({ select: chatExportMessageSelect, where: { chatId: chat.id } });
-  // Each answer review recorded before the feature's removal reads as its
-  // answer: the source question, then the group's latest version. Its
-  // server-written turns, reviews and earlier versions stay out.
-  const collapse = await collapseChatAnswerReviews(db, chat.id, loaded.map((row) => ({
+  // The chat reads as its branch graph does: each answer review recorded
+  // before the feature's removal as its answer, the source question then the
+  // latest version. Its server-written turns, reviews and earlier versions
+  // stay out.
+  const collapse = await collapseChatAnswerReviewTree(db, chat.id, loaded.map((row) => ({
     answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
     status: row.status, systemTurnKind: row.systemTurnKind
-  })));
+  })), chat.activeLeafMessageId);
   const rows = loaded.filter((row) => !collapse.removed.has(row.id))
     .map((row) => collapse.parents.has(row.id) ? { ...row, parentMessageId: collapse.parents.get(row.id) ?? null } : row);
-  const activeLeafKey = chat.activeLeafMessageId
-    ? collapse.replacements.get(chat.activeLeafMessageId) ?? chat.activeLeafMessageId
-    : null;
+  const activeLeafKey = collapse.activeLeafId;
   const attachmentIds = [...new Set(rows.flatMap((row) => chatExportAttachmentIds(row.content)))];
   const attachmentRows = attachmentIds.length
     ? await db.attachment.findMany({

@@ -7,6 +7,7 @@ import { createPrismaMessageBranchRepository } from "../messages/prismaRepositor
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import type { RunRepository } from "../runs/runRepositoryContract";
+import { createChatContinuationRepository } from "./continuationRepository";
 import { createPrismaChatNavigationRepository } from "./navigation";
 import { createPrismaChatRepository } from "./prismaRepository";
 
@@ -217,6 +218,59 @@ describe("an answer review recorded before the removal", () => {
       expect(new Set(deleted?.deletedMessageIds)).toEqual(new Set([ids.a1, ids.t1, ids.r1, ids.t2, ids.a2, ids.t3, ids.r2]));
       expect(deleted?.activeLeafMessageId).toBe(ids.q);
       expect(await prisma.answerReviewSession.count({ where: { chatId: ids.chat } })).toBe(0);
+    });
+  });
+
+  it("deletes the version without the source answer the chat still shows with a branch under a hidden step", async () => {
+    await withUser(async (userId) => {
+      const ids = await reviewedChat(userId, "r2");
+      const other = await ids.say("user", "Other branch", ids.r1);
+      const otherReply = await ids.say("assistant", "Other reply", other);
+      const chats = createPrismaChatRepository(prisma);
+      expect(new Map((await chats.getBranches({ chatId: ids.chat, userId }))?.nodes.map((node) => [node.id, node.parentMessageId])))
+        .toEqual(new Map([[ids.q, null], [ids.a1, ids.q], [ids.a2, ids.q], [other, ids.a1], [otherReply, other]]));
+      const deleted = await createPrismaMessageBranchRepository(prisma).deleteMessageSubtree({ messageId: ids.a2, userId });
+      expect(new Set(deleted?.deletedMessageIds)).toEqual(new Set([ids.t2, ids.a2, ids.t3, ids.r2]));
+      expect(deleted?.activeLeafMessageId).toBe(ids.q);
+      const graph = await chats.getBranches({ chatId: ids.chat, userId });
+      expect(new Map(graph?.nodes.map((node) => [node.id, node.parentMessageId])))
+        .toEqual(new Map([[ids.q, null], [ids.a1, ids.q], [other, ids.a1], [otherReply, other]]));
+      expect(await prisma.answerReviewSession.count({ where: { chatId: ids.chat } })).toBe(1);
+    });
+  });
+
+  it("reads a version the previous release regenerated beside the one it copied", async () => {
+    await withUser(async (userId) => {
+      const ids = await reviewedChat(userId, "a2");
+      // A regeneration of the version copied it under the revision request without its session.
+      const copy = await ids.say("assistant", "Revised answer again", ids.t2, { modelId: "fake-qsa", provider: "fake" });
+      await prisma.chat.update({ data: { activeLeafMessageId: copy }, where: { id: ids.chat } });
+      const chats = createPrismaChatRepository(prisma);
+      expect((await chats.getChat({ chatId: ids.chat, userId }))?.messages.map((message) => [message.id, message.parentMessageId]))
+        .toEqual([[ids.q, null], [copy, ids.q]]);
+      expect(new Map((await chats.getBranches({ chatId: ids.chat, userId }))?.nodes.map((node) => [node.id, node.parentMessageId])))
+        .toEqual(new Map([[ids.q, null], [ids.a2, ids.q], [copy, ids.q]]));
+      const source = await createPrismaRunRepository(prisma).findRegenerationSource(copy, userId);
+      expect([source?.userMessage.id, source?.assistantMessage?.id]).toEqual([ids.q, copy]);
+      const navigation = createPrismaChatNavigationRepository(prisma);
+      const matches = async (query: string) => {
+        const result = await navigation.searchMessagesPage({ cursor: null, limit: 30, query, userId });
+        if (result.kind !== "ok") throw new Error(`message_search_${result.kind}`);
+        return result.page.matches.map((match) => [match.messageId, match.matchCount]);
+      };
+      expect(await matches("First answer")).toEqual([]);
+      expect(await matches("Revised answer")).toEqual([[copy, 2]]);
+    });
+  });
+
+  it.each(["a2", "r2"] as const)("continues in a new chat from the version the chat shows (stored leaf %s)", async (leaf) => {
+    await withUser(async (userId) => {
+      const ids = await reviewedChat(userId, leaf);
+      const source = await createChatContinuationRepository(prisma).loadSource({ chatId: ids.chat, expectedLeafMessageId: ids.a2,
+        requestId: randomUUID(), userId });
+      expect(source.transcript).toBe("USER:\nQuestion\n\nASSISTANT:\nRevised answer");
+      // Every later check compares the stored leaf.
+      expect(source.leafMessageId).toBe(ids[leaf]);
     });
   });
 
