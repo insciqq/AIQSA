@@ -1504,8 +1504,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
     const leadingSlot = options.leading ? <>{options.leading}{identityLead}</> : identityLead;
     const command = source.parentMessageId ? memoryCommands.get(source.parentMessageId) : undefined;
-    // A background command owns the notice slot; its failed, unknown, stale
-    // and rejected outcomes stay silent instead of reviving older feedback.
+    // A background command owns the notice slot; apart from a save that
+    // committed nothing, its failed, unknown, stale and rejected outcomes stay
+    // silent instead of reviving older feedback.
     const memoryNotice = command && memoryCommandIsVisible(command) ? (
       <MemoryCommandStatusV2 command={command} onOpenMemory={settings.openMemory} />
     ) : command && (command.operation !== "UNKNOWN" ||

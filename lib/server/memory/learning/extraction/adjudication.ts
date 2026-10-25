@@ -466,9 +466,19 @@ export function memorySemanticAuthorityAdmitsCandidate(
   const temporalPerspective = requiresAdjudication
     ? decision?.temporalPerspective
     : candidate.semanticFrame.temporalPerspective;
-  const admittedSubjectScope = relationshipContext
-    ? subjectScope === "USER_RELATIONSHIP_CONTEXT"
-    : subjectScope === "CURRENT_USER";
+  // An explicit remember request is the user's own testimony whichever
+  // personal scope the two models chose, and its proposition keeps the
+  // statement's attribution, so a new fact may cross between them. Ordinary
+  // learning, SLOTs and relations to existing facts keep exact agreement.
+  const personalScopes: readonly string[] = ["CURRENT_USER", "USER_RELATIONSHIP_CONTEXT"];
+  const rememberedProposition = frame.memoryDirective === "EXPLICIT_REMEMBER" &&
+    candidate.identityKind === "PROPOSITION" && personalScopes.includes(frame.subjectScope) &&
+    decision?.operation === "NO_RELATION";
+  const admittedSubjectScope = rememberedProposition
+    ? subjectScope !== undefined && personalScopes.includes(subjectScope)
+    : relationshipContext
+      ? subjectScope === "USER_RELATIONSHIP_CONTEXT"
+      : subjectScope === "CURRENT_USER";
   if (!admittedSubjectScope || assertionStatus !== "ASSERTED" ||
     temporalPerspective === "UNKNOWN") return false;
   if (requiresAdjudication && (
