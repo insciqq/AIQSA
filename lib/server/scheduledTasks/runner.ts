@@ -274,9 +274,10 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     if (occurrence.trigger === "webhook" && !task.webhookEnabled) {
       return settlePending(execution, { reasonCode: "webhook_off", state: "SKIPPED" });
     }
-    // A webhook run always carries its event; one whose event no longer waits cannot start.
+    // A webhook run always carries its event; one whose event was dropped since
+    // (a pause or the webhook turned off, even if undone meanwhile) never starts.
     if (occurrence.trigger === "webhook" && !execution.webhookEvent) {
-      return settlePending(execution, { reasonCode: "admission_failed", state: "FAILED" });
+      return settlePending(execution, { reasonCode: "webhook_event_dropped", state: "SKIPPED" });
     }
     if (!execution.ownerActive) return settlePending(execution, pausingOutcome("account_inactive"));
     // Current catalog and entitlement, the exact saved model and no substitute;

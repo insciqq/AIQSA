@@ -285,16 +285,16 @@ describe("automation webhook events in the runner", () => {
     expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: late.id } })).toMatchObject({ runId: null, state: "PENDING" });
   });
 
-  it("discards waiting events on a pause or a trigger turned off, keeping the one an open occurrence carries", async () => {
+  it("discards waiting events on a pause or a trigger turned off, the one a not yet started occurrence carries included", async () => {
     const userId = await owner();
     const { accept, task } = await hooked(userId);
     for (const bodyText of ["a", "b", "c"]) await accept({ bodyText });
     await runner.claimDue(new Date(), 10);
     const paused = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: 1, nextRunAt: null, promptUrls: "keep",
       status: "paused" });
-    expect((await events(task.id)).map((event) => [event.state, event.bodyText])).toEqual([["QUEUED", "a"], ["DISCARDED", null],
+    expect((await events(task.id)).map((event) => [event.state, event.bodyText])).toEqual([["DISCARDED", null], ["DISCARDED", null],
       ["DISCARDED", null]]);
-    // The runner skips the open one as paused, which discards its event too.
+    // The runner then skips the open occurrence.
     const [open] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
     await runner.settlePending(open!.id, { reasonCode: "paused", state: "SKIPPED" }, new Date());
     expect((await events(task.id)).map((event) => event.state)).toEqual(["DISCARDED", "DISCARDED", "DISCARDED"]);
@@ -307,6 +307,45 @@ describe("automation webhook events in the runner", () => {
     await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true, webhookEnabled: false },
       expectedRevision: resumed.revision, nextRunAt: new Date(Date.now() + HOUR), promptUrls: "keep", status: "active" });
     expect((await events(task.id)).at(-1)).toMatchObject({ bodyText: null, state: "DISCARDED" });
+  });
+
+  it("never runs an event taken up before its webhook was turned off, even when it is on again before the run starts", async () => {
+    const userId = await owner();
+    const { accept, task } = await hooked(userId);
+    await accept({ bodyText: "sent with the old token" });
+    await runner.claimDue(new Date(), 10);
+    const [open] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
+    expect(open).toMatchObject({ runId: null, state: "PENDING", trigger: "webhook" });
+    // While the owner's slot is busy: the webhook off (the schedule keeps the task runnable), on again, a new token.
+    const off = await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true, webhookEnabled: false },
+      expectedRevision: task.revision, nextRunAt: new Date(Date.now() + HOUR), promptUrls: "keep", status: "active" });
+    await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: off.revision, nextRunAt: null, promptUrls: "keep",
+      status: "active" });
+    await owners.issueWebhookToken(userId, task.id, new Date());
+    expect((await events(task.id)).map((event) => [event.state, event.bodyText])).toEqual([["DISCARDED", null]]);
+    // The runner finds the occurrence without its event, so it can never start (`webhook_event_dropped`).
+    const execution = await runner.loadExecution(open!.id);
+    expect(execution).toMatchObject({ task: { webhookEnabled: true } });
+    expect(execution).not.toHaveProperty("webhookEvent");
+  });
+
+  it("skips the scheduled instants taken up but not started when the owner turns the schedule off", async () => {
+    const userId = await owner();
+    const due = new Date(Date.now() - 60_000);
+    const task = await prisma.scheduledTask.create({ data: {
+      ...scheduledTaskScheduleColumns({ kind: "daily", time: "09:00" }), chatMode: "SAME", modelId: providerTemplateIds.fakeModel,
+      nextRunAt: due, prompt: webhookDraft.prompt, provider: providerTemplateIds.fakeConnection, scheduleEnabled: true,
+      timeZone: "Europe/Moscow", title: "Synthetic daily on its webhook too", userId, webhookEnabled: true
+    } });
+    expect((await runner.claimDue(new Date(), 10)).claimed).toBe(1);
+    const [instant] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
+    expect(instant).toMatchObject({ state: "PENDING", trigger: "schedule" });
+    const current = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } });
+    await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: false, webhookEnabled: true },
+      expectedRevision: current.revision, nextRunAt: null, promptUrls: "keep", status: "active" });
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: instant!.id } }))
+      .toMatchObject({ leaseExpiresAt: null, reasonCode: "schedule_off", runId: null, state: "SKIPPED" });
+    expect(await runner.loadExecution(instant!.id)).toBeNull();
   });
 
   it("discards the waiting events of an automation that can no longer take them instead of claiming them", async () => {

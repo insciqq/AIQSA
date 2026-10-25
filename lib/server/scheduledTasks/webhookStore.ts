@@ -119,20 +119,17 @@ export async function replaceScheduledTaskWebhookToken(
 /**
  * Discards the task's waiting events, which can no longer run (the task was
  * paused or completed, or its webhook trigger turned off): their bodies are
- * cleared and they never run later. An event a still open occurrence carries
- * follows that occurrence instead, as a materialized scheduled instant does.
+ * cleared and they never run later. That includes the event of an occurrence
+ * the runner took up but has not started: it settles as
+ * `webhook_event_dropped`, so turning the webhook off and on again, or pausing
+ * and resuming, before it starts never lets it run. A started run admitted its
+ * event in the transaction that created it, so no waiting event is its own.
  */
 export async function discardWaitingScheduledTaskWebhookEvents(tx: Prisma.TransactionClient, taskId: string): Promise<number> {
   return tx.$executeRaw(Prisma.sql`
-    UPDATE "ScheduledTaskWebhookEvent" AS event
+    UPDATE "ScheduledTaskWebhookEvent"
     SET "state" = 'DISCARDED'::"ScheduledTaskWebhookEventState", "bodyText" = NULL
-    WHERE event."taskId" = ${taskId} AND event."state" = 'QUEUED'::"ScheduledTaskWebhookEventState"
-      AND NOT EXISTS (
-        SELECT 1 FROM "ScheduledTaskOccurrence" AS occurrence
-        WHERE occurrence."taskId" = event."taskId" AND occurrence."trigger" = 'webhook'
-          AND occurrence."scheduledFor" = event."receivedAt"
-          AND occurrence."state" IN ('PENDING'::"ScheduledTaskOccurrenceState", 'RUNNING'::"ScheduledTaskOccurrenceState")
-      )
+    WHERE "taskId" = ${taskId} AND "state" = 'QUEUED'::"ScheduledTaskWebhookEventState"
   `);
 }
 

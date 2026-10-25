@@ -523,6 +523,19 @@ export async function updateScheduledTask(
   if (write.draft.webhookEnabled) await ensureScheduledTaskWebhook(tx, userId, taskId);
   // Paused, or no longer on its webhook: the events still waiting never run.
   if (write.status !== "active" || !write.draft.webhookEnabled) await discardWaitingScheduledTaskWebhookEvents(tx, taskId);
+  // A schedule the owner turns off takes along its instants the runner took up
+  // but has not started (the task row lock fences the runner's link). The
+  // runner's own switch-off after a once run never comes through here, so
+  // that run still goes ahead.
+  if (current.scheduleEnabled && !write.draft.scheduleEnabled) {
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "ScheduledTaskOccurrence"
+      SET "state" = 'SKIPPED'::"ScheduledTaskOccurrenceState", "reasonCode" = 'schedule_off',
+        "finishedAt" = CURRENT_TIMESTAMP, "leaseExpiresAt" = NULL
+      WHERE "taskId" = ${taskId} AND "userId" = ${userId} AND "trigger" = 'schedule'
+        AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
+    `);
+  }
   // A result carried into a rotated chat belongs to the old question as well.
   if (newGeneration) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId, userId } });
   const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
