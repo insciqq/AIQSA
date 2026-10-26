@@ -13,6 +13,7 @@ const state = {
   runId: "run_1",
   browser: "running",
   controller: "agent",
+  signInRemembered: true,
   handoff: { id: "handoff_1", reason: "sign_in", message: "Sign in to the shop", startedAt: "2026-10-26T18:00:00.000Z",
     expiresAt: "2026-10-26T18:10:00.000Z" },
   page: { url: "https://shop.example/login", title: "Sign in" }
