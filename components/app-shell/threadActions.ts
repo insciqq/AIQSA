@@ -176,6 +176,7 @@ export function createThreadActions({
         useWorkspaceStore.getState().upsertNavigationChat({
           activeRun: false,
           assistant: null,
+          ...(typeof chat.pinned === "boolean" ? { favorite: chat.pinned } : {}),
           folderId: chat.folderId,
           id: chat.id,
           title: chat.title,

@@ -2440,7 +2440,7 @@ describe("workspace actions", () => {
     expect(useThreadStore.getState().threadsByChatId["chat-a"]?.messages).toHaveLength(2);
   });
 
-  it("favorites chats and keeps favorite rows sorted ahead of newer rows", async () => {
+  it("favorites chats, keeps favorite rows sorted ahead of newer rows and moves the navigation row by its unchanged time", async () => {
     const state = useWorkspaceActionsForTest({
       attachments: [],
       draft: ""
@@ -2460,10 +2460,10 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
+          // A favorite-only change keeps the chat's time on the server.
           chat: {
             ...state.chatA,
-            pinned: true,
-            updatedAt: "2026-06-09T00:00:00.000Z"
+            pinned: true
           }
         }),
         {
@@ -2489,9 +2489,34 @@ describe("workspace actions", () => {
     expect(state.chats()[0]?.pinned).toBe(true);
     expect(useWorkspaceStore.getState().navigationChats).toEqual([expect.objectContaining({
       activeRun: true,
+      favorite: true,
       id: "chat-a",
-      updatedAt: "2026-06-09T00:00:00.000Z"
+      updatedAt: state.chatA.updatedAt
     })]);
+  });
+
+  it("leaves a chat in its group when the favorite toggle fails", async () => {
+    const state = useWorkspaceActionsForTest({
+      attachments: [],
+      draft: ""
+    });
+    const row = {
+      activeRun: false,
+      assistant: null,
+      favorite: false,
+      folderId: state.chatA.folderId,
+      id: state.chatA.id,
+      title: state.chatA.title,
+      updatedAt: state.chatA.updatedAt
+    };
+    useWorkspaceStore.getState().applyNavigationPage({ chats: [row], folders: [], nextCursor: null }, false);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "chat_not_found" }, { status: 404 })));
+
+    await state.actions.toggleChatFavorite(state.chatA);
+
+    expect(useWorkspaceStore.getState().navigationChats).toEqual([row]);
+    expect(state.chats().find((candidate) => candidate.id === state.chatA.id)?.pinned).toBeFalsy();
+    expect(state.setNotice).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "error" }));
   });
 
   it("keeps an initial workspace failure inline without also raising a shell notice", async () => {

@@ -994,6 +994,24 @@ function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSou
     : {};
 }
 
+/**
+ * A chat update that only sets the favorite flag. It keeps the chat's
+ * `updatedAt`, so favoriting never moves the chat by time; every other
+ * update path keeps bumping it.
+ */
+export function favoriteOnlyChatUpdate(
+  patch: Omit<Parameters<ChatRepository["updateChat"]>[0], "chatId" | "userId">
+): boolean {
+  return patch.pinned !== undefined &&
+    patch.activeLeafMessageId === undefined &&
+    patch.assistantId === undefined &&
+    patch.assistantOverrides === undefined &&
+    patch.defaultSearchPlan === undefined &&
+    patch.folderId === undefined &&
+    !patch.title &&
+    patch.workspaceEnabled === undefined;
+}
+
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -2493,11 +2511,12 @@ export function createPrismaChatRepository(
             return null;
           }
         }
-        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { updatedAt: Date }>>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
             "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
+            "updatedAt"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -2582,7 +2601,15 @@ export function createPrismaChatRepository(
                 ...(pinned !== undefined ? { pinned } : {}),
                 // The owner's rename also keeps the chat from a scheduled task's history retention.
                 ...(title ? { ownerKeptAt: new Date(), title: title.trim(), titleRevision: { increment: 1 } } : {}),
-                ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
+                ...(workspaceEnabled === undefined ? {} : { workspaceEnabled }),
+                // Favoriting is not activity: the chat keeps its place by time
+                // (operator decision 2026-10-26).
+                ...(favoriteOnlyChatUpdate({
+                  activeLeafMessageId, assistantId, assistantOverrides, defaultSearchPlan,
+                  folderId, pinned, title, workspaceEnabled
+                })
+                  ? { updatedAt: chats[0].updatedAt }
+                  : {})
               },
               select: chatSummarySelect,
               where: { id: chatId }

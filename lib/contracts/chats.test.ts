@@ -3,6 +3,7 @@ import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "./memoryClient";
 import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
+  CHAT_NAVIGATION_FAVORITES_MAX,
   THREAD_CITATION_MAX_ITEMS,
   THREAD_REASONING_MAX_CHARACTERS,
   THREAD_REASONING_MAX_ENTRIES,
@@ -339,6 +340,36 @@ describe("chat wire contracts", () => {
     for (const scheduledTask of [{ taskId: "task-1" }, { taskId: "", unseen: true }, { taskId: "task-1", unseen: "yes" },
       { taskId: "task-1", unseen: true, title: "Morning brief" }, "task-1"]) {
       expect(decodeChatNavigationPage(page({ ...chat, scheduledTask }))).toBeNull();
+    }
+  });
+
+  it("decodes the favorite flag and the first page's favorites, rejecting malformed ones", () => {
+    const chat = {
+      activeRun: false, assistant: null, favorite: true, folderId: null, id: "chat-1", title: "Old favorite",
+      updatedAt: "2025-01-04T09:00:00.000Z"
+    };
+    const first = { chats: [], favorites: { chats: [chat], complete: true }, folders: [], nextCursor: null };
+    expect(decodeChatNavigationPage(first)).toEqual(first);
+    // A favorite may also sit on its date page; both copies decode.
+    expect(decodeChatNavigationPage({ ...first, chats: [chat] })).toEqual({ ...first, chats: [chat] });
+    expect(decodeChatNavigationPage({ ...first, favorites: { chats: [], complete: false } })?.favorites)
+      .toEqual({ chats: [], complete: false });
+    // Absent means not known; a later page and a search page carry no favorites.
+    const { favorite: _favorite, ...unflagged } = chat;
+    expect(decodeChatNavigationPage({ chats: [unflagged], folders: [], nextCursor: null })?.chats[0]).toEqual(unflagged);
+    for (const malformed of [
+      { ...first, chats: [{ ...chat, favorite: "yes" }] },
+      { ...first, favorites: { chats: [{ ...chat, favorite: false }], complete: true } },
+      { ...first, favorites: { chats: [unflagged], complete: true } },
+      { ...first, favorites: { chats: [chat, chat], complete: true } },
+      { ...first, favorites: { chats: [chat] } },
+      { ...first, favorites: { chats: [chat], complete: true, total: 1 } },
+      { ...first, favorites: [chat] },
+      { ...first, favorites: null },
+      { ...first, favorites: { chats: Array.from({ length: CHAT_NAVIGATION_FAVORITES_MAX + 1 }, (_, index) =>
+        ({ ...chat, id: `chat-${index}` })), complete: false } }
+    ]) {
+      expect(decodeChatNavigationPage(malformed)).toBeNull();
     }
   });
 

@@ -149,6 +149,47 @@ describe("workspace store", () => {
     expect(useWorkspaceStore.getState().navigationSearchChats).toEqual([]);
   });
 
+  it("lists the first page's favorites once beside the date pages and keeps a known favorite on local upserts", () => {
+    const row = (id: string, day: number, favorite: boolean) => ({
+      activeRun: false, assistant: null, favorite, folderId: null, id, title: id,
+      updatedAt: `2026-06-${String(day).padStart(2, "0")}T00:00:00.000Z`
+    });
+    const store = () => useWorkspaceStore.getState();
+    store().applyNavigationPage({
+      chats: [row("recent", 20, false)],
+      favorites: { chats: [row("old-favorite", 1, true)], complete: false },
+      folders: [],
+      nextCursor: "next"
+    }, false);
+    expect(store().navigationChats.map((chat) => chat.id)).toEqual(["recent", "old-favorite"]);
+    expect(store().navigationFavoritesComplete).toBe(false);
+
+    // The favorite's own date page adds no second copy.
+    store().applyNavigationPage({
+      chats: [row("middle", 10, false), row("old-favorite", 1, true)],
+      folders: [],
+      nextCursor: null
+    }, true);
+    expect(store().navigationChats.map((chat) => chat.id)).toEqual(["recent", "middle", "old-favorite"]);
+    expect(store().navigationFavoritesComplete).toBe(false);
+
+    // A row rebuilt locally without the flag keeps the listed favorite.
+    const { favorite: _favorite, ...unflagged } = row("old-favorite", 1, true);
+    store().upsertNavigationChat({ ...unflagged, title: "Renamed" });
+    expect(store().navigationChats.find((chat) => chat.id === "old-favorite"))
+      .toMatchObject({ favorite: true, title: "Renamed", updatedAt: "2026-06-01T00:00:00.000Z" });
+    store().upsertNavigationChat({ ...unflagged, favorite: false });
+    expect(store().navigationChats.find((chat) => chat.id === "old-favorite")?.favorite).toBe(false);
+
+    store().applyNavigationPage({
+      chats: [],
+      favorites: { chats: [], complete: true },
+      folders: [],
+      nextCursor: null
+    }, false);
+    expect(store().navigationFavoritesComplete).toBe(true);
+  });
+
   it("keeps message matches as their own list beside the title results", () => {
     const match = (chatId: string, title = `Title ${chatId}`) => ({
       chatId,

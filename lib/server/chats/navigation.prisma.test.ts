@@ -176,4 +176,61 @@ describe("Prisma chat navigation repository", () => {
       await prisma.user.deleteMany({ where: { id: { in: [ownerId, foreignId] } } });
     }
   });
+
+  it("lists the owner's favorites on the first page whatever their age, and pages the rest without gaps", async () => {
+    const ownerId = `navigation-favorites-${randomUUID()}`;
+    const foreignId = `navigation-favorites-foreign-${randomUUID()}`;
+    await prisma.user.createMany({
+      data: [
+        { displayName: "Favorites owner", id: ownerId, status: "active" },
+        { displayName: "Favorites foreign", id: foreignId, status: "active" }
+      ]
+    });
+    try {
+      const folder = await prisma.folder.create({ data: { name: "Archive shelf", userId: ownerId } });
+      const at = (day: number) => new Date(Date.UTC(2026, 9, day));
+      const [recent, middle, oldFavorite, filedFavorite] = await Promise.all([
+        prisma.chat.create({ data: { title: "Recent", updatedAt: at(20), userId: ownerId } }),
+        prisma.chat.create({ data: { title: "Middle", updatedAt: at(10), userId: ownerId } }),
+        prisma.chat.create({ data: { pinned: true, title: "Old favorite", updatedAt: at(2), userId: ownerId } }),
+        prisma.chat.create({
+          data: { folderId: folder.id, pinned: true, title: "Filed favorite", updatedAt: at(1), userId: ownerId }
+        }),
+        prisma.chat.create({
+          data: { archived: true, pinned: true, title: "Archived favorite", updatedAt: at(15), userId: ownerId }
+        }),
+        prisma.chat.create({ data: { pinned: true, title: "Foreign favorite", updatedAt: at(25), userId: foreignId } })
+      ]);
+
+      const repository = createPrismaChatNavigationRepository(prisma);
+      const firstPage = await repository.listPage({ cursor: null, limit: 1, userId: ownerId });
+      if (firstPage.kind !== "ok") throw new Error("navigation_page_missing");
+      expect(firstPage.page.chats.map((chat) => [chat.id, chat.favorite])).toEqual([[recent.id, false]]);
+      expect(firstPage.page.favorites).toEqual({
+        chats: [
+          expect.objectContaining({ favorite: true, folderId: null, id: oldFavorite.id }),
+          expect.objectContaining({ favorite: true, folderId: folder.id, id: filedFavorite.id })
+        ],
+        complete: true
+      });
+
+      // The date pages still list every chat once, favorites included, in order.
+      const paged = [...firstPage.page.chats];
+      let cursor = firstPage.page.nextCursor;
+      while (cursor) {
+        const next = await repository.listPage({ cursor, limit: 1, userId: ownerId });
+        if (next.kind !== "ok") throw new Error("navigation_page_missing");
+        expect(next.page.favorites).toBeUndefined();
+        paged.push(...next.page.chats);
+        cursor = next.page.nextCursor;
+      }
+      expect(paged.map((chat) => chat.id)).toEqual([recent.id, middle.id, oldFavorite.id, filedFavorite.id]);
+
+      const foreignPage = await repository.listPage({ cursor: null, limit: 1, userId: foreignId });
+      expect(foreignPage.kind === "ok" && foreignPage.page.favorites?.chats.map((chat) => chat.title))
+        .toEqual(["Foreign favorite"]);
+    } finally {
+      await prisma.user.deleteMany({ where: { id: { in: [ownerId, foreignId] } } });
+    }
+  });
 });

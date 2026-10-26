@@ -409,6 +409,30 @@ describe("Prisma-backed chat repository", () => {
     });
   });
 
+  it("keeps a chat's time when only its favorite flag changes", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const updatedAt = new Date("2025-03-01T08:00:00.000Z");
+      const chat = await prisma.chat.create({
+        data: { defaultProviderModelId: fakeProviderModelId, title: "Old chat", updatedAt, userId }
+      });
+
+      await expect(repository.updateChat({ chatId: chat.id, pinned: true, userId }))
+        .resolves.toMatchObject({ pinned: true, updatedAt });
+      await expect(repository.updateChat({ chatId: chat.id, pinned: false, userId }))
+        .resolves.toMatchObject({ pinned: false, updatedAt });
+      await expect(prisma.chat.findUniqueOrThrow({ select: { pinned: true, updatedAt: true }, where: { id: chat.id } }))
+        .resolves.toEqual({ pinned: false, updatedAt });
+      // Another user's toggle changes nothing.
+      await expect(repository.updateChat({ chatId: chat.id, pinned: true, userId: randomUUID() })).resolves.toBeNull();
+
+      // Every other update keeps advancing the time, also beside a favorite change.
+      const renamed = await repository.updateChat({ chatId: chat.id, pinned: true, title: "Renamed", userId });
+      expect(renamed?.pinned).toBe(true);
+      expect(new Date(renamed?.updatedAt ?? 0).getTime()).toBeGreaterThan(updatedAt.getTime());
+    });
+  });
+
   it("moves an unfiled retained chat with the production Memory hooks", async () => {
     await withFolderUser(async ({ fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma, {
