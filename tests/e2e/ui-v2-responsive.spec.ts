@@ -119,6 +119,10 @@ test("v2 sidebar transfers focus across desktop, compact, and mobile composition
   await page.setViewportSize({ height: 800, width: 1281 });
   await page.goto("/ui-v2-fixture?fixture=navigation");
   const source = page.getByRole("treeitem", { name: "Quarterly product brief", exact: true });
+  // The tree makes its selected row the Tab stop once it has hydrated; a focus
+  // placed before that is unknown to the shell, which then has nothing to move
+  // when the width changes.
+  await expect(source).toHaveAttribute("tabindex", "0");
   await source.focus();
 
   await page.setViewportSize({ height: 720, width: 767 });

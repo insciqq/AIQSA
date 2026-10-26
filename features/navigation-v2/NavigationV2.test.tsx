@@ -1387,6 +1387,19 @@ describe("Navigation v2", () => {
     expect(nextConversation).toHaveFocus();
   });
 
+  it("keeps the opener focused when Escape closes the list before the delayed chat-filter focus", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    render(<ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}><main>Conversation</main></ReadingRoomShellV2>);
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    act(() => vi.advanceTimersByTime(100));
+
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+    expect(screen.getByRole("searchbox", { name: "Filter chats" })).not.toHaveFocus();
+  });
+
   it("dismisses the chat-row menu on Escape, outside press, and focus-out", () => {
     sidebar();
     const trigger = screen.getByRole("button", { name: "Actions: Selected brief" });
