@@ -119,8 +119,7 @@ export const installationToolBudgetPolicy = {
       maxToolRounds: policy.toolLimitsEnabled ? Number(policy.maxToolRounds) : null,
       toolObservationPolicy: normalizeToolObservationPolicy(policy.toolObservationPolicy)
     };
-    if (!validDiscoveryResultBudget(budgets) ||
-      (policy.toolLimitsEnabled ? !validToolLoopBudgets(budgets) : !unlimitedToolLoopBudgets(budgets))) {
+    if (!validDiscoveryResultBudget(budgets) || policy.toolLimitsEnabled && !validToolLoopBudgets(budgets)) {
       throw new Error("installation_tool_budgets_invalid");
     }
     return budgets;
