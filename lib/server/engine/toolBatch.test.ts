@@ -164,6 +164,18 @@ describe("native tool batch", () => {
     expect(outcome.results[1]!.output).toContain("effect is unknown");
   });
 
+  it("starts no retry of a read-only call once the tool time ran out while it was running", async () => {
+    let timeLeft = true;
+    // The attempt fails in transport after the tool time ran out: trying again would start the call anew.
+    const read = vi.fn(async () => { timeLeft = false; throw new TypeError("fetch failed"); });
+    const { store } = fakeStore();
+    const outcome = await runToolBatch(deps({ read: tool("read", "none", read) }, store, { maxToolCalls: null,
+      toolTimeLeft: () => timeLeft }), { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "read" }], round: 1 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(outcome.results[0]!.outcome).toBe("error");
+    expect(outcome.executed).toBe(1);
+  });
+
   it("never sends an external call again after an identical one's outcome became unknown", async () => {
     // Regression: a write whose transport failed was sent a second time when the model asked again.
     const write = vi.fn(async () => { throw new TypeError("fetch failed"); });

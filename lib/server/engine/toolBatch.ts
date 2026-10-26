@@ -133,9 +133,9 @@ export type ToolBatchDeps = Readonly<{
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
   /**
-   * Whether the turn may still start tool work (the loop's tool time), asked as each call is about to start. A call
-   * of a batch that waited behind slower ones past it is refused like one past the call budget, so it never spends
-   * the answer's reserve; calls already running settle. Absent: no time check here.
+   * Whether the turn may still start tool work (the loop's tool time), asked as each call is about to start and before
+   * a read-only call is tried again. A call of a batch that waited behind slower ones past it is refused like one past
+   * the call budget, so it never spends the answer's reserve; calls already running settle. Absent: no time check here.
    */
   toolTimeLeft?(): boolean;
   /** Effects of the chat's earlier calls that are still unknown; the batch adds its own. */
@@ -351,8 +351,9 @@ async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, executi
     try {
       return await tool.execute(execution);
     } catch (error) {
+      // A retry starts the call again, so past the tool time it fails as it is: the answer's reserve covers one attempt.
       if (execution.signal.aborted || tool.effects !== "none" || attempt >= TOOL_BATCH_LIMITS.readOnlyRetries ||
-        !transientToolFailure(error)) throw error;
+        !transientToolFailure(error) || deps.toolTimeLeft?.() === false) throw error;
       await (deps.sleep ?? sleepWithSignal)(TOOL_BATCH_LIMITS.retryBaseDelayMs * 2 ** attempt, execution.signal);
     }
   }

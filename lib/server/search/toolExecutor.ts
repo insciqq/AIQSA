@@ -240,6 +240,12 @@ function searchTool(name: string, description: string, queryMaxCharacters: numbe
   };
 }
 
+/** A source's own call timeout, frozen with the run's Search plan; the runtime's response timeout may shorten it. */
+export function searchOptionTimeoutMs(option: NormalizedSearchPlanOption): number {
+  const value = option.config.timeoutMs;
+  return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : legacySearchExecutionDefaults.timeoutMs;
+}
+
 export function searchExecutionConfiguration(option: NormalizedSearchPlanOption, input: unknown = ""): {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
@@ -295,9 +301,7 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption,
     reasoningPolicy: config.reasoningPolicy === "provider_default"
       ? "provider_default"
       : legacySearchExecutionDefaults.reasoningPolicy,
-    timeoutMs: Number.isSafeInteger(config.timeoutMs) && Number(config.timeoutMs) > 0
-      ? Number(config.timeoutMs)
-      : legacySearchExecutionDefaults.timeoutMs
+    timeoutMs: searchOptionTimeoutMs(option)
   };
 }
 

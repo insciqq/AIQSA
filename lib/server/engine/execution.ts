@@ -23,7 +23,7 @@ import { reportedAnswerCost, usageAttributionsWithEstimatedCost } from "../runs/
 import { withPinnedHostedSearchIdentity } from "../runs/searchArtifactIdentity";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
-import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
+import { longestToolCallMs, turnSoftDeadlineMs } from "../runs/turnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
@@ -67,22 +67,10 @@ import { createUsageLedger } from "./usage";
  * handler: it cancels the run's row and aborts this run's controller.
  */
 export const NATIVE_TURN_LIMITS = Object.freeze({
-  /** A run without a Workspace answers within this long. */
-  turnMs: 60 * 60_000,
-  /** Before its deadline the turn stops calling tools and answers. */
-  answerReserveMs: 5 * 60_000
+  /** A run without a Workspace answers within this long; before it, the turn stops calling tools and answers
+   * (`turnSoftDeadlineMs`). */
+  turnMs: 60 * 60_000
 });
-
-/**
- * How long into a turn of `turnMs` tool work may start: the answer reserve (a
- * Workspace turn's own, `workspaceTurnDeadline.ts`) before its end. Past it
- * the turn answers without tools, which is what ends an answer when it has no
- * tool limits.
- */
-function turnToolTimeMs(turnMs: number, workspace: Readonly<{ syncToolTimeoutSeconds: number }> | undefined): number {
-  return workspace ? workspaceTurnSoftDeadlineMs(turnMs / 1_000, workspace.syncToolTimeoutSeconds)
-    : turnMs - NATIVE_TURN_LIMITS.answerReserveMs;
-}
 
 export class EngineFailure extends Error {
   constructor(readonly code: string, message: string) {
@@ -271,8 +259,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
   // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
   const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
-  const toolTimeEndsAt = Math.min(startedAt + turnToolTimeMs(turnMs, workspace), input.scheduled
-    ? (input.created.acceptedAt?.getTime() ?? startedAt) + turnToolTimeMs(scheduledTurnMs, workspace) : Infinity);
+  // Past its tool time the turn answers without tools, which is what ends an answer without tool limits. That time
+  // leaves room for the longest call that may then still be running, and the answer after it.
+  const longestCallMs = longestToolCallMs(normalizedRequest);
+  const toolTimeEndsAt = Math.min(startedAt + turnSoftDeadlineMs(turnMs, longestCallMs), input.scheduled
+    ? (input.created.acceptedAt?.getTime() ?? startedAt) + turnSoftDeadlineMs(scheduledTurnMs, longestCallMs) : Infinity);
   // Asked before each round and as each call of a batch starts, so a call queued behind slower ones never starts late.
   const toolTimeLeft = () => now() < toolTimeEndsAt;
   const deadline = new AbortController();
