@@ -113,7 +113,7 @@ describe("shared System Vision boundary", () => {
     f.prepareImages.mockRejectedValueOnce(new TypeError("terminated"));
     expect((await service.execute(f.call, f.context)).status).toBe("error");
     expect(f.execute).not.toHaveBeenCalled();
-    // The same call again, as the batch retries a read-only call with the same execution.
+    // The same call executed again with the same context, as any retry of it would be.
     expect((await service.execute(f.call, f.context)).status).toBe("complete");
     const requests = captures.create.mock.calls.map(([request]) => request);
     expect(requests.map((request) => request.consumerKey)).toEqual(["tool", "tool"]);
