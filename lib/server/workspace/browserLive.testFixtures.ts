@@ -82,7 +82,9 @@ export function fakeLiveGuest(options: FakeLiveGuestOptions = {}) {
         guest.handoff = false;
         guest.controller = "agent";
         broadcast();
-        return ack({ page: guest.page, saved: message.outcome === "completed" ? "shop.example" : null });
+        // As the guest's hub: Done saves the site only for a handoff about signing in.
+        return ack({ page: guest.page, saved: message.outcome === "completed" &&
+          ["sign_in", "verification_code", "captcha", "consent"].includes(String(message.reason)) ? "shop.example" : null });
       case "input":
         if (guest.controller !== "user") return refuse("not_in_control");
         return ack();

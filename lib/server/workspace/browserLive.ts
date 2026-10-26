@@ -296,7 +296,8 @@ class LiveRun implements BrowserLiveRunHandle {
 
   /**
    * The agent's handoff: the user holds the browser until Done, Cancel or `waitMs`; the run's Stop or deadline
-   * (`signal`) ends it too, by throwing its reason. On Done the guest saves the current site's sign-in.
+   * (`signal`) ends it too, by throwing its reason. On Done the guest saves the current site's sign-in, only for a
+   * handoff about signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end carries the reason.
    */
   async handoff(input: Readonly<{ message: string; reason: BrowserHandoffReason; signal: AbortSignal; waitMs: number }>):
     Promise<BrowserLiveHandoffResult> {
@@ -337,15 +338,16 @@ class LiveRun implements BrowserLiveRunHandle {
     this.broadcastState();
     if (outcome === "aborted") {
       // The run is ending: its guest stops with it, so the guest's control is ended without waiting.
-      void this.command({ action: "end", outcome: "cancelled", t: "handoff" }, 2_000).catch(() => undefined);
+      void this.command({ action: "end", outcome: "cancelled", reason: input.reason, t: "handoff" }, 2_000).catch(() => undefined);
       throw input.signal.reason ?? new Error("browser_handoff_aborted");
     }
-    let end = await this.command({ action: "end", outcome, t: "handoff" }).catch(() => null);
+    const ending = { action: "end", outcome, reason: input.reason, t: "handoff" };
+    let end = await this.command(ending).catch(() => null);
     if (end?.ok !== true && !this.ended) {
       // Once more on a fresh streamer: the guest's control must not stay with the user for the rest of the turn.
       const missed = this.streamer;
       if (missed) await this.close(missed);
-      end = await this.command({ action: "end", outcome, t: "handoff" }).catch(() => null);
+      end = await this.command(ending).catch(() => null);
     }
     return { kind: "ended", outcome, page: end?.ok === true ? pageOf(end.page) : null,
       saved: end?.ok === true && typeof end.saved === "string" ? end.saved.slice(0, 200) : null };

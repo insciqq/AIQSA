@@ -11,6 +11,21 @@ async function stored(args: Record<string, unknown>, mode: BrowserHandoffMode = 
   return { arguments: args, result: snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) };
 }
 
+describe("a handoff's result", () => {
+  it("names a site to be saved only when the guest saved one", async () => {
+    const call = { arguments: { message: "Pick the delivery slot you want.", reason: "user_choice" }, id: "call-1",
+      name: BROWSER_HANDOFF_TOOL_NAME };
+    const page = { title: "Delivery", url: "https://shop.example/slots" };
+    for (const saved of [null, "shop.example"]) {
+      const live = { end: async () => undefined, handoff: async () => ({ kind: "ended" as const, outcome: "completed" as const, page, saved }) };
+      const result = await executeBrowserHandoff(call, { kind: "interactive", live, toolTimeLeftMs: () => 3_600_000 },
+        new AbortController().signal);
+      const value = (result.content[0] as unknown as { value: Record<string, unknown> }).value;
+      expect("signInSavedAfterAnswer" in value).toBe(saved !== null);
+    }
+  });
+});
+
 describe("a scheduled run's handoff calls", () => {
   it("count as a needed sign-in only for a sign-in, a code or a check nobody could take over", async () => {
     for (const reason of ["sign_in", "verification_code", "captcha"]) {

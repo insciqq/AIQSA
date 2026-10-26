@@ -299,6 +299,22 @@ describe("browser live handoff", () => {
     expect(guest.guest).toMatchObject({ controller: "agent", handoff: false });
   });
 
+  it("tells the guest the handoff's reason with its end, so Done saves the site only for signing in", async () => {
+    const { guest, handle, view } = setup();
+    ended.push(() => handle.end());
+    const tab = recordingWriter();
+    await view.watch(owner, tab.writer);
+    for (const [reason, saved] of [["user_choice", null], ["consent", "shop.example"]] as const) {
+      const waiting = handle.handoff({ message: "Have a look", reason, signal: signal(), waitMs: 60_000 });
+      await until(() => Boolean(tab.last<BrowserLiveStateEvent>("state")?.handoff));
+      view.answerHandoff(owner, { action: "done", handoffId: tab.last<BrowserLiveStateEvent>("state")!.handoff!.id });
+      expect(await waiting).toMatchObject({ kind: "ended", outcome: "completed", saved });
+      await until(() => tab.last<BrowserLiveStateEvent>("state")?.handoff === null);
+    }
+    expect(guest.received.filter((message) => message.t === "handoff" && message.action === "end").map((message) => message.reason))
+      .toEqual(["user_choice", "consent"]);
+  });
+
   it("returns a handoff still waiting as timed out when the run ends", async () => {
     const { handle, view } = setup();
     const tab = recordingWriter();

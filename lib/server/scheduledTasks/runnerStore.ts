@@ -14,7 +14,7 @@ import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
 import type { ScheduledTaskNotification } from "./notifications";
-import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
+import { BROWSER_HANDOFF_SIGN_IN_REASONS, BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
 import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_RETRY_WINDOW_MS,
@@ -518,6 +518,22 @@ async function claimWebhookEvents(prisma: PrismaClient, limit: number): Promise<
   }, { maxWait: 10_000, timeout: 60_000 });
 }
 
+/**
+ * Whether the run's agent needed its owner to sign in to a site and nobody could take over
+ * (`browserHandoffNeededSignIn`). Every handoff call asking for a sign-in, a code or a check is read, however many
+ * other calls the run made.
+ */
+export async function runNeededBrowserSignIn(tx: Pick<Prisma.TransactionClient, "modelRunToolCall">, runId: string): Promise<boolean> {
+  const calls = await tx.modelRunToolCall.findMany({
+    select: { arguments: true, result: true },
+    where: {
+      modelRunId: runId, state: "error", toolName: BROWSER_HANDOFF_TOOL_NAME,
+      OR: BROWSER_HANDOFF_SIGN_IN_REASONS.map((reason) => ({ arguments: { equals: reason, path: ["reason"] } }))
+    }
+  });
+  return calls.some(browserHandoffNeededSignIn);
+}
+
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
   function settleLinked(occurrenceId: string, now: Date) {
     return prisma.$transaction(async (tx) => {
@@ -533,11 +549,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       // Its agent needed the user to sign in to a site (an expired sign-in, a code, a check) and nobody could take
       // over an unattended run: it fails visibly, its answer kept, and its owner signs in again in a chat. Any other
       // handoff call (malformed, refused, a consent or a choice) leaves the run's own outcome.
-      const outcome = linked.state === "COMPLETED" && observed.occurrence.runId && (await tx.modelRunToolCall.findMany({
-        select: { arguments: true, result: true },
-        take: 20,
-        where: { modelRunId: observed.occurrence.runId, state: "error", toolName: BROWSER_HANDOFF_TOOL_NAME }
-      })).some(browserHandoffNeededSignIn) ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
+      const outcome = linked.state === "COMPLETED" && observed.occurrence.runId && await runNeededBrowserSignIn(tx, observed.occurrence.runId)
+        ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
       const check = outcome.state === "COMPLETED" ? monitoringSettlementOf(locked) : null;
