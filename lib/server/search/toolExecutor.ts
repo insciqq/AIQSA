@@ -246,6 +246,20 @@ export function searchOptionTimeoutMs(option: NormalizedSearchPlanOption): numbe
   return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : legacySearchExecutionDefaults.timeoutMs;
 }
 
+/**
+ * The search tools a plan offers: each tool's name and description and the client sources its calls go to, all of
+ * them at once in `all_selected` mode, otherwise one each. Sources the answer model searches in its own call have none.
+ */
+export function searchToolRoutes(plan: NormalizedSearchPlan): readonly Readonly<{
+  description: string; name: string; options: readonly NormalizedSearchPlanOption[];
+}>[] {
+  const options = plan.options.filter((option) => option.adapterKind === "provider_model_client");
+  if (options.length === 0) return [];
+  return plan.mode === "all_selected"
+    ? [{ description: ALL_SELECTED_DESCRIPTION, name: allSelectedToolName, options }]
+    : options.map((option, ordinal) => ({ description: toolDescription(option), name: toolName(ordinal), options: [option] }));
+}
+
 export function searchExecutionConfiguration(option: NormalizedSearchPlanOption, input: unknown = ""): {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
@@ -782,10 +796,9 @@ export function createSearchPlanToolRouter(input: Readonly<{
   retry?: SearchRetryPorts;
   runtimes: Readonly<Record<string, ProviderRuntimeBinding | undefined>>;
 }>): SearchPlanToolRouter | null {
-  const clientOptions = input.plan.options.filter(
-    (option) => option.adapterKind === "provider_model_client"
-  );
-  if (clientOptions.length === 0) return null;
+  const searchRoutes = searchToolRoutes(input.plan);
+  if (searchRoutes.length === 0) return null;
+  const clientOptions = searchRoutes.flatMap((route) => route.options);
   const invocationCounts = new Map(clientOptions.map((option) => {
     const count = input.initialInvocationCounts?.[option.optionId];
     return [
@@ -801,23 +814,14 @@ export function createSearchPlanToolRouter(input: Readonly<{
       available === 1 ? "time" : "times"
     } for this answer.`;
   };
-  const routes = input.plan.mode === "all_selected"
-    ? [{
-        options: clientOptions,
-        tool: searchTool(
-          allSelectedToolName,
-          ALL_SELECTED_DESCRIPTION + budgetDescription(clientOptions),
-          Math.min(...clientOptions.map((option) => searchExecutionConfiguration(option).queryMaxCharacters))
-        )
-      }]
-    : clientOptions.map((option, ordinal) => ({
-        options: [option],
-        tool: searchTool(
-          toolName(ordinal),
-          toolDescription(option) + budgetDescription([option]),
-          searchExecutionConfiguration(option).queryMaxCharacters
-        )
-      }));
+  const routes = searchRoutes.map((route) => ({
+    options: route.options,
+    tool: searchTool(
+      route.name,
+      route.description + budgetDescription(route.options),
+      Math.min(...route.options.map((option) => searchExecutionConfiguration(option).queryMaxCharacters))
+    )
+  }));
   const routeForName = (name: string) =>
     routes.find((candidate) => candidate.tool.name === name);
 

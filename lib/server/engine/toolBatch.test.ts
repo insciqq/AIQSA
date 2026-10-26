@@ -310,6 +310,23 @@ describe("native tool batch", () => {
     expect(lookup).toHaveBeenCalledTimes(4);
   });
 
+  it("refuses only the call whose own bound no longer fits, while another call of the batch still starts", async () => {
+    const fast = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const slow = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const { store } = fakeStore();
+    // The time check sees each call's own tool: here the slow one would outlast the answer's reserve.
+    const batch = deps({ fast: tool("fast", "none", fast), slow: tool("slow", "none", slow) }, store,
+      { maxToolCalls: null, toolTimeLeft: (definition) => definition.name !== "slow" });
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [
+      { arguments: {}, id: "s1", name: "slow" }, { arguments: {}, id: "f1", name: "fast" }
+    ] });
+    expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["s1", "error"], ["f1", "complete"]]);
+    expect(outcome.results[0]!.output).toBe(TOOL_TIME_EXHAUSTED_OUTPUT);
+    expect(outcome).toMatchObject({ budgetExhausted: true, executed: 1 });
+    expect(slow).not.toHaveBeenCalled();
+    expect(fast).toHaveBeenCalledOnce();
+  });
+
   it("runs the reserved report's first call outside the call budget, and counts a repeated one", async () => {
     const report = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
     const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));

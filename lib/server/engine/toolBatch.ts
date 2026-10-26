@@ -22,7 +22,7 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
-import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
+import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
@@ -133,11 +133,12 @@ export type ToolBatchDeps = Readonly<{
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
   /**
-   * Whether the turn may still start tool work (the loop's tool time), asked as each call is about to start and before
-   * a read-only call is tried again. A call of a batch that waited behind slower ones past it is refused like one past
-   * the call budget, so it never spends the answer's reserve; calls already running settle. Absent: no time check here.
+   * Whether the turn may still start this tool's call: the loop's tool time, and whether the call's own longest
+   * duration still fits before the deadline (`toolCallBounds`). Asked as each call is about to start and before a
+   * read-only call is tried again. A call that waited behind slower ones past it, or would outlast the answer's
+   * reserve, is refused like one past the call budget; calls already running settle. Absent: no time check here.
    */
-  toolTimeLeft?(): boolean;
+  toolTimeLeft?(tool: RunTool): boolean;
   /** Effects of the chat's earlier calls that are still unknown; the batch adds its own. */
   unknownEffects: UnknownEffects;
   userId: string;
@@ -232,7 +233,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         toolName: call.name };
     }
     const exempt = deps.reservedToolName !== undefined && call.name === deps.reservedToolName && state.reservedCalled !== true;
-    if (!exempt && deps.toolTimeLeft?.() === false) {
+    if (!exempt && deps.toolTimeLeft?.(tool.definition) === false) {
       return { budget: true, kind: "refuse", output: TOOL_TIME_EXHAUSTED_OUTPUT, toolName: call.name,
         result: jsonError(call, { error: "tool_time_exhausted", message: TOOL_TIME_EXHAUSTED_OUTPUT }) };
     }
@@ -353,7 +354,7 @@ async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, executi
     } catch (error) {
       // A retry starts the call again, so past the tool time it fails as it is: the answer's reserve covers one attempt.
       if (execution.signal.aborted || tool.effects !== "none" || attempt >= TOOL_BATCH_LIMITS.readOnlyRetries ||
-        !transientToolFailure(error) || deps.toolTimeLeft?.() === false) throw error;
+        !transientToolFailure(error) || deps.toolTimeLeft?.(tool.definition) === false) throw error;
       await (deps.sleep ?? sleepWithSignal)(TOOL_BATCH_LIMITS.retryBaseDelayMs * 2 ** attempt, execution.signal);
     }
   }
