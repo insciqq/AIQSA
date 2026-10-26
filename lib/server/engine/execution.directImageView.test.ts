@@ -53,7 +53,7 @@ function engine(earlier?: Readonly<{ answerId: string; items: readonly Transcrip
   const transcripts = {
     append: vi.fn(async (_scope, _from, items: readonly TranscriptItem[]) => { recorded.push(...items); }),
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
-    loadRuns: vi.fn(async () => new Map(earlier ? [[earlier.runId, earlier.items]] : [])),
+    loadRuns: vi.fn(async () => new Map<string, TranscriptItem[]>(earlier ? [[earlier.runId, [...earlier.items]]] : [])),
     nativeRunsForAnswers: vi.fn(async () => new Map(earlier ? [[earlier.answerId, earlier.runId]] : [])),
     nativeRunsBeforeTurns: vi.fn(async () => []),
     nextSequence: vi.fn(async () => recorded.length),
