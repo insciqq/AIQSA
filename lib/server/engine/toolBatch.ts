@@ -109,7 +109,8 @@ export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
 export type ToolBatchDeps = Readonly<{
   chatId: string;
   history: ToolCallRepeatHistory;
-  maxToolCalls: number;
+  /** The run's call budget; null: no call count refuses a call (the repeat guard still does). */
+  maxToolCalls: number | null;
   /** Persisted output events (artifacts, cards); also sent live. */
   onEvent(event: ModelRunSseEvent): Promise<void>;
   /** Live-only events (a running step). */
@@ -221,7 +222,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         toolName: call.name };
     }
     const exempt = deps.reservedToolName !== undefined && call.name === deps.reservedToolName && state.reservedCalled !== true;
-    if (!exempt && state.calls >= deps.maxToolCalls) {
+    if (!exempt && deps.maxToolCalls !== null && state.calls >= deps.maxToolCalls) {
       const message = TOOL_CALL_LIMIT_OUTPUT(deps.maxToolCalls);
       return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
         toolName: call.name };

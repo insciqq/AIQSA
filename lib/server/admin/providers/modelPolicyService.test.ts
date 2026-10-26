@@ -103,6 +103,7 @@ describe("administrator model policy service", () => {
           // Retired storage stays in the row and never reaches the projection.
           mcpAutoDiscoveryTimeoutSeconds: 60n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
           maxMcpToolsPerDiscovery: 10n,
+          toolLimitsEnabled: false,
           maxToolCalls: 20n,
           maxToolRounds: 8n,
           updatedAt: NOW,
@@ -143,6 +144,7 @@ describe("administrator model policy service", () => {
         },
         reasoningEffort: null,
         maxMcpToolsPerDiscovery: 10,
+        toolLimitsEnabled: false,
         maxToolCalls: 20,
         maxToolRounds: 8,
         toolObservationPolicy: "off",
@@ -241,7 +243,7 @@ describe("administrator model policy service", () => {
     expect(targetTx.modelPolicy.update).not.toHaveBeenCalled();
   });
 
-  it("updates positive safe tool budgets without imposing a product cap", async () => {
+  it.each([true, false])("updates positive safe tool budgets without imposing a product cap, limits on: %s", async (toolLimitsEnabled) => {
     const update = vi.fn().mockResolvedValue({});
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ version: 5 }]),
@@ -256,14 +258,17 @@ describe("administrator model policy service", () => {
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
+      toolLimitsEnabled,
       userId: "admin-1"
     });
 
+    // Off keeps the numbers as the limits turning them on applies.
     expect(update).toHaveBeenCalledWith({
       data: {
         maxMcpToolsPerDiscovery: 10n,
         maxToolCalls: 200n,
         maxToolRounds: 200n,
+        toolLimitsEnabled,
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
@@ -312,6 +317,7 @@ describe("administrator model policy service", () => {
       maxToolRounds: 8,
       providerModelId: "model-1",
       reasoningEffort: "high",
+      toolLimitsEnabled: true,
       userId: "admin-1"
     });
 
@@ -324,6 +330,7 @@ describe("administrator model policy service", () => {
         maxToolCalls: 24n,
         maxToolRounds: 8n,
         reasoningEffort: "high",
+        toolLimitsEnabled: true,
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
@@ -337,6 +344,11 @@ describe("administrator model policy service", () => {
     await expect(service.update({ expectedVersion: 1, providerModelId: "model-1", userId: "admin-1" }))
       .rejects.toThrow("model_policy_update_invalid");
     await expect(service.update({ expectedVersion: 1, maxToolCalls: 4, userId: "admin-1" }))
+      .rejects.toThrow("model_policy_update_invalid");
+    // The numbers never change without their switch, nor the switch without its numbers.
+    await expect(service.update({ expectedVersion: 1, maxMcpToolsPerDiscovery: 10, maxToolCalls: 4, maxToolRounds: 2,
+      userId: "admin-1" })).rejects.toThrow("model_policy_update_invalid");
+    await expect(service.update({ expectedVersion: 1, toolLimitsEnabled: true, userId: "admin-1" }))
       .rejects.toThrow("model_policy_update_invalid");
     await expect(service.update({ expectedVersion: 1, userId: "admin-1" }))
       .rejects.toThrow("model_policy_update_invalid");

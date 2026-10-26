@@ -22,8 +22,8 @@ export const WORKSPACE_TURN_TAIL_RESERVE_MS = 240_000;
  * Reserve = one synchronous Workspace call (the longest a call already
  * running can take; it is never aborted early, so its side effects stay
  * unambiguous) + `WORKSPACE_TURN_TAIL_RESERVE_MS`, capped at half the budget
- * so short budgets keep time for actual work. Defaults (1 800 s turn, 120 s
- * call): 360 s reserve, so the final answer is forced after 1 440 s (80 %).
+ * so short budgets keep time for actual work. Defaults (3 600 s turn, 120 s
+ * call): 360 s reserve, so the final answer is forced after 3 240 s (90 %).
  * A longer in-flight call of another kind (a reasoning Vision request may wait
  * up to 300 s) can still meet the hard deadline.
  */

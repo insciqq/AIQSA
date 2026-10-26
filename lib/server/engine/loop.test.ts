@@ -17,7 +17,9 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
   batch: (calls: readonly ModelToolCall[]) => Partial<ToolBatchOutcome>;
   closes: boolean[];
   followups: TranscriptUserItem[][];
-  maxToolRounds: number;
+  /** Null: no round limit (tool limits off). */
+  maxToolRounds: number | null;
+  toolTimeLeft: () => boolean;
 }> = {}) {
   const items: TranscriptItem[] = [];
   const choices: string[] = [];
@@ -33,7 +35,7 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
     callModel: vi.fn(async () => responses[Math.min(index++, responses.length - 1)]!),
     closeFollowups: vi.fn(async () => closes.shift() ?? true),
     deliverFollowups: vi.fn(async () => followups.shift() ?? []),
-    maxToolRounds: options.maxToolRounds ?? 8,
+    maxToolRounds: options.maxToolRounds === undefined ? 8 : options.maxToolRounds,
     prepareRequest: vi.fn(async ({ answerNow, round, toolChoice }) => {
       choices.push(toolChoice);
       if (answerNow) asked.push(round);
@@ -49,7 +51,7 @@ function harness(responses: readonly ProviderRunResult[], options: Partial<{
       ...options.batch?.(calls)
     })),
     signal: new AbortController().signal,
-    toolTimeLeft: () => true
+    toolTimeLeft: options.toolTimeLeft ?? (() => true)
   };
   return { asked, choices, items, order, ports };
 }
@@ -108,6 +110,28 @@ describe("native agent loop", () => {
     const stalled = harness([response("", [call("c1")]), response("Done")], { batch: () => ({ executed: 0 }) });
     await runAgentLoop(stalled.ports);
     expect(stalled.choices).toEqual(["auto", "none"]);
+  });
+
+  it("keeps tools open for as many rounds as the work takes without a round limit", async () => {
+    const working = Array.from({ length: 60 }, (_, index) => response("", [call(`c${index}`)]));
+    const { choices, ports } = harness([...working, response("Done")], { maxToolRounds: null });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 61 });
+    expect(choices).toEqual(Array<string>(61).fill("auto"));
+    expect(ports.runTools).toHaveBeenCalledTimes(60);
+  });
+
+  it("ends tool use at the tool time without limits, and the tool-free round answers", async () => {
+    let rounds = 0;
+    // The model would go on calling tools: the time deadline, not a count, closes them.
+    const { asked, choices, items, ports } = harness([response("", [call("c1")]), response("", [call("c2")]),
+      response("", [call("c3")]), response("Here is what I found so far.")],
+    { maxToolRounds: null, toolTimeLeft: () => ++rounds <= 2 });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 4 });
+    expect(choices).toEqual(["auto", "auto", "none", "none"]);
+    expect(ports.runTools).toHaveBeenCalledTimes(2);
+    // The call of the first tool-free round gets its result without running, and the round is asked for the answer.
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c3")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+    expect(asked).toEqual([4]);
   });
 
   it("lets the model correct a call it could not make, a bounded number of times", async () => {
@@ -268,6 +292,16 @@ describe("the run's reserved report", () => {
     expect(ignored.choices).toEqual(["auto", "none"]);
     expect(ignored.reservedRounds).toEqual([1]);
     expect(ignored.ports.runTools).not.toHaveBeenCalled();
+  });
+
+  it("is offered by the tool time alone when the turn has no limits", async () => {
+    let rounds = 0;
+    const working = Array.from({ length: 12 }, (_, index) => response("", [call(`c${index}`)]));
+    const { choices, ports, reservedRounds } = reservedHarness([...working, response("", [call("v1", "report")]), response("Done")],
+      { maxToolRounds: null, timeLeft: () => ++rounds <= 12 });
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 14 });
+    expect(reservedRounds).toEqual([13]);
+    expect(choices).toEqual([...Array<string>(13).fill("auto"), "none"]);
   });
 
   it("is not offered past the tool time once made", async () => {

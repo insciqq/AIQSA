@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
+import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
@@ -71,6 +72,17 @@ export const NATIVE_TURN_LIMITS = Object.freeze({
   /** Before its deadline the turn stops calling tools and answers. */
   answerReserveMs: 5 * 60_000
 });
+
+/**
+ * How long into a turn of `turnMs` tool work may start: the answer reserve (a
+ * Workspace turn's own, `workspaceTurnDeadline.ts`) before its end. Past it
+ * the turn answers without tools, which is what ends an answer when it has no
+ * tool limits.
+ */
+function turnToolTimeMs(turnMs: number, workspace: Readonly<{ syncToolTimeoutSeconds: number }> | undefined): number {
+  return workspace ? workspaceTurnSoftDeadlineMs(turnMs / 1_000, workspace.syncToolTimeoutSeconds)
+    : turnMs - NATIVE_TURN_LIMITS.answerReserveMs;
+}
 
 export class EngineFailure extends Error {
   constructor(readonly code: string, message: string) {
@@ -256,9 +268,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   const workspace = normalizedRequest.workspace;
   const startedAt = now();
   const turnMs = workspace ? workspace.turnTimeoutSeconds * 1_000 : NATIVE_TURN_LIMITS.turnMs;
-  const toolTimeEndsAt = startedAt + (workspace
-    ? workspaceTurnSoftDeadlineMs(workspace.turnTimeoutSeconds, workspace.syncToolTimeoutSeconds)
-    : turnMs - NATIVE_TURN_LIMITS.answerReserveMs);
+  // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
+  // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
+  const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
+  const toolTimeEndsAt = Math.min(startedAt + turnToolTimeMs(turnMs, workspace), input.scheduled
+    ? (input.created.acceptedAt?.getTime() ?? startedAt) + turnToolTimeMs(scheduledTurnMs, workspace) : Infinity);
   const deadline = new AbortController();
   const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
     turnMs);
