@@ -83,6 +83,17 @@ type IntegerSetting = Readonly<{
  */
 export const WORKSPACE_TURN_TIMEOUT_MAX_SECONDS = 7_200;
 
+/**
+ * Microsandbox's own idle stop, a backstop behind the app's idle sweep (`cleanup.ts`), which stops a VM no run owns
+ * once it was idle for `idleTtlSeconds`. It must not fire inside a turn: an answer may work longer than the idle time
+ * without the VM (Search, MCP, saved results) and then use it again, and a stop there would restart the VM mid-answer
+ * and lose the processes the turn started. So it waits at least a whole turn, plus a margin for the hand-off.
+ * Microsandbox fixes it when it creates a VM, so a VM created earlier keeps the one it was created with.
+ */
+export function workspaceRuntimeIdleTimeoutSeconds(config: Pick<WorkspaceConfig, "idleTtlSeconds" | "turnTimeoutSeconds">): number {
+  return Math.max(config.idleTtlSeconds, config.turnTimeoutSeconds + 300);
+}
+
 const integerSettings = Object.freeze({
   codeMcpMaxCalls: {
     defaultValue: 200,
