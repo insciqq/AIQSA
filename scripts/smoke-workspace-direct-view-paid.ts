@@ -299,13 +299,13 @@ async function sendTurn(api: Api, chatId: string, leafId: string | null, model: 
   return poll("turn", 300_000, async () => {
     const message = (await chatDetail(api, chatId)).messages.find((entry) => entry.id === assistant.id) ?? null;
     if (!message || message.status !== "complete" || !expectFiles) return message;
-    return message.generatedFiles?.some((file) => file.fileName === "code.sha256") ? message : null;
+    return message.artifactSummary?.generatedFiles?.some((file) => file.fileName === "code.sha256") ? message : null;
   }, "generated_files_missing");
 }
 
 /** The hash the program wrote, from the answer's exported file. */
 async function writtenHash(api: Api, message: ChatMessageWire): Promise<string | null> {
-  const file = message.generatedFiles?.find((entry) => entry.fileName === "code.sha256");
+  const file = message.artifactSummary?.generatedFiles?.find((entry) => entry.fileName === "code.sha256");
   if (!file) return null;
   const response = await request(api, "evidence", `/api/attachments/${encodeURIComponent(file.attachmentId)}/content`);
   if (!response.ok) return null;
@@ -347,7 +347,7 @@ async function scenario(api: Api, db: PrismaClient, input: Readonly<{ model: Cat
     const started = Date.now();
     const message = await sendTurn(api, chatId, leafId, input.model, prompt, index === 0);
     const hash = await writtenHash(api, index === 0 ? message : (await chatDetail(api, chatId)).messages
-      .find((entry) => entry.generatedFiles?.some((file) => file.fileName === "code.sha256")) ?? message);
+      .find((entry) => entry.artifactSummary?.generatedFiles?.some((file) => file.fileName === "code.sha256")) ?? message);
     const facts = message.modelRunId ? await runFacts(db, message.modelRunId) : null;
     const turn = { answerMatches: answerMatches(message, hash), hashWritten: hash !== null, seconds: Math.round((Date.now() - started) / 1000),
       status: message.status, turn: index + 1, ...facts };
