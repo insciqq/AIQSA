@@ -53,7 +53,9 @@ import {
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
 import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
-import { modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptTarget, type TranscriptUserItem } from "./transcript";
+import {
+  modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptProjectionOptions, type TranscriptTarget, type TranscriptUserItem
+} from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
 import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
@@ -516,6 +518,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const reasoningScope = reasoningReplayScope(snapshot);
         const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId,
           ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}), ...(reasoningScope ? { reasoningScope } : {}) };
+        // How the run's requests render the transcript: its input with its attachments, and the Workspace previews it viewed.
+        const projection: TranscriptProjectionOptions = {
+          ...(conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {}),
+          ...(registry.images ? { images: registry.images } : {})
+        };
         const params = nativeRequestParams(snapshot.model.adapterKind, windowOutputParams(base.params,
           { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
         const timeoutMs = answerTimeoutMs;
@@ -546,7 +553,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           now,
           // Server-minted, so recorded as it is: the provider projection never keeps capacity statuses.
           onStatus: (status) => sink.record(contextCompactionArtifact(status)),
-          projection: conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {},
+          projection,
           record: (item) => transcriptRecord(registry, item),
           rules: engineItemRules(input.approvalContinuation ? conversation.currentInputId : null),
           runId,
@@ -636,7 +643,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const tools = [...registry.definitions()];
             const request: ProviderRunRequest = {
               ...base,
-              history: projectTranscript(items, target, { ...(conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {}) }),
+              history: projectTranscript(items, target, projection),
               params,
               parallelToolCalls: true,
               previousProviderResponseId: undefined,

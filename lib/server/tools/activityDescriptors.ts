@@ -93,6 +93,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
         toolName: name
       });
     }
+    // Direct view is a Workspace step, as the live answer shows it (`toolRegistry.ts`).
+    if (normalizedRequest.workspaceImageView === true) {
+      descriptors.set("view_workspace_image", { origin: "workspace", serverName: "Workspace", toolName: "view_workspace_image" });
+    }
   }
 
   descriptors.set("find_tools", { origin: "discovery", serverName: "Auto tools", toolName: "find_tools" });

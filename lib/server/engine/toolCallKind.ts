@@ -5,6 +5,7 @@ import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskCreation"
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskManagement";
 import { SAVE_SKILL_TOOL_NAME } from "../tools/skillSave";
 import type { RunTool, RunToolCapability } from "../tools/types";
+import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 
 /** The family of each tool capability; `session` tools are named one by one or are `other`. */
 const CAPABILITY_KINDS: Readonly<Record<RunToolCapability, ToolCallKind>> = {
@@ -17,7 +18,8 @@ const NAMED_KINDS: ReadonlyMap<string, ToolCallKind> = new Map([
   [CREATE_SCHEDULED_TASK_TOOL_NAME, "scheduled_task"],
   [MANAGE_SCHEDULED_TASK_TOOL_NAME, "scheduled_task"],
   [MONITORING_VERDICT_TOOL_NAME, "monitoring"],
-  [SAVE_SKILL_TOOL_NAME, "skill"]
+  [SAVE_SKILL_TOOL_NAME, "skill"],
+  [VIEW_WORKSPACE_IMAGE, "workspace_image"]
 ]);
 
 /**

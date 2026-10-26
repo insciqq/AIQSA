@@ -1,4 +1,6 @@
 import type { ProviderHistoryFormat, ProviderNativeData } from "../providers/history";
+import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
+import { parseWorkspaceImageEvidence, type WorkspaceImageEvidence } from "../workspace/directImageEvidence";
 import type { TranscriptItem, TranscriptOrigin } from "./transcript";
 
 /**
@@ -81,6 +83,13 @@ function optional<T>(key: string, value: T | undefined): Record<string, T> {
   return value === undefined ? {} : { [key]: value };
 }
 
+/** A completed `view_workspace_image` result's image reference, exactly as its evidence parses; never pixels. */
+function image(value: unknown, name: string, outcome: unknown): WorkspaceImageEvidence | undefined {
+  if (value === undefined) return undefined;
+  const evidence = parseWorkspaceImageEvidence(value);
+  return evidence && name === VIEW_WORKSPACE_IMAGE && outcome === "complete" ? evidence : invalid();
+}
+
 /** The row fields of one item; the item id becomes the row id. */
 export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields {
   const body: Record<string, unknown> = (() => {
@@ -97,7 +106,7 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
           ...optional("origin", item.origin), ...optional("outputTokens", item.outputTokens) };
       case "tool_result":
         return { name: item.name, outcome: item.outcome, output: item.output, ...optional("handle", item.handle),
-          ...(item.inFlight ? { inFlight: true } : {}) };
+          ...optional("image", item.image), ...(item.inFlight ? { inFlight: true } : {}) };
       case "compaction":
         return { origin: item.origin, ...optional("keepFromId", item.keepFromId), ...optional("native", item.native),
           ...optional("outputTokens", item.outputTokens), ...optional("retained", item.retained), ...optional("summary", item.summary) };
@@ -149,8 +158,9 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
         !OUTCOMES.includes(body.outcome as typeof OUTCOMES[number]) ||
         (body.handle !== undefined && !boundedString(body.handle, TRANSCRIPT_ITEM_LIMITS.identityLength)) ||
         (body.inFlight !== undefined && (body.inFlight !== true || body.outcome !== "unknown"))) return invalid();
+      const resultImage = image(body.image, body.name, body.outcome);
       return { callId: row.callId!, ...(typeof body.handle === "string" ? { handle: body.handle } : {}), id,
-        ...(body.inFlight === true ? { inFlight: true as const } : {}), kind,
+        ...(resultImage ? { image: resultImage } : {}), ...(body.inFlight === true ? { inFlight: true as const } : {}), kind,
         name: body.name, outcome: body.outcome as typeof OUTCOMES[number], output: text(body.output) };
     }
     case "compaction": {
