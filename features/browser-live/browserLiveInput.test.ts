@@ -9,6 +9,7 @@ import {
   BrowserLivePointerGesture,
   framePointV2,
   keyDownInputV2,
+  keyUpInputV2,
   textInputsV2,
   wheelPixelsV2,
   type GestureEnvironment
@@ -47,6 +48,16 @@ describe("keyboard mapping", () => {
       .toEqual({ kind: "key", type: "down", key: "a", code: "KeyA", modifiers: 2 });
     // AltGr arrives as Ctrl+Alt and types a character.
     expect(keyDownInputV2({ ...keys, ctrlKey: true, altKey: true, key: "@", code: "KeyQ" })).toEqual({ kind: "text", text: "@" });
+  });
+
+  it("presses Space as a key, so a focused checkbox or button acts on it", () => {
+    expect(keyDownInputV2({ ...keys, key: " ", code: "Space" })).toEqual({ kind: "key", type: "down", key: " ", code: "Space" });
+    expect(keyDownInputV2({ ...keys, shiftKey: true, key: " ", code: "Space" }))
+      .toEqual({ kind: "key", type: "down", key: " ", code: "Space", modifiers: 8 });
+    expect(keyUpInputV2({ ...keys, key: " ", code: "Space" })).toEqual({ kind: "key", type: "up", key: " ", code: "Space" });
+    // Ctrl+Space stays a shortcut.
+    expect(keyDownInputV2({ ...keys, ctrlKey: true, key: " ", code: "Space" }))
+      .toEqual({ kind: "key", type: "down", key: " ", code: "Space", modifiers: 2 });
   });
 
   it("ignores modifiers alone, IME composition and paste shortcuts", () => {

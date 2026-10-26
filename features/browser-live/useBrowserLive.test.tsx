@@ -214,8 +214,8 @@ describe("useBrowserLive ending control", () => {
     calls[0]!.respond(refusal("browser_live_rate_limited", 429));
     await flush();
     expect(result.current.failure).toBe("browser_live_rate_limited");
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_050)); });
-    await flush();
+    // The queue pauses a second after the refusal, then sends the next input.
+    await act(async () => { await vi.waitFor(() => expect(calls.length).toBe(2), { interval: 50, timeout: 5_000 }); });
     calls[1]!.respond(ok());
     await flush();
     expect(result.current.failure).toBeNull();
