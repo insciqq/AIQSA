@@ -31,7 +31,10 @@ import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecr
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
+import { browserLiveRelay, type BrowserLiveRunHandle } from "../workspace/browserLive";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { getAuthConfig } from "../auth/config";
+import type { BrowserHandoffMode } from "../tools/browserHandoff";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
@@ -119,9 +122,20 @@ export type NativeRunExecutionInput = Readonly<{
    */
   scheduled?: true;
   services: NativeRunServices;
+  /** A Telegram turn: its chat shows no live browser, so a handoff points to the web chat. */
+  telegram?: true;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>;
+
+/** The web chat's address a Telegram turn's handoff points to; the chat id is its only parameter. */
+function webChatUrl(chatId: string): string {
+  try {
+    return new URL(`/c/${encodeURIComponent(chatId)}`, getAuthConfig().appBaseUrl).toString();
+  } catch {
+    return `/c/${encodeURIComponent(chatId)}`;
+  }
+}
 
 /** The Responses family streams on the native engine (Codex LB included), always in the foreground. */
 export function nativeRequestParams(adapterKind: string, params: Record<string, unknown>): Record<string, unknown> {
@@ -326,10 +340,18 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "started" });
       let runRecords: TranscriptWriter | null = null;
       let runContext: RunContext | null = null;
+      let live: BrowserLiveRunHandle | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
           throw new EngineFailure("model_run_not_active", "The answer is no longer running.");
+        }
+        // The live browser of an interactive web run (`browserLive.ts`): its owner watches it and answers handoffs.
+        const coordinator = input.workspace;
+        if (workspace && coordinator?.browserLive && !input.scheduled && !input.telegram) {
+          live = browserLiveRelay().register({ channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
+            runId, signInRemembered: () => coordinator.browserSaveBack?.({ runId, userId: input.userId }) ?? Promise.resolve(false),
+            userId: input.userId });
         }
         sink.send({ data: { modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, runId, status: "streaming" },
           type: "run_start" });
@@ -432,7 +454,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
 
         const mcpBindings = engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId));
         const delivered: string[] = [];
+        const browserHandoff: BrowserHandoffMode | undefined = !workspace ? undefined
+          : input.scheduled ? { kind: "unattended" }
+            : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
+              : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now() };
         const registry = await buildToolRegistry({
+          ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
           followupTexts: () => delivered,
           loadMcpBindingRows: () => engine.mcpBindingRows(runId),
@@ -713,6 +740,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           await input.chatTitleGenerator.schedule({ answerText: answer.text, chatId: scope.chatId, runId, userId: input.userId,
             userMessageId: input.created.userMessageId }).catch(() => undefined);
         }
+        // The live browser ends before the Workspace hands off: no view or streamer outlives the turn.
+        await live?.end("run_finished");
         if (workspace && input.workspace) {
           const handoff = await input.workspace.handoff({ onActivity: onWorkspaceActivity, runId, signal, userId: input.userId, workspace });
           if (handoff.status !== "ready") throw new EngineFailure("workspace_operation_stale", "The Workspace could not hand off this turn.");
@@ -741,6 +770,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspaceRun: Boolean(workspace) }) });
         answer.stop();
         await runContext?.close();
+        await live?.end("run_finished");
         if (workspace && input.workspace) {
           await input.workspace.settle({ onActivity: onWorkspaceActivity,
             outcome: cancelled ? "cancelled" : deadline.signal.aborted ? "timed_out" : "failed", runId, userId: input.userId, workspace })
@@ -774,6 +804,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         if (failed) sink.send({ data: payload, type: "error" });
         else await chatUpdate();
       } finally {
+        void live?.end("run_finished");
         stopKeepalive();
         clearTimeout(deadlineTimer);
         if (activeRunControllers.get(runId) === stop) activeRunControllers.delete(runId);

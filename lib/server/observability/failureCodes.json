@@ -1245,5 +1245,11 @@
   "webhook_off",
   "webhook_event_dropped",
   "schedule_off",
-  "webhook_event_expired"
+  "webhook_event_expired",
+  "browser_handoff_unavailable",
+  "browser_handoff_no_browser",
+  "browser_handoff_busy",
+  "browser_handoff_invalid",
+  "browser_sign_in_required",
+  "workspace_browser_live_unavailable"
 ]

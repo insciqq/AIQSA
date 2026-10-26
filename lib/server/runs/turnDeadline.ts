@@ -3,6 +3,7 @@ import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfigu
 import type { NormalizedRunRequest } from "../providers/types";
 import { searchOptionTimeoutMs, searchToolRoutes } from "../search/toolExecutor";
 import { ANALYZE_IMAGE_TOOL_NAME, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
+import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
 import type { RunTool } from "../tools/types";
 
 /**
@@ -59,7 +60,9 @@ export type ToolCallBounds = Readonly<{
  * The bounds frozen with the run, by tool: an MCP tool's server's own call
  * timeout (loaded or in the Auto catalog; MCP's default without one), a search
  * tool's slowest source, the Workspace sync call for Workspace tools, the
- * System Vision wait for `analyze_image`, the image model's response timeout
+ * System Vision wait for `analyze_image`, a handoff's longest wait for the user
+ * for `browser_handoff` (which also never waits past the turn's tool time once
+ * it started, `browserHandoff.ts`), the image model's response timeout
  * for image generation, and MCP's default for everything else; and the
  * answer model's response timeout (`answerTimeoutMs`, as its requests apply
  * it). A slow source the run never calls never shortens its tool time.
@@ -89,6 +92,7 @@ export function toolCallBounds(request: Pick<NormalizedRunRequest,
     call(tool) {
       // `analyze_image` reads Workspace files as a Workspace tool, so its name decides before its capability.
       if (tool.name === ANALYZE_IMAGE_TOOL_NAME) return vision;
+      if (tool.name === BROWSER_HANDOFF_TOOL_NAME) return BROWSER_HANDOFF_WAIT_MS;
       switch (tool.capability) {
         case "mcp": return mcp.get(tool.name) ?? floor;
         case "web_search": return search.get(tool.name) ?? floor;
