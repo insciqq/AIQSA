@@ -123,6 +123,11 @@ describe("Workspace direct image view", () => {
     await expect(refused("/workspace/secrets/key.png")).resolves.toMatchObject({ status: "error",
       content: [{ type: "json", value: { error: "workspace_image_invalid" } }] });
     await expect(refused("/workspace/inbox/index.json")).resolves.toMatchObject({ content: [{ value: { error: "workspace_image_invalid" } }] });
+    // An earlier answer's output folder, as its earlier result names it, points to that answer's exports instead.
+    await expect(refused("/workspace/output/run-0/code.png")).resolves.toMatchObject({ content: [{ value: {
+      error: "workspace_image_invalid", message: expect.stringMatching(/earlier answer.*inbox index/u) } }] });
+    await expect(refused("/workspace/output/code.png")).resolves.toMatchObject({ content: [{ value: {
+      error: "workspace_image_invalid", message: expect.not.stringContaining("earlier answer") } }] });
     expect(f.owner.create).not.toHaveBeenCalled();
 
     const svg = captureOwner(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'));
