@@ -10,7 +10,9 @@ import {
   AUTO_TOOL_NOT_LOADED_OUTPUT,
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
+  TOOL_BATCH_LIMITS,
   ToolBatchInactiveError,
+  TOOL_TIME_EXHAUSTED_OUTPUT,
   transcriptRecord,
   UNKNOWN_OUTCOME_APPROVAL_OUTPUT,
   UNKNOWN_OUTCOME_REPEAT_OUTPUT,
@@ -257,6 +259,43 @@ describe("native tool batch", () => {
     expect(third.results[0]).toMatchObject({ outcome: "error" });
     expect(JSON.stringify((store.refuse.mock.calls.at(-1)![0] as { result: unknown }).result)).toContain(TOOL_CALL_REPEAT_BLOCKED);
     expect(third.budgetExhausted).toBe(false);
+  });
+
+  it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
+    let timeLeft = true;
+    let started = 0;
+    let release!: () => void;
+    const wave = new Promise<void>((resolve) => { release = resolve; });
+    // The first wave is running when the tool time runs out: it settles, and a call that waited behind it must not start.
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      started += 1;
+      if (started === TOOL_BATCH_LIMITS.concurrency) { timeLeft = false; release(); }
+      await wave;
+      return ok(call);
+    });
+    const { rows, store } = fakeStore();
+    const batch = deps({ lookup: tool("lookup", "none", lookup) }, store, { maxToolCalls: null, toolTimeLeft: () => timeLeft });
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: Array.from({ length: 6 }, (_, index) => (
+      { arguments: { page: index }, id: `c${index}`, name: "lookup" })) });
+    expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([
+      ["c0", "complete"], ["c1", "complete"], ["c2", "complete"], ["c3", "complete"], ["c4", "error"], ["c5", "error"]
+    ]);
+    expect(outcome.results[4]!.output).toBe(TOOL_TIME_EXHAUSTED_OUTPUT);
+    expect(outcome).toMatchObject({ budgetExhausted: true, executed: 4 });
+    expect(lookup).toHaveBeenCalledTimes(4);
+    const refused = [...rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"));
+    expect(refused.map((row) => row.providerCallId)).toEqual(["c4", "c5"]);
+
+    // Past the tool time, only the reserved report's first call still runs.
+    const report = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
+    const late = deps({ lookup: tool("lookup", "none", lookup), report_monitoring_result: tool("report_monitoring_result", "local", report) },
+      fakeStore().store, { maxToolCalls: null, reservedToolName: "report_monitoring_result", toolTimeLeft: () => false });
+    const reserved = await runToolBatch(late, { calls: 0 }, { round: 9, calls: [
+      { arguments: { status: "update" }, id: "v1", name: "report_monitoring_result" }, { arguments: { page: 9 }, id: "c9", name: "lookup" }
+    ] });
+    expect(reserved.results.map((item) => [item.callId, item.outcome])).toEqual([["v1", "complete"], ["c9", "error"]]);
+    expect(report).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledTimes(4);
   });
 
   it("runs the reserved report's first call outside the call budget, and counts a repeated one", async () => {
