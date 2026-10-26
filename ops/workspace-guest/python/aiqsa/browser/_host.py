@@ -666,6 +666,15 @@ class Host:
                  f"Open tabs: {data['tabs']}. Saved sessions kept current: {', '.join(data['sessions']) or 'none'}."]
         if data["skippedSessions"]:
             lines.append(f"Saved session files not loaded: {', '.join(data['skippedSessions'])}.")
+        for scope in ("page", "worker") if markers else ():
+            seen = markers.get(scope) if isinstance(markers, dict) else None
+            if not isinstance(seen, dict):
+                lines.append(f"Markers in {scope} scope: not measured.")
+                continue
+            lines.append(f"Markers in {scope} scope: webdriver={json.dumps(seen.get('webdriver'))}, "
+                         f"headless user agent={json.dumps('Headless' in str(seen.get('userAgent') or ''))}, "
+                         f"brands={', '.join(str(brand) for brand in seen.get('brands') or [])}, "
+                         f"time zone={seen.get('timeZone')}, languages={', '.join(str(code) for code in seen.get('languages') or [])}.")
         return {"data": data, "text": "\n".join(lines)}
 
     async def op_open(self, args: Dict[str, Any]) -> Dict[str, Any]:

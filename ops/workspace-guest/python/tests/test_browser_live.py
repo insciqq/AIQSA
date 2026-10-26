@@ -352,6 +352,16 @@ class LiveBrowserTests(unittest.TestCase):
             self.assertEqual(markers["timeZone"], "Europe/Madrid", scope)
             self.assertEqual(markers["languages"][0], "es-ES", scope)
         self.assertIs(status["markers"]["page"]["webdriver"], False)
+        from aiqsa.browser import cli
+
+        out = io.StringIO()
+        self.assertEqual(cli.main(["status", "--markers"], stdout=out, stderr=io.StringIO()), 0)
+        text = out.getvalue()
+        self.assertRegex(text, r"^Chromium ([0-9.]+) \(pinned \1\), language es-ES, time zone Europe/Madrid\.$" if status["pinned"]
+                         else r"^Chromium [0-9.]+ \(pinned unknown\)")
+        for scope in ("page", "worker"):
+            self.assertRegex(text, rf"(?m)^Markers in {scope} scope: webdriver=(false|null), headless user agent=false, brands=[^\n]*, "
+                                   r"time zone=Europe/Madrid, languages=es-ES")
 
     def test_9_screenshots_scrolling_and_history(self) -> None:
         from aiqsa import browser

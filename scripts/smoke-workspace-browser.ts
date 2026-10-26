@@ -44,6 +44,10 @@ let phase = "preflight";
 let step = "preflight";
 let callOrdinal = 0;
 type Run = Awaited<ReturnType<typeof admit>>;
+/** The browser binding these runs are admitted with; the guest browser must use exactly it. */
+const BROWSER_BINDING = { locale: "es-ES", timeZone: "Europe/Madrid" } as const;
+/** Browser hosts and Chromium processes in the guest, counted without matching the counting command. */
+const LEFTOVER_BROWSER_PROCESSES = "ps -eo args | grep -cE '[a]iqsa[.]browser[.]_host|[c]hromium-[0-9]+/chrome' || true";
 
 async function admit(chatId?: string) {
   step = "admission";
@@ -55,7 +59,7 @@ async function admit(chatId?: string) {
   const runId = randomUUID(), userMessageId = randomUUID(), assistantMessageId = randomUUID();
   const catalog = await loadPinnedOfficialWorkspaceToolCatalog();
   const policy = await prisma.workspacePolicy.findUniqueOrThrow({ where: { id: WORKSPACE_POLICY_ID } });
-  const workspace = { enabled: true as const, imageRef: config.imageRef, inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: false,
+  const workspace = { enabled: true as const, browser: BROWSER_BINDING, imageRef: config.imageRef, inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: false,
     maxToolCalls: config.maxToolCalls, maxToolRounds: config.maxToolRounds, mcpVersion: catalog.mcpVersion,
     messageManifestPath: workspaceMessageManifestPath(userMessageId), outputDirectory: workspaceRunOutputDirectory(runId),
     projectDirectory: "/workspace/project", runtimeVersion: catalog.runtimeVersion, sessionId,
@@ -95,54 +99,84 @@ async function startSite(run: Run) {
   await call(run, "sandbox_exec_start", { command: "/opt/aiqsa-python/bin/python", args: ["-u", "/workspace/tmp/browser-site.py"] });
 }
 
+async function shell(run: Run, command: string): Promise<string> {
+  const data = await call(run, "sandbox_shell", { command, treatNonZeroAsError: false });
+  return typeof data.stdout === "string" ? data.stdout : "";
+}
+
+/** One `aiqsa-browser` command as its own tool call; the browser stays open between them. */
+function aiqsaBrowser(run: Run, args: string): Promise<string> {
+  return shell(run, `aiqsa-browser ${args}`);
+}
+
+/** The number the latest page summary gives a synthetic element. */
+function element(output: string, role: string, name: string): number {
+  const match = new RegExp(`^\\[(\\d+)\\] ${role} "${name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"`, "mu").exec(output);
+  assert.ok(match, `${role} element missing`);
+  return Number(match[1]);
+}
+
+const python = (source: string) => `python3 -c "${source}"`;
+
 async function browser(run: Run, mode: "login" | "restored" | "expired" | "deleted") {
-  const source = `
-import importlib.metadata, json, os, pathlib, shutil, urllib.request
-from playwright.sync_api import sync_playwright
-import pyotp
-assert os.getuid() == 0
-assert importlib.metadata.version('playwright') == '1.60.0'
-assert importlib.metadata.version('pyotp') == '2.10.0'
-assert os.environ['PLAYWRIGHT_BROWSERS_PATH'] == '/opt/aiqsa-playwright'
-assert shutil.which('Xvfb') is None
-assert 'SHOP_LOGIN' in pathlib.Path('/workspace/SECRETS.md').read_text()
-state = pathlib.Path('/workspace/secrets/browser/shop.example.json')
-mode = ${JSON.stringify(mode)}
-if mode in ['login', 'deleted']: assert not state.exists()
-else: assert state.exists()
-url = os.environ['SHOP_URL']
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    context = browser.new_context(storage_state=str(state) if state.exists() else None, viewport={'width': 900, 'height': 640})
-    page = context.new_page()
-    if mode == 'expired': urllib.request.urlopen(url + '/expire', timeout=5).read()
-    page.goto(url, wait_until='domcontentloaded')
-    if mode == 'restored':
-        page.get_by_role('heading', name='Корзина — тест Workspace').wait_for()
-        assert json.load(urllib.request.urlopen(url + '/stats'))['logins'] == 0
-        assert page.get_by_text('Книга Python', exact=True).count() == 1
-    else:
-        page.get_by_label('Login', exact=True).fill(os.environ['SHOP_LOGIN'])
-        page.get_by_label('Password', exact=True).fill(os.environ['SHOP_PASSWORD'])
-        page.get_by_role('button', name='Sign in', exact=True).click()
-        page.get_by_label('Verification code').fill(pyotp.TOTP(os.environ['SHOP_TOTP_SEED']).now())
-        page.get_by_role('button', name='Verify', exact=True).click()
-        page.get_by_role('link', name='Continue', exact=True).click()
-        assert json.load(urllib.request.urlopen(url + '/stats'))['logins'] == 1
-        page.get_by_role('button', name='Добавить в корзину').click()
-        page.get_by_role('link', name='Continue', exact=True).click()
-    snapshot = page.locator('main').aria_snapshot()
-    assert 'Корзина' in snapshot and len(snapshot) < 4096
-    context.storage_state(path=str(state))
-    page.screenshot(path=${JSON.stringify(run.workspace.outputDirectory + "/cart.png")})
-    browser.close()
-if mode == 'login':
-    state.with_name('invalid.json').write_text('invalid synthetic state')
-    state.with_name('oversized.json').write_bytes(b'x' * ${WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1})
-    state.with_name('linked.json').symlink_to(state)
-print('synthetic_browser_ok')
-`;
-  await call(run, "sandbox_exec", { command: "/opt/aiqsa-python/bin/python", args: ["-c", source], treatNonZeroAsError: false });
+  step = "browser_quiescence";
+  // Every earlier turn of this chat ended with a VM stop: no browser host or Chromium survives into this one.
+  assert.equal((await shell(run, LEFTOVER_BROWSER_PROCESSES)).trim(), "0");
+  step = "browser_guest";
+  const saved = mode === "restored" || mode === "expired";
+  assert.equal((await shell(run, python("import importlib.metadata as m, os, pathlib, shutil; print(m.version('playwright'), " +
+    "m.version('pyotp'), os.environ['PLAYWRIGHT_BROWSERS_PATH'], shutil.which('Xvfb') is None, os.getuid() == 0, " +
+    "'SHOP_LOGIN' in pathlib.Path('/workspace/SECRETS.md').read_text(), pathlib.Path('/workspace/secrets/browser/shop.example.json').exists())"))).trim(),
+  `1.60.0 2.10.0 /opt/aiqsa-playwright True True True ${saved ? "True" : "False"}`);
+  if (mode === "expired") await shell(run, python("import os, urllib.request; urllib.request.urlopen(os.environ['SHOP_URL'] + '/expire', timeout=5).read()"));
+  step = "browser_open";
+  let page = await aiqsaBrowser(run, 'open "$SHOP_URL"');
+  assert.match(page, /^\[browser #1\] open @ 127\.0\.0\.1:18765\/$/mu);
+  // The run's admitted language and zone reached the guest browser through the run environment.
+  assert.match(page, new RegExp(`Started a new browser \\(Chromium [0-9.]+, language ${BROWSER_BINDING.locale}, time zone ` +
+    `${BROWSER_BINDING.timeZone}\\); saved sign-ins restored: ${saved ? "shop\\.example" : "none"}\\.`, "u"));
+  if (mode === "restored") {
+    assert.match(page, /^Title: Синтетический магазин$/mu);
+  } else {
+    step = "browser_sign_in";
+    // Separate tool calls drive one browser: the numbers of one call's output act in the next.
+    await aiqsaBrowser(run, `type ${element(page, "textbox", "Login")} --env SHOP_LOGIN`);
+    page = await aiqsaBrowser(run, `type ${element(page, "textbox", "Password")} --env SHOP_PASSWORD --submit`);
+    page = await aiqsaBrowser(run, `type ${element(page, "textbox", "Verification code")} ` +
+      `"$(${python("import os, pyotp; print(pyotp.TOTP(os.environ['SHOP_TOTP_SEED']).now())")})" --submit`);
+    page = await aiqsaBrowser(run, `click ${element(page, "link", "Continue")}`);
+    page = await aiqsaBrowser(run, `click ${element(page, "button", "Добавить в корзину")}`);
+    page = await aiqsaBrowser(run, `click ${element(page, "link", "Continue")}`);
+    assert.match(await aiqsaBrowser(run, "save-session shop.example"), /^\[browser #\d+\] save_session: shop\.example @ 127\.0\.0\.1:18765\/$/mu);
+  }
+  step = "browser_cart";
+  const text = await aiqsaBrowser(run, "text");
+  assert.match(text, /Корзина — тест Workspace/u);
+  assert.match(text, /Книга Python/u);
+  assert.equal((await shell(run, python("import json, os, urllib.request; " +
+    "print(json.load(urllib.request.urlopen(os.environ['SHOP_URL'] + '/stats'))['logins'])"))).trim(), mode === "restored" ? "0" : "1");
+  step = "browser_identity";
+  const status = await aiqsaBrowser(run, "status --markers");
+  const version = /^Chromium ([0-9.]+) \(pinned ([0-9.]+)\)/mu.exec(status);
+  assert.ok(version && version[1] === version[2], "Chromium differs from the Playwright pin");
+  for (const scope of ["page", "worker"]) {
+    assert.match(status, new RegExp(`^Markers in ${scope} scope: webdriver=(false|null), headless user agent=false, brands=[^\\n]*, ` +
+      `time zone=${BROWSER_BINDING.timeZone}, languages=${BROWSER_BINDING.locale}`, "mu"));
+  }
+  assert.doesNotMatch(status, /brands=[^\n]*Headless/u);
+  step = "browser_screenshot";
+  assert.match(await aiqsaBrowser(run, `shot --path ${run.workspace.outputDirectory}/cart.png`), /^Screenshot saved: .*\/cart\.png$/mu);
+  step = "browser_steps";
+  // One browser served every call of this turn: its step numbers run on across them.
+  const numbers = [...(await aiqsaBrowser(run, "steps")).matchAll(/^\[browser #(\d+)\] /gmu)].map((match) => Number(match[1]));
+  assert.deepEqual(numbers, numbers.map((_, index) => index + 1));
+  assert.ok(numbers.length >= (mode === "restored" ? 2 : 9));
+  if (mode === "login") {
+    await shell(run, python("import pathlib; state = pathlib.Path('/workspace/secrets/browser/shop.example.json'); " +
+      "state.with_name('invalid.json').write_text('invalid synthetic state'); " +
+      `state.with_name('oversized.json').write_bytes(b'x' * ${WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1}); ` +
+      "state.with_name('linked.json').symlink_to(state)"));
+  }
 }
 
 async function finish(run: Run) {
@@ -215,9 +249,11 @@ async function main() {
     phase = "manual_deletion_relogin";
     const fifth = await admit(third.chatId); await startSite(fifth); await browser(fifth, "deleted"); const recreated = await finish(fifth);
     assert.notEqual(recreated.saved.id, renewed.saved.id);
-    process.stdout.write(JSON.stringify({ ok: true, realKvm: true, headlessChromium: true, guestRoot: true, guestMemoryMiB: config.memoryMiB,
-      pythonPlaywright: "1.60.0", pyotp: "2.10.0", totp: true, cartScreenshot: true, personalRuns: 5, sameChat: true, newVm: true,
-      encryptedReverseSave: true, unchangedRevision: true, expiredRelogin: true, settingsDeletion: true, invalidSkipped: 3, exportExcluded: true }) + "\n");
+    process.stdout.write(JSON.stringify({ ok: true, realKvm: true, fullChromium: true, chromiumMatchesPin: true, guestRoot: true,
+      guestMemoryMiB: config.memoryMiB, pythonPlaywright: "1.60.0", pyotp: "2.10.0", oneBrowserAcrossCalls: true,
+      noMarkersPageAndWorker: true, admittedLocaleAndZone: true, noBrowserSurvivesTurn: true, totp: true, cartScreenshot: true,
+      personalRuns: 5, sameChat: true, newVm: true, encryptedReverseSave: true, unchangedRevision: true, expiredRelogin: true,
+      settingsDeletion: true, invalidSkipped: 3, exportExcluded: true }) + "\n");
   } finally {
     step = "cleanup_sessions";
     for (const id of ownedSessions) {
