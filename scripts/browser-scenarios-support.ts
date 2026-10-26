@@ -49,8 +49,8 @@ export type BrowserScenarioStand = { name?: string; services?: Record<string, Co
 
 export type StandBound = number | "default" | "none";
 export type StandTarget = Readonly<{
+  admin: Readonly<{ email: string; password: string }>;
   baseUrl: string;
-  bootstrapToken: string;
   databaseUrl: string;
   project: string;
   /** The stand's Workspace environment as configured ("default" when the code default applies). */
@@ -92,7 +92,8 @@ export function requireBrowserScenarioStand(mode: string | undefined, stand: Bro
   const services = stand.services ?? {};
   const app = services.app;
   const runner = services["workspace-runner"];
-  const roles = [app, services.postgres, runner, services["workspace-maintenance"], services["memory-worker"]];
+  const roles = [app, services.postgres, runner, services["workspace-maintenance"], services["memory-worker"],
+    services["migrate-bootstrap"]];
   if (roles.some((role) => !role)) fail("roles_missing");
   const env = (service: ComposeService | undefined) => service?.environment ?? {};
   if (env(runner).AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME !== "0" ||
@@ -107,9 +108,11 @@ export function requireBrowserScenarioStand(mode: string | undefined, stand: Bro
   const appPort = loopbackPort(app, 3000);
   const baseUrl = `http://127.0.0.1:${appPort}`;
   if (env(app).AIQSA_APP_BASE_URL !== baseUrl) fail("base_url_mismatch");
-  if (!/^(1|true|yes|on)$/iu.test(env(app).AIQSA_BOOTSTRAP_LOGIN_ENABLED ?? "")) fail("bootstrap_login_required");
-  const bootstrapToken = env(app).AIQSA_BOOTSTRAP_AUTH_TOKEN ?? "";
-  if (bootstrapToken.length < 32) fail("bootstrap_token_required");
+  // A production-mode app is not ready with bootstrap login on, so the harness
+  // signs in as the administrator that bootstrap created, with its password.
+  const adminEmail = env(services["migrate-bootstrap"]).AIQSA_INITIAL_ADMIN_EMAIL ?? "";
+  const adminPassword = env(services["migrate-bootstrap"]).AIQSA_INITIAL_ADMIN_PASSWORD ?? "";
+  if (!/^[^@\s]+@[^@\s]+$/u.test(adminEmail) || adminPassword.length < 12) fail("admin_credentials_required");
   let database: URL;
   try { database = new URL(env(app).DATABASE_URL ?? ""); } catch { return fail("database_invalid"); }
   if (database.protocol !== "postgresql:" || database.hostname !== "postgres" || database.pathname !== "/aiqsa" ||
@@ -118,8 +121,8 @@ export function requireBrowserScenarioStand(mode: string | undefined, stand: Bro
   database.port = loopbackPort(services.postgres, 5432);
   database.search = "";
   return {
+    admin: { email: adminEmail, password: adminPassword },
     baseUrl,
-    bootstrapToken,
     configuredBounds: {
       maxToolCalls: configuredBound(env(app).AIQSA_WORKSPACE_MAX_TOOL_CALLS),
       maxToolRounds: configuredBound(env(app).AIQSA_WORKSPACE_MAX_TOOL_ROUNDS),
