@@ -228,7 +228,10 @@ class Host:
 
     def _setup_future(self, page: Any) -> asyncio.Future:
         if page not in self.setups:
-            self.setups[page] = asyncio.ensure_future(self._prepare(page))
+            future = asyncio.ensure_future(self._prepare(page))
+            # A page that closes while it is set up fails here; whoever awaits it sees that, nobody else must.
+            future.add_done_callback(lambda done: done.cancelled() or done.exception())
+            self.setups[page] = future
         return self.setups[page]
 
     async def _setup(self, page: Any) -> None:
