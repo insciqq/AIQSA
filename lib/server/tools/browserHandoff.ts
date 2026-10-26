@@ -44,7 +44,9 @@ export const browserHandoffTool: RunTool = {
 };
 
 /** Reasons that mean a run's sign-in to a site ran out: an unattended run cannot go on without its owner. */
-const SIGN_IN_REASONS: ReadonlySet<string> = new Set<BrowserHandoffReason>(["sign_in", "verification_code", "captcha"]);
+export const BROWSER_HANDOFF_SIGN_IN_REASONS = Object.freeze(["sign_in", "verification_code", "captcha"] as const satisfies
+  readonly BrowserHandoffReason[]);
+const SIGN_IN_REASONS: ReadonlySet<string> = new Set<string>(BROWSER_HANDOFF_SIGN_IN_REASONS);
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
