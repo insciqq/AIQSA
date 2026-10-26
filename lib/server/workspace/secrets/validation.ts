@@ -75,7 +75,8 @@ export function parseWorkspaceSecretValue(value: unknown, purpose: "save" | "sto
   return value as WorkspaceSecretValue;
 }
 
-export function parseWorkspaceSecretMutation(value: unknown): WorkspaceSecretMutation {
+/** A settings mutation; `stored` reads an accepted revision as it was saved (`parseWorkspaceSecretValue`). */
+export function parseWorkspaceSecretMutation(value: unknown, purpose: "save" | "stored" = "save"): WorkspaceSecretMutation {
   const invalid = () => { throw new WorkspaceSecretError("workspace_secret_invalid"); };
   if (!record(value)) return invalid();
   if (value.action === "delete") {
@@ -85,7 +86,7 @@ export function parseWorkspaceSecretMutation(value: unknown): WorkspaceSecretMut
       !text(value.description, 8000) || value.description.length > 2000) return invalid();
     if (value.action === "create") {
       if (!keys(value, ["action", "name", "description", "value"])) return invalid();
-      parseWorkspaceSecretValue(value.value);
+      parseWorkspaceSecretValue(value.value, purpose);
     } else if (value.action === "update") {
       if (!keys(value, ["action", "id", "expectedVersionId", "name", "description", "value"]) ||
         !isWorkspaceSecretId(value.id) || !isWorkspaceSecretId(value.expectedVersionId) || !record(value.value)) return invalid();
@@ -93,7 +94,7 @@ export function parseWorkspaceSecretMutation(value: unknown): WorkspaceSecretMut
         if (!keys(value.value, ["action"])) return invalid();
       } else if (value.value.action === "replace") {
         if (!keys(value.value, ["action", "content"])) return invalid();
-        parseWorkspaceSecretValue(value.value.content);
+        parseWorkspaceSecretValue(value.value.content, purpose);
       } else return invalid();
     } else return invalid();
   }

@@ -217,6 +217,15 @@ class Host:
         self.browser = None
         self.stopped.set()
 
+    def _error_text(self, error: BaseException, limit: int = 300) -> str:
+        """An error's first line, masked raw before it is cut (it may quote the page)."""
+        text = str(error).strip().splitlines()
+        return _format.page_string(text[0] if text else type(error).__name__, self.hidden, limit)
+
+    def _said(self, value: Optional[str], limit: int = 100) -> str:
+        """Quoted text the agent or the page supplied, masked before quotes and cuts change it."""
+        return _format.quoted(self.hidden.text(value or ""), limit)
+
     # Pages -----------------------------------------------------------------------------------------------------
 
     def _on_page(self, page: Any) -> None:
@@ -282,10 +291,10 @@ class Host:
             await (dialog.accept() if accept else dialog.dismiss())
         except PlaywrightError:
             return
-        self.notes.append(f"A {kind} dialog was {'accepted' if accept else 'dismissed'}: {_format.quoted(dialog.message, 200)}.")
+        self.notes.append(f"A {kind} dialog was {'accepted' if accept else 'dismissed'}: {self._said(dialog.message, 200)}.")
 
     async def _on_download(self, download: Any) -> None:
-        name = _sessions.safe_basename(download.suggested_filename or "download")[:120] or "download"
+        name = _sessions.safe_basename(self.hidden.text(download.suggested_filename or "download"))[:120] or "download"
         try:
             self.downloads_dir.mkdir(parents=True, exist_ok=True)
             target = self.downloads_dir / name
@@ -296,7 +305,7 @@ class Host:
                 target = self.downloads_dir / f"{stem}-{index}{suffix}"
             await download.save_as(str(target))
         except (OSError, PlaywrightError) as error:
-            self.notes.append(f"A download could not be saved ({_first_line(error, 120)}).")
+            self.notes.append(f"A download could not be saved ({self._error_text(error, 120)}).")
             return
         self.notes.append(f"Downloaded {target}.")
         step = self._record("download", target.name, getattr(self.current, "url", None))
@@ -414,15 +423,18 @@ class Host:
             if masked and "masked" not in attempt:
                 self.masked.pop(frame, None)
             try:
-                data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, title: r.title, scroll: r.scroll, loading: r.loading })")
+                data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, title: r.title, "
+                                             "titleCut: r.titleCut, scroll: r.scroll, loading: r.loading })")
                 elements = await result.get_property("elements")
                 numbers = await result.get_property("numbers")
             except PlaywrightError:
                 continue
             next_number = max(next_number, int(data["next"]))
             frames_after[frame] = {"elements": elements, "numbers": numbers, "doc": frame.url}
+            _format.page_items(data["items"], self.hidden)
             if index == 0:
-                meta.update({key: data[key] for key in ("title", "scroll", "loading")})
+                meta.update({key: data[key] for key in ("scroll", "loading")})
+                meta["title"] = _format.page_string(data["title"], self.hidden, 200, bool(data.get("titleCut")))
                 viewport = (data.get("scroll") or {}).get("viewport")
             meta["truncated"] = meta["truncated"] or bool(data["truncated"])
             for local, item in enumerate(data["items"]):
@@ -451,7 +463,7 @@ class Host:
                                 "items": {int(item["n"]): item for item in items}, "captcha": captcha}
         notes, self.notes = self.notes, []
         tabs = [tab for tab in self.tabs if not tab.is_closed()]
-        return {"url": _format.without_userinfo(page.url), "title": meta["title"], "scroll": meta["scroll"], "loading": meta["loading"],
+        return {"url": self.hidden.text(_format.without_userinfo(page.url)), "title": meta["title"], "scroll": meta["scroll"], "loading": meta["loading"],
                 "truncated": meta["truncated"], "items": items, "captcha": captcha, "notes": notes,
                 "tabs": len(tabs), "tab": (tabs.index(page) + 1) if page in tabs else 1}
 
@@ -515,7 +527,8 @@ class Host:
     def _record(self, action: str, target: Optional[str], url: Optional[str]) -> Dict[str, Any]:
         """One step of the turn's list (kept in memory only), with the page's address and no query."""
         self.step_count += 1
-        step = {"n": self.step_count, "action": action, "target": target, "url": _format.page_address(url), "at": _now()}
+        step = {"n": self.step_count, "action": action, "target": self.hidden.text(target) if target else target,
+                "url": _format.page_address(self.hidden.text(url) if url else url), "at": _now()}
         self.steps.append(step)
         del self.steps[:-MAX_STEPS]
         return step
@@ -593,7 +606,7 @@ class Host:
         except (ValueError, UnicodeDecodeError, asyncio.LimitOverrunError, asyncio.TimeoutError):
             response = {"ok": False, "error": {"code": "protocol_error", "message": "The request could not be read."}}
         except Exception as error:  # noqa: BLE001 - one failed request must not end the browser
-            response = {"ok": False, "error": {"code": "browser_error", "message": _first_line(error)}}
+            response = {"ok": False, "error": {"code": "browser_error", "message": self._error_text(error)}}
         # A value typed from the environment may come back in a field, an address, page text or a script result.
         response = self.hidden.mask(response)
         try:
@@ -622,7 +635,7 @@ class Host:
         except PlaywrightError as error:
             if self.crashed:
                 raise HostError("browser_crashed", "The browser stopped unexpectedly; the next command starts a new one.") from None
-            raise HostError("browser_error", _first_line(error)) from None
+            raise HostError("browser_error", self._error_text(error)) from None
 
     async def _act(self, action: str, target: Optional[str], run: Any, *, settle: bool = True, info: bool = True) -> Dict[str, Any]:
         """Run one agent action, record its step, keep sessions current and summarize the page."""
@@ -654,7 +667,7 @@ class Host:
         page = await self._page()
         markers = None
         if args.get("markers"):
-            markers = await page.evaluate(_dom.MARKERS)
+            markers = self.hidden.mask(await page.evaluate(_dom.MARKERS))
         data = {"version": self.version, "pinned": _pinned_chromium(), "locale": self.locale, "timezone": self.timezone,
                 "userAgentHeadless": "Headless" in self.user_agent, "tabs": len([t for t in self.tabs if not t.is_closed()]),
                 "sessions": sorted(self.store.tracked), "skippedSessions": sorted(self.store.skipped), "steps": self.step_count,
@@ -687,7 +700,7 @@ class Host:
             except PlaywrightTimeoutError:
                 raise HostError("navigation_timeout", "The page did not start loading within 45 seconds.") from None
             except PlaywrightError as error:
-                raise HostError("navigation_failed", _first_line(error)) from None
+                raise HostError("navigation_failed", self._error_text(error)) from None
             status["code"] = response.status if response else None
 
         result = await self._act("open", None, run)
@@ -704,7 +717,7 @@ class Host:
         return {"info": summary, "text": _format.render_info(summary, every=every, limit=limit)}
 
     async def op_find(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        query = _text(args, "text", 200)
+        query = self.hidden.text(_text(args, "text", 200) or "")
         page = await self._page()
         summary = await self._snapshot(page)
         return {"info": summary, "text": _format.render_find(query, summary["items"])}
@@ -717,7 +730,7 @@ class Host:
                 await element.click(timeout=ACTION_TIMEOUT_MS)
             except PlaywrightTimeoutError as error:
                 raise HostError("element_not_actionable", f"Element [{item['n']}] could not be clicked within 10 seconds: "
-                                f"{_first_line(error, 240)} Look at the page (`shot`) for a covering banner or dialog.") from None
+                                f"{self._error_text(error, 240)} Look at the page (`shot`) for a covering banner or dialog.") from None
 
         return await self._act("click", _format.element_label(item), run)
 
@@ -733,7 +746,7 @@ class Host:
             self.masked.setdefault(frame, []).append((frame.url, element))
         detail = f"{len(text)} characters"
         if item.get("search") and not item.get("secret") and not masked:
-            detail = _format.quoted(text, 40)
+            detail = self._said(text, 40)
         label = f"{_format.element_label(item)} ({detail})"
 
         fillable = item.get("role") in ("textbox", "searchbox", "combobox", "spinbutton") or "value" in item or item.get("secret")
@@ -750,9 +763,9 @@ class Host:
                 if submit:
                     await element.press("Enter", timeout=ACTION_TIMEOUT_MS)
             except PlaywrightTimeoutError as error:
-                raise HostError("element_not_actionable", f"Could not type into element [{item['n']}]: {_first_line(error, 240)}") from None
+                raise HostError("element_not_actionable", f"Could not type into element [{item['n']}]: {self._error_text(error, 240)}") from None
             except PlaywrightError as error:
-                raise HostError("element_not_actionable", f"Could not type into element [{item['n']}]: {_first_line(error, 240)}") from None
+                raise HostError("element_not_actionable", f"Could not type into element [{item['n']}]: {self._error_text(error, 240)}") from None
 
         return await self._act("type", label, run, settle=submit)
 
@@ -770,12 +783,12 @@ class Host:
                 needle = option.casefold()
                 pick = next((value for label, value in labels if needle in label.casefold()), None)
             if pick is None:
-                shown = ", ".join(_format.quoted(label, 40) for label, _ in labels[:20])
-                raise HostError("option_not_found", f"No option of [{item['n']}] matches {_format.quoted(option)}. Options: {shown}.")
+                shown = ", ".join(self._said(label, 40) for label, _ in labels[:20])
+                raise HostError("option_not_found", f"No option of [{item['n']}] matches {self._said(option)}. Options: {shown}.")
             chosen["value"] = pick
             await element.select_option(value=pick, timeout=ACTION_TIMEOUT_MS)
 
-        return await self._act("select", f"{_format.quoted(option, 60)} in {_format.element_label(item)}", run)
+        return await self._act("select", f"{self._said(option, 60)} in {_format.element_label(item)}", run)
 
     async def op_upload(self, args: Dict[str, Any]) -> Dict[str, Any]:
         element, item = await self._element(_int(args, "n", None, 1, 100_000))
@@ -786,7 +799,7 @@ class Host:
         async def run(_: Any) -> None:
             await element.set_input_files(str(path), timeout=ACTION_TIMEOUT_MS)
 
-        return await self._act("upload", f"{_format.quoted(path.name, 60)} to {_format.element_label(item)}", run)
+        return await self._act("upload", f"{self._said(path.name, 60)} to {_format.element_label(item)}", run)
 
     async def op_press(self, args: Dict[str, Any]) -> Dict[str, Any]:
         key = _text(args, "key", 40)
@@ -842,8 +855,8 @@ class Host:
         url = _text(args, "url", 2000, required=False)
         if sum(value is not None for value in (text, selector, url)) != 1:
             raise HostError("invalid_arguments", "Wait for exactly one of text, selector or url.")
-        target = f"text {_format.quoted(text, 60)}" if text is not None else \
-            f"selector {_format.quoted(selector, 60)}" if selector is not None else f"address {_format.quoted(url, 60)}"
+        target = f"text {self._said(text, 60)}" if text is not None else \
+            f"selector {self._said(selector, 60)}" if selector is not None else f"address {self._said(url, 60)}"
 
         async def run(page: Any) -> None:
             try:
@@ -863,11 +876,12 @@ class Host:
         limit = _int(args, "max", 6000, 100, TEXT_MAX_CHARS)
         if args.get("n") is not None:
             element, _item = await self._element(_int(args, "n", None, 1, 100_000))
-            text = await element.evaluate(_dom.TEXT)
+            raw = await element.evaluate(_dom.TEXT)
         else:
             page = await self._page()
-            text = await page.main_frame.evaluate(_dom.TEXT, None)
-        return {"text": _format.render_text(text, start, limit), "data": {"length": len(text)}}
+            raw = await page.main_frame.evaluate(_dom.TEXT, None)
+        text, length = _format.page_text(raw if isinstance(raw, str) else "", self.hidden, start, limit)
+        return {"text": text, "data": {"length": length}}
 
     async def op_js(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Read page data with a script. Not while the page shows a CAPTCHA or bot check (same detection as clicks)."""
@@ -878,9 +892,9 @@ class Host:
             raise HostError("captcha_requires_user", f"This page shows a CAPTCHA or bot check ({', '.join(kinds)}). "
                             "Do not run scripts on it or try to get around it; stop and tell the user.")
         try:
-            value = await page.evaluate(expression)
+            value = self.hidden.mask(await page.evaluate(expression))
         except PlaywrightError as error:
-            raise HostError("script_error", _first_line(error)) from None
+            raise HostError("script_error", self._error_text(error)) from None
         text = json.dumps(value, ensure_ascii=False, default=str)
         return {"text": text if len(text) <= JS_MAX_CHARS else text[:JS_MAX_CHARS] + f"… ({len(text) - JS_MAX_CHARS} more characters)"}
 
@@ -921,10 +935,11 @@ class Host:
         tabs = []
         for index, tab in enumerate([tab for tab in self.tabs if not tab.is_closed()], start=1):
             try:
-                title = await tab.title()
+                title = self.hidden.text(await tab.title())
             except PlaywrightError:
                 title = ""
-            tabs.append({"index": index, "title": title, "url": _format.without_userinfo(tab.url), "current": tab is self.current})
+            tabs.append({"index": index, "title": title, "url": self.hidden.text(_format.without_userinfo(tab.url)),
+                         "current": tab is self.current})
         return {"data": tabs, "text": _format.render_tabs(tabs)}
 
     def _tab(self, args: Dict[str, Any]) -> Any:
