@@ -170,7 +170,7 @@ CMD ["node", "scripts/runtime-launcher.cjs", "runtime/server.js"]
 
 # The microVM guest contains general-purpose document/code tooling only. No
 # AIQSA source tree, application dependency graph, or installation secret is
-# copied into this stage; only the standard-library MCP client below.
+# copied into this stage; only the guest helpers below (MCP client, browser).
 FROM ${NODE_IMAGE} AS workspace-guest
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -191,7 +191,7 @@ RUN apt-get update \
     python-docx==1.2.0 python-pptx==1.0.2 uv==0.8.15 playwright==1.60.0 pyotp==2.10.0 \
   && /opt/aiqsa-python/bin/pip install --disable-pip-version-check --no-cache-dir psd-tools==1.19.0 \
   && /opt/aiqsa-python/bin/pip check \
-  && /opt/aiqsa-python/bin/playwright install --with-deps --only-shell chromium \
+  && /opt/aiqsa-python/bin/playwright install --with-deps --no-shell chromium \
   && apt-get purge -y xvfb \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global --ignore-scripts --no-audit --no-fund pnpm@10.15.1 \
@@ -209,19 +209,26 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund esbuild@0.28.1 \
 # Guest code calls the run's MCP tools through `import aiqsa` or `aiqsa-mcp`.
 # The package uses the standard library only; PYTHONPATH (the guest gets it
 # from the OCI config) reaches other interpreters such as `uv run` scripts.
+# `aiqsa-browser` (and `aiqsa.browser`) drives one full Chromium per turn; its
+# host process alone imports the pinned Playwright above. Only the full build
+# is installed: sites block the headless shell (queue measurements 2026-10-26).
 ENV PYTHONPATH=/opt/aiqsa-guest/python
 COPY ops/workspace-guest/python/aiqsa /opt/aiqsa-guest/python/aiqsa
 COPY ops/workspace-guest/bin/aiqsa-mcp /usr/local/bin/aiqsa-mcp
+COPY ops/workspace-guest/bin/aiqsa-browser /usr/local/bin/aiqsa-browser
 # Shows an Office document in an artifact: a PDF of its visible pages with
 # tracked changes accepted, without comments, notes, hidden sheets/slides,
 # document properties or image metadata.
 COPY ops/workspace-guest/bin/aiqsa-office-pdf /usr/local/bin/aiqsa-office-pdf
-RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-office-pdf \
+RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-browser /usr/local/bin/aiqsa-office-pdf \
   && chmod -R u=rwX,go=rX /opt/aiqsa-guest \
   && echo /opt/aiqsa-guest/python > "$(/opt/aiqsa-python/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/aiqsa-guest.pth" \
-  && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp; print("aiqsa", aiqsa.__version__)' \
+  && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp, aiqsa.browser, aiqsa.browser._host; print("aiqsa", aiqsa.__version__)' \
   && aiqsa-mcp --version \
   && (aiqsa-mcp list; test $? -eq 3) \
+  && aiqsa-browser --version \
+  && test -n "$(find /opt/aiqsa-playwright -maxdepth 1 -name 'chromium-*' -print -quit)" \
+  && test -z "$(find /opt/aiqsa-playwright -maxdepth 1 -name 'chromium_headless_shell-*' -print -quit)" \
   && (aiqsa-office-pdf --help; test $? -eq 2)
 
 WORKDIR /workspace/project
@@ -237,7 +244,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.36 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.37 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.
