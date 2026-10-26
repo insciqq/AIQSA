@@ -199,6 +199,21 @@ describe("BrowserLivePanelV2", () => {
     ]);
   });
 
+  it("leaves the view with Escape twice, sending only the first Escape to the page", async () => {
+    await openAsUser();
+    const stage = screen.getByTestId("browser-live-stage");
+    stage.focus();
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    fireEvent.keyUp(stage, { key: "Escape", code: "Escape" });
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    expect(screen.getByRole("button", { name: "Return control" })).toHaveFocus();
+    await waitFor(() => expect(posted()).toHaveLength(2));
+    expect(posted().map(([, body]) => body)).toEqual([
+      { kind: "key", type: "down", key: "Escape", code: "Escape" },
+      { kind: "key", type: "up", key: "Escape", code: "Escape" }
+    ]);
+  });
+
   it("maps a touch tap and sends nothing while the agent controls", async () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /Watch/u }));

@@ -83,7 +83,7 @@ function HandoffCardV2({ handoff, host, live, remembered }: Readonly<{
         <UiV2Button busy={live.busy === "cancel"} disabled={busy || countdown.expired}
           onClick={() => void live.answerHandoff(handoff.id, "cancel")} type="button">Cancel</UiV2Button>
         <UiV2Button busy={live.busy === "done"} disabled={busy || countdown.expired}
-          onClick={() => void live.answerHandoff(handoff.id, "done")} tone="primary" type="button">Done</UiV2Button>
+          data-browser-live-exit="" onClick={() => void live.answerHandoff(handoff.id, "done")} tone="primary" type="button">Done</UiV2Button>
       </div>
     </section>
   );
@@ -236,7 +236,6 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
   const [zoom, setZoom] = useState(1);
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
-  const returnRef = useRef<HTMLButtonElement>(null);
   const gestureRef = useRef(new BrowserLivePointerGesture());
   const pressedKeysRef = useRef(new Set<string>());
   const lastEscapeRef = useRef(0);
@@ -259,10 +258,12 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
     stage.scrollTop = (stage.scrollTop + anchor.y) * zoom / anchor.from - anchor.y;
   }, [zoom]);
 
-  const zoomTo = useCallback((next: number, clientX?: number, clientY?: number) => {
+  /** Zooms to a level, or by a factor of the current one (pinch moves arrive faster than renders). */
+  const zoomTo = useCallback((next: number | ((current: number) => number), clientX?: number, clientY?: number) => {
     const stage = stageRef.current;
     setZoom((current) => {
-      const target = clampZoom(next <= 0 ? 1 : next);
+      const value = typeof next === "function" ? next(current) : next;
+      const target = clampZoom(value > 0 ? value : 1);
       if (stage && target !== current) {
         const rect = stage.getBoundingClientRect();
         zoomAnchorRef.current = {
@@ -289,12 +290,13 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
 
   const apply = useCallback((output: GestureOutput) => {
     if (output.inputs.length > 0) sendInput(...output.inputs);
-    if (output.zoomBy) zoomTo(zoom * output.zoomBy.factor, output.zoomBy.clientX, output.zoomBy.clientY);
+    const zoomBy = output.zoomBy;
+    if (zoomBy) zoomTo((current) => current * zoomBy.factor, zoomBy.clientX, zoomBy.clientY);
     if (output.panBy && stageRef.current) {
       stageRef.current.scrollLeft += output.panBy.dx;
       stageRef.current.scrollTop += output.panBy.dy;
     }
-  }, [sendInput, zoom, zoomTo]);
+  }, [sendInput, zoomTo]);
 
   // Wheel needs a non-passive listener: while the user controls the page, it scrolls the page, not the chat.
   useEffect(() => {
@@ -304,7 +306,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
       if (event.ctrlKey && !userControls) {
         // A trackpad pinch zooms the frame.
         event.preventDefault();
-        zoomTo(zoom * Math.exp(-event.deltaY / 200), event.clientX, event.clientY);
+        zoomTo((current) => current * Math.exp(-event.deltaY / 200), event.clientX, event.clientY);
         return;
       }
       if (!userControls || !frame) return;
@@ -320,7 +322,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
     };
     stage.addEventListener("wheel", wheel, { passive: false });
     return () => stage.removeEventListener("wheel", wheel);
-  }, [environment, frame, sendInput, userControls, zoom, zoomTo]);
+  }, [environment, frame, sendInput, userControls, zoomTo]);
 
   const pointer = (kind: "down" | "move" | "up" | "cancel", event: ReactPointerEvent<HTMLDivElement>) => {
     if (!frame) return;
@@ -350,7 +352,8 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
         // Escape twice leaves the view without trapping keyboard users.
         event.preventDefault();
         lastEscapeRef.current = 0;
-        returnRef.current?.focus();
+        // To Return control, or to Done during a handoff.
+        stageRef.current?.parentElement?.querySelector<HTMLButtonElement>("[data-browser-live-exit]")?.focus();
         return;
       }
       lastEscapeRef.current = now;
@@ -394,7 +397,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
           </span>
           {handoff ? null : userControls ? (
             <UiV2Button busy={live.busy === "return"} disabled={live.busy !== null} onClick={() => void live.control("return")}
-              ref={returnRef} type="button">Return control</UiV2Button>
+              data-browser-live-exit="" type="button">Return control</UiV2Button>
           ) : (
             <UiV2Button busy={live.busy === "take"} disabled={live.busy !== null || snapshot.connection !== "live"}
               onClick={() => void live.control("take")} tone="primary" type="button">Take control</UiV2Button>
