@@ -32,6 +32,7 @@ import {
   type WorkspaceToolCaller
 } from "../tools/applyPatch";
 import { artifactTool, readArtifactTool } from "../tools/artifact";
+import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffTool, executeBrowserHandoff, type BrowserHandoffMode } from "../tools/browserHandoff";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { createFetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
@@ -213,6 +214,8 @@ export type ToolRegistryServices = Readonly<{
 }>;
 
 export type ToolRegistryInput = Readonly<{
+  /** Where the run's `browser_handoff` goes; absent where the run has no Workspace browser. */
+  browserHandoff?: BrowserHandoffMode;
   chatId: string;
   /** Text the user sent into this running answer (`fetch_url` link authority). */
   followupTexts(): readonly string[];
@@ -526,6 +529,14 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     if (APPLY_PATCH_WORKSPACE_TOOLS.every((name) => offered.has(namespacedWorkspaceToolName(name)) &&
       coordinator.accepts({ name: namespacedWorkspaceToolName(name), workspace }))) {
       add(applyPatchEngineTool(input, coordinator, workspace));
+    }
+    // The Workspace browser's handoff to the user, in every run with a Workspace so the browser guide's advice holds
+    // everywhere; where nobody can take over (Telegram, unattended runs) it answers with a stable code.
+    const handoffMode = input.browserHandoff;
+    if (handoffMode && offered.has(namespacedWorkspaceToolName("sandbox_exec"))) {
+      add({ activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: BROWSER_HANDOFF_TOOL_NAME }),
+        definition: browserHandoffTool, effects: "external", observationSource: "workspace",
+        execute: (execution) => executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
     }
   }
 

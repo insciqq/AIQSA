@@ -8,6 +8,7 @@ import { mcpFindToolsTool } from "../mcp/discovery";
 import { memorySearchTool } from "../memory/search/contract";
 import { analyzeConversationImageTool, analyzeImageTool } from "./analyzeImage";
 import { artifactTool, readArtifactTool } from "./artifact";
+import { browserHandoffTool } from "./browserHandoff";
 import { checkpointOutputsTool } from "./checkpointOutputs";
 import { fetchUrlTool } from "./fetchUrlPlan";
 import { HARNESS_TOOLS } from "./harnessTools";
@@ -68,7 +69,7 @@ function firstPartyTools(): RunTool[] {
     manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" }, userUrlDigests: [] }),
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
-    analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch)
+    analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool
   ];
 }
 

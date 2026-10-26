@@ -134,6 +134,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     prepared: input.prepared,
     repository: input.repository,
     ...(scheduled ? { scheduled: true as const } : {}),
+    ...(telegram ? { telegram: true as const } : {}),
     services: {
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),

@@ -196,6 +196,8 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
         "or turn Workspace off for the automation to go on without them";
     case "model_cannot_report": return "the model cannot report monitoring results";
     case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
+    case "browser_sign_in_required":
+      return "a website needed you to sign in again; ask the agent in the automation's chat to open the site and sign in in the live browser";
     case "provider_error":
     case "run_failed": return "the model did not return an answer";
     default: return state === "failed" ? "the answer did not complete" : "the run was not started";

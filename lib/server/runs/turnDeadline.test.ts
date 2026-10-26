@@ -3,6 +3,7 @@ import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
 import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest, NormalizedSearchPlanOption } from "../providers/types";
 import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
+import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { getWorkspaceConfig } from "../workspace/config";
 import { toolCallBounds, turnSoftDeadlineMs } from "./turnDeadline";
@@ -70,6 +71,10 @@ describe("turn deadlines", () => {
     expect(bounds.call({ capability: "web_search", name: "search_selected_engines" })).toBe(900_000);
     expect(bounds.call({ capability: "workspace", name: "workspace_exec" })).toBe(120_000);
     expect(bounds.call({ capability: "workspace", name: ANALYZE_IMAGE_TOOL_NAME })).toBe(300_000);
+    // A handoff waits for the user up to ten minutes: it may start until 44 minutes of an hour's turn.
+    expect(bounds.call({ capability: "workspace", name: BROWSER_HANDOFF_TOOL_NAME })).toBe(600_000);
+    expect(turnSoftDeadlineMs(3_600_000, bounds.call({ capability: "workspace", name: BROWSER_HANDOFF_TOOL_NAME }), bounds.answer))
+      .toBe(2_640_000);
     expect(bounds.call({ capability: "image", name: IMAGE_GENERATION_TOOL_NAME })).toBe(86_400_000);
     expect(bounds.call({ capability: "session", name: "read_tool_result" })).toBe(300_000);
     expect(bounds.round).toBe(300_000);
