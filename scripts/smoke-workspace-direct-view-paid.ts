@@ -349,6 +349,13 @@ async function scenario(api: Api, db: PrismaClient, input: Readonly<{ model: Cat
     const hash = await writtenHash(api, index === 0 ? message : (await chatDetail(api, chatId)).messages
       .find((entry) => entry.artifactSummary?.generatedFiles?.some((file) => file.fileName === "code.sha256")) ?? message);
     const facts = message.modelRunId ? await runFacts(db, message.modelRunId) : null;
+    // The next message is admitted only once the Workspace settled this turn (its export and its operation).
+    if (message.modelRunId) {
+      await poll("turn", 300_000, async () => (await db.workspaceRunBinding.findUnique({ select: { exportState: true },
+        where: { modelRunId: message.modelRunId! } }))?.exportState === "COMPLETE" ? true : null, "workspace_export_not_settled");
+    }
+    await poll("turn", 300_000, async () => (await db.workspaceSession.findUnique({ select: { operationOwner: true },
+      where: { chatId } }))?.operationOwner === null ? true : null, "workspace_not_settled");
     const turn = { answerMatches: answerMatches(message, hash), hashWritten: hash !== null, seconds: Math.round((Date.now() - started) / 1000),
       status: message.status, turn: index + 1, ...facts };
     emit({ stage: "turn", scenario: input.name, ...turn });
