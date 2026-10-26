@@ -25,6 +25,20 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("shows the live Browser bar under the process line only while its run works", () => {
+    const workspaceActivity = { entries: [{ id: "browser", kind: "command" as const, phase: "running" as const,
+      command: { preview: "aiqsa-browser open https://shop.example/" } }] };
+    const { rerender } = render(<RunAnswerV2 browserLiveChatId="chat-1" content="" workspaceActivity={workspaceActivity}
+      presentation={presentation({ kind: "activity", runId: "run-browser" })} />);
+    expect(screen.getByRole("region", { name: "Browser" })).toHaveTextContent("The agent is using the browser");
+    rerender(<RunAnswerV2 browserLiveChatId="chat-1" content="Done" workspaceActivity={workspaceActivity}
+      presentation={presentation({ kind: "complete", runId: "run-browser" })} />);
+    expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+    rerender(<RunAnswerV2 content="" workspaceActivity={workspaceActivity}
+      presentation={presentation({ kind: "activity", runId: "run-browser" })} />);
+    expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+  });
+
   it("shows sanitized compaction state in the existing process disclosure", () => {
     const { rerender } = render(<RunAnswerV2 content="" presentation={presentation({
       activity: { kind: "compaction", label: "Compacting context…" },
