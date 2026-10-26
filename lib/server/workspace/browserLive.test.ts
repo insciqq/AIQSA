@@ -131,6 +131,31 @@ describe("browser live relay", () => {
     await until(() => guest.open() === 1 && guest.started() === 2);
   });
 
+  it("replaces a long-running streamer with a fresh one before closing it, keeping the view and control", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { guest, handle, view } = setup();
+    ended.push(() => handle.end());
+    const tab = recordingWriter();
+    await view.watch(owner, tab.writer);
+    await until(() => tab.of("frame").length === 1);
+    expect(await view.control(owner, "take")).toBeNull();
+    await vi.advanceTimersByTimeAsync(BROWSER_LIVE_RELAY_LIMITS.rotateMs + 100);
+    await until(() => guest.started() === 2 && guest.open() === 1);
+    expect(tab.closed()).toBeUndefined();
+    expect(await view.input(owner, click)).toBeNull();
+    guest.frame();
+    await until(() => tab.of("frame").length >= 2);
+  });
+
+  it("stops frames as soon as the last view leaves", async () => {
+    const { guest, handle, view } = setup();
+    ended.push(() => handle.end());
+    const id = await view.watch(owner, recordingWriter().writer);
+    await until(() => guest.received.some((message) => message.t === "frames" && message.on === true));
+    view.unwatch(id!);
+    await until(() => guest.received.some((message) => message.t === "frames" && message.on === false));
+  });
+
   it("ends the views of a Workspace image without the live view, and of a runtime without the channel", async () => {
     const silent = setup({ silent: true });
     ended.push(() => silent.handle.end());
