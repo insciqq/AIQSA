@@ -92,7 +92,7 @@ for (const width of [1440, 390]) {
           else {
             if (width === 390 && !await drawer.isVisible()) await page.getByRole("button", { name: "Open sidebar" }).click();
             if (destination === "chat") await drawer.getByRole("treeitem", { name: "Migration destination", exact: true }).click();
-            else await (width === 390 ? drawer : rail).getByRole("button", {
+            else await (width === 390 ? drawer : rail).getByRole(destination === "new" ? "link" : "button", {
               name: destination === "new" ? "New chat" : "Chats", exact: true
             }).click();
           }
@@ -138,7 +138,9 @@ test("pending migrated mutations block exits, then preserve the draft on failure
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
     const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    for (const name of ["Chats", "New chat", "Studio"]) await expect(rail.getByRole("button", { name, exact: true })).toBeDisabled();
+    for (const [role, name] of [["button", "Chats"], ["link", "New chat"], ["button", "Studio"]] as const) {
+      await expect(rail.getByRole(role, { name, exact: true })).toBeDisabled();
+    }
     await page.keyboard.press("Control+Shift+O");
     await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
     await page.screenshot({ path: info.outputPath(`${resource}-busy.png`) });

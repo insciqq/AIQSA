@@ -147,7 +147,7 @@ async function newChat(page) {
     await page.getByRole("button", { name: "Open sidebar" }).click();
     await navigation.waitFor({ state: "visible" });
   }
-  await navigation.getByRole("button", { exact: true, name: "New chat" }).click();
+  await navigation.getByRole("link", { exact: true, name: "New chat" }).click();
   await page.getByRole("textbox", { name: "Message" }).waitFor({ state: "visible" });
 }
 

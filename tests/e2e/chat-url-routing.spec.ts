@@ -122,7 +122,7 @@ test("New chat chosen while the shell still loads its catalog opens a usable cha
   await page.goto("/");
   await catalogRequested;
   await page.getByRole("complementary", { name: "Chat navigation" })
-    .getByRole("button", { name: "New chat", exact: true })
+    .getByRole("link", { name: "New chat", exact: true })
     .click();
   releaseCatalog();
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
@@ -161,7 +161,7 @@ test("chats keep their address through reload, sidebar history and an independen
     await expect(header).toHaveText(betaTitle);
 
     await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true }).click();
+      .getByRole("link", { name: "New chat", exact: true }).click();
     await expect(page).toHaveURL(exactPath("/"));
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await page.goBack();
@@ -173,7 +173,7 @@ test("chats keep their address through reload, sidebar history and an independen
     await second.goto(`/c/${alpha}`);
     await expect(second.getByTestId("header-title")).toHaveText(alphaTitle);
     await second.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true }).click();
+      .getByRole("link", { name: "New chat", exact: true }).click();
     await expect(second).toHaveURL(exactPath("/"));
     await page.reload();
     await expect(page).toHaveURL(exactPath(`/c/${beta}`));
@@ -184,6 +184,58 @@ test("chats keep their address through reload, sidebar history and an independen
   } finally {
     await second?.close();
     await deleteChats(page, [alpha, beta]);
+  }
+});
+
+test("New chat opens a fresh chat in another tab on a middle or modified click", async ({ page, context, baseURL }, testInfo) => {
+  test.setTimeout(120_000);
+  await useAppearance(page, context, baseURL!, "light");
+  await signInWithLocalToken(page);
+  const title = `Routing new tab ${randomUUID().slice(0, 8)}`;
+  const chat = await createChat(page, title);
+  const header = page.getByTestId("header-title");
+  const tabs: Page[] = [];
+  try {
+    await page.goto(`/c/${chat}`);
+    await expect(header).toHaveText(title);
+    const sidebarLink = page.getByRole("complementary", { name: "Chat navigation" })
+      .getByRole("link", { name: "New chat", exact: true });
+    const railLink = page.getByRole("navigation", { name: "Workspace", exact: true })
+      .getByRole("link", { name: "New chat", exact: true });
+    await sidebarLink.hover();
+    await page.screenshot({ path: testInfo.outputPath("new-chat-link-light-1440.png") });
+
+    for (const open of [
+      () => sidebarLink.click({ button: "middle" }),
+      () => railLink.click({ modifiers: ["ControlOrMeta"] })
+    ]) {
+      const [tab] = await Promise.all([context.waitForEvent("page"), open()]);
+      tabs.push(tab);
+      await expect(tab).toHaveURL(exactPath("/"));
+      await expect(tab.getByTestId("conversation-empty")).toBeVisible({ timeout: 30_000 });
+      await expect(page).toHaveURL(exactPath(`/c/${chat}`));
+      await expect(header).toHaveText(title);
+    }
+
+    // The floating plus is a link too, at the widths that show it.
+    const openFromFloat = async (shot: string) => {
+      await page.goto(`/c/${chat}`);
+      await expect(header).toHaveText(title);
+      const float = page.locator(".v2-sidebar-floats").getByRole("link", { name: "New chat", exact: true });
+      await expect(float).toHaveAttribute("href", "/");
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(shot) });
+      await float.click();
+      await expect(page).toHaveURL(exactPath("/"));
+      await expect(page.getByTestId("conversation-empty")).toBeVisible();
+    };
+    await page.setViewportSize({ width: 900, height: 1180 });
+    await openFromFloat("new-chat-link-light-900.png");
+    await page.setViewportSize(phone);
+    await openFromFloat("new-chat-link-light-390.png");
+  } finally {
+    for (const tab of tabs) await tab.close();
+    await deleteChats(page, [chat]);
   }
 });
 

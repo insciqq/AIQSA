@@ -2,6 +2,8 @@
 
 import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
 import { ChatDragDropProvider, ChatRootDropTarget, useChatDraggable, useChatFolderDrop } from "./chatDragDrop";
+import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
+import { NEW_CHAT_PATH } from "@/lib/domain/chatRoute";
 
 import {
   UiV2Icon,
@@ -832,15 +834,19 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           </button>
         </div>
         <div className="v2-new-chat-wrap">
-          <button
+          {/* A plain click opens the new chat in place, a middle or modified
+              click in another tab. */}
+          <a
             className="v2-new-chat-main v2-focusable"
-            type="button"
-            disabled={props.navigationBusy}
-            onClick={() => props.onNewChat("NORMAL")}
+            href={NEW_CHAT_PATH}
+            aria-disabled={props.navigationBusy || undefined}
+            onClick={shellLinkClick(() => {
+              if (!props.navigationBusy) props.onNewChat("NORMAL");
+            })}
           >
             <UiV2Icon name="plus" />
             New chat
-          </button>
+          </a>
         </div>
         <div className="v2-navigation-filter">
           <UiV2Icon name="search" />
@@ -1744,12 +1750,15 @@ export function ReadingRoomShellV2({
           onClick={revealList}
         />
         {section === "chats" ? (
-          <UiV2IconButton
-            icon="plus"
-            label="New chat"
-            tooltip={`New chat · ${shortcutHintV2("shift+o")}`}
-            onClick={() => createPersonalChat("NORMAL")}
-          />
+          <a
+            className="v2-icon-button v2-focusable"
+            href={NEW_CHAT_PATH}
+            aria-label="New chat"
+            data-tooltip={`New chat · ${shortcutHintV2("shift+o")}`}
+            onClick={shellLinkClick(() => createPersonalChat("NORMAL"))}
+          >
+            <UiV2Icon name="plus" />
+          </a>
         ) : null}
       </div>
       <div className="v2-workspace-content" inert={drawerOpen ? true : undefined}>{children}</div>

@@ -330,7 +330,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     pdfReader = await startPdfReaderFixture(browser);
     await loginWithPassword(page, LOCAL_MCP_MEMBER);
     await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true })
+      .getByRole("link", { name: "New chat", exact: true })
       .click();
     await selectFakeModel(page);
 

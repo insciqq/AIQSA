@@ -224,7 +224,7 @@ async function main() {
       step = "new_chat";
       await page.goto("/", { waitUntil: "domcontentloaded" });
       await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 90_000 });
-      await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
+      await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
       await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
       step = "model_selection";
       await page.getByTestId("header-model-trigger").click();

@@ -74,7 +74,7 @@ async function openChat(page: Page, path: string): Promise<Locator> {
 function sidebarFloats(page: Page) {
   const floats = page.locator(".v2-sidebar-floats");
   return {
-    newChat: floats.getByRole("button", { exact: true, name: "New chat" }),
+    newChat: floats.getByRole("link", { exact: true, name: "New chat" }),
     showList: floats.getByRole("button", { name: "Open sidebar" })
   };
 }
@@ -123,7 +123,7 @@ async function expectCompactTouchHeader(page: Page, model: Locator, title: strin
 }
 
 /** Phone touch: the islands sit on one row, 8px apart around the centred pill. */
-async function expectPhoneIslandGaps(page: Page, withChatActions: boolean): Promise<void> {
+async function expectPhoneIslandGaps(page: Page): Promise<void> {
   const floats = sidebarFloats(page);
   const menu = await expectTarget(floats.showList, "menu island");
   const island = await boxOf(page.locator(".v2-live-header-island"), "model island");
@@ -135,11 +135,26 @@ async function expectPhoneIslandGaps(page: Page, withChatActions: boolean): Prom
   expect(Math.abs(left - right), `model pill gaps ${left} / ${right}`).toBeLessThanOrEqual(1);
   expect(Math.abs(island.y - menu.y), "model island row").toBeLessThanOrEqual(1);
   expect(Math.abs(plus.y - menu.y), "New chat island row").toBeLessThanOrEqual(1);
-  if (!withChatActions) return;
   const more = await expectTarget(page.getByTestId("header-more-trigger"), "Chat actions island");
   const actionsGap = more.x - (plus.x + plus.width);
   expect(Math.abs(actionsGap - 8), `New chat → Chat actions gap ${actionsGap}`).toBeLessThanOrEqual(1);
   expect(Math.abs(more.y - menu.y), "Chat actions island row").toBeLessThanOrEqual(1);
+}
+
+/**
+ * Phone touch on a blank chat: the Temporary switch takes the New chat
+ * island's place (Temporary became a header switch on 2026-10-20).
+ */
+async function expectPhoneBlankChatIslands(page: Page): Promise<void> {
+  const floats = sidebarFloats(page);
+  await expect(floats.newChat).toBeHidden();
+  const menu = await expectTarget(floats.showList, "menu island");
+  const island = await boxOf(page.locator(".v2-live-header-island"), "model island");
+  const temporary = await expectTarget(page.getByTestId("header-temporary-toggle"), "Temporary island");
+  expect(island.x - (menu.x + menu.width), "menu → model gap").toBeGreaterThanOrEqual(7.5);
+  expect(temporary.x - (island.x + island.width), "model → Temporary gap").toBeGreaterThanOrEqual(7.5);
+  expect(Math.abs(island.y - menu.y), "model island row").toBeLessThanOrEqual(1);
+  expect(Math.abs(temporary.y - menu.y), "Temporary island row").toBeLessThanOrEqual(1);
 }
 
 /**
@@ -267,12 +282,12 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
       await openChat(page, "/");
       expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-sidebar-composition", "mobile");
-      await expectPhoneIslandGaps(page, false);
+      await expectPhoneBlankChatIslands(page);
       await expectPhoneIslandSegments(page);
 
       await openChat(page, `/c/${chatId}`);
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-chat-active", "true");
-      await expectPhoneIslandGaps(page, true);
+      await expectPhoneIslandGaps(page);
       await expectPhoneIslandSegments(page);
       // Account Settings from a personal chat.
       await expectSettingsHeaderRoom(page);

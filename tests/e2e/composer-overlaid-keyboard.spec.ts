@@ -72,7 +72,7 @@ for (const viewport of VIEWPORTS) {
     const message = page.getByRole("textbox", { name: "Message", exact: true });
     await expect(page.getByText("Earlier answer")).toBeVisible();
 
-    await page.getByRole("button", { name: "New chat", exact: true }).filter({ visible: true }).first().click();
+    await page.getByRole("link", { name: "New chat", exact: true }).filter({ visible: true }).first().click();
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await expect(message).toBeFocused();
     const resting = await bottomOf(page.getByTestId("composer-v2"));

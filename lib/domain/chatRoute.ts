@@ -12,6 +12,9 @@ export type ChatRoute = Readonly<{
 
 export const BLANK_CHAT_ROUTE: ChatRoute = Object.freeze({ chatId: null });
 
+/** The new chat's address; New chat links to it so it can open in another tab. */
+export const NEW_CHAT_PATH = "/";
+
 /** One-shot parameters that belong to the chat they arrived with. */
 export const CHAT_SCOPED_ROUTE_PARAMETERS = ["message", "artifactEdit", "artifactId", "versionId"] as const;
 

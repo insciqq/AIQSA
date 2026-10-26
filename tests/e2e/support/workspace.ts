@@ -67,7 +67,7 @@ export async function selectFakeModel(page: Page): Promise<void> {
 
 export async function startNewChat(page: Page): Promise<void> {
   await page.getByRole("complementary", { name: "Chat navigation" })
-    .getByRole("button", { name: "New chat", exact: true })
+    .getByRole("link", { name: "New chat", exact: true })
     .click();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
 }
