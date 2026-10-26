@@ -1,0 +1,488 @@
+/**
+ * Opt-in, paid browser-scenario measurement against a DISPOSABLE real-KVM
+ * AIQSA stand. Never a default lane and never a persistent installation.
+ *
+ * Each selected scenario (`scripts/browser-scenarios-support.ts`) runs
+ * AIQSA_BROWSER_SCENARIOS_RUNS times (default 2), interleaved, each in a new
+ * chat with one Russian prompt. The harness waits for the terminal state (up
+ * to the run's turn limit plus a margin), reads `browser-result.json` from the
+ * turn's output files, checks it with the scenario's deterministic oracle and
+ * prints ONE content-free JSON line per run, then one summary line per
+ * scenario and a final line. Scenarios marked `not_available` are reported
+ * without a run.
+ *
+ * Setup through the ordinary Admin and user APIs (as a real operator would):
+ * the codex-lb route from ~/.codex/config.toml as a vision-capable chat model
+ * (reused when an identical usable one exists), System Vision on the same
+ * model, Workspace on with internet, Memory off for the user, and the public
+ * saucedemo.com demo login as a Workspace env secret. Workspace limits are the
+ * stand's own; the effective bounds of every admitted run are printed.
+ *
+ * After each run the chat is deleted permanently (unless
+ * AIQSA_BROWSER_SCENARIOS_KEEP_CHATS=1) and browser sessions the run saved are
+ * removed, so every run starts from the same state.
+ *
+ * Environment (process only; no .env loading):
+ * - AIQSA_BROWSER_SCENARIOS_E2E=DISPOSABLE (required acknowledgement)
+ * - AIQSA_BROWSER_SCENARIOS_COMPOSE_FILE: the stand's `docker compose config --format json`
+ *   (published app and Postgres ports on 127.0.0.1, reachable from this host)
+ * - CODEX_LB_API_KEY
+ * - AIQSA_BROWSER_SCENARIOS_SELECT (default S1,S2,S3,S4,S5), AIQSA_BROWSER_SCENARIOS_RUNS (1..5, default 2)
+ * - AIQSA_BROWSER_SCENARIOS_LABEL: tree or branch label echoed in the output
+ * - AIQSA_BROWSER_SCENARIOS_MARGIN_SECONDS (60..3600, default 600)
+ */
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { Client as PostgresClient } from "pg";
+import { decodeCatalogResponse, type CatalogModel } from "../lib/contracts/catalog";
+import { decodeChatSummaryResponse } from "../lib/contracts/chats";
+import {
+  MEMORY_CONFIRMATION_COPY_VERSION,
+  decodeMemoryConsumerChatModeResponse,
+  decodeMemoryConsumerPermanentChatDeleteResponse
+} from "../lib/contracts/memoryClient";
+import {
+  BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_SECRET,
+  parseBrowserResult, requireBrowserScenarioStand, runBounds, scenarioSummary, selectedScenarios, toolCallStats,
+  usageEvidence, type BrowserBlockedCode, type BrowserScenario, type BrowserScenarioId, type BrowserScenarioStand,
+  type RunBounds, type RunRecord, type StandTarget, type ToolCallRow, type UsageRow
+} from "./browser-scenarios-support";
+import {
+  JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
+  type JourneyConnection
+} from "./context-compaction-journey-support";
+import { codexLbRoute } from "./workspace-user-paid-support";
+
+const REQUEST_TIMEOUT_MS = 60_000;
+const SETUP_TIMEOUT_MS = 900_000;
+const MODEL_DISPLAY_NAME = "Browser scenarios model";
+const TERMINAL = new Set(["complete", "cancelled", "error"]);
+
+let stage = "guard";
+function emit(value: Record<string, unknown>) { process.stdout.write(`${JSON.stringify(value)}\n`); }
+const fail = (code: string): never => { throw new BrowserScenarioError(code); };
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const safeCode = (value: unknown): string | null =>
+  typeof value === "string" && /^[a-z0-9_]{1,64}$/u.test(value) ? value : null;
+
+type Api = Readonly<{ baseUrl: URL; cookie: string }>;
+type CallInit = Readonly<{ body?: unknown; method?: string; signal?: AbortSignal; timeoutMs?: number }>;
+
+async function request(api: Pick<Api, "baseUrl"> & Partial<Pick<Api, "cookie">>, path: string, init: CallInit = {}) {
+  const hasBody = Object.hasOwn(init, "body");
+  try {
+    return await fetch(new URL(path, api.baseUrl), {
+      ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
+      cache: "no-store",
+      headers: {
+        ...(hasBody ? { "content-type": "application/json" } : {}),
+        ...(api.cookie ? { cookie: api.cookie } : {}),
+        origin: api.baseUrl.origin
+      },
+      method: init.method ?? "GET",
+      redirect: "error",
+      signal: init.signal ?? AbortSignal.timeout(init.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    });
+  } catch {
+    return fail("request_failed");
+  }
+}
+
+async function errorCode(response: Response): Promise<string> {
+  const body = await response.json().catch(() => null) as unknown;
+  return (record(body) && safeCode(body.error)) || `http_${response.status}`;
+}
+
+async function json(api: Api, path: string, init: CallInit = {}): Promise<unknown> {
+  const response = await request(api, path, init);
+  if (!response.ok) fail(await errorCode(response));
+  return response.json().catch(() => fail("response_invalid"));
+}
+
+async function poll<T>(timeoutMs: number, probe: () => Promise<T | null>, code: string, intervalMs = 2_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const value = await probe();
+    if (value !== null) return value;
+    await sleep(intervalMs);
+  } while (Date.now() < deadline);
+  return fail(code);
+}
+
+async function authenticate(target: StandTarget): Promise<Api> {
+  const baseUrl = new URL(target.baseUrl);
+  const response = await request({ baseUrl }, "/api/auth/token", { body: { token: target.bootstrapToken }, method: "POST" });
+  if (!response.ok) fail(`auth_${await errorCode(response)}`);
+  const cookie = response.headers.getSetCookie().map((value) => value.split(";", 1)[0]?.trim() ?? "")
+    .find((value) => value.includes("=")) ?? "";
+  const body = await response.json().catch(() => null) as unknown;
+  if (!cookie || !record(body) || !record(body.user) || body.user.role !== "admin") fail("bootstrap_admin_required");
+  return { baseUrl, cookie };
+}
+
+// Setup ------------------------------------------------------------------------------
+
+async function connections(api: Api): Promise<JourneyConnection[]> {
+  return readConnections(await json(api, "/api/admin/providers")) ?? fail("providers_response_invalid");
+}
+
+async function checksIdle(api: Api, connectionId: string): Promise<JourneyConnection> {
+  return poll(SETUP_TIMEOUT_MS, async () => {
+    const connection = (await connections(api)).find((candidate) => candidate.id === connectionId) ?? fail("connection_missing");
+    return connection.checkRunning ? null : connection;
+  }, "checks_still_running", 5_000);
+}
+
+async function ensureModel(api: Api, route: Readonly<{ apiRoot: string; model: string }>, secret: string) {
+  let catalogProof: string | undefined;
+  let contextWindow: number = JOURNEY_LIMITS.defaultContextWindow;
+  const discovery = await request(api, "/api/admin/providers/custom-setup/discover", { body: {
+    allowPrivateNetwork: true, apiRoot: route.apiRoot, authenticationMode: "bearer", responseTimeoutSeconds: 180, secret
+  }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  if (discovery.ok) {
+    const value = await discovery.json().catch(() => null) as unknown;
+    if (record(value) && Array.isArray(value.models) && value.models.some((model) => record(model) && model.id === route.model)) {
+      if (typeof value.catalogProof === "string") catalogProof = value.catalogProof;
+      contextWindow = discoveredContextWindow(value, route.model) ?? contextWindow;
+    }
+  }
+  const decision = journeyReuseDecision(await connections(api), {
+    apiRoot: route.apiRoot, family: "openai_compatible", upstreamModelId: route.model
+  });
+  const reusable = decision.match && decision.match.model.displayName === MODEL_DISPLAY_NAME ? decision.match : null;
+  if (reusable) return { connectionId: reusable.connection.id, contextWindow, providerModelId: reusable.model.id, reused: true };
+  const result = await json(api, "/api/admin/providers/custom-setup", { body: {
+    allowPrivateNetwork: true, apiRoot: route.apiRoot, authenticationMode: "bearer",
+    // A vision-capable chat model as an administrator would add it; setup proves each declared capability.
+    capabilities: {
+      contextWindow, defaultMaxOutputTokens: 16_384, streaming: true, toolCalling: true, parallelToolCalls: false,
+      reasoning: true, reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium",
+      nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: true, vision: true
+    },
+    confirmPaidRequest: true, connectionDisplayName: `Browser scenarios codex-lb ${randomUUID().slice(0, 8)}`,
+    modelDisplayName: MODEL_DISPLAY_NAME, protocol: "responses", responseTimeoutSeconds: 180, secret,
+    ...(catalogProof ? { catalogProof, modelIds: [route.model] } : { modelId: route.model })
+  }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  if (!record(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) {
+    fail(`setup_${record(result) ? safeCode(result.outcome) ?? "invalid" : "invalid"}`);
+  }
+  const connectionId = (result as { connectionId: string }).connectionId;
+  const model = modelInConnection(await checksIdle(api, connectionId), route.model) ?? fail("model_not_configured");
+  return { connectionId, contextWindow, providerModelId: model.id, reused: false };
+}
+
+async function ensureSystemVision(api: Api, providerModelId: string): Promise<void> {
+  await json(api, "/api/admin/providers/system-model-policy", {
+    body: { providerModelId, role: "vision" }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS
+  });
+  const current = await json(api, "/api/admin/providers/system-model-policy");
+  const policy = record(current) && record(current.systemModelPolicy) && record(current.systemModelPolicy.policy)
+    ? current.systemModelPolicy.policy : fail("system_policy_invalid");
+  const updated = await json(api, "/api/admin/providers/system-model-policy", { body: {
+    expectedVersion: policy.version, visionProviderModelId: providerModelId, visionReasoningEffort: "low"
+  }, method: "PATCH" });
+  const vision = record(updated) && record(updated.systemModelPolicy) && record(updated.systemModelPolicy.policy)
+    ? updated.systemModelPolicy.policy.visionModel : null;
+  if (!record(vision) || vision.available !== true) fail("system_vision_unavailable");
+}
+
+async function ensureWorkspaceInternet(api: Api): Promise<void> {
+  const current = await json(api, "/api/admin/workspace");
+  const workspace = record(current) && record(current.workspace) ? current.workspace : fail("workspace_policy_invalid");
+  const version = workspace.version ?? (record(workspace.policy) ? workspace.policy.version : undefined);
+  await json(api, "/api/admin/workspace", { body: { enabled: true, expectedVersion: version, internetEnabled: true }, method: "PATCH" });
+}
+
+type SecretSummary = Readonly<{ id: string; kind: string; name: string; versionId: string }>;
+
+async function secrets(api: Api): Promise<SecretSummary[]> {
+  const value = await json(api, "/api/me/workspace/secrets");
+  if (!record(value) || !Array.isArray(value.secrets)) return fail("secrets_response_invalid");
+  return value.secrets.filter((entry): entry is SecretSummary => record(entry) && typeof entry.id === "string" &&
+    typeof entry.kind === "string" && typeof entry.name === "string" && typeof entry.versionId === "string");
+}
+
+async function ensureSaucedemoSecret(api: Api): Promise<void> {
+  if ((await secrets(api)).some((secret) => secret.kind === "env" && secret.name === SAUCEDEMO_SECRET.name)) return;
+  await json(api, "/api/me/workspace/secrets", { body: {
+    action: "create", description: SAUCEDEMO_SECRET.description, name: SAUCEDEMO_SECRET.name,
+    value: { entries: SAUCEDEMO_SECRET.entries.map((entry) => ({ ...entry })), kind: "env" }
+  }, method: "POST" });
+}
+
+/** Removes browser sessions a run saved, so the next run starts signed out like the first. */
+async function removeBrowserSessions(api: Api): Promise<number> {
+  let removed = 0;
+  for (const secret of (await secrets(api)).filter((entry) => entry.kind === "browser_session")) {
+    await json(api, "/api/me/workspace/secrets", {
+      body: { action: "delete", expectedVersionId: secret.versionId, id: secret.id }, method: "POST"
+    });
+    removed += 1;
+  }
+  return removed;
+}
+
+// One run ----------------------------------------------------------------------------
+
+type RunRow = { errorCode: string | null; id: string; status: string; toolBudgets: unknown; turnTimeoutSeconds: unknown };
+
+async function latestRun(db: PostgresClient, chatId: string): Promise<RunRow | null> {
+  const { rows } = await db.query<RunRow>(`SELECT "id", "status"::text AS "status", "errorPayload"->>'code' AS "errorCode",
+      "normalizedRequest"->'toolBudgets' AS "toolBudgets",
+      "normalizedRequest"->'workspace'->'turnTimeoutSeconds' AS "turnTimeoutSeconds"
+    FROM "ModelRun" WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT 1`, [chatId]);
+  return rows[0] ?? null;
+}
+
+async function deleteChat(api: Api, db: PostgresClient, chatId: string): Promise<boolean> {
+  try {
+    const run = await latestRun(db, chatId);
+    if (run && !TERMINAL.has(run.status)) {
+      await request(api, `/api/model-runs/${encodeURIComponent(run.id)}/cancel`, { body: {}, method: "POST" });
+    }
+    const admitted = decodeMemoryConsumerPermanentChatDeleteResponse(await json(api,
+      `/api/chats/${encodeURIComponent(chatId)}/delete-permanently`, { body: {
+        alsoForgetOriginMemories: true, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
+      }, method: "POST" }));
+    if (!admitted.ok) return false;
+    await poll(300_000, async () => {
+      const { rows } = await db.query<{ count: string }>(`SELECT count(*)::text AS "count" FROM "Chat" WHERE "id" = $1`, [chatId]);
+      return rows[0]?.count === "0" ? true : null;
+    }, "chat_delete_timeout");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Reads and discards a streamed answer within a byte bound; nothing is kept. */
+async function discard(response: Response): Promise<void> {
+  const reader = response.body?.getReader();
+  if (!reader) return;
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      bytes += value.byteLength;
+      if (bytes > 64 * 1024 * 1024) return;
+    }
+  } catch {
+    // The harness aborts the stream once the run is terminal.
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+type RunContext = Readonly<{
+  api: Api;
+  db: PostgresClient;
+  keepChats: boolean;
+  marginSeconds: number;
+  model: CatalogModel;
+  standBounds: StandTarget["configuredBounds"];
+}>;
+
+async function runOnce(context: RunContext, scenario: BrowserScenario, run: number): Promise<RunRecord> {
+  const { api, db } = context;
+  const line: Record<string, unknown> = { scenario: scenario.id, run };
+  let blocked: BrowserBlockedCode[] = [];
+  let success = false;
+  let rounds: number | null = null;
+  let toolCalls: number | null = null;
+  let wallSeconds: number | null = null;
+  let costUsd: number | null = null;
+  let chatId: string | null = null;
+  try {
+    stage = "chat";
+    const chat = decodeChatSummaryResponse(await json(api, "/api/chats", {
+      body: { title: `Browser scenario ${scenario.id} run ${run}` }, method: "POST"
+    })) ?? fail("chat_response_invalid");
+    chatId = chat.id;
+    const mode = decodeMemoryConsumerChatModeResponse(await json(api,
+      `/api/me/chats/${encodeURIComponent(chat.id)}/memory-mode`, { body: { mode: "EXCLUDED" }, method: "PATCH" }));
+    if (!mode.ok || mode.value.mode !== "EXCLUDED") fail("memory_exclusion_failed");
+    stage = "send";
+    const stream = new AbortController();
+    const started = Date.now();
+    const response = await request(api, `/api/chats/${encodeURIComponent(chat.id)}/messages`, { body: {
+      content: { blocks: [{ text: scenario.prompt, type: "text" }] },
+      expectedActiveLeafId: chat.activeLeafMessageId,
+      modelId: context.model.modelId,
+      params: context.model.defaultParams,
+      provider: context.model.provider,
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      searchStrategy: "search-disabled",
+      timeZone: "Europe/Madrid",
+      workspace: { enabled: true }
+    }, method: "POST", signal: stream.signal });
+    if (!response.ok) {
+      Object.assign(line, { terminal: "admission_failed", failureCode: await errorCode(response) });
+      return { blocked, costUsd, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
+    }
+    const drained = discard(response);
+    stage = "wait";
+    const admitted = await poll(120_000, () => latestRun(db, chat.id), "run_not_admitted");
+    const bounds: RunBounds = runBounds({ toolBudgets: admitted.toolBudgets, workspace: { turnTimeoutSeconds: admitted.turnTimeoutSeconds } });
+    line.bounds = bounds;
+    const limitSeconds = typeof bounds.turnTimeoutSeconds === "number" ? bounds.turnTimeoutSeconds
+      : typeof context.standBounds.turnTimeoutSeconds === "number" ? context.standBounds.turnTimeoutSeconds : 3_600;
+    const interaction = new AbortController();
+    const interacting = scenario.interaction?.({ baseUrl: api.baseUrl.origin, chatId: chat.id, cookie: api.cookie,
+      runId: admitted.id, signal: interaction.signal }).catch(() => { line.interactionFailed = true; });
+    let terminal: RunRow | null = null;
+    try {
+      terminal = await poll((limitSeconds + context.marginSeconds) * 1_000, async () => {
+        const current = await latestRun(db, chat.id);
+        return current && current.id === admitted.id && TERMINAL.has(current.status) ? current : null;
+      }, "harness_timeout", 3_000);
+    } catch (error) {
+      if (!(error instanceof BrowserScenarioError)) throw error;
+      await request(api, `/api/model-runs/${encodeURIComponent(admitted.id)}/cancel`, { body: {}, method: "POST" });
+    }
+    wallSeconds = Math.round((Date.now() - started) / 100) / 10;
+    interaction.abort();
+    stream.abort();
+    await Promise.all([drained, interacting]);
+    line.terminal = terminal?.status ?? "harness_timeout";
+    line.failureCode = terminal ? safeCode(terminal.errorCode) : "harness_timeout";
+    line.wallSeconds = wallSeconds;
+    stage = "evidence";
+    type Binding = { exportState: string; internetEnabled: boolean | null };
+    const binding = await poll<Binding>(300_000, async () => {
+      const { rows } = await db.query<Binding>(
+        `SELECT "exportState"::text AS "exportState", "internetEnabled" FROM "WorkspaceRunBinding" WHERE "modelRunId" = $1`, [admitted.id]);
+      const row = rows[0];
+      if (!row) return { exportState: "none", internetEnabled: null };
+      return row.exportState === "COMPLETE" || row.exportState === "FAILED" ? row : null;
+    }, "export_timeout", 3_000).catch((): Binding => ({ exportState: "pending", internetEnabled: null }));
+    Object.assign(line, { exportState: binding.exportState, internetEnabled: binding.internetEnabled });
+    const { rows: calls } = await db.query<ToolCallRow>(`SELECT "toolName", "state"::text AS "state", "roundIndex"
+      FROM "ModelRunToolCall" WHERE "modelRunId" = $1`, [admitted.id]);
+    const stats = toolCallStats(calls);
+    rounds = stats.rounds;
+    toolCalls = stats.toolCalls;
+    Object.assign(line, stats);
+    // Usage is recorded after the answer: wait briefly for the answer's own receipt.
+    const usageRows = await poll(120_000, async () => {
+      const { rows } = await db.query<UsageRow & { purpose: string }>(`SELECT "purpose"::text AS "purpose", "costReported",
+          "estimatedCostMicros", "inputTokens", "outputTokens" FROM "UsageEvent" WHERE "modelRunId" = $1`, [admitted.id]);
+      return rows.some((row) => row.purpose === "chat_answer") ? rows : null;
+    }, "usage_timeout", 3_000).catch(() => null);
+    const usage = usageEvidence(usageRows ?? []);
+    costUsd = usage.costUsd;
+    Object.assign(line, usage, { usageSettled: usageRows !== null });
+    stage = "result";
+    const { rows: outputs } = await db.query<{ attachmentId: string; byteSize: number; relativePath: string }>(
+      `SELECT "attachmentId", "byteSize", "relativePath" FROM "WorkspaceRunOutput" WHERE "workspaceRunBindingId" = $1`, [admitted.id]);
+    line.outputFiles = outputs.length;
+    const output = outputs.find((entry) => entry.relativePath === BROWSER_RESULT_FILE) ??
+      outputs.find((entry) => entry.relativePath.endsWith(`/${BROWSER_RESULT_FILE}`));
+    let checks: string[];
+    if (!output) checks = ["result_missing"];
+    else if (output.byteSize > BROWSER_RESULT_MAX_BYTES) checks = ["result_too_large"];
+    else {
+      const content = await request(api, `/api/attachments/${encodeURIComponent(output.attachmentId)}/content`);
+      const parsed = content.ok ? parseBrowserResult(new Uint8Array(await content.arrayBuffer())) : null;
+      if (!parsed) checks = ["result_unreadable"];
+      else if (!parsed.ok) checks = [parsed.code];
+      else {
+        blocked = [...parsed.blocked];
+        line.resultStatus = ["completed", "partial", "blocked"].includes(String(parsed.value.status)) ? parsed.value.status : "other";
+        checks = scenario.oracle(parsed.value);
+      }
+    }
+    line.checksFailed = checks;
+    line.blocked = blocked;
+    success = terminal?.status === "complete" && checks.length === 0;
+    return { blocked, costUsd, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
+  } catch (error) {
+    line.harnessError = error instanceof BrowserScenarioError ? error.message : "browser_scenarios_run_failed";
+    line.harnessStage = stage;
+    return { blocked, costUsd, rounds, scenario: scenario.id, success: false, toolCalls, wallSeconds };
+  } finally {
+    line.success = success;
+    if (chatId) {
+      line.browserSessionsRemoved = await removeBrowserSessions(api).catch(() => null);
+      if (!context.keepChats) line.chatDeleted = await deleteChat(api, db, chatId);
+    }
+    emit(line);
+  }
+}
+
+// Main -------------------------------------------------------------------------------
+
+function boundedInteger(raw: string | undefined, fallback: number, min: number, max: number, code: string): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= min && value <= max ? value : fail(code);
+}
+
+async function main() {
+  const composeFile = process.env.AIQSA_BROWSER_SCENARIOS_COMPOSE_FILE ?? fail("compose_required");
+  const target = requireBrowserScenarioStand(process.env.AIQSA_BROWSER_SCENARIOS_E2E,
+    JSON.parse(readFileSync(composeFile, "utf8")) as BrowserScenarioStand);
+  const scenarios = selectedScenarios(process.env.AIQSA_BROWSER_SCENARIOS_SELECT);
+  const runs = boundedInteger(process.env.AIQSA_BROWSER_SCENARIOS_RUNS, 2, 1, 5, "runs_invalid");
+  const marginSeconds = boundedInteger(process.env.AIQSA_BROWSER_SCENARIOS_MARGIN_SECONDS, 600, 60, 3_600, "margin_invalid");
+  const label = process.env.AIQSA_BROWSER_SCENARIOS_LABEL?.trim() || "unlabelled";
+  if (!/^[A-Za-z0-9._/-]{1,80}$/u.test(label)) fail("label_invalid");
+  const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
+  const secret = process.env.CODEX_LB_API_KEY ?? fail("codex_lb_key_required");
+  const db = new PostgresClient({ connectionString: target.databaseUrl });
+  await db.connect();
+  const started = Date.now();
+  const records: RunRecord[] = [];
+  try {
+    stage = "preflight";
+    const { rows } = await db.query<{ active: string; chats: string }>(`SELECT
+      (SELECT count(*) FROM "ModelRun" WHERE "status"::text NOT IN ('complete', 'cancelled', 'error'))::text AS "active",
+      (SELECT count(*) FROM "Chat")::text AS "chats"`);
+    if (rows[0]?.active !== "0" || rows[0]?.chats !== "0") fail("stand_not_idle");
+    const api = await authenticate(target);
+    stage = "setup";
+    await json(api, "/api/me/memory/settings", { body: {
+      decayEnabled: false, learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false
+    }, method: "PATCH" });
+    await ensureWorkspaceInternet(api);
+    const provider = await ensureModel(api, route, secret);
+    await ensureSystemVision(api, provider.providerModelId);
+    await ensureSaucedemoSecret(api);
+    const model = await poll(SETUP_TIMEOUT_MS, async () => {
+      const catalog = decodeCatalogResponse(await json(api, "/api/me/catalog")) ?? fail("catalog_response_invalid");
+      const entry = catalog.models.find((candidate) =>
+        candidate.provider === provider.connectionId && candidate.modelId === provider.providerModelId);
+      return entry && entry.capabilities.toolCalling ? entry : null;
+    }, "catalog_model_missing", 5_000);
+    emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model,
+      contextWindow: provider.contextWindow, reused: provider.reused, systemVision: true, workspaceInternet: true,
+      configuredBounds: target.configuredBounds, scenarios, runs });
+    const context: RunContext = { api, db, keepChats: process.env.AIQSA_BROWSER_SCENARIOS_KEEP_CHATS === "1",
+      marginSeconds, model, standBounds: target.configuredBounds };
+    // Runs interleave scenarios, so one site is not hit back to back.
+    for (let run = 1; run <= runs; run += 1) {
+      for (const id of scenarios) {
+        const scenario = BROWSER_SCENARIOS[id];
+        if (scenario.availability !== "available") continue;
+        records.push(await runOnce(context, scenario, run));
+      }
+    }
+    const summary = scenarios.map((id: BrowserScenarioId) => BROWSER_SCENARIOS[id].availability === "available"
+      ? scenarioSummary(id, records) : { scenario: id, status: "not_available" });
+    for (const row of summary) emit({ stage: "summary", ...row });
+    emit({ status: "finished", label, model: route.model, runs: records.length,
+      successes: records.filter((entry) => entry.success).length, elapsedSeconds: Math.round((Date.now() - started) / 1000) });
+  } finally {
+    await db.end().catch(() => undefined);
+  }
+}
+
+main().catch((error: unknown) => {
+  const code = error instanceof BrowserScenarioError ? error.message : "browser_scenarios_check_failed";
+  emit({ status: "failed", stage, code });
+  process.exitCode = 1;
+});
