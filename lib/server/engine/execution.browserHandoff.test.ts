@@ -171,7 +171,7 @@ describe("browser_handoff in a native run", () => {
     const result = await reading;
     expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
     expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "completed",
-      page: { title: "Sign in", url: "https://shop.example/login" }, signInSaved: "shop.example" });
+      page: { title: "Sign in", url: "https://shop.example/login" }, signInSavedAfterAnswer: "shop.example" });
     expect(JSON.stringify(run.model.requests[1]!.history)).not.toContain("zz-typed-4242");
     expect(run.space.order).toEqual(["handoff"]);
     expect(panel.tab.closed()).toEqual({ data: { reason: "run_finished" }, event: "end" });
@@ -189,7 +189,7 @@ describe("browser_handoff in a native run", () => {
     panel.view.answerHandoff(owner, { action: "cancel", handoffId: panel.handoff.id });
     await reading;
     expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "cancelled" });
-    expect(handoffResult(run.model.requests).signInSaved).toBeUndefined();
+    expect(handoffResult(run.model.requests).signInSavedAfterAnswer).toBeUndefined();
   });
 
   it("returns timed_out once the wait capped at the turn's tool time ran out", async () => {
