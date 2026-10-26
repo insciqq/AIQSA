@@ -143,6 +143,11 @@ export const browserLiveStateEventSchema = z.strictObject({
   browser: z.enum(BROWSER_LIVE_BROWSER_STATES),
   controller: z.enum(BROWSER_LIVE_CONTROLLERS),
   handoff: browserLiveHandoffSchema.nullable(),
+  /**
+   * Whether sign-ins made in this browser are saved to the user's Secrets after the turn (personal chats);
+   * false where save-back does not run (Assistant and temporary chats), so the card says it will not be remembered.
+   */
+  signInRemembered: z.boolean(),
   /** The page the browser shows, for the panel's address line; the owner's own content. */
   page: z.strictObject({ url: text(BROWSER_LIVE_LIMITS.urlChars), title: text(BROWSER_LIVE_LIMITS.titleChars) }).nullable()
 });
