@@ -56,7 +56,8 @@ export const saveSkillTool: RunTool = {
     properties: {
       directory: { type: ["string", "null"], maxLength: 1_024,
         description: "The folder, e.g. /workspace/project/gitlab-digest (or inside this run's /workspace/output directory); null for a restore." },
-      files: { type: ["array", "null"], minItems: 1, maxItems: SKILL_SAVE_MAX_FILES, items: { type: "string", maxLength: 512 },
+      files: { anyOf: [{ type: "array", minItems: 1, maxItems: SKILL_SAVE_MAX_FILES, items: { type: "string", maxLength: 512 } },
+        { type: "null" }],
         description: "Every file of the folder, relative to it, including SKILL.md (list them first, e.g. with find -type f). " +
           "A file left out is not part of the saved version. Null for a restore." },
       target: { type: "string", maxLength: 128,
