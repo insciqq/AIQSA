@@ -28,7 +28,12 @@ MAX_COUNT = 50
 WORKSPACE = Path("/workspace")
 ROOT = WORKSPACE / "secrets" / "browser"
 
-_SITE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$")
+_SITE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+#: Second-level labels under which a two-letter country code registers names (`co.uk`, `com.au`), as
+#: `http.cookiejar` treats them. Without a public suffix list this keeps such pairs, like single labels,
+#: from becoming a site whose session would gather every name under them.
+_COUNTRY_SECOND_LEVEL = frozenset({"ac", "aero", "biz", "cat", "co", "com", "coop", "edu", "eu", "gov", "info", "int", "jobs",
+                                   "mil", "mobi", "museum", "name", "net", "org", "pro", "travel"})
 
 
 class SessionError(Exception):
@@ -58,20 +63,31 @@ def session_name(site: str) -> str:
     return safe_basename(site) + ".json"
 
 
+def suffix_like(host: str) -> bool:
+    """A single label, or a country-code pair such as `co.uk`: never a site of its own."""
+    labels = host.split(".")
+    return len(labels) < 2 or (len(labels) == 2 and len(labels[1]) == 2 and labels[0] in _COUNTRY_SECOND_LEVEL)
+
+
 def site_of(host: str) -> Optional[str]:
-    """The file name a site's session uses: its host in lower case, without a leading `www.`."""
+    """The file name a site's session uses: its host in lower case, without a leading `www.`.
+
+    At least two labels and no public suffix: one file holds one site, never every name under a suffix.
+    """
     host = (host or "").strip().lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
-    return host if host and len(host) <= 200 and _SITE.match(host) else None
+    return host if host and len(host) <= 200 and _SITE.fullmatch(host) and not suffix_like(host) else None
 
 
 def domain_matches(domain: str, wanted: Iterable[str]) -> bool:
-    """A cookie or origin host belongs to a site when either is the other or its subdomain."""
+    """A cookie or origin host belongs to a site when it is the site, its subdomain, or a parent that is
+    still a registrable name (sign-in cookies often sit on the parent: `.example.com` for `app.example.com`)."""
     value = (domain or "").lstrip(".").lower()
     if not value:
         return False
-    return any(value == site or value.endswith("." + site) or site.endswith("." + value) for site in wanted)
+    return any(value == site or value.endswith("." + site) or (site.endswith("." + value) and not suffix_like(value))
+               for site in wanted)
 
 
 def _origin_host(origin: str) -> str:

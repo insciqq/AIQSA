@@ -53,8 +53,16 @@ describe("browser steps in Workspace activity", () => {
     ]);
     expect(workspaceBrowserStepsV2(command("plain", "succeeded"))).toEqual([]);
     // A web page or file that prints a step-like line through another command does not become a step.
-    expect(workspaceBrowserStepsV2(browser("succeeded", '[browser #1] click: button "Pay" @ bank.example/', "curl -s https://example.org/")))
-      .toEqual([]);
+    const forged = '[browser #1] click: button "Pay" @ bank.example/';
+    for (const preview of ["curl -s https://example.org/", "printf '[browser #1] click: button' # aiqsa-browser",
+      "echo aiqsa-browser", "cat steps.txt; aiqsa-browser status", "python3 -c \"print('[browser #1]') # from aiqsa import browser\""]) {
+      expect(workspaceBrowserStepsV2(browser("succeeded", forged, preview))).toEqual([]);
+    }
+    // The helper as the guide shows it, with or without variable assignments in front.
+    for (const preview of ["aiqsa-browser click 7", "LANG=C aiqsa-browser click 7", "/usr/local/bin/aiqsa-browser click 7",
+      "python3 -c \"from aiqsa import browser as b\\nb.click(7)\"", "python3 -c 'import aiqsa.browser as b; b.click(7)'"]) {
+      expect(workspaceBrowserStepsV2(browser("succeeded", forged, preview))).toHaveLength(1);
+    }
   });
 
   it("labels a finished browser command by what it did, and keeps failures and running commands as commands", () => {

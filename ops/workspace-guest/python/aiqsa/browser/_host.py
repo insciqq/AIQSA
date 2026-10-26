@@ -2,12 +2,14 @@
 
 The first `aiqsa.browser` call of a boot starts this process detached from the
 command (`_client.py`). It owns Playwright and the browser, answers one request
-at a time on a private Unix socket, keeps the site sessions current and writes
-the turn's step log. It is no registered execution: every run that executed a
+at a time on a private Unix socket, keeps the site sessions current and lists
+the turn's steps. It is no registered execution: every run that executed a
 command ends with a disk-preserving VM stop (`lib/server/workspace/quiescence.ts`),
 which ends this process and Chromium with it on success, Stop, deadline and
 failure alike. So nothing waits for a save at the end: sessions are written as
-they change.
+they change. Nothing it prints carries a value typed from the environment
+(`type N --env NAME`): such a field reads as a hidden value, and the value
+itself is masked in every answer.
 
     python3 -m aiqsa.browser._host
 """
@@ -40,9 +42,7 @@ IDLE_SECONDS = 1800
 MAX_ELEMENTS = 500
 MAX_FRAMES = 8
 MAX_STEPS = 500
-KEEP_THUMBS = 100
 KEEP_SHOTS = 20
-THUMB_WIDTH = 360
 TEXT_MAX_CHARS = 20_000
 JS_MAX_CHARS = 8_000
 ACTION_TIMEOUT_MS = 10_000
@@ -121,10 +121,9 @@ class Host:
         self.environ = environ
         self.locale = _identity.browser_locale(environ)
         self.timezone = _identity.browser_timezone(environ)
-        self.store = _sessions.SessionStore(_paths.sessions_dir(environ))
-        self.steps_dir = _paths.steps_dir(environ)
-        self.shots_dir = _paths.shots_dir(environ)
-        self.downloads_dir = _paths.downloads_dir(environ)
+        self.store = _sessions.SessionStore(_paths.sessions_dir())
+        self.shots_dir = _paths.shots_dir()
+        self.downloads_dir = _paths.downloads_dir()
         self.playwright = None
         self.browser = None
         self.context = None
@@ -141,6 +140,10 @@ class Host:
         self.local_storage: Dict[str, List[Dict[str, str]]] = {}
         self.steps: List[Dict[str, Any]] = []
         self.step_count = 0
+        #: per frame: (document address, element handle) of fields typed from the environment
+        self.masked: Dict[Any, List[Tuple[str, Any]]] = {}
+        #: values typed from the environment this turn; no answer of this host carries them
+        self.hidden = _format.HiddenValues()
         self.notes: List[str] = []
         self.acting = False
         self.crashed = False
@@ -265,6 +268,7 @@ class Host:
     def _on_close(self, page: Any) -> None:
         self.tabs = [tab for tab in self.tabs if tab is not page]
         self.snapshots.pop(page, None)
+        self.masked = {frame: fields for frame, fields in self.masked.items() if frame.page is not page}
         self.cdp.pop(page, None)
         self.activity.pop(page, None)
         self.setups.pop(page, None)
@@ -295,7 +299,7 @@ class Host:
             self.notes.append(f"A download could not be saved ({_first_line(error, 120)}).")
             return
         self.notes.append(f"Downloaded {target}.")
-        step = self._record("download", target.name, getattr(self.current, "url", None), thumb=False)
+        step = self._record("download", target.name, getattr(self.current, "url", None))
         await self._finish_step(step, None)
 
     async def _page(self) -> Any:
@@ -389,16 +393,26 @@ class Host:
             options: Dict[str, Any] = {"max": budget, "next": next_number}
             if before and before.get("doc") == frame.url:
                 options["previous"] = {"elements": before["elements"], "numbers": before["numbers"]}
-            try:
-                result = await frame.evaluate_handle(_dom.COLLECT, options)
-            except PlaywrightError:
-                if "previous" not in options:
-                    continue
-                options.pop("previous")
+            masked = [handle for document, handle in self.masked.get(frame, []) if document == frame.url]
+            if masked:
+                options["masked"] = masked
+            # A handle of a document that is gone fails the list: number afresh, then forget fields that left with it.
+            attempts = [options]
+            if "previous" in options:
+                attempts.append({key: value for key, value in options.items() if key != "previous"})
+            if masked:
+                attempts.append({key: value for key, value in options.items() if key not in ("previous", "masked")})
+            result = None
+            for attempt in attempts:
                 try:
-                    result = await frame.evaluate_handle(_dom.COLLECT, options)
+                    result = await frame.evaluate_handle(_dom.COLLECT, attempt)
+                    break
                 except PlaywrightError:
                     continue
+            if result is None:
+                continue
+            if masked and "masked" not in attempt:
+                self.masked.pop(frame, None)
             try:
                 data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, title: r.title, scroll: r.scroll, loading: r.loading })")
                 elements = await result.get_property("elements")
@@ -423,12 +437,9 @@ class Host:
                             item["position"], item["inView"] = "below", False
                 refs[int(item["n"])] = (frame, elements, local)
                 items.append(item)
-        try:
-            for kind in await page.main_frame.evaluate(_dom.CAPTCHA, _dom.CAPTCHA_SELECTORS):
-                if kind not in captcha:
-                    captcha.append(kind)
-        except PlaywrightError:
-            pass
+        for kind in await self._captcha_forms(page):
+            if kind not in captcha:
+                captcha.append(kind)
         # The previous list's handles were only needed to keep numbers; release them all.
         for before in (previous.get("frames") or {}).values():
             for name in ("elements", "numbers"):
@@ -440,11 +451,34 @@ class Host:
                                 "items": {int(item["n"]): item for item in items}, "captcha": captcha}
         notes, self.notes = self.notes, []
         tabs = [tab for tab in self.tabs if not tab.is_closed()]
-        return {"url": page.url, "title": meta["title"], "scroll": meta["scroll"], "loading": meta["loading"],
+        return {"url": _format.without_userinfo(page.url), "title": meta["title"], "scroll": meta["scroll"], "loading": meta["loading"],
                 "truncated": meta["truncated"], "items": items, "captcha": captcha, "notes": notes,
                 "tabs": len(tabs), "tab": (tabs.index(page) + 1) if page in tabs else 1}
 
+    async def _captcha_forms(self, page: Any) -> List[str]:
+        """CAPTCHA or bot-check widgets and forms in the page's own document."""
+        try:
+            return [str(kind) for kind in await page.main_frame.evaluate(_dom.CAPTCHA, _dom.CAPTCHA_SELECTORS)]
+        except PlaywrightError:
+            return []
+
+    async def _captcha_in_page(self, page: Any) -> List[str]:
+        """What the page shows now, the same detection as the element list: frames of known services and forms."""
+        kinds: List[str] = []
+        for index, (frame, _box) in enumerate(await self._frames(page)):
+            kind = self._captcha_frame(frame) if index else None
+            if kind and kind not in kinds:
+                kinds.append(kind)
+        for kind in await self._captcha_forms(page):
+            if kind not in kinds:
+                kinds.append(kind)
+        return kinds
+
     async def _element(self, number: int) -> Tuple[Any, Dict[str, Any]]:
+        _frame, element, item = await self._element_ref(number)
+        return element, item
+
+    async def _element_ref(self, number: int) -> Tuple[Any, Any, Dict[str, Any]]:
         page = await self._page()
         snapshot = self.snapshots.get(page)
         if not snapshot or snapshot.get("url") != page.main_frame.url:
@@ -471,26 +505,19 @@ class Host:
         if in_captcha:
             raise HostError("captcha_requires_user",
                             "This element belongs to a CAPTCHA or bot check. Do not try to solve or get around it; stop and tell the user.")
-        return element, item
+        return frame, element, item
 
     # Steps and sessions ----------------------------------------------------------------------------------------
 
     def _reset_steps(self) -> None:
         self.steps, self.step_count = [], 0
-        try:
-            self.steps_dir.mkdir(parents=True, exist_ok=True)
-            for entry in self.steps_dir.iterdir():
-                if entry.is_file() and not entry.is_symlink() and (entry.name.startswith("step-") or entry.name == "steps.jsonl"):
-                    entry.unlink()
-        except OSError:
-            pass
 
-    def _record(self, action: str, target: Optional[str], url: Optional[str], thumb: bool = True) -> Dict[str, Any]:
+    def _record(self, action: str, target: Optional[str], url: Optional[str]) -> Dict[str, Any]:
+        """One step of the turn's list (kept in memory only), with the page's address and no query."""
         self.step_count += 1
-        step = {"n": self.step_count, "action": action, "target": target, "url": url, "at": _now(), "thumb": None}
+        step = {"n": self.step_count, "action": action, "target": target, "url": _format.page_address(url), "at": _now()}
         self.steps.append(step)
         del self.steps[:-MAX_STEPS]
-        step["pending_thumb"] = thumb
         return step
 
     def _drop_step(self, step: Dict[str, Any]) -> None:
@@ -500,44 +527,8 @@ class Host:
             self.step_count -= 1
 
     async def _finish_step(self, step: Dict[str, Any], page: Any) -> None:
-        if step.pop("pending_thumb", False) and page is not None and not page.is_closed():
-            step["thumb"] = await self._thumbnail(page, step["n"])
         if page is not None and not page.is_closed():
-            step["url"] = page.url
-        try:
-            with open(self.steps_dir / "steps.jsonl", "a", encoding="utf-8") as stream:
-                stream.write(json.dumps(step, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
-
-    async def _thumbnail(self, page: Any, number: int) -> Optional[str]:
-        """A small JPEG of the viewport after the step, for the live view and the step log."""
-        try:
-            data = await page.screenshot(type="jpeg", quality=55, timeout=5_000)
-        except PlaywrightError:
-            return None
-        target = self.steps_dir / f"step-{number:04d}.jpg"
-        try:
-            try:
-                from io import BytesIO
-
-                from PIL import Image  # The guest image ships Pillow; without it the full-size frame is kept.
-
-                with Image.open(BytesIO(data)) as image:
-                    ratio = THUMB_WIDTH / max(1, image.width)
-                    small = image.convert("RGB").resize((THUMB_WIDTH, max(1, round(image.height * ratio))))
-                    buffer = BytesIO()
-                    small.save(buffer, "JPEG", quality=60)
-                    data = buffer.getvalue()
-            except ImportError:
-                pass
-            target.write_bytes(data)
-            thumbs = sorted(entry for entry in self.steps_dir.glob("step-*.jpg"))
-            for old in thumbs[:-KEEP_THUMBS]:
-                old.unlink()
-        except OSError:
-            return None
-        return str(target)
+            step["url"] = _format.page_address(page.url)
 
     async def _storage_state(self) -> Dict[str, Any]:
         """Cookies of the whole browser, and the kept sites' local storage read from their open documents.
@@ -603,6 +594,8 @@ class Host:
             response = {"ok": False, "error": {"code": "protocol_error", "message": "The request could not be read."}}
         except Exception as error:  # noqa: BLE001 - one failed request must not end the browser
             response = {"ok": False, "error": {"code": "browser_error", "message": _first_line(error)}}
+        # A value typed from the environment may come back in a field, an address, page text or a script result.
+        response = self.hidden.mask(response)
         try:
             writer.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
             await writer.drain()
@@ -729,12 +722,17 @@ class Host:
         return await self._act("click", _format.element_label(item), run)
 
     async def op_type(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        element, item = await self._element(_int(args, "n", None, 1, 100_000))
+        frame, element, item = await self._element_ref(_int(args, "n", None, 1, 100_000))
         text = _text(args, "text", 20_000, required=False) or ""
         submit = args.get("submit") is True
         replace = args.get("clear", True) is not False
+        masked = args.get("masked") is True
+        if masked:
+            # Before acting: even an error about this field must not carry the value.
+            self.hidden.add(text)
+            self.masked.setdefault(frame, []).append((frame.url, element))
         detail = f"{len(text)} characters"
-        if item.get("search") and not item.get("secret") and args.get("masked") is not True:
+        if item.get("search") and not item.get("secret") and not masked:
             detail = _format.quoted(text, 40)
         label = f"{_format.element_label(item)} ({detail})"
 
@@ -792,7 +790,7 @@ class Host:
 
     async def op_press(self, args: Dict[str, Any]) -> Dict[str, Any]:
         key = _text(args, "key", 40)
-        if not _KEY.match(key):
+        if not _KEY.fullmatch(key):
             raise HostError("invalid_arguments", "Use a key such as Enter, Escape, Tab, ArrowDown or Control+A.")
 
         async def run(page: Any) -> None:
@@ -872,8 +870,13 @@ class Host:
         return {"text": _format.render_text(text, start, limit), "data": {"length": len(text)}}
 
     async def op_js(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read page data with a script. Not while the page shows a CAPTCHA or bot check (same detection as clicks)."""
         expression = _text(args, "expression", 20_000)
         page = await self._page()
+        kinds = await self._captcha_in_page(page)
+        if kinds:
+            raise HostError("captcha_requires_user", f"This page shows a CAPTCHA or bot check ({', '.join(kinds)}). "
+                            "Do not run scripts on it or try to get around it; stop and tell the user.")
         try:
             value = await page.evaluate(expression)
         except PlaywrightError as error:
@@ -910,7 +913,7 @@ class Host:
                     old.unlink()
                 except OSError:
                     pass
-        step = self._record("screenshot", label, page.url, thumb=False)
+        step = self._record("screenshot", label, page.url)
         await self._finish_step(step, page)
         return {"step": step, "text": f"Screenshot saved: {path}", "data": {"path": str(path)}}
 
@@ -921,7 +924,7 @@ class Host:
                 title = await tab.title()
             except PlaywrightError:
                 title = ""
-            tabs.append({"index": index, "title": title, "url": tab.url, "current": tab is self.current})
+            tabs.append({"index": index, "title": title, "url": _format.without_userinfo(tab.url), "current": tab is self.current})
         return {"data": tabs, "text": _format.render_tabs(tabs)}
 
     def _tab(self, args: Dict[str, Any]) -> Any:
@@ -956,7 +959,7 @@ class Host:
         tab = self._tab(args) if args.get("index") is not None else await self._page()
         await tab.close()
         page = await self._page()
-        step = self._record("close_tab", None, page.url, thumb=False)
+        step = self._record("close_tab", None, page.url)
         await self._finish_step(step, page)
         summary = await self._snapshot(page)
         return {"step": step, "info": summary, "text": _format.render_info(summary)}
@@ -978,14 +981,14 @@ class Host:
             saved = self.store.save(name, state)
         except _sessions.SessionError as error:
             raise HostError(error.code, error.message) from None
-        step = self._record("save_session", name[: -len(".json")], page.url, thumb=False)
+        step = self._record("save_session", name[: -len(".json")], page.url)
         await self._finish_step(step, page)
         verb = "Saved" if saved["changed"] else "Unchanged"
         return {"step": step, "data": saved,
                 "text": f"{verb}: /workspace/secrets/browser/{name} ({saved['bytes']} bytes). It stays current while you browse in this turn."}
 
     async def op_steps(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        steps = [{key: value for key, value in step.items() if key != "pending_thumb"} for step in self.steps]
+        steps = [dict(step) for step in self.steps]
         return {"data": steps, "text": _format.render_steps(steps)}
 
     async def op_close(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1047,7 +1050,12 @@ async def _main() -> int:
     return 0
 
 
-def main() -> None:
+def main(argv: Optional[List[str]] = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and args[0] == _paths.TEST_ROOT_FLAG:
+        _paths.use_test_root(args[1])
+    elif args:
+        sys.exit(2)
     socket.setdefaulttimeout(None)
     sys.exit(asyncio.run(_main()))
 

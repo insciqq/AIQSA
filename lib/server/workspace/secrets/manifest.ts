@@ -1,5 +1,5 @@
 import {
-  isWorkspaceEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
+  isWorkspaceSavedEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
   WORKSPACE_SECRET_ENV_MAX_BYTES, workspaceSecretAssetPath, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT,
   WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, workspaceBrowserSessionPath,
   type WorkspaceSecretKind
@@ -112,7 +112,7 @@ export function workspaceSecretVariables(secrets: readonly WorkspaceSecretVariab
   let remaining = WORKSPACE_SECRET_ENV_MAX_BYTES - secrets.reduce((total, secret) => total + (secret.kind === "env" ? secret.byteSize : 0), 0);
   return secrets.map((secret) => {
     if (secret.kind === "env") return secret.envNames;
-    if (secret.kind !== "text" || !TEXT_SECRET_VARIABLE_NAME.test(secret.name) || !isWorkspaceEnvName(secret.name) ||
+    if (secret.kind !== "text" || !TEXT_SECRET_VARIABLE_NAME.test(secret.name) || !isWorkspaceSavedEnvName(secret.name) ||
       envNames.has(secret.name) || textNames.get(secret.name) !== 1 || secret.byteSize > WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES) return [];
     // Its entry in the environment is smaller than this: the name, and the stored value without its kind.
     const cost = secret.byteSize + secret.name.length;

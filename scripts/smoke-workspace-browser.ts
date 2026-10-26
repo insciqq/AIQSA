@@ -104,9 +104,17 @@ async function shell(run: Run, command: string): Promise<string> {
   return typeof data.stdout === "string" ? data.stdout : "";
 }
 
+/** Synthetic saved sign-in of the fixture shop; typed only with `--env`, so it must never come back. */
+const SHOP_LOGIN = "synthetic-login";
+const SHOP_PASSWORD = "synthetic-password";
+/** Everything the browser printed in this smoke, checked for the saved values once at the end of each turn. */
+const browserOutputs: string[] = [];
+
 /** One `aiqsa-browser` command as its own tool call; the browser stays open between them. */
-function aiqsaBrowser(run: Run, args: string): Promise<string> {
-  return shell(run, `aiqsa-browser ${args}`);
+async function aiqsaBrowser(run: Run, args: string): Promise<string> {
+  const output = await shell(run, `aiqsa-browser ${args}`);
+  browserOutputs.push(output);
+  return output;
 }
 
 /** The number the latest page summary gives a synthetic element. */
@@ -129,6 +137,13 @@ async function browser(run: Run, mode: "login" | "restored" | "expired" | "delet
     "'SHOP_LOGIN' in pathlib.Path('/workspace/SECRETS.md').read_text(), pathlib.Path('/workspace/secrets/browser/shop.example.json').exists())"))).trim(),
   `1.60.0 2.10.0 /opt/aiqsa-playwright True True True ${saved ? "True" : "False"}`);
   if (mode === "expired") await shell(run, python("import os, urllib.request; urllib.request.urlopen(os.environ['SHOP_URL'] + '/expire', timeout=5).read()"));
+  if (mode === "login") {
+    step = "browser_default_launch";
+    // A script's own default launch (no channel) still finds a browser: the shell's path runs the full build.
+    assert.match(await shell(run, python("from playwright.sync_api import sync_playwright; p = sync_playwright().start(); " +
+      "b = p.chromium.launch(); page = b.new_page(); page.set_content('<title>default launch</title>'); " +
+      "print(page.title(), '|', b.version); b.close(); p.stop()")), /^default launch \| [0-9.]+$/mu);
+  }
   step = "browser_open";
   let page = await aiqsaBrowser(run, 'open "$SHOP_URL"');
   assert.match(page, /^\[browser #1\] open @ 127\.0\.0\.1:18765\/$/mu);
@@ -141,6 +156,8 @@ async function browser(run: Run, mode: "login" | "restored" | "expired" | "delet
     step = "browser_sign_in";
     // Separate tool calls drive one browser: the numbers of one call's output act in the next.
     await aiqsaBrowser(run, `type ${element(page, "textbox", "Login")} --env SHOP_LOGIN`);
+    // The login went into a normal text field: it reads as a hidden value from now on.
+    assert.match(await aiqsaBrowser(run, "info"), /^\[\d+\] textbox "Login" \(hidden value, filled[),]/mu);
     page = await aiqsaBrowser(run, `type ${element(page, "textbox", "Password")} --env SHOP_PASSWORD --submit`);
     page = await aiqsaBrowser(run, `type ${element(page, "textbox", "Verification code")} ` +
       `"$(${python("import os, pyotp; print(pyotp.TOTP(os.environ['SHOP_TOTP_SEED']).now())")})" --submit`);
@@ -166,6 +183,9 @@ async function browser(run: Run, mode: "login" | "restored" | "expired" | "delet
   assert.doesNotMatch(status, /brands=[^\n]*Headless/u);
   step = "browser_screenshot";
   assert.match(await aiqsaBrowser(run, `shot --path ${run.workspace.outputDirectory}/cart.png`), /^Screenshot saved: .*\/cart\.png$/mu);
+  step = "browser_saved_values";
+  // Nothing the browser printed in this turn carries a value typed from the environment.
+  assert.ok(browserOutputs.every((output) => !output.includes(SHOP_LOGIN) && !output.includes(SHOP_PASSWORD)));
   step = "browser_steps";
   // One browser served every call of this turn: its step numbers run on across them.
   const numbers = [...(await aiqsaBrowser(run, "steps")).matchAll(/^ {2}\[browser #(\d+)\] /gmu)].map((match) => Number(match[1]));
@@ -225,8 +245,8 @@ async function main() {
     await prisma.user.create({ data: { id: userId, displayName: "Synthetic browser fixture", status: "active" } }); created = true;
     await prisma.userMemorySettings.update({ where: { userId }, data: { useMemoryFacts: false, learnAutomatically: false, referenceChatHistory: false } });
     await secrets.mutate(userId, { action: "create", name: "Synthetic shop", description: "Local browser verification only", value: { kind: "env", entries: [
-      { name: "SHOP_URL", value: "http://127.0.0.1:18765" }, { name: "SHOP_LOGIN", value: "synthetic-login" },
-      { name: "SHOP_PASSWORD", value: "synthetic-password" }, { name: "SHOP_TOTP_SEED", value: "JBSWY3DPEHPK3PXP" }
+      { name: "SHOP_URL", value: "http://127.0.0.1:18765" }, { name: "SHOP_LOGIN", value: SHOP_LOGIN },
+      { name: "SHOP_PASSWORD", value: SHOP_PASSWORD }, { name: "SHOP_TOTP_SEED", value: "JBSWY3DPEHPK3PXP" }
     ] } });
     phase = "first_login";
     const first = await admit(); await startSite(first); await browser(first, "login"); const initial = await finish(first);
@@ -251,7 +271,8 @@ async function main() {
     assert.notEqual(recreated.saved.id, renewed.saved.id);
     process.stdout.write(JSON.stringify({ ok: true, realKvm: true, fullChromium: true, chromiumMatchesPin: true, guestRoot: true,
       guestMemoryMiB: config.memoryMiB, pythonPlaywright: "1.60.0", pyotp: "2.10.0", oneBrowserAcrossCalls: true,
-      noMarkersPageAndWorker: true, admittedLocaleAndZone: true, noBrowserSurvivesTurn: true, totp: true, cartScreenshot: true,
+      noMarkersPageAndWorker: true, admittedLocaleAndZone: true, noBrowserSurvivesTurn: true, savedValuesNeverPrinted: true,
+      defaultLaunchRunsFullChromium: true, totp: true, cartScreenshot: true,
       personalRuns: 5, sameChat: true, newVm: true, encryptedReverseSave: true, unchangedRevision: true, expiredRelogin: true,
       settingsDeletion: true, invalidSkipped: 3, exportExcluded: true }) + "\n");
   } finally {

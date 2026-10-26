@@ -61,9 +61,13 @@ describe("run environment for guest commands", () => {
     expect(parseWorkspaceRunEnvironment({ ...bearer, ...browser }, RUNNER_GATEWAY_ORIGIN)).toEqual({ ...bearer, ...browser });
     expect(parseWorkspaceRunEnvironment({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: "mcp_off", AIQSA_BROWSER_TIMEZONE: "UTC" }, RUNNER_GATEWAY_ORIGIN))
       .toEqual({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: "mcp_off", AIQSA_BROWSER_TIMEZONE: "UTC" });
+    for (const zone of ["CET", "EST5EDT", "Etc/GMT+5"]) {
+      expect(parseWorkspaceRunEnvironment({ AIQSA_BROWSER_TIMEZONE: zone }, RUNNER_GATEWAY_ORIGIN)).toEqual({ AIQSA_BROWSER_TIMEZONE: zone });
+    }
     for (const value of [
       { AIQSA_BROWSER_LOCALE: "es_ES" }, { AIQSA_BROWSER_LOCALE: "x".repeat(40) }, { AIQSA_BROWSER_LOCALE: 1 },
-      { AIQSA_BROWSER_TIMEZONE: "../../etc/passwd" }, { AIQSA_BROWSER_TIMEZONE: "Europe/Madrid\n" }, { AIQSA_BROWSER_TIMEZONE: "" }
+      { AIQSA_BROWSER_TIMEZONE: "../../etc/passwd" }, { AIQSA_BROWSER_TIMEZONE: "Europe/Madrid\n" }, { AIQSA_BROWSER_TIMEZONE: "" },
+      { AIQSA_BROWSER_TIMEZONE: "/etc/localtime" }, { AIQSA_BROWSER_TIMEZONE: "a//b" }, { AIQSA_BROWSER_TIMEZONE: "x".repeat(65) }
     ]) {
       expect(() => parseWorkspaceRunEnvironment(value, RUNNER_GATEWAY_ORIGIN)).toThrow("workspace_run_environment_invalid");
     }

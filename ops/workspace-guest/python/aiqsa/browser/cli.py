@@ -99,7 +99,9 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("n", type=int, nargs="?")
     command.add_argument("--start", type=int, default=0)
     command.add_argument("--max", type=int, default=6000)
-    command = commands.add_parser("js", help="Evaluate a JavaScript expression in the page and print its JSON value.")
+    command = commands.add_parser("js", help="Read page data: evaluate a JavaScript expression and print its JSON value. Only for "
+                                  "reading; never to click, solve a challenge or change how the browser identifies itself. "
+                                  "Refused while the page shows a CAPTCHA.")
     command.add_argument("expression")
     command = commands.add_parser("shot", help="Save a PNG screenshot and print its path.")
     command.add_argument("n", type=int, nargs="?")

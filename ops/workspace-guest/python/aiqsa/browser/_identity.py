@@ -28,19 +28,20 @@ IGNORED_DEFAULT_ARGS = ["--enable-automation"]
 DROPPED_ENV = frozenset({"AIQSA_INVOCATION_ID", "AIQSA_RUN_TOKEN", "AIQSA_GATEWAY_URL"})
 
 _LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$")
-_ZONE = re.compile(r"^(?:UTC|[A-Za-z][A-Za-z0-9_+-]{0,30}(?:/[A-Za-z0-9_+-]{1,30}){1,2})$")
+#: An IANA name: one segment (`CET`, `EST5EDT`) or more (`America/Argentina/Buenos_Aires`); AIQSA checked it exists.
+_ZONE = re.compile(r"^[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*$")
 #: The high-entropy client hints a page may request.
 HIGH_ENTROPY_HINTS = ["architecture", "bitness", "fullVersionList", "model", "platformVersion", "wow64", "formFactors"]
 
 
 def browser_locale(environ: Mapping[str, str]) -> str:
     value = environ.get(LOCALE_ENV, "")
-    return value if len(value) <= 35 and _LOCALE.match(value) else DEFAULT_LOCALE
+    return value if len(value) <= 35 and _LOCALE.fullmatch(value) else DEFAULT_LOCALE
 
 
 def browser_timezone(environ: Mapping[str, str]) -> str:
     value = environ.get(TIMEZONE_ENV, "")
-    return value if len(value) <= 64 and _ZONE.match(value) else DEFAULT_TIMEZONE
+    return value if len(value) <= 64 and _ZONE.fullmatch(value) else DEFAULT_TIMEZONE
 
 
 def launch_args(locale: str, user_agent: Optional[str] = None) -> List[str]:

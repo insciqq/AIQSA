@@ -212,6 +212,8 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund esbuild@0.28.1 \
 # `aiqsa-browser` (and `aiqsa.browser`) drives one full Chromium per turn; its
 # host process alone imports the pinned Playwright above. Only the full build
 # is installed: sites block the headless shell (queue measurements 2026-10-26).
+# A default `p.chromium.launch()` in user scripts still finds a browser: the
+# shell's path links to the full build (playwright-default-launch.py).
 ENV PYTHONPATH=/opt/aiqsa-guest/python
 COPY ops/workspace-guest/python/aiqsa /opt/aiqsa-guest/python/aiqsa
 COPY ops/workspace-guest/bin/aiqsa-mcp /usr/local/bin/aiqsa-mcp
@@ -220,6 +222,7 @@ COPY ops/workspace-guest/bin/aiqsa-browser /usr/local/bin/aiqsa-browser
 # tracked changes accepted, without comments, notes, hidden sheets/slides,
 # document properties or image metadata.
 COPY ops/workspace-guest/bin/aiqsa-office-pdf /usr/local/bin/aiqsa-office-pdf
+COPY ops/workspace-guest/playwright-default-launch.py /tmp/playwright-default-launch.py
 RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-browser /usr/local/bin/aiqsa-office-pdf \
   && chmod -R u=rwX,go=rX /opt/aiqsa-guest \
   && echo /opt/aiqsa-guest/python > "$(/opt/aiqsa-python/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/aiqsa-guest.pth" \
@@ -227,8 +230,10 @@ RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-browser /usr/local/
   && aiqsa-mcp --version \
   && (aiqsa-mcp list; test $? -eq 3) \
   && aiqsa-browser --version \
+  && /opt/aiqsa-python/bin/python3 -I /tmp/playwright-default-launch.py \
+  && rm /tmp/playwright-default-launch.py \
   && test -n "$(find /opt/aiqsa-playwright -maxdepth 1 -name 'chromium-*' -print -quit)" \
-  && test -z "$(find /opt/aiqsa-playwright -maxdepth 1 -name 'chromium_headless_shell-*' -print -quit)" \
+  && test -z "$(find /opt/aiqsa-playwright -type f \( -name chrome-headless-shell -o -name headless_shell \) -print -quit)" \
   && (aiqsa-office-pdf --help; test $? -eq 2)
 
 WORKDIR /workspace/project

@@ -133,15 +133,24 @@ function commandSummary(preview: string): string {
  * presentation hint read from the command's own output, never authority.
  */
 const BROWSER_STEP = /^\[browser #(\d{1,5})\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$/u;
-/** Only a command that runs the helper reports steps; any other output that imitates one stays output. */
-const BROWSER_COMMAND = /aiqsa-browser|aiqsa import browser|aiqsa\.browser/u;
+/**
+ * Only a command that runs the helper reports steps, as the guide shows it: `aiqsa-browser …` (after
+ * optional variable assignments) or `python3 -c "from aiqsa import browser …"`. Output of any other
+ * command that imitates a step line stays output. The model could still print such lines itself.
+ */
+const ASSIGNMENTS = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+const BROWSER_COMMANDS = [
+  new RegExp(`^${ASSIGNMENTS}(?:/usr/local/bin/)?aiqsa-browser(?:\\s|$)`, "u"),
+  new RegExp(`^${ASSIGNMENTS}(?:/opt/aiqsa-python/bin/)?python3?\\s+-c\\s+["']\\s*(?:from aiqsa import browser\\b|import aiqsa\\.browser\\b|from aiqsa\\.browser import\\b)`, "u")
+];
 
 export type WorkspaceBrowserStepV2 = Readonly<{ number: number; action: string; target?: string; where?: string }>;
 
 /** The browser steps a finished command reported, in order. */
 export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): WorkspaceBrowserStepV2[] {
   const output = entry.kind === "command" ? entry.command?.stdoutPreview : undefined;
-  if (!output || !output.includes("[browser #") || !BROWSER_COMMAND.test(entry.command?.preview ?? "")) return [];
+  const command = entry.command?.preview.trimStart() ?? "";
+  if (!output || !output.includes("[browser #") || !BROWSER_COMMANDS.some((pattern) => pattern.test(command))) return [];
   const steps: WorkspaceBrowserStepV2[] = [];
   for (const line of output.split("\n")) {
     const match = BROWSER_STEP.exec(line.trimEnd());

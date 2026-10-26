@@ -6,6 +6,7 @@ import { WorkspaceActivityText, type WorkspaceSecretMatch } from "./activityText
 import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
 import { workspaceBrowserEnvironment } from "./browserBinding";
+import { WORKSPACE_RESERVED_ENV_PREFIX, isReservedWorkspaceEnvName } from "@/lib/contracts/workspaceSecrets";
 import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
   type WorkspaceCodeRunIdentity } from "./codeMcpStore";
 import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
@@ -1885,6 +1886,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   const SHELL_SYNTAX = /&&|\|\||[|;<>`$\n]|\s/u;
+  // Commands whose own `env` reaches the guest; a few reserved names are named back, bounded.
+  const ENV_TOOLS = new Set(["sandbox_shell", "sandbox_exec", "sandbox_exec_start"]);
+  const reservedEnvNames = (env: unknown): string[] => env && typeof env === "object" && !Array.isArray(env)
+    ? Object.keys(env).filter(isReservedWorkspaceEnvName).slice(0, 5).map((name) => name.slice(0, 64)) : [];
 
   function projectionState(runId: string): Map<string, ExecOutputBuffer> {
     const existing = execOutputsByRun.get(runId);
@@ -2149,6 +2154,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
             text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
+            result: rejected,
+            runId,
+            startedAt: new Date()
+          }, "settled");
+          return withActivity(rejected, entry);
+        }
+        const reserved = definitionByName && ENV_TOOLS.has(definitionByName.originalName) ? reservedEnvNames(call.arguments.env) : [];
+        if (definitionByName && reserved.length) {
+          // Only AIQSA sets these (the browser's admitted language and zone): refused before anything starts.
+          const rejected = executionErrorResult(call, `Environment names starting with ${WORKSPACE_RESERVED_ENV_PREFIX} are reserved ` +
+            `for the Workspace browser, which takes its language and time zone from AIQSA. Remove ${reserved.join(", ")} from \`env\`.`);
+          const entry = projectWorkspaceActivity({
+            arguments: call.arguments,
+            text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
+            callId: modelRunToolCallId,
+            originalName: definitionByName.originalName,
             result: rejected,
             runId,
             startedAt: new Date()

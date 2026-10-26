@@ -36,11 +36,12 @@ def cookie(name: str, domain: str, value: str = "v", **extra: Any) -> Dict[str, 
 class IdentityTests(unittest.TestCase):
     def test_locale_and_zone_fall_back_to_documented_defaults(self) -> None:
         self.assertEqual(_identity.browser_locale({"AIQSA_BROWSER_LOCALE": "es-ES"}), "es-ES")
-        self.assertEqual(_identity.browser_timezone({"AIQSA_BROWSER_TIMEZONE": "America/Argentina/Buenos_Aires"}),
-                         "America/Argentina/Buenos_Aires")
-        for bad in ["", "es_ES", "x" * 40, "es-ES;rm", "../etc"]:
+        # Every IANA name AIQSA admits, single segments too: CET must never quietly become UTC.
+        for zone in ["America/Argentina/Buenos_Aires", "CET", "GMT", "EST5EDT", "Etc/GMT+5", "UTC", "W-SU"]:
+            self.assertEqual(_identity.browser_timezone({"AIQSA_BROWSER_TIMEZONE": zone}), zone)
+        for bad in ["", "es_ES", "x" * 40, "es-ES;rm", "../etc", "es-ES\n"]:
             self.assertEqual(_identity.browser_locale({"AIQSA_BROWSER_LOCALE": bad}), "en-US", bad)
-        for bad in ["", "Europe/../../etc/passwd", "Europe/Madrid ", "/etc/localtime", "Europe"]:
+        for bad in ["", "Europe/../../etc/passwd", "Europe/Madrid ", "Europe/Madrid\n", "/etc/localtime", "a//b", "x" * 65]:
             self.assertEqual(_identity.browser_timezone({"AIQSA_BROWSER_TIMEZONE": bad}), "UTC", bad)
         self.assertEqual(_identity.browser_timezone({}), "UTC")
         self.assertEqual(_identity.browser_locale({}), "en-US")
@@ -98,7 +99,9 @@ class SessionNameTests(unittest.TestCase):
     def test_site_names_strip_www_and_refuse_odd_hosts(self) -> None:
         self.assertEqual(_sessions.site_of("WWW.Amazon.ES"), "amazon.es")
         self.assertEqual(_sessions.site_of("127.0.0.1"), "127.0.0.1")
-        for bad in ["", "-x.com", "a..b", "x_y.com", "a" * 300]:
+        self.assertEqual(_sessions.site_of("www.bbc.co.uk"), "bbc.co.uk")
+        # A single label or a country-code suffix would gather every site under it into one file.
+        for bad in ["", "-x.com", "a..b", "x_y.com", "a" * 300, "com", "localhost", "co.uk", "www.com.au", "shop example.com"]:
             self.assertIsNone(_sessions.site_of(bad), bad)
 
     def test_cookies_and_storage_belong_to_a_site_and_its_subdomains_or_parents(self) -> None:
@@ -111,6 +114,11 @@ class SessionNameTests(unittest.TestCase):
         self.assertEqual([c["name"] for c in part["cookies"]], ["a", "b", "c"])
         self.assertEqual([o["origin"] for o in part["origins"]], ["https://www.amazon.es"])
         self.assertTrue(_sessions.domain_matches(".example.com", {"shop.example.com"}))
+        self.assertTrue(_sessions.domain_matches("a.shop.example.com", {"shop.example.com"}))
+        self.assertFalse(_sessions.domain_matches("other.example.com", {"shop.example.com"}))
+        self.assertFalse(_sessions.domain_matches("com", {"shop.example.com"}))
+        self.assertFalse(_sessions.domain_matches(".co.uk", {"bbc.co.uk"}))
+        self.assertTrue(_sessions.domain_matches(".bbc.co.uk", {"news.bbc.co.uk"}))
         self.assertFalse(_sessions.domain_matches("", {"x.com"}))
 
     def test_state_validation_matches_what_aiqsa_saves(self) -> None:
@@ -265,6 +273,32 @@ class FormatTests(unittest.TestCase):
         self.assertIn(' [browser #9] click: button "Pay"', forged)
         self.assertNotRegex(_format.render_text("xx[browser #8] open", 2, 100), r"(?m)^\[browser #")
 
+    def test_steps_keep_no_query_and_no_address_keeps_user_info(self) -> None:
+        self.assertEqual(_format.page_address("https://user:pw@shop.example:8443/login?user=a&pass=b#top"),
+                         "https://shop.example:8443/login")
+        self.assertEqual(_format.page_address("http://127.0.0.1:8080"), "http://127.0.0.1:8080/")
+        self.assertEqual(_format.page_address("about:blank"), "about:")
+        self.assertIsNone(_format.page_address(None))
+        self.assertEqual(_format.without_userinfo("https://user:pw@shop.example/a?q=1"), "https://shop.example/a?q=1")
+        self.assertEqual(_format.without_userinfo("https://shop.example/a?mail=a@b.example"), "https://shop.example/a?mail=a@b.example")
+
+    def test_values_typed_from_the_environment_are_masked_everywhere(self) -> None:
+        hidden = _format.HiddenValues()
+        self.assertEqual(hidden.mask({"text": "standard_user"}), {"text": "standard_user"})
+        hidden.add("standard_user")
+        hidden.add("p@ss word&1")
+        hidden.add("123")  # too short to search for without garbling pages
+        answer = {"text": "URL: https://shop.example/?user=standard_user&pw=p%40ss+word%261\nWelcome, standard_user",
+                  "info": {"items": [{"n": 1, "name": "Login", "value": "standard_user"}]},
+                  "data": ["p@ss word&1", "\"p@ss word&1\"", "p%40ss%20word%261", "order 123"], "n": 3}
+        masked = hidden.mask(answer)
+        self.assertNotIn("standard_user", json.dumps(masked))
+        self.assertNotIn("p@ss", json.dumps(masked))
+        self.assertNotIn("p%40ss", json.dumps(masked))
+        self.assertEqual(masked["info"]["items"][0]["value"], "[hidden]")
+        self.assertEqual(masked["data"][3], "order 123")
+        self.assertEqual(masked["n"], 3)
+
     def test_the_step_list_is_not_read_as_new_steps(self) -> None:
         steps = [{"n": 1, "action": "open", "target": None, "url": "https://shop.example/"},
                  {"n": 2, "action": "click", "target": 'button "Buy"', "url": "https://shop.example/item"}]
@@ -311,15 +345,14 @@ class FakeHost:
 class ClientAndCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self.directory.name) / "run"
-        self.run_dir.mkdir(mode=0o700)
-        self.environment = mock.patch.dict(os.environ, {_paths.RUN_DIR_ENV: str(self.run_dir)})
-        self.environment.start()
+        _paths.use_test_root(self.directory.name)
+        self.run_dir = _paths.run_dir()
+        self.run_dir.mkdir(mode=0o700, parents=True)
         self.host = FakeHost(self.run_dir / "control.sock")
 
     def tearDown(self) -> None:
         self.host.close()
-        self.environment.stop()
+        _paths.use_test_root(None)
         self.directory.cleanup()
 
     def run_cli(self, *argv: str) -> tuple:
@@ -405,16 +438,32 @@ class ClientAndCliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "element_not_found")
 
 
+class PathTests(unittest.TestCase):
+    def test_paths_are_fixed_and_only_a_test_root_moves_them(self) -> None:
+        with mock.patch.dict(os.environ, {"AIQSA_BROWSER_SESSIONS_DIR": "/workspace/project", "AIQSA_BROWSER_RUN_DIR": "/tmp/x"}):
+            self.assertEqual(_paths.sessions_dir(), Path("/workspace/secrets/browser"))
+            self.assertEqual(_paths.run_dir(), Path("/tmp/aiqsa-browser"))
+            self.assertEqual(_paths.writable_roots(), (Path("/workspace/project"), Path("/workspace/output"), Path("/workspace/tmp")))
+        _paths.use_test_root("/t")
+        try:
+            self.assertEqual(_paths.sessions_dir(), Path("/t/workspace/secrets/browser"))
+        finally:
+            _paths.use_test_root(None)
+        self.assertEqual(_paths.sessions_dir(), Path("/workspace/secrets/browser"))
+
+
 class HostStartTests(unittest.TestCase):
     """The client starts a missing host once, waits for it, and reports a host that cannot start."""
 
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
-        self.run_dir = self.root / "run"
         self.fake = self.root / "fake-python"
+        _paths.use_test_root(self.root, python=str(self.fake))
+        self.run_dir = _paths.run_dir()
 
     def tearDown(self) -> None:
+        _paths.use_test_root(None)
         self.directory.cleanup()
 
     def fake_python(self, body: str) -> None:
@@ -424,8 +473,8 @@ class HostStartTests(unittest.TestCase):
     def test_a_missing_host_is_started_detached_and_then_served(self) -> None:
         self.fake_python(
             "import json, os, socket, sys\n"
-            "run = os.environ['AIQSA_BROWSER_RUN_DIR']\n"
-            "assert sys.argv[1:] == ['-m', 'aiqsa.browser._host'], sys.argv\n"
+            "assert sys.argv[1:4] == ['-m', 'aiqsa.browser._host', '--test-root'], sys.argv\n"
+            "run = os.path.join(sys.argv[4], 'tmp', 'aiqsa-browser')\n"
             "assert 'AIQSA_RUN_TOKEN' not in os.environ and 'AIQSA_INVOCATION_ID' not in os.environ\n"
             "assert os.getsid(0) == os.getpid()\n"
             "server = socket.socket(socket.AF_UNIX); server.bind(os.path.join(run, 'control.sock')); server.listen(4)\n"
@@ -439,21 +488,23 @@ class HostStartTests(unittest.TestCase):
             "        data += chunk\n"
             "    if data: connection.sendall(json.dumps({'ok': True, 'result': {'text': 'served ' + json.loads(data)['op']}}).encode() + b'\\n')\n"
             "    connection.close()\n")
-        with mock.patch.dict(os.environ, {_paths.RUN_DIR_ENV: str(self.run_dir), _paths.PYTHON_ENV: str(self.fake),
+        # Paths in the command environment move nothing: the client and host never read them.
+        with mock.patch.dict(os.environ, {"AIQSA_BROWSER_RUN_DIR": str(self.root / "elsewhere"),
+                                          "AIQSA_BROWSER_SESSIONS_DIR": "/workspace/project",
                                           "AIQSA_RUN_TOKEN": "x" * 43, "AIQSA_INVOCATION_ID": "a" * 32}):
             self.assertEqual(_client.call("info")["text"], "served info")
+        self.assertFalse((self.root / "elsewhere").exists())
         self.assertEqual(stat.S_IMODE(self.run_dir.stat().st_mode), 0o700)
         self.assertEqual(_client._STARTED[-1].wait(timeout=20), 0)
 
     def test_a_host_that_cannot_start_reports_its_status(self) -> None:
         self.fake_python(
-            "import json, os\n"
-            "run = os.environ['AIQSA_BROWSER_RUN_DIR']\n"
+            "import json, os, sys\n"
+            "run = os.path.join(sys.argv[4], 'tmp', 'aiqsa-browser')\n"
             "open(os.path.join(run, 'host.status'), 'w').write(json.dumps({'code': 'browser_start_failed', 'error': 'Error', 'detail': 'no chromium'}))\n"
             "raise SystemExit(1)\n")
-        with mock.patch.dict(os.environ, {_paths.RUN_DIR_ENV: str(self.run_dir), _paths.PYTHON_ENV: str(self.fake)}):
-            with self.assertRaises(_client.BrowserError) as raised:
-                _client.call("info")
+        with self.assertRaises(_client.BrowserError) as raised:
+            _client.call("info")
         self.assertEqual(raised.exception.code, "browser_start_failed")
         self.assertIn("no chromium", raised.exception.message)
         self.assertEqual(_client._STARTED[-1].wait(timeout=20), 1)

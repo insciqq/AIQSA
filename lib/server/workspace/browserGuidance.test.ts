@@ -31,6 +31,13 @@ describe("Workspace browser guide", () => {
     expect(guide).not.toMatch(/No headed browser|cannot see those screenshots|aria_snapshot|sandbox_exec_start/u);
   });
 
+  it("keeps scripts to reading page data and says what an older Workspace's browser is", () => {
+    expect(guide).toContain("reads page data as bounded JSON; never use it to click, fill in, solve a challenge or change how the browser identifies itself");
+    expect(guide).toContain("refused while a CAPTCHA shows");
+    expect(guide).toContain("still runs an older image, which it keeps until the Workspace is recreated");
+    expect(guide).toContain("Its browser announces automation, so some sites block it");
+  });
+
   it("fits the guest guide limits", () => {
     expect(Buffer.byteLength(guide, "utf8")).toBeLessThanOrEqual(32_768);
     expect(() => workspaceGuideInput()).not.toThrow();
