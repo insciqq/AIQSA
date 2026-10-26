@@ -11,6 +11,7 @@ import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { workspaceActiveLabelV2, workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
+import { BrowserLivePanelV2 } from "@/features/browser-live/BrowserLivePanelV2";
 import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import {
   ConversationTurnV2,
@@ -272,6 +273,8 @@ export type RunAnswerV2Props = Readonly<{
   processDisclosureId?: string;
   /** Settled answer outputs: Sources chip + list and the process fold's memory rows. */
   artifact?: ThreadArtifactSummary | null;
+  /** The chat of the live run whose Workspace browser the answer may show (`BrowserLivePanelV2`). */
+  browserLiveChatId?: string | null;
   content: string;
   /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
@@ -304,6 +307,7 @@ export function RunAnswerV2({
   anchorId,
   processDisclosureId,
   artifact = null,
+  browserLiveChatId = null,
   content,
   leadingSlot = null,
   noticeSlot = null,
@@ -401,6 +405,9 @@ export function RunAnswerV2({
         <>
           {leadingSlot}
           {process}
+          {browserLiveChatId && !settled ? (
+            <BrowserLivePanelV2 chatId={browserLiveChatId} live toolActivity={toolActivity} workspaceActivity={workspaceActivity} />
+          ) : null}
           {pdfPreparation?.length ? (
             <div className="v2-pdf-preparation" data-testid="pdf-preparation-notices">
               {[...new Set(pdfPreparation.map(chatPdfRouteDescription))].map((description) => <p key={description}>{description}</p>)}
