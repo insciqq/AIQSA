@@ -49,6 +49,9 @@ CONTROL_GRACE_SECONDS = 20.0
 LIVE_CONNECTIONS_MAX = 4
 
 MODIFIER_ALT, MODIFIER_CTRL, MODIFIER_META, MODIFIER_SHIFT = 1, 2, 4, 8
+#: Handoff reasons whose Done saves the current site's sign-in (`lib/contracts/browserLive.ts`); a choice or another
+#: look at the page saves nothing (operator decision 2026-10-27).
+SAVE_SESSION_REASONS = frozenset({"sign_in", "verification_code", "captcha", "consent"})
 #: CDP mouse buttons and their bits in `buttons`.
 MOUSE_BUTTONS = {"none": 0, "left": 1, "right": 2, "middle": 4}
 _MOUSE_TYPES = {"move": "mouseMoved", "down": "mousePressed", "up": "mouseReleased", "wheel": "mouseWheel"}

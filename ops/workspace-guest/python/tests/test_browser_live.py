@@ -568,7 +568,7 @@ class LiveBrowserTests(unittest.TestCase):
         started = time.monotonic()
         browser.status()
         self.assertLess(time.monotonic() - started, 5, "status reads no page and answers at once")
-        ended = view.ask({"t": "handoff", "action": "end", "outcome": "completed"})
+        ended = view.ask({"t": "handoff", "action": "end", "outcome": "completed", "reason": "sign_in"})
         self.assertEqual((ended["ok"], ended["saved"], ended["page"]["url"]), (True, "127.0.0.1", self.base + "/account"))
         self.assertTrue(saved.exists())
         self.assertIn("save_session: 127.0.0.1", browser.steps())

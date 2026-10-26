@@ -137,6 +137,9 @@ class HiddenValues:
     (`page_string`, `page_items`, `page_text`); answers are masked once more as a whole. Best effort
     (operator-accepted residual): a page that changes the value (case, partial echoes) is not caught.
     Values shorter than `MIN_CHARS` are not searched for: masking every such string would garble pages.
+
+    A value still being typed lives in one slot of its own (`provisional`), replaced as it grows rather
+    than added keystroke by keystroke, and kept (`commit`) once it is complete or about to change.
     """
 
     MIN_CHARS = 4
@@ -148,13 +151,10 @@ class HiddenValues:
         self.patterns: List[Tuple[int, Any]] = []
         #: The most characters one hidden value can span in any spelling.
         self.reach = 0
+        #: The value being typed: its core, length, pattern and reach.
+        self.typing: Optional[Tuple[str, int, Any, int]] = None
 
-    def add(self, value: str) -> None:
-        # Browsers collapse and strip whitespace (`document.title`, `innerText`): the value's own runs of
-        # whitespace match any run, and its edges are not needed to find it.
-        core = value.strip()
-        if len(core) < self.MIN_CHARS or any(len(core) == size and pattern.fullmatch(core) for size, pattern in self.patterns):
-            return
+    def _compile(self, core: str) -> Tuple[Any, int]:
         if len(core) <= self.PATTERN_CHARS:
             parts = []
             for run in re.findall(r"\s+|\S", core):
@@ -163,29 +163,54 @@ class HiddenValues:
                     parts.append(("(?:\\s|" + "|".join(part for part, _ in spellings) + ")+", max(size for _, size in spellings) * len(run)))
                 else:
                     parts.append(_spellings(run))
-            pattern = re.compile("".join(part for part, _ in parts))
-            reach = sum(size for _, size in parts)
-        else:
-            forms = sorted({core, quote(core, safe=""), quote(core, safe="").lower(), quote_plus(core)}, key=len, reverse=True)
-            pattern = re.compile("|".join(re.escape(form) for form in forms))
-            reach = max(len(form) for form in forms)
+            return re.compile("".join(part for part, _ in parts)), sum(size for _, size in parts)
+        forms = sorted({core, quote(core, safe=""), quote(core, safe="").lower(), quote_plus(core)}, key=len, reverse=True)
+        return re.compile("|".join(re.escape(form) for form in forms)), max(len(form) for form in forms)
+
+    def add(self, value: str) -> None:
+        # Browsers collapse and strip whitespace (`document.title`, `innerText`): the value's own runs of
+        # whitespace match any run, and its edges are not needed to find it.
+        core = value.strip()
+        if len(core) < self.MIN_CHARS or any(len(core) == size and pattern.fullmatch(core) for size, pattern in self.patterns):
+            return
+        pattern, reach = self._compile(core)
         self.patterns.append((len(core), pattern))
         self.patterns.sort(key=lambda entry: -entry[0])
         self.reach = max(self.reach, reach)
 
+    def provisional(self, value: str) -> None:
+        """The value being typed now: it replaces the previous one; shorter than `MIN_CHARS`, none."""
+        core = value.strip()
+        if len(core) < self.MIN_CHARS:
+            self.typing = None
+        elif self.typing is None or self.typing[0] != core:
+            pattern, reach = self._compile(core)
+            self.typing = (core, len(core), pattern, reach)
+
+    def commit(self) -> None:
+        """The value being typed stays hidden for good: it is complete, or about to be changed."""
+        typing, self.typing = self.typing, None
+        if typing is not None:
+            self.add(typing[0])
+
+    def _patterns(self) -> List[Tuple[int, Any]]:
+        if self.typing is None:
+            return self.patterns
+        return sorted([*self.patterns, (self.typing[1], self.typing[2])], key=lambda entry: -entry[0])
+
     def text(self, value: str) -> str:
-        for _, pattern in self.patterns:
+        for _, pattern in self._patterns():
             value = pattern.sub(self.MASK, value)
         return value
 
     def raw(self, value: str, truncated: bool = False) -> str:
         """Raw page data cut by the page script: its tail may hold part of a value, so that goes first."""
-        if truncated and self.patterns:
-            value = value[:max(0, len(value) - self.reach)]
+        if truncated and (self.patterns or self.typing is not None):
+            value = value[:max(0, len(value) - max(self.reach, self.typing[3] if self.typing else 0))]
         return self.text(value)
 
     def mask(self, value: Any) -> Any:
-        if not self.patterns:
+        if not self.patterns and self.typing is None:
             return value
         if isinstance(value, str):
             return self.text(value)

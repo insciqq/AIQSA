@@ -315,7 +315,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refused["code"], "handoff_pending")
         self.host.hidden.add("standard_user")
         self.host.current.url = "https://shop.example/inventory?u=standard_user"
-        ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed"})
+        ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed", "reason": "sign_in"})
         self.assertEqual(ended["page"], {"url": "https://shop.example/inventory?u=[hidden]", "title": "Sign in"})
         self.assertEqual((ended["saved"], self.host.saved, self.hub.controller), ("shop.example", 1, "agent"))
         cancelled = await self.ask(reader, writer, {"t": "handoff", "id": "h3", "action": "end", "outcome": "cancelled"})
@@ -462,7 +462,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.host.lock.locked())
         loop = asyncio.get_running_loop()
         started = loop.time()
-        ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed"})
+        ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed", "reason": "sign_in"})
         self.assertEqual((ended["ok"], ended["saved"]), (True, "shop.example"))
         self.assertLess(loop.time() - started, 1.0)
         await asyncio.wait_for(waiting, 2)
@@ -506,8 +506,74 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
             # The page submitted on the last digit and moved on before anything was captured.
             self.host.current.url = "https://shop.example/verify?otp=123456"
             self.host.current.main_frame.focused = None
-            ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed"})
+            ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed", "reason": "sign_in"})
         self.assertEqual(ended["page"]["url"], "https://shop.example/verify?otp=[hidden]")
+
+    async def test_a_corrected_code_is_hidden_before_a_field_that_submits_on_it(self) -> None:
+        reader, writer = await self.open_view()
+        self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
+        self.host.current.main_frame.focused = FakeElement("123456")
+        await self.ask(reader, writer, {"t": "input", "id": "t1", "input": {"kind": "text", "text": "123456"}})
+        await self.hub.capture_now()
+        # Select all, then the replacement: the page submits on its last digit and the field goes away.
+        await self.ask(reader, writer, {"t": "input", "id": "a", "input": {"kind": "key", "type": "down", "key": "a", "code": "KeyA",
+                                                                          "modifiers": 2}})
+        send = self.host.session.send
+
+        async def submitting(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            if method == "Input.insertText":
+                self.host.current.url = f"https://shop.example/verify?otp={(params or {})['text']}"
+                self.host.current.main_frame.focused = None
+            return await send(method, params)
+
+        self.host.session.send = submitting  # type: ignore[method-assign]
+        await self.ask(reader, writer, {"t": "input", "id": "t2", "input": {"kind": "text", "text": "654321"}})
+        ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed", "reason": "sign_in"})
+        self.assertNotIn("654321", ended["page"]["url"])
+        self.assertEqual(ended["page"]["url"], "https://shop.example/verify?otp=[hidden]")
+
+    async def test_a_typo_fixed_with_backspace_is_hidden_as_corrected(self) -> None:
+        reader, writer = await self.open_view()
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        self.host.current.main_frame.focused = None
+        for char in "12345":
+            await self.ask(reader, writer, {"t": "input", "id": "k", "input": {"kind": "key", "type": "down", "key": char, "code": "Digit" + char}})
+        await self.ask(reader, writer, {"t": "input", "id": "b", "input": {"kind": "key", "type": "down", "key": "Backspace", "code": "Backspace"}})
+        seen: List[str] = []
+        send = self.host.session.send
+
+        async def watching(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            seen.append(self.host.hidden.text("otp=12346"))
+            return await send(method, params)
+
+        self.host.session.send = watching  # type: ignore[method-assign]
+        await self.ask(reader, writer, {"t": "input", "id": "k6", "input": {"kind": "key", "type": "down", "key": "6", "code": "Digit6"}})
+        # Hidden before the corrected digit went out; the mistyped value stays hidden too.
+        self.assertEqual(seen, ["otp=[hidden]"])
+        self.assertEqual(self.host.hidden.text("12345 12346"), "[hidden] [hidden]")
+
+    async def test_typing_keeps_one_pattern_for_the_value_being_typed(self) -> None:
+        reader, writer = await self.open_view()
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        self.host.current.main_frame.focused = None
+        for index in range(40):
+            await self.ask(reader, writer, {"t": "input", "id": "t", "input": {"kind": "text", "text": "abcdefghij"[index % 10]}})
+        self.assertEqual(len(self.host.hidden.patterns), 0)
+        self.assertEqual(self.host.hidden.text("x" + "abcdefghij" * 4), "x[hidden]")
+        await self.ask(reader, writer, {"t": "input", "id": "tab", "input": {"kind": "key", "type": "down", "key": "Tab", "code": "Tab"}})
+        self.assertEqual(len(self.host.hidden.patterns), 1)
+
+    async def test_done_saves_the_site_only_for_a_handoff_about_signing_in(self) -> None:
+        reader, writer = await self.open_view()
+        for index, (reason, saves) in enumerate((("sign_in", True), ("verification_code", True), ("captcha", True),
+                                                 ("consent", True), ("user_choice", False), ("other", False), (None, False))):
+            self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": f"b{index}", "action": "begin"}))["ok"])
+            before = self.host.saved
+            end: Dict[str, Any] = {"t": "handoff", "id": f"e{index}", "action": "end", "outcome": "completed"}
+            if reason is not None:
+                end["reason"] = reason
+            ended = await self.ask(reader, writer, end)
+            self.assertEqual((ended["saved"] is not None, self.host.saved - before), (saves, 1 if saves else 0), reason)
 
     async def test_enter_tab_and_a_click_go_out_after_what_was_typed_is_hidden(self) -> None:
         reader, writer = await self.open_view()
