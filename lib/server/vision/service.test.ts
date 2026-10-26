@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
-import { workspaceCaptureFailure, type createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
+import { WorkspaceCaptureError, workspaceCaptureFailure, type createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { WorkspaceCapturedImage } from "../workspace/imageCapture";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
@@ -90,6 +90,36 @@ describe("shared System Vision boundary", () => {
     expect((await f.service.execute(f.call, { ...f.context, prepareWorkspace })).status).toBe("complete");
     expect(prepareWorkspace).toHaveBeenCalledOnce();
     expect(prepareWorkspace.mock.invocationCallOrder[0]!).toBeLessThan(f.captures.create.mock.invocationCallOrder[0]!);
+  });
+  it("analyzes again after a transient read failure: the retry of the same call captures afresh", async () => {
+    const f = fixture();
+    // A capture owner keyed like the real one: a request key whose capture was released is unavailable.
+    const keys = new Map<string, string>();
+    const released = new Set<string>();
+    const captures = {
+      create: vi.fn(async (request: { consumerKey: string; requestKey: string }) => {
+        if (released.has(request.requestKey)) throw new WorkspaceCaptureError("workspace_capture_unavailable");
+        const id = `capture-${keys.size + 1}`;
+        keys.set(id, request.requestKey);
+        return { id };
+      }),
+      imageSource: f.captures.imageSource,
+      release: vi.fn(async (reference: { captureId: string }) => { released.add(keys.get(reference.captureId)!); })
+    };
+    const service = createVisionAnalysisService({} as PrismaClient, captures as unknown as ReturnType<typeof createWorkspaceSelectedCaptures>, {
+      store: f.store as never, execute: f.execute, authorize: f.authorize, prepareImages: f.prepareImages as never, resolve: async () => plan
+    });
+    // The runner stream drops while the captured files are read: nothing was dispatched.
+    f.prepareImages.mockRejectedValueOnce(new TypeError("terminated"));
+    expect((await service.execute(f.call, f.context)).status).toBe("error");
+    expect(f.execute).not.toHaveBeenCalled();
+    // The same call again, as the batch retries a read-only call with the same execution.
+    expect((await service.execute(f.call, f.context)).status).toBe("complete");
+    const requests = captures.create.mock.calls.map(([request]) => request);
+    expect(requests.map((request) => request.consumerKey)).toEqual(["tool", "tool"]);
+    expect(new Set(requests.map((request) => request.requestKey)).size).toBe(2);
+    expect(requests.every((request) => request.requestKey.startsWith("tool_"))).toBe(true);
+    expect(captures.release).toHaveBeenCalledTimes(2);
   });
   it.each(["vision_model_absent", "vision_model_unavailable"] as const)("returns %s without any file or provider I/O", async code => {
     const f = fixture(); f.context.request.visionAnalysis = { version: 1, available: false, code };
