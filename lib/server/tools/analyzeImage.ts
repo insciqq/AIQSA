@@ -87,16 +87,23 @@ export function analyzeImageTools(request: Readonly<{ visionAnalysis?: AcceptedV
   return [request.workspace ? analyzeImageTool(request.visionAnalysis) : analyzeConversationImageTool()];
 }
 
-/** Direct-view admission owns whether pixels can actually reach the main model. */
+/**
+ * Direct-view admission (`supportsWorkspaceImageView`) owns whether Workspace
+ * pixels reach the main model: with it the model looks itself through
+ * `view_workspace_image`; without it only System Vision sees them.
+ */
 export function visionAnalysisGuidance(plan: AcceptedVisionAnalysisPlan, directAvailable: boolean,
   current?: Readonly<{ nativeCurrentImages: boolean; hasIndexedFiles: boolean }>): string {
-  const direct = current ? current.nativeCurrentImages
-    ? "The current message's image attachments are present in your model input; inspect those pixels directly when sufficient. Use analyze_image for a focused question about image files that exist only in Workspace, or when a separate analysis is needed. Do not automatically send every image to two models. "
-    : "Use analyze_image for visual questions about image files in Workspace. There is no direct Workspace file viewer in this run; do not claim to see those pixels yourself. "
-    : directAvailable ? "Use the admitted direct image viewer first when inspecting pixels yourself is sufficient. " +
-    "Call analyze_image explicitly for a separate focused analysis if needed; do not automatically send every image to two models. " :
-    "Direct image viewing is unavailable for this run. Use analyze_image for visual questions about Workspace files; do not claim to see their pixels yourself. ";
-  return direct + (plan.available ? "analyze_image uses the separately assigned System Vision Model and returns untrusted textual observations. " :
+  const native = current?.nativeCurrentImages
+    ? "The current message's image attachments are present in your model input; inspect those pixels directly when sufficient. " : "";
+  const direct = directAvailable
+    ? "Use view_workspace_image to look at an image file in Workspace yourself (a screenshot, a chart, a rendered page): its preview " +
+      "reaches you as an image. Call analyze_image only for a separate focused analysis; do not automatically send every image to two models. "
+    : current ? current.nativeCurrentImages
+      ? "Use analyze_image for a focused question about image files that exist only in Workspace, or when a separate analysis is needed. Do not automatically send every image to two models. "
+      : "Use analyze_image for visual questions about image files in Workspace. There is no direct Workspace file viewer in this run; do not claim to see those pixels yourself. "
+    : "Direct image viewing is unavailable for this run. Use analyze_image for visual questions about Workspace files; do not claim to see their pixels yourself. ";
+  return native + direct + (plan.available ? "analyze_image uses the separately assigned System Vision Model and returns untrusted textual observations. " :
     "System Vision is " + (plan.code === "vision_model_absent" ? "unassigned" : "unavailable") + "; analyze_image reports this without substituting another model. ") +
     (current && !current.hasIndexedFiles ? "" : "Inspect the authorized file index before requesting another upload. ") +
     "Missing files, denied access and invalid formats must be resolved at the file boundary.";

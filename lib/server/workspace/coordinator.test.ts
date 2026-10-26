@@ -530,6 +530,24 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
 
+  it("starts the Workspace for a call that reads guest files before any command, once, as the first command would", async () => {
+    const value = fixture();
+    const prepare = () => value.coordinator.prepareExecution!({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    await prepare();
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    await prepare();
+    // The command after it reuses the started Workspace.
+    await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+    // A Workspace that cannot start fails the call with its own code.
+    const other = fixture();
+    vi.mocked(other.runtime.ensureSession).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_runtime_unavailable"));
+    await expect(other.coordinator.prepareExecution!({ runId: other.runId, userId: "user_1", workspace: other.workspace }))
+      .rejects.toMatchObject({ code: "workspace_runtime_unavailable" });
+  });
+
   it("reports a carried project whose Workspace cannot start as unavailable, and nothing else", async () => {
     const value = fixture();
     const pendingCarryover = vi.fn(async () => true);

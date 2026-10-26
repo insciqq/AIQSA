@@ -1135,6 +1135,18 @@ export type WorkspaceCoordinator = Readonly<{
     userId: string;
     workspace: NormalizedRunWorkspace;
   }>): Promise<void>;
+  /**
+   * Before a call that reads guest files without running a command (a
+   * direct view, a System Vision capture): starts the Workspace for the run
+   * the way its first command does, with the run's inputs staged.
+   */
+  prepareExecution?(input: Readonly<{
+    onActivity?: WorkspaceActivityListener;
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<void>;
   execute(input: Readonly<{
     call: ModelToolCall;
     modelRunToolCallId: string;
@@ -2743,6 +2755,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return { attempted, completed };
       })().finally(() => { recoveryWork = null; });
       return recoveryWork;
+    },
+    async prepareExecution({ onActivity, runId, signal, userId, workspace }) {
+      const { binding } = await initializeWithLostSessionRecovery(await requireBinding(runId, userId, workspace), workspace, signal, onActivity);
+      if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     },
     async prepareCarryover({ onActivity, runId, signal, userId, workspace }) {
       const initial = await input.repository.binding({ runId, userId });

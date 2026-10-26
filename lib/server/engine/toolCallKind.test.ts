@@ -11,6 +11,7 @@ describe("engine tool call family", () => {
     ["manage_scheduled_task", "session", "scheduled_task"], ["save_skill", "session", "skill"], ["load_skill", "skill", "skill"],
     ["manage_skill", "skill", "skill"], ["create_artifact", "artifact", "artifact"], ["read_artifact", "artifact", "artifact"],
     ["generate_image", "image", "image_generation"], ["analyze_image", "workspace", "vision"], ["analyze_image", "vision", "vision"],
+    ["view_workspace_image", "workspace", "workspace_image"],
     ["checkpoint_outputs", "workspace", "workspace"], ["workspace_exec", "workspace", "workspace"], ["apply_patch", "workspace", "workspace"],
     ["memory_search", "memory", "memory"], ["report_monitoring_result", "session", "monitoring"],
     ["web_search", "web_search", "search"], [MCP_FIND_TOOLS_NAME, "mcp", "mcp"],

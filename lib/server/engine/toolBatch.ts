@@ -28,7 +28,7 @@ import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import { recordToolCall, type SettledToolCall } from "./toolCallTelemetry";
 import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
-import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolOutputExcerpt, toolResultOutputText } from "./toolResults";
+import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolOutputExcerpt, toolResultImage, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
 import type { UnknownEffects } from "./unknownEffects";
 
@@ -300,10 +300,12 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         run_id: deps.runId, stage: "write", subsystem: "database" });
     }
     for (const event of result.artifacts ?? []) await deps.onEvent(event);
+    const image = toolResultImage(result);
     return {
       callId: execution.call.id,
       ...(excerpt.handle ? { handle: excerpt.handle } : {}),
       id: randomUUID(),
+      ...(image ? { image } : {}),
       kind: "tool_result",
       name: execution.call.name,
       outcome: result.status,
