@@ -107,11 +107,21 @@ def filter_state(state: Mapping[str, Any], wanted: Iterable[str]) -> Dict[str, A
     return {"cookies": cookies, "origins": [{"origin": origin["origin"], "localStorage": origin["localStorage"]} for origin in origins]}
 
 
-def cookie_digest(cookies: Iterable[Mapping[str, Any]], wanted: Iterable[str]) -> str:
+def state_digest(state: Mapping[str, Any], wanted: Iterable[str]) -> str:
+    """What a site's session file would hold: its cookies and its origins' local storage, in a stable order.
+
+    Local storage counts because single-page apps keep (and rotate) their sign-in
+    tokens there; a rotated token that is not saved signs the next Workspace out.
+    """
     wanted = set(wanted)
-    rows = sorted(json.dumps([cookie.get("name"), cookie.get("domain"), cookie.get("path"), cookie.get("value"),
+    rows = sorted(json.dumps(["cookie", cookie.get("name"), cookie.get("domain"), cookie.get("path"), cookie.get("value"),
                               cookie.get("expires")], ensure_ascii=False)
-                  for cookie in cookies if domain_matches(str(cookie.get("domain", "")), wanted))
+                  for cookie in state.get("cookies") or []
+                  if isinstance(cookie, Mapping) and domain_matches(str(cookie.get("domain", "")), wanted))
+    rows += sorted(json.dumps(["storage", origin.get("origin"), item.get("name"), item.get("value")], ensure_ascii=False)
+                   for origin in state.get("origins") or []
+                   if isinstance(origin, Mapping) and domain_matches(_origin_host(str(origin.get("origin", ""))), wanted)
+                   for item in origin.get("localStorage") or [] if isinstance(item, Mapping))
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
@@ -224,7 +234,7 @@ class SessionStore:
             if own:
                 sites.add(own)
             self.tracked[name] = sites
-            self.digests[name] = cookie_digest(value["cookies"], sites)
+            self.digests[name] = state_digest(value, sites)
         merged["cookies"] = list(cookies.values())
         merged["origins"] = list(origins.values())
         return merged
@@ -232,9 +242,13 @@ class SessionStore:
     def track(self, name: str, sites: Iterable[str]) -> None:
         self.tracked.setdefault(name, set()).update(sites)
 
-    def changed(self, cookies: List[Mapping[str, Any]]) -> List[str]:
-        """Tracked files whose cookies differ from what was last saved or restored."""
-        return [name for name, sites in self.tracked.items() if cookie_digest(cookies, sites) != self.digests.get(name)]
+    def sites(self) -> Set[str]:
+        """Every site whose session the browser keeps current."""
+        return set().union(*self.tracked.values()) if self.tracked else set()
+
+    def changed(self, state: Mapping[str, Any]) -> List[str]:
+        """Tracked files whose cookies or local storage differ from what was last saved or restored."""
+        return [name for name, sites in self.tracked.items() if state_digest(state, sites) != self.digests.get(name)]
 
     def save(self, name: str, state: Mapping[str, Any]) -> Dict[str, Any]:
         """Write one tracked file from the browser's whole state; returns its size and whether it changed."""
@@ -260,7 +274,7 @@ class SessionStore:
             current = target.read_bytes() if target.is_file() and not target.is_symlink() else None
         except OSError:
             current = None
-        digest = cookie_digest(part["cookies"], sites)
+        digest = state_digest(part, sites)
         if current == data:
             self.digests[name] = digest
             return {"file": name, "bytes": len(data), "changed": False}

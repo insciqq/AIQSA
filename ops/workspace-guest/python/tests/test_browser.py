@@ -162,10 +162,18 @@ class SessionStoreTests(unittest.TestCase):
         self.assertTrue(_sessions.valid_state(saved))
         self.assertEqual(stat.S_IMODE((self.root / "shop.example.json").stat().st_mode), 0o600)
         self.assertEqual(self.store.save("shop.example.json", state)["changed"], False)
-        self.assertEqual(self.store.changed(state["cookies"]), [])
-        rotated = [cookie("sid", ".shop.example", "2"), cookie("other", "elsewhere.test", "9")]
+        self.assertEqual(self.store.changed(state), [])
+        rotated = {"cookies": [cookie("sid", ".shop.example", "2"), cookie("other", "elsewhere.test", "9")], "origins": state["origins"]}
         self.assertEqual(self.store.changed(rotated), ["shop.example.json"])
-        self.assertEqual(self.store.changed([cookie("sid", ".shop.example", "1"), cookie("other", "elsewhere.test", "9")]), [])
+        elsewhere = {"cookies": [cookie("sid", ".shop.example", "1"), cookie("other", "elsewhere.test", "9")],
+                     "origins": state["origins"] + [{"origin": "https://ads.example", "localStorage": [{"name": "k", "value": "v"}]}]}
+        self.assertEqual(self.store.changed(elsewhere), [])
+        # A single-page app rotates its sign-in token in local storage: that changes the session too.
+        token = {"cookies": state["cookies"], "origins": [{"origin": "https://shop.example", "localStorage": [{"name": "cart", "value": "3"}]}]}
+        self.assertEqual(self.store.changed(token), ["shop.example.json"])
+        self.assertEqual(self.store.save("shop.example.json", token)["changed"], True)
+        self.assertEqual(self.store.changed(token), [])
+        self.assertEqual(self.store.sites(), {"shop.example"})
         self.assertEqual([entry.name for entry in self.root.parent.iterdir() if entry.name.endswith(".tmp")], [])
 
     def test_limits_keep_the_previous_version(self) -> None:

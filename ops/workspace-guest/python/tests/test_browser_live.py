@@ -251,6 +251,10 @@ class LiveBrowserTests(unittest.TestCase):
         self.quiet(browser.open, self.base + "/rotate")
         rotated = json.loads(saved_path.read_text("utf-8"))
         self.assertEqual(rotated["cookies"][0]["value"], "rotated")
+        # Local storage (where single-page apps keep their tokens) stays current as well.
+        self.quiet(browser.open, self.base + "/storage")
+        stored = json.loads(saved_path.read_text("utf-8"))
+        self.assertIn({"name": "cart", "value": "3"}, [item for origin in stored["origins"] for item in origin["localStorage"]])
         from aiqsa.browser import _client
 
         browser.close()
