@@ -916,6 +916,46 @@ describe("Microsandbox Workspace lifecycle", () => {
     await expect(value.runtime.touchSession({ sessionId: ensureInput.sessionId })).resolves.toBeUndefined();
   });
 
+  it("runs the live browser streamer on its own MCP connection, for its own run only, and never starts a guest", async () => {
+    const value = fixture();
+    const live = { ...sessionInput, modelRunId: "run_fixture" };
+    // A guest this runner does not hold is never started for a view.
+    await expect(value.runtime.browserLive({ ...live, action: "start", stdin: "" })).rejects.toMatchObject({ code: "workspace_session_lost" });
+    expect(value.handle.connectOrStart).not.toHaveBeenCalled();
+    await value.runtime.ensureSession(ensureInput);
+    await value.runtime.callBoundTool(callInput);
+    const transports = sdk.transports.length;
+    const envelope = (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, data }, null, 2) }] });
+    sdk.callTool.mockImplementation(async (params: { arguments: Record<string, unknown>; name: string }) => {
+      if (params.name === "sandbox_exec_start") return envelope({ execSessionId: "live_exec" });
+      if (params.name !== "sandbox_exec_poll") return envelope({});
+      return envelope({ done: params.arguments.cursor === Number.MAX_SAFE_INTEGER, error: null, exitStatus: null, nextCursor: 2,
+        events: [{ event: { data: "@2 {}\n", kind: "stdout" }, index: 0 }, { event: { data: "Traceback", kind: "stderr" }, index: 1 }] });
+    });
+    expect(await value.runtime.browserLive({ ...live, action: "start", stdin: "{}\n" })).toEqual({ action: "start", execSessionId: "live_exec" });
+    expect(sdk.transports.length).toBe(transports + 1);
+    const start = sdk.callTool.mock.calls.at(-1)![0] as { arguments: Record<string, unknown>; name: string };
+    expect(start).toMatchObject({ name: "sandbox_exec_start", arguments: { args: ["-I", "-m", "aiqsa.browser.live"],
+      command: "/opt/aiqsa-python/bin/python3", name: sandboxName, stdin: "{}\n" } });
+    // No saved secret, run bearer or invocation id reaches the streamer.
+    expect(start.arguments.env).toBeUndefined();
+    expect(await value.runtime.browserLive({ ...live, action: "poll", cursor: 0, execSessionId: "live_exec" }))
+      .toEqual({ action: "poll", chunks: ["@2 {}\n"], done: false, nextCursor: 2, truncated: false });
+    expect((sdk.callTool.mock.calls.at(-1)![0] as { arguments: Record<string, unknown> }).arguments)
+      .toMatchObject({ limit: 28, maxBytes: execPollEventMaxBytes(28, config.toolOutputMaxBytes) });
+    const dispatched = sdk.callTool.mock.calls.length;
+    await expect(value.runtime.browserLive({ ...live, action: "poll", cursor: 0, execSessionId: "live_exec", modelRunId: "other_run" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(value.runtime.browserLive({ ...live, action: "write", data: "{}\n", execSessionId: "synthetic_exec" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(sdk.callTool.mock.calls.length).toBe(dispatched);
+    expect(await value.runtime.browserLive({ ...live, action: "close", execSessionId: "live_exec" })).toEqual({ action: "close", exited: true });
+    expect(sdk.callTool.mock.calls.slice(dispatched).map(([params]) => (params as { name: string }).name))
+      .toEqual(["sandbox_exec_write_stdin", "sandbox_exec_poll", "sandbox_exec_close"]);
+    await expect(value.runtime.browserLive({ ...live, action: "poll", cursor: 2, execSessionId: "live_exec" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+  });
+
   it("creates a persistent VM detached from the creator handle", async () => {
     const value = fixture();
     value.setState("missing");

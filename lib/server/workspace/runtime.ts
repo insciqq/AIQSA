@@ -137,6 +137,36 @@ export type WorkspaceOutputReleaseInput = Readonly<{
   signal?: AbortSignal;
 }>;
 
+/**
+ * One request of the live browser channel (`browserLive.ts`): the guest's live-view streamer
+ * (`python3 -I -m aiqsa.browser.live`, a fixed command), started, polled, written to and closed under the
+ * run's operation. Never a model tool, never logged per request, and only on a guest that already runs:
+ * no request starts or resumes one.
+ */
+export type WorkspaceBrowserLiveRequest = Readonly<{
+  modelRunId: string;
+  operation?: WorkspaceOperation;
+  runtimeSandboxId: string;
+  sessionId: string;
+  signal?: AbortSignal;
+}> & WorkspaceBrowserLiveAction;
+
+/** What one live channel request does; its owner adds the run's identity and operation. */
+export type WorkspaceBrowserLiveAction =
+  /** `stdin`: the streamer's first lines (its frame wish, a command). */
+  | Readonly<{ action: "start"; stdin: string }>
+  | Readonly<{ action: "poll"; cursor: number; execSessionId: string }>
+  | Readonly<{ action: "write"; data: string; execSessionId: string }>
+  /** Ends the streamer (stdin closed, then a kill if it lingers) and forgets its output. */
+  | Readonly<{ action: "close"; execSessionId: string }>;
+
+export type WorkspaceBrowserLiveReply =
+  | Readonly<{ action: "start"; execSessionId: string }>
+  /** `chunks`: the streamer's stdout since `cursor`, in order; `truncated`: some chunk was cut by the channel. */
+  | Readonly<{ action: "poll"; chunks: readonly string[]; done: boolean; nextCursor: number; truncated: boolean }>
+  | Readonly<{ action: "write" }>
+  | Readonly<{ action: "close"; exited: boolean }>;
+
 export type WorkspaceBrowserCollection = Readonly<{
   files: readonly WorkspaceOutputStream[];
   skipped: readonly import("./secrets/browserSession").WorkspaceBrowserSkipCode[];
@@ -295,6 +325,8 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceOutputCollection>;
+  /** The live browser channel; absent where the runtime has none (the live view is then unavailable). */
+  browserLive?(input: WorkspaceBrowserLiveRequest): Promise<WorkspaceBrowserLiveReply>;
   /** Private cache input, collected only after accepted-run quiescence; never an output capture. */
   collectBrowserSessions(input: Readonly<{
     modelRunId: string;

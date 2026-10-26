@@ -166,6 +166,34 @@ describe("Workspace runner lifecycle diagnostics", () => {
     expect(output.lines.join("")).not.toContain("foreign_");
   });
 
+  it("serves the live browser channel under the run's operation, quietly, with exact actions only", async () => {
+    const output = capture();
+    const browserLive = vi.fn(async (input: Parameters<NonNullable<WorkspaceRuntime["browserLive"]>>[0]) =>
+      input.action === "poll" ? { action: "poll" as const, chunks: ["@2 {}\n"], done: false, nextCursor: input.cursor + 1, truncated: false }
+        : { action: "start" as const, execSessionId: "exec_fixture" });
+    const request = fixture({ browserLive, stopSession: vi.fn(async () => undefined),
+      ensureSession: vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const })) });
+    await request("/v1/sessions/ensure", body);
+    const identity = { operation: body.operation, modelRunId: "run_fixture", runtimeSandboxId: "sandbox_fixture" };
+    const live = (value: Record<string, unknown>) => request(`/v1/sessions/${sessionId}/browser-live`, { ...identity, ...value });
+    const started = await live({ action: "start", stdin: "{\"t\":\"frames\",\"on\":true}\n" });
+    expect(started.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(started.end).toHaveBeenCalledWith(JSON.stringify({ action: "start", execSessionId: "exec_fixture" }));
+    expect((await live({ action: "poll", cursor: 4, execSessionId: "exec_fixture" })).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(browserLive).toHaveBeenLastCalledWith(expect.objectContaining({ action: "poll", cursor: 4, execSessionId: "exec_fixture",
+      modelRunId: "run_fixture", runtimeSandboxId: "sandbox_fixture", sessionId }));
+    for (const invalid of [{ action: "exec", command: "sh" }, { action: "poll", cursor: -1, execSessionId: "exec_fixture" },
+      { action: "write", data: "x".repeat(70_000), execSessionId: "exec_fixture" }, { action: "close", execSessionId: "../x" }]) {
+      expect((await live(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+    }
+    const stale = await live({ action: "poll", cursor: 0, execSessionId: "exec_fixture", operation: { generation: 9, owner: "run:other" } });
+    expect(stale.writeHead).toHaveBeenCalledWith(409, expect.any(Object));
+    expect(browserLive).toHaveBeenCalledTimes(2);
+    // Answered requests write nothing; only refusals leave a content-free record.
+    expect(output.records().every((record) => record.event === "runtime_lifecycle" && record.outcome !== "completed")).toBe(true);
+    expect(output.lines.join("")).not.toContain("frames");
+  });
+
   it("rejects a tool call body above its bound before dispatch and serves no Agent routes", async () => {
     capture();
     const ensureSession = vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const }));
