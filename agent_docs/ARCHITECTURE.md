@@ -15,7 +15,7 @@ Process and deployment shape, dependency direction, and every place data leaves 
 
 ## Shape
 
-- AIQSA is a Next.js modular monolith on one host with one application replica. Cancellation, external sessions, the AIQSA Connect relay, pending SAML requests and the sign-in method snapshot live in process memory, so replicas, untrusted tenancy or spend and latency guarantees first need a new design for admission, scheduling, recovery and isolation.
+- AIQSA is a Next.js modular monolith on one host with one application replica. Cancellation, external sessions, the Connect and live Workspace browser relays, pending SAML requests and the sign-in method snapshot live in process memory, so replicas, untrusted tenancy or spend and latency guarantees first need a new design for admission, scheduling, recovery and isolation.
 - Splitting out a service or adding remote control needs a measured blocker and an explicit design for auth, ownership, network, deployment, recovery and observability.
 - Dependency direction: browser UI → client-safe contracts (`lib/contracts/`, a leaf) → authenticated routes → provider-neutral server orchestration → repositories and adapters. Routes only compose; repositories own durable access; adapters own external wire formats. Lower layers never import their consumers.
 
