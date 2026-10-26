@@ -145,7 +145,8 @@ async function shot(page: Page, testInfo: TestInfo, name: string) {
   await panel.evaluate((element) => element.scrollIntoView({ behavior: "instant", block: "start" }));
   await page.evaluate(() => {
     const stage = document.querySelector<HTMLElement>("[data-testid='browser-live-stage']");
-    const dock = document.querySelector("[aria-label='Message']")?.getBoundingClientRect().top ?? window.innerHeight;
+    const workspace = document.querySelector(".v2-live-workspace");
+    const dock = window.innerHeight - (workspace ? Number.parseFloat(getComputedStyle(workspace).getPropertyValue("--v2-live-dock-height")) || 0 : 0);
     if (stage && !document.querySelector("[data-testid='browser-live-handoff']") && stage.getBoundingClientRect().bottom > dock) {
       // Its bottom just above the composer dock, which floats over the thread.
       let scroller = stage.parentElement;
@@ -228,8 +229,8 @@ for (const viewport of viewports) {
         expect(stageBox!.x + stageBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width + 1);
         expect(stageBox!.height).toBeLessThanOrEqual(viewport.height * 0.7 + 1);
         // The whole frame fits between the chat header and the composer dock.
-        const dockTop = await page.getByRole("textbox", { name: "Message" }).evaluate((element) =>
-          (element.closest("form") ?? element.parentElement!).getBoundingClientRect().top);
+        const dockTop = await page.evaluate(() => window.innerHeight - (Number.parseFloat(getComputedStyle(
+          document.querySelector(".v2-live-workspace")!).getPropertyValue("--v2-live-dock-height")) || 0));
         expect(stageBox!.height).toBeLessThanOrEqual(dockTop - 48 + 1);
         await expectNoHorizontalOverflow(page);
         await shot(page, testInfo, `${prefix}-2-watch`);
