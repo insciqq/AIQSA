@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
 import { contextTokenEstimator } from "../../domain/tokenEstimate";
@@ -224,7 +225,13 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
             if (!await authorize(plan)) throw new VisionAnalysisError("vision_model_unavailable");
             const consumer = { runId: c.runId, userId: c.userId, consumerKey: c.toolCallId };
             const files = [...new Map(input.images.map(image => [`${image.file.root}/${image.file.relativePath}`, image.file])).values()];
-            const capture = await captures.create({ ...consumer, requestKey: c.toolCallId, files, signal: bounded });
+            // A call before any Workspace command still reads a running guest holding the run's inputs.
+            await context.prepareWorkspace?.(bounded);
+            // Each attempt captures afresh under the same consumer, like a skill save's read: an attempt of the same call
+            // before it released its capture, which the call id as request key would only find released. The durable
+            // attempt stays keyed by the call (`store.ts`), so a dispatched call still restores rather than captures.
+            const requestKey = `${c.toolCallId.slice(0, 90)}_${randomUUID().replaceAll("-", "")}`;
+            const capture = await captures.create({ ...consumer, requestKey, files, signal: bounded });
             reference = { ...consumer, captureId: capture.id };
             // Capture canonical sorting must not reorder the analyst's comparisons.
             const sources = await Promise.all(input.images.map(async image => ({

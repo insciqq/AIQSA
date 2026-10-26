@@ -19,6 +19,7 @@ import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperati
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
+import { WORKSPACE_TURN_TIMEOUT_MAX_SECONDS } from "./config";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
@@ -37,7 +38,8 @@ const HEADER_VALUE_MAX_BYTES = 2_048;
  */
 const PENDING_OUTPUT_INACTIVITY_MS = 10 * 60_000;
 const PENDING_OUTPUT_ABSOLUTE_MAX_MS = 6 * 60 * 60_000;
-const REQUEST_TIMEOUT_MS = 3_700_000;
+/** The longest configurable turn plus a margin: no request is cut inside a turn. */
+const REQUEST_TIMEOUT_MS = (WORKSPACE_TURN_TIMEOUT_MAX_SECONDS + 100) * 1_000;
 
 type PendingOutput = Readonly<{
   output: WorkspaceOutputStream;
@@ -166,6 +168,8 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput, sign
 }
 
 export function createWorkspaceRunnerServer(input: Readonly<{
+  /** How often and how long the guest of an active operation is kept awake (`workspaceIdleRefreshTiming`). */
+  idleRefresh?: Readonly<{ intervalMs: number; lifetimeMs: number }>;
   /** Clock for pending-output expiry; tests inject a controllable clock. */
   now?: () => number;
   /** Private runtime-volume directory; omitted only by isolated unit fixtures. */
@@ -175,8 +179,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 }>): Server {
   if (input.token.length < 32) throw new Error("workspace_runner_token_invalid");
   const clock = input.now ?? Date.now;
+  const touch = input.runtime.touchSession?.bind(input.runtime);
   const fence = new WorkspaceOperationFence({
     directory: input.operationDirectory,
+    ...(input.idleRefresh && touch ? { idleRefresh: { ...input.idleRefresh, touch } } : {}),
     stop: (request) => input.runtime.stopSession(request)
   });
   const batches = new Map<string, PendingBatch>();

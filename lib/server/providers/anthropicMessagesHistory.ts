@@ -187,10 +187,15 @@ function parts(item: ProviderHistoryItem, options: AnthropicHistoryRenderOptions
         : { id: toolId(item.callId), input: toolInput(item.arguments), name: item.name, type: "tool_use" }, role: "assistant" }];
     case "tool_result": {
       const output = options.preview ? PREVIEW_TOOL_OUTPUT : item.output;
+      // A result's image is an image block of its content (`tool_result.content` takes text and image blocks).
+      const images = options.preview ? [] : (item.images ?? []).map((image): Record<string, unknown> => ({
+        source: { data: image.data, media_type: image.mimeType, type: "base64" }, type: "image" }));
       if (!options.toolsDeclared) {
-        return [{ block: textBlock(`[Tool result ${item.name}${item.isError ? ", error" : ""}]\n${output}`), role: "user" }];
+        return [{ block: textBlock(`[Tool result ${item.name}${item.isError ? ", error" : ""}]\n${output}`), role: "user" },
+          ...images.map((block): Part => ({ block, role: "user" }))];
       }
-      return [{ block: { ...(output.trim() ? { content: output } : {}), ...(item.isError ? { is_error: true } : {}),
+      const content = images.length > 0 ? [...(output.trim() ? [textBlock(output)] : []), ...images] : output.trim() ? output : null;
+      return [{ block: { ...(content !== null ? { content } : {}), ...(item.isError ? { is_error: true } : {}),
         tool_use_id: toolId(item.callId), type: "tool_result" }, role: "user" }];
     }
     case "compaction":

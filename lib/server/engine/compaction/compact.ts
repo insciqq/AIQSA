@@ -5,6 +5,7 @@ import {
   selectTranscript,
   type SelectedTranscriptItem,
   type TranscriptCompactionItem,
+  type TranscriptImages,
   type TranscriptItem,
   type TranscriptTarget
 } from "../transcript";
@@ -158,6 +159,8 @@ export type CompactInput = Readonly<{
   /** From `planCompaction` on this transcript or an earlier prefix of it. */
   cut: CompactionCut;
   estimate: (value: unknown) => number;
+  /** The result images the run's requests carry: the figures before and kept count them, the summary never sees them. */
+  images?: TranscriptImages;
   items: readonly TranscriptItem[];
   mode: CompactionMode;
   nextId: () => string;
@@ -254,7 +257,7 @@ function spanOf(items: readonly TranscriptItem[], target: TranscriptTarget, keep
 
 function weigh(entries: readonly SelectedTranscriptItem[], input: CompactInput): number {
   return entries.reduce((total, entry) =>
-    total + contextItemTokens(entry.item, input.target, input.estimate, input.reasoning ?? "opaque", input.calibration), 0);
+    total + contextItemTokens(entry.item, input.target, input.estimate, input.reasoning ?? "opaque", input.calibration, input.images), 0);
 }
 
 type SummaryRun = Readonly<{ chunks: number; summary: string }> | null;

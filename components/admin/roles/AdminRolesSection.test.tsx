@@ -48,13 +48,14 @@ function rolesCatalog(): AdminSystemModelPolicyCatalog {
   };
 }
 
-function modelCatalog(): AdminModelPolicyCatalog {
+/** `toolLimitsEnabled`: most cases edit the limits, so they start on; a new installation's are off. */
+function modelCatalog(toolLimitsEnabled = true): AdminModelPolicyCatalog {
   const candidate = { connectionDisplayName: "OpenAI", connectionId: "openai", defaultReasoningEffort: "medium", displayName: "GPT Luna", id: "luna", reasoningEfforts: ["low", "medium", "high"] };
   return {
     candidates: [candidate, { ...candidate, displayName: "GPT Terra", id: "terra" }],
     policy: {
       defaultModel: { ...candidate, available: true }, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8,
-      reasoningEffort: "medium", toolObservationPolicy: "v1",
+      reasoningEffort: "medium", toolLimitsEnabled, toolObservationPolicy: "v1",
       updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 4
     }
   };
@@ -159,7 +160,7 @@ function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
           } : {}),
           ...(Object.hasOwn(body, "maxToolRounds") ? {
             maxMcpToolsPerDiscovery: Number(body.maxMcpToolsPerDiscovery), maxToolCalls: Number(body.maxToolCalls),
-            maxToolRounds: Number(body.maxToolRounds)
+            maxToolRounds: Number(body.maxToolRounds), toolLimitsEnabled: body.toolLimitsEnabled === true
           } : {}),
           ...(body.toolObservationPolicy === "off" || body.toolObservationPolicy === "v1"
             ? { toolObservationPolicy: body.toolObservationPolicy } : {})
@@ -651,7 +652,7 @@ describe("AdminRolesSection", () => {
     fireEvent.click(save);
     await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
     expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1)).toEqual({
-      expectedVersion: 4, maxMcpToolsPerDiscovery: 20, maxToolCalls: 24, maxToolRounds: 8
+      expectedVersion: 4, maxMcpToolsPerDiscovery: 20, maxToolCalls: 24, maxToolRounds: 8, toolLimitsEnabled: true
     });
     const previousGetCount = calls.filter((call) => call.method === "GET").length;
     fireEvent(window, new Event("focus"));
@@ -683,9 +684,83 @@ describe("AdminRolesSection", () => {
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
     expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
       expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 10,
-      providerModelId: "terra", reasoningEffort: null
+      providerModelId: "terra", reasoningEffort: null, toolLimitsEnabled: true
     }]);
     expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+  });
+
+  it("starts with tool limits off and saves them on with the numbers shown", async () => {
+    const calls = server(rolesCatalog(), modelCatalog(false));
+    const { reportNotice } = renderSection();
+    const limits = await screen.findByRole("switch", { name: "Tool limits per answer" });
+    await waitFor(() => expect(limits).toBeEnabled());
+    expect(limits).toHaveAttribute("aria-checked", "false");
+    expect(limits).toHaveAccessibleDescription(expect.stringMatching(/^Off by default\. An answer uses tools until it is done/u));
+    // Off, no count applies: the numbers stay hidden, and the MCP Auto tool count, not a loop limit, stays.
+    expect(screen.queryByRole("spinbutton", { name: "Rounds" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton", { name: "Calls" })).not.toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "MCP Auto tools" })).toHaveValue(12);
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+
+    fireEvent.click(limits);
+    expect(limits).toHaveAttribute("aria-checked", "true");
+    expect(limits).toHaveAccessibleDescription(expect.stringMatching(/^An answer stops using tools after this many rounds or calls/u));
+    // The saved numbers come back as the limits turning them on applies.
+    expect(screen.getByRole("spinbutton", { name: "Rounds" })).toHaveValue(8);
+    expect(screen.getByRole("spinbutton", { name: "Calls" })).toHaveValue(24);
+    expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Calls" }), { target: { value: "100" } });
+    expect(screen.getByText("2 unsaved changes")).toBeInTheDocument();
+    fireEvent.click(save);
+    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
+    expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
+      expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 100, maxToolRounds: 8, toolLimitsEnabled: true
+    }]);
+    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+    expect(limits).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("spinbutton", { name: "Calls" })).toHaveValue(100);
+  });
+
+  it("turns tool limits off without saving or checking the numbers it hides", async () => {
+    const calls = server();
+    renderSection();
+    const limits = await screen.findByRole("switch", { name: "Tool limits per answer" });
+    await waitFor(() => expect(limits).toHaveAttribute("aria-checked", "true"));
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Rounds" }), { target: { value: "0" } });
+    expect(save).toBeDisabled();
+    expect(screen.getByText("Enter a valid Rounds to save.")).toBeVisible();
+
+    fireEvent.click(limits);
+    expect(screen.queryByRole("spinbutton", { name: "Rounds" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/to save\.$/u)).not.toBeInTheDocument();
+    expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
+    // Off keeps the saved numbers for turning the limits on again; the hidden edit is dropped.
+    expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
+      expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8, toolLimitsEnabled: false
+    }]);
+    expect(limits).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(limits);
+    expect(screen.getByRole("spinbutton", { name: "Rounds" })).toHaveValue(8);
+  });
+
+  it("saves the MCP Auto tool count while tool limits stay off", async () => {
+    const calls = server(rolesCatalog(), modelCatalog(false));
+    renderSection();
+    const tools = await screen.findByRole("spinbutton", { name: "MCP Auto tools" });
+    await waitFor(() => expect(tools).toHaveValue(12));
+    expect(tools).toHaveAccessibleDescription("The most MCP tools one tool search loads in Auto mode");
+    fireEvent.change(tools, { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
+    expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
+      expectedVersion: 4, maxMcpToolsPerDiscovery: 30, maxToolCalls: 24, maxToolRounds: 8, toolLimitsEnabled: false
+    }]);
+    expect(screen.getByRole("switch", { name: "Tool limits per answer" })).toHaveAttribute("aria-checked", "false");
   });
 
   it("shows observation and compaction on by default and saves the kill switch alone under the policy version", async () => {

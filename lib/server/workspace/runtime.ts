@@ -184,6 +184,11 @@ export interface WorkspaceRuntime {
   completeSkillRunPreparation(input: WorkspaceSkillRunIdentity): Promise<void>;
   claimSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   retireSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
+  /**
+   * Refreshes a running guest's own idle stop while an operation owns it (the runner's operation fence); never starts,
+   * resumes or connects a guest that is not running.
+   */
+  touchSession?(input: Readonly<{ sessionId: string }>): Promise<void>;
   health(signal?: AbortSignal): Promise<WorkspaceRuntimeHealth>;
   /** Lists labelled environments without connecting, touching, or changing lifecycle. */
   listSessions?(input: WorkspaceRuntimeInventoryInput): Promise<WorkspaceRuntimeInventoryPage>;

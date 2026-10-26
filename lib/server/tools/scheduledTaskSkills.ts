@@ -13,11 +13,10 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 type SkillCatalogRequest = Readonly<{ skills?: unknown }>;
 type CatalogSkill = Readonly<{ alias: string; name: string; skillId: string }>;
 
-/** The schema of the Skill list both tools take. */
+/** The schema of the Skill list `create_scheduled_task` takes: a list or null, as `anyOf` (`toolSchemaPortability.test.ts`). */
 export const SCHEDULED_TASK_SKILLS_SCHEMA = {
-  description: `Aliases of this chat's skills to pin, at most ${SCHEDULED_TASK_MAX_PINNED_SKILLS}.`,
-  items: { type: "string" },
-  type: ["array", "null"]
+  anyOf: [{ items: { type: "string" }, type: "array" }, { type: "null" }],
+  description: `Aliases of this chat's skills to pin, at most ${SCHEDULED_TASK_MAX_PINNED_SKILLS}.`
 } as const;
 
 /** The run's frozen Skills (pinned first, then the Auto catalog); none for a run without Skills. */

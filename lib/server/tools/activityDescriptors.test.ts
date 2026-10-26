@@ -29,6 +29,12 @@ describe("native Memory search activity", () => {
     expect(toolActivityDescriptors({}).get("analyze_image")).toBeUndefined();
   });
 
+  it("shows a direct view after a reload as the Workspace step the live answer showed", () => {
+    expect(toolActivityDescriptors({ workspace: { enabled: true }, workspaceImageView: true }).get("view_workspace_image")).toEqual({
+      origin: "workspace", serverName: "Workspace", toolName: "view_workspace_image" });
+    expect(toolActivityDescriptors({ workspace: { enabled: true } }).get("view_workspace_image")).toBeUndefined();
+  });
+
   it("does not invent successful recall for an unrecognized completed result", () => {
     expect(memorySearchActivityEvent({ ordinal: 0, round: 1, state: "complete", result: {
       content: [{ type: "json", value: { version: "legacy", outcome: "results" } }]

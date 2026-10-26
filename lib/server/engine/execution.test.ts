@@ -29,6 +29,16 @@ const snapshot: McpRunPlanSnapshot = {
   version: 1
 };
 
+/** The Jira run, which can also see a server whose own call timeout is ten minutes (left unbound: it never runs). */
+const withSlowServer: McpRunPlanSnapshot = {
+  servers: [...snapshot.servers, { fingerprint: "fp-2", revisionId: "rev-2",
+    runtimeTimeouts: { callTimeoutMs: 600_000, startupTimeoutMs: 60_000 }, serverId: "export", serverName: "Export" }],
+  tools: [...snapshot.tools, { annotations: { readOnlyHint: true }, definitionHash: "c".repeat(64), description: "Export",
+    inputSchema: { type: "object" }, name: "run_export", namespacedName: "mcp_export_run_export", originalName: "run_export",
+    serverId: "export", serverName: "Export" }],
+  version: 1
+};
+
 function scriptedAdapter(steps: readonly Step[]) {
   const requests: ProviderRunRequest[] = [];
   const adapter: ProviderAdapter = {
@@ -125,7 +135,7 @@ function prepared(extra: Partial<ProviderRunRequest> = {}): MaterializedPrepared
   return {
     contextTruncation: null, defaults: null, expectedActiveLeafId: null,
     mcpBindings: [{ fingerprint: "fp-1", runtimeGenerationId: "gen-1", serverId: "jira" }],
-    normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 60_000 },
+    normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 300_000 },
       connectionId: "connection-1", model: { adapterKind: "fake" }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
     providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
   };
@@ -491,6 +501,263 @@ describe("native run execution", () => {
     expect(result.at(-1)).toMatchObject({ data: { code: "context_too_large" }, type: "error" });
     expect(repo.failRun).toHaveBeenCalledWith("run-1", "answer-1", expect.objectContaining({ code: "context_too_large" }),
       { recoveryTerminal: true });
+  });
+
+  it.each([
+    // An hour, with 49 minutes for tools with or without a Workspace (`turnDeadline.ts`).
+    { name: "an interactive turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: null },
+    { name: "an interactive Workspace turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: 3_600 },
+    // The scheduler stops a scheduled run 30 minutes after admission: its tools close 19 minutes in.
+    { name: "a scheduled run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: null },
+    { name: "a scheduled Workspace run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: 3_600 }
+  ])("ends $name without tool limits at its time deadline with the forced final answer", async ({
+    scheduled, toolRounds, workspaceTurnSeconds
+  }) => {
+    // A model that would never stop calling tools; every round takes eight minutes.
+    let clock = 1_000_000;
+    const requests: ProviderRunRequest[] = [];
+    const answer = "Here is what I found so far; the rest is unchecked.";
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        requests.push(request);
+        clock += 8 * 60_000;
+        if (request.toolChoice === "none") {
+          yield { data: { delta: answer }, type: "token" };
+          return { finalProviderResponsePreview: {}, finalText: answer, toolCalls: [], usage: { inputTokens: 100, outputTokens: 10 } };
+        }
+        return { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 100, outputTokens: 10 },
+          toolCalls: [{ arguments: { key: `A-${requests.length}` }, id: `call-${requests.length}`, name: "mcp_jira_get_issue" }] };
+      }
+    };
+    const memory = memoryEngine({ now: () => clock });
+    const callTool = vi.fn(async () => ({ isError: false, text: ["open"], unsupportedContentTypes: [] }));
+    const result = await events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(clock) },
+      engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
+        ...(workspaceTurnSeconds ? { workspace: { enabled: true, syncToolTimeoutSeconds: 120,
+          turnTimeoutSeconds: workspaceTurnSeconds } as ProviderRunRequest["workspace"] } : {}) }),
+      repository: repository() as unknown as RunRepository, ...(scheduled ? { scheduled: true as const } : {}), services: {},
+      userId: "user" }));
+    expect(requests.map((request) => request.toolChoice)).toEqual([...Array<string>(toolRounds).fill("auto"), "none"]);
+    // The last round with tools returned after the tool time ran out: its call is refused, never started.
+    expect(callTool).toHaveBeenCalledTimes(toolRounds - 1);
+    expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(1);
+    expect(memory.published()).toBe(answer);
+    expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+  });
+
+  it("counts a scheduled run's time from its admission, not from when it started", async () => {
+    let clock = 1_000_000;
+    const admittedAt = new Date(clock - 10 * 60_000);
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        requests.push(request);
+        clock += 8 * 60_000;
+        return request.toolChoice === "none"
+          ? { finalProviderResponsePreview: {}, finalText: "Done.", toolCalls: [], usage: {} }
+          : { finalProviderResponsePreview: {}, finalText: "", usage: {},
+            toolCalls: [{ arguments: { key: `A-${requests.length}` }, id: `call-${requests.length}`, name: "mcp_jira_get_issue" }] };
+      }
+    };
+    const memory = memoryEngine({ now: () => clock });
+    const callTool = vi.fn(async () => ({ isError: false, text: ["open"], unsupportedContentTypes: [] }));
+    await events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: admittedAt }, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } }),
+      repository: repository() as unknown as RunRepository, scheduled: true, services: {}, userId: "user" }));
+    // Admitted ten minutes before it started: its tools close nine minutes in, not 19.
+    expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
+    expect(memory.published()).toBe("Done.");
+  });
+
+  it.each([
+    // Default turns on the real clock and deadline timers: tools may start until 49 minutes in, with or without a
+    // Workspace. The batch round returns at 48:40.
+    { batchRound: 73, softDeadlineMs: 49 * 60_000, workspace: false },
+    { batchRound: 73, softDeadlineMs: 49 * 60_000, workspace: true }
+  ])("starts no call of a late batch after the tool time and answers before the deadline (Workspace=$workspace)", async ({
+    batchRound, softDeadlineMs, workspace
+  }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const startedAt = Date.now();
+      const choices: string[] = [];
+      const starts: number[] = [];
+      // Every model round takes 40 s; the batch round returns eight calls of four minutes each, which run four at a time.
+      const adapter: ProviderAdapter = {
+        buildRequestPreview: () => ({}),
+        async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+          choices.push(request.toolChoice ?? "auto");
+          await new Promise((resolve) => setTimeout(resolve, 40_000));
+          const answering = request.toolChoice === "none";
+          return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
+            toolCalls: answering ? [] : Array.from({ length: choices.length === batchRound ? 8 : 1 }, (_, index) => ({
+              arguments: { key: `${choices.length}-${index}` }, id: `${choices.length}-${index}`, name: "mcp_jira_get_issue" })) };
+        }
+      };
+      const callTool = vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
+        starts.push(Date.now() - startedAt);
+        if (choices.length === batchRound) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 240_000);
+            signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+          });
+        }
+        return { isError: false, text: ["open"], unsupportedContentTypes: [] };
+      });
+      const memory = memoryEngine();
+      const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(startedAt) },
+        engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
+          ...(workspace ? { workspace: { enabled: true, syncToolTimeoutSeconds: 120,
+            turnTimeoutSeconds: 3_600 } as ProviderRunRequest["workspace"] } : {}) }),
+        repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
+      const result = await reading;
+      // The first four calls of the batch started in time and settled; the four queued behind them never started.
+      expect(starts.every((at) => at < softDeadlineMs)).toBe(true);
+      expect(callTool).toHaveBeenCalledTimes(batchRound - 1 + 4);
+      expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(4);
+      expect(choices.slice(batchRound)).toEqual(["none"]);
+      expect(memory.published()).toBe("Done");
+      expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Every call of the model uses its whole timeout and the forced answer nearly all of its own 300 s: by default 300 s
+  // Jira lookups in rounds of 59 s, whose last call starts nine seconds before the 49-minute tool time.
+  const fullTimeoutCase = (overrides: Readonly<{ label: string } & Partial<{ callSeconds: number; imageWaitMs: number;
+    lastStartSeconds: number; roundSeconds: number; serverTimeoutMs: number; slowServerSeen: boolean; workspace: boolean }>>) => ({
+    callSeconds: 300, imageWaitMs: null as number | null, lastStartSeconds: 2_931, roundSeconds: 59, serverTimeoutMs: null as number | null,
+    slowServerSeen: false, workspace: false, ...overrides
+  });
+  it.each([
+    fullTimeoutCase({ label: "a 300 s call started just before the tool time" }),
+    fullTimeoutCase({ label: "a 300 s call started just before the tool time", workspace: true }),
+    // The old five- and six-minute reserves started one more call at 53:20, which then ran into the deadline.
+    fullTimeoutCase({ label: "the 300 s call the old reserve would still start", lastStartSeconds: 2_850, roundSeconds: 50 }),
+    fullTimeoutCase({ label: "the 300 s call the old reserve would still start", lastStartSeconds: 2_850, roundSeconds: 50,
+      workspace: true }),
+    // A four-minute tail without the answer model's own timeout still started a call at 50:53 (review repro).
+    fullTimeoutCase({ callSeconds: 295, label: "the 295 s call a fixed four-minute tail would still start", lastStartSeconds: 2_681,
+      roundSeconds: 77 }),
+    // A server whose own call timeout is ten minutes: its last call starts 20 s before its own 44 minutes.
+    fullTimeoutCase({ callSeconds: 600, label: "a 600 s call of a server with a ten-minute timeout", lastStartSeconds: 2_620,
+      roundSeconds: 205, serverTimeoutMs: 600_000 }),
+    // Slow sources the run never calls leave its tool time at 49 minutes.
+    fullTimeoutCase({ label: "300 s calls of a run that can also see a ten-minute server", slowServerSeen: true }),
+    fullTimeoutCase({ imageWaitMs: 86_400_000, label: "300 s calls of a run whose image model may wait 24 hours" })
+  ])("leaves a forced tool-free answer before the deadline after $label (Workspace=$workspace)", async ({
+    callSeconds, imageWaitMs, lastStartSeconds, roundSeconds, serverTimeoutMs, slowServerSeen, workspace
+  }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const startedAt = Date.now();
+      const choices: string[] = [];
+      const starts: number[] = [];
+      // Every call uses its whole timeout; a round with tools takes `roundSeconds`, the tool-free answer 290 s.
+      const adapter: ProviderAdapter = {
+        buildRequestPreview: () => ({}),
+        async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+          choices.push(request.toolChoice ?? "auto");
+          const answering = request.toolChoice === "none";
+          await new Promise((resolve) => setTimeout(resolve, (answering ? 290 : roundSeconds) * 1_000));
+          return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
+            toolCalls: answering ? [] : [{ arguments: { key: `A-${choices.length}` }, id: `call-${choices.length}`,
+              name: "mcp_jira_get_issue" }] };
+        }
+      };
+      const callTool = vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
+        starts.push(Date.now() - startedAt);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, callSeconds * 1_000);
+          signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+        });
+        return { isError: false, text: ["open"], unsupportedContentTypes: [] };
+      });
+      const seen = slowServerSeen ? withSlowServer : snapshot;
+      const mcp: McpRunPlanSnapshot = serverTimeoutMs === null ? seen : { ...seen, servers: seen.servers.map((server) => ({
+        ...server, runtimeTimeouts: { callTimeoutMs: serverTimeoutMs, startupTimeoutMs: 60_000 } })) };
+      const memory = memoryEngine();
+      const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(startedAt) },
+        engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: prepared({ mcp, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
+          ...(imageWaitMs === null ? {} : { imagePlan: { snapshot: { connection: { responseTimeoutMs: imageWaitMs },
+            model: { adapterKind: "openai" } } } as unknown as ProviderRunRequest["imagePlan"] }),
+          ...(workspace ? { workspace: { enabled: true, syncToolTimeoutSeconds: 120,
+            turnTimeoutSeconds: 3_600 } as ProviderRunRequest["workspace"] } : {}) }),
+        repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      // Well past the hour, so a run the deadline ended also settles and fails the checks below rather than hanging.
+      await vi.advanceTimersByTimeAsync(70 * 60_000);
+      const result = await reading;
+      // The last call started in time ran its whole timeout; the next round answered without tools, before the deadline.
+      expect(Math.max(...starts)).toBe(lastStartSeconds * 1_000);
+      expect(choices).toEqual([...Array<string>(starts.length).fill("auto"), "none"]);
+      expect(memory.published()).toBe("Done");
+      expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a call to a ten-minute server at 47 minutes while a 300 s call beside it still starts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const startedAt = Date.now();
+      const choices: string[] = [];
+      const starts: Array<readonly [number, Record<string, unknown>]> = [];
+      // Rounds take a minute; the 47th returns, at 47:00, an export beside its lookup.
+      const adapter: ProviderAdapter = {
+        buildRequestPreview: () => ({}),
+        async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+          choices.push(request.toolChoice ?? "auto");
+          const round = choices.length;
+          const answering = request.toolChoice === "none";
+          await new Promise((resolve) => setTimeout(resolve, (answering ? 290 : 60) * 1_000));
+          return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
+            toolCalls: answering ? [] : [
+              ...(round === 47 ? [{ arguments: { job: "all" }, id: "export-47", name: "mcp_export_run_export" }] : []),
+              { arguments: { key: `A-${round}` }, id: `call-${round}`, name: "mcp_jira_get_issue" }
+            ] };
+        }
+      };
+      // Earlier lookups return at once; the one beside the export uses its whole 300 s.
+      const callTool = vi.fn(async ({ arguments: args, signal }: { arguments: Record<string, unknown>; signal?: AbortSignal }) => {
+        starts.push([Date.now() - startedAt, args]);
+        if (choices.length === 47) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 300_000);
+            signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+          });
+        }
+        return { isError: false, text: ["open"], unsupportedContentTypes: [] };
+      });
+      const memory = memoryEngine();
+      const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(startedAt) },
+        engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: prepared({ mcp: withSlowServer, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } }),
+        repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      await vi.advanceTimersByTimeAsync(70 * 60_000);
+      const result = await reading;
+      // Ten minutes, the answer and the handoff no longer fit at 47:00 (the export may start until 44 min), five minutes
+      // still do (until 49 min): the export never started.
+      expect(starts.at(-1)).toEqual([2_820_000, { key: "A-47" }]);
+      expect(starts.some(([, args]) => "job" in args)).toBe(false);
+      expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(1);
+      expect(choices).toEqual([...Array<string>(47).fill("auto"), "none"]);
+      expect(memory.published()).toBe("Done");
+      expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("records each terminal write, which Admin Health counts settled runs from, and the cause of a failure", async () => {
