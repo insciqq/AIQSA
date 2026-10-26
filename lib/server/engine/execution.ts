@@ -273,6 +273,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
   const toolTimeEndsAt = Math.min(startedAt + turnToolTimeMs(turnMs, workspace), input.scheduled
     ? (input.created.acceptedAt?.getTime() ?? startedAt) + turnToolTimeMs(scheduledTurnMs, workspace) : Infinity);
+  // Asked before each round and as each call of a batch starts, so a call queued behind slower ones never starts late.
+  const toolTimeLeft = () => now() < toolTimeEndsAt;
   const deadline = new AbortController();
   const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
     turnMs);
@@ -479,6 +481,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             text: save.text }),
           signal,
           store: engine.toolCalls,
+          toolTimeLeft,
           unknownEffects,
           userId: input.userId
         };
@@ -671,7 +674,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return batch;
           },
           signal,
-          toolTimeLeft: () => now() < toolTimeEndsAt
+          toolTimeLeft
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });

@@ -531,7 +531,9 @@ describe("native run execution", () => {
       repository: repository() as unknown as RunRepository, ...(scheduled ? { scheduled: true as const } : {}), services: {},
       userId: "user" }));
     expect(requests.map((request) => request.toolChoice)).toEqual([...Array<string>(toolRounds).fill("auto"), "none"]);
-    expect(callTool).toHaveBeenCalledTimes(toolRounds);
+    // The last round with tools returned after the tool time ran out: its call is refused, never started.
+    expect(callTool).toHaveBeenCalledTimes(toolRounds - 1);
+    expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(1);
     expect(memory.published()).toBe(answer);
     expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
   });
@@ -560,6 +562,62 @@ describe("native run execution", () => {
     // Admitted ten minutes before it started: its tools close fifteen minutes in.
     expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
     expect(memory.published()).toBe("Done.");
+  });
+
+  it.each([
+    // Default turns on the real clock and deadline timers: tools may start until 55 minutes in, 54 with a Workspace.
+    { batchRound: 82, softDeadlineMs: 55 * 60_000, workspace: false },
+    { batchRound: 80, softDeadlineMs: 54 * 60_000, workspace: true }
+  ])("starts no call of a late batch after the tool time and answers before the deadline (Workspace=$workspace)", async ({
+    batchRound, softDeadlineMs, workspace
+  }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const startedAt = Date.now();
+      const choices: string[] = [];
+      const starts: number[] = [];
+      // Every model round takes 40 s; the batch round returns eight calls of four minutes each, which run four at a time.
+      const adapter: ProviderAdapter = {
+        buildRequestPreview: () => ({}),
+        async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+          choices.push(request.toolChoice ?? "auto");
+          await new Promise((resolve) => setTimeout(resolve, 40_000));
+          const answering = request.toolChoice === "none";
+          return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
+            toolCalls: answering ? [] : Array.from({ length: choices.length === batchRound ? 8 : 1 }, (_, index) => ({
+              arguments: { key: `${choices.length}-${index}` }, id: `${choices.length}-${index}`, name: "mcp_jira_get_issue" })) };
+        }
+      };
+      const callTool = vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
+        starts.push(Date.now() - startedAt);
+        if (choices.length === batchRound) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 240_000);
+            signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+          });
+        }
+        return { isError: false, text: ["open"], unsupportedContentTypes: [] };
+      });
+      const memory = memoryEngine();
+      const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(startedAt) },
+        engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
+          ...(workspace ? { workspace: { enabled: true, syncToolTimeoutSeconds: 120,
+            turnTimeoutSeconds: 3_600 } as ProviderRunRequest["workspace"] } : {}) }),
+        repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
+      const result = await reading;
+      // The first four calls of the batch started in time and settled; the four queued behind them never started.
+      expect(starts.every((at) => at < softDeadlineMs)).toBe(true);
+      expect(callTool).toHaveBeenCalledTimes(batchRound - 1 + 4);
+      expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(4);
+      expect(choices.slice(batchRound)).toEqual(["none"]);
+      expect(memory.published()).toBe("Done");
+      expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("records each terminal write, which Admin Health counts settled runs from, and the cause of a failure", async () => {

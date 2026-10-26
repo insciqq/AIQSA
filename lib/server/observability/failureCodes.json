@@ -1234,6 +1234,7 @@
   "model_adapter_unsupported",
   "tool_arguments_invalid",
   "tool_call_limit_reached",
+  "tool_time_exhausted",
   "tool_execution_failed",
   "tool_outcome_unknown_repeat",
   "tool_binding_unavailable",
