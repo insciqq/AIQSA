@@ -275,6 +275,61 @@ describe("BrowserLiveInputQueue", () => {
     expect(pressed.sent).toHaveLength(20);
   });
 
+  it("sends a paced hover before a key, and drops it only for later mouse input", async () => {
+    const { queue, sent, settle } = setup();
+    queue.push({ kind: "mouse", type: "move", x: 1, y: 1, button: "none" });
+    await settle();
+    queue.push({ kind: "mouse", type: "move", x: 2, y: 2, button: "none" }, { kind: "text", text: "k" });
+    await vi.advanceTimersByTimeAsync(1_000 / BROWSER_LIVE_HOVER_MOVES_PER_SECOND + 1);
+    await settle();
+    await settle();
+    expect(sent.map((input) => input.kind === "mouse" ? `move:${input.x}` : input.kind)).toEqual(["move:1", "move:2", "text"]);
+
+    const superseded = setup();
+    superseded.queue.push({ kind: "mouse", type: "move", x: 1, y: 1, button: "none" });
+    await superseded.settle();
+    superseded.queue.push({ kind: "mouse", type: "move", x: 2, y: 2, button: "none" },
+      { kind: "mouse", type: "down", x: 3, y: 3, button: "left", clickCount: 1 });
+    await superseded.settle();
+    expect(superseded.sent.map((input) => input.kind === "mouse" ? `${input.type}:${input.x}` : input.kind)).toEqual(["move:1", "down:3"]);
+  });
+
+  it("keeps sending while an end of control drains, when the panel closes meanwhile", async () => {
+    const { queue, sent, settle } = setup();
+    queue.push({ kind: "text", text: "4" }, { kind: "text", text: "2" });
+    const drained = queue.drain(2_000);
+    queue.close();
+    queue.push({ kind: "text", text: "late" });
+    let result: boolean | null = null;
+    void drained.then((value) => { result = value; });
+    await settle();
+    expect(result).toBeNull();
+    expect(sent.map((input) => input.kind === "text" && input.text)).toEqual(["4", "2"]);
+    await settle();
+    expect(result).toBe(true);
+    expect(sent).toHaveLength(2);
+
+    const late = setup();
+    late.queue.push({ kind: "text", text: "1" });
+    const timedOut = late.queue.drain(2_000);
+    late.queue.close();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(timedOut).resolves.toBe(false);
+  });
+
+  it("hands queued releases to its owner when it closes, and keeps them on Cancel", async () => {
+    const closed = vi.fn();
+    const sent: BrowserLiveInput[] = [];
+    const queue = new BrowserLiveInputQueue({ onClosedWithReleases: closed, onRefused: vi.fn(),
+      send: (input) => { sent.push(input); return new Promise(() => undefined); } });
+    queue.push({ kind: "key", type: "down", key: "a", code: "KeyA" }, { kind: "text", text: "x" },
+      { kind: "key", type: "up", key: "a", code: "KeyA" });
+    queue.clearExceptReleases();
+    expect(queue.pending).toBe(1);
+    queue.close();
+    expect(closed).toHaveBeenCalledWith([{ kind: "key", type: "up", key: "a", code: "KeyA" }]);
+  });
+
   it("drains before control ends, or gives up after its bound", async () => {
     const { queue, settle } = setup();
     queue.push({ kind: "text", text: "1" }, { kind: "text", text: "2" });

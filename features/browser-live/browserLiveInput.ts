@@ -314,6 +314,8 @@ type QueueOptions = Readonly<{
   onRefused(code: BrowserLiveFailureCodeV2): void;
   /** The server accepted an input. */
   onAccepted?(): void;
+  /** Releases still queued when the queue closed; the owner sends them best effort. */
+  onClosedWithReleases?(releases: BrowserLiveInput[]): void;
   now?(): number;
 }>;
 
@@ -347,6 +349,10 @@ function holdOf(input: BrowserLiveInput): Readonly<{ id: string; press: boolean 
   return null;
 }
 
+function isRelease(input: BrowserLiveInput): boolean {
+  return holdOf(input)?.press === false;
+}
+
 /** Appends one input to a pending list, coalescing it into a trailing move or wheel. */
 function coalesce(queue: BrowserLiveInput[], input: BrowserLiveInput): void {
   const last = queue.at(-1);
@@ -375,7 +381,13 @@ export class BrowserLiveInputQueue {
   private readonly sentAt: number[] = [];
   /** Keys and buttons pressed by admitted input and not yet released. */
   private readonly held = new Set<string>();
-  private readonly idleWaiters = new Set<() => void>();
+  /** Drains waiting for the queue, each told whether everything was delivered. */
+  private readonly idleWaiters = new Set<(drained: boolean) => void>();
+  /** The latest deadline of a pending drain; a close during a drain waits at most until then. */
+  private drainDeadline = 0;
+  /** `close()` was asked during a drain: no new input, but what is admitted keeps going out. */
+  private closing = false;
+  private closeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private pausedUntil = 0;
@@ -397,7 +409,7 @@ export class BrowserLiveInputQueue {
   }
 
   push(...inputs: BrowserLiveInput[]): void {
-    if (this.closed || inputs.length === 0) return;
+    if (this.closed || this.closing || inputs.length === 0) return;
     const draft = [...this.queue];
     for (const input of inputs) coalesce(draft, input);
     // Waiting moves are only positions: they go first when the batch does not fit.
@@ -435,36 +447,68 @@ export class BrowserLiveInputQueue {
     this.notifyIdle();
   }
 
+  /** Drops everything waiting except releases (key up, mouse up), which still go out: Cancel. */
+  clearExceptReleases(): void {
+    this.queue = this.queue.filter(isRelease);
+    this.held.clear();
+    this.notifyIdle();
+  }
+
   /**
    * Resolves true once everything admitted was sent and answered, or false
    * after `timeoutMs` (the caller then clears what is left).
    */
   drain(timeoutMs: number): Promise<boolean> {
-    if (this.idle || this.closed) return Promise.resolve(this.idle);
+    if (this.closed) return Promise.resolve(false);
+    if (this.idle) return Promise.resolve(true);
+    this.drainDeadline = Math.max(this.drainDeadline, this.now() + timeoutMs);
     return new Promise((resolve) => {
       const done = (drained: boolean) => {
         clearTimeout(timer);
-        this.idleWaiters.delete(onIdle);
+        this.idleWaiters.delete(done);
         resolve(drained);
       };
-      const onIdle = () => done(true);
       const timer = setTimeout(() => done(false), timeoutMs);
-      this.idleWaiters.add(onIdle);
+      this.idleWaiters.add(done);
     });
   }
 
+  /**
+   * Stops the queue. While an end of control drains, it keeps sending until
+   * idle or the drain's deadline, so closing the panel never cuts the user's
+   * last input short; otherwise it stops at once. Queued releases it drops go
+   * to `onClosedWithReleases`.
+   */
   close(): void {
+    if (this.closed || this.closing) return;
+    if (this.idleWaiters.size > 0 && !this.idle) {
+      this.closing = true;
+      this.closeTimer = setTimeout(() => this.finishClose(), Math.max(0, this.drainDeadline - this.now()));
+      return;
+    }
+    this.finishClose();
+  }
+
+  private finishClose(): void {
+    if (this.closed) return;
+    const drained = this.idle;
+    const releases = this.queue.filter(isRelease);
     this.closed = true;
+    this.closing = false;
     this.queue = [];
     this.held.clear();
     if (this.timer) clearTimeout(this.timer);
+    if (this.closeTimer) clearTimeout(this.closeTimer);
     this.timer = null;
-    this.notifyIdle();
+    this.closeTimer = null;
+    for (const waiter of [...this.idleWaiters]) waiter(drained);
+    if (releases.length > 0) this.options.onClosedWithReleases?.(releases);
   }
 
   private notifyIdle(): void {
-    if (!this.idle && !this.closed) return;
-    for (const waiter of [...this.idleWaiters]) waiter();
+    if (!this.idle) return;
+    for (const waiter of [...this.idleWaiters]) waiter(true);
+    if (this.closing) this.finishClose();
   }
 
   private schedule(delay: number): void {
@@ -480,11 +524,11 @@ export class BrowserLiveInputQueue {
     if (this.queue.length === 0) return this.notifyIdle();
     const now = this.now();
     if (now < this.pausedUntil) return this.schedule(this.pausedUntil - now);
-    // A hover move followed by other input is superseded by it; a lone one waits for its pace.
-    while (this.queue.length > 1 && isHover(this.queue[0]!) && now - this.lastHoverAt < HOVER_INTERVAL_MS) this.queue.shift();
-    if (isHover(this.queue[0]!) && now - this.lastHoverAt < HOVER_INTERVAL_MS) {
-      return this.schedule(this.lastHoverAt + HOVER_INTERVAL_MS - now);
-    }
+    // A waiting hover is superseded only by later mouse input, which carries its own position; before a key or
+    // text it still goes out, at most one pacing interval late.
+    const tooSoon = now - this.lastHoverAt < HOVER_INTERVAL_MS;
+    while (tooSoon && this.queue.length > 1 && isHover(this.queue[0]!) && this.queue[1]!.kind === "mouse") this.queue.shift();
+    if (tooSoon && isHover(this.queue[0]!)) return this.schedule(this.lastHoverAt + HOVER_INTERVAL_MS - now);
     while (this.sentAt.length > 0 && now - this.sentAt[0]! >= 1_000) this.sentAt.shift();
     if (this.sentAt.length >= BROWSER_LIVE_CLIENT_INPUTS_PER_SECOND) return this.schedule(this.sentAt[0]! + 1_000 - now);
     const input = this.queue.shift()!;
@@ -493,7 +537,7 @@ export class BrowserLiveInputQueue {
     this.inFlight = true;
     void this.options.send(input).then((result) => {
       this.inFlight = false;
-      if (this.closed) return this.notifyIdle();
+      if (this.closed) return;
       if (!result.ok) {
         if (result.code === "browser_live_rate_limited") {
           // The server refused this one; the rest waits a moment.
