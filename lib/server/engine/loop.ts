@@ -13,7 +13,8 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * and go again until a response calls no tool. The turn stops at Stop or its
  * deadline (the signal), at an approval point (a call that waits for the
  * user ends the turn), and answers without tools once its tool rounds, call
- * budget or tool time are spent, or once a batch ran nothing. A batch whose
+ * budget or tool time are spent, or once a batch ran nothing; without tool
+ * limits (the default) only the tool time closes tools. A batch whose
  * calls were only mistakes the model can correct (an unknown tool name,
  * malformed arguments) keeps tools for a few rounds, since its results say
  * how (issue #54). A tool-free round that still answered only with calls is
@@ -44,8 +45,11 @@ export type AgentLoopPorts = Readonly<{
   /** False when a follow-up arrived after the last delivery: the turn goes on. */
   closeFollowups(): Promise<boolean>;
   deliverFollowups(): Promise<readonly TranscriptUserItem[]>;
-  /** Tool rounds the turn may take; the next round answers without tools. */
-  maxToolRounds: number;
+  /**
+   * Tool rounds the turn may take; the next round answers without tools. Null:
+   * no round count, so tools close only at the tool time (or a spent call budget).
+   */
+  maxToolRounds: number | null;
   /**
    * The request of one round from the transcript so far; the place compaction
    * hooks in. `reserved`: the round offers only the reserved call, and its
@@ -134,10 +138,11 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
   for (let round = 1; ; round += 1) {
     ports.signal.throwIfAborted();
     const timeLeft = ports.toolTimeLeft();
-    const open = toolsAllowed && round <= ports.maxToolRounds && timeLeft;
+    const roundsSpent = ports.maxToolRounds !== null && round > ports.maxToolRounds;
+    const open = toolsAllowed && !roundsSpent && timeLeft;
     // Once the call budget, the tool rounds or the tool time are spent, an outstanding reserved call is offered
     // alone in one more round; a batch without progress answers at once.
-    const reserved = !open && !reservedOffered && (budgetSpent || round > ports.maxToolRounds || !timeLeft) &&
+    const reserved = !open && !reservedOffered && (budgetSpent || roundsSpent || !timeLeft) &&
       ports.reservedCall?.outstanding() === true ? ports.reservedCall : null;
     if (reserved) reservedOffered = true;
     const toolChoice: LoopToolChoice = open || reserved ? "auto" : "none";

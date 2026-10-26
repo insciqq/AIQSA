@@ -146,6 +146,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
             : null,
           reasoningEffort: policy.reasoningEffort,
           maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
+          toolLimitsEnabled: policy.toolLimitsEnabled,
           maxToolCalls: Number(policy.maxToolCalls),
           maxToolRounds: Number(policy.maxToolRounds),
           toolObservationPolicy: normalizeToolObservationPolicy(policy.toolObservationPolicy),
@@ -159,12 +160,15 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
     /**
      * One optimistic save for the Chat defaults card: the default model pair
      * and the tool limits may arrive together or alone, all under the
-     * same expected version, so the administrator sees one result.
+     * same expected version, so the administrator sees one result. The tool
+     * limits travel whole, their switch included, so a client that does not
+     * know the switch cannot change the numbers as if they applied.
      */
     async update(input: Readonly<{
       expectedVersion: number;
       providerModelId?: string | null;
       reasoningEffort?: string | null;
+      toolLimitsEnabled?: boolean;
       maxToolCalls?: number;
       maxToolRounds?: number;
       maxMcpToolsPerDiscovery?: number;
@@ -172,7 +176,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
       userId: string;
     }>): Promise<void> {
       const hasModel = input.providerModelId !== undefined;
-      const limits = [input.maxToolCalls, input.maxToolRounds, input.maxMcpToolsPerDiscovery];
+      const limits = [input.toolLimitsEnabled, input.maxToolCalls, input.maxToolRounds, input.maxMcpToolsPerDiscovery];
       const hasLimits = limits.some((value) => value !== undefined);
       const hasObservationPolicy = input.toolObservationPolicy !== undefined;
       if (hasModel !== (input.reasoningEffort !== undefined) ||
@@ -235,6 +239,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
               } : {}),
               ...(hasLimits ? {
                 maxMcpToolsPerDiscovery: BigInt(input.maxMcpToolsPerDiscovery!),
+                toolLimitsEnabled: input.toolLimitsEnabled!,
                 maxToolCalls: BigInt(input.maxToolCalls!),
                 maxToolRounds: BigInt(input.maxToolRounds!)
               } : {}),

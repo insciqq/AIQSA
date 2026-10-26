@@ -22,6 +22,10 @@ export type AdminModelPolicyCatalog = {
     defaultModel: (AdminDefaultAnswerModelCandidate & { available: boolean }) | null;
     reasoningEffort: string | null;
     maxMcpToolsPerDiscovery: number;
+    /** Per-answer tool limits apply to new answers only while on; off (the
+     * default) no call or round count ends an answer. The two numbers are the
+     * limits turning them on applies. */
+    toolLimitsEnabled: boolean;
     maxToolCalls: number;
     maxToolRounds: number;
     /** Observation store and context compaction for new answers (installation
@@ -78,6 +82,7 @@ export function decodeAdminModelPolicyResponse(
     !Number.isSafeInteger(policy.maxMcpToolsPerDiscovery) ||
     Number(policy.maxMcpToolsPerDiscovery) < 1 ||
     Number(policy.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
+    typeof policy.toolLimitsEnabled !== "boolean" ||
     !Number.isSafeInteger(policy.maxToolCalls) || Number(policy.maxToolCalls) < 1 ||
     !Number.isSafeInteger(policy.maxToolRounds) || Number(policy.maxToolRounds) < 1 ||
     policy.toolObservationPolicy !== undefined && !isToolObservationPolicy(policy.toolObservationPolicy) ||
@@ -92,6 +97,7 @@ export function decodeAdminModelPolicyResponse(
         defaultModel: defaultModel as AdminModelPolicyCatalog["policy"]["defaultModel"],
         reasoningEffort: policy.reasoningEffort as string | null,
         maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
+        toolLimitsEnabled: policy.toolLimitsEnabled === true,
         maxToolCalls: Number(policy.maxToolCalls),
         maxToolRounds: Number(policy.maxToolRounds),
         ...(policy.toolObservationPolicy === undefined ? {} : { toolObservationPolicy: policy.toolObservationPolicy }),

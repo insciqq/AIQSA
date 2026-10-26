@@ -10,7 +10,9 @@ import {
   AUTO_TOOL_NOT_LOADED_OUTPUT,
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
+  TOOL_BATCH_LIMITS,
   ToolBatchInactiveError,
+  TOOL_TIME_EXHAUSTED_OUTPUT,
   transcriptRecord,
   UNKNOWN_OUTCOME_APPROVAL_OUTPUT,
   UNKNOWN_OUTCOME_REPEAT_OUTPUT,
@@ -162,6 +164,35 @@ describe("native tool batch", () => {
     expect(outcome.results[1]!.output).toContain("effect is unknown");
   });
 
+  it("starts no retry of a read-only call once the tool time ran out while it was running", async () => {
+    let timeLeft = true;
+    // The attempt fails in transport after the tool time ran out: trying again would start the call anew.
+    const read = vi.fn(async () => { timeLeft = false; throw new TypeError("fetch failed"); });
+    const { store } = fakeStore();
+    const outcome = await runToolBatch(deps({ read: tool("read", "none", read) }, store, { maxToolCalls: null,
+      toolTimeLeft: () => timeLeft }), { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "read" }], round: 1 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(outcome.results[0]!.outcome).toBe("error");
+    expect(outcome.executed).toBe(1);
+  });
+
+  it("starts no retry whose backoff crossed the tool time", async () => {
+    let timeLeft = true;
+    let attempts = 0;
+    const read = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      attempts += 1;
+      if (attempts === 1) throw new TypeError("fetch failed");
+      return ok(call);
+    });
+    const { store } = fakeStore();
+    // The tool time runs out while the batch waits to try the read again.
+    const outcome = await runToolBatch(deps({ read: tool("read", "none", read) }, store, { maxToolCalls: null,
+      sleep: async () => { timeLeft = false; }, toolTimeLeft: () => timeLeft }), { calls: 0 },
+    { calls: [{ arguments: {}, id: "c1", name: "read" }], round: 1 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(outcome.results[0]!.outcome).toBe("error");
+  });
+
   it("never sends an external call again after an identical one's outcome became unknown", async () => {
     // Regression: a write whose transport failed was sent a second time when the model asked again.
     const write = vi.fn(async () => { throw new TypeError("fetch failed"); });
@@ -234,6 +265,83 @@ describe("native tool batch", () => {
       { arguments: { id: 2 }, id: "c2", name: "lookup" }], round: 1 });
     expect(outcome.budgetExhausted).toBe(true);
     expect(outcome.results.map((item) => item.outcome)).toEqual(["complete", "error"]);
+  });
+
+  it("refuses no call for a count without a call budget, and still blocks an identical repeat", async () => {
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, `page ${String(call.arguments.page)}`));
+    const { store } = fakeStore();
+    const batch = deps({ lookup: tool("lookup", "none", lookup) }, store, { maxToolCalls: null });
+    const state = { calls: 0 };
+    for (let round = 1; round <= 30; round += 1) {
+      const outcome = await runToolBatch(batch, state, { round, calls: [
+        { arguments: { page: round * 2 }, id: `a${round}`, name: "lookup" },
+        { arguments: { page: round * 2 + 1 }, id: `b${round}`, name: "lookup" }
+      ] });
+      expect(outcome).toMatchObject({ budgetExhausted: false, executed: 2 });
+    }
+    expect(state.calls).toBe(60);
+    expect(lookup).toHaveBeenCalledTimes(60);
+    // Two identical successes, then the same call again: the repeat guard stops a loop no count stops any more.
+    const same = (id: string) => ({ arguments: { page: 1 }, id, name: "lookup" });
+    for (const [round, id] of [[31, "s1"], [32, "s2"]] as const) await runToolBatch(batch, state, { round, calls: [same(id)] });
+    const third = await runToolBatch(batch, state, { round: 33, calls: [same("s3")] });
+    expect(third.results[0]).toMatchObject({ outcome: "error" });
+    expect(JSON.stringify((store.refuse.mock.calls.at(-1)![0] as { result: unknown }).result)).toContain(TOOL_CALL_REPEAT_BLOCKED);
+    expect(third.budgetExhausted).toBe(false);
+  });
+
+  it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
+    let timeLeft = true;
+    let started = 0;
+    let release!: () => void;
+    const wave = new Promise<void>((resolve) => { release = resolve; });
+    // The first wave is running when the tool time runs out: it settles, and a call that waited behind it must not start.
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+      started += 1;
+      if (started === TOOL_BATCH_LIMITS.concurrency) { timeLeft = false; release(); }
+      await wave;
+      return ok(call);
+    });
+    const { rows, store } = fakeStore();
+    const batch = deps({ lookup: tool("lookup", "none", lookup) }, store, { maxToolCalls: null, toolTimeLeft: () => timeLeft });
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: Array.from({ length: 6 }, (_, index) => (
+      { arguments: { page: index }, id: `c${index}`, name: "lookup" })) });
+    expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([
+      ["c0", "complete"], ["c1", "complete"], ["c2", "complete"], ["c3", "complete"], ["c4", "error"], ["c5", "error"]
+    ]);
+    expect(outcome.results[4]!.output).toBe(TOOL_TIME_EXHAUSTED_OUTPUT);
+    expect(outcome).toMatchObject({ budgetExhausted: true, executed: 4 });
+    expect(lookup).toHaveBeenCalledTimes(4);
+    const refused = [...rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"));
+    expect(refused.map((row) => row.providerCallId)).toEqual(["c4", "c5"]);
+
+    // Past the tool time, only the reserved report's first call still runs.
+    const report = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
+    const late = deps({ lookup: tool("lookup", "none", lookup), report_monitoring_result: tool("report_monitoring_result", "local", report) },
+      fakeStore().store, { maxToolCalls: null, reservedToolName: "report_monitoring_result", toolTimeLeft: () => false });
+    const reserved = await runToolBatch(late, { calls: 0 }, { round: 9, calls: [
+      { arguments: { status: "update" }, id: "v1", name: "report_monitoring_result" }, { arguments: { page: 9 }, id: "c9", name: "lookup" }
+    ] });
+    expect(reserved.results.map((item) => [item.callId, item.outcome])).toEqual([["v1", "complete"], ["c9", "error"]]);
+    expect(report).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledTimes(4);
+  });
+
+  it("refuses only the call whose own bound no longer fits, while another call of the batch still starts", async () => {
+    const fast = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const slow = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const { store } = fakeStore();
+    // The time check sees each call's own tool: here the slow one would outlast the answer's reserve.
+    const batch = deps({ fast: tool("fast", "none", fast), slow: tool("slow", "none", slow) }, store,
+      { maxToolCalls: null, toolTimeLeft: (definition) => definition.name !== "slow" });
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1, calls: [
+      { arguments: {}, id: "s1", name: "slow" }, { arguments: {}, id: "f1", name: "fast" }
+    ] });
+    expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["s1", "error"], ["f1", "complete"]]);
+    expect(outcome.results[0]!.output).toBe(TOOL_TIME_EXHAUSTED_OUTPUT);
+    expect(outcome).toMatchObject({ budgetExhausted: true, executed: 1 });
+    expect(slow).not.toHaveBeenCalled();
+    expect(fast).toHaveBeenCalledOnce();
   });
 
   it("runs the reserved report's first call outside the call budget, and counts a repeated one", async () => {

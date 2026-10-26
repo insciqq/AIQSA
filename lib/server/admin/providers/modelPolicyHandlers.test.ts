@@ -79,7 +79,8 @@ describe("administrator model policy handlers", () => {
           expectedVersion: 2,
           maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 200,
-          maxToolRounds: 200
+          maxToolRounds: 200,
+          toolLimitsEnabled: true
         }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
@@ -91,15 +92,22 @@ describe("administrator model policy handlers", () => {
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
+      toolLimitsEnabled: true,
       userId: "user-1"
     });
 
     for (const body of [
-      { maxToolCalls: 0, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10 },
-      { maxToolCalls: 4, maxToolRounds: 8 },
-      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 129 },
+      { maxToolCalls: 0, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, toolLimitsEnabled: true },
+      { maxToolCalls: 4, maxToolRounds: 8, toolLimitsEnabled: true },
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 129, toolLimitsEnabled: true },
       { expectedVersion: 2 },
-      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, extra: 1 }
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, toolLimitsEnabled: true, extra: 1 },
+      // A client that does not know the switch cannot change the numbers as if they applied.
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10 },
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, toolLimitsEnabled: "true" },
+      { toolLimitsEnabled: false },
+      // Off still keeps valid numbers for turning the limits on, never a stored "no limit" number.
+      { maxToolCalls: null, maxToolRounds: null, maxMcpToolsPerDiscovery: 10, toolLimitsEnabled: false }
     ]) {
       const rejected = await handlers.PATCH(new Request(
         "http://local.test/api/admin/providers/model-policy",
@@ -159,7 +167,7 @@ describe("administrator model policy handlers", () => {
     const handlers = createAdminModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
     const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/model-policy", {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        expectedVersion: 2, maxToolCalls: 20, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, ...retired
+        expectedVersion: 2, maxToolCalls: 20, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, toolLimitsEnabled: true, ...retired
       })
     }));
     expect(response.status).toBe(400);
@@ -182,7 +190,8 @@ describe("administrator model policy handlers", () => {
           maxToolCalls: 24,
           maxToolRounds: 8,
           providerModelId: "model-1",
-          reasoningEffort: "medium"
+          reasoningEffort: "medium",
+          toolLimitsEnabled: false
         }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
@@ -196,6 +205,7 @@ describe("administrator model policy handlers", () => {
       maxToolRounds: 8,
       providerModelId: "model-1",
       reasoningEffort: "medium",
+      toolLimitsEnabled: false,
       userId: "user-1"
     });
   });
