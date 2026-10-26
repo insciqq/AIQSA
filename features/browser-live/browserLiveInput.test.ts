@@ -3,6 +3,8 @@ import type { BrowserLiveInput } from "@/lib/contracts/browserLive";
 import { browserLiveInputSchema } from "@/lib/contracts/browserLive";
 import {
   BROWSER_LIVE_CLIENT_INPUTS_PER_SECOND,
+  BROWSER_LIVE_HOVER_MOVES_PER_SECOND,
+  BROWSER_LIVE_QUEUE_MAX,
   BrowserLiveInputQueue,
   BrowserLivePointerGesture,
   framePointV2,
@@ -18,7 +20,7 @@ const frame = { width: 1280, height: 800 };
 
 function env(overrides: Partial<GestureEnvironment> = {}): GestureEnvironment {
   return { userControls: true, zoomed: false, scale: 2, now: 1_000,
-    toFrame: (x, y) => framePointV2(x, y, rect, frame), ...overrides };
+    toFrame: (x, y, clampToEdge) => framePointV2(x, y, rect, frame, clampToEdge), ...overrides };
 }
 
 function pointer(pointerId: number, pointerType: string, clientX: number, clientY: number, button = 0) {
@@ -32,6 +34,7 @@ describe("framePointV2", () => {
     expect(framePointV2(740, 450, rect, frame)).toEqual({ x: 1279, y: 799 });
     expect(framePointV2(99, 60, rect, frame)).toBeNull();
     expect(framePointV2(120, 60, { ...rect, width: 0 }, frame)).toBeNull();
+    expect(framePointV2(99, 600, rect, frame, true)).toEqual({ x: 0, y: 799 });
   });
 });
 
@@ -138,6 +141,48 @@ describe("BrowserLivePointerGesture", () => {
     expect(zoom.zoomBy).toEqual({ factor: 2, clientX: 300, clientY: 300 });
   });
 
+  it("releases a mouse drag that left the frame on the frame's edge", () => {
+    const gesture = new BrowserLivePointerGesture();
+    gesture.down(pointer(1, "mouse", 420, 250), env());
+    // A captured pointer keeps moving outside the frame; the page sees the edge.
+    expect(gesture.move(pointer(1, "mouse", 900, 250), env()).inputs).toEqual([
+      { kind: "mouse", type: "move", x: 1279, y: 400, button: "left" }
+    ]);
+    expect(gesture.up(pointer(1, "mouse", 900, 600), env()).inputs).toEqual([
+      { kind: "mouse", type: "up", x: 1279, y: 799, button: "left", clickCount: 1 }
+    ]);
+    // Without a held button, a pointer outside the frame sends nothing.
+    expect(gesture.move(pointer(1, "mouse", 900, 250), env()).inputs).toEqual([]);
+  });
+
+  it("releases a touch drag that left the frame, also when a second finger lands", () => {
+    const gesture = new BrowserLivePointerGesture();
+    gesture.down(pointer(1, "touch", 200, 100), env());
+    gesture.move(pointer(1, "touch", 240, 100), env());
+    expect(gesture.move(pointer(1, "touch", 240, 20), env()).inputs).toEqual([
+      { kind: "mouse", type: "move", x: 280, y: 0, button: "left" }
+    ]);
+    expect(gesture.up(pointer(1, "touch", 240, 20), env()).inputs).toEqual([
+      { kind: "mouse", type: "up", x: 280, y: 0, button: "left", clickCount: 1 }
+    ]);
+
+    const second = new BrowserLivePointerGesture();
+    second.down(pointer(1, "touch", 200, 100), env());
+    second.move(pointer(1, "touch", 240, 100), env());
+    second.move(pointer(1, "touch", 800, 100), env());
+    expect(second.down(pointer(2, "touch", 300, 100), env()).inputs).toEqual([
+      { kind: "mouse", type: "up", x: 1279, y: 100, button: "left", clickCount: 1 }
+    ]);
+  });
+
+  it("releases a held button without a pointer event, then forgets it", () => {
+    const gesture = new BrowserLivePointerGesture();
+    gesture.down(pointer(1, "mouse", 420, 250, 2), env());
+    gesture.move(pointer(1, "mouse", 430, 250, 2), env());
+    expect(gesture.release()).toEqual([{ kind: "mouse", type: "up", x: 660, y: 400, button: "right", clickCount: 1 }]);
+    expect(gesture.release()).toEqual([]);
+  });
+
   it("ends a one-finger drag when a second finger arrives", () => {
     const gesture = new BrowserLivePointerGesture();
     gesture.down(pointer(1, "touch", 200, 100), env());
@@ -186,6 +231,66 @@ describe("BrowserLiveInputQueue", () => {
     expect(sent.map((input) => input.kind === "mouse" ? `${input.type}:${input.type === "move" ? input.x : input.deltaY ?? ""}` : "")).toEqual([
       "down:", "move:4", "wheel:25", "up:"
     ]);
+  });
+
+  it("admits a batch whole or not at all, but never drops a release of an admitted press", async () => {
+    const { queue, refused, sent, settle } = setup();
+    queue.push({ kind: "text", text: "first" });
+    queue.push({ kind: "key", type: "down", key: "Shift", code: "ShiftLeft" });
+    for (let index = 0; index < BROWSER_LIVE_QUEUE_MAX - 2; index += 1) queue.push({ kind: "text", text: "x" });
+    expect(queue.pending).toBe(BROWSER_LIVE_QUEUE_MAX - 1);
+    // A paste with line breaks does not fit: none of it is admitted, so no Enter stays held.
+    queue.push(...textInputsV2("a\nb\nc"));
+    expect(refused).toHaveBeenCalledWith("browser_live_rate_limited");
+    expect(queue.pending).toBe(BROWSER_LIVE_QUEUE_MAX - 1);
+    // The release of the admitted Shift is admitted even over the limit.
+    queue.push({ kind: "key", type: "up", key: "Shift", code: "ShiftLeft" }, { kind: "text", text: "y" });
+    expect(queue.pending).toBe(BROWSER_LIVE_QUEUE_MAX);
+    for (let index = 0; index < 70; index += 1) await settle();
+    await vi.advanceTimersByTimeAsync(2_000);
+    for (let index = 0; index < 70; index += 1) await settle();
+    expect(sent.at(-1)).toEqual({ kind: "key", type: "up", key: "Shift", code: "ShiftLeft" });
+    expect(sent.some((input) => input.kind === "key" && input.key === "Enter")).toBe(false);
+  });
+
+  it("paces hover moves, but not moves with a pressed button", async () => {
+    const { queue, sent, settle } = setup();
+    for (let index = 0; index < 20; index += 1) {
+      queue.push({ kind: "mouse", type: "move", x: index, y: 1, button: "none" });
+      await settle();
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(sent.length).toBeLessThanOrEqual(Math.ceil(200 / (1_000 / BROWSER_LIVE_HOVER_MOVES_PER_SECOND)) + 1);
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+    // The latest position always arrives.
+    expect(sent.at(-1)).toMatchObject({ type: "move", x: 19 });
+
+    const pressed = setup();
+    for (let index = 0; index < 20; index += 1) {
+      pressed.queue.push({ kind: "mouse", type: "move", x: index, y: 1, button: "left" });
+      await pressed.settle();
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(pressed.sent).toHaveLength(20);
+  });
+
+  it("drains before control ends, or gives up after its bound", async () => {
+    const { queue, settle } = setup();
+    queue.push({ kind: "text", text: "1" }, { kind: "text", text: "2" });
+    const drained = queue.drain(2_000);
+    let result: boolean | null = null;
+    void drained.then((value) => { result = value; });
+    await settle();
+    expect(result).toBeNull();
+    await settle();
+    expect(result).toBe(true);
+
+    const stuck = setup();
+    stuck.queue.push({ kind: "text", text: "1" });
+    const timedOut = stuck.queue.drain(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(timedOut).resolves.toBe(false);
   });
 
   it("stays under the per-second limit", async () => {
