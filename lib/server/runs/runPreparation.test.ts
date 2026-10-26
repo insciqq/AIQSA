@@ -1317,7 +1317,8 @@ describe("run preparation", () => {
     }
   });
 
-  async function workspacePdfRetryFixture() {
+  type ToolLimits = Readonly<{ maxToolCalls: number | null; maxToolRounds: number | null }>;
+  async function workspacePdfRetryFixture(limits: ToolLimits = { maxToolCalls: 80, maxToolRounds: 32 }) {
     const bytes = Buffer.from("%PDF-synthetic-document");
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true },
       attachments: [runAttachment({ id: "retry-pdf", kind: "pdf", mimeType: "application/pdf", storageKey: "synthetic/pdf",
@@ -1337,9 +1338,10 @@ describe("run preparation", () => {
           syncToolTimeoutSeconds: 30, toolCatalogHash: String(revision).repeat(64), turnTimeoutSeconds: 300 }
       } };
     }) };
-    // Tool limits on, so the retry shows the Workspace allowance raising them.
+    // Tool limits on by default, so the retry shows the Workspace allowance raising them.
+    let policy = { maxMcpToolsPerDiscovery: 10, ...limits };
     const deps: RunPreparationDeps = { ...harness.deps, workspace,
-      runPolicy: { load: async () => ({ maxMcpToolsPerDiscovery: 10, maxToolCalls: 80, maxToolRounds: 32 }) },
+      runPolicy: { load: async () => policy },
       chatPdf: { resolve: async () => ({ route: "local_text", authority: null, snapshot: null, policyVersion: null }) } };
     const result = await prepareRun(deps, sendInput(successBody({ content: { blocks: [{ type: "file", attachmentId: "retry-pdf" }] },
       workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" })));
@@ -1349,8 +1351,25 @@ describe("run preparation", () => {
     const buildRequestPreview = vi.fn((request: ProviderRunRequest) => ({ workspace: request.workspace, prompt: request.prompt, tools: request.tools }));
     return { deps, input: { ...result, adapter: { ...result.adapter, buildRequestPreview }, prepared,
       userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
-      changeWorkspace: () => { revision = 2; }, workspace };
+      changeWorkspace: () => { revision = 2; }, setLimits: (next: ToolLimits) => { policy = { ...policy, ...next }; }, workspace };
   }
+
+  it.each([
+    { label: "on, then switched off", accepted: { maxToolCalls: 80, maxToolRounds: 32 },
+      current: { maxToolCalls: null, maxToolRounds: null }, retried: { maxToolCalls: 140, maxToolRounds: 40 } },
+    { label: "off, then switched on", accepted: { maxToolCalls: null, maxToolRounds: null },
+      current: { maxToolCalls: 80, maxToolRounds: 32 }, retried: { maxToolCalls: null, maxToolRounds: null } }
+  ])("keeps the run's accepted tool limits on a PDF retry, not the installation's current ones: $label", async ({
+    accepted, current, retried
+  }) => {
+    const fixture = await workspacePdfRetryFixture(accepted);
+    fixture.setLimits(current);
+    fixture.changeWorkspace();
+    const result = preparedFrom(await preparePdfRetry(fixture.deps, fixture.input));
+    // The new admission's Workspace allowance (140/40) still raises limits that are on.
+    expect(result.normalizedRequest.toolBudgets).toEqual({ maxMcpToolsPerDiscovery: 10, ...retried });
+    expect(result.providerRequest.toolBudgets).toEqual(result.normalizedRequest.toolBudgets);
+  });
 
   it("re-admits a persisted Workspace PDF retry with fresh sibling IDs and rebuilt execution data", async () => {
     const fixture = await workspacePdfRetryFixture();
