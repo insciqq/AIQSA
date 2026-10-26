@@ -99,6 +99,43 @@ describe("browser live relay", () => {
     expect(tab.last<BrowserLiveStateEvent>("state")?.controller).toBe("agent");
   });
 
+  it("never takes the guest's word that the user holds the browser, but believes it is the agent's again", async () => {
+    const { guest, handle, view } = setup();
+    ended.push(() => handle.end());
+    const tab = recordingWriter();
+    await view.watch(owner, tab.writer);
+    await until(() => tab.last<BrowserLiveStateEvent>("state")?.browser === "running");
+    // Agent code that reaches the host socket reports the user in control.
+    guest.report("user");
+    guest.navigate("https://shop.example/forged", "Forged");
+    await until(() => tab.last<BrowserLiveStateEvent>("state")?.page?.title === "Forged");
+    expect(tab.of("state").every((state) => (state as BrowserLiveStateEvent).controller === "agent")).toBe(true);
+    expect(await view.input(owner, click)).toBe("browser_live_not_in_control");
+    // The owner's own Take gives it; the guest's grace end or restart hands it back.
+    expect(await view.control(owner, "take")).toBeNull();
+    expect(tab.last<BrowserLiveStateEvent>("state")?.controller).toBe("user");
+    guest.report("agent");
+    await until(() => tab.last<BrowserLiveStateEvent>("state")?.controller === "agent");
+    expect(await view.input(owner, click)).toBe("browser_live_not_in_control");
+  });
+
+  it("sends a command during a rotation to the replacement, never to the retiring streamer", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { guest, handle, view } = setup({ startDelayMs: 200 });
+    ended.push(() => handle.end());
+    const tab = recordingWriter();
+    await view.watch(owner, tab.writer);
+    await until(() => tab.of("frame").length === 1);
+    await vi.advanceTimersByTimeAsync(BROWSER_LIVE_RELAY_LIMITS.rotateMs + 50);
+    await until(() => guest.started() === 2);
+    const taking = view.control(owner, "take");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await taking).toBeNull();
+    const take = guest.received.findIndex((message) => message.t === "control");
+    expect(guest.through[take]).toBe("exec-1");
+    await until(() => guest.open() === 1);
+  });
+
   it("drops a slow view's frames but ends a view that cannot take the state", async () => {
     const { guest, handle, view } = setup();
     ended.push(() => handle.end());
@@ -227,11 +264,16 @@ describe("browser live handoff", () => {
       .toMatchObject({ kind: "ended", outcome: "timed_out" });
   });
 
-  it("works without any open view and says when no page is open", async () => {
-    const noBrowser = setup({ browser: false });
-    ended.push(() => noBrowser.handle.end());
-    expect(await noBrowser.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 1_000 }))
+  it("works without any open view and tells a page not yet open from a browser that cannot be shown", async () => {
+    const noPage = setup({ noPage: true });
+    ended.push(() => noPage.handle.end());
+    expect(await noPage.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 1_000 }))
       .toEqual({ kind: "no_browser" });
+    // No host answered the streamer even after its retry.
+    const noHost = setup({ browser: false });
+    ended.push(() => noHost.handle.end());
+    expect(await noHost.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 1_000 }))
+      .toEqual({ kind: "unavailable" });
     const quiet = setup();
     ended.push(() => quiet.handle.end());
     const result = quiet.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 100 });
@@ -241,6 +283,30 @@ describe("browser live handoff", () => {
     stopped.guest.fail("workspace_session_lost");
     expect(await stopped.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 1_000 }))
       .toEqual({ kind: "no_browser" });
+  });
+
+  it("begins on a streamer started a moment ago and retries a missed end once on a fresh one", async () => {
+    // Without a view the first command starts the streamer; this guest reaches its host only after a while and
+    // refuses commands before, and refuses the first end.
+    const { guest, handle } = setup({ connectDelayMs: 150, refuseEnds: 1 });
+    ended.push(() => handle.end());
+    const result = await handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 300 });
+    expect(result).toEqual({ kind: "ended", outcome: "timed_out", page: { title: "Sign in", url: "https://shop.example/login" },
+      saved: null });
+    const handoffs = guest.received.flatMap((message, index) => message.t === "handoff" ? [[message.action, guest.through[index]]] : []);
+    expect(handoffs).toEqual([["begin", "exec-0"], ["end", "exec-0"], ["end", "exec-1"]]);
+    // The guest's control is the agent's again.
+    expect(guest.guest).toMatchObject({ controller: "agent", handoff: false });
+  });
+
+  it("returns a handoff still waiting as timed out when the run ends", async () => {
+    const { handle, view } = setup();
+    const tab = recordingWriter();
+    await view.watch(owner, tab.writer);
+    const waiting = handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 60_000 });
+    await until(() => Boolean(tab.last<BrowserLiveStateEvent>("state")?.handoff));
+    await handle.end("run_finished");
+    expect(await waiting).toMatchObject({ kind: "ended", outcome: "timed_out" });
   });
 
   it("is ended by the run's Stop or deadline, which it throws, and ends the guest's handoff too", async () => {

@@ -32,7 +32,11 @@ import type { WorkspaceBrowserLiveAction, WorkspaceBrowserLiveReply } from "./ru
  * (`aiqsa.browser.live`) started through the run's own channel under its operation (`browserLiveChannel.ts`),
  * polled back to back while it prints and every `idlePollMs` otherwise, keeping only the latest frame. It runs
  * only while a view is open or a command needs it, and is rotated before the pinned MCP's in-memory output
- * history grows large. Control lives in the guest, so a rotation never changes it.
+ * history grows large; a command waits for a fresh streamer's first report.
+ *
+ * Control is this server's record, set only by the owner's authenticated Take and Return and by the pending
+ * handoff: agent code shares the guest, so a guest report may hand control back to the agent (its grace ended, its
+ * host restarted) but never give it to the user. The guest enforces the same control for the agent's actions.
  *
  * The relay is one object per process (`globalThis`), shared by the engine's bundle and the routes', so its code
  * never relies on `instanceof` across bundles: failures are read by their `code`.
@@ -48,6 +52,8 @@ export const BROWSER_LIVE_RELAY_LIMITS = Object.freeze({
   lingerMs: 5_000,
   /** How long a command waits for the guest's answer. */
   commandMs: 10_000,
+  /** How long a command waits for a fresh streamer's first report (it has reached the host, or found none). */
+  firstStateMs: 2_000,
   /** Views of one run; another one ends the oldest with `replaced`. */
   views: 4,
   /** Failed polls in a row that end a streamer. */
@@ -119,10 +125,24 @@ class Streamer {
   cursor = 0;
   /** It printed a message: it runs on a guest that has the live view. */
   printed = false;
+  /** Being replaced (`rotate`): nothing new is sent through it. */
+  retiring = false;
+  /** Its first `state` arrived: its first attempt to reach the guest's host has resolved. */
+  reported = false;
+  readonly firstState: Promise<void>;
   readonly startedAt = Date.now();
   readonly waiters = new Map<string, (ack: Ack) => void>();
+  private announce: () => void = () => undefined;
 
-  constructor(readonly execSessionId: string, public frames: boolean) {}
+  constructor(readonly execSessionId: string, public frames: boolean) {
+    this.firstState = new Promise<void>((resolve) => { this.announce = resolve; });
+  }
+
+  stated(): void {
+    if (this.reported) return;
+    this.reported = true;
+    this.announce();
+  }
 }
 
 function failureCode(error: unknown): string {
@@ -286,9 +306,9 @@ class LiveRun implements BrowserLiveRunHandle {
     this.handoffStarting = true;
     try {
       const begin = await this.command({ action: "begin", t: "handoff" });
-      if (begin.ok !== true) {
-        return begin.code === "browser_not_running" || begin.code === "no_page" ? { kind: "no_browser" } : { kind: "unavailable" };
-      }
+      // `no_page`: the host runs without a tab. Anything else, `browser_not_running` (no host answered) included,
+      // is a browser the user cannot be shown now.
+      if (begin.ok !== true) return begin.code === "no_page" ? { kind: "no_browser" } : { kind: "unavailable" };
     } catch (error) {
       return GUEST_GONE.has(failureCode(error)) ? { kind: "no_browser" } : { kind: "unavailable" };
     } finally {
@@ -320,7 +340,13 @@ class LiveRun implements BrowserLiveRunHandle {
       void this.command({ action: "end", outcome: "cancelled", t: "handoff" }, 2_000).catch(() => undefined);
       throw input.signal.reason ?? new Error("browser_handoff_aborted");
     }
-    const end = await this.command({ action: "end", outcome, t: "handoff" }).catch(() => null);
+    let end = await this.command({ action: "end", outcome, t: "handoff" }).catch(() => null);
+    if (end?.ok !== true && !this.ended) {
+      // Once more on a fresh streamer: the guest's control must not stay with the user for the rest of the turn.
+      const missed = this.streamer;
+      if (missed) await this.close(missed);
+      end = await this.command({ action: "end", outcome, t: "handoff" }).catch(() => null);
+    }
     return { kind: "ended", outcome, page: end?.ok === true ? pageOf(end.page) : null,
       saved: end?.ok === true && typeof end.saved === "string" ? end.saved.slice(0, 200) : null };
   }
@@ -329,7 +355,10 @@ class LiveRun implements BrowserLiveRunHandle {
   end(reason: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished"> = "run_finished"): Promise<void> {
     if (this.ending) return this.ending;
     this.ended = true;
+    // A handoff still waiting ends with the run: its call returns `timed_out` instead of waiting out its time.
+    const pending = this.pending;
     this.pending = null;
+    pending?.resolve("timed_out");
     this.browser = "stopped";
     this.controller = "agent";
     this.clearLinger();
@@ -409,8 +438,9 @@ class LiveRun implements BrowserLiveRunHandle {
     }
   }
 
-  private start(frames: boolean, replacing?: Streamer): Promise<Streamer> {
-    if (this.streamer && !this.streamer.closed && this.streamer !== replacing) return Promise.resolve(this.streamer);
+  /** The current streamer, or the one starting (a rotation's replacement included). */
+  private start(frames: boolean): Promise<Streamer> {
+    if (this.streamer && !this.streamer.closed && !this.streamer.retiring) return Promise.resolve(this.streamer);
     this.starting ??= (async () => {
       if (this.ended || this.unavailable) throw Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
       const reply = await this.registration.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) });
@@ -457,7 +487,7 @@ class LiveRun implements BrowserLiveRunHandle {
         return;
       }
       if ((streamer.chars >= BROWSER_LIVE_RELAY_LIMITS.rotateChars || Date.now() - streamer.startedAt >= BROWSER_LIVE_RELAY_LIMITS.rotateMs) &&
-        streamer.waiters.size === 0) {
+        streamer.waiters.size === 0 && !this.handoffStarting && !this.starting) {
         await this.rotate(streamer);
         return;
       }
@@ -482,10 +512,14 @@ class LiveRun implements BrowserLiveRunHandle {
 
   private message(streamer: Streamer, message: GuestMessage): void {
     streamer.printed = true;
+    if (message.t === "state") streamer.stated();
+    // A streamer being replaced still answers its commands, but its reports may be older than the new one's.
+    if (message.t !== "ack" && streamer !== this.streamer) return;
     switch (message.t) {
       case "state": {
         const browser = message.browser === "running" ? "running" : "absent";
-        const controller = message.controller === "user" ? "user" : "agent";
+        // The guest may only hand control back to the agent; the user gets it from their own Take or the handoff.
+        const controller = this.controller === "user" && browser === "running" && message.controller === "user" ? "user" : "agent";
         const page = browser === "running" ? pageOf(message.page) : null;
         if (browser === this.browser && controller === this.controller && samePage(page, this.page)) return;
         this.browser = browser;
@@ -529,6 +563,8 @@ class LiveRun implements BrowserLiveRunHandle {
 
   private async command(message: Readonly<Record<string, unknown>>, timeoutMs: number = BROWSER_LIVE_RELAY_LIMITS.commandMs): Promise<Ack> {
     const streamer = await this.start(this.views.size > 0);
+    // A streamer started a moment ago may not have reached the guest's host yet (an older guest refuses then).
+    if (!streamer.reported) await Promise.race([streamer.firstState, delay(BROWSER_LIVE_RELAY_LIMITS.firstStateMs)]);
     const id = randomUUID();
     const answer = new Promise<Ack>((resolve) => {
       const timer = setTimeout(() => resolve({ code: "timeout", ok: false }), timeoutMs);
@@ -560,11 +596,15 @@ class LiveRun implements BrowserLiveRunHandle {
     return streamer.closing;
   }
 
-  /** A fresh streamer takes over before the old one closes, so input never meets a gap; control stays in the guest. */
+  /**
+   * A fresh streamer takes over before the old one closes, so input never meets a gap; control stays in the guest.
+   * Meanwhile commands go to the replacement: `start` hands it out while the old one is retiring.
+   */
   private async rotate(streamer: Streamer): Promise<void> {
+    streamer.retiring = true;
     if (this.views.size > 0 && !this.ended) {
       try {
-        await this.start(streamer.frames, streamer);
+        await this.start(streamer.frames);
       } catch (error) {
         await this.close(streamer);
         this.unreachable(error);
