@@ -3,6 +3,8 @@
 .v2-browser-live {
   min-width: 0;
   margin-top: 0.5rem;
+  /* Scrolled to, it clears the floating chat header. */
+  scroll-margin-top: 4.25rem;
   border: 1px solid var(--v2-color-border2);
   border-radius: var(--v2-radius-m);
   color: var(--v2-color-text2);
@@ -218,9 +220,10 @@
   opacity: 0.6;
 }
 
-/* The frame keeps the page's aspect at any width and never grows past the viewport's height. */
+/* The frame keeps the page's aspect at any width and fits between the chat header and the composer dock,
+   so a short landscape phone still shows the whole page (zoom shows detail). */
 .v2-browser-live-stage {
-  --v2-browser-live-max-h: min(70dvh, 46rem);
+  --v2-browser-live-max-h: max(9rem, min(70dvh, 46rem, calc(100dvh - var(--v2-live-dock-height, 9rem) - 5.5rem)));
   position: relative;
   width: min(100%, calc(var(--v2-browser-live-max-h) * var(--v2-browser-live-w) / var(--v2-browser-live-h)));
   aspect-ratio: var(--v2-browser-live-w) / var(--v2-browser-live-h);
