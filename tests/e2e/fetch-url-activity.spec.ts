@@ -53,7 +53,7 @@ async function cleanupPageReaderChats(page: Page) {
 }
 
 async function prepareFakeBlankChat(page: Page) {
-  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");

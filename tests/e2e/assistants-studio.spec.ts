@@ -788,7 +788,7 @@ test("unsaved edits of an existing Assistant are guarded on every exit from Stud
       ["Cancel", () => editor.getByRole("button", { exact: true, name: "Cancel" }).click()],
       ["Back to Assistants", () => library.getByRole("button", { exact: true, name: "Back to Assistants" }).click()],
       ["another Studio section", () => library.getByRole("tab", { exact: true, name: "Files" }).click()],
-      ["New chat", () => rail.getByRole("button", { exact: true, name: "New chat" }).click()],
+      ["New chat", () => rail.getByRole("link", { exact: true, name: "New chat" }).click()],
       ["Chats", () => rail.getByRole("button", { exact: true, name: "Chats" }).click()],
       ["new chat shortcut", () => page.keyboard.press("Control+Shift+O")]
     ];

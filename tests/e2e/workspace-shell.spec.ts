@@ -21,7 +21,7 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
   await expect(page.getByTestId("conversation-v2")).toBeVisible();
   await expect(page.getByTestId("composer-v2")).toBeVisible();
   const navigation = page.getByRole("complementary", { name: "Chat navigation" });
-  await expect(navigation.getByRole("button", { exact: true, name: "New chat" })).toBeVisible();
+  await expect(navigation.getByRole("link", { exact: true, name: "New chat" })).toBeVisible();
   // Permanent destinations live on the rail beside the list.
   const rail = page.getByRole("navigation", { name: "Workspace" });
   await expect(rail.getByRole("button", { name: "Studio" })).toBeVisible();
@@ -86,7 +86,7 @@ test("keeps the production workspace usable at the mobile breakpoint", async ({ 
   await page.getByRole("button", { name: "Open sidebar" }).click();
   const navigation = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(navigation).toBeVisible();
-  await expect(navigation.getByRole("button", { exact: true, name: "New chat" })).toBeVisible();
+  await expect(navigation.getByRole("link", { exact: true, name: "New chat" })).toBeVisible();
   await page.getByRole("button", { name: "Close sidebar" }).click();
   await expect(page.getByTestId("composer-v2")).toBeVisible();
 });

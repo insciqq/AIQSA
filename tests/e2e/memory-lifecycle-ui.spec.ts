@@ -338,7 +338,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
 
   // Temporary is the blank chat's header switch; each mode keeps its own draft.
   const temporaryToggle = page.getByTestId("header-temporary-toggle");
-  await workspace.getByRole("button", { name: "New chat", exact: true }).click();
+  await workspace.getByRole("link", { name: "New chat", exact: true }).click();
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Normal draft marker");
   await temporaryToggle.click();

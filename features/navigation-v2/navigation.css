@@ -170,6 +170,7 @@
   font-size: 0.875rem;
   font-weight: 500;
   text-align: left;
+  text-decoration: none;
 }
 
 .v2-new-chat-main > .v2-icon {
@@ -1263,9 +1264,10 @@ html[data-motion="off"] .v2-sidebar-floats {
   }
 }
 .v2-rail-button:disabled,
+.v2-rail-button[aria-disabled="true"],
 .v2-navigation-destination:disabled,
 .v2-chat-row:disabled,
-.v2-new-chat-main:disabled {
+.v2-new-chat-main[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
 }

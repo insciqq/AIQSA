@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 
 /**
- * Click handler of a card link the chat shell opens itself. The shell reads
+ * Click handler of a link the chat shell opens itself. The shell reads
  * its address (`/assistant/<id>`, `?library=…`) only on load and on history
  * traversal, so a framework link from inside a chat would change the address
  * and keep showing that chat. A plain primary click goes to `navigate`;

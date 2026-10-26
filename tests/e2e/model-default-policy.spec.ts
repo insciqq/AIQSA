@@ -324,7 +324,7 @@ test.describe("installation model default policy", () => {
       await expectRunSummary(userPage, { model: "Browser Policy Model" });
       await userPage
         .getByRole("complementary", { name: "Chat navigation" })
-        .getByRole("button", { name: "New chat", exact: true })
+        .getByRole("link", { name: "New chat", exact: true })
         .click();
       await expectRunSummary(userPage, { model: "Fake QSA" });
 

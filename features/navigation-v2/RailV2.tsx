@@ -1,8 +1,11 @@
 "use client";
 
 import { useControlCenterHref } from "@/components/app-shell/chatRoute";
+import type { MouseEvent, PointerEvent } from "react";
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
+import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
 import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
+import { NEW_CHAT_PATH } from "@/lib/domain/chatRoute";
 import { AccountMenuV2 } from "./AccountMenuV2";
 import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 import { AdminAttentionDot } from "./AdminAttentionDot";
@@ -14,6 +17,7 @@ function RailButton({
   active = false,
   className = "",
   disabled = false,
+  href,
   icon,
   label,
   onClick
@@ -21,26 +25,51 @@ function RailButton({
   active?: boolean;
   className?: string;
   disabled?: boolean;
+  /** Makes the entry a link that a plain click still opens in place with `onClick`. */
+  href?: string;
   icon: UiV2IconName;
   label: string;
   onClick?(): void;
 }>) {
+  const shared = {
+    className: `v2-rail-button v2-focusable ${className}`,
+    "aria-current": active ? "page" as const : undefined,
+    "aria-label": label,
+    "data-tooltip": label,
+    "data-tooltip-side": "right",
+    onPointerLeave: (event: PointerEvent<HTMLElement>) => event.currentTarget.removeAttribute("data-tooltip-suppressed")
+  };
+  // Hide the tooltip once the destination is chosen; it returns after the
+  // pointer leaves and comes back (UX audit v2 A10).
+  const suppressTooltip = (event: MouseEvent<HTMLElement>) =>
+    event.currentTarget.setAttribute("data-tooltip-suppressed", "");
+  if (href) {
+    const openInPlace = shellLinkClick(() => {
+      if (!disabled) onClick?.();
+    });
+    return (
+      <a
+        {...shared}
+        href={href}
+        aria-disabled={disabled || undefined}
+        onClick={(event) => {
+          suppressTooltip(event);
+          openInPlace(event);
+        }}
+      >
+        <UiV2Icon name={icon} />
+      </a>
+    );
+  }
   return (
     <button
-      className={`v2-rail-button v2-focusable ${className}`}
+      {...shared}
       type="button"
       disabled={disabled}
-      aria-current={active ? "page" : undefined}
-      aria-label={label}
-      data-tooltip={label}
-      data-tooltip-side="right"
       onClick={(event) => {
-        // Hide the tooltip once the destination is chosen; it returns after
-        // the pointer leaves and comes back (UX audit v2 A10).
-        event.currentTarget.setAttribute("data-tooltip-suppressed", "");
+        suppressTooltip(event);
         onClick?.();
       }}
-      onPointerLeave={(event) => event.currentTarget.removeAttribute("data-tooltip-suppressed")}
     >
       <UiV2Icon name={icon} />
     </button>
@@ -82,7 +111,7 @@ export function RailV2({
   const attention = adminAttentionIndicator(useAdminAttentionSummary(adminEntryVisible));
   return (
     <nav className="v2-rail" aria-label="Workspace" data-testid="workspace-rail">
-      <RailButton disabled={navigationBusy} className="v2-rail-brand" icon="brand" label="New chat" onClick={onNewChat} />
+      <RailButton disabled={navigationBusy} className="v2-rail-brand" href={NEW_CHAT_PATH} icon="brand" label="New chat" onClick={onNewChat} />
       <div className="v2-rail-group">
         <RailButton disabled={navigationBusy} active={active === "chats"} icon="chat" label="Chats" onClick={onChats} />
         {onLibrary ? (

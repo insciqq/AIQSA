@@ -289,7 +289,7 @@ async function main(): Promise<void> {
   try {
     await login(page);
     await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true })
+      .getByRole("link", { name: "New chat", exact: true })
       .click();
     await selectFakeModel(page);
     const toggle = page.getByRole("button", { name: /^Turn on Workspace/u });

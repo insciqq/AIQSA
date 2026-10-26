@@ -92,7 +92,7 @@ for (const width of [1440, 390]) {
           } else {
             if (width === 390) await openDrawer();
             const owner = width === 390 ? drawer : rail;
-            await owner.getByRole("button", { name: destination === "new" ? "New chat" : "Chats", exact: true }).click();
+            await owner.getByRole(destination === "new" ? "link" : "button", { name: destination === "new" ? "New chat" : "Chats", exact: true }).click();
           }
         };
         await navigate();
@@ -138,7 +138,9 @@ test("pending resource mutations block all Studio exits without offering Discard
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
     const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    for (const name of ["Chats", "New chat", "Studio"]) await expect(rail.getByRole("button", { name, exact: true })).toBeDisabled();
+    for (const [role, name] of [["button", "Chats"], ["link", "New chat"], ["button", "Studio"]] as const) {
+      await expect(rail.getByRole(role, { name, exact: true })).toBeDisabled();
+    }
     await page.keyboard.press("Control+Shift+O");
     await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
     await screenshot(page, info, `${resource}-busy`);

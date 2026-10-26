@@ -135,7 +135,8 @@ describe("Navigation v2", () => {
     </ReadingRoomShellV2>);
     if (destination === "shortcut") fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
     else if (destination === "chat") fireEvent.click(screen.getByRole("treeitem", { name: "Selected brief" }));
-    else fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" })).getByRole("button", { name: destination }));
+    else fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getByRole(destination === "New chat" ? "link" : "button", { name: destination }));
     expect(guard).toHaveBeenCalledOnce();
     for (const callback of [onNewChat, onSelectChat, onChats]) expect(callback).not.toHaveBeenCalled();
     act(() => pending?.());
@@ -151,7 +152,10 @@ describe("Navigation v2", () => {
     render(<ReadingRoomShellV2 section="library" navigationBusy onRequestNavigation={guard} onNewChat={vi.fn()}
       onSelectChat={vi.fn()} onLibrary={vi.fn()} onSettings={onSettings}><main>Saving</main></ReadingRoomShellV2>);
     const rail = screen.getByRole("navigation", { name: "Workspace" });
-    for (const name of ["Chats", "New chat", "Studio"]) expect(within(rail).getByRole("button", { name })).toBeDisabled();
+    for (const name of ["Chats", "Studio"]) expect(within(rail).getByRole("button", { name })).toBeDisabled();
+    const newChat = within(rail).getByRole("link", { name: "New chat" });
+    expect(newChat).toHaveAttribute("aria-disabled", "true");
+    expect(fireEvent.click(newChat)).toBe(false);
     fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
     expect(guard).not.toHaveBeenCalled();
     fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
@@ -323,11 +327,32 @@ describe("Navigation v2", () => {
     const onNewChat = vi.fn();
     sidebar({ onNewChat });
 
-    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+    fireEvent.click(screen.getByRole("link", { name: "New chat" }));
     expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
     // Temporary is the blank chat's header switch; Memory off is no longer offered.
     expect(screen.queryByRole("button", { name: "New chat mode" })).toBeNull();
     expect(screen.queryByText(/Memory off/)).toBeNull();
+  });
+
+  it("leaves middle and modified clicks on every New chat link to the browser", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+    useWorkspaceStore.getState().applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
+    const onNewChat = vi.fn();
+    render(<ReadingRoomShellV2 onNewChat={onNewChat} onSelectChat={vi.fn()}><main>Conversation</main></ReadingRoomShellV2>);
+
+    // The sidebar button, the rail mark and the floating plus.
+    const links = screen.getAllByRole("link", { name: "New chat" });
+    expect(links).toHaveLength(3);
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", "/");
+      for (const init of [{ button: 1 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+        expect(fireEvent.click(link, init)).toBe(true);
+      }
+      expect(onNewChat).not.toHaveBeenCalled();
+      expect(fireEvent.click(link)).toBe(false);
+      expect(onNewChat).toHaveBeenCalledExactlyOnceWith("NORMAL");
+      onNewChat.mockClear();
+    }
   });
 
   it("creates a root folder from the Folders header, not from the New-chat mode menu", () => {
@@ -928,7 +953,7 @@ describe("Navigation v2", () => {
     );
     const view = render(shell("library"));
     const activateBrand = () => fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getByRole("button", { name: "New chat" }));
+      .getByRole("link", { name: "New chat" }));
 
     activateBrand();
     expect(onChats).toHaveBeenCalledOnce();
@@ -950,7 +975,7 @@ describe("Navigation v2", () => {
     </ReadingRoomShellV2>);
     if (width < 1024) fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
     fireEvent.click(within(screen.getByRole("complementary", { name: "Chat navigation" }))
-      .getByRole("button", { name: "New chat" }));
+      .getByRole("link", { name: "New chat" }));
     expect(onNewChat).toHaveBeenCalledExactlyOnceWith("NORMAL");
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus());
   });
@@ -1022,7 +1047,7 @@ describe("Navigation v2", () => {
       return within(screen.getByRole("complementary", { name: "Chat navigation" }));
     };
 
-    fireEvent.click(openDrawer().getByRole("button", { name: "New chat" }));
+    fireEvent.click(openDrawer().getByRole("link", { name: "New chat" }));
     expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
     expect(shell).not.toHaveAttribute("data-mobile-sidebar");
   });
@@ -1272,7 +1297,7 @@ describe("Navigation v2", () => {
   it("dismisses the chat-row menu on Escape, outside press, and focus-out", () => {
     sidebar();
     const trigger = screen.getByRole("button", { name: "Actions: Selected brief" });
-    const outsideTarget = screen.getByRole("button", { name: "New chat" });
+    const outsideTarget = screen.getByRole("link", { name: "New chat" });
 
     fireEvent.click(trigger);
     fireEvent.keyDown(

@@ -242,7 +242,7 @@ test("v2 compact drawer isolates content, contains focus, and closes on Escape",
   await expect(page.getByRole("button", { name: "Close sidebar" })).toBeFocused();
 
   const firstRailDestination = page.getByRole("navigation", { name: "Workspace" })
-    .getByRole("button", { name: "New chat", exact: true });
+    .getByRole("link", { name: "New chat", exact: true });
   await firstRailDestination.focus();
   await page.keyboard.press("Shift+Tab");
   expect(await page.evaluate(() => Boolean(document.activeElement?.closest(".v2-navigation"))))

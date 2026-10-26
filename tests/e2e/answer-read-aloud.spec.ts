@@ -213,7 +213,7 @@ test.describe("answer read aloud", () => {
 
     const cancelsBeforeSwitch = state.cancels;
     await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true }).click();
+      .getByRole("link", { name: "New chat", exact: true }).click();
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     state = await probe(page);
     expect(state.cancels).toBe(cancelsBeforeSwitch + 1);

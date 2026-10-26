@@ -322,7 +322,7 @@ for (const transport of ["suspended", "disconnected"] as const) {
 async function startPlainFakeChat(page: Page): Promise<void> {
   await disableMemoryRecall(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
   await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
@@ -395,7 +395,7 @@ test("a disconnected accepted answer can be stopped through the real cancellatio
   });
   await signInWithLocalToken(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
   await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");

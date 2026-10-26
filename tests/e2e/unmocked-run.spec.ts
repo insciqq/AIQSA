@@ -77,7 +77,7 @@ async function cleanupUnmockedChats(page: Page) {
 async function prepareFakeBlankChat(page: Page) {
   await page
     .getByRole("complementary", { name: "Chat navigation" })
-    .getByRole("button", { name: "New chat", exact: true })
+    .getByRole("link", { name: "New chat", exact: true })
     .click();
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
@@ -149,7 +149,7 @@ test("a late fork response preserves the new-chat draft selected while it was pe
   await requested;
   try {
     await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true }).click();
+      .getByRole("link", { name: "New chat", exact: true }).click();
     await page.getByRole("textbox", { name: "Message" }).fill("Keep this new unsent draft");
   } finally {
     release();
