@@ -133,13 +133,15 @@ function commandSummary(preview: string): string {
  * presentation hint read from the command's own output, never authority.
  */
 const BROWSER_STEP = /^\[browser #(\d{1,5})\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$/u;
+/** Only a command that runs the helper reports steps; any other output that imitates one stays output. */
+const BROWSER_COMMAND = /aiqsa-browser|aiqsa import browser|aiqsa\.browser/u;
 
 export type WorkspaceBrowserStepV2 = Readonly<{ number: number; action: string; target?: string; where?: string }>;
 
 /** The browser steps a finished command reported, in order. */
 export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): WorkspaceBrowserStepV2[] {
   const output = entry.kind === "command" ? entry.command?.stdoutPreview : undefined;
-  if (!output || !output.includes("[browser #")) return [];
+  if (!output || !output.includes("[browser #") || !BROWSER_COMMAND.test(entry.command?.preview ?? "")) return [];
   const steps: WorkspaceBrowserStepV2[] = [];
   for (const line of output.split("\n")) {
     const match = BROWSER_STEP.exec(line.trimEnd());

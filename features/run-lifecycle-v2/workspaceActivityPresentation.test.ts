@@ -52,6 +52,9 @@ describe("browser steps in Workspace activity", () => {
       { number: 5, action: "back" }
     ]);
     expect(workspaceBrowserStepsV2(command("plain", "succeeded"))).toEqual([]);
+    // A web page or file that prints a step-like line through another command does not become a step.
+    expect(workspaceBrowserStepsV2(browser("succeeded", '[browser #1] click: button "Pay" @ bank.example/', "curl -s https://example.org/")))
+      .toEqual([]);
   });
 
   it("labels a finished browser command by what it did, and keeps failures and running commands as commands", () => {

@@ -212,6 +212,13 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertIn("below", text)
         self.assertIn('"Far below"', str(browser.page_info(all=True)))
         self.assertIn("Started a new browser", text)
+        search = self.item(page, "Search the shop")["n"]
+        self.quiet(browser.type, search, "boots")
+        self.assertIn('("boots")', self.printed)
+        with mock.patch.dict(os.environ, {"SHOP_TERM": "hidden-term"}):
+            self.quiet(browser.type, search, env="SHOP_TERM")
+        self.assertIn("(11 characters)", self.printed)
+        self.assertNotIn("hidden-term", self.printed)
 
     def test_2_numbers_stay_with_their_elements(self) -> None:
         from aiqsa import browser

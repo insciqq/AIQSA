@@ -134,7 +134,7 @@ def _request(parsed: argparse.Namespace) -> tuple:
             value = parsed.text
         else:
             raise _UsageError("give TEXT or --env NAME")
-        return "type", {"n": parsed.n, "text": value, "submit": parsed.submit, "clear": not parsed.append}
+        return "type", {"n": parsed.n, "text": value, "submit": parsed.submit, "clear": not parsed.append, "masked": bool(parsed.env)}
     if name == "scroll":
         where = parsed.where
         if where.isdigit():

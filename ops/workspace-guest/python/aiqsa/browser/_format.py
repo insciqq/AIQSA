@@ -8,7 +8,8 @@ this shape, so change both together):
     [browser #3] click: button "Add to cart" @ www.saucedemo.com/inventory.html
 
 Typed text never appears in a step line, except in a search box; a URL shows
-only its host and path.
+only its host and path. Only an action prints a step line at the start of a
+line: page text that looks like one is indented, and so is the turn's step list.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ INFO_CHARS = 16_000
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f  ]+")
 _SPACE = re.compile(r"\s+")
+#: A line of page text that would read as an action's step line.
+_STEP_LIKE = re.compile(r"^(?=\[browser #)", re.M)
 
 
 def clean(value: Any, limit: int) -> str:
@@ -178,7 +181,7 @@ def render_text(text: str, start: int, limit: int) -> str:
     body = text[start:start + limit]
     rest = len(text) - start - len(body)
     suffix = f"\n… {rest} more characters; continue with start={start + len(body)}." if rest > 0 else ""
-    return body + suffix
+    return _STEP_LIKE.sub(" ", body) + suffix
 
 
 def render_tabs(tabs: Sequence[Mapping[str, Any]]) -> str:
@@ -190,4 +193,7 @@ def render_tabs(tabs: Sequence[Mapping[str, Any]]) -> str:
 
 
 def render_steps(steps: Sequence[Mapping[str, Any]]) -> str:
-    return "\n".join(step_line(step) for step in steps) if steps else "No browser steps yet."
+    """The turn's steps so far, indented: listing them again is not doing them again."""
+    if not steps:
+        return "No browser steps yet."
+    return "Browser steps of this turn:\n" + "\n".join("  " + step_line(step) for step in steps)
