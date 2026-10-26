@@ -12,11 +12,16 @@ const prisma = new PrismaClient();
 let restoreFakeContext: (() => Promise<void>) | null = null;
 
 // The long synthetic prompt keeps the fake answer running while Follow-ups
-// arrive. Beside the default tool schemas it exceeds Fake QSA's 8k seed
-// window, so admission refuses it as too large. Like the Workspace specs,
-// this spec uses the 64k fake context. The fixture changes the shared fake
-// model; the suite's single worker keeps it unshared, and the tests stay
-// independent, so one failure keeps the other's evidence.
+// arrive. The engine delivers a Follow-up where a round ends, and the fake
+// echoes the prompt in every round, so one round lasts about 36 s at the
+// suite's 10 ms per word: long enough to check the composer between two
+// deliveries, which therefore take up to one round. Beside the default tool
+// schemas the prompt exceeds Fake QSA's 8k seed window, so admission refuses
+// it as too large. Like the Workspace specs, this spec uses the 64k fake
+// context. The fixture changes the shared fake model; the suite's single
+// worker keeps it unshared, and the tests stay independent, so one failure
+// keeps the other's evidence.
+const ROUND_WAIT_MS = 60_000;
 test.beforeAll(async () => {
   restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
 });
@@ -32,13 +37,13 @@ test.afterAll(async () => {
 async function startAnswer(page: Page): Promise<string> {
   await signInWithLocalToken(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
   await selectFakeModel(page);
   // Compile this route before a short fake generation on reusable dev servers.
   expect((await page.request.post("/api/model-runs/missing/followups", { data: {} })).status()).toBe(400);
   // Installations without configured Search omit its chip entirely.
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
-  await page.getByRole("textbox", { name: "Message" }).fill("Explain this synthetic example. " + "synthetic ".repeat(1_800));
+  await page.getByRole("textbox", { name: "Message" }).fill("Explain this synthetic example. " + "synthetic ".repeat(3_600));
   const admission = page.waitForResponse(response => response.request().method() === "POST" &&
     /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname));
   await page.getByRole("button", { name: "Send message", exact: true }).click();
@@ -76,7 +81,7 @@ test("Follow-up stays on the accepted run, survives another tab and reload, and 
       runId = acceptedRun;
       await expect(editor).toHaveValue("");
       await expect(page.getByLabel("Follow-ups")).toContainText(index === 0 ? "First clarification" : "Second clarification");
-      await expect(page.getByLabel("Follow-ups").getByText("Delivered to the task", { exact: true })).toHaveCount(index + 1, { timeout: 15_000 });
+      await expect(page.getByLabel("Follow-ups").getByText("Delivered to the task", { exact: true })).toHaveCount(index + 1, { timeout: ROUND_WAIT_MS });
       await editor.fill("Unsent draft remains here");
       await context.addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
       await page.evaluate(value => document.documentElement.setAttribute("data-theme", value), theme);
