@@ -195,6 +195,99 @@ describe("Navigation v2", () => {
     expect(screen.getByLabelText("Answer in progress")).toBeVisible();
   });
 
+  describe("Favorites", () => {
+    const folder = { id: "folder-a", name: "Work", parentId: null };
+    const oldFavorite: ChatNavigationSummaryWire = {
+      activeRun: false, assistant: null, favorite: true, folderId: null, id: "old-favorite", title: "Old favorite",
+      updatedAt: "2025-02-01T08:00:00.000Z"
+    };
+    const filedFavorite: ChatNavigationSummaryWire = {
+      activeRun: false, assistant: null, favorite: true, folderId: folder.id, id: "filed-favorite", title: "Filed favorite",
+      updatedAt: "2026-08-13T09:00:00.000Z"
+    };
+    const groupLabels = () =>
+      Array.from(document.querySelectorAll(".v2-navigation-group-label")).map((label) => label.textContent);
+    const group = (name: string) => screen.getByRole("group", { name });
+    const renderContainer = () => render(
+      <NavigationSidebarContainer now={now} onClose={vi.fn()} onNewChat={vi.fn()} onSelectChat={vi.fn()} />
+    );
+
+    it("leads the list above Today, newest first, with an unfiled favorite only there and a filed one also in its folder", () => {
+      useWorkspaceStore.getState().applyNavigationPage({
+        chats: [{ ...chats[0], favorite: false }, filedFavorite, { ...chats[1], favorite: false }],
+        favorites: { chats: [filedFavorite, oldFavorite], complete: true },
+        folders: [folder],
+        nextCursor: "next"
+      }, false);
+      renderContainer();
+
+      expect(groupLabels()).toEqual(["Favorites", "Today", "Yesterday", "Folders"]);
+      expect(within(group("Favorites")).getAllByRole("treeitem").map((row) => row.textContent))
+        .toEqual(["Filed favorite", "Old favorite"]);
+      expect(within(group("Today")).getAllByRole("treeitem").map((row) => row.textContent)).toEqual(["Running answer"]);
+      expect(screen.getAllByRole("treeitem", { name: "Old favorite" })).toHaveLength(1);
+      // The filed favorite keeps its folder place; its two rows stay distinct.
+      expect(screen.getAllByRole("treeitem", { name: "Filed favorite" })).toHaveLength(2);
+      expect(document.querySelector(`[data-folder-id="${folder.id}"]`)?.textContent).toContain("Filed favorite");
+      // No stars, badges or extra marks on the rows.
+      expect(within(group("Favorites")).queryByRole("img")).toBeNull();
+      expect(screen.queryByText("More favorites appear as earlier chats load.")).toBeNull();
+    });
+
+    it("moves a toggled chat into Favorites and back by its unchanged time", () => {
+      useWorkspaceStore.getState().applyNavigationPage({
+        chats: [{ ...chats[0], favorite: false }, { ...chats[1], favorite: false }],
+        favorites: { chats: [], complete: true },
+        folders: [],
+        nextCursor: null
+      }, false);
+      renderContainer();
+      expect(groupLabels()).toEqual(["Today", "Yesterday"]);
+
+      act(() => useWorkspaceStore.getState().upsertNavigationChat({ ...chats[1], favorite: true }));
+      expect(groupLabels()).toEqual(["Favorites", "Today"]);
+      expect(within(group("Favorites")).getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+
+      act(() => useWorkspaceStore.getState().upsertNavigationChat({ ...chats[1], favorite: false }));
+      expect(groupLabels()).toEqual(["Today", "Yesterday"]);
+      expect(within(group("Yesterday")).getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+    });
+
+    it("says when more favorites arrive with earlier chats, and keeps search results ungrouped", () => {
+      useWorkspaceStore.getState().applyNavigationPage({
+        chats: [],
+        favorites: { chats: [oldFavorite], complete: false },
+        folders: [],
+        nextCursor: "next"
+      }, false);
+      const view = renderContainer();
+      expect(within(group("Favorites")).getByText("More favorites appear as earlier chats load.")).toBeVisible();
+      view.unmount();
+
+      sidebar({ chats: [oldFavorite, { ...chats[0], favorite: false }], searchQuery: "o" });
+      expect(groupLabels()).toEqual(["Results"]);
+    });
+
+    it("drags a row from Favorites into a folder through the move action", () => {
+      const onMove = vi.fn();
+      sidebar({ chats: [oldFavorite], folders: [folder], onMove });
+      const dataTransfer = (() => {
+        const data = new Map<string, string>();
+        return {
+          getData: (key: string) => data.get(key),
+          setData: (key: string, value: string) => data.set(key, value),
+          types: ["application/x-aiqsa-chat"]
+        };
+      })();
+      const row = within(group("Favorites")).getByRole("treeitem", { name: "Old favorite" }).closest("[draggable]")!;
+      const target = document.querySelector(`[data-folder-id="${folder.id}"] .v2-folder-row`)!;
+      fireEvent.dragStart(row, { dataTransfer });
+      fireEvent.dragOver(target, { dataTransfer });
+      fireEvent.drop(target, { dataTransfer });
+      expect(onMove).toHaveBeenCalledExactlyOnceWith(oldFavorite, folder.id);
+    });
+  });
+
   it("leads a chat with its Assistant's 16px avatar and leaves other rows unchanged", () => {
     const assistant = {
       avatar: {

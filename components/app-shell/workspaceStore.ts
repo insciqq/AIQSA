@@ -23,6 +23,11 @@ export type WorkspaceSnapshot = {
   navigationAttempted: boolean;
   navigationChats: ChatNavigationSummaryWire[];
   navigationError: string | null;
+  /**
+   * The first page listed every favorite. False means more exist than it
+   * carries; the rest arrive with their date pages.
+   */
+  navigationFavoritesComplete: boolean;
   navigationFolders: ChatNavigationFolderWire[];
   navigationLoading: boolean;
   /**
@@ -95,6 +100,7 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   navigationAttempted: false,
   navigationChats: [],
   navigationError: null,
+  navigationFavoritesComplete: true,
   navigationFolders: [],
   navigationLoading: false,
   navigationMessageMatches: [],
@@ -186,10 +192,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     set((state) => ({ folders: applyUpdate(state.folders, update) }));
   },
   applyNavigationPage(page, append) {
+    // The first page's favorites join its chats by id, so a favorite on a
+    // date page not loaded yet is listed once and its page later adds nothing.
+    const incoming = page.favorites ? [...page.chats, ...page.favorites.chats] : page.chats;
     set((state) => ({
       navigationAttempted: true,
-      navigationChats: mergeNavigationChats(state.navigationChats, page.chats, append),
+      navigationChats: mergeNavigationChats(state.navigationChats, incoming, append),
       navigationError: null,
+      ...(page.favorites ? { navigationFavoritesComplete: page.favorites.complete } : {}),
       navigationFolders: mergeNavigationFolders(
         append ? state.navigationFolders : [],
         page.folders
@@ -272,19 +282,27 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       )
     }));
   },
-  upsertNavigationChat(chat) {
-    set((state) => ({
-      navigationChats: mergeNavigationChats(state.navigationChats, [chat], true),
-      // A renamed chat keeps its message match under the new title.
-      navigationMessageMatches: state.navigationMessageMatches.some((match) =>
-        match.chatId === chat.id && match.title !== chat.title)
-        ? state.navigationMessageMatches.map((match) =>
-            match.chatId === chat.id ? { ...match, title: chat.title } : match)
-        : state.navigationMessageMatches,
-      navigationSearchChats: state.navigationSearchChats.some((item) => item.id === chat.id)
-        ? mergeNavigationChats(state.navigationSearchChats, [chat], true)
-        : state.navigationSearchChats
-    }));
+  upsertNavigationChat(incoming) {
+    set((state) => {
+      // A local row built without the favorite flag keeps the known one.
+      const known = incoming.favorite === undefined
+        ? [...state.navigationChats, ...state.navigationSearchChats]
+            .find((item) => item.id === incoming.id)?.favorite
+        : undefined;
+      const chat = known === undefined ? incoming : { ...incoming, favorite: known };
+      return {
+        navigationChats: mergeNavigationChats(state.navigationChats, [chat], true),
+        // A renamed chat keeps its message match under the new title.
+        navigationMessageMatches: state.navigationMessageMatches.some((match) =>
+          match.chatId === chat.id && match.title !== chat.title)
+          ? state.navigationMessageMatches.map((match) =>
+              match.chatId === chat.id ? { ...match, title: chat.title } : match)
+          : state.navigationMessageMatches,
+        navigationSearchChats: state.navigationSearchChats.some((item) => item.id === chat.id)
+          ? mergeNavigationChats(state.navigationSearchChats, [chat], true)
+          : state.navigationSearchChats
+      };
+    });
   },
   removeNavigationChat(chatId) {
     set((state) => ({

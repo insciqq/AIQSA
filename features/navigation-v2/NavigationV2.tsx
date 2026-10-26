@@ -90,6 +90,11 @@ export type NavigationSidebarProps = Readonly<{
   chatStateFor?(chat: ChatNavigationSummaryWire): NavigationChatRowState | null;
   chats: readonly ChatNavigationSummaryWire[];
   error: string | null;
+  /**
+   * False when the user has more favorites than the first page carries; the
+   * Favorites group then says the rest arrive with earlier chats.
+   */
+  favoritesComplete?: boolean;
   folders: readonly ChatNavigationFolderWire[];
   hasMore: boolean;
   loading: boolean;
@@ -246,7 +251,8 @@ function ChatRow({
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const drag = useChatDraggable(chat.id, disabled || editing);
   const unread = Boolean(chat.scheduledTask?.unseen);
-  const unreadId = `v2-chat-unread-${chat.id}`;
+  // A filed favorite renders in Favorites and in its folder: ids stay unique.
+  const unreadId = `v2-chat-unread-${useId()}`;
   const rowState = chatStateFor?.(chat) ?? null;
   const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
   if (editing) {
@@ -329,7 +335,7 @@ function ChatRow({
             actions={chatMenuActionsV2({
               archiveDisabled: chat.activeRun,
               deleteDisabled: chat.activeRun,
-              favorite: rowState?.favorite ?? false,
+              favorite: rowState?.favorite ?? chat.favorite ?? false,
               folders,
               memoryUsed: onMemoryMode ? memoryUsed : null,
               onArchive: () => onArchive?.(chat),
@@ -569,7 +575,8 @@ function FolderGroup({
               active={chat.id === activeChatId}
               chat={chat}
               chatStateFor={props.chatStateFor}
-              editing={props.editingChatId === chat.id}
+              // A favorite renames in the Favorites group, not twice.
+              editing={props.editingChatId === chat.id && chat.favorite !== true}
               editingTitle={props.editingChatTitle}
               folders={folders}
               key={chat.id}
@@ -779,7 +786,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     props.onLoadMore();
   };
   const rowProps: NavigationSidebarProps = { ...props, onSelectChat: selectChat };
-  const unfiled = props.chats.filter((chat) => chat.folderId === null);
+  // Favorites lead the list, newest activity first. An unfiled favorite is
+  // listed only there; a filed one also stays in its folder (operator
+  // decision 2026-10-26).
+  const favorites = props.chats.filter((chat) => chat.favorite === true);
+  const unfiled = props.chats.filter((chat) => chat.folderId === null && chat.favorite !== true);
   const roots = props.folders.filter((folder) => folder.parentId === null);
   const dateGroups = (["today", "yesterday", "last-seven", "earlier"] as const)
     .map((id) => ({
@@ -787,6 +798,33 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       id
     }))
     .filter((group) => group.chats.length > 0);
+  const listRow = (chat: ChatNavigationSummaryWire) => (
+    <ChatRow
+      active={chat.id === props.activeChatId}
+      chat={chat}
+      chatStateFor={props.chatStateFor}
+      editing={props.editingChatId === chat.id}
+      editingTitle={props.editingChatTitle}
+      folders={props.folders}
+      key={chat.id}
+      level={1}
+      onArchive={props.onArchive}
+      onCancelRename={props.onCancelChatRename}
+      onChangeRename={props.onChangeChatRename}
+      onDelete={props.onDelete}
+      onBranches={props.onBranches}
+      onCopyThread={props.onCopyThread}
+      onExport={props.onExport}
+      onFavorite={props.onFavorite}
+      onMemoryMode={props.onMemoryMode}
+      onMove={props.onMove}
+      onRename={props.onRenameChat}
+      onSaveRename={props.onSaveChatRename}
+      onShare={props.onShare}
+      disabled={props.navigationBusy}
+      onSelect={selectChat}
+    />
+  );
   const focusMessageComposer = () => {
     if (currentSidebarCompositionV2() !== "desktop") props.onClose();
     window.setTimeout(() => {
@@ -1016,6 +1054,15 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             {props.chats.length === 0 ? (
               <div className="v2-navigation-status">Start your first chat</div>
             ) : null}
+            {favorites.length > 0 ? (
+              <div aria-labelledby="v2-navigation-favorites" className="v2-navigation-group" role="group">
+                <div className="v2-navigation-group-label" id="v2-navigation-favorites">Favorites</div>
+                {favorites.map(listRow)}
+                {props.favoritesComplete === false ? (
+                  <div className="v2-navigation-section-status">More favorites appear as earlier chats load.</div>
+                ) : null}
+              </div>
+            ) : null}
             {/* Recent unfiled chats first, then the folder tree (UX audit F10). */}
             {dateGroups.map((group) => (
               <div
@@ -1027,33 +1074,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 <div className="v2-navigation-group-label" id={`v2-navigation-${group.id}`}>
                   {dateLabels[group.id]}
                 </div>
-                {group.chats.map((chat) => (
-                  <ChatRow
-                    active={chat.id === props.activeChatId}
-                    chat={chat}
-                    chatStateFor={props.chatStateFor}
-                    editing={props.editingChatId === chat.id}
-                    editingTitle={props.editingChatTitle}
-                    folders={props.folders}
-                    key={chat.id}
-                    level={1}
-                    onArchive={props.onArchive}
-                    onCancelRename={props.onCancelChatRename}
-                    onChangeRename={props.onChangeChatRename}
-                    onDelete={props.onDelete}
-                    onBranches={props.onBranches}
-                    onCopyThread={props.onCopyThread}
-                    onExport={props.onExport}
-                    onFavorite={props.onFavorite}
-                    onMemoryMode={props.onMemoryMode}
-                    onMove={props.onMove}
-                    onRename={props.onRenameChat}
-                    onSaveRename={props.onSaveChatRename}
-                    onShare={props.onShare}
-                    disabled={props.navigationBusy}
-                    onSelect={selectChat}
-                  />
-                ))}
+                {group.chats.map(listRow)}
               </div>
             ))}
             {roots.length > 0 || props.onCreateFolder ? (
@@ -1219,7 +1240,7 @@ function useChatNavigationLiveness(input: Readonly<{
 }
 
 export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarProps,
-  | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
+  | "activeChatId" | "chats" | "error" | "favoritesComplete" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
   | "messageMatchesReady" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
   | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery"
@@ -1228,6 +1249,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
   const attempted = useWorkspaceStore((state) => state.navigationAttempted);
   const chats = useWorkspaceStore((state) => state.navigationChats);
   const error = useWorkspaceStore((state) => state.navigationError);
+  const favoritesComplete = useWorkspaceStore((state) => state.navigationFavoritesComplete);
   const folders = useWorkspaceStore((state) => state.navigationFolders);
   const loading = useWorkspaceStore((state) => state.navigationLoading);
   const messageMatches = useWorkspaceStore((state) => state.navigationMessageMatches);
@@ -1274,6 +1296,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
       activeChatId={activeChatId}
       chats={visibleChats}
       error={error}
+      favoritesComplete={favoritesComplete}
       folders={folders}
       hasMore={Boolean(searchQuery ? searchNextCursor : nextCursor)}
       loading={loading}
@@ -1317,7 +1340,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
 }
 
 type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
-  | "activeChatId" | "chats" | "drawerDestinations" | "error" | "folders" | "hasMore" | "loading"
+  | "activeChatId" | "chats" | "drawerDestinations" | "error" | "favoritesComplete" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
   | "messageMatchesReady" | "now" | "onClose" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
   | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery"

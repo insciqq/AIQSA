@@ -110,6 +110,11 @@ export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
 export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
 export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
+/**
+ * Favorites the first navigation page carries. A user with more sees the rest
+ * arrive with their date pages, and the page says the list is incomplete.
+ */
+export const CHAT_NAVIGATION_FAVORITES_MAX = 200;
 /** Message text matching starts at this many characters of the normalized query; title search has no minimum. */
 export const CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH = 3;
 /** Characters of readable text a message snippet keeps on each side of the first match. */
@@ -686,6 +691,12 @@ export type WorkspaceChatsResponseWire = {
 export type ChatNavigationSummaryWire = {
   activeRun: boolean;
   assistant: AssistantIdentity | null;
+  /**
+   * The owner marked this chat a favorite. Present on current responses;
+   * absent (fixtures, rows built before it is known) means not a favorite, and
+   * a local upsert without it keeps the stored value.
+   */
+  favorite?: boolean;
   folderId: string | null;
   id: string;
   /**
@@ -710,8 +721,21 @@ export type ChatNavigationFolderWire = {
   parentId: string | null;
 };
 
+/**
+ * The user's favorites, newest activity first, on the first list page only:
+ * the Favorites group never depends on how many date pages are loaded.
+ * `complete: false` means more than CHAT_NAVIGATION_FAVORITES_MAX exist; the
+ * rest still arrive, marked, with their date pages.
+ */
+export type ChatNavigationFavoritesWire = {
+  chats: ChatNavigationSummaryWire[];
+  complete: boolean;
+};
+
 export type ChatNavigationPageWire = {
   chats: ChatNavigationSummaryWire[];
+  /** First page of `/api/chats/compact` only; search pages never carry it. */
+  favorites?: ChatNavigationFavoritesWire;
   folders: ChatNavigationFolderWire[];
   nextCursor: string | null;
 };
@@ -1479,6 +1503,7 @@ function decodeFolderWire(value: unknown): FolderWire | null {
 }
 
 const CHAT_NAVIGATION_SUMMARY_KEYS = ["activeRun", "assistant", "folderId", "id", "title", "updatedAt"] as const;
+const CHAT_NAVIGATION_SUMMARY_OPTIONAL_KEYS = ["favorite", "scheduledTask"] as const;
 
 function decodeChatNavigationScheduledTask(value: unknown): ChatNavigationScheduledTaskWire | null | undefined {
   if (value === null) return null;
@@ -1494,11 +1519,14 @@ function decodeChatNavigationSummaryWire(
 ): ChatNavigationSummaryWire | null {
   if (
     !isRecord(value) ||
-    (!hasExactKeys(value, CHAT_NAVIGATION_SUMMARY_KEYS) &&
-      !hasExactKeys(value, [...CHAT_NAVIGATION_SUMMARY_KEYS, "scheduledTask"]))
+    !CHAT_NAVIGATION_SUMMARY_KEYS.every((key) => key in value) ||
+    !Object.keys(value).every((key) =>
+      (CHAT_NAVIGATION_SUMMARY_KEYS as readonly string[]).includes(key) ||
+      (CHAT_NAVIGATION_SUMMARY_OPTIONAL_KEYS as readonly string[]).includes(key))
   ) {
     return null;
   }
+  if ("favorite" in value && typeof value.favorite !== "boolean") return null;
   const scheduledTask = "scheduledTask" in value
     ? decodeChatNavigationScheduledTask(value.scheduledTask)
     : null;
@@ -1521,6 +1549,7 @@ function decodeChatNavigationSummaryWire(
   return {
     activeRun: value.activeRun,
     assistant,
+    ...(typeof value.favorite === "boolean" ? { favorite: value.favorite } : {}),
     folderId,
     id,
     ...(scheduledTask ? { scheduledTask } : {}),
@@ -1572,7 +1601,8 @@ export function decodeChatNavigationPage(
 ): ChatNavigationPageWire | null {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["chats", "folders", "nextCursor"]) ||
+    (!hasExactKeys(value, ["chats", "folders", "nextCursor"]) &&
+      !hasExactKeys(value, ["chats", "favorites", "folders", "nextCursor"])) ||
     !Array.isArray(value.chats) ||
     value.chats.length > CHAT_NAVIGATION_MAX_PAGE_SIZE ||
     !Array.isArray(value.folders)
@@ -1581,6 +1611,8 @@ export function decodeChatNavigationPage(
   }
   const nextCursor = decodeNavigationCursor(value.nextCursor);
   if (nextCursor === undefined) return null;
+  const favorites = "favorites" in value ? decodeChatNavigationFavorites(value.favorites) : undefined;
+  if (favorites === null) return null;
   const chats = value.chats.map(decodeChatNavigationSummaryWire);
   const folders = value.folders.map(decodeChatNavigationFolderWire);
   if (
@@ -1601,7 +1633,29 @@ export function decodeChatNavigationPage(
   ) {
     return null;
   }
-  return { chats: decodedChats, folders: decodedFolders, nextCursor };
+  return {
+    chats: decodedChats,
+    ...(favorites ? { favorites } : {}),
+    folders: decodedFolders,
+    nextCursor
+  };
+}
+
+function decodeChatNavigationFavorites(value: unknown): ChatNavigationFavoritesWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["chats", "complete"]) ||
+    typeof value.complete !== "boolean" ||
+    !Array.isArray(value.chats) ||
+    value.chats.length > CHAT_NAVIGATION_FAVORITES_MAX
+  ) {
+    return null;
+  }
+  const chats = value.chats.map(decodeChatNavigationSummaryWire);
+  const decoded = chats.filter((chat): chat is ChatNavigationSummaryWire => chat?.favorite === true);
+  return decoded.length === chats.length && new Set(decoded.map((chat) => chat.id)).size === decoded.length
+    ? { chats: decoded, complete: value.complete }
+    : null;
 }
 
 function decodeChatMessageMatchWire(value: unknown): ChatMessageMatchWire | null {

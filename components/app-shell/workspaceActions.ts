@@ -261,6 +261,8 @@ export function useWorkspaceActions({
       useWorkspaceStore.getState().upsertNavigationChat({
         activeRun: existing?.activeRun ?? chatHasActiveStream(chat.id),
         assistant: assistant !== undefined ? assistant : existing?.assistant ?? null,
+        // The server's flag; a local summary without it keeps the listed one.
+        ...(typeof resolvedChat.pinned === "boolean" ? { favorite: resolvedChat.pinned } : {}),
         folderId: resolvedChat.folderId,
         id: resolvedChat.id,
         ...(existing?.scheduledTask ? { scheduledTask: existing.scheduledTask } : {}),
@@ -1312,6 +1314,7 @@ export function useWorkspaceActions({
                 useWorkspaceStore.getState().upsertNavigationChat({
                   activeRun: false,
                   assistant: listedAssistant,
+                  ...(typeof restoredChat.pinned === "boolean" ? { favorite: restoredChat.pinned } : {}),
                   folderId: restoredChat.folderId,
                   id: restoredChat.id,
                   title: restoredChat.title,

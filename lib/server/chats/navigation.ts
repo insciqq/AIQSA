@@ -3,6 +3,7 @@ import { Prisma, type ModelRunStatus } from "@prisma/client";
 import {
   CHAT_NAVIGATION_CURSOR_MAX_LENGTH,
   CHAT_NAVIGATION_DEFAULT_PAGE_SIZE,
+  CHAT_NAVIGATION_FAVORITES_MAX,
   CHAT_NAVIGATION_MAX_PAGE_SIZE,
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
   chatMessageSearchApplies,
@@ -10,6 +11,7 @@ import {
   type ChatMessageMatchPageWire,
   type ChatMessageMatchWire,
   type ChatNavigationErrorResponse,
+  type ChatNavigationFavoritesWire,
   type ChatNavigationFolderWire,
   type ChatNavigationPageWire,
   type ChatNavigationSummaryWire
@@ -40,6 +42,8 @@ type NavigationCursorKind = "chats" | "messages";
 
 export type ChatNavigationPageRecord = Readonly<{
   chats: readonly ChatNavigationSummaryWire[];
+  /** The first list page only: the favorites, independent of the date pages. */
+  favorites?: ChatNavigationFavoritesWire;
   folders: readonly ChatNavigationFolderWire[];
   nextCursor: string | null;
 }>;
@@ -144,6 +148,35 @@ function decodeCursor(
   }
 }
 
+const navigationChatSelect = {
+  assistantId: true,
+  folderId: true,
+  id: true,
+  modelRuns: {
+    select: { id: true },
+    take: 1,
+    where: { status: { in: ACTIVE_RUN_STATUSES } }
+  },
+  pinned: true,
+  // The task that posts into this chat, now or by an earlier run, and
+  // whether a result here is unread; nothing else crosses the boundary.
+  scheduledTasks: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { id: true },
+    take: 1
+  },
+  // An unread result first, else the newest run in this chat.
+  scheduledTaskOccurrences: {
+    orderBy: [{ unseenAt: { nulls: "last", sort: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
+    select: { taskId: true, unseenAt: true },
+    take: 1
+  },
+  title: true,
+  updatedAt: true
+} satisfies Prisma.ChatSelect;
+
+type NavigationChatRow = Prisma.ChatGetPayload<{ select: typeof navigationChatSelect }>;
+
 async function page(
   prismaClient: typeof prisma,
   input: {
@@ -181,7 +214,18 @@ async function page(
         ]
       };
 
-  const [folders, rows] = await Promise.all([
+  const ownerWhere = {
+    archived: false,
+    memoryMode: { not: "TEMPORARY" },
+    permanentDeletionAt: null,
+    userId: input.userId
+  } satisfies Prisma.ChatWhereInput;
+  // The first list page also carries the user's favorites, so the Favorites
+  // group never depends on how many date pages are loaded. The date pages
+  // still list favorites too, so their cursor sequence has no gaps; the
+  // browser merges both lists by id.
+  const withFavorites = input.query === null && !cursor;
+  const [folders, rows, favoriteRows] = await Promise.all([
     prismaClient.folder.findMany({
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
       select: { id: true, name: true, parentId: true },
@@ -189,62 +233,54 @@ async function page(
     }),
     prismaClient.chat.findMany({
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      select: {
-        assistantId: true,
-        folderId: true,
-        id: true,
-        modelRuns: {
-          select: { id: true },
-          take: 1,
-          where: { status: { in: ACTIVE_RUN_STATUSES } }
-        },
-        // The task that posts into this chat, now or by an earlier run, and
-        // whether a result here is unread; nothing else crosses the boundary.
-        scheduledTasks: {
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          select: { id: true },
-          take: 1
-        },
-        // An unread result first, else the newest run in this chat.
-        scheduledTaskOccurrences: {
-          orderBy: [{ unseenAt: { nulls: "last", sort: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
-          select: { taskId: true, unseenAt: true },
-          take: 1
-        },
-        title: true,
-        updatedAt: true
-      },
+      select: navigationChatSelect,
       take: input.limit + 1,
-      where: {
-        AND: [cursorWhere, queryWhere],
-        archived: false,
-        memoryMode: { not: "TEMPORARY" },
-        permanentDeletionAt: null,
-        userId: input.userId
-      }
-    })
+      where: { ...ownerWhere, AND: [cursorWhere, queryWhere] }
+    }),
+    withFavorites
+      ? prismaClient.chat.findMany({
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+          select: navigationChatSelect,
+          take: CHAT_NAVIGATION_FAVORITES_MAX + 1,
+          where: { ...ownerWhere, pinned: true }
+        })
+      : null
   ]);
 
   const hasMore = rows.length > input.limit;
   const visible = hasMore ? rows.slice(0, input.limit) : rows;
   const final = visible.at(-1);
+  const favorites = favoriteRows?.slice(0, CHAT_NAVIGATION_FAVORITES_MAX) ?? [];
   // One lookup per page; an Assistant the viewer can no longer use shows nothing.
   const identities = await availableAssistantIdentities(prismaClient, {
-    assistantIds: visible.flatMap((row) => row.assistantId ? [row.assistantId] : []),
+    assistantIds: [...new Set([...visible, ...favorites].flatMap((row) =>
+      row.assistantId ? [row.assistantId] : []))],
     userId: input.userId
+  });
+  const summary = (row: NavigationChatRow): ChatNavigationSummaryWire => ({
+    activeRun: row.modelRuns.length > 0,
+    assistant: row.assistantId ? identities.get(row.assistantId) ?? null : null,
+    favorite: row.pinned,
+    folderId: row.folderId,
+    id: row.id,
+    scheduledTask: scheduledTaskMarker(row),
+    title: row.title,
+    updatedAt: row.updatedAt.toISOString()
   });
   return {
     kind: "ok",
     page: {
-      chats: visible.map((row) => ({
-        activeRun: row.modelRuns.length > 0,
-        assistant: row.assistantId ? identities.get(row.assistantId) ?? null : null,
-        folderId: row.folderId,
-        id: row.id,
-        scheduledTask: scheduledTaskMarker(row),
-        title: row.title,
-        updatedAt: row.updatedAt.toISOString()
-      })),
+      chats: visible.map(summary),
+      // Past the bound, the remaining favorites arrive with their date pages;
+      // `complete: false` lets the sidebar say so instead of hiding them.
+      ...(favoriteRows
+        ? {
+            favorites: {
+              chats: favorites.map(summary),
+              complete: favoriteRows.length <= CHAT_NAVIGATION_FAVORITES_MAX
+            }
+          }
+        : {}),
       folders,
       nextCursor: hasMore && final
           ? encodeCursor({
@@ -370,6 +406,9 @@ async function respond(
     ? failure(result.kind)
     : json({
         chats: [...result.page.chats],
+        ...(result.page.favorites
+          ? { favorites: { chats: [...result.page.favorites.chats], complete: result.page.favorites.complete } }
+          : {}),
         folders: [...result.page.folders],
         nextCursor: result.page.nextCursor
       });
