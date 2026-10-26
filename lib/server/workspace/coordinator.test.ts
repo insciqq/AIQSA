@@ -2254,6 +2254,33 @@ describe("Workspace coordinator activity projection", () => {
     expect(JSON.stringify(entries)).not.toMatch(/provider-start|durable-start|exec_activity/);
   });
 
+  it("refuses a command's own env that sets a reserved browser name, before touching the runtime", async () => {
+    const value = fixture();
+    for (const tool of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      const result = await value.coordinator.execute({
+        call: {
+          arguments: { command: "aiqsa-browser", args: ["save-session"], env: { SHOP: "x", AIQSA_BROWSER_SESSIONS_DIR: "/workspace/project" } },
+          id: `call_${tool}_reserved`,
+          name: namespacedWorkspaceToolName(tool)
+        },
+        modelRunToolCallId: `stored_${tool}_reserved`,
+        runId: value.runId,
+        userId: "user_1",
+        workspace: value.workspace
+      });
+      expect(result.status).toBe("error");
+      expect(result.content[0]).toMatchObject({
+        text: expect.stringContaining("Environment names starting with AIQSA_BROWSER_ are reserved for the Workspace browser")
+      });
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Remove AIQSA_BROWSER_SESSIONS_DIR from `env`") });
+      expect(result.artifacts).toEqual([expect.objectContaining({
+        data: expect.objectContaining({ payload: expect.objectContaining({ kind: "command", phase: "failed" }) })
+      })]);
+    }
+    expect(value.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
   it("rejects shell syntax in direct exec with an actionable error before touching the runtime", async () => {
     const value = fixture();
     const execName = namespacedWorkspaceToolName("sandbox_exec");
@@ -2867,6 +2894,23 @@ describe("Workspace coordinator guest-code MCP", () => {
     const stale = fixture();
     withCode(stale).issueCodeGrant.mockRejectedValue(new WorkspaceRuntimeError("workspace_operation_stale"));
     await expect(shell(stale, "call")).rejects.toMatchObject({ code: "workspace_operation_stale" });
+  });
+
+  it("hands commands the run's admitted browser language and time zone beside the code authority", async () => {
+    const value = fixture();
+    withCode(value);
+    const browser = { ...value, workspace: { ...value.workspace, browser: { locale: "es-ES", timeZone: "Europe/Madrid" } } };
+    await shell(browser, "call_browser");
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: {
+      AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token, AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "Europe/Madrid" } }));
+    // Without guest-code MCP the browser values still arrive; a malformed binding sends nothing.
+    const plain = fixture();
+    await shell({ ...plain, workspace: { ...plain.workspace, browser: { locale: "en-US", timeZone: "UTC" } } }, "call_plain");
+    expect(plain.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: {
+      AIQSA_BROWSER_LOCALE: "en-US", AIQSA_BROWSER_TIMEZONE: "UTC" } }));
+    const malformed = fixture();
+    await shell({ ...malformed, workspace: { ...malformed.workspace, browser: { locale: "en US", timeZone: "../etc" } } }, "call_bad");
+    expect(malformed.runtime.syncPersonalSecrets).not.toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: expect.anything() }));
   });
 
   it("never mints guest-code authority while exporting outputs", async () => {

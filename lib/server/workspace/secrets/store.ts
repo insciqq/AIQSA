@@ -113,7 +113,7 @@ export function decryptWorkspaceSecret(value: StoredValue, userId: string, key =
   try {
     const content = parseWorkspaceSecretValue(decryptSecretEnvelope(value.payloadEnvelope, key, {
       ownerId: userId, purpose: PURPOSE, valueId: value.id
-    }, ENVELOPE_OPTIONS));
+    }, ENVELOPE_OPTIONS), "stored");
     if (content.kind !== value.kind) throw new Error("kind_mismatch");
     return { id: value.secretId, versionId: value.id, name: value.name, description: value.description, value: content };
   } catch { throw new WorkspaceSecretError("workspace_secret_unavailable"); }

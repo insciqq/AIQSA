@@ -1,7 +1,8 @@
 import { RESOURCE_CHANGE_TEXT_LIMITS, clipResourceChangeText, type SecretChangeCard } from "@/lib/contracts/resourceChanges";
 import {
+  WORKSPACE_RESERVED_ENV_PREFIX,
   WORKSPACE_SECRET_FILE_MAX_BYTES,
-  isWorkspaceEnvName,
+  isWorkspaceSavedEnvName,
   isWorkspaceSecretId,
   workspaceSecretErrorMessage,
   type WorkspaceSecretKind,
@@ -161,8 +162,8 @@ function valueFields(args: Record<string, unknown>): ValueSource | null | Refusa
       const entries: { name: string; value: string }[] = [];
       for (const [index, entry] of args.variables.entries()) {
         if (!record(entry) || Object.keys(entry).some((key) => key !== "name" && key !== "value")) return invalid(`variables[${index}] must be {name, value}.`);
-        if (!isWorkspaceEnvName(entry.name)) {
-          return invalid(`variables[${index}].name must use letters, digits and underscores, start with a letter or underscore, and not be SSH_AUTH_SOCK, SSH_AGENT_PID or GIT_SSH_COMMAND.`);
+        if (!isWorkspaceSavedEnvName(entry.name)) {
+          return invalid(`variables[${index}].name must use letters, digits and underscores, start with a letter or underscore, not start with ${WORKSPACE_RESERVED_ENV_PREFIX} (reserved for the Workspace browser) and not be SSH_AUTH_SOCK, SSH_AGENT_PID or GIT_SSH_COMMAND.`);
         }
         if (entries.some((item) => item.name === entry.name)) return invalid(`variables names must be unique; ${JSON.stringify(entry.name)} repeats.`);
         const value = textField(entry.value, `variables[${index}].value`, MANAGE_SECRET_LIMITS.variableValueBytes, false);

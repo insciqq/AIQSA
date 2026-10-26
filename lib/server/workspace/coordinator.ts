@@ -5,6 +5,8 @@ import { measureTransaction, transactionTimingFields, transactionTimingOf } from
 import { WorkspaceActivityText, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
+import { workspaceBrowserEnvironment } from "./browserBinding";
+import { WORKSPACE_RESERVED_ENV_PREFIX, isReservedWorkspaceEnvName } from "@/lib/contracts/workspaceSecrets";
 import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
   type WorkspaceCodeRunIdentity } from "./codeMcpStore";
 import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
@@ -1608,7 +1610,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
     purpose: "execution" | "export",
     signal?: AbortSignal,
     onActivity?: WorkspaceActivityListener,
-    predecessor?: WorkspaceOperation
+    predecessor?: WorkspaceOperation,
+    browserEnvironment: Readonly<Record<string, string>> = {}
   ): Promise<WorkspaceExecutionBinding> {
     ownedOperation(binding);
     const ready = initialized.get(binding.runId);
@@ -1626,7 +1629,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     if (pending) {
       const resolved = await pending;
       if (purpose === "export" || skillPlans.has(binding.runId)) return resolved;
-      return initialize(resolved, purpose, signal, onActivity);
+      return initialize(resolved, purpose, signal, onActivity, undefined, browserEnvironment);
     }
     skillPlans.delete(binding.runId);
     const operation = (async () => {
@@ -1736,9 +1739,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const matches: WorkspaceSecretMatch[] = code?.token ? [{ name: WORKSPACE_CODE_TOKEN_ENV, value: code.token }] : [];
           activityTextByRun.set(binding.runId, new WorkspaceActivityText(matches));
           outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
+          // The run's admitted browser language and time zone ride in the same environment.
+          const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
           await input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId,
-            ...(code && Object.keys(code.environment).length > 0 ? { runEnvironment: code.environment } : {}),
+            ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
@@ -1851,8 +1856,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
   ): Promise<Readonly<{ binding: WorkspaceExecutionBinding; recreated: boolean }>> {
     let recreated = binding.runtimeSandboxId === null && binding.sessionErrorCode === "workspace_session_lost";
     let ready: WorkspaceExecutionBinding;
+    const browserEnvironment = workspaceBrowserEnvironment(workspace.browser);
     try {
-      ready = await initialize(binding, "execution", signal, onActivity);
+      ready = await initialize(binding, "execution", signal, onActivity, undefined, browserEnvironment);
     } catch (error) {
       if (
         !(error instanceof WorkspaceRuntimeError) ||
@@ -1863,7 +1869,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
       const fresh = await requireBinding(binding.runId, binding.userId, workspace);
       if (fresh.runtimeSandboxId !== null) throw error;
-      ready = await initialize(fresh, "execution", signal, onActivity);
+      ready = await initialize(fresh, "execution", signal, onActivity, undefined, browserEnvironment);
       recreated = true;
     }
     if (recreated) {
@@ -1880,6 +1886,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   const SHELL_SYNTAX = /&&|\|\||[|;<>`$\n]|\s/u;
+  // Commands whose own `env` reaches the guest; a few reserved names are named back, bounded.
+  const ENV_TOOLS = new Set(["sandbox_shell", "sandbox_exec", "sandbox_exec_start"]);
+  const reservedEnvNames = (env: unknown): string[] => env && typeof env === "object" && !Array.isArray(env)
+    ? Object.keys(env).filter(isReservedWorkspaceEnvName).slice(0, 5).map((name) => name.slice(0, 64)) : [];
 
   function projectionState(runId: string): Map<string, ExecOutputBuffer> {
     const existing = execOutputsByRun.get(runId);
@@ -2144,6 +2154,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
             text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
+            result: rejected,
+            runId,
+            startedAt: new Date()
+          }, "settled");
+          return withActivity(rejected, entry);
+        }
+        const reserved = definitionByName && ENV_TOOLS.has(definitionByName.originalName) ? reservedEnvNames(call.arguments.env) : [];
+        if (definitionByName && reserved.length) {
+          // Only AIQSA sets these (the browser's admitted language and zone): refused before anything starts.
+          const rejected = executionErrorResult(call, `Environment names starting with ${WORKSPACE_RESERVED_ENV_PREFIX} are reserved ` +
+            `for the Workspace browser, which takes its language and time zone from AIQSA. Remove ${reserved.join(", ")} from \`env\`.`);
+          const entry = projectWorkspaceActivity({
+            arguments: call.arguments,
+            text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
+            callId: modelRunToolCallId,
+            originalName: definitionByName.originalName,
             result: rejected,
             runId,
             startedAt: new Date()

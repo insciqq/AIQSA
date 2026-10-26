@@ -8,6 +8,29 @@ vi.mock("@/components/clipboard/writeClipboardText", () => ({
 }));
 
 describe("WorkspaceActivityTimelineV2", () => {
+  it("names a browser command by its steps and lists them inside, in prose", () => {
+    const { container } = render(<WorkspaceActivityTimelineV2 activity={{ entries: [
+      { command: { exitCode: 0, preview: "aiqsa-browser click 7",
+        stdoutPreview: '[browser #4] click: button "Add to cart" @ www.saucedemo.com/inventory.html\nURL: https://www.saucedemo.com/inventory.html' },
+      id: "one", kind: "command", phase: "succeeded" },
+      { command: { exitCode: 0, preview: "python3 -c \"from aiqsa import browser as b; b.click(5); b.click(6); b.type(7, 'Test')\"", stdoutPreview: [
+        "[browser #5] click: link \"Shopping cart\" @ www.saucedemo.com/inventory.html",
+        "[browser #6] click: button \"Checkout\" @ www.saucedemo.com/cart.html",
+        "[browser #7] type: textbox \"First Name\" (4 characters) @ www.saucedemo.com/checkout-step-one.html"].join("\n") },
+      id: "many", kind: "command", phase: "succeeded" }
+    ] }} />);
+    const single = screen.getByText('Browser: Clicked button "Add to cart"');
+    expect(single).toBeVisible();
+    expect(single).toHaveAttribute("data-kind", "browser");
+    expect(container.querySelectorAll("ol[aria-label='Browser steps']")).toHaveLength(1);
+    const many = screen.getByText('Browser: 3 steps, last: Typed into textbox "First Name" (4 characters)');
+    fireEvent.click(many.closest("summary")!);
+    const list = screen.getByRole("list", { name: "Browser steps" });
+    expect(list).toBeVisible();
+    expect([...list.querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+      'Clicked link "Shopping cart"', 'Clicked button "Checkout"', 'Typed into textbox "First Name" (4 characters)']);
+  });
+
   it("says on the export row which output entries were not exported", () => {
     render(<WorkspaceActivityTimelineV2 activity={{ entries: [
       { count: 1, durationMs: 400, id: "export", kind: "outputs_export", phase: "succeeded", skipped: { link: 1 } },
