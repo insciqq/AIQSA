@@ -263,6 +263,18 @@ describe("HTTP context and completion", () => {
     expect(records()[1]).toMatchObject({ stream: false, duration_ms: 3_000, headers_ms: 3_000, level: "info" });
   });
 
+  it("keeps answered live browser input quiet and still records its refusals", async () => {
+    const origin = await serve((request, response) => {
+      response.statusCode = request.url?.includes("refused") ? 409 : 204;
+      response.end();
+    });
+    for (let index = 0; index < 5; index += 1) await fetch(`${origin}/api/chats/chat-1/browser/input`, { method: "POST", body: "{}" });
+    expect(records()).toEqual([]);
+    await fetch(`${origin}/api/chats/refused/browser/input`, { method: "POST", body: "{}" });
+    await fetch(`${origin}/api/chats/chat-1/browser/control`, { method: "POST", body: "{}" });
+    expect(records().map((record) => record.status)).toEqual([409, 204]);
+  });
+
   it("keeps unexpected errors visible even on health and closes an already started response", async () => {
     const origin = await serve((request, response) => {
       if (request.url === "/stream") {

@@ -63,12 +63,14 @@ import {
 import type {
   WorkspaceAttachmentStream,
   WorkspaceBoundTool,
+  WorkspaceBrowserLiveReply,
   WorkspaceOutputCollection,
   WorkspaceOutputStream,
   WorkspaceRuntime,
   WorkspaceToolResult
 } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
+import type { BrowserLiveChannelRequest } from "./browserLive";
 import type { WorkspaceOperation } from "./operationFence";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import { workspaceRunTools } from "./admission";
@@ -224,6 +226,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   closeCodeInvocation?(input: Readonly<{ invocationId: string; runId: string }>): Promise<void>;
   codeCallSummary?(input: Readonly<{ runId: string; toolCallId: string }>): Promise<WorkspaceCodeCallSummary | null>;
   saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
+  /** Whether the run's browser sign-ins are saved back to its owner's Secrets after it (`saveBrowserSessions`). */
+  browserSaveBack?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   /** Persist before guest I/O, including attempts with an ambiguous result. */
   markGuestUsed(binding: WorkspaceExecutionBinding): Promise<boolean>;
@@ -464,6 +468,14 @@ export function createPrismaWorkspaceCoordinatorRepository(
   return {
     ...createPrismaWorkspaceCodeGrantRepository(prisma),
     saveBrowserSessions: (input) => saveWorkspaceBrowserSessions(prisma, input),
+    async browserSaveBack({ runId, userId }) {
+      // The same facts the save authorizes by (`browserStore.ts`): the run's accepted sequence in its owner's own chat.
+      const binding = await prisma.workspaceRunBinding.findFirst({
+        select: { modelRunId: true },
+        where: { browserSessionSequence: { not: null }, modelRun: { chat: { userId }, userId }, modelRunId: runId }
+      });
+      return binding !== null;
+    },
     async personalSecrets(binding) {
       const current = await loadBinding(binding.runId, binding.userId);
       if (!current || current.operationOwner !== binding.operationOwner || current.operationGeneration !== binding.operationGeneration) {
@@ -1123,6 +1135,14 @@ export type WorkspaceCoordinator = Readonly<{
     workspace: NormalizedRunWorkspace;
   }>): Promise<string>;
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
+  /**
+   * One request of a run's live browser channel (`browserLive.ts`), under the run's own operation, on the guest
+   * this process started for the run: `workspace_session_lost` before that guest runs and after the run settled.
+   * It never starts, resumes or recreates a guest, and never becomes a model tool.
+   */
+  browserLive?(input: Readonly<{ request: BrowserLiveChannelRequest; runId: string; signal?: AbortSignal }>): Promise<WorkspaceBrowserLiveReply>;
+  /** Whether the run's browser sign-ins are saved to its owner's Secrets after the turn. */
+  browserSaveBack?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
   /**
    * Before a scheduled run's first model request: starts the Workspace and
    * restores the files its task's monthly rotation carried into the chat,
@@ -2054,6 +2074,18 @@ export function createWorkspaceCoordinator(input: Readonly<{
     },
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
+    },
+    async browserLive({ request, runId, signal }) {
+      // Only the guest this process initialized for the run, under the run's own operation: nothing starts one here.
+      const binding = initialized.get(runId);
+      if (!binding?.runtimeSandboxId || !input.runtime.browserLive) {
+        throw new WorkspaceRuntimeError(input.runtime.browserLive ? "workspace_session_lost" : "workspace_runtime_incompatible");
+      }
+      return input.runtime.browserLive({ ...request, modelRunId: runId, operation: ownedOperation(binding),
+        runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId, ...(signal ? { signal } : {}) });
+    },
+    async browserSaveBack({ runId, userId }) {
+      return await input.repository.browserSaveBack?.({ runId, userId }) ?? false;
     },
     async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace, skipBrowserSave }) {
       // Every terminal path ends guest-code MCP authority first, before any
