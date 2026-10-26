@@ -325,6 +325,77 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.hub.wait_for_agent(2.0))
         self.assertIn("The user gave the browser back to you", self.hub.take_note() or "")
 
+    async def press(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, event: Dict[str, Any]) -> None:
+        self.assertTrue((await self.ask(reader, writer, {"t": "input", "id": "p", "input": event}))["ok"])
+
+    def released(self) -> List[Tuple[str, Any, Any]]:
+        session = self.host.session
+        return [("mouse", params["type"], params["button"]) for params in session.calls("Input.dispatchMouseEvent")] + \
+            [("key", params["type"], params["code"] or params["key"]) for params in session.calls("Input.dispatchKeyEvent")]
+
+    async def test_control_leaving_the_user_lets_go_of_what_their_input_left_pressed(self) -> None:
+        reader, writer = await self.open_view()
+        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        session = self.host.session
+        # Take control, then a drag whose button never comes up, an arrow key held and Shift pressed and let go.
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        await self.press(reader, writer, {"kind": "mouse", "type": "down", "x": 100, "y": 100, "button": "left", "clickCount": 1})
+        await self.press(reader, writer, {"kind": "mouse", "type": "move", "x": 640, "y": 400})
+        await self.press(reader, writer, {"kind": "key", "type": "down", "key": "ArrowDown", "code": "ArrowDown"})
+        await self.press(reader, writer, {"kind": "key", "type": "down", "key": "Shift", "code": "ShiftLeft", "modifiers": 8})
+        await self.press(reader, writer, {"kind": "key", "type": "up", "key": "Shift", "code": "ShiftLeft"})
+        session.sent.clear()
+        self.assertTrue((await self.ask(reader, writer, {"t": "control", "id": "c2", "action": "return"}))["ok"])
+        # Before the agent has the page back: the button at the pointer's last position, then the key still down.
+        self.assertEqual(session.calls("Input.dispatchMouseEvent"), [{"type": "mouseReleased", "x": 720.0, "y": 450.0, "button": "left",
+                                                                     "buttons": 0, "clickCount": 1, "modifiers": 0}])
+        self.assertEqual(session.calls("Input.dispatchKeyEvent"), [{"type": "keyUp", "key": "ArrowDown", "code": "ArrowDown", "modifiers": 0,
+                                                                   "windowsVirtualKeyCode": 40, "nativeVirtualKeyCode": 40}])
+        self.assertEqual((self.hub.pressed, self.hub.keys), (0, {}))
+        # A handoff's end lets go the same way whatever its outcome; nothing is let go twice.
+        self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
+        await self.press(reader, writer, {"kind": "mouse", "type": "down", "x": 10, "y": 10, "button": "right", "clickCount": 1})
+        await self.press(reader, writer, {"kind": "mouse", "type": "down", "x": 10, "y": 10, "button": "left", "clickCount": 1})
+        await self.press(reader, writer, {"kind": "key", "type": "down", "key": "Control", "code": "ControlLeft", "modifiers": 2})
+        await self.press(reader, writer, {"kind": "key", "type": "down", "key": "a", "code": "KeyA", "modifiers": 2})
+        session.sent.clear()
+        self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "cancelled"}))["ok"])
+        self.assertEqual(self.released(), [("mouse", "mouseReleased", "left"), ("mouse", "mouseReleased", "right"),
+                                           ("key", "keyUp", "KeyA"), ("key", "keyUp", "ControlLeft")])
+        self.assertEqual([params["buttons"] for params in session.calls("Input.dispatchMouseEvent")], [2, 0])
+        session.sent.clear()
+        await self.ask(reader, writer, {"t": "control", "id": "c3", "action": "take"})
+        await self.ask(reader, writer, {"t": "control", "id": "c4", "action": "return"})
+        self.assertEqual(self.released(), [])
+
+    async def test_the_grace_end_and_the_host_stop_let_go_of_what_the_user_held(self) -> None:
+        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        with mock.patch.object(_live, "CONTROL_GRACE_SECONDS", 0.1):
+            reader, writer = await self.open_view()
+            await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+            await self.press(reader, writer, {"kind": "mouse", "type": "down", "x": 640, "y": 400, "button": "left", "clickCount": 1})
+            # The panel's tab closes mid-drag: its button up never comes.
+            writer.close()
+            self.views.clear()
+            self.assertTrue(await self.hub.wait_for_agent(2.0))
+        self.assertEqual(self.released(), [("mouse", "mousePressed", "left"), ("mouse", "mouseReleased", "left")])
+        reader, writer = await self.open_view()
+        await self.ask(reader, writer, {"t": "control", "id": "c2", "action": "take"})
+        await self.press(reader, writer, {"kind": "key", "type": "down", "key": "Control", "code": "ControlLeft", "modifiers": 2})
+        self.host.session.sent.clear()
+        await self.hub.close()
+        self.assertEqual(self.released(), [("key", "keyUp", "ControlLeft")])
+        self.assertEqual((self.hub.controller, self.hub.pressed, self.hub.keys), ("agent", 0, {}))
+
+    async def test_held_keys_stay_bounded_by_letting_the_oldest_go(self) -> None:
+        reader, writer = await self.open_view()
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        for index in range(_livehub.HELD_KEYS_MAX + 1):
+            await self.press(reader, writer, {"kind": "key", "type": "down", "key": "F1", "code": f"Code{index}"})
+        self.assertEqual(len(self.hub.keys), _livehub.HELD_KEYS_MAX)
+        self.assertEqual([params["code"] for params in self.host.session.calls("Input.dispatchKeyEvent") if params["type"] == "keyUp"],
+                         ["Code0"])
+
     async def test_a_handoff_survives_its_streamer_leaving(self) -> None:
         with mock.patch.object(_live, "CONTROL_GRACE_SECONDS", 0.05):
             reader, writer = await self.open_view()
