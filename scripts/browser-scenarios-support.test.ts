@@ -183,15 +183,15 @@ describe("selection and evidence", () => {
   });
 
   it("aggregates one baseline row per scenario", () => {
-    const run = (overrides: Partial<RunRecord>): RunRecord => ({ blocked: [], costUsd: null, rounds: 4, scenario: "S1",
-      success: false, toolCalls: 10, wallSeconds: 100, ...overrides });
+    const run = (overrides: Partial<RunRecord>): RunRecord => ({ blocked: [], costUsd: null, inputTokens: 1_000,
+      outputTokens: 10, rounds: 4, scenario: "S1", success: false, toolCalls: 10, wallSeconds: 100, ...overrides });
     const summary = scenarioSummary("S1", [
-      run({ blocked: ["bot_wall"], rounds: 2, toolCalls: 6, wallSeconds: 60 }),
-      run({ blocked: ["bot_wall", "captcha"], success: true, rounds: 6 }),
+      run({ blocked: ["bot_wall"], rounds: 2, toolCalls: 6, wallSeconds: 60.15 }),
+      run({ blocked: ["bot_wall", "captcha"], success: true, rounds: 6, outputTokens: null }),
       run({ scenario: "S2", success: true })
     ]);
-    expect(summary).toEqual({ blocked: { bot_wall: 2, captcha: 1 }, costKnownRuns: 0, costUsdTotal: null, medianRounds: 4,
-      medianToolCalls: 8, medianWallSeconds: 80, runs: 2, scenario: "S1", successes: 1 });
+    expect(summary).toEqual({ blocked: { bot_wall: 2, captcha: 1 }, costKnownRuns: 0, costUsdTotal: null, inputTokensTotal: 2_000,
+      medianRounds: 4, medianToolCalls: 8, medianWallSeconds: 80.1, outputTokensTotal: null, runs: 2, scenario: "S1", successes: 1 });
     expect(scenarioSummary("S2", [run({ costUsd: 0.25, scenario: "S2" }), run({ costUsd: 0.5, scenario: "S2" })]).costUsdTotal).toBe(0.75);
     expect(median([3, 1, 2])).toBe(2);
     expect(median([])).toBeNull();

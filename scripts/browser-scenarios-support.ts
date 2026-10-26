@@ -420,6 +420,8 @@ export function usageEvidence(rows: readonly UsageRow[]): Readonly<{
 export type RunRecord = Readonly<{
   blocked: readonly BrowserBlockedCode[];
   costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
   rounds: number | null;
   scenario: BrowserScenarioId;
   success: boolean;
@@ -434,11 +436,19 @@ export function median(values: readonly number[]): number | null {
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-/** One baseline-table row: a scenario's runs aggregated without their content. */
+const tenth = (value: number | null) => value === null ? null : Math.round(value * 10) / 10;
+
+/**
+ * One baseline-table row: a scenario's runs aggregated without their content.
+ * Token totals are provider-reported usage and stay null when any run's usage
+ * is unknown; they are the comparable spend when the route reports no cost.
+ */
 export function scenarioSummary(scenario: BrowserScenarioId, runs: readonly RunRecord[]) {
   const own = runs.filter((run) => run.scenario === scenario);
   const numbers = (key: "rounds" | "toolCalls" | "wallSeconds") =>
     own.map((run) => run[key]).filter((value): value is number => value !== null);
+  const total = (key: "inputTokens" | "outputTokens") => own.length > 0 && own.every((run) => run[key] !== null)
+    ? own.reduce((sum, run) => sum + (run[key] ?? 0), 0) : null;
   const blocked: Record<string, number> = {};
   for (const run of own) for (const code of run.blocked) blocked[code] = (blocked[code] ?? 0) + 1;
   const costs = own.map((run) => run.costUsd);
@@ -447,9 +457,11 @@ export function scenarioSummary(scenario: BrowserScenarioId, runs: readonly RunR
     costKnownRuns: costs.filter((cost) => cost !== null).length,
     costUsdTotal: own.length > 0 && costs.every((cost) => cost !== null)
       ? Math.round(costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0) * 1_000_000) / 1_000_000 : null,
-    medianRounds: median(numbers("rounds")),
-    medianToolCalls: median(numbers("toolCalls")),
-    medianWallSeconds: median(numbers("wallSeconds")),
+    inputTokensTotal: total("inputTokens"),
+    medianRounds: tenth(median(numbers("rounds"))),
+    medianToolCalls: tenth(median(numbers("toolCalls"))),
+    medianWallSeconds: tenth(median(numbers("wallSeconds"))),
+    outputTokensTotal: total("outputTokens"),
     runs: own.length,
     scenario,
     successes: own.filter((run) => run.success).length
