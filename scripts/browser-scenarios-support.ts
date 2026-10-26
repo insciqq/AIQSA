@@ -628,14 +628,60 @@ export type UsageRow = Readonly<{
 }>;
 
 export function toolCallStats(calls: readonly ToolCallRow[]): Readonly<{
-  analyzeImageCalls: number; failedToolCalls: number; rounds: number; toolCalls: number;
+  analyzeImageCalls: number; failedToolCalls: number; rounds: number; toolCalls: number; viewWorkspaceImageCalls: number;
 }> {
   return {
     analyzeImageCalls: calls.filter((call) => call.toolName === "analyze_image").length,
     failedToolCalls: calls.filter((call) => call.state === "error").length,
     // Tool rounds are numbered from 1; a run without tool calls had none.
     rounds: calls.reduce((max, call) => Math.max(max, call.roundIndex), 0),
-    toolCalls: calls.length
+    toolCalls: calls.length,
+    viewWorkspaceImageCalls: calls.filter((call) => call.toolName === "view_workspace_image").length
+  };
+}
+
+// Chat route --------------------------------------------------------------------------
+
+export const OPENROUTER_API_ROOT = "https://openrouter.ai/api/v1";
+
+/**
+ * The chat model the runs use. `codex-lb` (default) is the vision-capable
+ * Responses model from the operator's codex-lb profile. `openrouter` adds a
+ * text-only OpenRouter model as an OpenAI-compatible Chat Completions
+ * connection, so it sees Workspace images only through System Vision, which
+ * stays on the codex-lb model either way.
+ */
+export type ChatRoute = Readonly<{ route: "codex-lb" }> | Readonly<{ model: string; route: "openrouter" }>;
+
+export function chatRoute(env: Readonly<Record<string, string | undefined>>): ChatRoute {
+  const route = env.AIQSA_BROWSER_SCENARIOS_CHAT_ROUTE?.trim() || "codex-lb";
+  const model = env.AIQSA_BROWSER_SCENARIOS_CHAT_MODEL?.trim() ?? "";
+  if (route === "codex-lb") return model ? fail("chat_model_unexpected") : { route };
+  if (route !== "openrouter") return fail("chat_route_invalid");
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._:-]{0,127}$/u.test(model)) fail("chat_model_invalid");
+  if (!env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
+  return { model, route };
+}
+
+/** The listing entry of a text-only model with tool calling, or a stable refusal code. */
+export function openRouterTextModel(listing: unknown, model: string): Readonly<{ contextWindow: number }> | Readonly<{ code: string }> {
+  const entries = record(listing) && Array.isArray(listing.data) ? listing.data.filter(record) : [];
+  const entry = entries.find((candidate) => candidate.id === model);
+  if (!entry) return { code: "chat_model_not_listed" };
+  const parameters = Array.isArray(entry.supported_parameters) ? entry.supported_parameters : [];
+  if (!parameters.includes("tools")) return { code: "chat_model_without_tools" };
+  const architecture = record(entry.architecture) ? entry.architecture : {};
+  const inputs = Array.isArray(architecture.input_modalities) ? architecture.input_modalities : [];
+  if (inputs.some((input) => input !== "text")) return { code: "chat_model_not_text_only" };
+  const contextWindow = Number(entry.context_length);
+  return Number.isSafeInteger(contextWindow) && contextWindow >= 32_768 ? { contextWindow } : { code: "chat_model_context_invalid" };
+}
+
+/** The declared capabilities of the text-only route; setup proves each before the model is offered. */
+export function textChatCapabilities(contextWindow: number): Readonly<Record<string, unknown>> {
+  return {
+    contextWindow, defaultMaxOutputTokens: 16_384, nativeImageGeneration: false, nativePdfInput: false, nativeSearch: false,
+    parallelToolCalls: false, pdf: true, reasoning: false, streaming: true, toolCalling: true, vision: false
   };
 }
 
