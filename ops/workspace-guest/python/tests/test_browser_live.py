@@ -357,7 +357,7 @@ class LiveBrowserTests(unittest.TestCase):
         out = io.StringIO()
         self.assertEqual(cli.main(["status", "--markers"], stdout=out, stderr=io.StringIO()), 0)
         text = out.getvalue()
-        self.assertRegex(text, r"^Chromium ([0-9.]+) \(pinned \1\), language es-ES, time zone Europe/Madrid\.$" if status["pinned"]
+        self.assertRegex(text, r"(?m)^Chromium ([0-9.]+) \(pinned \1\), language es-ES, time zone Europe/Madrid\.$" if status["pinned"]
                          else r"^Chromium [0-9.]+ \(pinned unknown\)")
         for scope in ("page", "worker"):
             self.assertRegex(text, rf"(?m)^Markers in {scope} scope: webdriver=(false|null), headless user agent=false, brands=[^\n]*, "
