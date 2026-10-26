@@ -15,7 +15,8 @@
  * the codex-lb route from ~/.codex/config.toml as a vision-capable chat model
  * (reused when an identical usable one exists), System Vision on the same
  * model, Workspace on with internet, Memory off for the user, and the public
- * saucedemo.com demo login as a Workspace env secret. The harness signs in with
+ * saucedemo.com demo login as a Workspace env secret, saved only for the runs
+ * of a scenario that expects it (S3). The harness signs in with
  * the password of the administrator the stand's bootstrap created. Workspace
  * limits are the stand's own; the effective bounds of every run are printed.
  * The exit code is 0 whenever the measurement completes, whatever the success
@@ -27,6 +28,12 @@
  * AIQSA_BROWSER_SCENARIOS_KEEP_CHATS=1) and browser sessions the run saved are
  * removed, so every run starts from the same state.
  *
+ * S5 also drives the chat page with Playwright while the run is live
+ * (`scripts/browser-scenarios-handoff.ts`): it signs in through the live
+ * browser handoff, so the harness host needs a Chromium for Playwright. Its
+ * oracle also reads the run's `browser_handoff` calls and counts stored rows
+ * that carry what the user typed; only counts are printed.
+ *
  * Environment (process only; no .env loading):
  * - AIQSA_BROWSER_SCENARIOS_E2E=DISPOSABLE (required acknowledgement)
  * - AIQSA_BROWSER_SCENARIOS_COMPOSE_FILE: the stand's `docker compose config --format json`
@@ -35,6 +42,7 @@
  * - AIQSA_BROWSER_SCENARIOS_SELECT (default S1,S2,S3,S4,S5), AIQSA_BROWSER_SCENARIOS_RUNS (1..5, default 2)
  * - AIQSA_BROWSER_SCENARIOS_LABEL: tree or branch label echoed in the output
  * - AIQSA_BROWSER_SCENARIOS_MARGIN_SECONDS (60..3600, default 600)
+ * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL: optional installed browser for S5 (for example `chrome`)
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -50,10 +58,10 @@ import {
   decodeMemoryConsumerPermanentChatDeleteResponse
 } from "../lib/contracts/memoryClient";
 import {
-  BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_SECRET, checkBrowserResult, cleanUpRun,
-  parseBrowserResult, requireBrowserScenarioStand, runBounds, scenarioSummary, selectedScenarios, toolCallStats,
-  usageEvidence, type BrowserBlockedCode, type BrowserScenario, type BrowserScenarioId, type BrowserScenarioStand,
-  type RunBounds, type RunRecord, type StandTarget, type ToolCallRow, type UsageRow
+  BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_LOGIN_VALUES, SAUCEDEMO_SECRET,
+  checkBrowserResult, cleanUpRun, parseBrowserResult, requireBrowserScenarioStand, runBounds, scenarioSummary, selectedScenarios,
+  toolCallStats, usageEvidence, type BrowserBlockedCode, type BrowserScenario, type BrowserScenarioId, type BrowserScenarioStand,
+  type HandoffCallRow, type RunBounds, type RunRecord, type StandTarget, type ToolCallRow, type TypedValueLeaks, type UsageRow
 } from "./browser-scenarios-support";
 import {
   JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
@@ -211,12 +219,28 @@ async function secrets(api: Api): Promise<SecretSummary[]> {
     typeof entry.kind === "string" && typeof entry.name === "string" && typeof entry.versionId === "string");
 }
 
-async function ensureSaucedemoSecret(api: Api): Promise<void> {
-  if ((await secrets(api)).some((secret) => secret.kind === "env" && secret.name === SAUCEDEMO_SECRET.name)) return;
-  await json(api, "/api/me/workspace/secrets", { body: {
-    action: "create", description: SAUCEDEMO_SECRET.description, name: SAUCEDEMO_SECRET.name,
-    value: { entries: SAUCEDEMO_SECRET.entries.map((entry) => ({ ...entry })), kind: "env" }
-  }, method: "POST" });
+/**
+ * The Saucedemo secret is saved only for a scenario that expects it (S3):
+ * S5 signs in through the user, so a saved login must not be there to use.
+ */
+async function syncSaucedemoSecret(api: Api, wanted: boolean): Promise<void> {
+  const saved = (await secrets(api)).filter((secret) => secret.kind === "env" && secret.name === SAUCEDEMO_SECRET.name);
+  if (wanted && saved.length === 0) {
+    await json(api, "/api/me/workspace/secrets", { body: {
+      action: "create", description: SAUCEDEMO_SECRET.description, name: SAUCEDEMO_SECRET.name,
+      value: { entries: SAUCEDEMO_SECRET.entries.map((entry) => ({ ...entry })), kind: "env" }
+    }, method: "POST" });
+  }
+  if (!wanted) {
+    for (const secret of saved) {
+      await json(api, "/api/me/workspace/secrets", {
+        body: { action: "delete", expectedVersionId: secret.versionId, id: secret.id }, method: "POST"
+      });
+    }
+    if ((await secrets(api)).some((secret) => secret.kind === "env" && secret.name === SAUCEDEMO_SECRET.name)) {
+      fail("saucedemo_secret_cleanup_failed");
+    }
+  }
 }
 
 /**
@@ -268,6 +292,40 @@ async function deleteChat(api: Api, db: PostgresClient, chatId: string): Promise
   }
 }
 
+/** The run's `browser_handoff` calls with their arguments and results, read only for the oracle. */
+async function handoffCalls(db: PostgresClient, runId: string): Promise<HandoffCallRow[]> {
+  const { rows } = await db.query<HandoffCallRow>(`SELECT "state"::text AS "state", "arguments", "result"
+    FROM "ModelRunToolCall" WHERE "modelRunId" = $1 AND "toolName" = 'browser_handoff' ORDER BY "roundIndex", "ordinal"`, [runId]);
+  return rows;
+}
+
+/**
+ * Counts the run's stored rows that carry what the user typed into the live
+ * view (`TypedValueLeaks`): the chat's messages and the run's tool calls,
+ * transcript items and events. Only counts leave the database.
+ */
+async function typedValueLeaks(db: PostgresClient, chatId: string, runId: string, marker: string): Promise<TypedValueLeaks> {
+  const { rows } = await db.query<TypedValueLeaks>(`WITH "fence" AS (
+      SELECT min("startedAt") AS "at" FROM "ModelRunToolCall" WHERE "modelRunId" = $2 AND "toolName" = 'browser_handoff'
+    ), "stored" AS (
+      SELECT "content"::text AS "body", "updatedAt" AS "at", false AS "agentArguments" FROM "Message" WHERE "chatId" = $1
+      UNION ALL SELECT coalesce("errorMessage", ''), "updatedAt", false FROM "Message" WHERE "chatId" = $1
+      UNION ALL SELECT "arguments"::text, "updatedAt", true FROM "ModelRunToolCall" WHERE "modelRunId" = $2
+      UNION ALL SELECT coalesce("result"::text, ''), "updatedAt", false FROM "ModelRunToolCall" WHERE "modelRunId" = $2
+      UNION ALL SELECT "body"::text, "createdAt", false FROM "RunTranscriptItem" WHERE "modelRunId" = $2
+      UNION ALL SELECT "payload"::text, "createdAt", false FROM "ModelRunEvent" WHERE "modelRunId" = $2
+    ), "matched" AS (
+      SELECT "body", "at", "agentArguments",
+        EXISTS (SELECT 1 FROM unnest($4::text[]) AS "value" WHERE strpos("body", "value") > 0) AS "credential"
+      FROM "stored"
+    )
+    SELECT count(*) FILTER (WHERE strpos("body", $3) > 0)::int AS "marker",
+      count(*) FILTER (WHERE "credential" AND "agentArguments")::int AS "credentialsInToolArguments",
+      count(*) FILTER (WHERE "credential" AND NOT "agentArguments" AND "at" >= (SELECT "at" FROM "fence"))::int AS "credentialsAfterHandoff"
+    FROM "matched"`, [chatId, runId, marker, [...SAUCEDEMO_LOGIN_VALUES]]);
+  return rows[0] ?? fail("leak_check_failed");
+}
+
 /** Reads and discards a streamed answer within a byte bound; nothing is kept. */
 async function discard(response: Response): Promise<void> {
   const reader = response.body?.getReader();
@@ -308,10 +366,13 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
   let chatId: string | null = null;
+  // Typed only into the live view (S5); the run's leak check looks for it. Never printed.
+  const marker = `zq${randomUUID().replaceAll("-", "")}`;
   const measured = await (async (): Promise<RunRecord> => { try {
     // A session saved late by the previous run's settlement must not sign this run in.
     stage = "pre_run_cleanup";
     line.sessionsRemovedBefore = await removeBrowserSessions(api);
+    await syncSaucedemoSecret(api, scenario.secret === "saucedemo");
     stage = "chat";
     const chat = decodeChatSummaryResponse(await json(api, "/api/chats", {
       body: { title: `Browser scenario ${scenario.id} run ${run}` }, method: "POST"
@@ -346,8 +407,10 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     const limitSeconds = typeof bounds.turnTimeoutSeconds === "number" ? bounds.turnTimeoutSeconds
       : typeof context.standBounds.turnTimeoutSeconds === "number" ? context.standBounds.turnTimeoutSeconds : 3_600;
     const interaction = new AbortController();
-    const interacting = scenario.interaction?.({ baseUrl: api.baseUrl.origin, chatId: chat.id, cookie: api.cookie,
-      runId: admitted.id, signal: interaction.signal }).catch(() => { line.interactionFailed = true; });
+    const interacting = scenario.interaction?.({ baseUrl: api.baseUrl.origin, chatId: chat.id, cookie: api.cookie, marker,
+      runId: admitted.id, signal: interaction.signal }).then((evidence) => { line.interaction = evidence; }, (error: unknown) => {
+      line.interactionFailed = error instanceof BrowserScenarioError ? error.message : "browser_scenarios_interaction_failed";
+    });
     let terminal: RunRow | null = null;
     try {
       terminal = await poll((limitSeconds + context.marginSeconds) * 1_000, async () => {
@@ -412,6 +475,15 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
         line.oracleCounts = verdict.counts;
       }
     }
+    if (scenario.runOracle) {
+      stage = "run_evidence";
+      const runVerdict = scenario.runOracle({
+        handoffs: await handoffCalls(db, admitted.id),
+        leaks: await typedValueLeaks(db, chat.id, admitted.id, marker).catch(() => null)
+      });
+      checks = [...checks, ...runVerdict.failed];
+      line.runOracleCounts = runVerdict.counts;
+    }
     line.checksFailed = checks;
     line.blocked = blocked;
     success = terminal?.status === "complete" && checks.length === 0;
@@ -469,7 +541,6 @@ async function main() {
     await ensureWorkspaceInternet(api);
     const provider = await ensureModel(api, route, secret);
     await ensureSystemVision(api, provider.providerModelId);
-    await ensureSaucedemoSecret(api);
     const model = await poll(SETUP_TIMEOUT_MS, async () => {
       const catalog = decodeCatalogResponse(await json(api, "/api/me/catalog")) ?? fail("catalog_response_invalid");
       const entry = catalog.models.find((candidate) =>
