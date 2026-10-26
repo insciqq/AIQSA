@@ -177,10 +177,16 @@ class FakeHost:
         self.masked: Dict[Any, List[Tuple[str, Any]]] = {}
         self.last_used = 0.0
         self.saved = 0
+        self.lock = asyncio.Lock()
 
     async def save_site_session(self) -> Optional[str]:
-        self.saved += 1
-        return "shop.example"
+        # As the host's: under its lock, which a waiting agent action must not hold.
+        await asyncio.wait_for(self.lock.acquire(), 2)
+        try:
+            self.saved += 1
+            return "shop.example"
+        finally:
+            self.lock.release()
 
 
 class HubTests(unittest.IsolatedAsyncioTestCase):
@@ -396,6 +402,139 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([params["code"] for params in self.host.session.calls("Input.dispatchKeyEvent") if params["type"] == "keyUp"],
                          ["Code0"])
 
+    async def test_a_queued_agent_action_never_starts_after_take_control(self) -> None:
+        reader, writer = await self.open_view()
+        lock, ran = self.host.lock, []
+        first_may_end = asyncio.Event()
+
+        async def action(name: str, until: Optional[asyncio.Event] = None) -> None:
+            # The host's dispatch, mocked: what runs under the lock, and who held the browser then.
+            async with self.hub.agent_action(lock):
+                ran.append((name, self.hub.controller))
+                if until is not None:
+                    await until.wait()
+
+        first = asyncio.ensure_future(action("first", first_may_end))
+        await asyncio.sleep(0.02)
+        queued = asyncio.ensure_future(action("queued"))
+        await asyncio.sleep(0.02)
+        self.assertTrue(lock.locked())
+        take = asyncio.ensure_future(self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"}))
+        await asyncio.sleep(0.05)
+        # Take waits for the action under way; the queued one does not start meanwhile, nor after it.
+        self.assertFalse(take.done())
+        first_may_end.set()
+        self.assertTrue((await take)["ok"])
+        await first
+        await asyncio.sleep(0.05)
+        self.assertEqual((ran, self.hub.controller, queued.done()), ([("first", "agent")], "user", False))
+        self.assertTrue((await self.ask(reader, writer, {"t": "control", "id": "c2", "action": "return"}))["ok"])
+        await asyncio.wait_for(queued, 2)
+        self.assertEqual(ran, [("first", "agent"), ("queued", "agent")])
+
+    async def test_a_take_does_not_wait_out_a_long_agent_action(self) -> None:
+        reader, writer = await self.open_view()
+        never = asyncio.Event()
+
+        async def waiting_action() -> None:
+            async with self.hub.agent_action(self.host.lock):
+                await never.wait()
+
+        long_action = asyncio.ensure_future(waiting_action())
+        await asyncio.sleep(0.02)
+        with mock.patch.object(_livehub, "TAKE_WAIT_SECONDS", 0.1):
+            self.assertTrue((await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"}))["ok"])
+        self.assertEqual(self.hub.controller, "user")
+        long_action.cancel()
+        await asyncio.gather(long_action, return_exceptions=True)
+
+    async def test_an_agent_action_waiting_for_the_user_holds_no_lock_the_handoff_end_needs(self) -> None:
+        reader, writer = await self.open_view()
+        self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
+        ran = []
+
+        async def action() -> None:
+            async with self.hub.agent_action(self.host.lock):
+                ran.append(self.hub.controller)
+
+        waiting = asyncio.ensure_future(action())
+        await asyncio.sleep(0.05)
+        self.assertFalse(self.host.lock.locked())
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed"})
+        self.assertEqual((ended["ok"], ended["saved"]), (True, "shop.example"))
+        self.assertLess(loop.time() - started, 1.0)
+        await asyncio.wait_for(waiting, 2)
+        self.assertEqual(ran, ["agent"])
+
+    async def test_an_agent_action_fails_when_the_user_keeps_the_browser(self) -> None:
+        reader, writer = await self.open_view()
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        with mock.patch.object(_live, "CONTROL_WAIT_SECONDS", 0.1):
+            with self.assertRaises(_livehub.UserInControl):
+                async with self.hub.agent_action(self.host.lock):
+                    self.fail("the action must not run")
+            # Reading no page, `status` and `steps` still answer.
+            async with self.hub.agent_action(self.host.lock, control_free=True):
+                pass
+        self.assertFalse(self.host.lock.locked())
+
+    async def test_a_value_typed_with_pauses_is_hidden_whole(self) -> None:
+        reader, writer = await self.open_view()
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        # A code widget whose value the page does not expose in one field: only what the user typed is known.
+        self.host.current.main_frame.focused = None
+        with mock.patch.object(_livehub, "CAPTURE_DELAY", 0.02):
+            for part in ("123", "456"):
+                for char in part:
+                    await self.ask(reader, writer, {"t": "input", "id": "k" + char, "input": {"kind": "key", "type": "down", "key": char,
+                                                                                             "code": "Digit" + char}})
+                await asyncio.sleep(0.1)
+        self.assertEqual(self.host.hidden.text("code=123456"), "code=[hidden]")
+
+    async def test_a_field_that_submits_on_its_last_digit_is_hidden_before_the_agent_gets_the_page(self) -> None:
+        reader, writer = await self.open_view()
+        self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
+        field = FakeElement("1234")
+        self.host.current.main_frame.focused = field
+        with mock.patch.object(_livehub, "CAPTURE_DELAY", 0.02):
+            await self.ask(reader, writer, {"t": "input", "id": "t1", "input": {"kind": "text", "text": "1234"}})
+            await asyncio.sleep(0.1)
+        with mock.patch.object(_livehub, "CAPTURE_DELAY", 30):
+            await self.ask(reader, writer, {"t": "input", "id": "t2", "input": {"kind": "text", "text": "56"}})
+            # The page submitted on the last digit and moved on before anything was captured.
+            self.host.current.url = "https://shop.example/verify?otp=123456"
+            self.host.current.main_frame.focused = None
+            ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed"})
+        self.assertEqual(ended["page"]["url"], "https://shop.example/verify?otp=[hidden]")
+
+    async def test_enter_tab_and_a_click_go_out_after_what_was_typed_is_hidden(self) -> None:
+        reader, writer = await self.open_view()
+        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
+        session = self.host.session
+        seen: List[Tuple[str, str]] = []
+        send = session.send
+
+        async def watching(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            if method != "Input.insertText":
+                key = (params or {}).get("key") or (params or {}).get("type")
+                seen.append((str(key), self.host.hidden.text("secret-one secret-two secret-six")))
+            return await send(method, params)
+
+        session.send = watching  # type: ignore[method-assign]
+        self.host.current.main_frame.focused = None
+        with mock.patch.object(_livehub, "CAPTURE_DELAY", 30):
+            for text, key in (("secret-one", "Enter"), ("secret-two", "Tab")):
+                await self.ask(reader, writer, {"t": "input", "id": "t", "input": {"kind": "text", "text": text}})
+                await self.ask(reader, writer, {"t": "input", "id": "k", "input": {"kind": "key", "type": "down", "key": key, "code": key}})
+            await self.ask(reader, writer, {"t": "input", "id": "t", "input": {"kind": "text", "text": "secret-six"}})
+            await self.ask(reader, writer, {"t": "input", "id": "m", "input": {"kind": "mouse", "type": "down", "x": 10, "y": 10,
+                                                                              "button": "left", "clickCount": 1}})
+        self.assertEqual(seen, [("Enter", "[hidden] secret-two secret-six"), ("Tab", "[hidden] [hidden] secret-six"),
+                                ("mousePressed", "[hidden] [hidden] [hidden]")])
+
     async def test_a_handoff_survives_its_streamer_leaving(self) -> None:
         with mock.patch.object(_live, "CONTROL_GRACE_SECONDS", 0.05):
             reader, writer = await self.open_view()
@@ -456,6 +595,55 @@ class StreamerTests(unittest.TestCase):
                                       json.dumps({"t": "handoff", "id": "h1", "action": "begin"}), "not json"])
         self.assertEqual(messages[0], {"t": "state", "browser": "absent"})
         self.assertIn({"t": "ack", "id": "h1", "ok": False, "code": "browser_not_running"}, messages)
+
+    def test_a_command_written_right_after_start_waits_for_the_host(self) -> None:
+        """AIQSA writes `begin` right after it starts the streamer, and the host may come up only for its retry."""
+        path = str(self.root / "tmp" / "aiqsa-browser" / "control.sock")
+        received: List[Dict[str, Any]] = []
+
+        async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            received.append(json.loads(await reader.readline()))
+            writer.write(b'{"t":"state","browser":"running"}\n')
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                message = json.loads(line)
+                received.append(message)
+                writer.write(json.dumps({"t": "ack", "id": message["id"], "ok": True}).encode() + b"\n")
+                await writer.drain()
+            writer.close()
+
+        async def main() -> List[Dict[str, Any]]:
+            env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[1]), os.environ.get("PYTHONPATH", "")])}
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "aiqsa.browser.live", "--test-root", str(self.root), stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.write(b'{"t":"handoff","action":"begin","id":"b1"}\n')
+            await process.stdin.drain()
+            # Its first attempt finds no host; the host listens before the retry.
+            await asyncio.sleep(0.2)
+            server = await asyncio.start_unix_server(serve, path=path)
+            messages: List[Dict[str, Any]] = []
+            try:
+                while not any(message.get("t") == "ack" for message in messages):
+                    line = await asyncio.wait_for(process.stdout.readline(), 8)
+                    self.assertTrue(line, "the streamer ended early")
+                    message = _live.decode_line(line.decode().rstrip("\n"))
+                    if message is not None:
+                        messages.append(message)
+                process.stdin.close()
+                await asyncio.wait_for(process.stdout.read(), 10)
+                self.assertEqual(await asyncio.wait_for(process.wait(), 10), 0)
+            finally:
+                server.close()
+                await server.wait_closed()
+            return messages
+
+        messages = asyncio.run(main())
+        self.assertEqual([message for message in messages if message["t"] == "ack"], [{"t": "ack", "id": "b1", "ok": True}])
+        self.assertEqual(received[1], {"t": "handoff", "action": "begin", "id": "b1"})
 
     def test_it_relays_both_ways_and_never_starts_a_host(self) -> None:
         received: List[Dict[str, Any]] = []

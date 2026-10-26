@@ -616,12 +616,13 @@ class Host:
                 await self.live.serve(reader, writer, request.get("args", {}))
                 return
             agent_request = True
-            if request["op"] not in CONTROL_FREE_OPS and not await self.live.wait_for_agent():
-                raise HostError("user_in_control", USER_IN_CONTROL)
-            async with self.lock:
+            # One action at a time, and none while the user holds the browser (checked again under the lock).
+            async with self.live.agent_action(self.lock, control_free=request["op"] in CONTROL_FREE_OPS):
                 self.last_used = time.monotonic()
                 response = {"ok": True, "result": await self.dispatch(request["op"], request.get("args", {}))}
                 self.last_used = time.monotonic()
+        except _livehub.UserInControl:
+            response = {"ok": False, "error": {"code": "user_in_control", "message": USER_IN_CONTROL}}
         except HostError as error:
             response = {"ok": False, "error": {"code": error.code, "message": error.message}}
         except (ValueError, UnicodeDecodeError, asyncio.LimitOverrunError, asyncio.TimeoutError):

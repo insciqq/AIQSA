@@ -5,24 +5,31 @@ the turn's steps and, while a view wants them, frames of the current tab from CD
 to at most `_live.FRAME_INTERVAL` and skipped when nothing changed. Input is applied only while the user holds
 control, through the tab's own CDP session, never through Playwright's agent actions.
 
-Control lives here, so it survives a streamer's rotation. While the user holds it (Take control, or a handoff
-the agent asked for), the agent's browser actions wait `_live.CONTROL_WAIT_SECONDS` and then fail with
-`user_in_control`; the action after the user gives it back says so with the page the user left. Control the
-user took returns to the agent `_live.CONTROL_GRACE_SECONDS` after the last view closed; a handoff's ends only
-with its own end message. Whenever control leaves the user, the mouse buttons and keys the user's input left
-pressed are let go first: the panel sends its own ups, but a closed tab or a dropped network loses them. What the
-user typed never reaches the agent: each value joins the host's hidden values and the field reads as a hidden
-value, as for values typed from the environment. The panel's own address line masks only those
-(`Host.env_hidden`): the user sees their own input.
+Control lives here, so it survives a streamer's rotation; AIQSA keeps its own record and never takes the guest's
+word that the user holds it. While the user holds it (Take control, or a handoff the agent asked for), the
+agent's browser actions wait `_live.CONTROL_WAIT_SECONDS` without the host's lock and then fail with
+`user_in_control`; an action checks again once it holds the lock, and control passes to the user only between
+two actions (or after `TAKE_WAIT_SECONDS` of a long one), so no agent action starts while the user holds the
+browser. The action after the user gives it back says so with the page the user left. Control the user took
+returns to the agent `_live.CONTROL_GRACE_SECONDS` after the last view closed; a handoff's ends only with its own
+end message. Whenever control leaves the user, the mouse buttons and keys the user's input left pressed are let
+go first: the panel sends its own ups, but a closed tab or a dropped network loses them.
+
+What the user typed never reaches the agent: the whole value typed since the user last moved focus (pauses do not
+split it) and the focused field's value join the host's hidden values before a key or click that can submit or
+navigate goes out, and the field reads as a hidden value, as for values typed from the environment. The panel's
+own address line masks only those (`Host.env_hidden`): the user sees their own input. Best effort: agent code in
+the same VM can read the page itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from . import _format, _live
 
@@ -53,6 +60,14 @@ FRAME_SEARCH_LIMIT = 8
 HELD_KEYS_MAX = 16
 #: Seconds one release may take: a tab that went away holds nothing down.
 RELEASE_TIMEOUT = 1.0
+#: Take control and a handoff wait this long for the agent's action under way; a longer one (a `wait`) goes on.
+TAKE_WAIT_SECONDS = 5.0
+#: Characters of the value typed since focus last moved that are kept for masking; older ones go first.
+TYPED_MAX_CHARS = 1024
+
+
+class UserInControl(Exception):
+    """The user held the browser for the whole wait: the agent's action did not run."""
 
 
 class Connection:
@@ -119,8 +134,11 @@ class LiveHub:
         self.pointer: Optional[Tuple[Any, float, float]] = None
         #: Keys the user's input pressed and did not let go, by `code` (or `key`): the tab's session and the key up.
         self.keys: Dict[str, Tuple[Any, Dict[str, Any]]] = {}
-        #: What the user typed since the last capture.
+        #: What the user typed since they last pressed Tab or Enter or clicked, kept across pauses: a value typed in
+        #: parts, or into one-character fields a page advances through itself, is hidden whole.
         self.typed = ""
+        #: The user typed or deleted since the last capture.
+        self.typed_new = False
         self.capture: Optional[asyncio.TimerHandle] = None
 
     # Agent side --------------------------------------------------------------------------------------------------
@@ -130,13 +148,38 @@ class LiveHub:
         return self.controller == "user" or bool(self.connections)
 
     async def wait_for_agent(self, seconds: float = _live.CONTROL_WAIT_SECONDS) -> bool:
-        if self.controller == "agent":
+        """Whether the agent has the browser now or gets it back within `seconds`; Take control in progress counts
+        as the user's."""
+        if self.agent_turn.is_set():
             return True
         try:
-            await asyncio.wait_for(self.agent_turn.wait(), seconds)
+            await asyncio.wait_for(self.agent_turn.wait(), max(0.0, seconds))
         except asyncio.TimeoutError:
             return False
         return True
+
+    @contextlib.asynccontextmanager
+    async def agent_action(self, lock: asyncio.Lock, control_free: bool = False) -> AsyncIterator[None]:
+        """Holds the host's `lock` for one agent action, only while the agent has the browser.
+
+        The wait for the user to give the browser back (at most `_live.CONTROL_WAIT_SECONDS` in all) never holds
+        the lock, which a handoff's end needs to save the site; control is checked again once the lock is held, so
+        an action queued behind another never starts after the user took control. `control_free` actions (they
+        read no page) skip the wait. Raises `UserInControl` when the user kept the browser for the whole wait.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _live.CONTROL_WAIT_SECONDS
+        while True:
+            if not control_free and not await self.wait_for_agent(deadline - loop.time()):
+                raise UserInControl()
+            await lock.acquire()
+            if control_free or self.agent_turn.is_set():
+                break
+            lock.release()
+        try:
+            yield
+        finally:
+            lock.release()
 
     def take_note(self) -> Optional[str]:
         note, self.note = self.note, None
@@ -278,17 +321,32 @@ class LiveHub:
 
     # Control and handoff -----------------------------------------------------------------------------------------
 
-    def give_user(self) -> None:
+    async def hand_to_user(self) -> None:
+        """Control goes to the user between two agent actions: from now on no agent action starts, and one under way
+        may finish first, for at most `TAKE_WAIT_SECONDS` (a longer one, such as a `wait`, goes on)."""
         if self.grace is not None:
             self.grace.cancel()
             self.grace = None
-        self.controller = "user"
         self.agent_turn.clear()
+        lock = self.host.lock
+        acquired = False
+        try:
+            try:
+                await asyncio.wait_for(lock.acquire(), TAKE_WAIT_SECONDS)
+                acquired = True
+            except asyncio.TimeoutError:
+                pass
+            self.controller = "user"
+        finally:
+            if acquired:
+                lock.release()
+            if self.controller != "user":
+                self.agent_turn.set()
 
     async def control(self, action: Any) -> None:
         if action == "take":
-            if not self.handoff:
-                self.give_user()
+            if not self.handoff and self.controller != "user":
+                await self.hand_to_user()
         elif action == "return":
             if self.handoff:
                 raise _live.LiveError("handoff_pending")
@@ -347,7 +405,8 @@ class LiveHub:
             if self.page() is None:
                 raise _live.LiveError("no_page")
             self.handoff = True
-            self.give_user()
+            if self.controller != "user":
+                await self.hand_to_user()
             await self.refresh()
             return {}
         if action != "end":
@@ -389,30 +448,39 @@ class LiveHub:
             if self.frame_size is None or self.device is None:
                 raise _live.LiveError("no_frame")
             params, pressed = _live.mouse_event(event, self.frame_size, self.device, self.pressed)
-            if params["type"] == "mousePressed" and self.typed:
-                # A click may move focus: what was typed so far belongs to the field that had it.
-                await self.capture_now()
+            if params["type"] == "mousePressed":
+                # A click may submit or move focus: what was typed is hidden first, and a new value starts.
+                await self.capture_now(focus_moves=True)
             await session.send("Input.dispatchMouseEvent", params)
             self.pressed = pressed
             self.pointer = (session, params["x"], params["y"])
         elif kind == "key":
             params, typed = _live.key_event(event)
-            if params["type"] != "keyUp" and params["key"] in ("Tab", "Enter") and self.typed:
-                await self.capture_now()
+            if params["type"] != "keyUp" and params["key"] in ("Tab", "Enter"):
+                # Enter may submit and navigate, Tab moves focus: masking is updated before either goes out, and what
+                # is typed next is a new value.
+                await self.capture_now(focus_moves=True)
             await session.send("Input.dispatchKeyEvent", params)
             await self.track_key(session, params)
             if typed is not None:
-                self.typed += typed
-                self.schedule_capture()
+                self.type(typed)
             elif params["type"] == "rawKeyDown" and params["key"] == "Backspace":
-                self.typed = self.typed[:-1]
+                self.typed, self.typed_new = self.typed[:-1], True
+                self.schedule_capture()
         elif kind == "text":
             text = _live.text_input(event)
             await session.send("Input.insertText", {"text": text})
-            self.typed += text
-            self.schedule_capture()
+            self.type(text)
         else:
             raise _live.LiveError("input_invalid")
+
+    def type(self, text: str) -> None:
+        """Adds what the user typed to the value typed since focus last moved. A page that submits by itself (a code
+        field on its last digit) still has it hidden before the agent gets the browser back: every end of the
+        user's control captures first."""
+        self.typed = (self.typed + text)[-TYPED_MAX_CHARS:]
+        self.typed_new = True
+        self.schedule_capture()
 
     async def track_key(self, session: Any, params: Dict[str, Any]) -> None:
         held = params["code"] or params["key"]
@@ -433,15 +501,21 @@ class LiveHub:
         loop = asyncio.get_running_loop()
         self.capture = loop.call_later(CAPTURE_DELAY, lambda: asyncio.ensure_future(self.capture_now()))
 
-    async def capture_now(self) -> None:
-        """Marks the field the user typed into as hidden and adds what it holds, and what was typed, to the mask."""
+    async def capture_now(self, focus_moves: bool = False) -> None:
+        """Hides what the user typed: the whole value typed since focus last moved and what the focused field holds
+        (read from the page), and marks that field hidden. With `focus_moves` (a Tab, an Enter or a click is about to
+        go out) the next value starts empty."""
         if self.capture is not None:
             self.capture.cancel()
             self.capture = None
-        typed, self.typed = self.typed, ""
-        if not typed:
+        typed, fresh = self.typed, self.typed_new
+        self.typed_new = False
+        if focus_moves:
+            self.typed = ""
+        if not fresh:
             return
-        self.host.hidden.add(typed)
+        if typed:
+            self.host.hidden.add(typed)
         page = self.page()
         found = await self.focused_field(page) if page is not None else None
         if found is None:

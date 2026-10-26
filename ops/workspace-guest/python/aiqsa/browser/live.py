@@ -6,8 +6,10 @@ AIQSA starts it through the exec channel under the run's operation (`lib/server/
 never as the agent's command. Each stdin line is one message for the host (`frames`, `input`, `control`,
 `handoff`, `ping`); each host message goes to stdout as one `@<length> <json>` line (`_live.encode_line`). It
 never starts the browser: while no host answers it reports `absent` and waits, and when the host goes away it
-says so and waits for the next one. It ends when stdin closes, on `{"t": "bye"}` or on SIGTERM. It prints
-nothing else: no log, no input echo, no page content beyond the host's own messages.
+says so and waits for the next one. AIQSA writes its first command right after starting it, so a command that
+comes before the first attempt to reach the host (and one retry) has resolved waits for that; only then is it
+refused. It ends when stdin closes, on `{"t": "bye"}` or on SIGTERM. It prints nothing else: no log, no input
+echo, no page content beyond the host's own messages.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ from . import _live, _paths
 #: How often a missing host is looked for.
 HOST_RETRY_SECONDS = 0.5
 CONNECT_TIMEOUT_SECONDS = 2.0
+#: Commands answer only with the host; while there is none they are refused (`browser_not_running`).
+COMMANDS = ("control", "handoff", "ping")
+#: A command that comes before the first connection attempt and one retry resolved waits at most this long.
+HOLD_SECONDS = 2 * CONNECT_TIMEOUT_SECONDS + HOST_RETRY_SECONDS + 0.5
 
 
 class Streamer:
@@ -34,6 +40,9 @@ class Streamer:
         self.inbox: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
         self.stopping = asyncio.Event()
         self.reported: Optional[str] = None
+        #: Set once a connection is up, or the first attempt and one retry failed: before that a command waits.
+        self.settled = asyncio.Event()
+        self.failed_attempts = 0
 
     def emit(self, message: Dict[str, Any]) -> None:
         self.out.write(_live.encode_line(message))
@@ -72,8 +81,15 @@ class Streamer:
             if message.get("t") == "frames":
                 self.frames = message.get("on") is True
             writer = self.writer
+            if writer is None and message.get("t") in COMMANDS and not self.settled.is_set():
+                # Started a moment ago: the host may answer the first attempt, or the retry.
+                try:
+                    await asyncio.wait_for(self.settled.wait(), HOLD_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
+                writer = self.writer
             if writer is None:
-                if message.get("t") in ("control", "handoff", "ping"):
+                if message.get("t") in COMMANDS:
                     self.refuse(message, "browser_not_running")
                 continue
             try:
@@ -91,12 +107,16 @@ class Streamer:
                                                         CONNECT_TIMEOUT_SECONDS)
             except (OSError, asyncio.TimeoutError):
                 self.report("absent")
+                self.failed_attempts += 1
+                if self.failed_attempts >= 2:
+                    self.settled.set()
                 await self.pause(HOST_RETRY_SECONDS)
                 continue
             try:
                 writer.write(json.dumps({"v": _live.PROTOCOL, "op": "live", "args": {"frames": self.frames}}).encode("ascii") + b"\n")
                 await writer.drain()
                 self.writer = writer
+                self.settled.set()
                 while not self.stopping.is_set():
                     line = await reader.readline()
                     if not line:
