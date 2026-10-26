@@ -1623,9 +1623,9 @@ export function ReadingRoomShellV2({
   // Ctrl/⌘+Shift+S toggles the sidebar and Ctrl/⌘+K jumps to the chat filter
   // (revealing the list first). They are ignored while a modal layer owns
   // the keyboard (UX audit 2026-09-02 #16).
-  const shortcutsRef = useRef({ createPersonalChat, revealList, toggleSidebar });
+  const shortcutsRef = useRef({ createPersonalChat, revealList, sidebarShown, toggleSidebar });
   useEffect(() => {
-    shortcutsRef.current = { createPersonalChat, revealList, toggleSidebar };
+    shortcutsRef.current = { createPersonalChat, revealList, sidebarShown, toggleSidebar };
   });
   useEffect(() => {
     let filterFocusTimeout: number | undefined;
@@ -1646,6 +1646,8 @@ export function ReadingRoomShellV2({
         window.clearTimeout(filterFocusTimeout);
         filterFocusTimeout = window.setTimeout(() => {
           filterFocusTimeout = undefined;
+          // A list closed meanwhile (Escape) keeps the focus it returned to its opener.
+          if (!shortcutsRef.current.sidebarShown) return;
           document.querySelector<HTMLInputElement>('input[aria-label="Filter chats"]')?.focus();
         }, 60);
       }
