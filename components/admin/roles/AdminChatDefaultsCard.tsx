@@ -13,6 +13,8 @@ import { useId, useMemo, useState } from "react";
 type Draft = Readonly<{
   calls: string;
   effort: string;
+  /** Per-answer tool limits apply; off, the two numbers wait for the switch. */
+  limitsOn: boolean;
   mcpTools: string;
   /** Empty while the saved policy is unknown. */
   observation: ToolObservationPolicy | "";
@@ -21,16 +23,19 @@ type Draft = Readonly<{
 }>;
 
 const emptyDraft: Draft = {
-  calls: "", effort: "", mcpTools: "", observation: "", modelId: "", rounds: ""
+  calls: "", effort: "", limitsOn: false, mcpTools: "", observation: "", modelId: "", rounds: ""
 };
 
 const OBSERVATION_POLICY_LABEL = "Tool result store and context compaction";
+const TOOL_LIMITS_LABEL = "Tool limits per answer";
+const MCP_TOOLS_LABEL = "MCP Auto tools";
 
 function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
   if (!catalog) return emptyDraft;
   return {
     calls: String(catalog.policy.maxToolCalls),
     effort: catalog.policy.reasoningEffort ?? "",
+    limitsOn: catalog.policy.toolLimitsEnabled,
     mcpTools: String(catalog.policy.maxMcpToolsPerDiscovery),
     observation: catalog.policy.toolObservationPolicy ?? "",
     modelId: catalog.policy.defaultModel?.id ?? "",
@@ -65,7 +70,8 @@ export const NO_REACHABLE_DEFAULT_COPY =
 
 /**
  * Chat defaults (PRD 5.5): the installation default model with its reasoning
- * effort, the per-answer tool limits and the observation/compaction switch,
+ * effort, the per-answer tool limits (off by default, operator decision
+ * 2026-10-26), the MCP Auto tool count and the observation/compaction switch,
  * saved together with one `Save` under the policy version.
  */
 export function AdminChatDefaultsCard({
@@ -85,6 +91,8 @@ export function AdminChatDefaultsCard({
 }>) {
   const [edits, setEdits] = useState<Partial<Draft>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const limitsHelpId = useId();
+  const mcpToolsHelpId = useId();
   const observationHelpId = useId();
   const saveBlockedId = useId();
   const current = draftFor(catalog);
@@ -108,15 +116,16 @@ export function AdminChatDefaultsCard({
     mcpTools: positiveSafeInteger(draft.mcpTools),
     rounds: positiveSafeInteger(draft.rounds)
   };
+  // Off, the two numbers are not in force: they are neither validated nor saved.
   const invalidLimits = [
-    ...(parsed.rounds === null ? ["Rounds"] : []),
-    ...(parsed.calls === null ? ["Calls"] : []),
-    ...(parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools ? ["MCP Auto tools"] : [])
+    ...(draft.limitsOn && parsed.rounds === null ? ["Rounds"] : []),
+    ...(draft.limitsOn && parsed.calls === null ? ["Calls"] : []),
+    ...(parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools ? [MCP_TOOLS_LABEL] : [])
   ];
   const limitsValid = invalidLimits.length === 0;
   const modelChanged = draft.modelId !== current.modelId || draft.effort !== current.effort;
-  const limitsChanged = (["calls", "mcpTools", "rounds"] as const)
-    .filter((key) => draft[key] !== current[key]).length;
+  const limitsChanged = (draft.limitsOn !== current.limitsOn ? 1 : 0) + (draft.mcpTools !== current.mcpTools ? 1 : 0) +
+    (draft.limitsOn ? (["calls", "rounds"] as const).filter((key) => draft[key] !== current[key]).length : 0);
   const observationChanged = draft.observation !== "" && draft.observation !== current.observation;
   const changed = (modelChanged ? 1 : 0) + limitsChanged + (observationChanged ? 1 : 0);
   // Each field group is validated only when it is part of the request, so a
@@ -141,8 +150,10 @@ export function AdminChatDefaultsCard({
       } : {}),
       ...(limitsChanged > 0 ? {
         maxMcpToolsPerDiscovery: parsed.mcpTools!,
-        maxToolCalls: parsed.calls!,
-        maxToolRounds: parsed.rounds!
+        // Off keeps the saved numbers: they are the limits turning the switch on applies.
+        maxToolCalls: draft.limitsOn ? parsed.calls! : catalog.policy.maxToolCalls,
+        maxToolRounds: draft.limitsOn ? parsed.rounds! : catalog.policy.maxToolRounds,
+        toolLimitsEnabled: draft.limitsOn
       } : {}),
       ...(observationChanged && draft.observation !== "" ? { toolObservationPolicy: draft.observation } : {})
     });
@@ -150,33 +161,38 @@ export function AdminChatDefaultsCard({
     else setEdits({});
   };
 
-  const limitField = (
+  const limitInput = (
     key: "calls" | "mcpTools" | "rounds",
     name: string,
-    options: Readonly<{ max?: number; width: string }>
+    options: Readonly<{ describedBy?: string; max?: number; width: string }>
   ) => (
+    <input
+      aria-describedby={options.describedBy}
+      aria-invalid={draft[key] !== "" && (
+        key === "mcpTools"
+          ? parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools
+          : parsed[key] === null
+      ) ? true : undefined}
+      aria-label={name}
+      className={`${compactInputClass} ${options.width}`}
+      disabled={!catalog || busy}
+      inputMode="numeric"
+      max={options.max}
+      min={1}
+      onChange={(event) => {
+        const value = event.currentTarget.value;
+        setEdits((previous) => ({ ...previous, [key]: value }));
+      }}
+      step={1}
+      type="number"
+      value={draft[key]}
+    />
+  );
+
+  const limitField = (key: "calls" | "rounds", name: string) => (
     <label className="flex items-center gap-2 text-xs text-ink-muted">
       <span>{name}</span>
-      <input
-        aria-invalid={draft[key] !== "" && (
-          key === "mcpTools"
-            ? parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools
-            : parsed[key] === null
-        ) ? true : undefined}
-        aria-label={name}
-        className={`${compactInputClass} ${options.width}`}
-        disabled={!catalog || busy}
-        inputMode="numeric"
-        max={options.max}
-        min={1}
-        onChange={(event) => {
-          const value = event.currentTarget.value;
-          setEdits((previous) => ({ ...previous, [key]: value }));
-        }}
-        step={1}
-        type="number"
-        value={draft[key]}
-      />
+      {limitInput(key, name, { width: "w-16" })}
     </label>
   );
 
@@ -240,17 +256,42 @@ export function AdminChatDefaultsCard({
             </select>
           </div>
         </details>
-          <div className="grid gap-3 border-t border-trace-subtle px-5 py-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-ink">Tool limits per answer</p>
-              <p className="mt-0.5 text-xs leading-5 text-ink-muted">Apply to new answers only</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              {limitField("rounds", "Rounds", { width: "w-16" })}
-              {limitField("calls", "Calls", { width: "w-16" })}
-              {limitField("mcpTools", "MCP Auto tools", { max: MCP_RUN_PLAN_LIMITS.maxTools, width: "w-16" })}
-            </div>
+        <div className="grid gap-3 border-t border-trace-subtle px-5 py-4">
+          <div className="flex min-w-0 items-center justify-between gap-6">
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-ink">{TOOL_LIMITS_LABEL}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-ink-muted" id={limitsHelpId}>
+                {draft.limitsOn
+                  ? "An answer stops using tools after this many rounds or calls and answers with what it has. Changes apply to new answers only."
+                  : "Off by default. An answer uses tools until it is done, its time runs out or it is stopped. Changes apply to new answers only."}
+              </span>
+            </span>
+            <UiV2Switch
+              aria-describedby={limitsHelpId}
+              checked={draft.limitsOn}
+              className="shrink-0"
+              disabled={!catalog || busy}
+              label={TOOL_LIMITS_LABEL}
+              onChange={(enabled) => setEdits((previous) => ({ ...previous, limitsOn: enabled }))}
+            />
           </div>
+          {draft.limitsOn ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              {limitField("rounds", "Rounds")}
+              {limitField("calls", "Calls")}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex min-w-0 items-center justify-between gap-6 border-t border-trace-subtle px-5 py-4">
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-ink">{MCP_TOOLS_LABEL}</span>
+            <span className="mt-0.5 block text-xs leading-5 text-ink-muted" id={mcpToolsHelpId}>
+              The most MCP tools one tool search loads in Auto mode
+            </span>
+          </span>
+          {limitInput("mcpTools", MCP_TOOLS_LABEL, { describedBy: mcpToolsHelpId, max: MCP_RUN_PLAN_LIMITS.maxTools,
+            width: "w-16 shrink-0" })}
+        </div>
         <div className="flex min-w-0 items-center justify-between gap-6 border-t border-trace-subtle px-5 py-4">
           <span className="min-w-0">
             <span className="block text-sm font-medium text-ink">{OBSERVATION_POLICY_LABEL}</span>

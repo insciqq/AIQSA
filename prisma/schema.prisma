@@ -1569,6 +1569,10 @@ model ModelPolicy {
   defaultProviderModelId         String?
   reasoningEffort                String?        @db.VarChar(32)
   memorySearchTimeoutSeconds     BigInt         @default(30)
+  /// Per-answer tool call and round limits apply only while on; off by default
+  /// (operator decision 2026-10-26). The two numbers are the limits turning
+  /// them on applies, kept while off.
+  toolLimitsEnabled              Boolean        @default(false)
   maxToolCalls                   BigInt         @default(80)
   maxToolRounds                  BigInt         @default(32)
   maxMcpToolsPerDiscovery        BigInt         @default(10)

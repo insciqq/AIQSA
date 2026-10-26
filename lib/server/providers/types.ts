@@ -300,13 +300,14 @@ export type NormalizedRunRequest = {
   /** Frozen store/reader policy. Absent on accepted historical runs; 0 is a
    * newly accepted explicit Off mode and 1 is the observation-store contract. */
   toolObservationVersion?: 0 | 1;
-  /** Exact installation tool-loop limits frozen when the run is accepted.
+  /** Exact installation tool-loop limits frozen when the run is accepted;
+   * both counts null when tool limits were off (`toolBudgets.ts`).
    * Older accepted requests may also carry the retired router allowances
    * `mcpAutoDiscoveryTimeoutSeconds` and `mcpAutoDiscoveryMaxOutputTokens`. */
   toolBudgets?: Readonly<{
     maxMcpToolsPerDiscovery?: number;
-    maxToolCalls: number;
-    maxToolRounds: number;
+    maxToolCalls: number | null;
+    maxToolRounds: number | null;
   }>;
   /** Durable operator/client suppression for all client-side run tools. */
   toolMode: "auto" | "none";

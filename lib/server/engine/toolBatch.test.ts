@@ -236,6 +236,29 @@ describe("native tool batch", () => {
     expect(outcome.results.map((item) => item.outcome)).toEqual(["complete", "error"]);
   });
 
+  it("refuses no call for a count without a call budget, and still blocks an identical repeat", async () => {
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, `page ${String(call.arguments.page)}`));
+    const { store } = fakeStore();
+    const batch = deps({ lookup: tool("lookup", "none", lookup) }, store, { maxToolCalls: null });
+    const state = { calls: 0 };
+    for (let round = 1; round <= 30; round += 1) {
+      const outcome = await runToolBatch(batch, state, { round, calls: [
+        { arguments: { page: round * 2 }, id: `a${round}`, name: "lookup" },
+        { arguments: { page: round * 2 + 1 }, id: `b${round}`, name: "lookup" }
+      ] });
+      expect(outcome).toMatchObject({ budgetExhausted: false, executed: 2 });
+    }
+    expect(state.calls).toBe(60);
+    expect(lookup).toHaveBeenCalledTimes(60);
+    // Two identical successes, then the same call again: the repeat guard stops a loop no count stops any more.
+    const same = (id: string) => ({ arguments: { page: 1 }, id, name: "lookup" });
+    for (const [round, id] of [[31, "s1"], [32, "s2"]] as const) await runToolBatch(batch, state, { round, calls: [same(id)] });
+    const third = await runToolBatch(batch, state, { round: 33, calls: [same("s3")] });
+    expect(third.results[0]).toMatchObject({ outcome: "error" });
+    expect(JSON.stringify((store.refuse.mock.calls.at(-1)![0] as { result: unknown }).result)).toContain(TOOL_CALL_REPEAT_BLOCKED);
+    expect(third.budgetExhausted).toBe(false);
+  });
+
   it("runs the reserved report's first call outside the call budget, and counts a repeated one", async () => {
     const report = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "recorded"));
     const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));

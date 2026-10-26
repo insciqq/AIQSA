@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_MCP_VERSION,
   WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES,
+  WORKSPACE_TURN_TIMEOUT_MAX_SECONDS,
   WorkspaceConfigError,
   getScheduledWorkspaceMaxConcurrent,
   getWorkspaceConfig,
@@ -26,8 +27,19 @@ describe("Workspace configuration", () => {
       runtimeMode: "unconfigured",
       syncToolTimeoutSeconds: 120,
       toolOutputMaxBytes: 128 * 1_024,
-      turnTimeoutSeconds: 1_800
+      turnTimeoutSeconds: 3_600
     });
+  });
+
+  it("lets a turn take as long as one without a Workspace, keeping an explicit turn time up to two hours", () => {
+    expect(getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "" }).turnTimeoutSeconds).toBe(3_600);
+    expect(WORKSPACE_TURN_TIMEOUT_MAX_SECONDS).toBe(7_200);
+    for (const seconds of ["60", "1800", "7200"]) {
+      expect(getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: seconds }).turnTimeoutSeconds).toBe(Number(seconds));
+    }
+    for (const seconds of ["59", "7201", "3600.5"]) {
+      expect(() => getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: seconds })).toThrow(WorkspaceConfigError);
+    }
   });
 
   it("bounds the guest-code MCP budgets separately from the model's tool budgets", () => {

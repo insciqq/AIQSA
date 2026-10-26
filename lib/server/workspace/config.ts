@@ -75,6 +75,14 @@ type IntegerSetting = Readonly<{
   name: string;
 }>;
 
+/**
+ * The longest Workspace turn an installation may configure. The default turn
+ * equals the turn without a Workspace (60 minutes), so long tool work fits one
+ * turn now that answers have no tool limits by default (operator decision
+ * 2026-10-26); an explicit `AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS` still wins.
+ */
+export const WORKSPACE_TURN_TIMEOUT_MAX_SECONDS = 7_200;
+
 const integerSettings = Object.freeze({
   codeMcpMaxCalls: {
     defaultValue: 200,
@@ -164,8 +172,8 @@ const integerSettings = Object.freeze({
     name: "AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES"
   },
   turnTimeoutSeconds: {
-    defaultValue: 1_800,
-    maximum: 3_600,
+    defaultValue: 3_600,
+    maximum: WORKSPACE_TURN_TIMEOUT_MAX_SECONDS,
     minimum: 60,
     name: "AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS"
   }

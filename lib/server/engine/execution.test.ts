@@ -493,6 +493,75 @@ describe("native run execution", () => {
       { recoveryTerminal: true });
   });
 
+  it.each([
+    { name: "an interactive turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: null },
+    // The default Workspace turn: an hour, with 54 minutes for tools (`workspaceTurnDeadline.ts`).
+    { name: "an interactive Workspace turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: 3_600 },
+    // The scheduler stops a scheduled run 30 minutes after admission: its tools close 25 minutes in.
+    { name: "a scheduled run", scheduled: true, toolRounds: 4, workspaceTurnSeconds: null },
+    // As a 30-minute Workspace turn: 24 minutes.
+    { name: "a scheduled Workspace run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: 3_600 }
+  ])("ends $name without tool limits at its time deadline with the forced final answer", async ({
+    scheduled, toolRounds, workspaceTurnSeconds
+  }) => {
+    // A model that would never stop calling tools; every round takes eight minutes.
+    let clock = 1_000_000;
+    const requests: ProviderRunRequest[] = [];
+    const answer = "Here is what I found so far; the rest is unchecked.";
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        requests.push(request);
+        clock += 8 * 60_000;
+        if (request.toolChoice === "none") {
+          yield { data: { delta: answer }, type: "token" };
+          return { finalProviderResponsePreview: {}, finalText: answer, toolCalls: [], usage: { inputTokens: 100, outputTokens: 10 } };
+        }
+        return { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 100, outputTokens: 10 },
+          toolCalls: [{ arguments: { key: `A-${requests.length}` }, id: `call-${requests.length}`, name: "mcp_jira_get_issue" }] };
+      }
+    };
+    const memory = memoryEngine({ now: () => clock });
+    const callTool = vi.fn(async () => ({ isError: false, text: ["open"], unsupportedContentTypes: [] }));
+    const result = await events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(clock) },
+      engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
+        ...(workspaceTurnSeconds ? { workspace: { enabled: true, syncToolTimeoutSeconds: 120,
+          turnTimeoutSeconds: workspaceTurnSeconds } as ProviderRunRequest["workspace"] } : {}) }),
+      repository: repository() as unknown as RunRepository, ...(scheduled ? { scheduled: true as const } : {}), services: {},
+      userId: "user" }));
+    expect(requests.map((request) => request.toolChoice)).toEqual([...Array<string>(toolRounds).fill("auto"), "none"]);
+    expect(callTool).toHaveBeenCalledTimes(toolRounds);
+    expect(memory.published()).toBe(answer);
+    expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+  });
+
+  it("counts a scheduled run's time from its admission, not from when it started", async () => {
+    let clock = 1_000_000;
+    const admittedAt = new Date(clock - 10 * 60_000);
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        requests.push(request);
+        clock += 8 * 60_000;
+        return request.toolChoice === "none"
+          ? { finalProviderResponsePreview: {}, finalText: "Done.", toolCalls: [], usage: {} }
+          : { finalProviderResponsePreview: {}, finalText: "", usage: {},
+            toolCalls: [{ arguments: { key: `A-${requests.length}` }, id: `call-${requests.length}`, name: "mcp_jira_get_issue" }] };
+      }
+    };
+    const memory = memoryEngine({ now: () => clock });
+    const callTool = vi.fn(async () => ({ isError: false, text: ["open"], unsupportedContentTypes: [] }));
+    await events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: admittedAt }, engine: memory.engine,
+      mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+      prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } }),
+      repository: repository() as unknown as RunRepository, scheduled: true, services: {}, userId: "user" }));
+    // Admitted ten minutes before it started: its tools close fifteen minutes in.
+    expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
+    expect(memory.published()).toBe("Done.");
+  });
+
   it("records each terminal write, which Admin Health counts settled runs from, and the cause of a failure", async () => {
     const observation = await captureRunObservation();
     const memory = memoryEngine();

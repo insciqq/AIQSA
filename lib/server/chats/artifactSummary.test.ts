@@ -734,6 +734,15 @@ describe("summarizeMessageRunToolActivity", () => {
     })?.warning).toEqual({ kind: "rounds", limit: 8 });
   });
 
+  it("shows no limit warning for a run admitted without tool limits, however long it worked", () => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: null,
+      normalizedRequest: { toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } }, status: "complete",
+      toolCalls: Array.from({ length: 120 }, (_, index) => ({ completedAt: null, startedAt: null, ordinal: index % 2,
+        roundIndex: Math.floor(index / 2) + 1, state: "complete", toolName: "search" }))
+    })?.warning).toBeUndefined();
+  });
+
   it("excludes a preflight call before the first provider round from tool call and round limits", () => {
     expect(summarizeMessageRunToolActivity({
       errorPayload: null,

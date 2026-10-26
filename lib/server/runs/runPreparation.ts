@@ -137,6 +137,7 @@ import type {
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
   normalizeToolObservationPolicy,
+  workspaceToolLimit,
   type ToolRunBudgets
 } from "./toolBudgets";
 import type {
@@ -714,8 +715,8 @@ export async function preparePdfRetry(
     }
     const budgets = deps.runPolicy ? await deps.runPolicy.load() : DEFAULT_TOOL_RUN_BUDGETS;
     const toolBudgets = { ...request.toolBudgets,
-      maxToolCalls: Math.max(budgets.maxToolCalls, plan.normalized.maxToolCalls),
-      maxToolRounds: Math.max(budgets.maxToolRounds, plan.normalized.maxToolRounds) };
+      maxToolCalls: workspaceToolLimit(budgets.maxToolCalls, plan.normalized.maxToolCalls),
+      maxToolRounds: workspaceToolLimit(budgets.maxToolRounds, plan.normalized.maxToolRounds) };
     const prompt = { ...request.prompt, system };
     prepared.workspaceAdmissionPlan = plan;
     prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
@@ -1937,16 +1938,10 @@ export async function prepareRun(
     toolBudgets: {
       maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
       maxToolCalls: workspaceEnabled
-        ? Math.max(
-            toolBudgets.maxToolCalls,
-            workspaceAdmissionPlan?.normalized.maxToolCalls ?? toolBudgets.maxToolCalls
-          )
+        ? workspaceToolLimit(toolBudgets.maxToolCalls, workspaceAdmissionPlan?.normalized.maxToolCalls)
         : toolBudgets.maxToolCalls,
       maxToolRounds: workspaceEnabled
-        ? Math.max(
-            toolBudgets.maxToolRounds,
-            workspaceAdmissionPlan?.normalized.maxToolRounds ?? toolBudgets.maxToolRounds
-          )
+        ? workspaceToolLimit(toolBudgets.maxToolRounds, workspaceAdmissionPlan?.normalized.maxToolRounds)
         : toolBudgets.maxToolRounds
     },
     toolMode: workspaceEnabled || body?.tools !== "none" ? "auto" : "none",
