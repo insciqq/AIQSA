@@ -240,6 +240,16 @@ describe("run lifecycle v2 presentation", () => {
     expect(presentToolActivityV2([external])?.calls[0]).not.toHaveProperty("skillName");
   });
 
+  it("names the agent's browser handoff in plain words", () => {
+    for (const origin of ["tool", "workspace"] as const) {
+      const call = { origin, toolName: "browser_handoff" };
+      expect(describeToolCallV2(call, "running")).toBe("Waiting for you in the browser");
+      expect(describeToolCallV2(call, "settled")).toBe("Asked for your help in the browser");
+      expect(describeToolCallV2(call, "cancelled")).toBe("Browser handoff stopped");
+    }
+    expect(describeToolCallV2({ origin: "mcp", serverName: "Team", toolName: "browser_handoff" }, "running")).toBe("Using Team: browser handoff");
+  });
+
   it("names a chat Skill save instead of a load", () => {
     const call = { origin: "skill", toolName: "save_skill" };
     expect(describeToolCallV2(call, "running")).toBe("Saving Skill");
