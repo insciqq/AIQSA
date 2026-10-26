@@ -16,8 +16,10 @@
  * (reused when an identical usable one exists), System Vision on the same
  * model, Workspace on with internet, Memory off for the user, and the public
  * saucedemo.com demo login as a Workspace env secret. The harness signs in with
- * the password of the administrator the stand's bootstrap created. Workspace limits are the
- * stand's own; the effective bounds of every admitted run are printed.
+ * the password of the administrator the stand's bootstrap created. Workspace
+ * limits are the stand's own; the effective bounds of every run are printed.
+ * The exit code is 0 whenever the measurement completes, whatever the success
+ * count: failed oracles are data, not a harness failure.
  *
  * After each run the chat is deleted permanently (unless
  * AIQSA_BROWSER_SCENARIOS_KEEP_CHATS=1) and browser sessions the run saved are
@@ -297,6 +299,8 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
   let toolCalls: number | null = null;
   let wallSeconds: number | null = null;
   let costUsd: number | null = null;
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
   let chatId: string | null = null;
   try {
     stage = "chat";
@@ -323,7 +327,7 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     }, method: "POST", signal: stream.signal });
     if (!response.ok) {
       Object.assign(line, { terminal: "admission_failed", failureCode: await errorCode(response) });
-      return { blocked, costUsd, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
+      return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
     }
     const drained = discard(response);
     stage = "wait";
@@ -375,7 +379,7 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
       return rows.some((row) => row.purpose === "chat_answer") ? rows : null;
     }, "usage_timeout", 3_000).catch(() => null);
     const usage = usageEvidence(usageRows ?? []);
-    costUsd = usage.costUsd;
+    ({ costUsd, inputTokens, outputTokens } = usage);
     Object.assign(line, usage, { usageSettled: usageRows !== null });
     stage = "result";
     const { rows: outputs } = await db.query<{ attachmentId: string; byteSize: number; relativePath: string }>(
@@ -400,11 +404,11 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     line.checksFailed = checks;
     line.blocked = blocked;
     success = terminal?.status === "complete" && checks.length === 0;
-    return { blocked, costUsd, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
+    return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
   } catch (error) {
     line.harnessError = error instanceof BrowserScenarioError ? error.message : "browser_scenarios_run_failed";
     line.harnessStage = stage;
-    return { blocked, costUsd, rounds, scenario: scenario.id, success: false, toolCalls, wallSeconds };
+    return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success: false, toolCalls, wallSeconds };
   } finally {
     line.success = success;
     if (chatId) {
