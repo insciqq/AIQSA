@@ -362,9 +362,14 @@ export type TranscriptImages = Readonly<{
   attached(item: TranscriptToolResultItem): Readonly<{ image: ProviderHistoryImage; tokens: number }> | undefined;
 }>;
 
-/** Appended to a result whose image a request does not carry. */
+/**
+ * Appended to a result whose image a request does not carry. Its path stays
+ * viewable, except an earlier answer's output folder: that answer's files are
+ * then the exports its inbox index lists (`lib/server/workspace/promptContract.ts`).
+ */
 export const IMAGE_NOT_ATTACHED_NOTE =
-  "[The image is not attached here any more. Call view_workspace_image with the same path to see it again.]";
+  "[The image is not attached here any more. To see it again, call view_workspace_image with its path, or for a file in an " +
+  "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
 
 export type TranscriptProjectionOptions = Readonly<{
   /** The run's own user item: the adapter renders it with the run's attachments. */

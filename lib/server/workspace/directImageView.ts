@@ -101,6 +101,10 @@ const REFUSALS: Readonly<Record<string, string>> = {
 const REQUEST_FULL =
   "This answer already holds as many image previews as one model request can carry. View fewer images at once.";
 
+/** Another answer's output folder: only this answer's is viewable, and that answer's files are its exports. */
+const EARLIER_OUTPUT = "That output folder belongs to an earlier answer. Its files are the exports the inbox index lists " +
+  "(source=export): view the file by the path of its copy there.";
+
 function refusal(call: ModelToolCall, code: string, message: string): ToolExecutionResult {
   return { callId: call.id, content: [{ type: "json", value: { error: code, message } }], name: call.name, status: "error" };
 }
@@ -197,7 +201,10 @@ export function createWorkspaceImageViewer(input: Readonly<{
         selected = workspaceImageInputForRun(call.arguments, workspace.outputDirectory);
       } catch {
         // Only selected-file authority under the guest's own roots: any other path or shape is the model's to correct.
-        return refusal(call, "workspace_image_invalid", REFUSALS.workspace_image_invalid!);
+        const path = typeof call.arguments.path === "string" ? call.arguments.path : "";
+        const earlierOutput = path.startsWith("/workspace/output/") && path.split("/").length > 4 &&
+          !path.startsWith(`${workspace.outputDirectory}/`);
+        return refusal(call, "workspace_image_invalid", earlierOutput ? EARLIER_OUTPUT : REFUSALS.workspace_image_invalid!);
       }
       const consumer = { consumerKey: execution.persistedToolCallId, runId: input.runId, userId: input.userId };
       let owner: WorkspaceImageCaptures | null = null;
