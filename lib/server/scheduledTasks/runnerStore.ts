@@ -14,7 +14,7 @@ import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
 import type { ScheduledTaskNotification } from "./notifications";
-import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
+import { BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
 import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_RETRY_WINDOW_MS,
@@ -530,11 +530,14 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         : null;
       const linked = linkedRunOutcome(run);
       if (!linked) return null;
-      // Its agent asked for the user in the browser (an expired sign-in, a code, a check): nobody could take over
-      // an unattended run, so it fails visibly, its answer kept, and its owner signs in again in a chat.
-      const outcome = linked.state === "COMPLETED" && observed.occurrence.runId && await tx.modelRunToolCall.count({
-        where: { modelRunId: observed.occurrence.runId, toolName: BROWSER_HANDOFF_TOOL_NAME }
-      }) > 0 ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
+      // Its agent needed the user to sign in to a site (an expired sign-in, a code, a check) and nobody could take
+      // over an unattended run: it fails visibly, its answer kept, and its owner signs in again in a chat. Any other
+      // handoff call (malformed, refused, a consent or a choice) leaves the run's own outcome.
+      const outcome = linked.state === "COMPLETED" && observed.occurrence.runId && (await tx.modelRunToolCall.findMany({
+        select: { arguments: true, result: true },
+        take: 20,
+        where: { modelRunId: observed.occurrence.runId, state: "error", toolName: BROWSER_HANDOFF_TOOL_NAME }
+      })).some(browserHandoffNeededSignIn) ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
       const check = outcome.state === "COMPLETED" ? monitoringSettlementOf(locked) : null;

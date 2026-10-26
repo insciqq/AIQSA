@@ -43,6 +43,26 @@ export const browserHandoffTool: RunTool = {
   strict: true
 };
 
+/** Reasons that mean a run's sign-in to a site ran out: an unattended run cannot go on without its owner. */
+const SIGN_IN_REASONS: ReadonlySet<string> = new Set<BrowserHandoffReason>(["sign_in", "verification_code", "captcha"]);
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether a stored `browser_handoff` call shows a run that needed its owner to sign in to a site (a sign-in, a code
+ * or a check) where nobody could take over: its result is `browser_handoff_unavailable`. A malformed call, one
+ * refused before it ran, and a consent or a choice the agent could not ask for do not count.
+ */
+export function browserHandoffNeededSignIn(call: Readonly<{ arguments: unknown; result: unknown }>): boolean {
+  const reason = isRecord(call.arguments) ? call.arguments.reason : undefined;
+  if (typeof reason !== "string" || !SIGN_IN_REASONS.has(reason)) return false;
+  const content = isRecord(call.result) && Array.isArray(call.result.content) ? call.result.content as unknown[] : [];
+  return content.some((part) => isRecord(part) && part.type === "json" && isRecord(part.value) &&
+    part.value.error === BROWSER_HANDOFF_UNAVAILABLE);
+}
+
 const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]+/gu;
 
 function result(call: ModelToolCall, status: "complete" | "error", value: Readonly<Record<string, unknown>>): ToolExecutionResult {
@@ -60,7 +80,8 @@ function cardMessage(value: unknown): string | null {
 
 const NEXT_STEPS: Readonly<Record<"cancelled" | "completed" | "timed_out", string>> = {
   completed: "The user pressed Done. Look at the page yourself before you go on (take a screenshot and view it); the user may " +
-    "have left it anywhere. Never repeat or ask for what the user typed.",
+    "have left it anywhere. Never repeat or ask for what the user typed. A site named in signInSavedAfterAnswer keeps its sign-in " +
+    "in this browser now and is saved to the user's Secrets after your answer, unless that save is skipped; it is not saved yet.",
   cancelled: "The user pressed Cancel. Do not ask for the handoff again unless the user asks; tell the user what you could not do " +
     "without it, and go on with what you can.",
   timed_out: "The user did not finish in time. Look at the page; if the step is still needed, tell the user what is waiting for " +
@@ -110,14 +131,15 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
       return result(call, "error", { error: "browser_handoff_busy", message: "Another handoff is already waiting for the user; " +
         "wait for its result." });
     case "unavailable":
-      return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE, message: "The live browser cannot be shown for this " +
-        "chat's Workspace (it may run an older image; a new chat uses the current one). Tell the user what the site needs and " +
-        "finish with what you have." });
+      return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE, message: "The live browser cannot reach this chat's " +
+        "Workspace browser now: it may not be running, or the Workspace runs an older image (a new chat uses the current one). " +
+        "If you have not opened the page yet, open it and call browser_handoff once more; otherwise tell the user what the site " +
+        "needs and finish with what you have." });
     case "ended":
       return result(call, "complete", {
         outcome: handoff.outcome,
         page: handoff.page,
-        ...(handoff.saved ? { signInSaved: handoff.saved } : {}),
+        ...(handoff.saved ? { signInSavedAfterAnswer: handoff.saved } : {}),
         next: NEXT_STEPS[handoff.outcome]
       });
   }
