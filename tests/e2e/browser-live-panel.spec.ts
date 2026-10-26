@@ -139,9 +139,20 @@ const viewports = [
   { name: "phone-landscape", width: 844, height: 390, touch: true }
 ] as const;
 
+/** A viewport shot of the panel; where the frame does not fit under the panel's top (a landscape phone), of the frame. */
 async function shot(page: Page, testInfo: TestInfo, name: string) {
   const panel = page.getByTestId("browser-live");
   await panel.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await page.evaluate(() => {
+    const stage = document.querySelector<HTMLElement>("[data-testid='browser-live-stage']");
+    const dock = document.querySelector("[aria-label='Message']")?.getBoundingClientRect().top ?? window.innerHeight;
+    if (stage && !document.querySelector("[data-testid='browser-live-handoff']") && stage.getBoundingClientRect().bottom > dock) {
+      // Its bottom just above the composer dock, which floats over the thread.
+      stage.style.scrollMarginBottom = `${window.innerHeight - dock + 24}px`;
+      stage.scrollIntoView({ block: "end" });
+      stage.style.scrollMarginBottom = "";
+    }
+  });
   await page.waitForTimeout(150);
   await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
 }
