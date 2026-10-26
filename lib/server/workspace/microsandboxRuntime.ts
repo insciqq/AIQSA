@@ -1748,6 +1748,21 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
   }
 
+  async touchSession(input: Parameters<NonNullable<WorkspaceRuntime["touchSession"]>>[0]): Promise<void> {
+    const session = this.sessions.get(input.sessionId);
+    try {
+      const handle = await Sandbox.get(session?.sandboxName ?? workspaceSandboxName(input.sessionId));
+      // Only the session's own guest, and only while it runs: a touch never starts a stopped one or keeps another.
+      if (session && handle.id !== session.runtimeSandboxId) return;
+      if (handle.status !== "running") return;
+      await handle.touch();
+    } catch (error) {
+      // Stopped or removed meanwhile: there is nothing to keep awake.
+      if (error instanceof SandboxNotFoundError || error instanceof SandboxNotRunningError) return;
+      throw error;
+    }
+  }
+
   async stopSession(input: Parameters<WorkspaceRuntime["stopSession"]>[0]): Promise<void> {
     // A cancelled remote ensure may still be creating its VM. Absence before
     // that accepted initializer finishes is not proof of a stopped session.

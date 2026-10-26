@@ -259,15 +259,19 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
   // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
   const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
-  // Until when work that may take `longestMs` once started may still start: the turn's soft deadline for it, and a
+  // The longest one request of the answer model may take, which its rounds apply and the deadlines below leave room for.
+  const answerTimeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
+    snapshot.model.adapterKind === "fake" ? null : snapshot.model);
+  // Until when work that may take `workMs` once started may still start: the turn's soft deadline for it, and a
   // scheduled run's occurrence's.
   const admittedAt = input.created.acceptedAt?.getTime() ?? startedAt;
-  const startsUntil = (longestMs: number) => Math.min(startedAt + turnSoftDeadlineMs(turnMs, longestMs),
-    input.scheduled ? admittedAt + turnSoftDeadlineMs(scheduledTurnMs, longestMs) : Infinity);
+  const bounds = toolCallBounds(normalizedRequest, answerTimeoutMs);
+  const startsUntil = (workMs: number) => Math.min(startedAt + turnSoftDeadlineMs(turnMs, workMs, bounds.answer),
+    input.scheduled ? admittedAt + turnSoftDeadlineMs(scheduledTurnMs, workMs, bounds.answer) : Infinity);
   // Past its tool time the turn answers without tools, which is what ends an answer without tool limits. Rounds leave
-  // room for a common call; a call whose own bound is longer (a slow MCP server, Search source or image model) must
-  // also fit before the deadline as it starts, so a slow source the run never calls never shortens its tool time.
-  const bounds = toolCallBounds(normalizedRequest);
+  // room for a common call or a round under way, then the answer; a call whose own bound is longer (a slow MCP server,
+  // Search source or image model) must also fit before the deadline as it starts, so a slow source the run never
+  // calls never shortens its tool time.
   const toolTimeEndsAt = startsUntil(bounds.round);
   // Asked before each round.
   const toolTimeLeft = () => now() < toolTimeEndsAt;
@@ -514,8 +518,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}), ...(reasoningScope ? { reasoningScope } : {}) };
         const params = nativeRequestParams(snapshot.model.adapterKind, windowOutputParams(base.params,
           { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
-        const timeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
-          snapshot.model.adapterKind === "fake" ? null : snapshot.model);
+        const timeoutMs = answerTimeoutMs;
         let pending: ModelRunSseEvent[] = [];
         let followupRevision = 0;
         const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),

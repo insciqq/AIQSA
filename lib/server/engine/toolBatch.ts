@@ -356,6 +356,8 @@ async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, executi
       if (execution.signal.aborted || tool.effects !== "none" || attempt >= TOOL_BATCH_LIMITS.readOnlyRetries ||
         !transientToolFailure(error) || deps.toolTimeLeft?.(tool.definition) === false) throw error;
       await (deps.sleep ?? sleepWithSignal)(TOOL_BATCH_LIMITS.retryBaseDelayMs * 2 ** attempt, execution.signal);
+      // The backoff may have crossed the tool time: asked again right before the call starts anew.
+      if (deps.toolTimeLeft?.(tool.definition) === false) throw error;
     }
   }
 }

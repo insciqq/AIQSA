@@ -15,8 +15,8 @@ const body = { cpus: 1, diskMiB: 1024, memoryMiB: 512, imageRef: "fixture_image"
   operation: { generation: 1, owner: "run:fixture" } };
 
 /** The real request callback, without opening a socket or launching a server. */
-function fixture(runtime: Partial<WorkspaceRuntime>) {
-  const server = createWorkspaceRunnerServer({ runtime: runtime as WorkspaceRuntime, token });
+function fixture(runtime: Partial<WorkspaceRuntime>, idleRefresh?: Readonly<{ intervalMs: number; lifetimeMs: number }>) {
+  const server = createWorkspaceRunnerServer({ ...(idleRefresh ? { idleRefresh } : {}), runtime: runtime as WorkspaceRuntime, token });
   const handler = server.listeners("request")[0] as (request: IncomingMessage, response: ServerResponse) => Promise<void>;
   return async (url: string, value?: unknown, raw?: { body: Readable; headers: Record<string, string> }) => {
     const request = Object.assign(raw?.body ?? Readable.from(value === undefined ? [] : [JSON.stringify(value)]), {
@@ -38,6 +38,27 @@ function capture() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Workspace runner lifecycle diagnostics", () => {
+  it("keeps the guest of a claimed operation awake until the operation is retired", async () => {
+    vi.useFakeTimers();
+    try {
+      const touchSession = vi.fn(async () => undefined);
+      const request = fixture({ stopSession: vi.fn(async () => undefined), touchSession },
+        { intervalMs: 300_000, lifetimeMs: 3_900_000 });
+      const operation = { operation: body.operation, runtimeSandboxId: null };
+      expect((await request(`/v1/sessions/${sessionId}/operations/claim`, operation)).writeHead)
+        .toHaveBeenCalledWith(200, expect.any(Object));
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(touchSession).toHaveBeenCalledTimes(2);
+      expect(touchSession).toHaveBeenCalledWith({ sessionId });
+      expect((await request(`/v1/sessions/${sessionId}/operations/retire`, operation)).writeHead)
+        .toHaveBeenCalledWith(200, expect.any(Object));
+      await vi.advanceTimersByTimeAsync(900_000);
+      expect(touchSession).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not read the original ahead while guest staging is stalled", async () => {
     let produced = 0;
     const stageAttachments = vi.fn(async (input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]) => {

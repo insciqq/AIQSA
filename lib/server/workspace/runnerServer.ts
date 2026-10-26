@@ -168,6 +168,8 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput, sign
 }
 
 export function createWorkspaceRunnerServer(input: Readonly<{
+  /** How often and how long the guest of an active operation is kept awake (`workspaceIdleRefreshTiming`). */
+  idleRefresh?: Readonly<{ intervalMs: number; lifetimeMs: number }>;
   /** Clock for pending-output expiry; tests inject a controllable clock. */
   now?: () => number;
   /** Private runtime-volume directory; omitted only by isolated unit fixtures. */
@@ -177,8 +179,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 }>): Server {
   if (input.token.length < 32) throw new Error("workspace_runner_token_invalid");
   const clock = input.now ?? Date.now;
+  const touch = input.runtime.touchSession?.bind(input.runtime);
   const fence = new WorkspaceOperationFence({
     directory: input.operationDirectory,
+    ...(input.idleRefresh && touch ? { idleRefresh: { ...input.idleRefresh, touch } } : {}),
     stop: (request) => input.runtime.stopSession(request)
   });
   const batches = new Map<string, PendingBatch>();

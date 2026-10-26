@@ -178,7 +178,8 @@ function fixture() {
     id: runtimeSandboxId,
     name: sandboxName,
     get status() { return state; },
-    stopWithTimeout: vi.fn(async () => { state = "stopped"; })
+    stopWithTimeout: vi.fn(async () => { state = "stopped"; }),
+    touch: vi.fn(async () => ({ activitySeq: 1, name: sandboxName }))
   };
   const builder = {
     connectOrCreate: vi.fn(async () => { state = "running"; return sandbox; }),
@@ -867,6 +868,24 @@ describe("Microsandbox Workspace lifecycle", () => {
       .rejects.toMatchObject({ code: "workspace_output_export_failed" });
     expect(execute).toHaveBeenCalledOnce();
     expect(value.handle.stopWithTimeout).not.toHaveBeenCalled();
+  });
+
+  it("touches only a running guest of the session, and never starts or resumes one", async () => {
+    const value = fixture();
+    await value.runtime.touchSession({ sessionId: ensureInput.sessionId });
+    expect(value.handle.touch).toHaveBeenCalledOnce();
+    // A guest the idle stop or a retirement stopped meanwhile stays stopped.
+    value.setState("stopped");
+    await value.runtime.touchSession({ sessionId: ensureInput.sessionId });
+    value.setState("missing");
+    await value.runtime.touchSession({ sessionId: ensureInput.sessionId });
+    expect(value.handle.touch).toHaveBeenCalledOnce();
+    expect(value.handle.connectOrStart).not.toHaveBeenCalled();
+    expect(value.builder.connectOrCreate).not.toHaveBeenCalled();
+    // A guest that stops between the look and the touch is no failure either.
+    value.setState("running");
+    value.handle.touch.mockRejectedValueOnce(new SandboxNotRunningError(sandboxName));
+    await expect(value.runtime.touchSession({ sessionId: ensureInput.sessionId })).resolves.toBeUndefined();
   });
 
   it("creates a persistent VM detached from the creator handle", async () => {
