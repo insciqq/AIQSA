@@ -86,12 +86,12 @@ describe("BrowserLiveStream", () => {
 
 describe("browser live requests", () => {
   it("posts input, control and handoff bodies to their routes", async () => {
-    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    const fetchMock = vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(async () => new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(postBrowserLiveInput("chat-1", { kind: "text", text: "hello" })).resolves.toEqual({ ok: true });
     await postBrowserLiveControl("chat-1", "take");
     await postBrowserLiveHandoff("chat-1", "handoff-1", "done");
-    expect(fetchMock.mock.calls.map(([path, init]) => [path, (init as RequestInit).method, (init as RequestInit).body])).toEqual([
+    expect(fetchMock.mock.calls.map(([path, init]) => [path, init?.method, init?.body])).toEqual([
       [browserLiveInputPath("chat-1"), "POST", JSON.stringify({ kind: "text", text: "hello" })],
       [browserLiveControlPath("chat-1"), "POST", JSON.stringify({ action: "take" })],
       [browserLiveHandoffPath("chat-1"), "POST", JSON.stringify({ action: "done", handoffId: "handoff-1" })]
