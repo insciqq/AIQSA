@@ -101,11 +101,14 @@ type McpConnection = Readonly<{
   state: { closed: boolean; inFlight: number; overflow: "sole" | "shared" | null };
 }>;
 
+/** A guest's live browser streamers (exec id -> the run that started it) on their own MCP connection. */
+type LiveChannel = { execs: Map<string, string>; idle?: ReturnType<typeof setTimeout>; mcp?: McpConnection };
+
 type LocalSession = {
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
   execOwners: Map<string, string>;
   /** The live browser channel's own MCP connection and its streamers by run (`browserLive`). */
-  live?: { execs: Map<string, string>; idle?: ReturnType<typeof setTimeout>; mcp?: McpConnection };
+  live?: LiveChannel;
   mcp?: McpConnection;
   runtimeSandboxId: string;
   sandbox: Sandbox;
@@ -1421,7 +1424,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const session = this.sessions.get(input.sessionId);
     if (!session || session.runtimeSandboxId !== input.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
     if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
-    const live = session.live ??= { execs: new Map() };
+    const live: LiveChannel = session.live ??= { execs: new Map<string, string>() };
     if (input.action !== "start" && live.execs.get(input.execSessionId) !== input.modelRunId) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
@@ -1488,6 +1491,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           live.execs.delete(id);
           return { action: "close", exited };
         }
+        default:
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
     } finally {
       if (live.execs.size === 0 && session.live === live) {

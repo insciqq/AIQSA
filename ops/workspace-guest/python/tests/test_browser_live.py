@@ -487,7 +487,7 @@ class LiveBrowserTests(unittest.TestCase):
         value = json.loads(browser_js(script))
         return value["centers"], value["viewport"]
 
-    def test_10_the_user_signs_in_through_the_live_view_and_the_agent_sees_no_typed_value(self) -> None:
+    def test_9b_the_user_signs_in_through_the_live_view_and_the_agent_sees_no_typed_value(self) -> None:
         from aiqsa import browser
 
         self.quiet(browser.open, self.base + "/signin")
@@ -546,7 +546,7 @@ class LiveBrowserTests(unittest.TestCase):
             self.assertNotIn(value, everything, value)
         self.assertEqual(view.close(), 0)
 
-    def test_11_a_handoff_pauses_the_agent_and_done_saves_the_site(self) -> None:
+    def test_9c_a_handoff_pauses_the_agent_and_done_saves_the_site(self) -> None:
         from aiqsa import browser
 
         self.quiet(browser.open, self.base + "/account")
@@ -571,7 +571,7 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertIn("save_session: 127.0.0.1", browser.steps())
         self.assertNotIn("gave the browser back", browser.text(), "a handoff's result tells the agent, not its next command")
 
-    def test_12_frames_are_paced_and_the_streamer_ends_with_its_stdin(self) -> None:
+    def test_9d_frames_are_paced_and_the_streamer_ends_with_its_stdin(self) -> None:
         from aiqsa import browser
 
         self.quiet(browser.open, self.base + "/anim")
