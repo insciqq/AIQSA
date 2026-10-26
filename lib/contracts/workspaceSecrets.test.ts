@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeWorkspaceBrowserAutosaveReport, decodeWorkspaceSecretList, formatWorkspaceSecretLimit, workspaceBrowserAutosaveMessage,
+  decodeWorkspaceBrowserAutosaveReport, decodeWorkspaceSecretList, formatWorkspaceSecretLimit, isReservedWorkspaceEnvName,
+  isWorkspaceEnvName, isWorkspaceSavedEnvName, workspaceBrowserAutosaveMessage, WORKSPACE_RESERVED_ENV_PREFIX,
   workspaceSecretErrorMessage, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
   WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, WORKSPACE_SECRET_VALUE_MAX_BYTES, type WorkspaceSecretSummary
 } from "./workspaceSecrets";
@@ -11,6 +12,19 @@ const summary: WorkspaceSecretSummary = {
 };
 const browser: WorkspaceSecretSummary = { ...summary, id: "10000000-0000-4000-8000-000000000003", kind: "browser_session",
   name: "shop.example", originalName: "shop.example.json", browserSession: { autoSaved: true } };
+
+describe("Workspace secret environment names", () => {
+  it("keeps the browser's names for AIQSA alone, as a saved name and in the settings error", () => {
+    expect(isWorkspaceEnvName("AIQSA_BROWSER_TIMEZONE")).toBe(true);
+    for (const name of ["AIQSA_BROWSER_TIMEZONE", "AIQSA_BROWSER_SESSIONS_DIR", "AIQSA_BROWSER_"]) {
+      expect(isReservedWorkspaceEnvName(name)).toBe(true);
+      expect(isWorkspaceSavedEnvName(name)).toBe(false);
+    }
+    for (const name of ["SHOP_LOGIN", "AIQSA_BROWSERX", "aiqsa_browser_timezone"]) expect(isWorkspaceSavedEnvName(name)).toBe(true);
+    expect(isWorkspaceSavedEnvName("GIT_SSH_COMMAND")).toBe(false);
+    expect(workspaceSecretErrorMessage("workspace_secret_invalid")).toContain(`not start with ${WORKSPACE_RESERVED_ENV_PREFIX}`);
+  });
+});
 
 describe("Workspace secret wire contract", () => {
   it("bounds byteSize per kind so one large browser session does not reject the whole list", () => {

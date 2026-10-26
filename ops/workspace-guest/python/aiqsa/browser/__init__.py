@@ -132,7 +132,11 @@ def text(n: Optional[int] = None, start: int = 0, max_chars: int = 6000) -> str:
 
 
 def js(expression: str) -> str:
-    """Evaluate a JavaScript expression in the page and return its JSON value as text (bounded)."""
+    """Read page data: evaluate a JavaScript expression and return its JSON value as text (bounded).
+
+    Only for reading, never to click, solve a challenge or change how the browser identifies itself;
+    refused while the page shows a CAPTCHA.
+    """
     return builtins.str(call("js", {"expression": expression}).get("text") or "")
 
 

@@ -76,6 +76,7 @@ describe("manage_secret", () => {
     for (const [variables, message] of [
       [[{ name: "1BAD", value: "x" }], "variables[0].name must use letters"],
       [[{ name: "SSH_AUTH_SOCK", value: "x" }], "not be SSH_AUTH_SOCK"],
+      [[{ name: "AIQSA_BROWSER_SESSIONS_DIR", value: "/workspace/project" }], "not start with AIQSA_BROWSER_ (reserved for the Workspace browser)"],
       [[{ name: "A", value: "x" }, { name: "A", value: "y" }], "\"A\" repeats"],
       [[], "variables must be a non-empty list"]
     ] as const) {

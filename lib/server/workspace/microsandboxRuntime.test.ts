@@ -570,6 +570,13 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, ...run });
     await expect(value.runtime.callBoundTool({ ...callInput, invocationId: "../escape", originalName: "sandbox_shell",
       arguments: { command: "env" } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    // Only AIQSA sets the browser's names: a command's own env never reaches the guest with one.
+    const dispatched = sdk.callTool.mock.calls.length;
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await expect(value.runtime.callBoundTool({ ...callInput, originalName,
+        arguments: { command: "env", env: { AIQSA_BROWSER_TIMEZONE: "UTC" } } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    }
+    expect(sdk.callTool.mock.calls.length).toBe(dispatched);
     await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "foreign", secrets: [],
       runEnvironment: { ...run, AIQSA_GATEWAY_URL: "https://attacker.example" } })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
   });

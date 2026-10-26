@@ -7,6 +7,11 @@ describe("Workspace browser binding", () => {
   it("freezes the run's admitted zone and the documented default language", () => {
     expect(workspaceBrowserBinding({ timeZone: "Europe/Madrid" })).toEqual({ locale: "en-US", timeZone: "Europe/Madrid" });
     expect(workspaceBrowserBinding({ timeZone: "UTC" })).toEqual({ locale: "en-US", timeZone: "UTC" });
+    // Single-segment IANA names stay what the user chose; none of them silently becomes UTC.
+    for (const zone of ["CET", "GMT", "EST5EDT", "Etc/GMT+5", "America/Argentina/Buenos_Aires", "W-SU"]) {
+      expect(workspaceBrowserBinding({ timeZone: zone })).toEqual({ locale: "en-US", timeZone: zone });
+      expect(workspaceBrowserEnvironment(workspaceBrowserBinding({ timeZone: zone }))[WORKSPACE_BROWSER_TIME_ZONE_ENV]).toBe(zone);
+    }
     for (const zone of [undefined, null, "", "Not/A_Zone", "Europe/Madrid; rm -rf /", "x".repeat(80)]) {
       expect(workspaceBrowserBinding({ timeZone: zone })).toEqual({ locale: "en-US", timeZone: "UTC" });
     }

@@ -2254,6 +2254,33 @@ describe("Workspace coordinator activity projection", () => {
     expect(JSON.stringify(entries)).not.toMatch(/provider-start|durable-start|exec_activity/);
   });
 
+  it("refuses a command's own env that sets a reserved browser name, before touching the runtime", async () => {
+    const value = fixture();
+    for (const tool of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      const result = await value.coordinator.execute({
+        call: {
+          arguments: { command: "aiqsa-browser", args: ["save-session"], env: { SHOP: "x", AIQSA_BROWSER_SESSIONS_DIR: "/workspace/project" } },
+          id: `call_${tool}_reserved`,
+          name: namespacedWorkspaceToolName(tool)
+        },
+        modelRunToolCallId: `stored_${tool}_reserved`,
+        runId: value.runId,
+        userId: "user_1",
+        workspace: value.workspace
+      });
+      expect(result.status).toBe("error");
+      expect(result.content[0]).toMatchObject({
+        text: expect.stringContaining("Environment names starting with AIQSA_BROWSER_ are reserved for the Workspace browser")
+      });
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Remove AIQSA_BROWSER_SESSIONS_DIR from `env`") });
+      expect(result.artifacts).toEqual([expect.objectContaining({
+        data: expect.objectContaining({ payload: expect.objectContaining({ kind: "command", phase: "failed" }) })
+      })]);
+    }
+    expect(value.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
   it("rejects shell syntax in direct exec with an actionable error before touching the runtime", async () => {
     const value = fixture();
     const execName = namespacedWorkspaceToolName("sandbox_exec");

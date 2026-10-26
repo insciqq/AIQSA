@@ -86,9 +86,13 @@ def _start(run_dir: Path, socket_path: Path) -> None:
         socket_path.unlink()
     except FileNotFoundError:
         pass
+    argv = [python, "-m", "aiqsa.browser._host"]
+    test_root = _paths.current_test_root()
+    if test_root is not None:
+        argv += [_paths.TEST_ROOT_FLAG, str(test_root)]
     log = open(run_dir / "host.log", "wb")  # noqa: SIM115 - handed to the detached host
     try:
-        process = subprocess.Popen([python, "-m", "aiqsa.browser._host"], stdin=subprocess.DEVNULL, stdout=log,
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True, close_fds=True, cwd="/",
                                    env=_host_environment(os.environ))
     except OSError as error:

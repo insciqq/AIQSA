@@ -88,7 +88,7 @@ export const WORKSPACE_BROWSER_SESSION_LIMIT_TEXT =
 
 export function workspaceSecretErrorMessage(code: unknown): string {
   switch (code) {
-    case "workspace_secret_invalid": return "Check the name, value and file size. Environment names must be unique and use letters, digits and underscores.";
+    case "workspace_secret_invalid": return `Check the name, value and file size. Environment names must be unique, use letters, digits and underscores, and not start with ${WORKSPACE_RESERVED_ENV_PREFIX}.`;
     case "workspace_secret_limit": return `Workspace secrets allow up to ${WORKSPACE_SECRET_MAX_COUNT} entries and ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_TOTAL_MAX_BYTES)} in total, including up to ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_ENV_MAX_BYTES)} of environment variables. Each file can be up to ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_FILE_MAX_BYTES)}. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT}`;
     case "workspace_browser_session_invalid": return `Choose a Playwright storage_state JSON file with cookies and origins, up to ${browserLimit}. Use a safe filename such as shop.example.json.`;
     case "workspace_browser_session_conflict": return "A browser session with this filename already exists. Edit that session to replace it.";
@@ -106,6 +106,22 @@ export function isWorkspaceSecretId(value: unknown): value is string {
 export function isWorkspaceEnvName(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(value) &&
     !["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH_COMMAND"].includes(value);
+}
+
+/**
+ * Names only AIQSA sets in guest commands: the browser's admitted language and time zone arrive in the
+ * run's own environment. Neither a saved secret nor a command's `env` may set them, so nothing poses as
+ * the admitted values or points the browser helper elsewhere (saved sign-ins into exported folders).
+ */
+export const WORKSPACE_RESERVED_ENV_PREFIX = "AIQSA_BROWSER_";
+
+export function isReservedWorkspaceEnvName(value: string): boolean {
+  return value.startsWith(WORKSPACE_RESERVED_ENV_PREFIX);
+}
+
+/** A name a user or the agent may save as an environment variable. */
+export function isWorkspaceSavedEnvName(value: unknown): value is string {
+  return isWorkspaceEnvName(value) && !isReservedWorkspaceEnvName(value);
 }
 
 export function workspaceSecretAssetPath(id: string, kind: "ssh_key" | "file"): string {

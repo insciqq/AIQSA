@@ -86,7 +86,8 @@ export const WORKSPACE_BROWSER_LOCALE_ENV = "AIQSA_BROWSER_LOCALE";
 export const WORKSPACE_BROWSER_TIME_ZONE_ENV = "AIQSA_BROWSER_TIMEZONE";
 
 const BROWSER_LOCALE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/u;
-const BROWSER_TIME_ZONE = /^(?:UTC|[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){1,2})$/u;
+// An IANA name of one segment (`CET`, `EST5EDT`) or more; admission checked that it exists.
+const BROWSER_TIME_ZONE = /^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)*$/u;
 
 /** The exact shapes the guest accepts. */
 export function isWorkspaceBrowserLocale(value: unknown): value is string {

@@ -7,16 +7,19 @@ this shape, so change both together):
 
     [browser #3] click: button "Add to cart" @ www.saucedemo.com/inventory.html
 
-Typed text never appears in a step line, except in a search box; a URL shows
-only its host and path. Only an action prints a step line at the start of a
-line: page text that looks like one is indented, and so is the turn's step list.
+Typed text never appears in a step line, except in a search box, and a value
+typed from the environment appears nowhere (`HiddenValues`); a URL shows only
+its host and path. Only an action prints a step line at the start of a line:
+page text that looks like one is indented, and so is the turn's step list.
 """
 
 from __future__ import annotations
 
+import html
+import json
 import re
 from typing import Any, List, Mapping, Optional, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, urlsplit, urlunsplit
 
 STEP_PREFIX = "[browser #"
 #: Characters of one element name, value or link shown to the agent.
@@ -54,6 +57,71 @@ def where(url: Optional[str]) -> Optional[str]:
         return clean(parts.scheme + ":", WHERE_CHARS) if parts.scheme else None
     host = parts.hostname + (f":{parts.port}" if parts.port else "")
     return clean(host + (parts.path or "/"), WHERE_CHARS).replace(" ", "%20")
+
+
+def page_address(url: Optional[str]) -> Optional[str]:
+    """A step's page: scheme, host and path. Query, fragment and user info may carry credentials."""
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return parts.scheme + ":" if parts.scheme else None
+    return f"{parts.scheme}://{parts.hostname}{f':{port}' if port else ''}{parts.path or '/'}"
+
+
+def without_userinfo(url: Any) -> Any:
+    """A page address as the agent reads it, without a user name or password in it."""
+    if not isinstance(url, str) or "@" not in url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
+
+
+class HiddenValues:
+    """Values typed from the environment in this turn: no answer of the browser carries them.
+
+    The field such a value went into reads as a hidden value; this catches the value where the page
+    repeats it (an address after a GET form, a greeting, a script result), also URL- and JSON-escaped.
+    Values shorter than `MIN_CHARS` are not searched for: masking every such string would garble pages.
+    """
+
+    MIN_CHARS = 4
+    MASK = "[hidden]"
+
+    def __init__(self) -> None:
+        self.forms: List[str] = []
+
+    def add(self, value: str) -> None:
+        if len(value) < self.MIN_CHARS:
+            return
+        for form in (value, quote(value, safe=""), quote_plus(value), json.dumps(value, ensure_ascii=False)[1:-1],
+                     json.dumps(value)[1:-1], html.escape(value)):
+            if len(form) >= self.MIN_CHARS and form not in self.forms:
+                self.forms.append(form)
+        self.forms.sort(key=len, reverse=True)
+
+    def mask(self, value: Any) -> Any:
+        if not self.forms:
+            return value
+        if isinstance(value, str):
+            for form in self.forms:
+                if form in value:
+                    value = value.replace(form, self.MASK)
+            return value
+        if isinstance(value, dict):
+            return {key: self.mask(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self.mask(item) for item in value]
+        return value
 
 
 def step_line(step: Mapping[str, Any]) -> str:

@@ -4,7 +4,9 @@
 order (open shadow roots included) and returns them with the elements
 themselves, which the browser host keeps as handles. An element that is still
 on the page keeps its number from the previous list of the same document, so
-a number the agent read a few steps ago still means the same element.
+a number the agent read a few steps ago still means the same element. Fields
+the agent filled from the environment (`options.masked`) read as hidden values,
+and every name and value is one line: page text cannot pose as a step line.
 """
 
 COLLECT = r"""
@@ -18,12 +20,14 @@ COLLECT = r"""
   const max = options.max;
   const previous = new Map();
   if (options.previous) options.previous.elements.forEach((el, index) => previous.set(el, options.previous.numbers[index]));
+  const masked = new Set(options.masked || []);
   let next = options.next;
   const vw = window.innerWidth, vh = window.innerHeight;
   const items = [], elements = [], numbers = [];
   let truncated = false;
   const textOf = (node) => ((node && (node.innerText || node.textContent)) || '').replace(/\s+/g, ' ').trim();
-  const cut = (value, n) => (value || '').length > n ? value.slice(0, n) : (value || '');
+  const line = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const cut = (value, n) => { const text = line(value); return text.length > n ? text.slice(0, n) : text; };
   const CONTROLS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
   // A label's own words: a control inside it (a list box's options, a field's value) is not its name.
   function labelText(label) {
@@ -104,6 +108,12 @@ COLLECT = r"""
       item.value = cut(textOf(el), 200);
     }
     if (item.role === 'searchbox') item.search = true;
+    if (masked.has(el)) {
+      // Filled from a saved value: show that it is filled, never what it holds.
+      delete item.value;
+      item.secret = true;
+      item.filled = ((el.value !== undefined ? el.value : el.textContent) || '').length > 0;
+    }
     const ariaChecked = el.getAttribute('aria-checked');
     if (ariaChecked) item.checked = ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : 'mixed';
     const expanded = el.getAttribute('aria-expanded');
@@ -159,7 +169,7 @@ COLLECT = r"""
   const scroller = document.scrollingElement || document.documentElement;
   return {
     items, elements, numbers, next, truncated,
-    title: document.title,
+    title: line(document.title),
     scroll: { y: Math.round(scroller ? scroller.scrollTop : 0), height: Math.round(scroller ? scroller.scrollHeight : 0), viewport: [vw, vh] },
     loading: document.readyState !== 'complete'
   };
