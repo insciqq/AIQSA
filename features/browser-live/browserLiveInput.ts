@@ -61,13 +61,18 @@ type KeyboardLike = ModifierKeys & Readonly<{ key: string; code: string; isCompo
 /**
  * One key press as page input: printable characters as `text` (layouts and
  * AltGr already applied), everything else, and shortcuts with Ctrl or Meta, as
- * key down. Null for modifiers alone, IME composition and paste (the paste
- * event sends the clipboard text instead).
+ * key down. Space is a key press too, which the guest types as a space: pages
+ * act on its keydown (a focused checkbox, button or player). Null for
+ * modifiers alone, IME composition and paste (the paste event sends the
+ * clipboard text instead).
  */
 export function keyDownInputV2(event: KeyboardLike): BrowserLiveInput | null {
   if (event.isComposing || event.key === "Process" || event.key === "Dead" || event.key === "Unidentified") return null;
   if (MODIFIER_KEYS.has(event.key) || event.key.length > BROWSER_LIVE_LIMITS.keyChars) return null;
   const shortcut = (event.ctrlKey || event.metaKey) && !(event.ctrlKey && event.altKey);
+  if (event.key === " " && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    return { kind: "key", type: "down", key: " ", code: "Space", ...(event.shiftKey ? { modifiers: modifiersV2(event) } : {}) };
+  }
   if ([...event.key].length === 1 && !shortcut) return { kind: "text", text: event.key };
   if (shortcut && event.key.toLowerCase() === "v") return null;
   return { kind: "key", type: "down", key: event.key, code: event.code.slice(0, BROWSER_LIVE_LIMITS.keyChars),
