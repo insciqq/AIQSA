@@ -47,7 +47,7 @@ import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
-import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
@@ -1297,7 +1297,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (["sandbox_shell", "sandbox_exec", "sandbox_exec_start"].includes(input.originalName)) {
         const environment = await this.secretEnvironment(session, input.modelRunId);
         const requested = argumentsWithIdentity.env;
-        if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested))) {
+        if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested) ||
+          Object.keys(requested).some(isReservedWorkspaceEnvName))) {
+          // The coordinator refuses reserved names visibly; any other caller is refused here, before dispatch.
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
         if (input.invocationId !== undefined && !isWorkspaceCodeInvocationId(input.invocationId)) {

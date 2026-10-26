@@ -20,6 +20,7 @@ import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSe
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { BOUND_WORKSPACE_UV_CACHE, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS, WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
+import { parseWorkspaceSecretValue } from "./secrets/validation";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -548,6 +549,26 @@ describe("Microsandbox Workspace lifecycle", () => {
     }
   });
 
+  it("stages a secret saved before the browser's names were reserved, without letting its reserved entries reach commands", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    // A revision as it was stored: the settings would refuse this name today, staging must not.
+    const legacy = parseWorkspaceSecretValue({ kind: "env", entries: [
+      { name: "AIQSA_BROWSER_LOCALE", value: "de-DE" }, { name: "AIQSA_BROWSER_SESSIONS_DIR", value: "/workspace/project" },
+      { name: "SHOP_TOKEN", value: "synthetic-shop-token" }] }, "stored");
+    const run = { AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "CET" };
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, runEnvironment: run, secrets: [
+      { id: randomUUID(), versionId: randomUUID(), name: "Legacy shop", description: "", value: legacy }
+    ] });
+    const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: unknown; guide: string };
+    expect(bundle.environment).toEqual({ SHOP_TOKEN: "synthetic-shop-token", ...run });
+    expect(bundle.guide).toContain("Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):\n" +
+      "- `AIQSA_BROWSER_LOCALE`\n- `AIQSA_BROWSER_SESSIONS_DIR`");
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
+    await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", arguments: { command: "env" } });
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, SHOP_TOKEN: "synthetic-shop-token", ...run });
+  });
+
   it("adds the run's code bearer over saved env, and each command's own invocation id over requested env", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
@@ -570,6 +591,13 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, ...run });
     await expect(value.runtime.callBoundTool({ ...callInput, invocationId: "../escape", originalName: "sandbox_shell",
       arguments: { command: "env" } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    // Only AIQSA sets the browser's names: a command's own env never reaches the guest with one.
+    const dispatched = sdk.callTool.mock.calls.length;
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await expect(value.runtime.callBoundTool({ ...callInput, originalName,
+        arguments: { command: "env", env: { AIQSA_BROWSER_TIMEZONE: "UTC" } } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    }
+    expect(sdk.callTool.mock.calls.length).toBe(dispatched);
     await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "foreign", secrets: [],
       runEnvironment: { ...run, AIQSA_GATEWAY_URL: "https://attacker.example" } })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
   });

@@ -1,5 +1,5 @@
 import {
-  isWorkspaceEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
+  isReservedWorkspaceEnvName, isWorkspaceSavedEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES,
   WORKSPACE_SECRET_ENV_MAX_BYTES, workspaceSecretAssetPath, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT,
   WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, workspaceBrowserSessionPath,
   type WorkspaceSecretKind
@@ -39,7 +39,8 @@ export function parseAcceptedWorkspaceSecrets(value: unknown): readonly Accepted
     if (typeof item !== "object" || item === null || Array.isArray(item) || Object.keys(item).length !== 5 ||
       !isWorkspaceSecretId(item.id) || ids.has(item.id) || !isWorkspaceSecretId(item.versionId)) throw new WorkspaceSecretError("workspace_secret_invalid");
     ids.add(item.id);
-    const mutation = parseWorkspaceSecretMutation({ action: "create", name: item.name, description: item.description, value: item.value });
+    // Accepted revisions as they were saved: one stored before a name was reserved still stages.
+    const mutation = parseWorkspaceSecretMutation({ action: "create", name: item.name, description: item.description, value: item.value }, "stored");
     if (mutation.action !== "create") throw new WorkspaceSecretError("workspace_secret_invalid");
     if (mutation.value.kind === "browser_session") {
       browserCount++;
@@ -111,8 +112,9 @@ export function workspaceSecretVariables(secrets: readonly WorkspaceSecretVariab
   for (const secret of secrets) if (secret.kind === "text") textNames.set(secret.name, (textNames.get(secret.name) ?? 0) + 1);
   let remaining = WORKSPACE_SECRET_ENV_MAX_BYTES - secrets.reduce((total, secret) => total + (secret.kind === "env" ? secret.byteSize : 0), 0);
   return secrets.map((secret) => {
-    if (secret.kind === "env") return secret.envNames;
-    if (secret.kind !== "text" || !TEXT_SECRET_VARIABLE_NAME.test(secret.name) || !isWorkspaceEnvName(secret.name) ||
+    // AIQSA's own names stay with AIQSA (`isReservedWorkspaceEnvName`): never a saved value over them.
+    if (secret.kind === "env") return secret.envNames.filter((name) => !isReservedWorkspaceEnvName(name));
+    if (secret.kind !== "text" || !TEXT_SECRET_VARIABLE_NAME.test(secret.name) || !isWorkspaceSavedEnvName(secret.name) ||
       envNames.has(secret.name) || textNames.get(secret.name) !== 1 || secret.byteSize > WORKSPACE_TEXT_SECRET_VARIABLE_MAX_BYTES) return [];
     // Its entry in the environment is smaller than this: the name, and the stored value without its kind.
     const cost = secret.byteSize + secret.name.length;
@@ -131,7 +133,9 @@ function variableInput({ name, value }: AcceptedWorkspaceSecret): WorkspaceSecre
 export function workspaceSecretEnvironment(secrets: readonly AcceptedWorkspaceSecret[]): Record<string, string> {
   const variables = workspaceSecretVariables(secrets.map(variableInput));
   return Object.fromEntries(secrets.flatMap(({ value }, index) => {
-    if (value.kind === "env") return value.entries.map(({ name, value: content }) => [name, content] as const);
+    if (value.kind === "env") {
+      return value.entries.filter(({ name }) => !isReservedWorkspaceEnvName(name)).map(({ name, value: content }) => [name, content] as const);
+    }
     const [variable] = variables[index]!;
     return value.kind === "text" && variable ? [[variable, value.text] as const] : [];
   }));
@@ -160,7 +164,15 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
           "For Git, set GIT_SSH_COMMAND to the same ssh command without user@host. First use records the host key; changed host keys are rejected.", "");
         break;
       }
-      case "env": lines.push("Environment variables (values are already in command environments):", ...secret.value.entries.map(({ name }) => `- \`${name}\``), ""); break;
+      case "env": {
+        const [kept, reserved] = [secret.value.entries.filter(({ name }) => !isReservedWorkspaceEnvName(name)),
+          secret.value.entries.filter(({ name }) => isReservedWorkspaceEnvName(name))];
+        if (kept.length) lines.push("Environment variables (values are already in command environments):", ...kept.map(({ name }) => `- \`${name}\``));
+        if (reserved.length) lines.push("Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):",
+          ...reserved.map(({ name }) => `- \`${name}\``));
+        lines.push("");
+        break;
+      }
       case "text": {
         const [variable] = variables[index]!;
         if (variable) lines.push(`Environment variable (the value is already in command environments): \`${variable}\``);
@@ -171,7 +183,7 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
       case "file": lines.push(`Original file: ${heading(secret.value.originalName)}`, `Path: \`${workspaceSecretAssetPath(secret.id, "file")}\``, "Use the original bytes at this path; no reconstruction is needed.", ""); break;
     }
   }
-  lines.push("## Browser sessions", "", `Save Playwright storage_state JSON in /workspace/secrets/browser/<host>.json. AIQSA encrypts valid files after a personal run settles and restores them in later Workspaces. Verify that a restored session is still logged in; use saved credentials if it expired. Guest file deletion does not delete settings. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT} A larger state is not saved and its previous version stays. ${WORKSPACE_BROWSER_SESSION_USER_PATH}`, "");
+  lines.push("## Browser sessions", "", `Saved sign-ins are Playwright storage_state JSON files in /workspace/secrets/browser/<site>.json. The Workspace browser (\`aiqsa-browser\`) restores them when it starts; after a sign-in, \`aiqsa-browser save-session\` saves the site's state there and keeps it current while it browses. AIQSA encrypts valid files after a personal run settles and restores them in later Workspaces. Verify that a restored session is still logged in; use saved credentials if it expired. Guest file deletion does not delete settings. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT} A larger state is not saved and its previous version stays. ${WORKSPACE_BROWSER_SESSION_USER_PATH}`, "");
   for (const secret of secrets) if (secret.value.kind === "browser_session") {
     lines.push(`### ${heading(secret.name)}`, `Host/file: ${heading(secret.value.originalName)}`,
       `Path: \`${workspaceBrowserSessionPath(secret.value.originalName)}\``, "");
