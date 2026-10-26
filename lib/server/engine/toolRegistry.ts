@@ -68,7 +68,7 @@ import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { defaultSkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 import { namespacedWorkspaceToolName, workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 import { executeReadToolResult, readToolResultTool, type SavedToolResultReader } from "./toolResults";
-import type { TranscriptImages } from "./transcript";
+import { IMAGE_ANALYZE_NOTE, IMAGE_VIEW_NOTE, type TranscriptImages } from "./transcript";
 
 /**
  * The native engine's one tool registry, built once at the start of a run
@@ -142,8 +142,9 @@ export type ToolRegistry = Readonly<{
   definitions(): readonly RunTool[];
   /**
    * The Workspace previews this run viewed itself (`view_workspace_image`),
-   * which its requests carry with their results; absent where the run offers
-   * no direct view.
+   * which its requests carry with their results, and how a result image they
+   * do not carry is seen again; absent where the run offers neither direct
+   * view nor System Vision.
    */
   images?: TranscriptImages;
   /**
@@ -273,8 +274,16 @@ function notSent(call: ModelToolCall, error: unknown): ToolExecutionResult {
 export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolRegistry> {
   const request = input.request;
   const owner = { runId: input.runId, userId: input.userId };
+  // A tool that reads guest files without a command (a direct view, a System Vision capture) starts the Workspace first.
+  const coordinator = input.services.workspace;
+  const runWorkspace = request.workspace;
+  const prepareWorkspace = coordinator?.prepareExecution && runWorkspace
+    ? (signal?: AbortSignal) => coordinator.prepareExecution!({ onActivity: input.onWorkspaceActivity, runId: input.runId,
+      ...(signal ? { signal } : {}), userId: input.userId, workspace: runWorkspace })
+    : undefined;
   const context = (execution: EngineToolExecution) => ({
-    persistedToolCallId: execution.persistedToolCallId, request, runId: input.runId, userId: input.userId
+    persistedToolCallId: execution.persistedToolCallId, ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId,
+    userId: input.userId
   });
   const tools = new Map<string, EngineTool>();
   const descriptors = toolActivityDescriptors(request);
@@ -320,22 +329,24 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       execute: async (execution) => (await defaultWorkspaceCheckpoints()).execute(execution.call, context(execution), execution.signal) });
   }
 
+  // A result image the run's requests do not carry is named with the way this run can see it again.
+  let images: TranscriptImages | undefined;
   for (const definition of analyzeImageTools(request)) {
     if (definition.name !== ANALYZE_IMAGE_TOOL_NAME || !input.services.vision) continue;
     const service = input.services.vision;
     add({ activity: named(definition, "System Vision"), definition, effects: "none", observationSource: "workspace",
       execute: (execution) => service.execute(execution.call, context(execution), execution.signal) });
+    images = { attached: () => undefined, note: IMAGE_ANALYZE_NOTE };
   }
 
   // Direct view, frozen at admission with the chat model's verified vision: the run's requests carry its own
   // previews as image content of their results (`directImageView.ts`).
-  let images: TranscriptImages | undefined;
   if (clientTools && request.workspaceImageView === true && request.workspace && input.services.workspace) {
     const viewer = createWorkspaceImageViewer({ captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
-      request, runId: input.runId, userId: input.userId });
+      ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId, userId: input.userId });
     add({ activity: named(viewWorkspaceImageTool, "Workspace"), definition: viewWorkspaceImageTool, effects: "none",
       observationSource: "workspace", execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
-    images = viewer;
+    images = { attached: (item) => viewer.attached(item), note: IMAGE_VIEW_NOTE };
   }
 
   if (clientTools && request.imagePlan && input.services.images) {

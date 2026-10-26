@@ -9,9 +9,10 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import type { WorkspaceImageCaptures } from "../workspace/directImageView";
+import { WorkspaceCaptureError } from "../workspace/selectedCapture";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
-import { IMAGE_NOT_ATTACHED_NOTE, type TranscriptItem } from "./transcript";
+import { IMAGE_VIEW_NOTE, type TranscriptItem } from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 
 /**
@@ -71,20 +72,27 @@ function engine(earlier?: Readonly<{ answerId: string; items: readonly Transcrip
   return { deps, recorded };
 }
 
-function workspace(): WorkspaceCoordinator {
+/** The guest a run started, as the capture owner sees it: nothing is captured before the run's Workspace runs. */
+type Guest = { started: boolean };
+
+function workspace(guest: Guest): WorkspaceCoordinator {
   return {
     accepts: () => true,
     execute: vi.fn(),
     handoff: vi.fn(async () => ({ status: "ready" as const })),
+    prepareExecution: vi.fn(async () => { guest.started = true; }),
     settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: false })),
     tools: vi.fn(async () => [])
   } as unknown as WorkspaceCoordinator;
 }
 
-function captures(bytes: Buffer) {
+function captures(bytes: Buffer, guest: Guest) {
   const checksum = createHash("sha256").update(bytes).digest("hex");
   const owner = {
-    create: vi.fn(async () => ({ files: [], id: "c".repeat(32), readiness: "captured" as const })),
+    create: vi.fn(async () => {
+      if (!guest.started) throw new WorkspaceCaptureError("workspace_capture_unavailable");
+      return { files: [], id: "c".repeat(32), readiness: "captured" as const };
+    }),
     imageSource: vi.fn(async (reference: { captureId: string; relativePath: string }) => ({
       assertAccess: async () => undefined, byteSize: bytes.length, captureId: reference.captureId, checksum,
       open: async () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }),
@@ -133,14 +141,16 @@ const viewResult = (history: readonly ProviderHistoryItem[] | undefined) =>
 describe("direct view through the native engine", () => {
   it("shows the model its preview in the next request, keeps only the reference, and a later turn reads the reference", async () => {
     const png = await sharp({ create: { background: "#20305a", channels: 3, height: 600, width: 1600 } }).png().toBuffer();
-    const owner = captures(png);
+    // The turn's first call is the view: no Workspace command ran before it.
+    const guest: Guest = { started: false };
+    const owner = captures(png, guest);
     const view = { arguments: { path: "/workspace/project/code.png" }, id: "call-view", name: "view_workspace_image" };
     const first = scriptedAdapter([{ calls: [view] }, { text: "The code is on the screenshot." }]);
     const turn1 = engine();
     const stream = await done(createNativeRunExecutionResponse({ adapter: first.adapter, created: { assistantMessageId: "answer-1",
       runId: "run-1", userMessageId: "question-1" }, engine: turn1.deps,
     prepared: prepared([{ id: "question-1", role: "user", text: "Read the code on the screenshot." }]), repository: repository(),
-    services: { workspaceImageCaptures: owner.load }, userId: "user", workspace: workspace() }));
+    services: { workspaceImageCaptures: owner.load }, userId: "user", workspace: workspace(guest) }));
     expect(stream).toContain("\"status\":\"complete\"");
 
     expect(first.requests[0]!.tools?.map((tool) => tool.name)).toContain("view_workspace_image");
@@ -166,10 +176,10 @@ describe("direct view through the native engine", () => {
       { id: "question-1", role: "user", text: "Read the code on the screenshot." },
       { id: "answer-1", role: "assistant", text: "The code is on the screenshot." },
       { id: "question-2", role: "user", text: "And again?" }
-    ]), repository: repository(), services: { workspaceImageCaptures: owner.load }, userId: "user", workspace: workspace() }));
+    ]), repository: repository(), services: { workspaceImageCaptures: owner.load }, userId: "user", workspace: workspace(guest) }));
     const later = viewResult(second.requests[0]!.history)!;
     expect(later.images).toBeUndefined();
-    expect(later.output.endsWith(`\n\n${IMAGE_NOT_ATTACHED_NOTE}`)).toBe(true);
+    expect(later.output.endsWith(`\n\n${IMAGE_VIEW_NOTE}`)).toBe(true);
     // A fixed model's tool list is the same in both turns.
     expect(JSON.stringify(second.requests[0]!.tools)).toBe(JSON.stringify(first.requests[0]!.tools));
   });

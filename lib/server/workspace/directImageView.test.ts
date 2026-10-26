@@ -6,6 +6,7 @@ import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "
 import type { ModelToolCall } from "../tools/types";
 import { parseWorkspaceImageEvidence } from "./directImageEvidence";
 import {
+  createDirectImageBudget,
   createWorkspaceImageViewer,
   DIRECT_IMAGE_VIEW_LIMITS,
   supportsWorkspaceImageView,
@@ -49,6 +50,41 @@ function captureOwner(bytes: Buffer) {
   };
   return { access, owner, captures: () => Promise.resolve(owner as unknown as WorkspaceImageCaptures) };
 }
+
+/**
+ * A capture owner keyed like the real one: a request key whose capture was
+ * released is unavailable, and nothing is captured before the run's
+ * Workspace was started (`selectedCapture.ts`).
+ */
+function keyedCaptureOwner(bytes: Buffer, options: Readonly<{ started?: () => boolean }> = {}) {
+  const checksum = createHash("sha256").update(bytes).digest("hex");
+  const keys = new Map<string, string>();
+  const released = new Set<string>();
+  const open = vi.fn(async () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } }));
+  const owner = {
+    create: vi.fn(async (request: { consumerKey: string; requestKey: string }) => {
+      if (options.started && !options.started()) throw new WorkspaceCaptureError("workspace_capture_unavailable");
+      if (released.has(request.requestKey)) throw new WorkspaceCaptureError("workspace_capture_unavailable");
+      const id = (keys.size + 1).toString(16).padStart(32, "a");
+      keys.set(id, request.requestKey);
+      return { files: [], id, readiness: "captured" as const };
+    }),
+    imageSource: vi.fn(async (reference: { captureId: string; relativePath: string }) => ({
+      assertAccess: async () => undefined, byteSize: bytes.length, captureId: reference.captureId, checksum, open,
+      relativePath: reference.relativePath
+    })),
+    release: vi.fn(async (reference: { captureId: string }) => { released.add(keys.get(reference.captureId)!); })
+  };
+  return { captures: () => Promise.resolve(owner as unknown as WorkspaceImageCaptures), open, owner };
+}
+
+function deferred() {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("Workspace direct image view", () => {
   it("maps exact output paths to the capture's run-scoped output root without double prefixing", () => {
@@ -208,6 +244,168 @@ describe("Workspace direct image view", () => {
       request: request({ modelCapabilities: { ...request().modelCapabilities, contextWindow: 4_600 }, provider: "deepseek" }) });
     await expect(small.execute(view("call-3"), { persistedToolCallId: "tool-3", round: 1 })).resolves.toMatchObject({ status: "complete" });
     await expect(small.execute(view("call-4"), { persistedToolCallId: "tool-4", round: 1 })).resolves.toMatchObject({ status: "error" });
+    // The input's own image takes its tokens from that share first: beside it, not even one preview fits.
+    const crowded = createWorkspaceImageViewer({ captures: f.captures, runId: "run-1", userId: "user-1", request: request({ attachments: [image],
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 4_600 }, provider: "deepseek" }) });
+    await expect(crowded.execute(view("call-5"), { persistedToolCallId: "tool-5", round: 1 })).resolves.toMatchObject({
+      content: [{ value: { error: "workspace_image_limit_exceeded" } }], status: "error" });
+  });
+
+  it("shares one process budget: held bytes all or nothing, preparation slots in arrival order within their wait", async () => {
+    const budget = createDirectImageBudget({ heldBytes: 100, preparationWaitMs: 40, preparations: 1 });
+    expect(budget.swap(60, 0)).toBe(true);
+    expect(budget.swap(50, 0)).toBe(false);
+    expect(budget.swap(50, 20)).toBe(true);
+    expect(budget.usage().heldBytes).toBe(90);
+    // Freeing goes through whatever the total, and never below nothing.
+    expect(budget.swap(0, 85)).toBe(true);
+    budget.free(10);
+    expect(budget.usage().heldBytes).toBe(0);
+
+    const first = (await budget.prepare())!;
+    const second = budget.prepare();
+    const third = budget.prepare();
+    expect(budget.usage()).toMatchObject({ preparing: 1, waiting: 2 });
+    first();
+    first();
+    const secondSlot = (await second)!;
+    expect(budget.usage()).toMatchObject({ preparing: 1, waiting: 1 });
+    // The third waited its time while the second held the only slot: it is told so, never queued on.
+    await expect(third).resolves.toBeNull();
+    secondSlot();
+    expect(budget.usage()).toEqual({ heldBytes: 0, preparing: 0, waiting: 0 });
+
+    const stop = new AbortController();
+    const held = (await budget.prepare())!;
+    const waiting = budget.prepare(stop.signal);
+    stop.abort(new Error("stopped"));
+    await expect(waiting).rejects.toThrow("stopped");
+    held();
+    expect(budget.usage()).toEqual({ heldBytes: 0, preparing: 0, waiting: 0 });
+  });
+
+  it("reserves each preview in the process budget, frees the ones its run lets go and all of them when the run ends", async () => {
+    const f = captureOwner(await png(64, 48));
+    const budget = createDirectImageBudget({ heldBytes: 64 * 1024 * 1024, preparationWaitMs: 1_000, preparations: 2 });
+    const ended = deferred();
+    const viewer = createWorkspaceImageViewer({ budget, captures: f.captures, request: request(), runEnded: ended.promise, runId: "run-1",
+      userId: "user-1" });
+    const evidence: NonNullable<ReturnType<typeof parseWorkspaceImageEvidence>>[] = [];
+    const run = async (index: number, round: number) => {
+      const result = await viewer.execute(view(`call-${index}`), { persistedToolCallId: `tool-${index}`, round });
+      evidence.push(parseWorkspaceImageEvidence((result.content[1] as { value: unknown }).value)!);
+    };
+    const heldBytes = () => evidence.reduce((total, entry) => total + (viewer.attached({ image: entry })?.image.data.length ?? 0), 0);
+    for (let index = 0; index < DIRECT_IMAGE_VIEW_LIMITS.requestImages; index += 1) await run(index, 1);
+    expect(heldBytes()).toBeGreaterThan(0);
+    expect(budget.usage().heldBytes).toBe(heldBytes());
+    // A later round lets the carried previews go down to half the bound, and the budget frees them with it.
+    await run(8, 2);
+    expect(evidence.filter((entry) => viewer.attached({ image: entry }))).toHaveLength(4);
+    expect(budget.usage().heldBytes).toBe(heldBytes());
+
+    ended.resolve();
+    await flush();
+    expect(budget.usage()).toEqual({ heldBytes: 0, preparing: 0, waiting: 0 });
+    expect(evidence.some((entry) => viewer.attached({ image: entry }))).toBe(false);
+    // A view that ends after its run did holds nothing.
+    await expect(viewer.execute(view("call-9"), { persistedToolCallId: "tool-9", round: 3 })).resolves.toMatchObject({ status: "error" });
+    expect(budget.usage().heldBytes).toBe(0);
+  });
+
+  it("frees its preparation and reserves nothing when a view is refused, fails or stops", async () => {
+    const budget = createDirectImageBudget({ heldBytes: 64 * 1024 * 1024, preparationWaitMs: 1_000, preparations: 1 });
+    const big = captureOwner(await png(800, 600));
+    const limited = createWorkspaceImageViewer({ budget, captures: big.captures, runEnded: null, runId: "run-1", userId: "user-1",
+      request: request({ modelCapabilities: { ...request().modelCapabilities, imageInputLimits: { imageBytes: 100, imageCount: 8,
+        imagePixels: 4_000_000, payloadBytes: 50_000_000 } } }) });
+    await expect(limited.execute(view("call-1"), { persistedToolCallId: "tool-1", round: 1 })).resolves.toMatchObject({ status: "error" });
+    const failing = captureOwner(await png(24, 16));
+    failing.owner.imageSource.mockRejectedValueOnce(new Error("storage_failed"));
+    const viewer = createWorkspaceImageViewer({ budget, captures: failing.captures, request: request(), runEnded: null, runId: "run-1",
+      userId: "user-1" });
+    await expect(viewer.execute(view("call-2"), { persistedToolCallId: "tool-2", round: 1 })).rejects.toThrow("storage_failed");
+    const stopped = new AbortController();
+    stopped.abort();
+    await expect(viewer.execute(view("call-3"), { persistedToolCallId: "tool-3", round: 1 }, stopped.signal)).rejects.toThrow();
+    expect(budget.usage()).toEqual({ heldBytes: 0, preparing: 0, waiting: 0 });
+    // The only slot is free again: the next view takes it.
+    await expect(viewer.execute(view("call-4"), { persistedToolCallId: "tool-4", round: 1 })).resolves.toMatchObject({ status: "complete" });
+  });
+
+  it("refuses a view the process cannot take now, with what to do instead, and never waits long", async () => {
+    const bytes = await png(64, 48);
+    // What one preview of this image takes, measured with a budget of its own.
+    const measure = createDirectImageBudget();
+    await createWorkspaceImageViewer({ budget: measure, captures: captureOwner(bytes).captures, request: request(), runEnded: null,
+      runId: "run-0", userId: "user-1" }).execute(view("call-0"), { persistedToolCallId: "tool-0", round: 1 });
+    const one = measure.usage().heldBytes;
+    const shared = createDirectImageBudget({ heldBytes: one, preparationWaitMs: 30, preparations: 1 });
+    const first = createWorkspaceImageViewer({ budget: shared, captures: captureOwner(bytes).captures, request: request(), runEnded: null,
+      runId: "run-1", userId: "user-1" });
+    await expect(first.execute(view("call-1"), { persistedToolCallId: "tool-1", round: 1 })).resolves.toMatchObject({ status: "complete" });
+    // Another run's preview no longer fits beside it.
+    const other = captureOwner(bytes);
+    const second = createWorkspaceImageViewer({ budget: shared, captures: other.captures, request: request(), runEnded: null, runId: "run-2",
+      userId: "user-1" });
+    await expect(second.execute(view("call-2"), { persistedToolCallId: "tool-2", round: 1 })).resolves.toMatchObject({ status: "error",
+      content: [{ value: { error: "workspace_image_busy", message: expect.stringContaining("in a moment") } }] });
+    expect(other.owner.release).toHaveBeenCalledOnce();
+    expect(shared.usage()).toEqual({ heldBytes: one, preparing: 0, waiting: 0 });
+
+    // A decode holding the process's only slot: the next view waits briefly, then is refused rather than queued.
+    const slow = keyedCaptureOwner(bytes);
+    const gate = deferred();
+    slow.open.mockImplementationOnce(async () => {
+      await gate.promise;
+      return new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+    });
+    const budget = createDirectImageBudget({ heldBytes: 64 * 1024 * 1024, preparationWaitMs: 30, preparations: 1 });
+    const busy = createWorkspaceImageViewer({ budget, captures: slow.captures, request: request(), runEnded: null, runId: "run-3",
+      userId: "user-1" });
+    const pending = busy.execute(view("call-3"), { persistedToolCallId: "tool-3", round: 1 });
+    await vi.waitFor(() => expect(budget.usage().preparing).toBe(1));
+    const queued = createWorkspaceImageViewer({ budget, captures: captureOwner(bytes).captures, request: request(), runEnded: null,
+      runId: "run-4", userId: "user-1" });
+    await expect(queued.execute(view("call-4"), { persistedToolCallId: "tool-4", round: 1 })).resolves.toMatchObject({
+      content: [{ value: { error: "workspace_image_busy" } }], status: "error" });
+    gate.resolve();
+    await expect(pending).resolves.toMatchObject({ status: "complete" });
+    expect(budget.usage()).toMatchObject({ preparing: 0, waiting: 0 });
+  });
+
+  it("views again after a transient read failure: the retry captures afresh under the same call", async () => {
+    const f = keyedCaptureOwner(await png(24, 16));
+    f.open.mockRejectedValueOnce(new TypeError("terminated"));
+    const viewer = createWorkspaceImageViewer({ budget: createDirectImageBudget(), captures: f.captures, request: request(), runEnded: null,
+      runId: "run-1", userId: "user-1" });
+    // The batch retries a read-only call with the same execution (`toolBatch.ts`).
+    const execution = { persistedToolCallId: "tool-1", round: 1 };
+    await expect(viewer.execute(view("call-1"), execution)).rejects.toThrow("terminated");
+    await expect(viewer.execute(view("call-1"), execution)).resolves.toMatchObject({ status: "complete" });
+    expect(f.owner.create.mock.calls.map(([call]) => [call.consumerKey, call.requestKey])).toEqual([["tool-1", "tool-1"], ["tool-1", "tool-1-2"]]);
+    expect(f.owner.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts the run's Workspace before its first capture, so a view needs no command before it", async () => {
+    let started = false;
+    const prepareWorkspace = vi.fn(async () => { started = true; });
+    const f = keyedCaptureOwner(await png(24, 16), { started: () => started });
+    const viewer = createWorkspaceImageViewer({ budget: createDirectImageBudget(), captures: f.captures, prepareWorkspace, request: request(),
+      runEnded: null, runId: "run-1", userId: "user-1" });
+    const stop = new AbortController();
+    await expect(viewer.execute(view("call-1"), { persistedToolCallId: "tool-1", round: 1 }, stop.signal)).resolves
+      .toMatchObject({ status: "complete" });
+    expect(prepareWorkspace).toHaveBeenCalledWith(stop.signal);
+    expect(prepareWorkspace.mock.invocationCallOrder[0]!).toBeLessThan(f.owner.create.mock.invocationCallOrder[0]!);
+
+    // A capture whose session changed meanwhile says to view again.
+    const stale = captureOwner(await png(24, 16));
+    stale.owner.create.mockRejectedValueOnce(new WorkspaceCaptureError("workspace_capture_stale"));
+    const again = createWorkspaceImageViewer({ budget: createDirectImageBudget(), captures: stale.captures, request: request(), runEnded: null,
+      runId: "run-2", userId: "user-1" });
+    await expect(again.execute(view("call-2"), { persistedToolCallId: "tool-2", round: 1 })).resolves.toMatchObject({ status: "error",
+      content: [{ value: { error: "workspace_capture_stale", message: expect.stringContaining("View the image again") } }] });
   });
 
   it("is offered only to verified vision on a route that renders result images", () => {

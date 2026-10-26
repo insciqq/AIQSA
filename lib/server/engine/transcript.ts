@@ -360,16 +360,25 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
 export type TranscriptImages = Readonly<{
   /** The image to send with this result and the input tokens it adds; undefined when it goes by reference. */
   attached(item: TranscriptToolResultItem): Readonly<{ image: ProviderHistoryImage; tokens: number }> | undefined;
+  /** Appended to a result whose image the request does not carry: how this run sees it again. */
+  note: string;
 }>;
 
-/**
- * Appended to a result whose image a request does not carry. Its path stays
- * viewable, except an earlier answer's output folder: that answer's files are
+/*
+ * The notes of a result whose image a request does not carry. Its path stays
+ * readable, except an earlier answer's output folder: that answer's files are
  * then the exports its inbox index lists (`lib/server/workspace/promptContract.ts`).
  */
-export const IMAGE_NOT_ATTACHED_NOTE =
+/** For a run that views Workspace images itself. */
+export const IMAGE_VIEW_NOTE =
   "[The image is not attached here any more. To see it again, call view_workspace_image with its path, or for a file in an " +
   "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
+/** For a run that reads images only through System Vision. */
+export const IMAGE_ANALYZE_NOTE =
+  "[The image is not attached here. To learn more about it, call analyze_image with its path, or for a file in an " +
+  "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
+/** For a run with neither, and for compactions, which call no tools. */
+export const IMAGE_REFERENCE_NOTE = "[The image is not attached here; only the description above remains.]";
 
 export type TranscriptProjectionOptions = Readonly<{
   /** The run's own user item: the adapter renders it with the run's attachments. */
@@ -409,7 +418,7 @@ function historyItems(
         ...(attached ? { images: [attached.image] } : {}),
         ...(item.outcome === "error" ? { isError: true as const } : {}),
         name: item.name,
-        output: item.image && !attached ? `${item.output}\n\n${IMAGE_NOT_ATTACHED_NOTE}` : item.output,
+        output: item.image && !attached ? `${item.output}\n\n${options.images?.note ?? IMAGE_REFERENCE_NOTE}` : item.output,
         type: "tool_result"
       }];
     }

@@ -2,7 +2,7 @@ import type { TokenEstimateProfile } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import {
   compactionSummaryText,
-  IMAGE_NOT_ATTACHED_NOTE,
+  IMAGE_REFERENCE_NOTE,
   replaysNativeCompaction,
   sameTranscriptOrigin,
   selectTranscript,
@@ -127,7 +127,7 @@ export function contextItemTokens(
   if (item.kind === "tool_result" && item.image) {
     const attached = images?.attached(item);
     return estimate(item.name) + estimate(item.output) + framing.tool_result +
-      (attached ? attached.tokens : estimate(IMAGE_NOT_ATTACHED_NOTE));
+      (attached ? attached.tokens : estimate(images?.note ?? IMAGE_REFERENCE_NOTE));
   }
   switch (item.kind) {
     case "user":

@@ -224,6 +224,8 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
             if (!await authorize(plan)) throw new VisionAnalysisError("vision_model_unavailable");
             const consumer = { runId: c.runId, userId: c.userId, consumerKey: c.toolCallId };
             const files = [...new Map(input.images.map(image => [`${image.file.root}/${image.file.relativePath}`, image.file])).values()];
+            // A call before any Workspace command still reads a running guest holding the run's inputs.
+            await context.prepareWorkspace?.(bounded);
             const capture = await captures.create({ ...consumer, requestKey: c.toolCallId, files, signal: bounded });
             reference = { ...consumer, captureId: capture.id };
             // Capture canonical sorting must not reorder the analyst's comparisons.

@@ -10,7 +10,7 @@ import {
   measureContext,
   type ContextMeasureCalibration
 } from "./contextMeasure";
-import { IMAGE_NOT_ATTACHED_NOTE, modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget } from "./transcript";
+import { IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget } from "./transcript";
 
 const codex: TranscriptTarget = { model: "gpt-6-astra", provider: "codex-lb" };
 const deepseek: TranscriptTarget = { model: "deepseek-flash", provider: "deepseek" };
@@ -128,11 +128,13 @@ describe("anchored context measure", () => {
     ];
     const call = "view".length + "{}".length + FRAMING.tool_call;
     const result = "view".length + "preview".length + FRAMING.tool_result;
-    const held = { attached: () => ({ image: { data: "UElYRUxT", mimeType: "image/png" as const }, tokens: 1_200 }) };
+    const held = { attached: () => ({ image: { data: "UElYRUxT", mimeType: "image/png" as const }, tokens: 1_200 }), note: IMAGE_VIEW_NOTE };
     expect(measureContext({ estimate, fixedTokens: 0, images: held, items, target: codex }).tokens)
       .toBe("look".length + FRAMING.user + call + result + 1_200);
     expect(measureContext({ estimate, fixedTokens: 0, items, target: codex }).tokens)
-      .toBe("look".length + FRAMING.user + call + result + estimate(IMAGE_NOT_ATTACHED_NOTE));
+      .toBe("look".length + FRAMING.user + call + result + estimate(IMAGE_REFERENCE_NOTE));
+    expect(measureContext({ estimate, fixedTokens: 0, images: { attached: () => undefined, note: IMAGE_VIEW_NOTE }, items, target: codex })
+      .tokens).toBe("look".length + FRAMING.user + call + result + estimate(IMAGE_VIEW_NOTE));
     // A newly viewed image is added on top of the anchor, like any new item.
     const anchor = contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: 500 } });
     expect(measureContext({ anchor, estimate, fixedTokens: 0, images: held, items, target: codex }).tokens).toBe(500 + call + result + 1_200);
