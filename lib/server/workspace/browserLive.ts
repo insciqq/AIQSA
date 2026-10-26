@@ -226,7 +226,14 @@ class LiveRun implements BrowserLiveRunHandle {
   }
 
   unwatch(id: string): void {
-    if (this.views.delete(id) && this.views.size === 0) this.scheduleLinger();
+    if (!this.views.delete(id) || this.views.size > 0) return;
+    // No view wants frames now; the streamer itself lingers for a reloading page.
+    const streamer = this.streamer;
+    if (streamer && !streamer.closed && streamer.frames) {
+      streamer.frames = false;
+      void this.write(streamer, { on: false, t: "frames" }).catch(() => undefined);
+    }
+    this.scheduleLinger();
   }
 
   /** One input from the owner, applied in arrival order, only while the user holds the browser. */
@@ -402,8 +409,8 @@ class LiveRun implements BrowserLiveRunHandle {
     }
   }
 
-  private start(frames: boolean): Promise<Streamer> {
-    if (this.streamer && !this.streamer.closed) return Promise.resolve(this.streamer);
+  private start(frames: boolean, replacing?: Streamer): Promise<Streamer> {
+    if (this.streamer && !this.streamer.closed && this.streamer !== replacing) return Promise.resolve(this.streamer);
     this.starting ??= (async () => {
       if (this.ended || this.unavailable) throw Object.assign(new Error("browser_live_closed"), { code: "browser_live_closed" });
       const reply = await this.registration.channel({ action: "start", stdin: streamerLine({ on: frames, t: "frames" }) });
@@ -553,16 +560,18 @@ class LiveRun implements BrowserLiveRunHandle {
     return streamer.closing;
   }
 
+  /** A fresh streamer takes over before the old one closes, so input never meets a gap; control stays in the guest. */
   private async rotate(streamer: Streamer): Promise<void> {
-    const frames = streamer.frames && this.views.size > 0;
-    await this.close(streamer);
     if (this.views.size > 0 && !this.ended) {
       try {
-        await this.start(frames);
+        await this.start(streamer.frames, streamer);
       } catch (error) {
+        await this.close(streamer);
         this.unreachable(error);
+        return;
       }
     }
+    await this.close(streamer);
   }
 
   /** The streamer ended by itself: one that never printed runs on a guest image without the live view. */
