@@ -438,7 +438,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
         style={stageStyle}
         tabIndex={showsFrame ? 0 : -1}
       >
-        {showsFrame ? (
+        {frame && showsFrame ? (
           // eslint-disable-next-line @next/next/no-img-element -- a live in-memory frame, never a static asset
           <img alt="" className="v2-browser-live-frame" draggable={false} height={frame.height} ref={imageRef}
             src={`data:${frame.mime};base64,${frame.data}`} style={{ width: `${zoom * 100}%` }} width={frame.width} />

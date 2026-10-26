@@ -23,7 +23,6 @@ export type BrowserLiveController = Readonly<{
   busy: BrowserLiveAction | null;
   /** The latest refusal to show, until the next action or state change clears it. */
   failure: BrowserLiveFailureCodeV2 | null;
-  clearFailure(): void;
   sendInput(...inputs: BrowserLiveInput[]): void;
   control(action: "take" | "return"): Promise<void>;
   answerHandoff(handoffId: string, action: "done" | "cancel"): Promise<void>;
@@ -121,7 +120,6 @@ export function useBrowserLive(
     setFailureEntry(null);
     stream?.restart();
   }, [stream]);
-  const clearFailure = useCallback(() => setFailureEntry(null), []);
 
-  return { snapshot, busy, failure, clearFailure, sendInput, control, answerHandoff, reopen };
+  return { snapshot, busy, failure, sendInput, control, answerHandoff, reopen };
 }
