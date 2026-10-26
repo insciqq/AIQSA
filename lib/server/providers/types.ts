@@ -153,7 +153,8 @@ export type NormalizedRunRequest = {
   artifactEdit?: import("../../contracts/artifacts").ArtifactEdit;
   /** Owner selection fenced at initial acceptance; texts live in prompt. */
   instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
-  /** Verified image-input and supported Responses tool-output route, frozen at admission. */
+  /** Direct view frozen at admission: the chat model's image input is verified on a route that renders result images,
+   * so the run offers `view_workspace_image` (`lib/server/workspace/directImageView.ts`). */
   workspaceImageView?: true;
   workspaceCheckpoints?: true;
   /** Exact server-owned tool text; absent accepted rows use the legacy text. */

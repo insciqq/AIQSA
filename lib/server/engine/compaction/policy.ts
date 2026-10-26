@@ -1,5 +1,5 @@
 import { contextItemTokens, type ContextMeasureCalibration, type ReasoningWeight } from "../contextMeasure";
-import { selectTranscript, type TranscriptItem, type TranscriptTarget } from "../transcript";
+import { selectTranscript, type TranscriptImages, type TranscriptItem, type TranscriptTarget } from "../transcript";
 import { itemRules, type CompactionItemRules } from "./items";
 import { estimateRetainedTokens } from "./retained";
 
@@ -95,6 +95,8 @@ export type CompactionWeights = Readonly<{
   calibration?: ContextMeasureCalibration;
   /** Local token estimate for the target's tokenizer family. */
   estimate: (value: unknown) => number;
+  /** The result images the run's requests carry, which a compaction of their span leaves out. */
+  images?: TranscriptImages;
   reasoning?: ReasoningWeight;
   /** The engine's item conventions (`engineItemRules`). */
   rules?: Partial<CompactionItemRules>;
@@ -162,7 +164,7 @@ function windowWeights(items: readonly TranscriptItem[], target: TranscriptTarge
   const reasoning = weights.reasoning ?? "opaque";
   const byKey = new Map<string, number>();
   for (const entry of selection.entries) {
-    byKey.set(entry.key, contextItemTokens(entry.item, target, weights.estimate, reasoning, weights.calibration));
+    byKey.set(entry.key, contextItemTokens(entry.item, target, weights.estimate, reasoning, weights.calibration, weights.images));
   }
   const window = selection.window;
   const suffix = new Array<number>(window.length + 1).fill(0);

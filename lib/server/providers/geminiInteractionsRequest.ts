@@ -27,6 +27,8 @@ import { assertProviderHistoryRequest, geminiStepsFromHistory, providerHistoryPr
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
 const MAX_INT32 = 2_147_483_647;
+/** Base64 of one tool result image: a Workspace preview is at most a few megabytes (`directImageView.ts`). */
+const MAX_RESULT_IMAGE_BASE64 = 8 * 1024 * 1024;
 const imageMimeTypes = new Set([
   "image/png",
   "image/jpeg",
@@ -262,6 +264,13 @@ function validFunctionCall(step: Record<string, unknown>): boolean {
     (step.signature === undefined || boundedString(step.signature, 1_000_000));
 }
 
+/** A tool result's image (a Workspace preview): base64 PNG or JPEG bytes, bounded like an attachment. */
+function validResultImageContent(value: unknown): boolean {
+  return isRecord(value) && value.type === "image" && Object.keys(value).every((key) => key === "data" || key === "mime_type" ||
+    key === "type") && (value.mime_type === "image/png" || value.mime_type === "image/jpeg") &&
+    typeof value.data === "string" && value.data.length <= MAX_RESULT_IMAGE_BASE64 && validBase64(value.data);
+}
+
 function validFunctionResult(step: Record<string, unknown>): boolean {
   if (!boundedString(step.call_id, 512)) {
     return false;
@@ -274,7 +283,8 @@ function validFunctionResult(step: Record<string, unknown>): boolean {
   }
 
   return typeof step.result === "string" || isRecord(step.result) ||
-    (Array.isArray(step.result) && step.result.length <= 1_000 && step.result.every(validTextContent));
+    (Array.isArray(step.result) && step.result.length <= 1_000 &&
+      step.result.every((item) => validTextContent(item) || validResultImageContent(item)));
 }
 
 function validThought(step: Record<string, unknown>): boolean {

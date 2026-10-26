@@ -265,7 +265,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   function measure(request: ProviderRunRequest, items: readonly TranscriptItem[] = deps.items): number {
     const { calibration, estimate } = measuring(request);
     return measureContext({ anchor, calibration, estimate,
-      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]), items, target }).tokens;
+      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]),
+      ...(deps.projection.images ? { images: deps.projection.images } : {}), items, target }).tokens;
   }
 
   function state(): BackgroundCompactionState {
@@ -276,8 +277,9 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   function plan(request: ProviderRunRequest, tokens: number, overflow?: Readonly<{ reportedMaximumTokens?: number }>) {
     const { calibration, estimate } = measuring(request);
     const reserved = window!.maxOutputTokens;
-    return planCompaction({ background: state(), calibration, estimate, items: deps.items, ...(overflow ? { overflow } : {}),
-      rules: deps.rules, target, tokens, window: { contextWindow: usable + reserved, maxOutputTokens: reserved } });
+    return planCompaction({ background: state(), calibration, estimate, ...(deps.projection.images ? { images: deps.projection.images } : {}),
+      items: deps.items, ...(overflow ? { overflow } : {}), rules: deps.rules, target, tokens,
+      window: { contextWindow: usable + reserved, maxOutputTokens: reserved } });
   }
 
   /** The marker is a display: it never fails the run. */

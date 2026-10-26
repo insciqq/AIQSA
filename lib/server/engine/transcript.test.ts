@@ -14,6 +14,7 @@ import { buildOpenRouterChatRequest } from "../providers/openRouterChatRequest";
 import type { ProviderRunRequest } from "../providers/types";
 import type { RunTool } from "../tools/types";
 import {
+  IMAGE_NOT_ATTACHED_NOTE,
   modelResponseItems,
   projectTranscript,
   selectTranscript,
@@ -411,5 +412,32 @@ describe("transcript projection", () => {
     ], codex)).toThrow("transcript_item_id_duplicate");
     expect(() => modelResponseItems({ estimate, history: [{ text: "x", type: "user" }], nextId: () => "x", origin: codex }))
       .toThrow("transcript_response_item_invalid");
+  });
+
+  it("carries a result's image only while the run holds its preview, and names how to see it again otherwise", () => {
+    const image = { consumerKey: "tool-1", descriptor: { byteSize: 10, checksum: "b".repeat(64), frames: 1, height: 8, id: "a".repeat(64),
+      mimeType: "image/png", source: { byteSize: 20, captureId: "c".repeat(32), checksum: "d".repeat(64), height: 16,
+        relativePath: "project/code.png", width: 20 }, transform: null, version: 1, width: 10 } } as const;
+    const items: TranscriptItem[] = [
+      { id: "u1", kind: "user", text: "Read the code on the screenshot." },
+      { arguments: "{\"path\":\"/workspace/project/code.png\"}", callId: "call_view", id: "c1", kind: "tool_call",
+        name: "view_workspace_image", origin: codex },
+      { callId: "call_view", id: "t1", image, kind: "tool_result", name: "view_workspace_image", outcome: "complete",
+        output: "Preview of /workspace/project/code.png" }
+    ];
+    const pixels = { data: "UElYRUxT", mimeType: "image/png" } as const;
+    const held = { attached: (item: { image?: unknown }) => item.image === image ? { image: pixels, tokens: 77 } : undefined };
+    expect(projectTranscript(items, codex, { images: held }).at(-1)).toEqual({ callId: "call_view", images: [pixels],
+      name: "view_workspace_image", output: "Preview of /workspace/project/code.png", type: "tool_result" });
+    // An earlier run's result, a compaction's span or a released preview: the reference alone, never stored pixels.
+    for (const projected of [projectTranscript(items, codex), projectTranscript(items, codex, { images: { attached: () => undefined } })]) {
+      expect(projected.at(-1)).toEqual({ callId: "call_view", name: "view_workspace_image",
+        output: `Preview of /workspace/project/code.png\n\n${IMAGE_NOT_ATTACHED_NOTE}`, type: "tool_result" });
+    }
+    expect(JSON.stringify(items)).not.toContain("UElYRUxT");
+    const body = buildCompatibleResponsesRequest(request(codex, projectTranscript(items, codex, { images: held })));
+    expect((body.input as Record<string, unknown>[]).at(-1)).toEqual({ call_id: "call_view", type: "function_call_output",
+      output: [{ text: "Preview of /workspace/project/code.png", type: "input_text" },
+        { detail: "auto", image_url: "data:image/png;base64,UElYRUxT", type: "input_image" }] });
   });
 });

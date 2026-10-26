@@ -2,10 +2,12 @@ import type { TokenEstimateProfile } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import {
   compactionSummaryText,
+  IMAGE_NOT_ATTACHED_NOTE,
   replaysNativeCompaction,
   sameTranscriptOrigin,
   selectTranscript,
   type SelectedTranscriptItem,
+  type TranscriptImages,
   type TranscriptItem,
   type TranscriptOrigin,
   type TranscriptTarget
@@ -106,15 +108,27 @@ export function contextAnchor(input: Readonly<{
     : null;
 }
 
-/** Tokens one replayed item adds to a request to `target`. */
+/**
+ * Tokens one replayed item adds to a request to `target`. A result's image
+ * weighs its estimate while the request carries it (`images`), else the note
+ * that replaces it. A preview the run released after the anchored request
+ * stays in the anchor's count until the provider's next report: an
+ * overestimate for one request at most.
+ */
 export function contextItemTokens(
   item: TranscriptItem,
   target: TranscriptTarget,
   estimate: (value: unknown) => number,
   reasoning: ReasoningWeight,
-  calibration: ContextMeasureCalibration = CONTEXT_MEASURE_CALIBRATION.default
+  calibration: ContextMeasureCalibration = CONTEXT_MEASURE_CALIBRATION.default,
+  images?: TranscriptImages
 ): number {
   const framing = calibration.framing;
+  if (item.kind === "tool_result" && item.image) {
+    const attached = images?.attached(item);
+    return estimate(item.name) + estimate(item.output) + framing.tool_result +
+      (attached ? attached.tokens : estimate(IMAGE_NOT_ATTACHED_NOTE));
+  }
   switch (item.kind) {
     case "user":
       return estimate(item.text) + framing.user;
@@ -151,13 +165,15 @@ export function measureContext(input: Readonly<{
   estimate: (value: unknown) => number;
   /** Instructions and tool declarations; counted only without a usable anchor. */
   fixedTokens: number;
+  /** The result images the request carries (`TranscriptProjectionOptions.images`). */
+  images?: TranscriptImages;
   items: readonly TranscriptItem[];
   reasoning?: ReasoningWeight;
   target: TranscriptTarget;
 }>): ContextMeasure {
   const reasoning = input.reasoning ?? "opaque";
   const weigh = (entries: readonly SelectedTranscriptItem[]) => entries.reduce((total, entry) =>
-    total + contextItemTokens(entry.item, input.target, input.estimate, reasoning, input.calibration), 0);
+    total + contextItemTokens(entry.item, input.target, input.estimate, reasoning, input.calibration, input.images), 0);
   const current = selectTranscript(input.items, input.target);
   const anchor = usableAnchor(input.anchor, input.target, input.items.length);
   if (anchor) {
