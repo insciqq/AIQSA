@@ -82,6 +82,7 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
         maxToolCalls: 8,
         maxToolRounds: 4,
         reasoningEffort: null,
+        toolLimitsEnabled: false,
         updatedAt: FIXTURE_NOW,
         updatedBy: null,
         version: 1

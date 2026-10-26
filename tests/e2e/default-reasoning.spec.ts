@@ -30,7 +30,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       candidates: [reasoningModel, plainModel],
       policy: {
         defaultModel: { ...reasoningModel, available: true }, reasoningEffort: null,
-        maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
+        maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8, toolLimitsEnabled: true,
         updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 1
       }
     };
@@ -61,6 +61,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
           const value = body[key];
           if (value !== undefined) policy.policy[key] = value;
         }
+        if (body.toolLimitsEnabled !== undefined) policy.policy.toolLimitsEnabled = body.toolLimitsEnabled;
         policy.policy.version += 1;
       }
       await route.fulfill({ json: { modelPolicy: policy } });
@@ -102,7 +103,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await expect(save).toBeEnabled();
     await save.click();
     await expect(defaults.getByRole("status")).toHaveText("No unsaved changes");
-    expect(saved.at(-1)).toEqual({ expectedVersion: 2, maxMcpToolsPerDiscovery: 20, maxToolCalls: 20, maxToolRounds: 8 });
+    expect(saved.at(-1)).toEqual({ expectedVersion: 2, maxMcpToolsPerDiscovery: 20, maxToolCalls: 20, maxToolRounds: 8,
+      toolLimitsEnabled: true });
     await page.reload();
     await defaults.locator("summary").click();
     await expect(effort).toHaveValue("high");

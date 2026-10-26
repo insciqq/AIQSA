@@ -139,6 +139,31 @@ describe("native tool registry", () => {
     expect(coordinator.execute).not.toHaveBeenCalled();
   });
 
+  it("offers direct view only where admission froze it, the same tool list every turn of a fixed model", async () => {
+    const coordinator = { accepts: () => true, execute: vi.fn(), tools: vi.fn(async () => []) } as unknown as WorkspaceCoordinator;
+    const workspace = { enabled: true, outputDirectory: "/workspace/output/run" } as ProviderRunRequest["workspace"];
+    const captures = vi.fn(async () => { throw new Error("not_called"); });
+    const registry = (extra: Partial<ProviderRunRequest>) => buildToolRegistry(input({ request: request({ workspace, ...extra }),
+      services: { repository: {} as never, savedResults: { read: vi.fn(async () => null) }, workspace: coordinator,
+        workspaceImageCaptures: captures } }));
+    const direct = await registry({ workspaceImageView: true });
+    expect(direct.resolve("view_workspace_image")).toMatchObject({ effects: "none", definition: { name: "view_workspace_image" } });
+    expect(direct.resolve("view_workspace_image")!.activity({ arguments: {}, id: "c1", name: "view_workspace_image" }))
+      .toMatchObject({ origin: "workspace", serverName: "Workspace" });
+    expect(direct.images).toBeDefined();
+    // Another turn of the same chat and model (its own input, an image of its own): byte-identical tools for the prompt cache.
+    const later = await registry({ attachments: [{ byteSize: 4, dataUrl: "data:image/png;base64,AAAA", extractedText: null, fileName: "a.png",
+      id: "a", kind: "image", metadata: {}, mimeType: "image/png", status: "ready" }], content: { blocks: [{ text: "Next", type: "text" }] },
+    workspaceImageView: true });
+    expect(JSON.stringify(later.definitions())).toBe(JSON.stringify(direct.definitions()));
+    // Not admitted (vision unverified), or tools off: neither the tool nor held previews.
+    for (const off of [await registry({}), await registry({ toolMode: "none", workspaceImageView: true })]) {
+      expect(off.resolve("view_workspace_image")).toBeUndefined();
+      expect(off.images).toBeUndefined();
+    }
+    expect(captures).not.toHaveBeenCalled();
+  });
+
   it("maps the run's accepted bindings to their rows by server", () => {
     expect(engineMcpBindings([{ fingerprint: "fp-1", runtimeGenerationId: "gen-1", serverId: "jira" },
       { fingerprint: "fp-2", runtimeGenerationId: "gen-2", serverId: "gitlab" }],

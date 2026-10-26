@@ -1,5 +1,6 @@
 import type { TokenUsage } from "../../domain/usage";
-import type { ProviderHistoryItem, ProviderNativeData } from "../providers/history";
+import type { ProviderHistoryImage, ProviderHistoryItem, ProviderNativeData } from "../providers/history";
+import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
 
 /**
  * The native agent engine's provider-neutral transcript: every turn of a chat
@@ -23,7 +24,11 @@ import type { ProviderHistoryItem, ProviderNativeData } from "../providers/histo
  *   after itself, then everything appended since, and one whose tail is no
  *   longer found before it is not used; the run's own context (`runContext`)
  *   is never compacted and stays, right after the compaction;
- * - reasoning with no text or call after it in its response stays out.
+ * - reasoning with no text or call after it in its response stays out;
+ * - a result's image (`view_workspace_image`) is kept by reference, never as
+ *   pixels: a request carries its pixels only while the run that viewed it
+ *   holds them (`TranscriptProjectionOptions.images`), and otherwise names
+ *   how to see it again, so later turns and compactions read text alone.
  */
 
 /** The provider route and model an item came from. `provider` names the route
@@ -84,6 +89,8 @@ export type TranscriptToolResultItem = Readonly<{
   /** The saved whole result (`read_tool_result`) when `output` is an excerpt of it. */
   handle?: string;
   id: string;
+  /** The Workspace image the result showed (`view_workspace_image`), by reference: its pixels are never kept here. */
+  image?: WorkspaceImageEvidence;
   /**
    * Written before an approval continuation sends the call again (`outcome` is `unknown`): the call is open until its own
    * result follows and supersedes this one; without one, an interruption left its effect unknown (`unknownEffects.ts`).
@@ -344,9 +351,40 @@ export function selectTranscript(items: readonly TranscriptItem[], target: Trans
   return { base, entries, start, window };
 }
 
+/**
+ * The pixels of result images a request carries: the previews the running
+ * run viewed itself and still holds within its per-request bounds
+ * (`lib/server/workspace/directImageView.ts`). Any other result image, an
+ * earlier turn's included, goes as its reference alone.
+ */
+export type TranscriptImages = Readonly<{
+  /** The image to send with this result and the input tokens it adds; undefined when it goes by reference. */
+  attached(item: TranscriptToolResultItem): Readonly<{ image: ProviderHistoryImage; tokens: number }> | undefined;
+  /** Appended to a result whose image the request does not carry: how this run sees it again. */
+  note: string;
+}>;
+
+/*
+ * The notes of a result whose image a request does not carry. Its path stays
+ * readable, except an earlier answer's output folder: that answer's files are
+ * then the exports its inbox index lists (`lib/server/workspace/promptContract.ts`).
+ */
+/** For a run that views Workspace images itself. */
+export const IMAGE_VIEW_NOTE =
+  "[The image is not attached here any more. To see it again, call view_workspace_image with its path, or for a file in an " +
+  "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
+/** For a run that reads images only through System Vision. */
+export const IMAGE_ANALYZE_NOTE =
+  "[The image is not attached here. To learn more about it, call analyze_image with its path, or for a file in an " +
+  "earlier answer's output folder with the path of its copy in the inbox index (source=export).]";
+/** For a run with neither, and for compactions, which call no tools. */
+export const IMAGE_REFERENCE_NOTE = "[The image is not attached here; only the description above remains.]";
+
 export type TranscriptProjectionOptions = Readonly<{
   /** The run's own user item: the adapter renders it with the run's attachments. */
   currentInputId?: string;
+  /** The result images the run holds; without them every result image goes by reference. */
+  images?: TranscriptImages;
 }>;
 
 function historyItems(
@@ -373,14 +411,17 @@ function historyItems(
         ...(item.native && sameTranscriptOrigin(item.origin, target) ? { native: item.native } : {}),
         type: "tool_call"
       }];
-    case "tool_result":
+    case "tool_result": {
+      const attached = item.image ? options.images?.attached(item) : undefined;
       return [{
         callId: item.callId,
+        ...(attached ? { images: [attached.image] } : {}),
         ...(item.outcome === "error" ? { isError: true as const } : {}),
         name: item.name,
-        output: item.output,
+        output: item.image && !attached ? `${item.output}\n\n${options.images?.note ?? IMAGE_REFERENCE_NOTE}` : item.output,
         type: "tool_result"
       }];
+    }
     case "compaction": {
       const native = replaysNativeCompaction(item, target) ? item.native : undefined;
       return native

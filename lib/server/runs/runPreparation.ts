@@ -1,5 +1,7 @@
 import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { analyzeImageTools, visionAnalysisGuidance } from "../tools/analyzeImage";
+import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
+import { supportsWorkspaceImageView } from "../workspace/directImageView";
 import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailableGuidance, imageReferenceInstructions } from "../tools/imageGeneration";
 import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
@@ -138,6 +140,8 @@ import type {
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
   normalizeToolObservationPolicy,
+  toolRunBudgetsForRequest,
+  workspaceToolLimit,
   type ToolRunBudgets
 } from "./toolBudgets";
 import type {
@@ -656,10 +660,10 @@ function resolveWorkspaceEnabled(
   return (value as { enabled: boolean }).enabled;
 }
 
-/** Explicit document retry retains the accepted reader/answer authority, but a
- * sibling needs its own current Workspace admission and derived request. */
+/** Explicit document retry retains the accepted reader/answer authority and tool
+ * limits, but a sibling needs its own current Workspace admission and derived request. */
 export async function preparePdfRetry(
-  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy">,
+  deps: Pick<RunPreparationDeps, "workspace">,
   input: Readonly<{
     adapter: ProviderAdapter;
     prepared: PreparedRun;
@@ -714,10 +718,12 @@ export async function preparePdfRetry(
       if (at < 0 || at !== system.lastIndexOf(oldSegment)) return failure("pdf_preparation_unavailable", 409);
       system = system.slice(0, at) + newSegments[index] + system.slice(at + oldSegment.length);
     }
-    const budgets = deps.runPolicy ? await deps.runPolicy.load() : DEFAULT_TOOL_RUN_BUDGETS;
+    // The retry keeps the run's accepted tool limits, on or off, never the installation's current ones; only the
+    // Workspace allowance comes from this admission, and it raises only a limit that is on.
+    const accepted = toolRunBudgetsForRequest(request);
     const toolBudgets = { ...request.toolBudgets,
-      maxToolCalls: Math.max(budgets.maxToolCalls, plan.normalized.maxToolCalls),
-      maxToolRounds: Math.max(budgets.maxToolRounds, plan.normalized.maxToolRounds) };
+      maxToolCalls: workspaceToolLimit(accepted.maxToolCalls, plan.normalized.maxToolCalls),
+      maxToolRounds: workspaceToolLimit(accepted.maxToolRounds, plan.normalized.maxToolRounds) };
     const prompt = { ...request.prompt, system };
     prepared.workspaceAdmissionPlan = plan;
     prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
@@ -1693,9 +1699,11 @@ export async function prepareRun(
   if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
     ? await deps.vision?.resolve() : undefined;
-  // New Workspace runs use only the independently admitted Vision role. Direct
-  // image flags remain decodable for already accepted execution and recovery.
-  if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, false, {
+  // A chat model with verified vision looks at Workspace images itself (operator decision 2026-10-26), frozen with the
+  // run's other bindings; System Vision stays for every model.
+  const workspaceImageView = Boolean(workspaceAdmissionPlan) && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+    supportsWorkspaceImageView(executionAdapterKind, admissionPlan.answer.verifiedVisionInput === true);
+  if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, workspaceImageView, {
     nativeCurrentImages: modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
     hasIndexedFiles: hasWorkspaceIndexedFiles
   }));
@@ -1876,6 +1884,7 @@ export async function prepareRun(
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const,
       workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
+    ...(workspaceImageView ? { workspaceImageView: true as const } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
     ...(artifactEdit ? { artifactEdit } : {}),
@@ -1939,16 +1948,10 @@ export async function prepareRun(
     toolBudgets: {
       maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
       maxToolCalls: workspaceEnabled
-        ? Math.max(
-            toolBudgets.maxToolCalls,
-            workspaceAdmissionPlan?.normalized.maxToolCalls ?? toolBudgets.maxToolCalls
-          )
+        ? workspaceToolLimit(toolBudgets.maxToolCalls, workspaceAdmissionPlan?.normalized.maxToolCalls)
         : toolBudgets.maxToolCalls,
       maxToolRounds: workspaceEnabled
-        ? Math.max(
-            toolBudgets.maxToolRounds,
-            workspaceAdmissionPlan?.normalized.maxToolRounds ?? toolBudgets.maxToolRounds
-          )
+        ? workspaceToolLimit(toolBudgets.maxToolRounds, workspaceAdmissionPlan?.normalized.maxToolRounds)
         : toolBudgets.maxToolRounds
     },
     toolMode: workspaceEnabled || body?.tools !== "none" ? "auto" : "none",
@@ -1971,6 +1974,7 @@ export async function prepareRun(
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
         ...analyzeImageTools(baseNormalizedRequest),
+        ...(workspaceImageView ? [viewWorkspaceImageTool] : []),
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
         ...(baseNormalizedRequest.artifactTool ? [artifactTool(baseNormalizedRequest.artifactToolDescription), ...(artifactReferences?.length ? [readArtifactTool()] : [])] : []),
         ...plannedSearchTools,

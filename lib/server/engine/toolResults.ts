@@ -9,7 +9,9 @@ import {
 import { readObservationOriginal } from "../toolObservations/searchOriginal";
 import type { ToolObservationService } from "../toolObservations/service";
 import type { ModelToolCall, RunTool, ToolExecutionContent, ToolExecutionResult } from "../tools/types";
+import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
+import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
 
 /**
  * Tool results as the native engine's model sees them. A result is one text
@@ -36,15 +38,27 @@ export const TOOL_RESULT_LIMITS = Object.freeze({
 
 export const READ_TOOL_RESULT_NAME = "read_tool_result";
 
-function textFromContent(content: ToolExecutionContent): string {
-  if (content.type === "text") return content.text;
-  if (content.type === "workspace_image") return "[An image was produced; images cannot be shown in this tool result.]";
-  return JSON.stringify(content.value);
+function textFromContent(content: Exclude<ToolExecutionContent, { type: "workspace_image" }>): string {
+  return content.type === "text" ? content.text : JSON.stringify(content.value);
 }
 
-/** The text a provider bridge sends for the result. */
+/**
+ * The text a provider bridge sends for the result. A Workspace image is not
+ * text: its transcript item keeps it by reference (`toolResultImage`).
+ */
 export function toolResultOutputText(result: Pick<ToolExecutionResult, "content">): string {
-  return result.content.map(textFromContent).join("\n\n");
+  return result.content.flatMap((content) => content.type === "workspace_image" ? [] : [textFromContent(content)]).join("\n\n");
+}
+
+/**
+ * The image reference a completed `view_workspace_image` result carries for
+ * its transcript item; its pixels stay with the run that viewed it
+ * (`lib/server/workspace/directImageView.ts`).
+ */
+export function toolResultImage(result: Pick<ToolExecutionResult, "content" | "name" | "status">): WorkspaceImageEvidence | undefined {
+  if (result.name !== VIEW_WORKSPACE_IMAGE || result.status !== "complete") return undefined;
+  const images = result.content.flatMap((content) => content.type === "workspace_image" ? [content.value] : []);
+  return images.length === 1 ? images[0] : undefined;
 }
 
 export type ToolOutputExcerpt = Readonly<{ handle: string | null; output: string; truncated: boolean }>;

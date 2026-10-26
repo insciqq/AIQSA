@@ -64,7 +64,8 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      const limitKeys = ["maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery"] as const;
+      // The tool limits travel whole, their switch included (`modelPolicyService.ts`).
+      const limitKeys = ["toolLimitsEnabled", "maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery"] as const;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "toolObservationPolicy", ...limitKeys];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 &&
@@ -81,6 +82,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
           !textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32) ||
           value.providerModelId === null && value.reasoningEffort !== null) ||
         presentLimits.length > 0 && (presentLimits.length !== limitKeys.length ||
+          typeof value.toolLimitsEnabled !== "boolean" ||
           !Number.isSafeInteger(value.maxMcpToolsPerDiscovery) ||
           Number(value.maxMcpToolsPerDiscovery) < 1 ||
           Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
@@ -96,6 +98,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
             reasoningEffort: value.reasoningEffort as string | null
           } : {}),
           ...(presentLimits.length > 0 ? {
+            toolLimitsEnabled: value.toolLimitsEnabled === true,
             maxMcpToolsPerDiscovery: Number(value.maxMcpToolsPerDiscovery),
             maxToolCalls: Number(value.maxToolCalls),
             maxToolRounds: Number(value.maxToolRounds)

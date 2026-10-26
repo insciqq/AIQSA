@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { logEvent } from "../observability";
 import { WorkspaceRuntimeError } from "./runtime";
 
 /** Private authority. Never include this value in model/browser projections. */
@@ -13,6 +14,24 @@ type SessionState = {
   tail: Promise<void>;
 };
 export type WorkspaceOperationFenceState = Map<string, Promise<SessionState>>;
+
+/**
+ * Keeps a guest's own idle stop away while an operation owns it. Microsandbox fixes a VM's idle timeout when it
+ * creates the VM, so one created by an earlier release, with a shorter timeout, would otherwise stop mid-turn when the
+ * run works without it for a while, and the processes the run started would be lost.
+ */
+export type WorkspaceIdleRefresh = Readonly<{
+  /** Between touches: well under the shortest idle timeout a guest may have. */
+  intervalMs: number;
+  /**
+   * How long after the operation became active, or last ran a request, the touches go on: a whole turn and its
+   * handoff, so an app that never retires its operation (a crash) does not keep a guest up for good.
+   */
+  lifetimeMs: number;
+  /** Refreshes a running guest only (`WorkspaceRuntime.touchSession`). */
+  touch(input: Readonly<{ sessionId: string }>): Promise<void>;
+}>;
+type IdleBeat = { operation: WorkspaceOperation; timer: ReturnType<typeof setInterval> | undefined; until: number };
 
 export function parseWorkspaceOperation(value: unknown): WorkspaceOperation {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -30,13 +49,50 @@ export function parseWorkspaceOperation(value: unknown): WorkspaceOperation {
 /** One receiver per private runtime volume; no database/provider credentials. */
 export class WorkspaceOperationFence {
   private readonly sessions: WorkspaceOperationFenceState;
+  private readonly beats = new Map<string, IdleBeat>();
 
   constructor(private readonly options: Readonly<{
     directory?: string;
     drainTimeoutMs?: number;
+    idleRefresh?: WorkspaceIdleRefresh;
     state?: WorkspaceOperationFenceState;
     stop: (input: { runtimeSandboxId: string | null; sessionId: string }) => Promise<void>;
   }>) { this.sessions = options.state ?? new Map(); }
+
+  /** Touches the session's guest while `operation` owns it, until `lifetimeMs` after its latest activity. */
+  private keepAwake(sessionId: string, operation: WorkspaceOperation): void {
+    const refresh = this.options.idleRefresh;
+    if (!refresh) return;
+    const until = Date.now() + refresh.lifetimeMs;
+    const current = this.beats.get(sessionId);
+    if (current && current.operation.generation === operation.generation && current.operation.owner === operation.owner) {
+      current.until = until;
+      return;
+    }
+    this.letSleep(sessionId);
+    const beat: IdleBeat = { operation, timer: undefined, until };
+    beat.timer = setInterval(() => {
+      if (Date.now() >= beat.until) {
+        this.letSleep(sessionId, operation);
+        return;
+      }
+      // A failed refresh never fails the operation: at worst the guest stops early, and its next call starts it again.
+      void refresh.touch({ sessionId }).catch((error: unknown) => {
+        logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "heartbeat", outcome: "failed",
+          code: "workspace_idle_refresh_failed", action: "retry" });
+      });
+    }, refresh.intervalMs);
+    beat.timer.unref?.();
+    this.beats.set(sessionId, beat);
+  }
+
+  /** Ends the touches of the session's guest; with `operation`, only that operation's. */
+  private letSleep(sessionId: string, operation?: WorkspaceOperation): void {
+    const beat = this.beats.get(sessionId);
+    if (!beat || (operation && (beat.operation.generation !== operation.generation || beat.operation.owner !== operation.owner))) return;
+    clearInterval(beat.timer);
+    this.beats.delete(sessionId);
+  }
 
   private file(sessionId: string): string {
     return join(this.options.directory!, createHash("sha256").update(sessionId).digest("hex") + ".json");
@@ -148,19 +204,26 @@ export class WorkspaceOperationFence {
         if (!this.exact(state, operation) || (state.record.phase !== "active" && state.record.phase !== "claiming")) {
           throw new WorkspaceRuntimeError("workspace_operation_stale");
         }
-        if (state.record.phase === "active") return;
+        if (state.record.phase === "active") {
+          this.keepAwake(input.sessionId, operation);
+          return;
+        }
       }
       if (predecessor && state.record?.phase === "active" && this.exact(state, predecessor) && state.pending.size === 0) {
         // Nothing to abort or stop; later requests of the predecessor are stale.
         await this.persist(input.sessionId, state, { ...operation, phase: "active" });
+        this.keepAwake(input.sessionId, operation);
         return;
       }
+      // The previous owner's touches end with its operation.
+      this.letSleep(input.sessionId);
       // Persist the high-water mark BEFORE abort or any runtime mutation.
       // An interrupted claim stays unavailable until the same owner retries
       // the drain, or a higher durable generation takes it over.
       await this.persist(input.sessionId, state, { ...operation, phase: "claiming" });
       await this.drain(state, input.sessionId, input.runtimeSandboxId);
       await this.persist(input.sessionId, state, { ...operation, phase: "active" });
+      this.keepAwake(input.sessionId, operation);
     });
   }
 
@@ -168,6 +231,7 @@ export class WorkspaceOperationFence {
     const operation = parseWorkspaceOperation(input.operation);
     await this.locked(input.sessionId, async (state) => {
       if (!this.exact(state, operation)) throw new WorkspaceRuntimeError("workspace_operation_stale");
+      this.letSleep(input.sessionId, operation);
       if (state.record?.phase === "retired") return;
       await this.persist(input.sessionId, state, { ...operation, phase: "retiring" });
       await this.drain(state, input.sessionId, input.runtimeSandboxId);
@@ -184,6 +248,8 @@ export class WorkspaceOperationFence {
         throw new WorkspaceRuntimeError("workspace_operation_stale");
       }
       state.pending.add(entry);
+      // Also after a runner restart, which forgets the touches: the operation's next request starts them again.
+      this.keepAwake(input.sessionId, operation);
       return state;
     });
     try {

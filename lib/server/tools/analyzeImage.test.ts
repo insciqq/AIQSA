@@ -12,8 +12,19 @@ describe("System Vision tool contract", () => {
   it("uses direct-first only when an actual direct path is admitted", () => {
     const plan = { version: 1, available: false, code: "vision_model_absent" } as const;
     expect(visionAnalysisGuidance(plan, false)).toContain("Direct image viewing is unavailable");
-    expect(visionAnalysisGuidance(plan, true)).toContain("direct image viewer first");
+    expect(visionAnalysisGuidance(plan, true)).toContain("Use view_workspace_image to look at an image file in Workspace yourself");
     expect(visionAnalysisGuidance(plan, true)).toContain("do not automatically send every image to two models");
+    // A Workspace turn says what this run really has, its current images included.
+    for (const nativeCurrentImages of [false, true]) {
+      const current = { hasIndexedFiles: true, nativeCurrentImages };
+      const direct = visionAnalysisGuidance(plan, true, current);
+      expect(direct).toContain("view_workspace_image");
+      expect(direct).not.toContain("There is no direct Workspace file viewer");
+      expect(direct.includes("image attachments are present in your model input")).toBe(nativeCurrentImages);
+      const indirect = visionAnalysisGuidance(plan, false, current);
+      expect(indirect).not.toContain("view_workspace_image");
+      expect(indirect.includes("There is no direct Workspace file viewer")).toBe(!nativeCurrentImages);
+    }
   });
   it("addresses conversation images by image_id with the Workspace bounds and no paths", () => {
     const chat = analyzeConversationImageTool();

@@ -85,6 +85,9 @@ import {
   dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql
 } from "./drop-projects-knowledge-adoption";
 import { AUTOMATION_WEBHOOKS_MIGRATION, automationWebhooksFixtureSql, automationWebhooksProofSql } from "./automation-webhooks-adoption";
+import {
+  TOOL_LIMITS_OFF_MIGRATION, toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql
+} from "./tool-limits-off-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -716,8 +719,10 @@ function bootstrapFoundationDigest(database: string): string {
 function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT "memorySearchTimeoutSeconds" FROM "ModelPolicy" WHERE id = 'installation';`),
     "30", "fresh installation must use the Memory search time limit default");
+  assert.equal(psqlScalar(database, `SELECT "toolLimitsEnabled" FROM "ModelPolicy" WHERE id = 'installation';`),
+    "f", "fresh installation must answer without tool limits");
   assert.equal(psqlScalar(database, `SELECT "maxToolCalls" || ':' || "maxToolRounds" FROM "ModelPolicy" WHERE id = 'installation';`),
-    "80:32", "fresh installation must receive the increased tool budgets");
+    "80:32", "fresh installation must keep the tool limits turning them on applies");
   assert.equal(
     psqlScalar(database, `SELECT enabled FROM "WorkspacePolicy" WHERE id = 'installation';`),
     "t",
@@ -755,7 +760,9 @@ function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "");
   assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "v1",
     "a fresh installation enables observations and compaction without an administrator action");
-  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096, "toolObservationPolicy" = 'off' WHERE id = 'installation';`);
+  assert.equal(psqlScalar(database, `SELECT "toolLimitsEnabled" FROM "ModelPolicy" WHERE id = 'installation';`), "f",
+    "bootstrap must leave a fresh installation without tool limits");
+  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096, "toolObservationPolicy" = 'off', "toolLimitsEnabled" = true WHERE id = 'installation';`);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
     AND "providerModelId" IS NULL AND "reasoningEffort" IS NULL AND "assignmentSource" = 'UNASSIGNED' AND version = 1;`), "1",
     "fresh bootstrap leaves Memory available for verified automatic setup");
@@ -779,6 +786,7 @@ function runBootstrapProof(database: string): void {
     "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
   assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "off", "bootstrap must retain the operator's observation kill switch");
+  assert.equal(psqlScalar(database, `SELECT "toolLimitsEnabled" FROM "ModelPolicy" WHERE id = 'installation';`), "t", "bootstrap must retain the operator's tool limits");
   assert.equal(
     bootstrapFoundationDigest(database),
     freshDigest,
@@ -7680,8 +7688,9 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, TOOL_BUDGET_DEFAULTS_MIGRATION,
       fixture, proof, repeatProof, CODEX_AGENT_RETIREMENT_MIGRATION);
   }
+  // Its proof compares the whole policy row, which the later tool limits switch extends.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_TIMEOUT_MIGRATION,
-    memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql);
+    memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql, TOOL_LIMITS_OFF_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_RECEIPT_MIGRATION,
     memorySearchReceiptFixtureSql, memorySearchReceiptProofSql, memorySearchReceiptRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
@@ -7912,6 +7921,9 @@ function main(
   // writer during the upgrade, keep running on their schedule with the webhook off.
   runForwardAdoptionProof(shadowDatabase, migrations, AUTOMATION_WEBHOOKS_MIGRATION,
     automationWebhooksFixtureSql, automationWebhooksProofSql);
+  // Tool limits go off for everyone, limits an administrator typed included; their numbers stay for turning them on.
+  runForwardAdoptionProof(shadowDatabase, migrations, TOOL_LIMITS_OFF_MIGRATION,
+    toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

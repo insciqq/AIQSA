@@ -58,14 +58,17 @@ import { acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
 import { SAVE_SKILL_TOOL_NAME, executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/updatePlan";
+import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
 import type { VisionAnalysisService } from "../vision/service";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { createWorkspaceImageViewer, defaultWorkspaceImageCaptures, type WorkspaceImageCaptures } from "../workspace/directImageView";
 import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { defaultSkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 import { namespacedWorkspaceToolName, workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 import { executeReadToolResult, readToolResultTool, type SavedToolResultReader } from "./toolResults";
+import { IMAGE_ANALYZE_NOTE, IMAGE_VIEW_NOTE, type TranscriptImages } from "./transcript";
 
 /**
  * The native engine's one tool registry, built once at the start of a run
@@ -75,7 +78,10 @@ import { executeReadToolResult, readToolResultTool, type SavedToolResultReader }
  * files and is never tried again, `external` may act outside and is never
  * sent twice. A tool that needs its initiator's approval says so per call.
  * Workspace tools are always registered when the run has a Workspace; the VM
- * starts at the first call that needs it. Discovery (`find_tools`) adds MCP
+ * starts at the first call that needs it. `view_workspace_image` is offered
+ * only where admission froze direct view for the chat model's verified vision,
+ * which a fixed model keeps across turns, so the tool list stays the same for
+ * provider prompt caches. Discovery (`find_tools`) adds MCP
  * tools to the registry for the run's later requests. The harness tools
  * (`HARNESS_TOOLS`) ride on every request that offers tools, and the
  * self-service tools (`SELF_SERVICE_TOOLS`) on those of interactive personal
@@ -134,6 +140,13 @@ export type EngineTool = Readonly<{
 
 export type ToolRegistry = Readonly<{
   definitions(): readonly RunTool[];
+  /**
+   * The Workspace previews this run viewed itself (`view_workspace_image`),
+   * which its requests carry with their results, and how a result image they
+   * do not carry is seen again; absent where the run offers neither direct
+   * view nor System Vision.
+   */
+  images?: TranscriptImages;
   /**
    * For a call of an older tool this run does not offer because a newer one
    * replaces it (a name the model may know from a Workspace guide or an
@@ -195,6 +208,8 @@ export type ToolRegistryServices = Readonly<{
   skillTools?: Pick<SkillToolService, "execute">;
   vision?: Pick<VisionAnalysisService, "execute">;
   workspace?: WorkspaceCoordinator;
+  /** Test seam of direct view's capture owner; production loads the default at the run's first view. */
+  workspaceImageCaptures?: () => Promise<WorkspaceImageCaptures>;
 }>;
 
 export type ToolRegistryInput = Readonly<{
@@ -259,8 +274,16 @@ function notSent(call: ModelToolCall, error: unknown): ToolExecutionResult {
 export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolRegistry> {
   const request = input.request;
   const owner = { runId: input.runId, userId: input.userId };
+  // A tool that reads guest files without a command (a direct view, a System Vision capture) starts the Workspace first.
+  const coordinator = input.services.workspace;
+  const runWorkspace = request.workspace;
+  const prepareWorkspace = coordinator?.prepareExecution && runWorkspace
+    ? (signal?: AbortSignal) => coordinator.prepareExecution!({ onActivity: input.onWorkspaceActivity, runId: input.runId,
+      ...(signal ? { signal } : {}), userId: input.userId, workspace: runWorkspace })
+    : undefined;
   const context = (execution: EngineToolExecution) => ({
-    persistedToolCallId: execution.persistedToolCallId, request, runId: input.runId, userId: input.userId
+    persistedToolCallId: execution.persistedToolCallId, ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId,
+    userId: input.userId
   });
   const tools = new Map<string, EngineTool>();
   const descriptors = toolActivityDescriptors(request);
@@ -306,11 +329,24 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       execute: async (execution) => (await defaultWorkspaceCheckpoints()).execute(execution.call, context(execution), execution.signal) });
   }
 
+  // A result image the run's requests do not carry is named with the way this run can see it again.
+  let images: TranscriptImages | undefined;
   for (const definition of analyzeImageTools(request)) {
     if (definition.name !== ANALYZE_IMAGE_TOOL_NAME || !input.services.vision) continue;
     const service = input.services.vision;
     add({ activity: named(definition, "System Vision"), definition, effects: "none", observationSource: "workspace",
       execute: (execution) => service.execute(execution.call, context(execution), execution.signal) });
+    images = { attached: () => undefined, note: IMAGE_ANALYZE_NOTE };
+  }
+
+  // Direct view, frozen at admission with the chat model's verified vision: the run's requests carry its own
+  // previews as image content of their results (`directImageView.ts`).
+  if (clientTools && request.workspaceImageView === true && request.workspace && input.services.workspace) {
+    const viewer = createWorkspaceImageViewer({ captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
+      ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId, userId: input.userId });
+    add({ activity: named(viewWorkspaceImageTool, "Workspace"), definition: viewWorkspaceImageTool, effects: "none",
+      observationSource: "workspace", execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
+    images = { attached: (item) => viewer.attached(item), note: IMAGE_VIEW_NOTE };
   }
 
   if (clientTools && request.imagePlan && input.services.images) {
@@ -495,6 +531,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
 
   return {
     definitions: () => [...tools.values()].map((tool) => tool.definition),
+    ...(images ? { images } : {}),
     ...(mcpLoadCall ? { mcpLoadCall } : {}),
     replacement: (name) => {
       const superseded = SUPERSEDED_TOOLS.get(name);
