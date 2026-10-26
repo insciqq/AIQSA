@@ -1381,6 +1381,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             </>}
         anchorId={source.id}
         artifact={artifact}
+        browserLiveChatId={ownsLiveRun ? session.activeChatId : null}
         onPinSkill={pinLoadedSkill}
         pinnedSkillIds={pinnedSkillIds}
         content={messageText(source)}
