@@ -41,6 +41,12 @@ type FailureEntry = Readonly<{
   stream: BrowserLiveStream;
 }>;
 
+/** Posts inputs one after another, best effort; nothing waits for the answers. */
+function postInOrder(chatId: string, inputs: readonly BrowserLiveInput[]): void {
+  void inputs.reduce<Promise<unknown>>((previous, input) =>
+    previous.then(() => postBrowserLiveInput(chatId, input)), Promise.resolve());
+}
+
 const NOOP_SUBSCRIBE = () => () => undefined;
 const IDLE = () => BROWSER_LIVE_IDLE_SNAPSHOT;
 
@@ -81,7 +87,9 @@ export function useBrowserLive(
         setFailureEntry({ code, state: stateRef.current, stream });
       },
       // An accepted send ends "too much input at once".
-      onAccepted: () => setFailureEntry((current) => current?.code === "browser_live_rate_limited" ? null : current)
+      onAccepted: () => setFailureEntry((current) => current?.code === "browser_live_rate_limited" ? null : current),
+      // Closing the panel never keeps a key or button held: queued releases still go out, best effort.
+      onClosedWithReleases: (releases) => postInOrder(chatId, releases)
     });
     queueRef.current = queue;
     stream.start();
@@ -125,13 +133,15 @@ export function useBrowserLive(
     setBusyEntry({ action, stream: requestStream });
     setFailureEntry(null);
     const queue = queueRef.current;
-    endingRef.current = action === "take" ? null : { sawAgent: false };
+    // This operation's own ending latch: a later result may clear only the latch its operation set.
+    const ending = action === "take" ? null : { sawAgent: false };
+    endingRef.current = ending;
     try {
-      if (action === "cancel") queue?.clear();
+      if (action === "cancel") queue?.clearExceptReleases();
       else if (action !== "take" && queue && !await queue.drain(BROWSER_LIVE_END_DRAIN_MS)) queue.clear();
       const result = await request();
       // A refused end that left the user in control (a network failure) gives the browser back to them.
-      if (!result.ok && action !== "take" && result.code !== "browser_live_handoff_stale" &&
+      if (!result.ok && ending && endingRef.current === ending && result.code !== "browser_live_handoff_stale" &&
         result.code !== "browser_live_not_in_control") endingRef.current = null;
       if (!result.ok && streamRef.current === requestStream) {
         setFailureEntry({ code: result.code, state: stateRef.current, stream: requestStream });
@@ -151,11 +161,12 @@ export function useBrowserLive(
   }, [userControls]);
   const releaseNow = useCallback((...inputs: BrowserLiveInput[]) => {
     if (!userControls || endingRef.current) return;
-    // Best effort and in order; nothing waits for the answers.
-    void inputs.reduce<Promise<unknown>>((previous, input) =>
-      previous.then(() => postBrowserLiveInput(chatId, input)), Promise.resolve());
+    postInOrder(chatId, inputs);
   }, [chatId, userControls]);
   const reopen = useCallback(() => {
+    // A reopened stream starts from the state it receives; a transition the closed one missed must not keep
+    // input blocked.
+    endingRef.current = null;
     setFailureEntry(null);
     stream?.restart();
   }, [stream]);

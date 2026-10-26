@@ -39,13 +39,20 @@ async function flush() {
 
 function setup() {
   const hook = renderHook(() => useBrowserLive(CHAT, true, openSource));
-  act(() => sources[0]!.send("state", liveState({ controller: "user" })));
+  act(() => sources.at(-1)!.send("state", liveState({ controller: "user" })));
   return hook;
 }
 
 function paths() {
-  return calls.map((call) => call.path === browserLiveInputPath(CHAT) ? `input:${(call.body as { text?: string }).text}` : call.path);
+  return calls.map((call) => {
+    if (call.path !== browserLiveInputPath(CHAT)) return call.path;
+    const body = call.body as { kind: string; text?: string; type?: string; key?: string };
+    return body.kind === "text" ? `input:${body.text}` : `input:${body.key}-${body.type}`;
+  });
 }
+
+const keyDown = (key: string): BrowserLiveInput => ({ kind: "key", type: "down", key, code: key });
+const keyUp = (key: string): BrowserLiveInput => ({ kind: "key", type: "up", key, code: key });
 
 describe("useBrowserLive ending control", () => {
   it("lets queued input arrive before Done, and refuses input typed after it", async () => {
@@ -132,6 +139,72 @@ describe("useBrowserLive ending control", () => {
     act(() => result.current.sendInput(text("next")));
     await flush();
     expect(paths().at(-1)).toBe("input:next");
+  });
+
+  it("still delivers queued input and Return control when the panel closes during the drain", async () => {
+    const { result, unmount } = setup();
+    act(() => result.current.sendInput(text("4"), text("2")));
+    act(() => { void result.current.control("return"); });
+    unmount();
+    await flush();
+    calls[0]!.respond(ok());
+    await flush();
+    expect(paths()).toEqual(["input:4", "input:2"]);
+    calls[1]!.respond(ok());
+    await flush();
+    expect(paths()).toEqual(["input:4", "input:2", browserLiveControlPath(CHAT)]);
+  });
+
+  it("keeps queued releases on Cancel, and sends them when the panel closes", async () => {
+    const { result } = setup();
+    act(() => result.current.sendInput(keyDown("a"), text("x"), keyUp("a")));
+    act(() => { void result.current.answerHandoff("handoff-1", "cancel"); });
+    await flush();
+    expect(paths()).toEqual(["input:a-down", browserLiveHandoffPath(CHAT)]);
+    calls[0]!.respond(ok());
+    await flush();
+    expect(paths()).toEqual(["input:a-down", browserLiveHandoffPath(CHAT), "input:a-up"]);
+    cleanup();
+    calls = [];
+
+    const closing = setup();
+    act(() => closing.result.current.sendInput(keyDown("b"), text("y"), keyUp("b")));
+    closing.unmount();
+    await flush();
+    expect(paths()).toEqual(["input:b-down", "input:b-up"]);
+  });
+
+  it("lets only an operation's own failure unblock input", async () => {
+    const first = renderHook(({ open }) => useBrowserLive(CHAT, open, openSource), { initialProps: { open: true } });
+    act(() => sources[0]!.send("state", liveState({ controller: "user" })));
+    act(() => { void first.result.current.control("return"); });
+    await flush();
+    first.rerender({ open: false });
+    first.rerender({ open: true });
+    act(() => sources.at(-1)!.send("state", liveState({ controller: "user" })));
+    act(() => { void first.result.current.control("return"); });
+    await flush();
+    expect(paths()).toEqual([browserLiveControlPath(CHAT), browserLiveControlPath(CHAT)]);
+    // The first, older Return fails: the newer one still holds input back.
+    calls[0]!.respond(refusal("browser_live_unavailable"));
+    await flush();
+    act(() => first.result.current.sendInput(text("blocked")));
+    await flush();
+    expect(paths()).toEqual([browserLiveControlPath(CHAT), browserLiveControlPath(CHAT)]);
+  });
+
+  it("accepts input again after reopening a stream that missed the control change", async () => {
+    const { result } = setup();
+    act(() => { void result.current.control("return"); });
+    await flush();
+    act(() => sources[0]!.send("end", { reason: "replaced" }));
+    calls[0]!.respond(ok());
+    await flush();
+    act(() => result.current.reopen());
+    act(() => sources.at(-1)!.send("state", liveState({ controller: "user" })));
+    act(() => result.current.sendInput(text("again")));
+    await flush();
+    expect(paths()).toEqual([browserLiveControlPath(CHAT), "input:again"]);
   });
 
   it("clears a rate-limit alert on the next accepted input", async () => {
