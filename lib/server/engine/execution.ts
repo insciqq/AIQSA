@@ -23,13 +23,13 @@ import { reportedAnswerCost, usageAttributionsWithEstimatedCost } from "../runs/
 import { withPinnedHostedSearchIdentity } from "../runs/searchArtifactIdentity";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
-import { longestToolCallMs, turnSoftDeadlineMs } from "../runs/turnDeadline";
+import { toolCallBounds, turnSoftDeadlineMs } from "../runs/turnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
 import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecret";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
-import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
+import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -259,13 +259,21 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
   // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
   const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
-  // Past its tool time the turn answers without tools, which is what ends an answer without tool limits. That time
-  // leaves room for the longest call that may then still be running, and the answer after it.
-  const longestCallMs = longestToolCallMs(normalizedRequest);
-  const toolTimeEndsAt = Math.min(startedAt + turnSoftDeadlineMs(turnMs, longestCallMs), input.scheduled
-    ? (input.created.acceptedAt?.getTime() ?? startedAt) + turnSoftDeadlineMs(scheduledTurnMs, longestCallMs) : Infinity);
-  // Asked before each round and as each call of a batch starts, so a call queued behind slower ones never starts late.
+  // Until when work that may take `longestMs` once started may still start: the turn's soft deadline for it, and a
+  // scheduled run's occurrence's.
+  const admittedAt = input.created.acceptedAt?.getTime() ?? startedAt;
+  const startsUntil = (longestMs: number) => Math.min(startedAt + turnSoftDeadlineMs(turnMs, longestMs),
+    input.scheduled ? admittedAt + turnSoftDeadlineMs(scheduledTurnMs, longestMs) : Infinity);
+  // Past its tool time the turn answers without tools, which is what ends an answer without tool limits. Rounds leave
+  // room for a common call; a call whose own bound is longer (a slow MCP server, Search source or image model) must
+  // also fit before the deadline as it starts, so a slow source the run never calls never shortens its tool time.
+  const bounds = toolCallBounds(normalizedRequest);
+  const toolTimeEndsAt = startsUntil(bounds.round);
+  // Asked before each round.
   const toolTimeLeft = () => now() < toolTimeEndsAt;
+  // Asked as each call of a batch starts, so a call queued behind slower ones, or one that would outlast the answer's
+  // reserve, never starts.
+  const callTimeLeft = (tool: Pick<RunTool, "capability" | "name">) => toolTimeLeft() && now() < startsUntil(bounds.call(tool));
   const deadline = new AbortController();
   const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
     turnMs);
@@ -472,7 +480,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             text: save.text }),
           signal,
           store: engine.toolCalls,
-          toolTimeLeft,
+          toolTimeLeft: callTimeLeft,
           unknownEffects,
           userId: input.userId
         };

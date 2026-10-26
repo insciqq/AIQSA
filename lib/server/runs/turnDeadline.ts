@@ -1,8 +1,9 @@
 import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { NormalizedRunRequest } from "../providers/types";
-import { searchOptionTimeoutMs } from "../search/toolExecutor";
-import { visionAnalysisTimeoutMs } from "../tools/analyzeImage";
+import { searchOptionTimeoutMs, searchToolRoutes } from "../search/toolExecutor";
+import { ANALYZE_IMAGE_TOOL_NAME, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
+import type { RunTool } from "../tools/types";
 
 /**
  * What a turn may still need after it stops starting tool work, beyond the
@@ -20,48 +21,76 @@ import { visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 export const TURN_TAIL_RESERVE_MS = 240_000;
 
 /**
- * Milliseconds after the turn starts at which its time for tools is used up,
- * with or without a Workspace: no further call starts and the next round is
- * the forced tool-free final answer, followed by the handoff. The hard turn
- * deadline stays the safety net.
+ * Milliseconds after the turn starts until which work that may take
+ * `longestCallMs` once started may still start, with or without a Workspace.
  *
- * Reserve = the longest one call already running may still take
- * (`longestToolCallMs`; it is never aborted early, so its side effects stay
- * unambiguous) + `TURN_TAIL_RESERVE_MS`, capped at half the turn so short
- * turns keep time for actual work. Defaults (a 3 600 s turn, MCP's 300 s
- * default call timeout): 540 s, so the final answer is forced after 3 060 s
- * (51 min). A scheduled run's 30-minute occurrence: tools until 21 min.
+ * Reserve = `longestCallMs` (a call already running is never aborted early,
+ * so its side effects stay unambiguous) + `TURN_TAIL_RESERVE_MS`, capped at
+ * half the turn so short turns, and calls whose own bound outlasts the turn,
+ * keep time for actual work. With the common bound (`ToolCallBounds.round`)
+ * it is when rounds stop offering tools and the next one is the forced
+ * tool-free answer; with one call's own bound, when that call may still start.
+ * Defaults (a 3 600 s turn, MCP's 300 s default call timeout): 540 s, so the
+ * final answer is forced after 3 060 s (51 min); a call to a server with a
+ * ten-minute timeout may start until 46 min. A scheduled run's 30-minute
+ * occurrence: tools until 21 min.
  */
 export function turnSoftDeadlineMs(turnMs: number, longestCallMs: number): number {
   return turnMs - Math.min(longestCallMs + TURN_TAIL_RESERVE_MS, Math.floor(turnMs / 2));
 }
 
+/** The provider wait of one image generation: its model's response timeout, as the image adapter applies it. */
+function imageGenerationWaitMs(plan: NonNullable<NormalizedRunRequest["imagePlan"]>): number {
+  const { connection, model } = plan.snapshot;
+  return effectiveProviderResponseTimeoutMs(connection, model.adapterKind === "fake" ? null : model);
+}
+
+/** How long the calls of one run may take once started (`toolCallBounds`). */
+export type ToolCallBounds = Readonly<{
+  /** The common bound a round leaves room for: MCP's default call timeout, or a longer Workspace sync call. */
+  round: number;
+  /** The longest one call of this tool may take. */
+  call(tool: Pick<RunTool, "capability" | "name">): number;
+}>;
+
 /**
- * The longest one tool call of this run may take once it started, from the
- * bounds frozen with the run: MCP's default call timeout as the floor (Memory
- * search and page reading have shorter bounds of their own), each MCP
- * server's own call timeout (loaded or in the Auto catalog), each Search
- * source's, the Workspace synchronous call, and the provider waits of System
- * Vision and image generation. Allowances before a call is sent (a VM or MCP
- * runtime start, Vision's preparation) are not counted: the tail reserve
- * absorbs them.
+ * The bounds frozen with the run, by tool: an MCP tool's server's own call
+ * timeout (loaded or in the Auto catalog; MCP's default without one), a search
+ * tool's slowest source, the Workspace sync call for Workspace tools, the
+ * System Vision wait for `analyze_image`, the image model's response timeout
+ * for image generation, and MCP's default for everything else. A slow source
+ * the run never calls never shortens its tool time. Allowances before a call
+ * is sent (a VM or MCP runtime start, Vision's preparation) are not counted:
+ * the tail reserve absorbs them. A malformed bound counts as the default.
  */
-export function longestToolCallMs(request: Pick<NormalizedRunRequest,
-  "imagePlan" | "mcp" | "mcpDiscovery" | "searchPlan" | "visionAnalysis" | "workspace">): number {
-  let longest: number = MCP_RUNTIME_TIMEOUT_LIMITS.defaultCallMs;
-  // A malformed bound never shortens the reserve or breaks the deadline.
-  const bound = (milliseconds: number | undefined) => {
-    if (milliseconds !== undefined && Number.isFinite(milliseconds) && milliseconds > longest) longest = milliseconds;
+export function toolCallBounds(request: Pick<NormalizedRunRequest,
+  "imagePlan" | "mcp" | "mcpDiscovery" | "searchPlan" | "visionAnalysis" | "workspace">): ToolCallBounds {
+  const floor: number = MCP_RUNTIME_TIMEOUT_LIMITS.defaultCallMs;
+  const own = (milliseconds: number | undefined) =>
+    milliseconds !== undefined && Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : floor;
+  const mcp = new Map<string, number>();
+  const servers = new Map((request.mcp?.servers ?? []).map((server) => [server.serverId, server.runtimeTimeouts?.callTimeoutMs]));
+  for (const tool of request.mcp?.tools ?? []) mcp.set(tool.namespacedName, own(servers.get(tool.serverId)));
+  for (const server of request.mcpDiscovery?.catalog.servers ?? []) {
+    for (const tool of server.tools) if (!mcp.has(tool.namespacedName)) mcp.set(tool.namespacedName, own(server.runtimeTimeouts?.callTimeoutMs));
+  }
+  const search = new Map(searchToolRoutes(request.searchPlan).map((route) =>
+    [route.name, own(Math.max(...route.options.map(searchOptionTimeoutMs)))]));
+  const workspace = request.workspace ? own(request.workspace.syncToolTimeoutSeconds * 1_000) : floor;
+  const vision = request.visionAnalysis?.available ? own(visionAnalysisTimeoutMs(request.visionAnalysis)) : floor;
+  const image = request.imagePlan ? own(imageGenerationWaitMs(request.imagePlan)) : floor;
+  return {
+    round: request.workspace ? Math.max(floor, workspace) : floor,
+    call(tool) {
+      // `analyze_image` reads Workspace files as a Workspace tool, so its name decides before its capability.
+      if (tool.name === ANALYZE_IMAGE_TOOL_NAME) return vision;
+      switch (tool.capability) {
+        case "mcp": return mcp.get(tool.name) ?? floor;
+        case "web_search": return search.get(tool.name) ?? floor;
+        case "workspace": return workspace;
+        case "image": return image;
+        default: return floor;
+      }
+    }
   };
-  for (const server of [...request.mcp?.servers ?? [], ...request.mcpDiscovery?.catalog.servers ?? []]) {
-    bound(server.runtimeTimeouts?.callTimeoutMs);
-  }
-  for (const option of request.searchPlan.options) bound(searchOptionTimeoutMs(option));
-  if (request.workspace) bound(request.workspace.syncToolTimeoutSeconds * 1_000);
-  if (request.visionAnalysis?.available) bound(visionAnalysisTimeoutMs(request.visionAnalysis));
-  if (request.imagePlan) {
-    const { connection, model } = request.imagePlan.snapshot;
-    bound(effectiveProviderResponseTimeoutMs(connection, model.adapterKind === "fake" ? null : model));
-  }
-  return longest;
 }
