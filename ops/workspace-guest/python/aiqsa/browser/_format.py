@@ -150,17 +150,26 @@ class HiddenValues:
         self.reach = 0
 
     def add(self, value: str) -> None:
-        if len(value) < self.MIN_CHARS or any(len(value) == size and pattern.fullmatch(value) for size, pattern in self.patterns):
+        # Browsers collapse and strip whitespace (`document.title`, `innerText`): the value's own runs of
+        # whitespace match any run, and its edges are not needed to find it.
+        core = value.strip()
+        if len(core) < self.MIN_CHARS or any(len(core) == size and pattern.fullmatch(core) for size, pattern in self.patterns):
             return
-        if len(value) <= self.PATTERN_CHARS:
-            parts = [_spellings(char) for char in value]
+        if len(core) <= self.PATTERN_CHARS:
+            parts = []
+            for run in re.findall(r"\s+|\S", core):
+                if run.isspace():
+                    spellings = [_spellings(char) for char in sorted(set(run) | {" ", "\u00a0"})]
+                    parts.append(("(?:\\s|" + "|".join(part for part, _ in spellings) + ")+", max(size for _, size in spellings) * len(run)))
+                else:
+                    parts.append(_spellings(run))
             pattern = re.compile("".join(part for part, _ in parts))
             reach = sum(size for _, size in parts)
         else:
-            forms = sorted({value, quote(value, safe=""), quote(value, safe="").lower(), quote_plus(value)}, key=len, reverse=True)
+            forms = sorted({core, quote(core, safe=""), quote(core, safe="").lower(), quote_plus(core)}, key=len, reverse=True)
             pattern = re.compile("|".join(re.escape(form) for form in forms))
             reach = max(len(form) for form in forms)
-        self.patterns.append((len(value), pattern))
+        self.patterns.append((len(core), pattern))
         self.patterns.sort(key=lambda entry: -entry[0])
         self.reach = max(self.reach, reach)
 

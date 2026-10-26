@@ -313,6 +313,15 @@ class FormatTests(unittest.TestCase):
         # Unrelated text stays, and a page that changes the value is not caught (accepted, best effort).
         for output in ['pass-word/1"x', "PASS+WORD/1\"X", "pass+word/1", "two-words"]:
             self.assertEqual(hidden.text(output), output, output)
+        # Browsers collapse and strip whitespace (`document.title`, `innerText`): any run of it still matches.
+        hidden.add('zq"x  4/1+9')
+        hidden.add("  edge-value  ")
+        for output in ['Hello zq"x 4/1+9', 'zq"x\n 4/1+9', "zq&quot;x&nbsp;&nbsp;4&sol;1+9", "zq%22x++4%2F1%2B9", "[edge-value]"]:
+            masked = hidden.text(output)
+            self.assertIn("[hidden]", masked, output)
+            self.assertNotIn("4/1", masked, output)
+            self.assertNotIn("edge-value", masked, output)
+        self.assertEqual(hidden.text("zq\"x4/1+9"), "zq\"x4/1+9")
         long = "k" * 600 + "/end"
         hidden.add(long)
         self.assertEqual(hidden.text("a " + long + " b " + long.replace("/", "%2f")), "a [hidden] b [hidden]")
