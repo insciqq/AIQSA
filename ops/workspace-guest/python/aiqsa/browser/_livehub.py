@@ -62,8 +62,11 @@ HELD_KEYS_MAX = 16
 RELEASE_TIMEOUT = 1.0
 #: Take control and a handoff wait this long for the agent's action under way; a longer one (a `wait`) goes on.
 TAKE_WAIT_SECONDS = 5.0
-#: Characters of the value typed since focus last moved that are kept for masking; older ones go first.
+#: Characters of the value being typed that are kept for masking; older ones go first.
 TYPED_MAX_CHARS = 1024
+#: Keys that move the caret (with Shift, the selection): what is typed after them may land anywhere in the field.
+CARET_KEYS = frozenset({"ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"})
+MODIFIER_KEYS = frozenset({"Alt", "AltGraph", "CapsLock", "Control", "Meta", "Shift"})
 
 
 class UserInControl(Exception):
@@ -134,9 +137,14 @@ class LiveHub:
         self.pointer: Optional[Tuple[Any, float, float]] = None
         #: Keys the user's input pressed and did not let go, by `code` (or `key`): the tab's session and the key up.
         self.keys: Dict[str, Tuple[Any, Dict[str, Any]]] = {}
-        #: What the user typed since they last pressed Tab or Enter or clicked, kept across pauses: a value typed in
-        #: parts, or into one-character fields a page advances through itself, is hidden whole.
+        #: The value the user's typing gives the field, as far as their keys tell: kept across pauses, so a value typed
+        #: in parts, or into one-character fields a page advances through itself, is hidden whole. A new value starts
+        #: after Tab, Enter, a click or a key that moves the caret.
         self.typed = ""
+        #: Select all came last: the next text or deletion replaces the whole value.
+        self.replace_next = False
+        #: A run of deletions is under way: the value as it stood before it is hidden for good already.
+        self.deleting = False
         #: The user typed or deleted since the last capture.
         self.typed_new = False
         self.capture: Optional[asyncio.TimerHandle] = None
@@ -358,7 +366,7 @@ class LiveHub:
 
     async def return_control(self) -> None:
         await self.release_held()
-        await self.capture_now()
+        await self.capture_now(focus_moves=True)
         self.note = await self.returned_note()
         self.controller = "agent"
         self.agent_turn.set()
@@ -415,9 +423,11 @@ class LiveHub:
         if outcome not in ("completed", "cancelled", "timed_out"):
             raise _live.LiveError("message_invalid")
         await self.release_held()
-        await self.capture_now()
+        await self.capture_now(focus_moves=True)
         saved: Optional[str] = None
-        if outcome == "completed":
+        # Done saves the site's sign-in only for a handoff about signing in (operator decision 2026-10-27): a choice
+        # or a look at the page never adds a browser session to the user's Secrets.
+        if outcome == "completed" and message.get("reason") in _live.SAVE_SESSION_REASONS:
             saved = await self.host.save_site_session()
         self.handoff = False
         self.controller = "agent"
@@ -456,29 +466,75 @@ class LiveHub:
             self.pointer = (session, params["x"], params["y"])
         elif kind == "key":
             params, typed = _live.key_event(event)
-            if params["type"] != "keyUp" and params["key"] in ("Tab", "Enter"):
-                # Enter may submit and navigate, Tab moves focus: masking is updated before either goes out, and what
-                # is typed next is a new value.
-                await self.capture_now(focus_moves=True)
+            if params["type"] != "keyUp":
+                key, modifiers = params["key"], params["modifiers"]
+                if key in ("Tab", "Enter"):
+                    # Enter may submit and navigate, Tab moves focus: masking is updated before either goes out, and
+                    # what is typed next is a new value.
+                    await self.capture_now(focus_moves=True)
+                elif typed is not None:
+                    self.edit(typed)
+                elif key in ("Backspace", "Delete"):
+                    self.delete(key, modifiers)
+                elif key in MODIFIER_KEYS:
+                    pass
+                elif modifiers & (_live.MODIFIER_CTRL | _live.MODIFIER_META) and key.lower() == "a":
+                    self.select_all()
+                elif key in CARET_KEYS or modifiers & (_live.MODIFIER_CTRL | _live.MODIFIER_META):
+                    # The caret or the selection moved, or a shortcut cut, undid or pasted: the value is not known now.
+                    self.close_value()
             await session.send("Input.dispatchKeyEvent", params)
             await self.track_key(session, params)
-            if typed is not None:
-                self.type(typed)
-            elif params["type"] == "rawKeyDown" and params["key"] == "Backspace":
-                self.typed, self.typed_new = self.typed[:-1], True
-                self.schedule_capture()
         elif kind == "text":
             text = _live.text_input(event)
+            self.edit(text)
             await session.send("Input.insertText", {"text": text})
-            self.type(text)
         else:
             raise _live.LiveError("input_invalid")
 
-    def type(self, text: str) -> None:
-        """Adds what the user typed to the value typed since focus last moved. A page that submits by itself (a code
-        field on its last digit) still has it hidden before the agent gets the browser back: every end of the
-        user's control captures first."""
-        self.typed = (self.typed + text)[-TYPED_MAX_CHARS:]
+    # What the user types -----------------------------------------------------------------------------------------
+
+    def edit(self, text: str) -> None:
+        """The value the field holds once `text` goes in, hidden before it goes out: a page may submit on this very
+        character (a code field on its last digit). After Select all the text replaces the value."""
+        value = text if self.replace_next else self.typed + text
+        self.typed = value[-TYPED_MAX_CHARS:]
+        self.replace_next = self.deleting = False
+        self.updated()
+
+    def delete(self, key: str, modifiers: int) -> None:
+        if modifiers & (_live.MODIFIER_CTRL | _live.MODIFIER_ALT | _live.MODIFIER_META):
+            # A word or a line goes: what is left is not known.
+            self.close_value()
+            return
+        if self.replace_next:
+            # Select all, then delete: the field is empty (its old value was kept hidden at Select all).
+            self.typed, self.replace_next = "", False
+        elif key == "Backspace" and self.typed:
+            if not self.deleting:
+                # The value as it stood before this run of deletions stays hidden; the shorter one is the new value.
+                self.host.hidden.commit()
+                self.deleting = True
+            self.typed = self.typed[:-1]
+        else:
+            # Delete at the end of the value takes nothing.
+            return
+        self.updated()
+
+    def select_all(self) -> None:
+        self.host.hidden.commit()
+        self.replace_next, self.deleting = True, False
+
+    def close_value(self) -> None:
+        """Keeps the value so far hidden for good and starts a new one; the page is read at the next capture."""
+        self.host.hidden.commit()
+        self.typed, self.replace_next, self.deleting = "", False, False
+        self.typed_new = True
+        self.schedule_capture()
+
+    def updated(self) -> None:
+        # One replaceable pattern while the value grows or shrinks, not one per keystroke.
+        self.host.hidden.provisional(self.typed)
         self.typed_new = True
         self.schedule_capture()
 
@@ -502,20 +558,19 @@ class LiveHub:
         self.capture = loop.call_later(CAPTURE_DELAY, lambda: asyncio.ensure_future(self.capture_now()))
 
     async def capture_now(self, focus_moves: bool = False) -> None:
-        """Hides what the user typed: the whole value typed since focus last moved and what the focused field holds
-        (read from the page), and marks that field hidden. With `focus_moves` (a Tab, an Enter or a click is about to
-        go out) the next value starts empty."""
+        """Hides what the focused field holds (read from the page) and marks that field hidden; the value being typed
+        is hidden already. With `focus_moves` (a Tab, an Enter or a click is about to go out, or the user's control
+        ends) that value is kept for good and the next one starts empty."""
         if self.capture is not None:
             self.capture.cancel()
             self.capture = None
-        typed, fresh = self.typed, self.typed_new
+        fresh = self.typed_new
         self.typed_new = False
         if focus_moves:
-            self.typed = ""
+            self.host.hidden.commit()
+            self.typed, self.replace_next, self.deleting = "", False, False
         if not fresh:
             return
-        if typed:
-            self.host.hidden.add(typed)
         page = self.page()
         found = await self.focused_field(page) if page is not None else None
         if found is None:
