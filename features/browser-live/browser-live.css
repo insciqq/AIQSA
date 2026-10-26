@@ -1,0 +1,398 @@
+/* The live Workspace browser of a running answer (`BrowserLivePanelV2`). */
+
+.v2-browser-live {
+  min-width: 0;
+  margin-top: 0.5rem;
+  /* Scrolled to, it clears the floating chat header. */
+  scroll-margin-top: 4.25rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface);
+}
+
+.v2-browser-live[data-needs-user] {
+  border-color: color-mix(in srgb, var(--v2-color-warn) 45%, var(--v2-color-border2));
+}
+
+.v2-browser-live-bar {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  border-radius: var(--v2-radius-m);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .v2-browser-live-bar:hover {
+    background: var(--v2-color-hover);
+  }
+}
+
+.v2-browser-live-bar > svg {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+
+.v2-browser-live[data-needs-user] .v2-browser-live-bar > svg:first-child {
+  color: var(--v2-color-warn);
+}
+
+.v2-browser-live-bar-title {
+  flex: none;
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-browser-live-bar-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-browser-live-bar-action {
+  flex: none;
+  color: var(--v2-color-text3);
+}
+
+.v2-browser-live[data-expanded] .v2-browser-live-bar > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.v2-browser-live-panel {
+  padding: 0 0.75rem 0.75rem;
+}
+
+.v2-browser-live-view {
+  display: grid;
+  min-width: 0;
+  gap: 0.625rem;
+  font-size: 0.8125rem;
+}
+
+/* The handoff: what the agent needs, the agent's own words, the time left, Done and Cancel. */
+.v2-browser-live-handoff {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-warn) 45%, var(--v2-color-border2));
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-canvas);
+}
+
+.v2-browser-live-handoff-heading {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-browser-live-handoff-heading > svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--v2-color-warn);
+}
+
+.v2-browser-live-handoff-heading h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.v2-browser-live-countdown {
+  color: var(--v2-color-text2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.v2-browser-live-countdown[data-expired] {
+  color: var(--v2-color-danger);
+}
+
+.v2-browser-live-handoff p {
+  margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.v2-browser-live-handoff-message {
+  color: var(--v2-color-text);
+  white-space: pre-wrap;
+}
+
+.v2-browser-live-handoff-note {
+  color: var(--v2-color-text3);
+}
+
+.v2-browser-live-handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.v2-browser-live-address {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.v2-browser-live-title,
+.v2-browser-live-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-browser-live-title {
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-browser-live-url {
+  color: var(--v2-color-text3);
+  font: 0.75rem/1.4 var(--font-mono), monospace;
+}
+
+.v2-browser-live-toolbar {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-browser-live-controller {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.v2-browser-live-zoom {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+}
+
+.v2-browser-live-zoom-button {
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: transparent;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.v2-browser-live-zoom-fit {
+  min-width: 3.25rem;
+}
+
+@media (hover: hover) {
+  .v2-browser-live-zoom-button:hover:not(:disabled) {
+    color: var(--v2-color-text);
+    background: var(--v2-color-hover);
+  }
+}
+
+.v2-browser-live-zoom-button:disabled {
+  color: var(--v2-color-text3);
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The frame keeps the page's aspect at any width and fits between the chat header and the composer dock,
+   so a short landscape phone still shows the whole page (zoom shows detail). */
+.v2-browser-live-stage {
+  --v2-browser-live-max-h: max(9rem, min(70dvh, 46rem, calc(100dvh - var(--v2-live-dock-height, 9rem) - 5.5rem)));
+  position: relative;
+  width: min(100%, calc(var(--v2-browser-live-max-h) * var(--v2-browser-live-w) / var(--v2-browser-live-h)));
+  aspect-ratio: var(--v2-browser-live-w) / var(--v2-browser-live-h);
+  margin-inline: auto;
+  overflow: hidden;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-code-bg);
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+
+.v2-browser-live-stage[data-zoomed] {
+  overflow: auto;
+  touch-action: pan-x pan-y;
+}
+
+.v2-browser-live-stage[data-control="user"] {
+  touch-action: none;
+  cursor: default;
+}
+
+.v2-browser-live-stage[data-control="user"]:focus {
+  border-color: var(--v2-color-text);
+}
+
+.v2-browser-live-frame {
+  display: block;
+  max-width: none;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
+.v2-browser-live-stage[data-reconnecting] .v2-browser-live-frame {
+  opacity: 0.5;
+}
+
+.v2-browser-live-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  color: var(--v2-color-text2);
+  text-align: center;
+}
+
+.v2-browser-live-placeholder p {
+  max-width: 28rem;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.v2-browser-live-hint {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
+/* Phones type through a real field so the on-screen keyboard opens. */
+.v2-browser-live-typing {
+  display: none;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.v2-browser-live-typing-field {
+  flex: 1 1 10rem;
+  min-width: 0;
+  height: 2.5rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-canvas);
+  /* 16px keeps iOS from zooming the page when the field is focused. */
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.v2-browser-live-typing-keys {
+  display: flex;
+  flex: none;
+  gap: 0.375rem;
+}
+
+.v2-browser-live-typing-keys .v2-button {
+  min-width: 2.75rem;
+  min-height: 2.5rem;
+}
+
+.v2-browser-live-error {
+  margin: 0;
+  color: var(--v2-color-danger);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.v2-browser-live-steps > summary {
+  display: flex;
+  min-width: 0;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  border-radius: var(--v2-radius-s);
+  cursor: pointer;
+  list-style: none;
+}
+
+.v2-browser-live-steps > summary::-webkit-details-marker {
+  display: none;
+}
+
+.v2-browser-live-steps > summary > span:first-child {
+  flex: none;
+  color: var(--v2-color-text);
+  font-weight: 500;
+}
+
+.v2-browser-live-steps-last {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-browser-live-steps ol {
+  max-height: 14rem;
+  margin: 0.25rem 0 0;
+  padding-left: 2rem;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.v2-browser-live-steps li {
+  overflow-wrap: anywhere;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-browser-live-typing {
+    display: flex;
+  }
+
+  .v2-browser-live-hint {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .v2-browser-live-panel {
+    padding: 0 0.5rem 0.5rem;
+  }
+
+  .v2-browser-live-handoff-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .v2-browser-live-handoff-actions .v2-button {
+    width: 100%;
+    justify-content: center;
+  }
+}
