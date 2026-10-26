@@ -6,7 +6,7 @@ import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 
 function fixture() {
   const claim = { runId: "waiting-test-run", userId: "waiting-test-user", claimToken: "claim-token" };
-  const loaded = { deadlineAt: new Date(Date.now() + 60_000), predecessor: { status: "complete" },
+  const loaded = { deadlineAt: new Date(Date.now() + 60_000), predecessor: { errorPayload: null, status: "complete" },
     modelRun: { workspaceWaitPending: true, status: "preparing" } } as WorkspaceFollowupLoaded;
   const deps: WorkspaceFollowupCoordinatorDependencies = {
     registry, continueRun: vi.fn(async () => undefined), fail: vi.fn(async () => undefined),
@@ -43,12 +43,28 @@ describe("Workspace follow-up coordinator", () => {
   it.each(["expired", "failed predecessor"] as const)("settles %s without starting the next answer", async (reason) => {
     const { claim, coordinator, deps, loaded } = fixture();
     vi.mocked(deps.repository.load).mockResolvedValue({ ...loaded,
-      ...(reason === "expired" ? { deadlineAt: new Date(0) } : { predecessor: { status: "error" } }) });
+      ...(reason === "expired" ? { deadlineAt: new Date(0) } : { predecessor: { errorPayload: null, status: "error" } }) });
     await coordinator.runOne();
     expect(deps.continueRun).not.toHaveBeenCalled();
     expect(deps.fail).toHaveBeenCalledWith(claim, expect.objectContaining({ code: reason === "expired"
       ? "workspace_followup_expired" : "workspace_followup_predecessor_failed" }));
     expect(registry.has(claim.runId)).toBe(false);
+  });
+
+  it("continues after a predecessor whose Workspace disk was proven lost, never after another failure", async () => {
+    const lost = fixture();
+    vi.mocked(lost.deps.repository.load).mockResolvedValue({ ...lost.loaded,
+      predecessor: { errorPayload: { code: "workspace_session_lost", message: "lost" }, status: "error" } });
+    await lost.coordinator.runOne();
+    expect(lost.deps.continueRun).toHaveBeenCalledOnce();
+    expect(lost.deps.fail).not.toHaveBeenCalled();
+
+    const exported = fixture();
+    vi.mocked(exported.deps.repository.load).mockResolvedValue({ ...exported.loaded,
+      predecessor: { errorPayload: { code: "workspace_output_export_failed", message: "failed" }, status: "error" } });
+    await exported.coordinator.runOne();
+    expect(exported.deps.continueRun).not.toHaveBeenCalled();
+    expect(exported.deps.fail).toHaveBeenCalledWith(exported.claim, expect.objectContaining({ code: "workspace_followup_predecessor_failed" }));
   });
 
   it("leaves explicit Stop to the cancellation writer", async () => {
