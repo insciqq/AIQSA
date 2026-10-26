@@ -8,11 +8,11 @@ import {
 function stand(): BrowserScenarioStand {
   const runner = { AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310", AIQSA_WORKSPACE_RUNNER_TOKEN: "synthetic-runner-token" };
   return { name: "aiqsa-bx-base-stand", services: {
-    app: { environment: { ...runner, AIQSA_APP_BASE_URL: "http://127.0.0.1:32101", AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
-      AIQSA_BOOTSTRAP_AUTH_TOKEN: "s".repeat(48), AIQSA_WORKSPACE_MAX_TOOL_CALLS: "320", AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: "",
+    app: { environment: { ...runner, AIQSA_APP_BASE_URL: "http://127.0.0.1:32101", AIQSA_WORKSPACE_MAX_TOOL_CALLS: "320", AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: "",
       AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "1800", DATABASE_URL: "postgresql://aiqsa:synthetic@postgres:5432/aiqsa?schema=public" },
     ports: [{ host_ip: "127.0.0.1", published: "32101", target: 3000 }] },
     "memory-worker": { environment: { ...runner } },
+    "migrate-bootstrap": { environment: { AIQSA_INITIAL_ADMIN_EMAIL: "admin@example.com", AIQSA_INITIAL_ADMIN_PASSWORD: "p".repeat(64) } },
     postgres: { environment: {}, ports: [{ host_ip: "127.0.0.1", published: "32102", target: 5432 }] },
     "workspace-maintenance": { environment: {} },
     "workspace-runner": { devices: [{ source: "/dev/kvm", target: "/dev/kvm" }], environment: { AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0" } }
@@ -24,8 +24,8 @@ const write = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)
 describe("browser scenario stand guard", () => {
   it("admits an acknowledged loopback real-KVM stand and records its configured bounds", () => {
     expect(requireBrowserScenarioStand("DISPOSABLE", stand())).toEqual({
+      admin: { email: "admin@example.com", password: "p".repeat(64) },
       baseUrl: "http://127.0.0.1:32101",
-      bootstrapToken: "s".repeat(48),
       configuredBounds: { maxToolCalls: 320, maxToolRounds: "default", turnTimeoutSeconds: 1800 },
       databaseUrl: "postgresql://aiqsa:synthetic@127.0.0.1:32102/aiqsa",
       project: "aiqsa-bx-base-stand"
@@ -51,6 +51,9 @@ describe("browser scenario stand guard", () => {
     ["a foreign base URL", (value: BrowserScenarioStand) => {
       value.services!.app!.environment!.AIQSA_APP_BASE_URL = "https://ai.example.invalid"; return value;
     }, "DISPOSABLE", "browser_scenarios_base_url_mismatch"],
+    ["missing administrator credentials", (value: BrowserScenarioStand) => {
+      value.services!["migrate-bootstrap"]!.environment!.AIQSA_INITIAL_ADMIN_PASSWORD = ""; return value;
+    }, "DISPOSABLE", "browser_scenarios_admin_credentials_required"],
     ["a non-numeric bound", (value: BrowserScenarioStand) => {
       value.services!.app!.environment!.AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS = "long"; return value;
     }, "DISPOSABLE", "browser_scenarios_runtime_bounds_invalid"]

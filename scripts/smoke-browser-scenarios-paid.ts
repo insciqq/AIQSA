@@ -15,7 +15,8 @@
  * the codex-lb route from ~/.codex/config.toml as a vision-capable chat model
  * (reused when an identical usable one exists), System Vision on the same
  * model, Workspace on with internet, Memory off for the user, and the public
- * saucedemo.com demo login as a Workspace env secret. Workspace limits are the
+ * saucedemo.com demo login as a Workspace env secret. The harness signs in with
+ * the password of the administrator the stand's bootstrap created. Workspace limits are the
  * stand's own; the effective bounds of every admitted run are printed.
  *
  * After each run the chat is deleted permanently (unless
@@ -115,12 +116,12 @@ async function poll<T>(timeoutMs: number, probe: () => Promise<T | null>, code: 
 
 async function authenticate(target: StandTarget): Promise<Api> {
   const baseUrl = new URL(target.baseUrl);
-  const response = await request({ baseUrl }, "/api/auth/token", { body: { token: target.bootstrapToken }, method: "POST" });
+  const response = await request({ baseUrl }, "/api/auth/login", { body: { ...target.admin }, method: "POST" });
   if (!response.ok) fail(`auth_${await errorCode(response)}`);
   const cookie = response.headers.getSetCookie().map((value) => value.split(";", 1)[0]?.trim() ?? "")
     .find((value) => value.includes("=")) ?? "";
   const body = await response.json().catch(() => null) as unknown;
-  if (!cookie || !record(body) || !record(body.user) || body.user.role !== "admin") fail("bootstrap_admin_required");
+  if (!cookie || !record(body) || !record(body.user) || body.user.role !== "admin") fail("admin_session_required");
   return { baseUrl, cookie };
 }
 
