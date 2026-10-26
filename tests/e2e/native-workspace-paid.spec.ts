@@ -25,7 +25,7 @@
  * Every other AIQSA_WORKSPACE_* setting is optional and validated by
  * `getWorkspaceConfig` (defaults: 2 CPUs, 4096 MiB, 10240 MiB disk, 1800 s
  * turn and idle TTL, 320 calls, 128 KiB tool output, image
- * `aiqsa-workspace:0.1.37`, MCP 0.6.16, which must stay equal to
+ * `aiqsa-workspace:0.1.38`, MCP 0.6.16, which must stay equal to
  * WORKSPACE_MCP_VERSION). A stand that bounds the guest (as the paid
  * Workspace smoke does with 1 CPU / 1024 MiB) needs the same values on the app
  * and the runner. A reused server (PLAYWRIGHT_REUSE_SERVER=1) must already

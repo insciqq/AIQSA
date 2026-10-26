@@ -26,6 +26,8 @@ EXIT_ELEMENT = 4
 EXIT_PAGE = 5
 EXIT_CAPTCHA = 6
 EXIT_SESSION = 7
+#: The user holds the browser in the chat's live view; try again after a pause.
+EXIT_USER_IN_CONTROL = 8
 _ELEMENT = {"element_not_found", "stale_element", "element_not_actionable", "not_a_select", "option_not_found"}
 _PAGE = {"invalid_url", "navigation_failed", "navigation_timeout", "wait_timeout", "timeout", "tab_not_found", "script_error"}
 _UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error"}
@@ -40,6 +42,8 @@ def exit_code(code: str) -> int:
         return EXIT_PAGE
     if code == "captcha_requires_user":
         return EXIT_CAPTCHA
+    if code == "user_in_control":
+        return EXIT_USER_IN_CONTROL
     if code.startswith("session_") or code.startswith("browser_session_"):
         return EXIT_SESSION
     if code in ("invalid_arguments", "invalid_path"):

@@ -8,8 +8,10 @@ command ends with a disk-preserving VM stop (`lib/server/workspace/quiescence.ts
 which ends this process and Chromium with it on success, Stop, deadline and
 failure alike. So nothing waits for a save at the end: sessions are written as
 they change. Nothing it prints carries a value typed from the environment
-(`type N --env NAME`): such a field reads as a hidden value, and the value
-itself is masked in every answer.
+(`type N --env NAME`) or by the user in the live view: such a field reads as a
+hidden value, and the value itself is masked in every answer. The live view
+(`_livehub.py`) is served on the same socket; while the user holds control,
+the agent's actions wait for it (`user_in_control`).
 
     python3 -m aiqsa.browser._host
 """
@@ -33,9 +35,14 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from . import _dom, _format, _identity, _paths, _sessions
+from . import _dom, _format, _identity, _livehub, _paths, _sessions
 
 PROTOCOL = 1
+#: Requests the agent may make while the user holds the browser: they read no page.
+CONTROL_FREE_OPS = frozenset({"status", "steps"})
+USER_IN_CONTROL = ("The user took control of the browser in the chat and is using it, so this was not done. Do not act on "
+                   "the page meanwhile: wait a little and try again (your next browser command says when the user gives it "
+                   "back), or answer with what you have.")
 REQUEST_MAX_BYTES = 1024 * 1024
 #: The turn's browser idles out after this; the next call starts a new one from the saved sessions.
 IDLE_SECONDS = 1800
@@ -142,8 +149,11 @@ class Host:
         self.step_count = 0
         #: per frame: (document address, element handle) of fields typed from the environment
         self.masked: Dict[Any, List[Tuple[str, Any]]] = {}
-        #: values typed from the environment this turn; no answer of this host carries them
+        #: values typed from the environment or by the user this turn; no answer of this host carries them
         self.hidden = _format.HiddenValues()
+        #: values typed from the environment only: the live view's address line, which the user reads, masks these
+        self.env_hidden = _format.HiddenValues()
+        self.live = _livehub.LiveHub(self)
         self.notes: List[str] = []
         self.acting = False
         self.crashed = False
@@ -199,6 +209,7 @@ class Host:
     async def stop(self) -> None:
         if self.stopped.is_set() and self.browser is None:
             return
+        await self.live.close()
         try:
             if self.context is not None and not self.crashed:
                 await asyncio.wait_for(self._autosave(), 20)
@@ -591,12 +602,22 @@ class Host:
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         response: Dict[str, Any]
+        agent_request = False
         try:
             raw = await asyncio.wait_for(reader.readline(), 30)
             request = json.loads(raw.decode("utf-8"))
             if not isinstance(request, dict) or request.get("v") != PROTOCOL or not isinstance(request.get("op"), str) \
                     or not isinstance(request.get("args", {}), dict):
                 raise HostError("protocol_error", "Unsupported request.")
+            if request["op"] == "live":
+                if self.crashed or self.stopped.is_set():
+                    raise HostError("browser_crashed", "The browser stopped.")
+                # The connection stays open; the hub owns and closes it.
+                await self.live.serve(reader, writer, request.get("args", {}))
+                return
+            agent_request = True
+            if request["op"] not in CONTROL_FREE_OPS and not await self.live.wait_for_agent():
+                raise HostError("user_in_control", USER_IN_CONTROL)
             async with self.lock:
                 self.last_used = time.monotonic()
                 response = {"ok": True, "result": await self.dispatch(request["op"], request.get("args", {}))}
@@ -607,6 +628,13 @@ class Host:
             response = {"ok": False, "error": {"code": "protocol_error", "message": "The request could not be read."}}
         except Exception as error:  # noqa: BLE001 - one failed request must not end the browser
             response = {"ok": False, "error": {"code": "browser_error", "message": self._error_text(error)}}
+        # The first answer after the user gave the browser back says so, with the page the user left.
+        note = self.live.take_note() if agent_request and response.get("error", {}).get("code") != "user_in_control" else None
+        if note and response.get("ok"):
+            text = response["result"].get("text")
+            response["result"]["text"] = note + ("\n" + text if isinstance(text, str) and text else "")
+        elif note:
+            response["error"]["message"] = note + " " + response["error"]["message"]
         # A value typed from the environment may come back in a field, an address, page text or a script result.
         response = self.hidden.mask(response)
         try:
@@ -743,6 +771,7 @@ class Host:
         if masked:
             # Before acting: even an error about this field must not carry the value.
             self.hidden.add(text)
+            self.env_hidden.add(text)
             self.masked.setdefault(frame, []).append((frame.url, element))
         detail = f"{len(text)} characters"
         if item.get("search") and not item.get("secret") and not masked:
@@ -1002,6 +1031,33 @@ class Host:
         return {"step": step, "data": saved,
                 "text": f"{verb}: /workspace/secrets/browser/{name} ({saved['bytes']} bytes). It stays current while you browse in this turn."}
 
+    async def save_site_session(self) -> Optional[str]:
+        """After the user finished a handoff: the current site's sign-in, kept current from now on (`op_save_session`).
+
+        The site's name, or None when the tab shows no site or the save failed; the previous version then stays.
+        """
+        try:
+            await asyncio.wait_for(self.lock.acquire(), 20)
+        except asyncio.TimeoutError:
+            return None
+        try:
+            page = self.current if self.current is not None and not self.current.is_closed() else None
+            site = _sessions.site_of(urlsplit(page.url).hostname or "") if page is not None else None
+            if page is None or not site:
+                return None
+            name = _sessions.session_name(site)
+            if not _sessions.is_session_filename(name):
+                return None
+            self.store.track(name, {site})
+            self.store.save(name, await self._storage_state())
+            step = self._record("save_session", name[: -len(".json")], page.url)
+            await self._finish_step(step, page)
+            return name[: -len(".json")]
+        except (_sessions.SessionError, PlaywrightError, OSError, ValueError):
+            return None
+        finally:
+            self.lock.release()
+
     async def op_steps(self, args: Dict[str, Any]) -> Dict[str, Any]:
         steps = [dict(step) for step in self.steps]
         return {"data": steps, "text": _format.render_steps(steps)}
@@ -1048,7 +1104,8 @@ async def _main() -> int:
     async def idle() -> None:
         while not host.stopped.is_set():
             await asyncio.sleep(15)
-            if not host.lock.locked() and time.monotonic() - host.last_used > IDLE_SECONDS:
+            # A browser the user watches or holds is in use.
+            if not host.lock.locked() and not host.live.busy() and time.monotonic() - host.last_used > IDLE_SECONDS:
                 await host.stop()
 
     watcher = asyncio.ensure_future(idle())
