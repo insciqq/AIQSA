@@ -57,33 +57,50 @@ function useNow(active: boolean): number {
   return now;
 }
 
-function HandoffCardV2({ handoff, host, live, remembered }: Readonly<{
+function prefersReducedMotion(): boolean {
+  return document.documentElement.dataset.motion === "off" ||
+    (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+}
+
+function HandoffCardV2({ claimScroll, handoff, host, live, onAnswer, remembered }: Readonly<{
+  /** True the first time this handoff's card shows: it scrolls into view once, without taking focus. */
+  claimScroll(handoffId: string): boolean;
   handoff: BrowserLiveHandoff;
   host: string | null;
   live: BrowserLiveController;
+  onAnswer(action: "done" | "cancel"): void;
   remembered: boolean;
 }>) {
   const titleId = useId();
+  const cardRef = useRef<HTMLElement>(null);
   const now = useNow(true);
+  // Only a label: the client clock may be wrong, and the server answers a late Done with its own refusal.
   const countdown = browserHandoffCountdownV2(handoff.expiresAt, now);
   const title = browserHandoffTitleV2(handoff.reason, host);
   const busy = live.busy === "done" || live.busy === "cancel";
+  useEffect(() => {
+    if (!claimScroll(handoff.id)) return;
+    // On a phone the card can open above the visible part of the thread.
+    cardRef.current?.scrollIntoView?.({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "nearest" });
+  }, [claimScroll, handoff.id]);
   return (
     <section aria-labelledby={titleId} className="v2-browser-live-handoff" data-reason={handoff.reason}
-      data-testid="browser-live-handoff">
+      data-testid="browser-live-handoff" ref={cardRef}>
       <div className="v2-browser-live-handoff-heading">
         <UiV2Icon name="user" />
         <h3 id={titleId}>{title}</h3>
         <span className="v2-browser-live-countdown" data-expired={countdown.expired || undefined}>{countdown.label}</span>
       </div>
       {handoff.message ? <p className="v2-browser-live-handoff-message">{handoff.message}</p> : null}
-      <p className="v2-browser-live-handoff-hint">You have control. Use the browser below, then press Done. The agent never sees what you type.</p>
+      <p className="v2-browser-live-handoff-hint">
+        You have control. Use the browser below, then press Done. Your keystrokes are not sent to the agent. When you
+        press Done, the agent continues from the page as you leave it.
+      </p>
       {remembered ? null : <p className="v2-browser-live-handoff-note" role="note">{BROWSER_SIGN_IN_NOT_REMEMBERED_V2}</p>}
       <div aria-labelledby={titleId} className="v2-browser-live-handoff-actions" role="group">
-        <UiV2Button busy={live.busy === "cancel"} disabled={busy || countdown.expired}
-          onClick={() => void live.answerHandoff(handoff.id, "cancel")} type="button">Cancel</UiV2Button>
-        <UiV2Button busy={live.busy === "done"} disabled={busy || countdown.expired}
-          data-browser-live-exit="" onClick={() => void live.answerHandoff(handoff.id, "done")} tone="primary" type="button">Done</UiV2Button>
+        <UiV2Button busy={live.busy === "cancel"} disabled={busy} onClick={() => onAnswer("cancel")} type="button">Cancel</UiV2Button>
+        <UiV2Button busy={live.busy === "done"} disabled={busy} data-browser-live-exit="" onClick={() => onAnswer("done")}
+          tone="primary" type="button">Done</UiV2Button>
       </div>
     </section>
   );
@@ -225,7 +242,7 @@ function announcement(snapshot: BrowserLiveSnapshot, host: string | null): strin
   return state.controller === "user" ? "You have control of the browser." : "The agent has control of the browser.";
 }
 
-function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
+function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: string): boolean; live: BrowserLiveController }>) {
   const { snapshot } = live;
   const state = snapshot.state;
   const frame = snapshot.connection === "ended" || snapshot.connection === "failed" ? null : snapshot.frame;
@@ -237,16 +254,43 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const gestureRef = useRef(new BrowserLivePointerGesture());
-  const pressedKeysRef = useRef(new Set<string>());
+  /** Keys this view pressed on the page and has not released, by `code` (or `key`). */
+  const pressedKeysRef = useRef(new Map<string, Readonly<{ key: string; code: string }>>());
   const lastEscapeRef = useRef(0);
   const zoomAnchorRef = useRef<{ x: number; y: number; from: number } | null>(null);
   const placeholder = placeholderCopy(snapshot);
   const sendInput = live.sendInput;
 
-  useEffect(() => {
-    gestureRef.current.reset();
+  /** The key ups and the mouse up that free whatever this view still holds on the page; forgets them. */
+  const takeHeld = useCallback((): BrowserLiveInput[] => {
+    const keys = [...pressedKeysRef.current.values()].map((held) => keyUpInputV2({ ...held,
+      altKey: false, ctrlKey: false, metaKey: false, shiftKey: false }));
     pressedKeysRef.current.clear();
+    return [...keys, ...gestureRef.current.release()];
+  }, []);
+
+  // Control moved: whatever was held went with it (the page can no longer be reached from here).
+  useEffect(() => {
+    pressedKeysRef.current.clear();
+    gestureRef.current.reset();
   }, [userControls]);
+
+  // Collapsing or leaving the panel while in control frees held keys and buttons, best effort.
+  const releaseOnCloseRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    releaseOnCloseRef.current = () => {
+      const held = takeHeld();
+      if (userControls && held.length > 0) live.releaseNow(...held);
+    };
+  }, [live, takeHeld, userControls]);
+  useEffect(() => () => releaseOnCloseRef.current(), []);
+
+  /** Ends the user's control (Done, Cancel, Return control) after freeing what is held, so the release arrives first. */
+  const endControl = (end: () => Promise<void>) => {
+    const held = takeHeld();
+    if (held.length > 0) sendInput(...held);
+    void end();
+  };
 
   // Zooming keeps the point under the fingers (or the frame's centre) in place.
   useLayoutEffect(() => {
@@ -284,7 +328,8 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
       zoomed: zoom > 1,
       scale: frame && rect && rect.width > 0 ? frame.width / rect.width : 1,
       now: Date.now(),
-      toFrame: (clientX: number, clientY: number) => frame && rect ? framePointV2(clientX, clientY, rect, frame) : null
+      toFrame: (clientX: number, clientY: number, clampToEdge?: boolean) =>
+        frame && rect ? framePointV2(clientX, clientY, rect, frame, clampToEdge) : null
     };
   }, [frame, userControls, zoom]);
 
@@ -349,11 +394,14 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
     if (event.key === "Escape") {
       const now = Date.now();
       if (now - lastEscapeRef.current <= ESCAPE_TWICE_MS) {
-        // Escape twice leaves the view without trapping keyboard users.
+        // Escape twice leaves the view without trapping keyboard users: to Return control, or to Done during a
+        // handoff, or to the Browser bar while those are busy.
         event.preventDefault();
         lastEscapeRef.current = 0;
-        // To Return control, or to Done during a handoff.
-        stageRef.current?.parentElement?.querySelector<HTMLButtonElement>("[data-browser-live-exit]")?.focus();
+        const stage = stageRef.current;
+        const exit = stage?.parentElement?.querySelector<HTMLButtonElement>("[data-browser-live-exit]:not(:disabled)") ??
+          stage?.closest("[data-testid='browser-live']")?.querySelector<HTMLButtonElement>(".v2-browser-live-bar");
+        exit?.focus();
         return;
       }
       lastEscapeRef.current = now;
@@ -361,7 +409,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
     const input = keyDownInputV2(event);
     if (!input) return;
     event.preventDefault();
-    if (input.kind === "key") pressedKeysRef.current.add(event.code || event.key);
+    if (input.kind === "key") pressedKeysRef.current.set(event.code || event.key, { key: input.key, code: input.code });
     sendInput(input);
   };
 
@@ -382,7 +430,10 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
 
   return (
     <div className="v2-browser-live-view">
-      {handoff ? <HandoffCardV2 handoff={handoff} host={host} live={live} remembered={state?.signInRemembered !== false} /> : null}
+      {handoff ? (
+        <HandoffCardV2 claimScroll={claimScroll} handoff={handoff} host={host} live={live}
+          onAnswer={(action) => endControl(() => live.answerHandoff(handoff.id, action))} remembered={state?.signInRemembered !== false} />
+      ) : null}
       {state?.page && running ? (
         <p className="v2-browser-live-address">
           {state.page.title ? <span className="v2-browser-live-title">{state.page.title}</span> : null}
@@ -396,7 +447,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
               : snapshot.connection === "reconnecting" ? "Reconnecting…" : "The agent is using the browser"}
           </span>
           {handoff ? null : userControls ? (
-            <UiV2Button busy={live.busy === "return"} disabled={live.busy !== null} onClick={() => void live.control("return")}
+            <UiV2Button busy={live.busy === "return"} disabled={live.busy !== null} onClick={() => endControl(() => live.control("return"))}
               data-browser-live-exit="" type="button">Return control</UiV2Button>
           ) : (
             <UiV2Button busy={live.busy === "take"} disabled={live.busy !== null || snapshot.connection !== "live"}
@@ -425,6 +476,11 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
         data-testid="browser-live-stage"
         data-zoomed={zoom > 1 || undefined}
         onContextMenu={(event) => { if (userControls) event.preventDefault(); }}
+        onBlur={() => {
+          // Focus left the page view: nothing stays pressed on the page.
+          const held = takeHeld();
+          if (userControls && held.length > 0) sendInput(...held);
+        }}
         onKeyDown={keyDown}
         onKeyUp={keyUp}
         onPaste={(event) => {
@@ -480,6 +536,12 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
   const visible = runLive && activity.visible;
   const [expanded, setExpanded] = useState(false);
   const autoOpenedRef = useRef<string | null>(null);
+  const scrolledHandoffsRef = useRef(new Set<string>());
+  const claimScroll = useCallback((handoffId: string) => {
+    if (scrolledHandoffsRef.current.has(handoffId)) return false;
+    scrolledHandoffsRef.current.add(handoffId);
+    return true;
+  }, []);
   const panelId = useId();
   const live = useBrowserLive(chatId, visible && expanded, openEventSource);
   const streamHandoff = live.snapshot.state?.handoff?.id ?? null;
@@ -509,7 +571,7 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
         <span className="v2-browser-live-bar-action">{expanded ? "Hide" : "Watch"}</span>
         <UiV2Icon name="chevron-down" />
       </button>
-      {expanded ? <div className="v2-browser-live-panel" id={panelId}><LiveViewV2 live={live} /></div> : null}
+      {expanded ? <div className="v2-browser-live-panel" id={panelId}><LiveViewV2 claimScroll={claimScroll} live={live} /></div> : null}
     </section>
   );
 }

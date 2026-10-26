@@ -154,13 +154,79 @@ describe("BrowserLivePanelV2", () => {
     expect(posted()[1]).toEqual([browserLiveHandoffPath(CHAT), { action: "cancel", handoffId: "handoff-1" }]);
   });
 
-  it("disables Done and Cancel once the handoff expired", () => {
+  it("keeps Done and Cancel usable when the client clock says the time is up", async () => {
     renderPanel({ toolActivity: handoffCall });
     send("state", liveState({ controller: "user", handoff: handoff("captcha", { expiresAt: new Date(Date.now() - 1_000).toISOString() }) }));
     const card = screen.getByTestId("browser-live-handoff");
     expect(card).toHaveTextContent("Time is up");
-    expect(within(card).getByRole("button", { name: "Done" })).toBeDisabled();
-    expect(within(card).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(card).toHaveTextContent("Your keystrokes are not sent to the agent. When you press Done, the agent continues from the page as you leave it.");
+    // The server, not the client clock, decides: a late Done gets its own refusal.
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This request has already ended.");
+    expect(within(card).getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("scrolls the handoff card into view once per handoff, without taking focus", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "nearest" }));
+    expect(document.activeElement).toBe(document.body);
+    // Closing and opening the panel again does not scroll a second time.
+    fireEvent.click(screen.getByRole("button", { name: /Hide/u }));
+    fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    send("state", liveState({ controller: "user", handoff: handoff("verification_code", { id: "handoff-2" }) }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+
+  it("frees held keys and buttons before control ends, and when focus leaves the view", async () => {
+    await openAsUser();
+    const stage = screen.getByTestId("browser-live-stage");
+    fireEvent.keyDown(stage, { key: "Shift", code: "ShiftLeft", shiftKey: true });
+    fireEvent.keyDown(stage, { key: "Control", code: "ControlLeft", ctrlKey: true });
+    fireEvent.keyDown(stage, { key: "a", code: "KeyA", ctrlKey: true });
+    fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 420, clientY: 250 });
+    fireEvent.click(screen.getByRole("button", { name: "Return control" }));
+    await waitFor(() => expect(posted().at(-1)?.[0]).toBe(browserLiveControlPath(CHAT)));
+    expect(posted().map(([, body]) => body)).toEqual([
+      { kind: "key", type: "down", key: "a", code: "KeyA", modifiers: 2 },
+      { kind: "mouse", type: "down", x: 640, y: 400, button: "left", clickCount: 1 },
+      { kind: "key", type: "up", key: "a", code: "KeyA" },
+      { kind: "mouse", type: "up", x: 640, y: 400, button: "left", clickCount: 1 },
+      { action: "return" }
+    ]);
+    cleanup();
+    fetchMock.mockClear();
+
+    await openAsUser();
+    const again = screen.getByTestId("browser-live-stage");
+    again.focus();
+    fireEvent.keyDown(again, { key: "ArrowDown", code: "ArrowDown" });
+    act(() => again.blur());
+    await waitFor(() => expect(posted()).toHaveLength(2));
+    expect(posted()[1]![1]).toEqual({ kind: "key", type: "up", key: "ArrowDown", code: "ArrowDown" });
+  });
+
+  it("leaves the view with Escape twice to the Browser bar while Done is busy", async () => {
+    let finish: (response: Response) => void = () => undefined;
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    send("frame", liveFrame(1));
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Done" })).toBeDisabled());
+    const stage = screen.getByTestId("browser-live-stage");
+    stage.focus();
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    expect(screen.getByRole("button", { name: /Hide/u })).toHaveFocus();
+    await act(async () => finish(new Response(null, { status: 204 })));
   });
 
   it("takes and returns control", async () => {
