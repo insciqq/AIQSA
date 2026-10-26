@@ -4,7 +4,7 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { memoryRunLinkStore } from "@/tests/support/telegramChatBridge";
 import { createTelegramBotApi, createTelegramPacer } from "../botApi";
 import type { TelegramAccessDecision } from "../control/access";
-import { TELEGRAM_COPY } from "../copy";
+import { TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY } from "../copy";
 import type { TelegramBotSession } from "../dispatcher";
 import { createTelegramOutbound } from "../outbound";
 import { renderTelegramAnswer } from "../render";
@@ -91,6 +91,20 @@ describe("Telegram final answer delivery", () => {
     expect(JSON.stringify(h.fake.calls("sendMessage"))).not.toContain(TELEGRAM_COPY.stopped);
     expect(result).toMatchObject({ state: "failed" });
     expect(h.runLinks.rows.get("run-1")?.deliveryState).toBe("failed");
+  });
+
+  it("leaves a turn that stopped for an approval to its card, and points an empty answer to AIQSA", async () => {
+    const card = { approvalId: "approval-1", canDecide: true as const, serverName: "Records", source: "model" as const,
+      state: "pending" as const, toolName: "delete_record" };
+    const waiting = await setup({ ...answer(""), artifactSummary: { citations: [], mcpApprovals: [card], reasoningText: [], sources: [] } },
+      () => undefined);
+    expect(await waiting.deliver()).toMatchObject({ state: "delivered" });
+    expect(waiting.fake.calls("sendMessage")).toHaveLength(0);
+    expect(waiting.runLinks.rows.get("run-1")?.deliveryState).toBe("delivered");
+
+    const empty = await setup(answer(""), () => undefined);
+    await empty.deliver();
+    expect(empty.fake.calls("sendMessage").map((call) => call.params.text)).toEqual([TELEGRAM_BRIDGE_COPY.answerInAiqsa]);
   });
 
   it("delivers every message while the link still reaches the chat", async () => {

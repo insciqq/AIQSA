@@ -114,9 +114,11 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
       take(await bot.outbound.sendText({ authorize, chatId: input.telegramChatId, text: TELEGRAM_BRIDGE_COPY.answerInAiqsa }));
     } else {
       const text = answer.text.trim();
+      // A turn that stopped for an approval is answered by its card (`../approvals.ts`), not by a pointer to AIQSA.
+      const awaitsDecision = (answer.artifactSummary?.mcpApprovals?.length ?? 0) > 0;
       const ending = answer.status === "cancelled" ? TELEGRAM_COPY.stopped
         : answer.status === "error" ? telegramAnswerFailedText(answer.errorMessage)
-          : text ? null : TELEGRAM_BRIDGE_COPY.answerInAiqsa;
+          : text || awaitsDecision ? null : TELEGRAM_BRIDGE_COPY.answerInAiqsa;
       let continued = true;
       if (text) {
         const rendered = renderTelegramAnswer(answer.text, { citations: answer.artifactSummary?.citations ?? [] });

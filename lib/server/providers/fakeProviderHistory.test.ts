@@ -34,6 +34,12 @@ describe("fake provider on the native engine's history", () => {
       { arguments: "{\"id\":\"r-1\"}", callId: "fake-mcp-delete_record-r-1", name: deleteRecord.name, type: "tool_call" },
       { callId: "fake-mcp-delete_record-r-1", name: deleteRecord.name, output: "deleted", type: "tool_result" }]));
     expect(continued.finalText).toBe("MCP call finished: done.");
+    // The engine sends the run context last in a continuation; it is no user turn.
+    const withContext = await run(request([{ text: asked[0].text, type: "user" },
+      { arguments: "{\"id\":\"r-1\"}", callId: "fake-mcp-delete_record-r-1", name: deleteRecord.name, type: "tool_call" },
+      { callId: "fake-mcp-delete_record-r-1", name: deleteRecord.name, output: "deleted", type: "tool_result" },
+      { text: "<turn_context>\nCurrent local time: Monday.\n</turn_context>", type: "user" }]));
+    expect(withContext.finalText).toBe("MCP call finished: done.");
     const refused = await run(request([...asked,
       { arguments: "{}", callId: "c1", name: deleteRecord.name, type: "tool_call" },
       { callId: "c1", isError: true, name: deleteRecord.name, output: "{\"error\":\"mcp_approval_required\"}", type: "tool_result" }]));
