@@ -19,7 +19,9 @@
  * the password of the administrator the stand's bootstrap created. Workspace
  * limits are the stand's own; the effective bounds of every run are printed.
  * The exit code is 0 whenever the measurement completes, whatever the success
- * count: failed oracles are data, not a harness failure.
+ * count: failed oracles are data, not a harness failure. Cleanup is not:
+ * when a chat or a saved browser session cannot be removed and proven gone,
+ * the measurement stops before the next run and exits 1.
  *
  * After each run the chat is deleted permanently (unless
  * AIQSA_BROWSER_SCENARIOS_KEEP_CHATS=1) and browser sessions the run saved are
@@ -48,7 +50,7 @@ import {
   decodeMemoryConsumerPermanentChatDeleteResponse
 } from "../lib/contracts/memoryClient";
 import {
-  BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_SECRET,
+  BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_SECRET, checkBrowserResult, cleanUpRun,
   parseBrowserResult, requireBrowserScenarioStand, runBounds, scenarioSummary, selectedScenarios, toolCallStats,
   usageEvidence, type BrowserBlockedCode, type BrowserScenario, type BrowserScenarioId, type BrowserScenarioStand,
   type RunBounds, type RunRecord, type StandTarget, type ToolCallRow, type UsageRow
@@ -217,7 +219,10 @@ async function ensureSaucedemoSecret(api: Api): Promise<void> {
   }, method: "POST" });
 }
 
-/** Removes browser sessions a run saved, so the next run starts signed out like the first. */
+/**
+ * Removes saved browser sessions, so every run starts signed out like the
+ * first, and proves it by listing again. Throws when one is still there.
+ */
 async function removeBrowserSessions(api: Api): Promise<number> {
   let removed = 0;
   for (const secret of (await secrets(api)).filter((entry) => entry.kind === "browser_session")) {
@@ -226,6 +231,7 @@ async function removeBrowserSessions(api: Api): Promise<number> {
     });
     removed += 1;
   }
+  if ((await secrets(api)).some((entry) => entry.kind === "browser_session")) fail("browser_session_cleanup_failed");
   return removed;
 }
 
@@ -302,7 +308,10 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
   let chatId: string | null = null;
-  try {
+  const measured = await (async (): Promise<RunRecord> => { try {
+    // A session saved late by the previous run's settlement must not sign this run in.
+    stage = "pre_run_cleanup";
+    line.sessionsRemovedBefore = await removeBrowserSessions(api);
     stage = "chat";
     const chat = decodeChatSummaryResponse(await json(api, "/api/chats", {
       body: { title: `Browser scenario ${scenario.id} run ${run}` }, method: "POST"
@@ -398,7 +407,9 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
       else {
         blocked = [...parsed.blocked];
         line.resultStatus = ["completed", "partial", "blocked"].includes(String(parsed.value.status)) ? parsed.value.status : "other";
-        checks = scenario.oracle(parsed.value);
+        const verdict = checkBrowserResult(scenario, parsed.value);
+        checks = [...verdict.failed];
+        line.oracleCounts = verdict.counts;
       }
     }
     line.checksFailed = checks;
@@ -409,14 +420,16 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     line.harnessError = error instanceof BrowserScenarioError ? error.message : "browser_scenarios_run_failed";
     line.harnessStage = stage;
     return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success: false, toolCalls, wallSeconds };
-  } finally {
-    line.success = success;
-    if (chatId) {
-      line.browserSessionsRemoved = await removeBrowserSessions(api).catch(() => null);
-      if (!context.keepChats) line.chatDeleted = await deleteChat(api, db, chatId);
-    }
-    emit(line);
-  }
+  } })();
+  line.success = measured.success;
+  const { cleaned, ...cleanup } = await cleanUpRun({
+    deleteChat: (id) => deleteChat(api, db, id),
+    removeBrowserSessions: () => removeBrowserSessions(api)
+  }, chatId, context.keepChats);
+  Object.assign(line, cleanup);
+  emit(line);
+  if (!cleaned) fail("cleanup_failed");
+  return measured;
 }
 
 // Main -------------------------------------------------------------------------------

@@ -217,47 +217,116 @@ const nonEmptyText = (value: unknown) => typeof value === "string" && value.trim
 const items = (result: BrowserResult) => Array.isArray(result.items) ? result.items.filter(record) : [];
 const isEuro = (value: unknown) => typeof value === "string" && /^(eur|€)$/iu.test(value.trim());
 const near = (a: number, b: number, tolerance: number) => Math.abs(a - b) <= tolerance + 1e-9;
+const flag = (value: boolean) => value ? 1 : 0;
 
-function oracleS1(result: BrowserResult): string[] {
-  const valid = items(result).filter((item) =>
-    nonEmptyText(item.name) && priceValue(item.price) !== null && isEuro(item.currency) && urlOnDomain(item.url, "amazon.es"));
-  const failed: string[] = [];
-  if (valid.length < 8) failed.push("items_lt_8");
-  if (valid.filter((item) => item.offer === true).length < 2) failed.push("offers_lt_2");
-  return failed;
+/** A verdict with content-free counts, so it can be audited later without the file. */
+export type OracleVerdict = Readonly<{ counts: Readonly<Record<string, number>>; failed: readonly string[] }>;
+
+/**
+ * The identity of a listed page: an Amazon product's ASIN when the URL names
+ * one, otherwise host (without `www.`) and path, without query or fragment.
+ */
+export function canonicalPageKey(value: string): string | null {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/^www\./u, "");
+    const asin = /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:\/|$)/iu.exec(url.pathname)?.[1];
+    if (asin && (host === "amazon.es" || host.endsWith(".amazon.es"))) return `amazon.es/dp/${asin.toUpperCase()}`;
+    return `${host}${url.pathname.replace(/\/+$/u, "")}`;
+  } catch {
+    return null;
+  }
 }
 
-function oracleS2(result: BrowserResult): string[] {
-  const cart = record(result.cart) ? result.cart : null;
-  if (!cart) return ["cart_missing"];
+const nameKey = (value: string) => value.trim().toLowerCase().replace(/\s+/gu, " ");
+
+/** Valid entries counted once: a repeated page identity or a repeated name adds nothing. */
+function distinctEntries(entries: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  const pages = new Set<string>();
+  const names = new Set<string>();
+  return entries.filter((entry) => {
+    const page = canonicalPageKey(String(entry.url));
+    const name = nameKey(String(entry.name));
+    if (!page || pages.has(page) || names.has(name)) return false;
+    pages.add(page);
+    names.add(name);
+    return true;
+  });
+}
+
+function oracleS1(result: BrowserResult): OracleVerdict {
+  const listed = items(result);
+  const valid = listed.filter((item) =>
+    nonEmptyText(item.name) && priceValue(item.price) !== null && isEuro(item.currency) && urlOnDomain(item.url, "amazon.es"));
+  const distinct = distinctEntries(valid);
+  const offers = distinct.filter((item) => item.offer === true).length;
+  const failed: string[] = [];
+  if (distinct.length < 8) failed.push("items_lt_8");
+  if (offers < 2) failed.push("offers_lt_2");
+  return { counts: { distinctItems: distinct.length, items: listed.length, offers, validItems: valid.length }, failed };
+}
+
+function oracleS2(result: BrowserResult): OracleVerdict {
+  const cart = record(result.cart) ? result.cart : {};
   const lines = Array.isArray(cart.lines) ? cart.lines : [];
   const failed: string[] = [];
   if (lines.length !== 3) failed.push("cart_lines_not_3");
   const totals = lines.map((line) => record(line) && nonEmptyText(line.name) ? priceValue(line.line_total) : null);
-  if (lines.length === 0 || totals.some((total) => total === null)) failed.push("cart_line_price_invalid");
+  const priced = lines.length > 0 && totals.every((total) => total !== null);
+  if (!priced) failed.push("cart_line_price_invalid");
   const subtotal = priceValue(cart.subtotal);
+  const matches = subtotal !== null && priced &&
+    near(subtotal, totals.reduce<number>((sum, total) => sum + (total ?? 0), 0), 0.02);
   if (subtotal === null) failed.push("cart_subtotal_invalid");
-  else if (!totals.some((total) => total === null) &&
-    !near(subtotal, totals.reduce<number>((sum, total) => sum + (total ?? 0), 0), 0.02)) failed.push("cart_subtotal_mismatch");
-  return failed;
+  else if (priced && !matches) failed.push("cart_subtotal_mismatch");
+  return { counts: { lines: lines.length, pricedLines: totals.filter((total) => total !== null).length,
+    subtotalMatches: flag(matches), subtotalPresent: flag(subtotal !== null) }, failed };
 }
 
-function oracleS3(result: BrowserResult): string[] {
-  const checkout = record(result.checkout) ? result.checkout : null;
-  if (!checkout) return ["checkout_missing"];
-  const failed: string[] = [];
+function oracleS3(result: BrowserResult): OracleVerdict {
+  const checkout = record(result.checkout) ? result.checkout : {};
   const itemTotal = priceValue(checkout.item_total);
   const tax = priceValue(checkout.tax);
-  if (itemTotal === null || !near(itemTotal, 39.98, 0.005)) failed.push("item_total_mismatch");
-  if (tax === null || !near(tax, 3.2, 0.005)) failed.push("tax_mismatch");
+  const totalMatches = itemTotal !== null && near(itemTotal, 39.98, 0.005);
+  const taxMatches = tax !== null && near(tax, 3.2, 0.005);
+  const failed: string[] = [];
+  if (!totalMatches) failed.push("item_total_mismatch");
+  if (!taxMatches) failed.push("tax_mismatch");
   if (checkout.finished !== false) failed.push("order_not_proven_unfinished");
-  return failed;
+  return { counts: { itemTotalMatches: flag(totalMatches), taxMatches: flag(taxMatches),
+    unfinished: flag(checkout.finished === false) }, failed };
 }
 
-function oracleS4(result: BrowserResult): string[] {
-  const valid = items(result).filter((item) =>
+function oracleS4(result: BrowserResult): OracleVerdict {
+  const listed = items(result);
+  const valid = listed.filter((item) =>
     nonEmptyText(item.name) && priceValue(item.price) !== null && urlOnDomain(item.url, "booking.com"));
-  return valid.length < 5 ? ["items_lt_5"] : [];
+  const distinct = distinctEntries(valid);
+  return { counts: { distinctItems: distinct.length, items: listed.length, validItems: valid.length },
+    failed: distinct.length < 5 ? ["items_lt_5"] : [] };
+}
+
+/** The section of the result file a scenario's oracle reads. */
+export type ResultSection = "cart" | "checkout" | "items";
+
+/**
+ * The fixed schema every result file must satisfy before an oracle reads it:
+ * the `status` enum, `blocked` as an array of strings, and the scenario's own
+ * section with the right type. A malformed file fails with stable codes.
+ */
+export function resultShapeErrors(value: BrowserResult, section: ResultSection | null): string[] {
+  const errors: string[] = [];
+  if (typeof value.status !== "string" || !["completed", "partial", "blocked"].includes(value.status)) {
+    errors.push("result_status_invalid");
+  }
+  if (!Array.isArray(value.blocked) || value.blocked.some((entry) => typeof entry !== "string")) errors.push("result_blocked_invalid");
+  if (section === "items" && (!Array.isArray(value.items) || value.items.some((entry) => !record(entry)))) {
+    errors.push("result_items_invalid");
+  }
+  if (section === "cart" && (!record(value.cart) || !Array.isArray(value.cart.lines) ||
+    value.cart.lines.some((entry) => !record(entry)))) errors.push("result_cart_invalid");
+  if (section === "checkout" && !record(value.checkout)) errors.push("result_checkout_invalid");
+  return errors;
 }
 
 // Scenarios -------------------------------------------------------------------------
@@ -280,8 +349,10 @@ export type BrowserScenario = Readonly<{
   /** `not_available` scenarios are reported without a run. */
   availability: "available" | "not_available";
   interaction?: ScenarioInteraction;
-  oracle(result: BrowserResult): string[];
+  oracle(result: BrowserResult): OracleVerdict;
   prompt: string;
+  /** The result section the oracle reads; its type is checked first. */
+  section: ResultSection | null;
   /** The saved Workspace secret the scenario expects (S3). */
   secret?: "saucedemo";
 }>;
@@ -309,6 +380,7 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
     availability: "available",
     id: "S1",
     oracle: oracleS1,
+    section: "items",
     prompt: [
       "Зайди на amazon.es и посмотри продукты: соки (zumo), йогурты (yogur) и замороженные продукты La Sirena. " +
         "Найди, что сейчас есть в продаже, и какие на них действуют акции и скидки. Хочу понять, что выгодно взять на две недели.",
@@ -322,6 +394,7 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
     availability: "available",
     id: "S2",
     oracle: oracleS2,
+    section: "cart",
     prompt: [
       "Зайди на amazon.es без входа в аккаунт и положи в корзину 3 недорогих продуктовых товара " +
         "(например, сок, йогурт и что-нибудь замороженное), по одной штуке. Потом открой корзину и посмотри, " +
@@ -334,6 +407,7 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
     availability: "available",
     id: "S3",
     oracle: oracleS3,
+    section: "checkout",
     prompt: [
       "Открой тестовый магазин https://www.saucedemo.com и войди: логин и пароль сохранены в моих секретах (Saucedemo). " +
         "Добавь в корзину «Sauce Labs Backpack» и «Sauce Labs Bike Light», начни оформление, заполни имя, фамилию " +
@@ -348,6 +422,7 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
     availability: "available",
     id: "S4",
     oracle: oracleS4,
+    section: "items",
     prompt: [
       `Найди на booking.com 5 отелей в Мадриде для двух взрослых на ночи с ${S4_CHECK_IN} по ${S4_CHECK_OUT} ` +
         "(заезд 9 декабря 2026, выезд 11 декабря 2026). Если появится баннер про cookies, закрой его.",
@@ -363,10 +438,17 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
     // adding `interaction` (Playwright on the handoff panel) and an oracle.
     availability: "not_available",
     id: "S5",
-    oracle: () => ["not_available"],
-    prompt: ""
+    oracle: () => ({ counts: {}, failed: ["not_available"] }),
+    prompt: "",
+    section: null
   }
 });
+
+/** Shape first, then the oracle: a malformed file never reaches the thresholds. */
+export function checkBrowserResult(scenario: BrowserScenario, value: BrowserResult): OracleVerdict {
+  const shape = resultShapeErrors(value, scenario.section);
+  return shape.length > 0 ? { counts: {}, failed: shape } : scenario.oracle(value);
+}
 
 export function selectedScenarios(raw: string | undefined): BrowserScenarioId[] {
   const value = raw?.trim() || BROWSER_SCENARIO_IDS.join(",");
@@ -374,6 +456,34 @@ export function selectedScenarios(raw: string | undefined): BrowserScenarioId[] 
   if (ids.length === 0 || ids.some((id) => !(BROWSER_SCENARIO_IDS as readonly string[]).includes(id)) ||
     new Set(ids).size !== ids.length) fail("scenarios_invalid");
   return BROWSER_SCENARIO_IDS.filter((id) => ids.includes(id));
+}
+
+// Cleanup between runs ----------------------------------------------------------------
+
+export type RunCleanupPorts = Readonly<{
+  /** Deletes the chat permanently and resolves true only once it is proven gone. */
+  deleteChat(chatId: string): Promise<boolean>;
+  /** Removes every saved browser session, proves none is left, and returns how many it removed. */
+  removeBrowserSessions(): Promise<number>;
+}>;
+
+export type RunCleanup = Readonly<{ browserSessionsRemoved: number | null; chatDeleted?: boolean; cleaned: boolean }>;
+
+/**
+ * The postcondition of a run before the next may start. The chat goes first,
+ * since deleting it fences a late browser-session save; then sessions are
+ * removed and proven gone. Any failure leaves `cleaned` false, and the
+ * harness stops instead of letting a leftover session sign the next run in.
+ */
+export async function cleanUpRun(ports: RunCleanupPorts, chatId: string | null, keepChats: boolean): Promise<RunCleanup> {
+  let chatDeleted: boolean | undefined;
+  if (chatId && !keepChats) chatDeleted = await ports.deleteChat(chatId).catch(() => false);
+  const browserSessionsRemoved = await ports.removeBrowserSessions().catch(() => null);
+  return {
+    browserSessionsRemoved,
+    ...(chatDeleted === undefined ? {} : { chatDeleted }),
+    cleaned: chatDeleted !== false && browserSessionsRemoved !== null
+  };
 }
 
 // Run evidence ----------------------------------------------------------------------
@@ -406,7 +516,9 @@ export function toolCallStats(calls: readonly ToolCallRow[]): Readonly<{
 export function usageEvidence(rows: readonly UsageRow[]): Readonly<{
   costUsd: number | null; inputTokens: number | null; outputTokens: number | null; usageEvents: number;
 }> {
-  const sum = (key: "inputTokens" | "outputTokens") => rows.some((row) => row[key] !== null)
+  // A total counts as provider-reported only when every row reports the field;
+  // a partial sum would undercount, so it stays unknown.
+  const sum = (key: "inputTokens" | "outputTokens") => rows.length > 0 && rows.every((row) => row[key] !== null)
     ? rows.reduce((total, row) => total + (row[key] ?? 0), 0) : null;
   const known = rows.length > 0 && rows.every((row) => row.costReported && row.estimatedCostMicros !== null);
   return {
