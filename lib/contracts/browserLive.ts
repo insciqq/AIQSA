@@ -144,8 +144,8 @@ export const browserLiveStateEventSchema = z.strictObject({
   controller: z.enum(BROWSER_LIVE_CONTROLLERS),
   handoff: browserLiveHandoffSchema.nullable(),
   /**
-   * Whether sign-ins made in this browser are saved to the user's Secrets after the turn (personal chats);
-   * false where save-back does not run (Assistant and temporary chats), so the card says it will not be remembered.
+   * Whether sign-ins made in this browser are saved to the user's Secrets after the turn (the run's binding
+   * authorizes save-back, `lib/server/workspace/secrets/browserStore.ts`); when false, the card says it will not be remembered.
    */
   signInRemembered: z.boolean(),
   /** The page the browser shows, for the panel's address line; the owner's own content. */

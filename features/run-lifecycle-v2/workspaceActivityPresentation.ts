@@ -144,13 +144,18 @@ const BROWSER_COMMANDS = [
   new RegExp(`^${ASSIGNMENTS}(?:/opt/aiqsa-python/bin/)?python3?\\s+-c\\s+["']\\s*(?:from aiqsa import browser\\b|import aiqsa\\.browser\\b|from aiqsa\\.browser import\\b)`, "u")
 ];
 
+/** A command, running or finished, that runs the Workspace browser helper. A presentation hint, never authority. */
+export function isWorkspaceBrowserCommandV2(entry: ThreadWorkspaceActivityEntry): boolean {
+  const command = entry.kind === "command" ? entry.command?.preview.trimStart() ?? "" : "";
+  return command !== "" && BROWSER_COMMANDS.some((pattern) => pattern.test(command));
+}
+
 export type WorkspaceBrowserStepV2 = Readonly<{ number: number; action: string; target?: string; where?: string }>;
 
 /** The browser steps a finished command reported, in order. */
 export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): WorkspaceBrowserStepV2[] {
   const output = entry.kind === "command" ? entry.command?.stdoutPreview : undefined;
-  const command = entry.command?.preview.trimStart() ?? "";
-  if (!output || !output.includes("[browser #") || !BROWSER_COMMANDS.some((pattern) => pattern.test(command))) return [];
+  if (!output || !output.includes("[browser #") || !isWorkspaceBrowserCommandV2(entry)) return [];
   const steps: WorkspaceBrowserStepV2[] = [];
   for (const line of output.split("\n")) {
     const match = BROWSER_STEP.exec(line.trimEnd());
