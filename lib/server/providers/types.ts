@@ -116,6 +116,9 @@ export type ProviderImageProvenance = Readonly<
  * and is never accepted from the browser as configuration. */
 export type NormalizedRunWorkspace = Readonly<{
   enabled: true;
+  /** The guest browser's language and time zone, frozen at admission. Absent
+   * for older runs: the browser then uses its documented defaults. */
+  browser?: import("../workspace/browserBinding").WorkspaceBrowserBinding;
   /** Guest code of this Internet-On run can reach the run gateway, with these
    * code-call budgets. Absent: no code token (older runs too). */
   codeMcp?: import("../workspace/codeMcp").NormalizedWorkspaceCodeMcp;

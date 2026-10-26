@@ -2851,6 +2851,23 @@ describe("Workspace coordinator guest-code MCP", () => {
     await expect(shell(stale, "call")).rejects.toMatchObject({ code: "workspace_operation_stale" });
   });
 
+  it("hands commands the run's admitted browser language and time zone beside the code authority", async () => {
+    const value = fixture();
+    withCode(value);
+    const browser = { ...value, workspace: { ...value.workspace, browser: { locale: "es-ES", timeZone: "Europe/Madrid" } } };
+    await shell(browser, "call_browser");
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: {
+      AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token, AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "Europe/Madrid" } }));
+    // Without guest-code MCP the browser values still arrive; a malformed binding sends nothing.
+    const plain = fixture();
+    await shell({ ...plain, workspace: { ...plain.workspace, browser: { locale: "en-US", timeZone: "UTC" } } }, "call_plain");
+    expect(plain.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: {
+      AIQSA_BROWSER_LOCALE: "en-US", AIQSA_BROWSER_TIMEZONE: "UTC" } }));
+    const malformed = fixture();
+    await shell({ ...malformed, workspace: { ...malformed.workspace, browser: { locale: "en US", timeZone: "../etc" } } }, "call_bad");
+    expect(malformed.runtime.syncPersonalSecrets).not.toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: expect.anything() }));
+  });
+
   it("never mints guest-code authority while exporting outputs", async () => {
     const value = fixture();
     value.setUntouchedSession("STOPPED");
