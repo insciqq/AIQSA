@@ -6,7 +6,7 @@ import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepo
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import {
-  assertWorkspaceFollowupClaim, prepareWorkspaceFollowupAdmission,
+  assertWorkspaceFollowupClaim, predecessorReleasesSuccessor, prepareWorkspaceFollowupAdmission,
   storeWorkspaceFollowupAdmission, WorkspaceFollowupError
 } from "./workspaceFollowupPersistence";
 import { logEvent, runWithContext } from "../observability";
@@ -4381,7 +4381,7 @@ export async function activateWorkspaceFollowupWithClient(
     const run = await lockPreparingRun(tx, input.created.runId, admission.userId);
     await assertWorkspaceFollowupClaim(tx, { claimToken: input.claimToken, runId: input.created.runId, userId: admission.userId });
     const job = await tx.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: input.created.runId },
-      include: { predecessor: { select: { status: true } } } });
+      include: { predecessor: { select: { errorPayload: true, status: true } } } });
     const created = job.admissionResult as unknown as PreparingRunAdmissionResult;
     if (!run || created?.runId !== run.id || created.assistantMessageId !== run.assistantMessageId ||
       created.userMessageId !== run.userMessageId || run.chatId !== admission.chatId) {
@@ -4389,7 +4389,7 @@ export async function activateWorkspaceFollowupWithClient(
     }
     if (!run.workspaceWaitPending) return created;
     if (job.deadlineAt <= new Date()) throw new WorkspaceFollowupError("workspace_followup_expired");
-    if (job.predecessor.status !== "complete") throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
+    if (!predecessorReleasesSuccessor(job.predecessor)) throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
     const chat = await tx.chat.findUniqueOrThrow({ where: { id: admission.chatId } });
     if (chat.activeLeafMessageId !== created.assistantMessageId ||
       chat.userId !== admission.userId ||

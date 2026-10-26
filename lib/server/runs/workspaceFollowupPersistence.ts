@@ -23,6 +23,20 @@ export type WorkspaceFollowupAdmission = Readonly<{
   sourceRevisionAdvance: 0 | 1;
 }>;
 
+/**
+ * A successor starts after a complete predecessor, or after one whose
+ * Workspace disk its own export proved lost: nothing of that disk is left to
+ * hand over, and the successor's start recreates the Workspace with its
+ * originals. Any other failure keeps the successor from starting (operator
+ * decision 2026-10-26).
+ */
+export function predecessorReleasesSuccessor(predecessor: Readonly<{ errorPayload: unknown; status: string }>): boolean {
+  if (predecessor.status === "complete") return true;
+  const payload = predecessor.errorPayload;
+  return predecessor.status === "error" && typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
+    (payload as Record<string, unknown>).code === "workspace_session_lost";
+}
+
 /** The caller holds the chat lock. Acceptance permits one waiting successor,
  * never another executor. A completed predecessor takes the ordinary path. */
 export async function prepareWorkspaceFollowupAdmission(
@@ -151,7 +165,7 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
         modelRunId: claim.runId, claimToken: claim.claimToken, state: "preparing",
         leaseExpiresAt: { gt: new Date() }, modelRun: { userId: claim.userId, chat: { userId: claim.userId } }
       }, include: {
-        predecessor: { select: { status: true } },
+        predecessor: { select: { errorPayload: true, status: true } },
         modelRun: { select: { chatId: true, createdAt: true, engine: true, status: true, normalizedRequest: true,
           workspaceWaitPending: true } }
       } });

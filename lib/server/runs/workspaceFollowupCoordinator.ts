@@ -2,7 +2,9 @@ import { bindContext, logEvent, runInBackground, runWithContext } from "../obser
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailure } from "../providers/providerObservability";
 import type { ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
-import { WorkspaceFollowupError, type createWorkspaceFollowupRepository, type WorkspaceFollowupClaim } from "./workspaceFollowupPersistence";
+import {
+  predecessorReleasesSuccessor, WorkspaceFollowupError, type createWorkspaceFollowupRepository, type WorkspaceFollowupClaim
+} from "./workspaceFollowupPersistence";
 
 type Repository = ReturnType<typeof createWorkspaceFollowupRepository>;
 export type WorkspaceFollowupLoaded = NonNullable<Awaited<ReturnType<Repository["load"]>>>;
@@ -51,7 +53,7 @@ export function createWorkspaceFollowupCoordinator(deps: WorkspaceFollowupCoordi
       if (loaded.modelRun.workspaceWaitPending && loaded.deadlineAt <= new Date()) {
         throw new WorkspaceFollowupError("workspace_followup_expired");
       }
-      if (loaded.predecessor.status !== "complete") throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
+      if (!predecessorReleasesSuccessor(loaded.predecessor)) throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
       signal.throwIfAborted();
       await deps.continueRun({ claim, loaded, releaseRegistry: registration.release, signal });
     } catch (error) {
