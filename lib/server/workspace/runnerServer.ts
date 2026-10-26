@@ -17,6 +17,7 @@ import {
 } from "./runtime";
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
+import { parseBrowserLiveAction, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
 import { WORKSPACE_TURN_TIMEOUT_MAX_SECONDS } from "./config";
@@ -470,6 +471,19 @@ export function createWorkspaceRunnerServer(input: Readonly<{
             sessionId, signal
           }));
         })));
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/browser-live") {
+        // The live view's streamer (`browserLiveChannel.ts`): a fixed command under the run's operation, never a model tool.
+        stage = "dispatch";
+        if (!input.runtime.browserLive) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        const body = await readJson(request, 2 * WORKSPACE_BROWSER_LIVE_LIMITS.stdinChars + 4_096);
+        const action = parseBrowserLiveAction(body);
+        const modelRunId = requiredString(body.modelRunId, 128);
+        const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+        sendJson(response, 200, await execute(body.operation, (signal) =>
+          input.runtime.browserLive!({ ...action, modelRunId, runtimeSandboxId, sessionId, signal })));
         return;
       }
 
