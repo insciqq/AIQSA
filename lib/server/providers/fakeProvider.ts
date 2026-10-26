@@ -54,6 +54,17 @@ function requestQuestion(request: ProviderRunRequest): string {
   return (users.find((item) => item.currentInput) ?? users.at(-1))?.text ?? "";
 }
 
+/**
+ * The turn a call id belongs to: where the request's current input stands in
+ * the history (or its latest user turn). Providers never reuse a call id, and
+ * the engine pairs a result with its call by id across the chat's turns.
+ */
+function callTurn(request: ProviderRunRequest): number {
+  const history = request.history ?? [];
+  const current = history.findIndex((item) => item.type === "user" && item.currentInput === true);
+  return current >= 0 ? current : history.reduce((latest, item, index) => item.type === "user" ? index : latest, 0);
+}
+
 /** Test-only page-reader scenario: `first_link` reads the question's first link, `unlisted` a link it never had. */
 const FETCH_URL_TEST_DIRECTIVE = /\[AIQSA_FETCH_URL_E2E:(first_link|unlisted)\]/u;
 
@@ -77,7 +88,7 @@ function scriptedFetchUrlResult(request: ProviderRunRequest, question: string): 
       ? /https?:\/\/\S+/u.exec(question.replace(match[0], ""))?.[0] ?? ""
       : "https://unlisted.example/private";
     return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
-      toolCalls: [{ arguments: { url }, id: "fake-fetch-url-1", name: "fetch_url" }], usage: fakeUsage(question, "") };
+      toolCalls: [{ arguments: { url }, id: `fake-fetch-url-${callTurn(request)}`, name: "fetch_url" }], usage: fakeUsage(question, "") };
   }
   const value = results[0]?.content.find((part) => part.type === "json")?.value;
   const finalText = `Page reading finished: ${isRecord(value) && typeof value.error === "string" ? value.error : "read"}.`;
@@ -150,31 +161,32 @@ function toolCall(
   const tool = workspaceTool(request, originalName);
   return tool ? {
     arguments: argumentsValue,
-    id: `workspace-e2e-${step}-${originalName}`,
+    id: `workspace-e2e-${callTurn(request)}-${step}-${originalName}`,
     name: tool.name
   } : null;
 }
 
-function lastToolDataAt(results: readonly FakeToolResultMessage[], index: number): Record<string, unknown> | null {
-  const entry = results[index]?.content.find((content) => content.type === "text")?.text;
+/** A tool result's payload: parsed JSON from the native engine's history, or the JSON text of a tool message. */
+function toolResultPayload(result: FakeToolResultMessage | undefined): unknown {
+  const json = result?.content.find((content) => content.type === "json");
+  if (json) return json.value;
+  const entry = result?.content.find((content) => content.type === "text")?.text;
   if (!entry) return null;
   try {
-    const parsed = JSON.parse(entry) as unknown;
-    return isRecord(parsed) && isRecord(parsed.data) ? parsed.data : null;
+    return JSON.parse(entry) as unknown;
   } catch {
     return null;
   }
 }
 
+function lastToolDataAt(results: readonly FakeToolResultMessage[], index: number): Record<string, unknown> | null {
+  const parsed = toolResultPayload(results[index]);
+  return isRecord(parsed) && isRecord(parsed.data) ? parsed.data : null;
+}
+
 function lastToolData(results: readonly FakeToolResultMessage[]): unknown {
-  const entry = results.at(-1)?.content.find((content) => content.type === "text")?.text;
-  if (!entry) return null;
-  try {
-    const parsed = JSON.parse(entry) as unknown;
-    return isRecord(parsed) ? parsed.data : null;
-  } catch {
-    return null;
-  }
+  const parsed = toolResultPayload(results.at(-1));
+  return isRecord(parsed) ? parsed.data : null;
 }
 
 function stagedAttachmentPath(results: readonly FakeToolResultMessage[]): string | null {

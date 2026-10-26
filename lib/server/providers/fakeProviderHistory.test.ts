@@ -39,4 +39,19 @@ describe("fake provider on the native engine's history", () => {
       { callId: "c1", isError: true, name: deleteRecord.name, output: "{\"error\":\"mcp_approval_required\"}", type: "tool_result" }]));
     expect(refused.finalText).toBe("MCP call finished: mcp_approval_required.");
   });
+
+  it("reads a Workspace tool's data from the history's JSON result", async () => {
+    const tools = ["sandbox_fs_read", "sandbox_fs_write"].map((name) => ({ capability: "workspace", description: name,
+      inputSchema: { type: "object" }, name: `workspace_${name}_0123456789` }));
+    const workspaceRequest = (history: readonly ProviderHistoryItem[]) => ({ ...request(history), tools,
+      workspace: { inboxIndexPath: "/workspace/inbox/index.json", outputDirectory: "/workspace/outputs" } }) as unknown as
+      ProviderRunRequest;
+    const asked = { currentInput: true as const, text: "[AIQSA_WORKSPACE_E2E:deterministic_prepare]", type: "user" as const };
+    const index = { attachments: [{ attachmentId: "a-1", sandboxPath: "/workspace/inbox/m-1/a-1/input.bin" }] };
+    const result = await run(workspaceRequest([asked,
+      { arguments: "{}", callId: "c1", name: tools[0]!.name, type: "tool_call" },
+      { callId: "c1", name: tools[0]!.name, output: JSON.stringify({ data: { content: JSON.stringify(index) } }), type: "tool_result" }]));
+    expect(result.toolCalls?.[0]).toMatchObject({ arguments: { encoding: "base64", path: "/workspace/inbox/m-1/a-1/input.bin" },
+      name: tools[0]!.name });
+  });
 });
