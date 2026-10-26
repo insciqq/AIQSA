@@ -214,6 +214,10 @@ for (const viewport of viewports) {
         expect(Math.abs(stageBox!.width / stageBox!.height - 1.6)).toBeLessThan(0.02);
         expect(stageBox!.x + stageBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width + 1);
         expect(stageBox!.height).toBeLessThanOrEqual(viewport.height * 0.7 + 1);
+        // The whole frame fits between the chat header and the composer dock.
+        const dockTop = await page.getByRole("textbox", { name: "Message" }).evaluate((element) =>
+          (element.closest("form") ?? element.parentElement!).getBoundingClientRect().top);
+        expect(stageBox!.height).toBeLessThanOrEqual(dockTop - 48 + 1);
         await expectNoHorizontalOverflow(page);
         await shot(page, testInfo, `${prefix}-2-watch`);
 
@@ -226,8 +230,12 @@ for (const viewport of viewports) {
         const typing = panel.getByRole("textbox", { name: "Type into the page" });
         if (viewport.touch) await expect(typing).toBeVisible();
         else await expect(typing).toBeHidden();
+        await stage.evaluate((element) => element.scrollIntoView({ block: "center" }));
         const box = (await stage.boundingBox())!;
         const target = { x: box.x + box.width * 0.25, y: box.y + box.height * 0.5 };
+        // Nothing (the composer dock, the chat header) covers the point the person taps.
+        expect(await page.evaluate(({ x, y }) =>
+          Boolean(document.elementFromPoint(x, y)?.closest("[data-testid='browser-live-stage']")), target)).toBe(true);
         if (viewport.touch) await page.touchscreen.tap(target.x, target.y);
         else await page.mouse.click(target.x, target.y);
         await expect.poll(() => posted.filter((entry) => entry.path.endsWith("/input")).length).toBeGreaterThanOrEqual(2);
@@ -266,6 +274,7 @@ for (const viewport of viewports) {
         await shot(page, testInfo, `${prefix}-4-handoff`);
         await card.getByRole("button", { name: "Done" }).click();
         await expect.poll(() => posted.at(-1)).toEqual({ path: `/api/chats/${chatId}/browser/handoff`, body: { action: "done", handoffId: "handoff-1" } });
+        await stream.emit(page, "artifact", { artifactType: "tool_call", payload: { name: "browser_handoff", round: 3, ordinal: 0, status: "complete" } });
 
         // The stream failed: a plain reason and Reopen. Reopening uses the browser's real EventSource,
         // served by page.route, and shows that stream's own end.
