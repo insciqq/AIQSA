@@ -14,7 +14,7 @@ import { conversationMessagesFromPathRows } from "../runs/prismaRepository";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
-import { TURN_TAIL_RESERVE_MS } from "../runs/turnDeadline";
+import { TURN_HANDOFF_RESERVE_MS } from "../runs/turnDeadline";
 import { monitoringCheckInstruction, monitoringVerdictReservedInstruction } from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
@@ -105,7 +105,7 @@ describe("a scheduled monitoring check on the native engine", () => {
     let clock = Date.now();
     // The first lookup takes the turn into its last minutes: tool time is over, the deadline is not.
     const callTool = vi.fn(async () => {
-      clock += NATIVE_TURN_LIMITS.turnMs - TURN_TAIL_RESERVE_MS;
+      clock += NATIVE_TURN_LIMITS.turnMs - TURN_HANDOFF_RESERVE_MS;
       return { isError: false, text: ["open"], unsupportedContentTypes: [] };
     });
     const result = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: { ...memory.engine,

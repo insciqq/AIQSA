@@ -99,3 +99,113 @@ describe("Workspace receiver operation drain", () => {
       .rejects.toMatchObject({ code: "workspace_operation_stale" });
   });
 });
+
+describe("Workspace receiver idle refresh", () => {
+  // The runner's defaults: a touch every five minutes, for a turn and its handoff after the latest activity.
+  const awake = (touch: (input: Readonly<{ sessionId: string }>) => Promise<void>, lifetimeMs = 3_900_000) =>
+    new WorkspaceOperationFence({ idleRefresh: { intervalMs: 300_000, lifetimeMs, touch }, stop: async () => undefined });
+
+  it("touches the guest while its operation is active and stops when the run ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const touch = vi.fn(async () => undefined);
+      const fence = awake(touch);
+      await fence.claim({ ...identity, operation: operation(1) });
+      expect(touch).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(touch).toHaveBeenCalledExactlyOnceWith({ sessionId: identity.sessionId });
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(touch).toHaveBeenCalledTimes(3);
+      // The run's end retires its operation: no touch after it, so the guest may idle again.
+      await fence.retire({ ...identity, operation: operation(1) });
+      await vi.advanceTimersByTimeAsync(3_000_000);
+      expect(touch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops touching on Stop, which retires the operation while a request still runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const touch = vi.fn(async () => undefined);
+      const fence = awake(touch);
+      await fence.claim({ ...identity, operation: operation(1) });
+      const entered = barrier();
+      const running = fence.run({ ...identity, operation: operation(1) }, async (signal) => {
+        entered.release();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      });
+      await entered.wait;
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(touch).toHaveBeenCalledOnce();
+      await fence.retire({ ...identity, operation: operation(1) });
+      await running;
+      await vi.advanceTimersByTimeAsync(900_000);
+      expect(touch).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("goes on while requests come and ends a lifetime after the last one when nobody retires the operation", async () => {
+    vi.useFakeTimers();
+    try {
+      const touch = vi.fn(async () => undefined);
+      const fence = awake(touch, 900_000);
+      await fence.claim({ ...identity, operation: operation(1) });
+      await vi.advanceTimersByTimeAsync(600_000);
+      // A request at ten minutes keeps the guest awake until 25 minutes, then the touches end on their own.
+      await fence.run({ ...identity, operation: operation(1) }, async () => undefined);
+      await vi.advanceTimersByTimeAsync(1_400_000);
+      expect(touch).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(3_000_000);
+      expect(touch).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands the touches to the operation that takes the session over", async () => {
+    vi.useFakeTimers();
+    try {
+      const touch = vi.fn(async () => undefined);
+      const fence = awake(touch);
+      await fence.claim({ ...identity, operation: operation(1) });
+      await vi.advanceTimersByTimeAsync(300_000);
+      await fence.claim({ ...identity, operation: operation(2) });
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(touch).toHaveBeenCalledTimes(2);
+      await expect(fence.retire({ ...identity, operation: operation(1) })).rejects.toMatchObject({ code: "workspace_operation_stale" });
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(touch).toHaveBeenCalledTimes(3);
+      await fence.retire({ ...identity, operation: operation(2) });
+      await vi.advanceTimersByTimeAsync(900_000);
+      expect(touch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never fails the operation when a touch fails, and logs only a content-free code", async () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
+    try {
+      const touch = vi.fn(async () => { throw new Error("guest unreachable: private detail"); });
+      const fence = awake(touch);
+      await fence.claim({ ...identity, operation: operation(1) });
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(touch).toHaveBeenCalledTimes(2);
+      await expect(fence.run({ ...identity, operation: operation(1) }, async () => "done")).resolves.toBe("done");
+      const failures = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((record) => record.code === "workspace_idle_refresh_failed");
+      expect(failures).toHaveLength(2);
+      expect(failures[0]).toMatchObject({ outcome: "failed", stage: "heartbeat", subsystem: "workspace" });
+      expect(lines.join("\n")).not.toContain("private detail");
+    } finally {
+      write.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});

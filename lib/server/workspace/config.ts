@@ -94,6 +94,17 @@ export function workspaceRuntimeIdleTimeoutSeconds(config: Pick<WorkspaceConfig,
   return Math.max(config.idleTtlSeconds, config.turnTimeoutSeconds + 300);
 }
 
+/**
+ * How the runner keeps the guest of a run awake (`WorkspaceIdleRefresh` in `operationFence.ts`), which also covers VMs
+ * created with an older, shorter idle stop: a touch every five minutes, or every third of the idle time when that is
+ * shorter, for as long as a new VM's own idle stop waits after the run's latest request.
+ */
+export function workspaceIdleRefreshTiming(config: Pick<WorkspaceConfig, "idleTtlSeconds" | "turnTimeoutSeconds">):
+  Readonly<{ intervalMs: number; lifetimeMs: number }> {
+  return { intervalMs: Math.min(300_000, Math.floor(config.idleTtlSeconds * 1_000 / 3)),
+    lifetimeMs: workspaceRuntimeIdleTimeoutSeconds(config) * 1_000 };
+}
+
 const integerSettings = Object.freeze({
   codeMcpMaxCalls: {
     defaultValue: 200,

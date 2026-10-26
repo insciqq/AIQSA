@@ -135,7 +135,7 @@ function prepared(extra: Partial<ProviderRunRequest> = {}): MaterializedPrepared
   return {
     contextTruncation: null, defaults: null, expectedActiveLeafId: null,
     mcpBindings: [{ fingerprint: "fp-1", runtimeGenerationId: "gen-1", serverId: "jira" }],
-    normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 60_000 },
+    normalizedRequest: request, providerAdmissionPlan: { answer: { snapshot: { connection: { responseTimeoutMs: 300_000 },
       connectionId: "connection-1", model: { adapterKind: "fake" }, providerFamily: "fake", providerModelId: "model-1" } } } as never,
     providerRequest: request, providerRequestPreview: {}, sourceKind: "send"
   };
@@ -504,10 +504,10 @@ describe("native run execution", () => {
   });
 
   it.each([
-    // An hour, with 51 minutes for tools with or without a Workspace (`turnDeadline.ts`).
+    // An hour, with 49 minutes for tools with or without a Workspace (`turnDeadline.ts`).
     { name: "an interactive turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: null },
     { name: "an interactive Workspace turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: 3_600 },
-    // The scheduler stops a scheduled run 30 minutes after admission: its tools close 21 minutes in.
+    // The scheduler stops a scheduled run 30 minutes after admission: its tools close 19 minutes in.
     { name: "a scheduled run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: null },
     { name: "a scheduled Workspace run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: 3_600 }
   ])("ends $name without tool limits at its time deadline with the forced final answer", async ({
@@ -568,16 +568,16 @@ describe("native run execution", () => {
       mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
       prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } }),
       repository: repository() as unknown as RunRepository, scheduled: true, services: {}, userId: "user" }));
-    // Admitted ten minutes before it started: its tools close eleven minutes in, not 21.
+    // Admitted ten minutes before it started: its tools close nine minutes in, not 19.
     expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
     expect(memory.published()).toBe("Done.");
   });
 
   it.each([
-    // Default turns on the real clock and deadline timers: tools may start until 51 minutes in, with or without a
-    // Workspace. The batch round returns at 50:40.
-    { batchRound: 76, softDeadlineMs: 51 * 60_000, workspace: false },
-    { batchRound: 76, softDeadlineMs: 51 * 60_000, workspace: true }
+    // Default turns on the real clock and deadline timers: tools may start until 49 minutes in, with or without a
+    // Workspace. The batch round returns at 48:40.
+    { batchRound: 73, softDeadlineMs: 49 * 60_000, workspace: false },
+    { batchRound: 73, softDeadlineMs: 49 * 60_000, workspace: true }
   ])("starts no call of a late batch after the tool time and answers before the deadline (Workspace=$workspace)", async ({
     batchRound, softDeadlineMs, workspace
   }) => {
@@ -630,11 +630,11 @@ describe("native run execution", () => {
     }
   });
 
-  // Every call of the model uses its whole timeout: by default a 300 s Jira lookup in rounds of 73 s, whose last call
-  // starts three seconds before the 51-minute tool time.
+  // Every call of the model uses its whole timeout and the forced answer nearly all of its own 300 s: by default 300 s
+  // Jira lookups in rounds of 59 s, whose last call starts nine seconds before the 49-minute tool time.
   const fullTimeoutCase = (overrides: Readonly<{ label: string } & Partial<{ callSeconds: number; imageWaitMs: number;
     lastStartSeconds: number; roundSeconds: number; serverTimeoutMs: number; slowServerSeen: boolean; workspace: boolean }>>) => ({
-    callSeconds: 300, imageWaitMs: null as number | null, lastStartSeconds: 3_057, roundSeconds: 73, serverTimeoutMs: null as number | null,
+    callSeconds: 300, imageWaitMs: null as number | null, lastStartSeconds: 2_931, roundSeconds: 59, serverTimeoutMs: null as number | null,
     slowServerSeen: false, workspace: false, ...overrides
   });
   it.each([
@@ -644,10 +644,13 @@ describe("native run execution", () => {
     fullTimeoutCase({ label: "the 300 s call the old reserve would still start", lastStartSeconds: 2_850, roundSeconds: 50 }),
     fullTimeoutCase({ label: "the 300 s call the old reserve would still start", lastStartSeconds: 2_850, roundSeconds: 50,
       workspace: true }),
-    // A server whose own call timeout is ten minutes: its last call starts 20 s before its own 46 minutes.
-    fullTimeoutCase({ callSeconds: 600, label: "a 600 s call of a server with a ten-minute timeout", lastStartSeconds: 2_740,
-      roundSeconds: 235, serverTimeoutMs: 600_000 }),
-    // Slow sources the run never calls leave its tool time at 51 minutes.
+    // A four-minute tail without the answer model's own timeout still started a call at 50:53 (review repro).
+    fullTimeoutCase({ callSeconds: 295, label: "the 295 s call a fixed four-minute tail would still start", lastStartSeconds: 2_681,
+      roundSeconds: 77 }),
+    // A server whose own call timeout is ten minutes: its last call starts 20 s before its own 44 minutes.
+    fullTimeoutCase({ callSeconds: 600, label: "a 600 s call of a server with a ten-minute timeout", lastStartSeconds: 2_620,
+      roundSeconds: 205, serverTimeoutMs: 600_000 }),
+    // Slow sources the run never calls leave its tool time at 49 minutes.
     fullTimeoutCase({ label: "300 s calls of a run that can also see a ten-minute server", slowServerSeen: true }),
     fullTimeoutCase({ imageWaitMs: 86_400_000, label: "300 s calls of a run whose image model may wait 24 hours" })
   ])("leaves a forced tool-free answer before the deadline after $label (Workspace=$workspace)", async ({
@@ -659,13 +662,13 @@ describe("native run execution", () => {
       const startedAt = Date.now();
       const choices: string[] = [];
       const starts: number[] = [];
-      // Every call uses its whole timeout; a round with tools takes `roundSeconds`, the tool-free answer two minutes.
+      // Every call uses its whole timeout; a round with tools takes `roundSeconds`, the tool-free answer 290 s.
       const adapter: ProviderAdapter = {
         buildRequestPreview: () => ({}),
         async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
           choices.push(request.toolChoice ?? "auto");
           const answering = request.toolChoice === "none";
-          await new Promise((resolve) => setTimeout(resolve, (answering ? 120 : roundSeconds) * 1_000));
+          await new Promise((resolve) => setTimeout(resolve, (answering ? 290 : roundSeconds) * 1_000));
           return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
             toolCalls: answering ? [] : [{ arguments: { key: `A-${choices.length}` }, id: `call-${choices.length}`,
               name: "mcp_jira_get_issue" }] };
@@ -718,7 +721,7 @@ describe("native run execution", () => {
           choices.push(request.toolChoice ?? "auto");
           const round = choices.length;
           const answering = request.toolChoice === "none";
-          await new Promise((resolve) => setTimeout(resolve, (answering ? 120 : 60) * 1_000));
+          await new Promise((resolve) => setTimeout(resolve, (answering ? 290 : 60) * 1_000));
           return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
             toolCalls: answering ? [] : [
               ...(round === 47 ? [{ arguments: { job: "all" }, id: "export-47", name: "mcp_export_run_export" }] : []),
@@ -744,7 +747,8 @@ describe("native run execution", () => {
         repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
       await vi.advanceTimersByTimeAsync(70 * 60_000);
       const result = await reading;
-      // Ten minutes and the answer's reserve no longer fit at 47:00, five minutes still do: the export never started.
+      // Ten minutes, the answer and the handoff no longer fit at 47:00 (the export may start until 44 min), five minutes
+      // still do (until 49 min): the export never started.
       expect(starts.at(-1)).toEqual([2_820_000, { key: "A-47" }]);
       expect(starts.some(([, args]) => "job" in args)).toBe(false);
       expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(1);

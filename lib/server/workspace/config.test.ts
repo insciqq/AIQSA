@@ -6,6 +6,7 @@ import {
   WorkspaceConfigError,
   getScheduledWorkspaceMaxConcurrent,
   getWorkspaceConfig,
+  workspaceIdleRefreshTiming,
   workspaceRuntimeIdleTimeoutSeconds,
   workspaceToolTransportMaxBytes
 } from "./config";
@@ -47,6 +48,12 @@ describe("Workspace configuration", () => {
     expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({}))).toBe(3_900);
     expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "7200" }))).toBe(7_500);
     expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "14400" }))).toBe(14_400);
+  });
+
+  it("touches a run's guest every five minutes, more often under a short idle time, for a turn and its handoff", () => {
+    expect(workspaceIdleRefreshTiming(getWorkspaceConfig({}))).toEqual({ intervalMs: 300_000, lifetimeMs: 3_900_000 });
+    expect(workspaceIdleRefreshTiming(getWorkspaceConfig({ AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "60" })))
+      .toEqual({ intervalMs: 20_000, lifetimeMs: 3_900_000 });
   });
 
   it("bounds the guest-code MCP budgets separately from the model's tool budgets", () => {
