@@ -105,6 +105,12 @@ describe("Telegram final answer delivery", () => {
     const empty = await setup(answer(""), () => undefined);
     await empty.deliver();
     expect(empty.fake.calls("sendMessage").map((call) => call.params.text)).toEqual([TELEGRAM_BRIDGE_COPY.answerInAiqsa]);
+
+    // Decided before delivery: no card is offered any more, so the pointer stays.
+    const decided = await setup({ ...answer(""), artifactSummary: { citations: [], mcpApprovals: [{ ...card, state: "allowed_once" as const }],
+      reasoningText: [], sources: [] } }, () => undefined);
+    await decided.deliver();
+    expect(decided.fake.calls("sendMessage").map((call) => call.params.text)).toEqual([TELEGRAM_BRIDGE_COPY.answerInAiqsa]);
   });
 
   it("delivers every message while the link still reaches the chat", async () => {
