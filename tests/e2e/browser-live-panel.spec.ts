@@ -148,9 +148,11 @@ async function shot(page: Page, testInfo: TestInfo, name: string) {
     const dock = document.querySelector("[aria-label='Message']")?.getBoundingClientRect().top ?? window.innerHeight;
     if (stage && !document.querySelector("[data-testid='browser-live-handoff']") && stage.getBoundingClientRect().bottom > dock) {
       // Its bottom just above the composer dock, which floats over the thread.
-      stage.style.scrollMarginBottom = `${window.innerHeight - dock + 24}px`;
-      stage.scrollIntoView({ behavior: "instant", block: "end" });
-      stage.style.scrollMarginBottom = "";
+      let scroller = stage.parentElement;
+      while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/u.test(getComputedStyle(scroller).overflowY))) {
+        scroller = scroller.parentElement;
+      }
+      (scroller ?? document.scrollingElement)?.scrollBy({ behavior: "instant", top: stage.getBoundingClientRect().bottom - (dock - 16) });
     }
   });
   await page.waitForTimeout(150);
