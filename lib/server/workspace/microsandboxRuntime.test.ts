@@ -875,6 +875,8 @@ describe("Microsandbox Workspace lifecycle", () => {
     await value.runtime.ensureSession({ ...ensureInput, runtimeSandboxId: null });
     expect(value.builder.detached).toHaveBeenCalledWith(true);
     expect(value.builder.connectOrCreate).toHaveBeenCalledTimes(1);
+    // Microsandbox's own idle stop waits a whole default turn and its hand-off, never the 30-minute idle time alone.
+    expect(value.builder.idleTimeout).toHaveBeenCalledWith(3_900);
   });
 
   it.each([false, true])("resumes an exact stopped disk detached (cached=%s)", async (cached) => {

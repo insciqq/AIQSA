@@ -6,6 +6,7 @@ import {
   WorkspaceConfigError,
   getScheduledWorkspaceMaxConcurrent,
   getWorkspaceConfig,
+  workspaceRuntimeIdleTimeoutSeconds,
   workspaceToolTransportMaxBytes
 } from "./config";
 
@@ -40,6 +41,12 @@ describe("Workspace configuration", () => {
     for (const seconds of ["59", "7201", "3600.5"]) {
       expect(() => getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: seconds })).toThrow(WorkspaceConfigError);
     }
+  });
+
+  it("keeps Microsandbox's own idle stop out of a turn, never shorter than the idle time", () => {
+    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({}))).toBe(3_900);
+    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "7200" }))).toBe(7_500);
+    expect(workspaceRuntimeIdleTimeoutSeconds(getWorkspaceConfig({ AIQSA_WORKSPACE_IDLE_TTL_SECONDS: "14400" }))).toBe(14_400);
   });
 
   it("bounds the guest-code MCP budgets separately from the model's tool budgets", () => {
