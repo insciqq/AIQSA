@@ -2147,7 +2147,11 @@ describe("Workspace coordinator export database retries", () => {
     expect(elapsed).toBeLessThan(4_000);
     expect(records.at(-1)).toMatchObject({ work_stage: "seal", outcome: "failed", code: "workspace_output_export_failed",
       prisma_code: "P2010", db_failure: "lock_timeout" });
-    expect(records.filter((record) => record.outcome === "degraded" && record.work_stage === "seal")).toHaveLength(starts.length - 1);
+    // Every attempt but the last was followed by one; the last also logs one when the failing heartbeat ended the pause
+    // after it, before another attempt (both orders are valid, and the fake clock does not fix which comes first).
+    const degraded = records.filter((record) => record.outcome === "degraded" && record.work_stage === "seal").length;
+    expect(degraded).toBeGreaterThanOrEqual(starts.length - 1);
+    expect(degraded).toBeLessThanOrEqual(starts.length);
     expect(databaseFailureKind(caught)).toBe("lock_timeout");
     expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(false);
   });
