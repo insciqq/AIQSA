@@ -540,17 +540,22 @@ class Host:
         return str(target)
 
     async def _storage_state(self) -> Dict[str, Any]:
-        """Cookies of the whole browser, and local storage read from the open documents over what was restored.
+        """Cookies of the whole browser, and the kept sites' local storage read from their open documents.
 
         Unlike Playwright's own `storage_state()`, this never opens hidden pages on
-        every origin the turn visited, so it stays cheap enough to run after an action.
+        every origin the turn visited and reads only frames of sites whose sessions
+        are kept, so it stays cheap enough to run after every action. Origins not
+        open now keep what was restored or last read.
         """
         cookies = await self.context.cookies()
+        sites = self.store.sites()
         for page in [tab for tab in self.tabs if not tab.is_closed()]:
             for frame in page.frames:
                 try:
                     parts = urlsplit(frame.url)
                     if parts.scheme not in ("http", "https") or not parts.hostname:
+                        continue
+                    if not _sessions.domain_matches(parts.hostname, sites):
                         continue
                     origin = f"{parts.scheme}://{parts.netloc}"
                     entries = await frame.evaluate(_dom.LOCAL_STORAGE)
@@ -562,19 +567,15 @@ class Host:
                                                 for origin, entries in self.local_storage.items() if entries]}
 
     async def _autosave(self) -> List[str]:
-        """Rewrite the saved sessions whose cookies changed; the turn may end at any moment."""
+        """Rewrite the saved sessions whose cookies or local storage changed; the turn may end at any moment."""
         if not self.store.tracked or self.context is None:
             return []
         try:
-            cookies = await self.context.cookies()
+            state = await self._storage_state()
         except PlaywrightError:
             return []
-        names = self.store.changed(cookies)
-        if not names:
-            return []
-        state = await self._storage_state()
         saved = []
-        for name in names:
+        for name in self.store.changed(state):
             try:
                 if self.store.save(name, state)["changed"]:
                     saved.append(name)
