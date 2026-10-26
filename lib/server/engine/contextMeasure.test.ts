@@ -10,7 +10,7 @@ import {
   measureContext,
   type ContextMeasureCalibration
 } from "./contextMeasure";
-import { modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget } from "./transcript";
+import { IMAGE_NOT_ATTACHED_NOTE, modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget } from "./transcript";
 
 const codex: TranscriptTarget = { model: "gpt-6-astra", provider: "codex-lb" };
 const deepseek: TranscriptTarget = { model: "deepseek-flash", provider: "deepseek" };
@@ -115,6 +115,27 @@ describe("anchored context measure", () => {
     const measure = measureContext({ anchor, estimate, fixedTokens: 0, items: conversation.items, reasoning: "reported", target: scoped });
     expect(measure).toMatchObject({ addedItems: 2, anchored: true, removedItems: 1, removedTokens: 40 });
     expect(measure.tokens).toBe(700 + (6 + FRAMING.assistant_text) + ("two".length + FRAMING.user) - 40);
+  });
+
+  it("weighs a result's image by its estimate while the run's request carries it, else by the note that replaces it", () => {
+    const image = { consumerKey: "tool-1", descriptor: { byteSize: 10, checksum: "b".repeat(64), frames: 1, height: 8, id: "a".repeat(64),
+      mimeType: "image/png", source: { byteSize: 20, captureId: "c".repeat(32), checksum: "d".repeat(64), height: 16,
+        relativePath: "project/code.png", width: 20 }, transform: null, version: 1, width: 10 } } as const;
+    const items: TranscriptItem[] = [
+      { id: "u1", kind: "user", text: "look" },
+      { arguments: "{}", callId: "call_1", id: "c1", kind: "tool_call", name: "view" },
+      { callId: "call_1", id: "t1", image, kind: "tool_result", name: "view", outcome: "complete", output: "preview" }
+    ];
+    const call = "view".length + "{}".length + FRAMING.tool_call;
+    const result = "view".length + "preview".length + FRAMING.tool_result;
+    const held = { attached: () => ({ image: { data: "UElYRUxT", mimeType: "image/png" as const }, tokens: 1_200 }) };
+    expect(measureContext({ estimate, fixedTokens: 0, images: held, items, target: codex }).tokens)
+      .toBe("look".length + FRAMING.user + call + result + 1_200);
+    expect(measureContext({ estimate, fixedTokens: 0, items, target: codex }).tokens)
+      .toBe("look".length + FRAMING.user + call + result + estimate(IMAGE_NOT_ATTACHED_NOTE));
+    // A newly viewed image is added on top of the anchor, like any new item.
+    const anchor = contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: 500 } });
+    expect(measureContext({ anchor, estimate, fixedTokens: 0, images: held, items, target: codex }).tokens).toBe(500 + call + result + 1_200);
   });
 
   it("drops the anchor once a compaction changed where replay starts, and without reported input", () => {

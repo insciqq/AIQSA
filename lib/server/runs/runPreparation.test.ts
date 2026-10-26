@@ -988,7 +988,7 @@ describe("run preparation", () => {
 
   it.each([
     { vision: false, verified: false }, { vision: true, verified: false }, { vision: true, verified: true }
-  ])("routes Workspace images only to System Vision independently of the main modality (%j)", async ({ vision, verified }) => {
+  ])("offers direct view only for verified vision and keeps System Vision for every model (%j)", async ({ vision, verified }) => {
     const h = createHarness({ capabilities: { ...baseCapabilities, vision, toolCalling: true } });
     const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn(async input => ({ ok: true as const, tools: [], plan: {
       ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
@@ -1015,14 +1015,20 @@ describe("run preparation", () => {
       const result = preparedFrom(await prepareRun(deps, sendInput(successBody({ workspace: { enabled: true },
         provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } }))));
       expect(result.normalizedRequest.visionAnalysis).toEqual(plan);
-      expect(result.normalizedRequest.workspaceImageView).toBeUndefined();
+      // The chat model's verified vision admits direct view (operator decision 2026-10-26), frozen with the run.
+      expect(result.normalizedRequest.workspaceImageView).toBe(verified ? true : undefined);
       expect(result.providerRequest).toMatchObject({ provider: "openai", modelId: "gpt-fixture", modelCapabilities: { vision } });
       expect(result.providerRequest.tools?.some(tool => tool.name === "analyze_image")).toBe(true);
-      expect(result.providerRequest.tools?.some(tool => tool.name === "view_workspace_image")).toBe(false);
-      expect(result.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer in this run");
-      expect(result.normalizedRequest.prompt.system).not.toContain("direct image viewer first");
+      expect(result.providerRequest.tools?.some(tool => tool.name === "view_workspace_image")).toBe(verified);
       const system = result.normalizedRequest.prompt.system!;
-      expect(system.indexOf("There is no direct Workspace file viewer")).toBeLessThan(system.indexOf("This turn's output directory:"));
+      const guidance = verified ? "Use view_workspace_image to look at an image file in Workspace yourself"
+        : "There is no direct Workspace file viewer in this run";
+      expect(system).toContain(guidance);
+      expect(system.includes("There is no direct Workspace file viewer")).toBe(!verified);
+      expect(system.includes("Use view_workspace_image to look at an image file")).toBe(verified);
+      // This turn's own guidance, after the chat's stable part.
+      expect(system.indexOf(guidance)).toBeLessThan(system.indexOf("This turn's output directory:"));
+      expect(result.normalizedRequest.prompt.turnGuidance?.some((part) => part.includes(guidance))).toBe(true);
       if (!plan.available) expect(result.normalizedRequest.prompt.system).toContain("without substituting another model");
     }
   });

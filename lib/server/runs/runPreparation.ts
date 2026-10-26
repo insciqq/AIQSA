@@ -1,5 +1,7 @@
 import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { analyzeImageTools, visionAnalysisGuidance } from "../tools/analyzeImage";
+import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
+import { supportsWorkspaceImageView } from "../workspace/directImageView";
 import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailableGuidance, imageReferenceInstructions } from "../tools/imageGeneration";
 import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
@@ -1691,9 +1693,11 @@ export async function prepareRun(
   if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
     ? await deps.vision?.resolve() : undefined;
-  // New Workspace runs use only the independently admitted Vision role. Direct
-  // image flags remain decodable for already accepted execution and recovery.
-  if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, false, {
+  // A chat model with verified vision looks at Workspace images itself (operator decision 2026-10-26), frozen with the
+  // run's other bindings; System Vision stays for every model.
+  const workspaceImageView = Boolean(workspaceAdmissionPlan) && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+    supportsWorkspaceImageView(executionAdapterKind, admissionPlan.answer.verifiedVisionInput === true);
+  if (workspaceVision) appendTurnGuidance(visionAnalysisGuidance(workspaceVision, workspaceImageView, {
     nativeCurrentImages: modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
     hasIndexedFiles: hasWorkspaceIndexedFiles
   }));
@@ -1874,6 +1878,7 @@ export async function prepareRun(
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const,
       workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
+    ...(workspaceImageView ? { workspaceImageView: true as const } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
     ...(artifactEdit ? { artifactEdit } : {}),
@@ -1969,6 +1974,7 @@ export async function prepareRun(
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
         ...analyzeImageTools(baseNormalizedRequest),
+        ...(workspaceImageView ? [viewWorkspaceImageTool] : []),
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
         ...(baseNormalizedRequest.artifactTool ? [artifactTool(baseNormalizedRequest.artifactToolDescription), ...(artifactReferences?.length ? [readArtifactTool()] : [])] : []),
         ...plannedSearchTools,
