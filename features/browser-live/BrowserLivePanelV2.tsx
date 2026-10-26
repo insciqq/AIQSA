@@ -413,6 +413,9 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
           </div>
         </div>
       ) : null}
+      {live.failure ? <p className="v2-browser-live-error" role="alert">{browserLiveErrorCopyV2(live.failure)}</p> : null}
+      {/* Above the frame, so the composer dock or an on-screen keyboard never hides the field under it. */}
+      {userControls ? <BrowserLiveTypingV2 onInputs={sendInput} /> : null}
       <div
         aria-label={showsFrame ? label : undefined}
         aria-roledescription={showsFrame ? "live browser" : undefined}
@@ -450,13 +453,7 @@ function LiveViewV2({ live }: Readonly<{ live: BrowserLiveController }>) {
           </div>
         ) : null}
       </div>
-      {userControls ? (
-        <>
-          <p className="v2-browser-live-hint">Click the page, then type. Press Esc twice to leave the view.</p>
-          <BrowserLiveTypingV2 onInputs={sendInput} />
-        </>
-      ) : null}
-      {live.failure ? <p className="v2-browser-live-error" role="alert">{browserLiveErrorCopyV2(live.failure)}</p> : null}
+      {userControls ? <p className="v2-browser-live-hint">Click the page, then type. Press Esc twice to leave the view.</p> : null}
       <StepsV2 steps={snapshot.steps} />
       <p aria-atomic="true" aria-live="polite" className="v2-sr-only" role="status">{announcement(snapshot, host)}</p>
     </div>
