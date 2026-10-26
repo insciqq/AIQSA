@@ -13,7 +13,7 @@ describe("WorkspaceActivityTimelineV2", () => {
       { command: { exitCode: 0, preview: "aiqsa-browser click 7",
         stdoutPreview: '[browser #4] click: button "Add to cart" @ www.saucedemo.com/inventory.html\nURL: https://www.saucedemo.com/inventory.html' },
       id: "one", kind: "command", phase: "succeeded" },
-      { command: { exitCode: 0, preview: "python3 checkout.py", stdoutPreview: [
+      { command: { exitCode: 0, preview: "python3 -c \"from aiqsa import browser as b; b.click(5); b.click(6); b.type(7, 'Test')\"", stdoutPreview: [
         "[browser #5] click: link \"Shopping cart\" @ www.saucedemo.com/inventory.html",
         "[browser #6] click: button \"Checkout\" @ www.saucedemo.com/cart.html",
         "[browser #7] type: textbox \"First Name\" (4 characters) @ www.saucedemo.com/checkout-step-one.html"].join("\n") },

@@ -168,7 +168,7 @@ async function browser(run: Run, mode: "login" | "restored" | "expired" | "delet
   assert.match(await aiqsaBrowser(run, `shot --path ${run.workspace.outputDirectory}/cart.png`), /^Screenshot saved: .*\/cart\.png$/mu);
   step = "browser_steps";
   // One browser served every call of this turn: its step numbers run on across them.
-  const numbers = [...(await aiqsaBrowser(run, "steps")).matchAll(/^\[browser #(\d+)\] /gmu)].map((match) => Number(match[1]));
+  const numbers = [...(await aiqsaBrowser(run, "steps")).matchAll(/^ {2}\[browser #(\d+)\] /gmu)].map((match) => Number(match[1]));
   assert.deepEqual(numbers, numbers.map((_, index) => index + 1));
   assert.ok(numbers.length >= (mode === "restored" ? 2 : 9));
   if (mode === "login") {

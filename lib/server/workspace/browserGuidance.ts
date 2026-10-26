@@ -33,7 +33,7 @@ export const WORKSPACE_BROWSER_GUIDANCE = [
   "- `text [N] [--start K]` (visible text in pages of 6000 characters), `js EXPRESSION` (bounded JSON result)",
   "- `shot [N] [--full] [--path PATH]`, `tabs`, `tab I`, `new-tab [URL]`, `close-tab [I]`, `save-session [SITE]`, `steps`, `status`, `close`",
   "",
-  "In Python the same names are functions: `b.open(url)`, `print(b.page_info())`, `b.click(12)`, `b.type(3, text, submit=True)`, `print(b.find(\"Add to cart\"))`, `b.screenshot()`, `b.save_session()`. Each action prints its step line and returns the page; `page.items` lists the elements as dicts with `n`, `role` and `name`. Failures raise `b.BrowserError` with a stable `code`.",
+  "In Python the same names are functions: `b.open(url)`, `print(b.page_info())`, `b.click(12)`, `b.type(3, text, submit=True)`, `b.type(4, env=\"NAME\")`, `print(b.find(\"Add to cart\"))`, `b.screenshot()`, `b.save_session()`. Each action prints its step line and returns the page; `page.items` lists the elements as dicts with `n`, `role` and `name`. Failures raise `b.BrowserError` with a stable `code`.",
   "Read pages with `text` and `find` first. When layout matters or something looks wrong, run `shot` and look at the PNG it prints with " +
     `${BROWSER_GUIDE_IMAGE_TOOLS.view} when that tool is offered, otherwise ${BROWSER_GUIDE_IMAGE_TOOLS.analyze}. Screenshots stay in /workspace/project/.browser; save one into this turn's output directory with \`shot --path\` only when the user should get it.`,
   "The browser uses the user's language and time zone and a normal desktop window. Downloads go to /workspace/project/downloads.",

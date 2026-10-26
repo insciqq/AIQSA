@@ -2,8 +2,8 @@
 
     from aiqsa import browser as b
     print(b.open("https://www.saucedemo.com"))   # the page: URL, title, numbered elements on screen
-    b.type(1, os.environ["SHOP_LOGIN"])          # act by element number; each action prints one step line
-    b.type(2, os.environ["SHOP_PASSWORD"], submit=True)
+    b.type(1, env="SHOP_LOGIN")                  # act by element number; each action prints one step line
+    b.type(2, env="SHOP_PASSWORD", submit=True)  # a saved value is read here and never printed
     print(b.find("Add to cart"))                 # numbered matches anywhere on the page
     path = b.screenshot()                        # look at it with view_workspace_image, else analyze_image
     b.save_session()                             # keep the sign-in for later requests
@@ -17,6 +17,7 @@ from a shell. Errors raise `BrowserError` with a stable `code`.
 from __future__ import annotations
 
 import builtins
+import os
 from typing import Any, Dict, List, Optional
 
 from ._client import BrowserError, call
@@ -73,9 +74,19 @@ def click(n: int) -> Page:
     return _page(_run("click", n=n))
 
 
-def type(n: int, text: str, submit: bool = False, clear: bool = True) -> Page:  # noqa: A001
-    """Type into element n (replacing its value unless clear=False); submit presses Enter afterwards."""
-    return _page(_run("type", n=n, text=text, submit=submit, clear=clear))
+def type(n: int, text: Optional[str] = None, submit: bool = False, clear: bool = True,  # noqa: A001
+         env: Optional[str] = None) -> Page:
+    """Type text, or the value of environment variable `env` (never printed), into element n.
+
+    The value replaces the element's own unless clear=False; submit presses Enter afterwards.
+    """
+    if (text is None) == (env is None):
+        raise BrowserError("invalid_arguments", "Give either the text to type or env=NAME.")
+    if env is not None:
+        if env not in os.environ:
+            raise BrowserError("invalid_arguments", f"The environment variable {env} is not set.")
+        text = os.environ[env]
+    return _page(_run("type", n=n, text=text, submit=submit, clear=clear, masked=env is not None))
 
 
 def select(n: int, option: str) -> Page:
