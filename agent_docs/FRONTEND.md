@@ -40,6 +40,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - An answer review recorded before Answer Review was removed (operator decision 2026-10-25) shows only its latest version, with no history (`lib/domain/answerReviewTranscript.ts`).
 - Workspace is ambient in interactive chats: a send uses it whenever the installation offers it and the model calls tools, with no composer or chat toggle and no saved default (operator decision 2026-10-20). Controls wrap whole; no More menu or horizontal scroll hides a capability. Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
 - Every chat is one agent with no mode to pick (`agent_docs/RUN_CONTRACTS.md`). Answers of the removed Codex Agent keep rendering their steps and files like any other.
+- The live Workspace browser (operator decisions 2026-10-26) shows as a Browser bar only under its owner's running answer that uses the browser, and disappears when the run ends. It streams frames only while expanded, a handoff expands it, and frames and typed text are never stored, logged or sent anywhere but the input route (`features/browser-live/`).
 - Artifact previews open only by user action. Historical answers keep pointing at their own artifact versions and files (`sandbox:` links), and thumbnails never run scripts.
 
 ## Management surfaces

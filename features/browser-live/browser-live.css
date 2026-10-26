@@ -33,8 +33,10 @@
   cursor: pointer;
 }
 
-.v2-browser-live-bar:hover {
-  background: var(--v2-color-hover);
+@media (hover: hover) {
+  .v2-browser-live-bar:hover {
+    background: var(--v2-color-hover);
+  }
 }
 
 .v2-browser-live-bar > svg {
