@@ -211,9 +211,11 @@
   min-width: 3.25rem;
 }
 
-.v2-browser-live-zoom-button:hover:not(:disabled) {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
+@media (hover: hover) {
+  .v2-browser-live-zoom-button:hover:not(:disabled) {
+    color: var(--v2-color-text);
+    background: var(--v2-color-hover);
+  }
 }
 
 .v2-browser-live-zoom-button:disabled {
