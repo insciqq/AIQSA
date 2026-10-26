@@ -730,6 +730,21 @@ html[data-motion="off"] .v2-run-answer-streaming .v2-conversation-markdown > div
   font-family: var(--v2-font-mono, ui-monospace, monospace);
 }
 
+/* A browser command reads as the step it took. */
+.v2-workspace-command .v2-workspace-row-label[data-kind="browser"] {
+  font-family: inherit;
+}
+
+.v2-workspace-browser-steps {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding-left: 1.25rem;
+  overflow-wrap: anywhere;
+  font-size: var(--v2-text-body-sm, 0.8125rem);
+  color: var(--v2-color-text);
+}
+
 .v2-workspace-row-meta {
   flex: 0 0 auto;
   font-size: var(--v2-text-metadata, 0.75rem);
