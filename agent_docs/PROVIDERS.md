@@ -32,6 +32,7 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 - Only a deterministic rejection or a static adapter restriction proves incompatibility. Authentication, rate-limit, network, timeout, output or context safety-limit and upstream failures keep the previous evidence. Native PDF proof must read image content through the native route; intermediary OCR text, refusals and generic HTTP errors are inconclusive.
 - Changing an endpoint requires fresh secrets for every retained key, disabled ones included, before contacting the new destination. A stored secret is never sent to a changed endpoint, so editing a URL cannot leak a saved key.
 - Gemini structured-output schemas omit upper bounds on nested arrays for compatibility; consumers enforce the canonical bounds after decoding.
+- Tool schemas write a nullable list or object, or a string-or-list value, as `anyOf`, never as a `type` list naming `array` or `object`: DeepSeek's strict schema validator, which OpenRouter's DeepSeek endpoint applies to strict tools, rejects the whole request with HTTP 400 (2026-10-26, `lib/server/tools/toolSchemaPortability.test.ts`).
 
 ## Transport
 
