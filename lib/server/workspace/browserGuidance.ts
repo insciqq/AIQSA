@@ -4,6 +4,9 @@ import { namespacedWorkspaceToolName } from "./toolCatalog";
 
 const sandboxExecToolName = namespacedWorkspaceToolName("sandbox_exec");
 
+/** The handoff tool the guide names (`lib/server/tools/browserHandoff.ts`); its test keeps it equal. */
+export const BROWSER_HANDOFF_TOOL = "browser_handoff";
+
 /** Image tools the guide names; `browserGuidance.test.ts` keeps them equal to the tools' own names. */
 export const BROWSER_GUIDE_IMAGE_TOOLS = { view: "view_workspace_image", analyze: "analyze_image" } as const;
 
@@ -21,6 +24,7 @@ export const WORKSPACE_BROWSER_GUIDANCE = [
   "",
   "A full Chromium runs for this turn. Drive it with the preinstalled `aiqsa-browser` command, or in Python with `from aiqsa import browser as b`. Do not install browser packages, run playwright install or start your own Playwright browser.",
   "The browser stays open between your commands for the rest of this turn: tabs, cookies and the current page survive; your Python variables do not. It ends with the turn.",
+  "The user can watch this browser live in the web chat and take control of it at any time. While they hold it, your browser commands wait a few seconds and then fail with `user_in_control`: do not act on the page then; wait and try again, or answer with what you have. Your first command after they give it back starts with a line saying so and where the page is.",
   "",
   "## Acting on a page",
   "",
@@ -45,7 +49,9 @@ export const WORKSPACE_BROWSER_GUIDANCE = [
   "If a site needs sign-in and the user saved credentials (see /workspace/SECRETS.md and the command environment), type them with `type N --env NAME`, which reads the variable inside the Workspace so its value never appears in the command; never put a password in an argument. After a successful sign-in run `save-session` once: from then on the session file stays current while you browse in this turn, and AIQSA encrypts it after the run settles and restores it in later Workspaces. " +
     `${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT} A larger state is not saved and its previous version stays. Guest file deletion does not delete the saved setting.`,
   "If the user saved a TOTP seed, compute the current code with pyotp (for example `python3 -c 'import os, pyotp; print(pyotp.TOTP(os.environ[\"NAME\"]).now())'`) and type it.",
-  "CAPTCHAs and bot checks, SMS or email codes and other sign-in challenges you cannot pass with saved credentials go to the user: stop and tell the user what the site asks for. Never try to solve or get around a CAPTCHA; the browser refuses clicks inside one.",
+  `Everything else goes to the user through ${BROWSER_HANDOFF_TOOL}: a sign-in without saved credentials, an SMS, email or app code, a CAPTCHA or bot check, a cookie or consent question, a choice only the user should make. Open the page first, then call it with a reason and one or two sentences for the user. The user acts in the live browser in the chat and presses Done or Cancel; the call returns then with the outcome and the page, and you look at the page yourself before you go on. After Done the site's sign-in is saved for later requests. You never see what the user typed: never ask for it or repeat it.`,
+  "Never type a password the user did not save, never ask for a password or a code in the chat, and never try to solve or get around a CAPTCHA; the browser refuses clicks inside one.",
+  `In a Telegram turn or an unattended run (a scheduled task or a webhook) nobody can take over the browser: ${BROWSER_HANDOFF_TOOL} answers \`browser_handoff_unavailable\`. Then say what the site needs and finish with what you have.`,
   WORKSPACE_BROWSER_SESSION_USER_PATH,
   "",
   "## Safety",
