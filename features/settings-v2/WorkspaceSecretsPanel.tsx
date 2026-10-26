@@ -231,7 +231,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
       <summary className="v2-focusable">How secrets work</summary>
       <div className="v2-settings-disclosure-body">
         <p>Saving a secret makes it available automatically when Workspace is on. Changes apply to the next accepted request.</p>
-        <p>Browser sessions are saved automatically after work in Workspace and contain sign-in cookies. Delete a session to remove that saved sign-in from your next Workspace request. You can also import a session after signing in manually.</p>
+        <p>Browser sessions keep you signed in to the websites the agent uses in Workspace; they hold sign-in cookies, never passwords. When a site needs you, the agent asks in the chat: sign in in the live browser there and press Done, and the session is saved here after the answer. Delete a session to remove that saved sign-in from your next Workspace request. Advanced: you can also import a Playwright storage_state JSON file.</p>
       </div>
     </details>
     {autosave ? <p className={`mt-3 break-words text-xs leading-5 ${autosave.attention ? "text-caution" : "text-ink-muted"}`} data-testid="workspace-browser-autosave">{autosave.text}</p> : null}
@@ -316,7 +316,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
             <span className="break-all text-xs text-ink-muted">{draft.fileName || `Up to ${draft.kind === "browser_session" ? browserLimit : fileLimit}; original bytes are preserved.`}</span>
           </label>{draft.kind === "browser_session" ? <>
             <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Session filename<input className={field} required value={draft.fileName} onChange={event => change({ fileName: event.target.value })} /></label>
-            <p className="text-xs leading-5 text-ink-muted">Import a Playwright storage_state JSON file with cookies and origins. Use a filename such as shop.example.json so Workspace can find the right site. {WORKSPACE_BROWSER_SESSION_LIMIT_TEXT}</p>
+            <p className="text-xs leading-5 text-ink-muted">Advanced: import a Playwright storage_state JSON file with cookies and origins. Usually you do not need this: sign in in the live browser of the chat when the agent asks. Use a filename such as shop.example.json so Workspace can find the right site. {WORKSPACE_BROWSER_SESSION_LIMIT_TEXT}</p>
           </> : null}</>}
           {error ? <div role="alert" className="text-sm text-critical"><p>{error}</p>
             <UiV2Button type="button" disabled={busy} onClick={() => void refresh()}>Refresh</UiV2Button>
