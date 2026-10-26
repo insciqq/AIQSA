@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import type { TelegramAdminCommand, TelegramAdminState, TelegramLinkCodeResponse } from "../../lib/contracts/telegram";
 import {
-  TELEGRAM_APPROVAL_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramAlwaysAllowLabel, telegramConnectedText
+  TELEGRAM_APPROVAL_COPY, TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramAlwaysAllowLabel, telegramConnectedText
 } from "../../lib/server/telegram/copy";
 import { createFakeTelegramBotApi, type FakeTelegramCall, type FakeTelegramMessage, type FakeTelegramUser } from "../support/fakeTelegramBotApi";
 import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
@@ -98,13 +98,20 @@ async function expectAnswer(since: number, text: string, timeout = REPLY_TIMEOUT
   }
 }
 
-/** Sends a scripted delete in the current chat and waits for its approval message and its answer. */
+/**
+ * Sends a scripted delete in the current chat. The turn stops at the call's
+ * approval, so its card is all Telegram shows: no answer, and no pointer to
+ * AIQSA once the run's delivery settled.
+ */
 async function askToDelete(id: string, timeout = REPLY_TIMEOUT_MS): Promise<FakeTelegramMessage> {
   const before = approvalMessages().length;
   const since = bot.calls().length;
   bot.inject.text(tgAlice, `Delete record ${id} [AIQSA_MCP_E2E:delete_record:${id}]`);
-  await expectAnswer(since, "MCP call finished: mcp_approval_required.", timeout);
-  await expect.poll(() => approvalMessages().length, { timeout: REPLY_TIMEOUT_MS }).toBe(before + 1);
+  await expect.poll(() => approvalMessages().length, { timeout }).toBe(before + 1);
+  const run = await latestRun();
+  await expect.poll(async () => (await prisma.telegramRunLink.findUnique({ select: { deliveryState: true }, where: { runId: run.id } }))
+    ?.deliveryState, { timeout: REPLY_TIMEOUT_MS }).toBe("delivered");
+  expect(textsSince(since)).not.toContain(TELEGRAM_BRIDGE_COPY.answerInAiqsa);
   return approvalMessages().at(-1)!;
 }
 

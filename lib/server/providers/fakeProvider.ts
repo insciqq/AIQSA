@@ -20,10 +20,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The run context the engine sends as a user item (last in an approval continuation): never the user's turn. */
+function turnContext(item: ProviderHistoryItem): boolean {
+  return item.type === "user" && item.text.startsWith("<turn_context>");
+}
+
 /** The native engine's history after its latest user turn: the current turn's tool results. */
 function historyToolResults(history: readonly ProviderHistoryItem[]): FakeToolResultMessage[] {
   let start = 0;
-  history.forEach((item, index) => { if (item.type === "user") start = index + 1; });
+  history.forEach((item, index) => { if (item.type === "user" && !turnContext(item)) start = index + 1; });
   return history.slice(start).flatMap((item): FakeToolResultMessage[] => {
     if (item.type !== "tool_result") return [];
     let content: FakeToolResultMessage["content"][number];
@@ -50,7 +55,8 @@ function fakeToolResults(request: ProviderRunRequest): FakeToolResultMessage[] {
  */
 function requestQuestion(request: ProviderRunRequest): string {
   if (!request.history) return textFromContentBlocks(request.content);
-  const users = request.history.filter((item): item is Extract<ProviderHistoryItem, { type: "user" }> => item.type === "user");
+  const users = request.history.filter((item): item is Extract<ProviderHistoryItem, { type: "user" }> =>
+    item.type === "user" && !turnContext(item));
   return (users.find((item) => item.currentInput) ?? users.at(-1))?.text ?? "";
 }
 
@@ -62,7 +68,8 @@ function requestQuestion(request: ProviderRunRequest): string {
 function callTurn(request: ProviderRunRequest): number {
   const history = request.history ?? [];
   const current = history.findIndex((item) => item.type === "user" && item.currentInput === true);
-  return current >= 0 ? current : history.reduce((latest, item, index) => item.type === "user" ? index : latest, 0);
+  return current >= 0 ? current
+    : history.reduce((latest, item, index) => item.type === "user" && !turnContext(item) ? index : latest, 0);
 }
 
 /** Test-only page-reader scenario: `first_link` reads the question's first link, `unlisted` a link it never had. */
