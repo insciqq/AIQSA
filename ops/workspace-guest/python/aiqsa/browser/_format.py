@@ -16,9 +16,9 @@ page text that looks like one is indented, and so is the turn's step list.
 from __future__ import annotations
 
 import html
-import json
+import html.entities
 import re
-from typing import Any, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote, quote_plus, urlsplit, urlunsplit
 
 STEP_PREFIX = "[browser #"
@@ -86,42 +86,132 @@ def without_userinfo(url: Any) -> Any:
     return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
 
 
+def _html_names() -> Dict[str, List[str]]:
+    names: Dict[str, List[str]] = {}
+    for name, text in html.entities.html5.items():
+        if len(text) == 1:
+            names.setdefault(text, []).append(name)
+    return names
+
+
+#: Every HTML5 entity name of one character (`/` is `&sol;`, `"` is `&quot;` or `&QUOT;`).
+_HTML_NAMES = _html_names()
+_JSON_SHORT = {'"': '\\"', "\\": "\\\\", "/": "\\/", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _hex(digits: str) -> str:
+    """Hex digits in either case."""
+    return "".join(f"[{digit.lower()}{digit.upper()}]" if digit.isalpha() else digit for digit in digits)
+
+
+def _spellings(char: str) -> Tuple[str, int]:
+    """A pattern for one character in any spelling a page or URL may use, and its longest match."""
+    code = ord(char)
+    options = [(re.escape(char), 1)]
+    if char == " ":
+        options.append((r"\+", 1))
+    encoded = char.encode("utf-8")
+    options.append(("".join("%" + _hex(f"{byte:02x}") for byte in encoded), 3 * len(encoded)))
+    if code > 0xFFFF:
+        high, low = 0xD800 + ((code - 0x10000) >> 10), 0xDC00 + ((code - 0x10000) & 0x3FF)
+        options.append((r"\\u" + _hex(f"{high:04x}") + r"\\u" + _hex(f"{low:04x}"), 12))
+    else:
+        options.append((r"\\u" + _hex(f"{code:04x}"), 6))
+    if char in _JSON_SHORT:
+        options.append((re.escape(_JSON_SHORT[char]), 2))
+    options.append((f"&#0{{0,8}}{code};", 3 + 8 + len(str(code))))
+    options.append((f"&#[xX]0{{0,8}}{_hex(f'{code:x}')};", 4 + 8 + len(f"{code:x}")))
+    for name in _HTML_NAMES.get(char, []):
+        options.append(("&" + re.escape(name), 1 + len(name)))
+    options.sort(key=lambda option: -len(option[0]))
+    return "(?:" + "|".join(pattern for pattern, _ in options) + ")", max(reach for _, reach in options)
+
+
 class HiddenValues:
     """Values typed from the environment in this turn: no answer of the browser carries them.
 
     The field such a value went into reads as a hidden value; this catches the value where the page
-    repeats it (an address after a GET form, a greeting, a script result), also URL- and JSON-escaped.
+    or an address repeats it, in any mix of the spellings per character: as is, percent-encoded in
+    either hex case (a space also as `+`), JSON-escaped (`\\uXXXX`, `\\/`) or as an HTML entity, named or
+    numeric. Callers mask raw page data before they normalize whitespace, replace quotes or cut it
+    (`page_string`, `page_items`, `page_text`); answers are masked once more as a whole. Best effort
+    (operator-accepted residual): a page that changes the value (case, partial echoes) is not caught.
     Values shorter than `MIN_CHARS` are not searched for: masking every such string would garble pages.
     """
 
     MIN_CHARS = 4
     MASK = "[hidden]"
+    #: Longer values are matched in their plain and percent-encoded spellings only.
+    PATTERN_CHARS = 512
 
     def __init__(self) -> None:
-        self.forms: List[str] = []
+        self.patterns: List[Tuple[int, Any]] = []
+        #: The most characters one hidden value can span in any spelling.
+        self.reach = 0
 
     def add(self, value: str) -> None:
-        if len(value) < self.MIN_CHARS:
+        if len(value) < self.MIN_CHARS or any(len(value) == size and pattern.fullmatch(value) for size, pattern in self.patterns):
             return
-        for form in (value, quote(value, safe=""), quote_plus(value), json.dumps(value, ensure_ascii=False)[1:-1],
-                     json.dumps(value)[1:-1], html.escape(value)):
-            if len(form) >= self.MIN_CHARS and form not in self.forms:
-                self.forms.append(form)
-        self.forms.sort(key=len, reverse=True)
+        if len(value) <= self.PATTERN_CHARS:
+            parts = [_spellings(char) for char in value]
+            pattern = re.compile("".join(part for part, _ in parts))
+            reach = sum(size for _, size in parts)
+        else:
+            forms = sorted({value, quote(value, safe=""), quote(value, safe="").lower(), quote_plus(value)}, key=len, reverse=True)
+            pattern = re.compile("|".join(re.escape(form) for form in forms))
+            reach = max(len(form) for form in forms)
+        self.patterns.append((len(value), pattern))
+        self.patterns.sort(key=lambda entry: -entry[0])
+        self.reach = max(self.reach, reach)
+
+    def text(self, value: str) -> str:
+        for _, pattern in self.patterns:
+            value = pattern.sub(self.MASK, value)
+        return value
+
+    def raw(self, value: str, truncated: bool = False) -> str:
+        """Raw page data cut by the page script: its tail may hold part of a value, so that goes first."""
+        if truncated and self.patterns:
+            value = value[:max(0, len(value) - self.reach)]
+        return self.text(value)
 
     def mask(self, value: Any) -> Any:
-        if not self.forms:
+        if not self.patterns:
             return value
         if isinstance(value, str):
-            for form in self.forms:
-                if form in value:
-                    value = value.replace(form, self.MASK)
-            return value
+            return self.text(value)
         if isinstance(value, dict):
             return {key: self.mask(item) for key, item in value.items()}
         if isinstance(value, list):
             return [self.mask(item) for item in value]
         return value
+
+
+#: Characters of a page-provided string the page script hands over: masking runs on them, display cuts follow.
+RAW_CHARS = 2000
+#: Characters of a name, value or link kept in an element list.
+ITEM_CHARS = 200
+
+
+def page_string(raw: Any, hidden: HiddenValues, limit: int, truncated: bool = False) -> str:
+    """A string from the page as the agent reads it: masked raw, then one line, then cut."""
+    return clean(hidden.raw(str(raw if raw is not None else ""), truncated), limit)
+
+
+def page_items(items: List[Dict[str, Any]], hidden: HiddenValues) -> List[Dict[str, Any]]:
+    """The element list's names, values and links, masked raw before they become one bounded line."""
+    for item in items:
+        cut = set(item.pop("cut", None) or [])
+        for key in ("name", "value", "href"):
+            if item.get(key) is not None:
+                item[key] = page_string(item[key], hidden, ITEM_CHARS, key in cut)
+    return items
+
+
+def page_text(raw: str, hidden: HiddenValues, start: int, limit: int) -> Tuple[str, int]:
+    """Visible text as `text` shows it: masked first, then whitespace-normalized, then paged."""
+    text = re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t\u00a0]+", " ", hidden.text(raw or ""))).strip()
+    return render_text(text, start, limit), len(text)
 
 
 def step_line(step: Mapping[str, Any]) -> str:

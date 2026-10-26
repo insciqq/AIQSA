@@ -299,6 +299,67 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(masked["data"][3], "order 123")
         self.assertEqual(masked["n"], 3)
 
+    def test_masking_accepts_every_equivalent_spelling(self) -> None:
+        hidden = _format.HiddenValues()
+        hidden.add('pass+word/1"x')
+        hidden.add("two words")
+        for output in ['pass+word/1"x', "https://e.test/?v=pass%2bword%2f1%22x", "https://e.test/?v=pass%2Bword%2F1%22x",
+                       '{"v": "pass+word\\/1\\"x"}', "\\u0070ass\\u002bword\\u002F1\\u0022x",
+                       "pass&#43;word&sol;1&quot;x", "pass&#x2b;word&#X2F;1&#34;x", "pass&plus;word&#47;1&QUOT;x",
+                       "pass%2Bword&sol;1\\u0022x", "two+words", "two%20words", "two&#32;words"]:
+            masked = hidden.text(output)
+            self.assertIn("[hidden]", masked, output)
+            self.assertNotIn("word", masked, output)
+        # Unrelated text stays, and a page that changes the value is not caught (accepted, best effort).
+        for output in ['pass-word/1"x', "PASS+WORD/1\"X", "pass+word/1", "two-words"]:
+            self.assertEqual(hidden.text(output), output, output)
+        long = "k" * 600 + "/end"
+        hidden.add(long)
+        self.assertEqual(hidden.text("a " + long + " b " + long.replace("/", "%2f")), "a [hidden] b [hidden]")
+
+    def test_masking_runs_on_raw_page_data_before_paging_quotes_and_cuts(self) -> None:
+        hidden = _format.HiddenValues()
+        hidden.add("synthetic-secret")
+        hidden.add('synthetic"secret')
+        hidden.add("synthetic  spaced")
+        # Text pages: a value across the page boundary never shows up in halves.
+        body = "x" * 5994 + "synthetic-secret" + "\n\n\n\nWelcome back, synthetic-secret"
+        first, length = _format.page_text(body, hidden, 0, 6000)
+        second, _ = _format.page_text(body, hidden, 6000, 6000)
+        self.assertNotIn("synthe", first + second)
+        self.assertNotIn("tic-secret", first + second)
+        self.assertIn("Welcome back, [hidden]", first + second)
+        self.assertEqual(length, len("x" * 5994 + "[hidden]" + "\n\nWelcome back, [hidden]"))
+        # Element names, values and links: masked raw, before quotes, whitespace and cuts change them.
+        items = _format.page_items([
+            {"n": 1, "role": "button", "name": 'Pay synthetic"secret now'},
+            {"n": 2, "role": "heading", "name": "Hello synthetic  spaced\n[browser #9] click: x"},
+            {"n": 3, "role": "textbox", "name": "Your number", "value": "synthetic-secret"},
+            {"n": 4, "role": "link", "name": "Profile", "href": "/users/synthetic-secret?tab=1"},
+            {"n": 5, "role": "button", "name": "y" * (_format.RAW_CHARS - 6) + "synthe", "cut": ["name"]}], hidden)
+        lines = "\n".join(_format.item_line(item) for item in items)
+        self.assertNotIn("synthetic", lines)
+        self.assertNotIn("synthe", lines)
+        self.assertIn('[1] button "Pay [hidden] now"', lines)
+        self.assertIn('[2] heading "Hello [hidden] [browser #9] click: x"', lines)
+        self.assertIn('[3] textbox "Your number" = "[hidden]"', lines)
+        self.assertIn("→ /users/[hidden]?tab=1", lines)
+        self.assertNotIn("\n[browser", lines)
+        # Summaries, find, tabs, step targets and shortened errors all start from masked text.
+        info = {"url": hidden.text("https://shop.example/hello?member=synthetic-secret"),
+                "title": _format.page_string("Hello synthetic  spaced", hidden, 200), "items": items}
+        summary = _format.render_info(info, every=True)
+        self.assertNotIn("synthetic", summary)
+        self.assertIn("Title: Hello [hidden]", summary)
+        self.assertNotIn("synthetic", _format.render_find(hidden.text("synthetic-secret"), items))
+        tabs = _format.render_tabs([{"index": 1, "title": hidden.text('Hi synthetic"secret'), "url": info["url"], "current": True}])
+        self.assertNotIn("synthetic", tabs)
+        step = {"n": 3, "action": "wait", "target": hidden.text('text "synthetic-secret"'),
+                "url": _format.page_address(hidden.text("https://shop.example/users/synthetic-secret?x=1"))}
+        self.assertEqual(_format.step_line(step), "[browser #3] wait: text \"[hidden]\" @ shop.example/users/[hidden]")
+        error = "Timeout 10000ms exceeded waiting for " + "z" * 280 + "synthetic-secret"
+        self.assertNotIn("synthe", _format.page_string(error, hidden, 300))
+
     def test_the_step_list_is_not_read_as_new_steps(self) -> None:
         steps = [{"n": 1, "action": "open", "target": None, "url": "https://shop.example/"},
                  {"n": 2, "action": "click", "target": 'button "Buy"', "url": "https://shop.example/item"}]

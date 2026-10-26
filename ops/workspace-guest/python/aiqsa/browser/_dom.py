@@ -5,8 +5,12 @@ order (open shadow roots included) and returns them with the elements
 themselves, which the browser host keeps as handles. An element that is still
 on the page keeps its number from the previous list of the same document, so
 a number the agent read a few steps ago still means the same element. Fields
-the agent filled from the environment (`options.masked`) read as hidden values,
-and every name and value is one line: page text cannot pose as a step line.
+the agent filled from the environment (`options.masked`) read as hidden values.
+Names, values, links and the title come back raw (whitespace kept, at most
+`options.raw` characters, with `cut` naming what was shortened): the host masks
+values typed from the environment first, then makes each one bounded line
+(`_format.page_items`), so page text can neither hide a value from the mask
+nor pose as a step line. Page scripts never receive those values.
 """
 
 COLLECT = r"""
@@ -21,13 +25,13 @@ COLLECT = r"""
   const previous = new Map();
   if (options.previous) options.previous.elements.forEach((el, index) => previous.set(el, options.previous.numbers[index]));
   const masked = new Set(options.masked || []);
+  const RAW = options.raw || 2000;
   let next = options.next;
   const vw = window.innerWidth, vh = window.innerHeight;
   const items = [], elements = [], numbers = [];
   let truncated = false;
-  const textOf = (node) => ((node && (node.innerText || node.textContent)) || '').replace(/\s+/g, ' ').trim();
-  const line = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const cut = (value, n) => { const text = line(value); return text.length > n ? text.slice(0, n) : text; };
+  const textOf = (node) => (node && (node.innerText || node.textContent)) || '';
+  const filled = (value) => String(value || '').trim().length > 0;
   const CONTROLS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON']);
   // A label's own words: a control inside it (a list box's options, a field's value) is not its name.
   function labelText(label) {
@@ -39,19 +43,19 @@ COLLECT = r"""
       }
     };
     walk(label);
-    return parts.join(' ').replace(/\s+/g, ' ').trim();
+    return parts.join(' ');
   }
   function nameOf(el) {
     let value = el.getAttribute('aria-label');
-    if (value && value.trim()) return value.trim();
+    if (filled(value)) return value;
     const labelledBy = el.getAttribute('aria-labelledby');
     if (labelledBy) {
-      value = labelledBy.split(/\s+/).map((id) => textOf(el.ownerDocument.getElementById(id))).join(' ').trim();
-      if (value) return value;
+      value = labelledBy.split(/\s+/).map((id) => textOf(el.ownerDocument.getElementById(id))).join(' ');
+      if (filled(value)) return value;
     }
     if (el.labels && el.labels.length) {
-      value = Array.from(el.labels).map(labelText).join(' ').trim();
-      if (value) return value;
+      value = Array.from(el.labels).map(labelText).join(' ');
+      if (filled(value)) return value;
     }
     const tag = el.tagName;
     if (tag === 'INPUT') {
@@ -62,11 +66,11 @@ COLLECT = r"""
     }
     if (tag === 'TEXTAREA' || tag === 'SELECT') return el.placeholder || el.title || el.getAttribute('name') || '';
     value = textOf(el);
-    if (!value) {
+    if (!filled(value)) {
       const image = el.querySelector('img[alt]');
-      if (image) value = image.alt.trim();
+      if (image) value = image.alt;
     }
-    return value || el.title || el.getAttribute('alt') || '';
+    return filled(value) ? value : (el.title || el.getAttribute('alt') || '');
   }
   function roleOf(el) {
     const role = el.getAttribute('role');
@@ -88,7 +92,14 @@ COLLECT = r"""
   function describe(el, rect) {
     let number = previous.get(el);
     if (number === undefined) number = next++;
-    const item = { n: number, role: roleOf(el), name: cut(nameOf(el), 200) };
+    const cut = [];
+    const take = (value, key) => {
+      const text = String(value == null ? '' : value);
+      if (text.length <= RAW) return text;
+      cut.push(key);
+      return text.slice(0, RAW);
+    };
+    const item = { n: number, role: roleOf(el), name: take(nameOf(el), 'name') };
     const tag = el.tagName;
     const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') item.disabled = true;
@@ -97,15 +108,15 @@ COLLECT = r"""
       if (type === 'checkbox' || type === 'radio') item.checked = el.checked;
       else if (type === 'file') item.files = el.files ? el.files.length : 0;
       else if (type === 'password' || /one-time-code|cc-|password/.test(autocomplete)) { item.secret = true; item.filled = el.value.length > 0; }
-      else if (!['submit', 'button', 'reset', 'image'].includes(type)) item.value = cut(el.value, 200);
+      else if (!['submit', 'button', 'reset', 'image'].includes(type)) item.value = take(el.value, 'value');
       if (type === 'search') item.search = true;
     } else if (tag === 'TEXTAREA') {
-      item.value = cut(el.value, 200);
+      item.value = take(el.value, 'value');
     } else if (tag === 'SELECT') {
-      item.value = cut(Array.from(el.selectedOptions).map((option) => option.textContent.trim()).join(', '), 200);
+      item.value = take(Array.from(el.selectedOptions).map((option) => option.textContent).join(', '), 'value');
       item.select = true;
     } else if (el.isContentEditable) {
-      item.value = cut(textOf(el), 200);
+      item.value = take(textOf(el), 'value');
     }
     if (item.role === 'searchbox') item.search = true;
     if (masked.has(el)) {
@@ -124,10 +135,11 @@ COLLECT = r"""
       try {
         const url = new URL(el.href, document.baseURI);
         if (url.protocol === 'http:' || url.protocol === 'https:') {
-          item.href = url.origin === location.origin ? url.pathname + url.search : url.host + url.pathname;
+          item.href = take(url.origin === location.origin ? url.pathname + url.search : url.host + url.pathname, 'href');
         }
       } catch (error) { /* no link shown */ }
     }
+    if (cut.length) item.cut = cut;
     item.position = rect.bottom <= 0 ? 'above' : rect.top >= vh ? 'below' : 'screen';
     item.inView = item.position === 'screen' && rect.right > 0 && rect.left < vw;
     elements.push(el);
@@ -163,13 +175,13 @@ COLLECT = r"""
     if (items.length >= max) { truncated = true; break; }
     if (el.querySelector(STRONG)) continue;
     const rect = rendered(el);
-    if (!rect || !nameOf(el)) continue;
+    if (!rect || !filled(nameOf(el))) continue;
     describe(el, rect);
   }
   const scroller = document.scrollingElement || document.documentElement;
   return {
     items, elements, numbers, next, truncated,
-    title: line(document.title),
+    title: String(document.title || '').slice(0, RAW), titleCut: String(document.title || '').length > RAW,
     scroll: { y: Math.round(scroller ? scroller.scrollTop : 0), height: Math.round(scroller ? scroller.scrollHeight : 0), viewport: [vw, vh] },
     loading: document.readyState !== 'complete'
   };
@@ -218,8 +230,9 @@ CAPTCHA_FRAMES = [
     ("DataDome challenge", ("captcha-delivery.com/",)),
 ]
 
+#: Visible text, raw: the host masks it, then normalizes whitespace and pages it (`_format.page_text`).
 TEXT = r"""
-(el) => ((el || document.body || document.documentElement).innerText || '').replace(/[ \t ]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+(el) => (el || document.body || document.documentElement).innerText || ''
 """
 
 SCROLL = r"""

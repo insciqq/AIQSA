@@ -8,6 +8,7 @@ image, or the Playwright Python image on the dev server), never on a workstation
 
 from __future__ import annotations
 
+import html
 import importlib.util
 import io
 import json
@@ -16,7 +17,9 @@ import sys
 import tempfile
 import threading
 import time
+import re
 import unittest
+import urllib.parse
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -95,9 +98,12 @@ class Fixture(BaseHTTPRequestHandler):
         if self.path == "/report.txt":
             return self.reply("report", ctype="text/plain", headers={"content-disposition": 'attachment; filename="report.txt"'})
         if self.path.startswith("/hello?"):
-            member = self.path.split("member=", 1)[-1]
-            return self.reply(f"<!doctype html><title>Hello</title><p>Welcome back, member {member}</p>"
-                              f"<input aria-label='Your number' value='{member}'>")
+            # Greets the member with the number the form sent, everywhere a page may repeat it.
+            member = html.escape(urllib.parse.unquote_plus(self.path.split("member=", 1)[-1]), quote=True)
+            return self.reply(f"<!doctype html><title>Hello {member}</title><p>Welcome back, member {member}</p>"
+                              f"<input aria-label='Your number' value='{member}'><button aria-label=\"Pay {member}\">x</button>"
+                              "<button onclick=\"alert('Hi ' + document.querySelector('input').value)\">Greet</button>"
+                              f"<p>{'y' * 5990}{member}</p>")
         if self.path in PAGES:
             return self.reply(PAGES[self.path])
         return self.reply("<!doctype html><title>Missing</title>", status=404)
@@ -380,6 +386,29 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertIn("member=[hidden]", str(shown))
         self.assertIn("Welcome back, member [hidden]", browser.text())
         self.assertNotIn("4711", json.dumps([step for step in browser.steps().splitlines() if "@" in step]))
+
+    def test_7c_a_saved_value_with_quotes_spaces_and_escapes_stays_hidden(self) -> None:
+        from aiqsa import browser
+
+        secret = 'zq"x  4/1+9'
+        page = self.quiet(browser.open, self.base + "/member")
+        with mock.patch.dict(os.environ, {"MEMBER_SECRET": secret}):
+            shown = self.quiet(browser.type, self.item(page, "Member number")["n"], env="MEMBER_SECRET", submit=True)
+        outputs = [self.printed, str(shown), json.dumps(shown.items)]
+        self.assertIn("Title: Hello [hidden]", str(shown))
+        self.assertIn("member=[hidden]", str(shown))
+        self.assertIn('"Pay [hidden]"', str(shown))
+        length = int(re.search(r"continue with start=(\d+)", browser.text()).group(1)) + 6000
+        for start in range(0, length, 997):
+            outputs.append(browser.text(start=start))
+        greet = self.quiet(browser.click, self.item(shown, "Greet")["n"])
+        self.assertIn('alert dialog was accepted: "Hi [hidden]"', str(greet))
+        outputs += [str(greet), browser.js("document.title"), browser.js("location.href"), browser.tabs(),
+                    str(browser.find(secret)), browser.steps()]
+        everything = "\n".join(outputs)
+        for spelling in (secret, "zq'x  4/1+9", 'zq"x 4/1+9', "zq'x 4/1+9", "zq%22x", "4%2F1", '\\"x', "4\\/1", "4/1+9", "zq"):
+            self.assertNotIn(spelling, everything, spelling)
+        self.assertIn('Elements matching "[hidden]"', everything)
 
     def test_8_the_browser_shows_no_automation_markers(self) -> None:
         from aiqsa import browser
