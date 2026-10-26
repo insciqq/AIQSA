@@ -494,12 +494,11 @@ describe("native run execution", () => {
   });
 
   it.each([
+    // An hour, with 51 minutes for tools with or without a Workspace (`turnDeadline.ts`).
     { name: "an interactive turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: null },
-    // The default Workspace turn: an hour, with 54 minutes for tools (`workspaceTurnDeadline.ts`).
     { name: "an interactive Workspace turn", scheduled: false, toolRounds: 7, workspaceTurnSeconds: 3_600 },
-    // The scheduler stops a scheduled run 30 minutes after admission: its tools close 25 minutes in.
-    { name: "a scheduled run", scheduled: true, toolRounds: 4, workspaceTurnSeconds: null },
-    // As a 30-minute Workspace turn: 24 minutes.
+    // The scheduler stops a scheduled run 30 minutes after admission: its tools close 21 minutes in.
+    { name: "a scheduled run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: null },
     { name: "a scheduled Workspace run", scheduled: true, toolRounds: 3, workspaceTurnSeconds: 3_600 }
   ])("ends $name without tool limits at its time deadline with the forced final answer", async ({
     scheduled, toolRounds, workspaceTurnSeconds
@@ -559,15 +558,16 @@ describe("native run execution", () => {
       mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
       prepared: prepared({ mcp: snapshot, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null } }),
       repository: repository() as unknown as RunRepository, scheduled: true, services: {}, userId: "user" }));
-    // Admitted ten minutes before it started: its tools close fifteen minutes in.
+    // Admitted ten minutes before it started: its tools close eleven minutes in, not 21.
     expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
     expect(memory.published()).toBe("Done.");
   });
 
   it.each([
-    // Default turns on the real clock and deadline timers: tools may start until 55 minutes in, 54 with a Workspace.
-    { batchRound: 82, softDeadlineMs: 55 * 60_000, workspace: false },
-    { batchRound: 80, softDeadlineMs: 54 * 60_000, workspace: true }
+    // Default turns on the real clock and deadline timers: tools may start until 51 minutes in, with or without a
+    // Workspace. The batch round returns at 50:40.
+    { batchRound: 76, softDeadlineMs: 51 * 60_000, workspace: false },
+    { batchRound: 76, softDeadlineMs: 51 * 60_000, workspace: true }
   ])("starts no call of a late batch after the tool time and answers before the deadline (Workspace=$workspace)", async ({
     batchRound, softDeadlineMs, workspace
   }) => {
@@ -613,6 +613,71 @@ describe("native run execution", () => {
       expect(callTool).toHaveBeenCalledTimes(batchRound - 1 + 4);
       expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(4);
       expect(choices.slice(batchRound)).toEqual(["none"]);
+      expect(memory.published()).toBe("Done");
+      expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    // Tools may start until 51 minutes in, with or without a Workspace: the last call starts three seconds before.
+    { callSeconds: 300, label: "a 300 s call started just before the tool time", lastStartSeconds: 3_057, roundSeconds: 73,
+      serverTimeoutMs: null, workspace: false },
+    { callSeconds: 300, label: "a 300 s call started just before the tool time", lastStartSeconds: 3_057, roundSeconds: 73,
+      serverTimeoutMs: null, workspace: true },
+    // The old five- and six-minute reserves started one more call at 53:20, which then ran into the deadline.
+    { callSeconds: 300, label: "the 300 s call the old reserve would still start", lastStartSeconds: 2_850, roundSeconds: 50,
+      serverTimeoutMs: null, workspace: false },
+    { callSeconds: 300, label: "the 300 s call the old reserve would still start", lastStartSeconds: 2_850, roundSeconds: 50,
+      serverTimeoutMs: null, workspace: true },
+    // A server whose own call timeout is ten minutes moves the tool time to 46 minutes.
+    { callSeconds: 600, label: "a 600 s call of a server with a ten-minute timeout", lastStartSeconds: 2_190, roundSeconds: 330,
+      serverTimeoutMs: 600_000, workspace: false }
+  ])("leaves a forced tool-free answer before the deadline after $label (Workspace=$workspace)", async ({
+    callSeconds, lastStartSeconds, roundSeconds, serverTimeoutMs, workspace
+  }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const startedAt = Date.now();
+      const choices: string[] = [];
+      const starts: number[] = [];
+      // Every call uses its whole timeout; a round with tools takes `roundSeconds`, the tool-free answer two minutes.
+      const adapter: ProviderAdapter = {
+        buildRequestPreview: () => ({}),
+        async *stream(request): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+          choices.push(request.toolChoice ?? "auto");
+          const answering = request.toolChoice === "none";
+          await new Promise((resolve) => setTimeout(resolve, (answering ? 120 : roundSeconds) * 1_000));
+          return { finalProviderResponsePreview: {}, finalText: answering ? "Done" : "", usage: {},
+            toolCalls: answering ? [] : [{ arguments: { key: `A-${choices.length}` }, id: `call-${choices.length}`,
+              name: "mcp_jira_get_issue" }] };
+        }
+      };
+      const callTool = vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
+        starts.push(Date.now() - startedAt);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, callSeconds * 1_000);
+          signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+        });
+        return { isError: false, text: ["open"], unsupportedContentTypes: [] };
+      });
+      const mcp: McpRunPlanSnapshot = serverTimeoutMs === null ? snapshot : { ...snapshot, servers: snapshot.servers.map((server) => ({
+        ...server, runtimeTimeouts: { callTimeoutMs: serverTimeoutMs, startupTimeoutMs: 60_000 } })) };
+      const memory = memoryEngine();
+      const reading = events(createNativeRunExecutionResponse({ adapter, created: { ...created, acceptedAt: new Date(startedAt) },
+        engine: memory.engine, mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: prepared({ mcp, toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: null, maxToolRounds: null },
+          ...(workspace ? { workspace: { enabled: true, syncToolTimeoutSeconds: 120,
+            turnTimeoutSeconds: 3_600 } as ProviderRunRequest["workspace"] } : {}) }),
+        repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+      // Well past the hour, so a run the deadline ended also settles and fails the checks below rather than hanging.
+      await vi.advanceTimersByTimeAsync(70 * 60_000);
+      const result = await reading;
+      // The last call started in time ran its whole timeout; the next round answered without tools, before the deadline.
+      expect(Math.max(...starts)).toBe(lastStartSeconds * 1_000);
+      expect(choices).toEqual([...Array<string>(starts.length).fill("auto"), "none"]);
       expect(memory.published()).toBe("Done");
       expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
     } finally {
