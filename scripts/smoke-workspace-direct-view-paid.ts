@@ -8,10 +8,13 @@
  * 2. sets up the codex-lb Responses route with `vision: true`, so its setup
  *    runs the real image-input probe, and requires the verified evidence the
  *    System Vision candidates show; assigns System Vision to that route;
- * 3. sets up a text-only chat model: an OpenRouter model whose listing takes
- *    text only, through OpenRouter's OpenAI-compatible Chat endpoint, or
- *    without an OpenRouter key the codex-lb route a second time with vision
- *    unverified;
+ * 3. sets up a text-only chat model: an OpenRouter model through OpenRouter's
+ *    OpenAI-compatible Chat endpoint. Setup runs every probe and enables
+ *    what passes, so its image input must stay unverified: a listing that
+ *    says text only is not enough, since OpenRouter sends an image to
+ *    whichever of the model's endpoints reads one (DeepSeek V4 Flash passed
+ *    the probe that way), and a model with no image-reading endpoint, such
+ *    as gpt-oss, is needed. For the same reason no codex-lb model can serve;
  * 4. in a chat with the vision model, has the agent run a fixed program that
  *    draws a random code into a PNG of the turn's output directory and writes
  *    only the code's SHA-256 beside it, then read the code from the image;
@@ -32,7 +35,7 @@
  * - AIQSA_DIRECT_VIEW_DATABASE_URL (the stand's PostgreSQL on loopback; read-only queries)
  * - AIQSA_DIRECT_VIEW_ADMIN_EMAIL, AIQSA_DIRECT_VIEW_ADMIN_PASSWORD (the stand's initial administrator)
  * - CODEX_LB_API_KEY, CODEX_LB_BASE_URL (the OpenAI-compatible root), AIQSA_DIRECT_VIEW_CODEX_MODEL
- * - OPENROUTER_API_KEY and AIQSA_DIRECT_VIEW_TEXT_MODEL (optional, see 3.)
+ * - OPENROUTER_API_KEY and AIQSA_DIRECT_VIEW_TEXT_MODEL (see 3.)
  */
 import { createHash, randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
@@ -166,14 +169,12 @@ function config() {
   const required = (name: string) => env[name]?.trim() || fail("config", `${name.toLowerCase()}_required`);
   const codexRoot = new URL(required("CODEX_LB_BASE_URL"));
   if (codexRoot.protocol !== "https:") fail("config", "codex_lb_https_required");
-  const textModel = env.AIQSA_DIRECT_VIEW_TEXT_MODEL?.trim();
-  const openRouterKey = env.OPENROUTER_API_KEY?.trim();
   return {
     adminEmail: required("AIQSA_DIRECT_VIEW_ADMIN_EMAIL"), adminPassword: required("AIQSA_DIRECT_VIEW_ADMIN_PASSWORD"), baseUrl,
     codex: { apiKey: required("CODEX_LB_API_KEY"), apiRoot: codexRoot.toString().replace(/\/$/u, ""),
       model: required("AIQSA_DIRECT_VIEW_CODEX_MODEL") },
     databaseUrl: database.toString(),
-    textOnly: textModel && openRouterKey ? { apiKey: openRouterKey, model: textModel } : null
+    textOnly: { apiKey: required("OPENROUTER_API_KEY"), model: required("AIQSA_DIRECT_VIEW_TEXT_MODEL") }
   };
 }
 
@@ -349,8 +350,9 @@ async function scenario(api: Api, db: PrismaClient, input: Readonly<{ model: Cat
     const hash = await writtenHash(api, index === 0 ? message : (await chatDetail(api, chatId)).messages
       .find((entry) => entry.artifactSummary?.generatedFiles?.some((file) => file.fileName === "code.sha256")) ?? message);
     const facts = message.modelRunId ? await runFacts(db, message.modelRunId) : null;
-    // The next message is admitted only once the Workspace settled this turn (its export and its operation).
-    if (message.modelRunId) {
+    // The next message is admitted only once the Workspace settled this turn (its export and its operation); a turn
+    // that did not complete is reported as it ended, without waiting for an export.
+    if (message.modelRunId && message.status === "complete") {
       await poll("turn", 300_000, async () => (await db.workspaceRunBinding.findUnique({ select: { exportState: true },
         where: { modelRunId: message.modelRunId! } }))?.exportState === "COMPLETE" ? true : null, "workspace_export_not_settled");
     }
@@ -386,13 +388,12 @@ async function main() {
     if (!evidence.verified) fail("vision", "vision_input_not_verified");
     await json(api, "vision", "/api/admin/providers/system-model-policy", { body: { expectedVersion: evidence.version,
       visionProviderModelId: vision.providerModelId, visionReasoningEffort: "low" }, method: "PATCH" });
-    const textRoute = settings.textOnly
-      ? { apiRoot: "https://openrouter.ai/api/v1", label: "text-only openrouter", model: settings.textOnly.model,
-        protocol: "chat_completions" as const, privateNetwork: false, secret: settings.textOnly.apiKey }
-      : { apiRoot: settings.codex.apiRoot, label: "text-only codex-lb", model: settings.codex.model, protocol: "responses" as const,
-        privateNetwork: true, secret: settings.codex.apiKey };
-    const textOnly = await setUp(api, { ...textRoute, contextWindow: 128_000, vision: false });
-    emit({ stage: "text_only_route", route: settings.textOnly ? "openrouter" : "codex-lb-unverified" });
+    const textOnly = await setUp(api, { apiRoot: "https://openrouter.ai/api/v1", contextWindow: 128_000, label: "text-only openrouter",
+      model: settings.textOnly.model, protocol: "chat_completions", privateNetwork: false, secret: settings.textOnly.apiKey, vision: false });
+    const textOnlyReadsImages = (await visionVerified(api, textOnly)).verified;
+    emit({ stage: "text_only_route", visionVerified: textOnlyReadsImages });
+    // Setup enables every capability its probes verify, so a model that read the probe image is no text-only model.
+    if (textOnlyReadsImages) fail("vision", "text_only_model_reads_images");
 
     const direct = await scenario(api, db, { model: await catalogModel(api, vision), name: "vision", prompts: [VIEW_PROMPT, AGAIN_PROMPT] });
     const indirect = await scenario(api, db, { model: await catalogModel(api, textOnly), name: "text-only", prompts: [ANALYZE_PROMPT] });
@@ -400,8 +401,7 @@ async function main() {
       (turn.viewComplete ?? 0) >= 1 && turn.transcriptImageResults === turn.viewComplete && (turn.largestTranscriptItemBytes ?? 0) < 65_536) &&
       indirect.every((turn) => turn.status === "complete" && turn.answerMatches && !turn.workspaceImageView && turn.viewCalls === 0 &&
         (turn.analyzeComplete ?? 0) >= 1);
-    emit({ status: passed ? "passed" : "failed", elapsedSeconds: Math.round((Date.now() - started) / 1000),
-      textOnlyRoute: settings.textOnly ? "openrouter" : "codex-lb-unverified" });
+    emit({ status: passed ? "passed" : "failed", elapsedSeconds: Math.round((Date.now() - started) / 1000) });
     if (!passed) process.exitCode = 1;
   } finally {
     await db.$disconnect();
