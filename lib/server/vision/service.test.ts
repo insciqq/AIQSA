@@ -84,6 +84,13 @@ describe("shared System Vision boundary", () => {
     expect(JSON.stringify(f.store.dispatch.mock.calls)).not.toContain("AAID");
     expect(f.captures.release).toHaveBeenCalledOnce();
   });
+  it("starts the run's Workspace before capturing, so an analysis needs no command before it", async () => {
+    const f = fixture();
+    const prepareWorkspace = vi.fn(async (_signal?: AbortSignal) => undefined);
+    expect((await f.service.execute(f.call, { ...f.context, prepareWorkspace })).status).toBe("complete");
+    expect(prepareWorkspace).toHaveBeenCalledOnce();
+    expect(prepareWorkspace.mock.invocationCallOrder[0]!).toBeLessThan(f.captures.create.mock.invocationCallOrder[0]!);
+  });
   it.each(["vision_model_absent", "vision_model_unavailable"] as const)("returns %s without any file or provider I/O", async code => {
     const f = fixture(); f.context.request.visionAnalysis = { version: 1, available: false, code };
     expect(JSON.stringify(await f.service.execute(f.call, f.context))).toContain(code);

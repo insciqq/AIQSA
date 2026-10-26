@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { responsesHistoryFromOutput } from "../../providers/history";
-import { COMPACTION_SUMMARY_HEADING, IMAGE_NOT_ATTACHED_NOTE, projectTranscript, type TranscriptItem } from "../transcript";
+import { COMPACTION_SUMMARY_HEADING, IMAGE_REFERENCE_NOTE, projectTranscript, type TranscriptItem } from "../transcript";
 import {
   compact,
   COMPACTION_DEFAULTS,
@@ -252,7 +252,14 @@ describe("viewed images", () => {
     expect((await compact(input(chat, keep, native.call))).ok).toBe(true);
     const result = native.requests[0]!.history.find((item) => item.type === "tool_result");
     expect(result).toEqual({ callId, name: "view_workspace_image", type: "tool_result",
-      output: `Preview of /workspace/project/code.png: 10×8 pixels of the 20×16 image.\n\n${IMAGE_NOT_ATTACHED_NOTE}` });
+      output: `Preview of /workspace/project/code.png: 10×8 pixels of the 20×16 image.\n\n${IMAGE_REFERENCE_NOTE}` });
+
+    // The figures before count the preview the run's requests carry; the summarizer still sees none of it.
+    const held = { attached: () => ({ image: { data: "UElYRUxT", mimeType: "image/png" as const }, tokens: 9_000 }), note: "[note]" };
+    const counted = fakeCall(summaryReply());
+    const withPreview = await compact(input(chat, keep, counted.call, { images: held, path: "summary" }));
+    expect(withPreview.metadata.tokensBefore - summarized.metadata.tokensBefore).toBe(9_000 - charTokens(IMAGE_REFERENCE_NOTE));
+    expect(requestText(counted.requests[0]!)).not.toContain("UElYRUxT");
   });
 });
 

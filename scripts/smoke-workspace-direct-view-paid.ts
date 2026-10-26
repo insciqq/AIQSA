@@ -20,7 +20,9 @@
  *    only the code's SHA-256 beside it, then read the code from the image;
  *    passes when the run viewed it with `view_workspace_image`, the answer's
  *    code hashes to the written hash, and the transcript keeps the image by
- *    reference only. A second turn has it look again;
+ *    reference only. The agent also copies the image into the project, and a
+ *    second turn has it look at that copy again with the view as the turn's
+ *    first call, before any Workspace command;
  * 5. in a chat with the text-only model, the same program: passes when the
  *    run was admitted without direct view, never called it, analyzed the
  *    image through `analyze_image` (System Vision) and answered the code.
@@ -93,12 +95,12 @@ const TASK = "Please do this in the Workspace. Save the Python program below as 
   "this turn's output directory as its only argument. It draws a random code into code.png in that directory and writes only " +
   "a SHA-256 hash of the code to code.sha256; it prints nothing. Do not change the program, do not print, decode or OCR the " +
   "code with any program, and do not read code.sha256.";
-const VIEW_PROMPT = `${TASK} Then look at code.png yourself and reply with exactly one line: CODE: followed by the six ` +
-  `characters you see.\n\n\`\`\`python\n${PROGRAM}\`\`\``;
+const VIEW_PROMPT = `${TASK} Then look at code.png yourself, copy it to /workspace/project/code.png, and reply with exactly one ` +
+  `line: CODE: followed by the six characters you see.\n\n\`\`\`python\n${PROGRAM}\`\`\``;
 const ANALYZE_PROMPT = `${TASK} Then find out which code the image shows and reply with exactly one line: CODE: followed by ` +
   `the six characters.\n\n\`\`\`python\n${PROGRAM}\`\`\``;
-const AGAIN_PROMPT = "Look at the code.png image from your previous answer once more (it is among this chat's Workspace files) " +
-  "and reply with exactly one line: CODE: followed by the six characters you see now.";
+const AGAIN_PROMPT = "Look at /workspace/project/code.png once more: view it with view_workspace_image as your very first step, " +
+  "before any other tool, and reply with exactly one line: CODE: followed by the six characters you see now.";
 
 type Stage = "auth" | "config" | "evidence" | "provider_setup" | "turn" | "vision" | "workspace";
 
@@ -330,13 +332,18 @@ async function runFacts(db: PrismaClient, runId: string) {
   const results = items.filter((item) => item.kind === "tool_result");
   const imageResults = results.filter((item) => record(item.body) && Object.hasOwn(item.body, "image"));
   const request = record(run?.normalizedRequest) ? run.normalizedRequest : {};
+  // The run's first call: a view before any Workspace command needs the run to start its Workspace itself.
+  const first = await db.modelRunToolCall.findFirst({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+    select: { state: true, toolName: true }, where: { modelRunId: runId } });
   return {
     analyzeCalls: count("analyze_image"), analyzeComplete: count("analyze_image", "complete"),
     // The transcript keeps references: no stored item is anywhere near a preview's size.
     largestTranscriptItemBytes: Math.max(0, ...items.map((item) => Buffer.byteLength(JSON.stringify(item.body)))),
     status: run?.status ?? null, toolCalls: calls.reduce((total, entry) => total + entry._count._all, 0),
     transcriptImageResults: imageResults.length, viewCalls: count("view_workspace_image"),
-    viewComplete: count("view_workspace_image", "complete"), workspaceImageView: request.workspaceImageView === true
+    viewComplete: count("view_workspace_image", "complete"), viewFirst: first?.toolName === "view_workspace_image",
+    viewFirstComplete: first?.toolName === "view_workspace_image" && first.state === "complete",
+    workspaceImageView: request.workspaceImageView === true
   };
 }
 
@@ -397,8 +404,10 @@ async function main() {
 
     const direct = await scenario(api, db, { model: await catalogModel(api, vision), name: "vision", prompts: [VIEW_PROMPT, AGAIN_PROMPT] });
     const indirect = await scenario(api, db, { model: await catalogModel(api, textOnly), name: "text-only", prompts: [ANALYZE_PROMPT] });
-    const passed = direct.every((turn) => turn.status === "complete" && turn.answerMatches && turn.workspaceImageView &&
-      (turn.viewComplete ?? 0) >= 1 && turn.transcriptImageResults === turn.viewComplete && (turn.largestTranscriptItemBytes ?? 0) < 65_536) &&
+    // The second turn's first call is the view of the project copy, before any Workspace command.
+    const passed = direct.every((turn, index) => turn.status === "complete" && turn.answerMatches && turn.workspaceImageView &&
+      (turn.viewComplete ?? 0) >= 1 && turn.transcriptImageResults === turn.viewComplete && (turn.largestTranscriptItemBytes ?? 0) < 65_536 &&
+      (index === 0 || turn.viewFirstComplete === true)) &&
       indirect.every((turn) => turn.status === "complete" && turn.answerMatches && !turn.workspaceImageView && turn.viewCalls === 0 &&
         (turn.analyzeComplete ?? 0) >= 1);
     emit({ status: passed ? "passed" : "failed", elapsedSeconds: Math.round((Date.now() - started) / 1000) });

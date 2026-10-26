@@ -341,7 +341,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     const startedAt = now();
     const { calibration, estimate } = measuring(latest!);
     const promise: Promise<JobResult> = compact({
-      call: deps.compactionCall(() => latest!), calibration, cut, estimate, items: deps.items.map(deps.record), mode, nextId: randomUUID,
+      call: deps.compactionCall(() => latest!), calibration, cut, estimate, ...(deps.projection.images ? { images: deps.projection.images } : {}),
+      items: deps.items.map(deps.record), mode, nextId: randomUUID,
       now, options: { summaryOutputTokens: Math.min(COMPACTION_DEFAULTS.summaryOutputTokens[mode],
         Math.max(1_024, Math.floor(usable * COMPACTION_RETENTION.maxShare))) },
       path, rules: deps.rules, signal: AbortSignal.any([deps.signal, controller.signal]), target, usable

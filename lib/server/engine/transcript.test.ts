@@ -14,7 +14,9 @@ import { buildOpenRouterChatRequest } from "../providers/openRouterChatRequest";
 import type { ProviderRunRequest } from "../providers/types";
 import type { RunTool } from "../tools/types";
 import {
-  IMAGE_NOT_ATTACHED_NOTE,
+  IMAGE_ANALYZE_NOTE,
+  IMAGE_REFERENCE_NOTE,
+  IMAGE_VIEW_NOTE,
   modelResponseItems,
   projectTranscript,
   selectTranscript,
@@ -426,13 +428,16 @@ describe("transcript projection", () => {
         output: "Preview of /workspace/project/code.png" }
     ];
     const pixels = { data: "UElYRUxT", mimeType: "image/png" } as const;
-    const held = { attached: (item: { image?: unknown }) => item.image === image ? { image: pixels, tokens: 77 } : undefined };
+    const held = { attached: (item: { image?: unknown }) => item.image === image ? { image: pixels, tokens: 77 } : undefined,
+      note: IMAGE_VIEW_NOTE };
     expect(projectTranscript(items, codex, { images: held }).at(-1)).toEqual({ callId: "call_view", images: [pixels],
       name: "view_workspace_image", output: "Preview of /workspace/project/code.png", type: "tool_result" });
-    // An earlier run's result, a compaction's span or a released preview: the reference alone, never stored pixels.
-    for (const projected of [projectTranscript(items, codex), projectTranscript(items, codex, { images: { attached: () => undefined } })]) {
-      expect(projected.at(-1)).toEqual({ callId: "call_view", name: "view_workspace_image",
-        output: `Preview of /workspace/project/code.png\n\n${IMAGE_NOT_ATTACHED_NOTE}`, type: "tool_result" });
+    // An earlier run's result, a compaction's span or a released preview: the reference alone, never stored pixels, with how
+    // the run sees it again (a compaction calls no tools).
+    for (const [images, note] of [[undefined, IMAGE_REFERENCE_NOTE], [{ attached: () => undefined, note: IMAGE_VIEW_NOTE }, IMAGE_VIEW_NOTE],
+      [{ attached: () => undefined, note: IMAGE_ANALYZE_NOTE }, IMAGE_ANALYZE_NOTE]] as const) {
+      expect(projectTranscript(items, codex, images ? { images } : {}).at(-1)).toEqual({ callId: "call_view", name: "view_workspace_image",
+        output: `Preview of /workspace/project/code.png\n\n${note}`, type: "tool_result" });
     }
     expect(JSON.stringify(items)).not.toContain("UElYRUxT");
     const body = buildCompatibleResponsesRequest(request(codex, projectTranscript(items, codex, { images: held })));
