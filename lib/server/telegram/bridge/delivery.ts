@@ -114,8 +114,10 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
       take(await bot.outbound.sendText({ authorize, chatId: input.telegramChatId, text: TELEGRAM_BRIDGE_COPY.answerInAiqsa }));
     } else {
       const text = answer.text.trim();
-      // A turn that stopped for an approval is answered by its card (`../approvals.ts`), not by a pointer to AIQSA.
-      const awaitsDecision = (answer.artifactSummary?.mcpApprovals?.length ?? 0) > 0;
+      // A turn that stopped for an approval is answered by its card, not by a pointer to AIQSA; the card shows while it
+      // still waits for a decision this user can make (`offer` in `../approvals.ts`), else the pointer stays.
+      const awaitsDecision = (answer.artifactSummary?.mcpApprovals ?? [])
+        .some((card) => card.state === "pending" && card.canDecide === true);
       const ending = answer.status === "cancelled" ? TELEGRAM_COPY.stopped
         : answer.status === "error" ? telegramAnswerFailedText(answer.errorMessage)
           : text || awaitsDecision ? null : TELEGRAM_BRIDGE_COPY.answerInAiqsa;
