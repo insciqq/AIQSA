@@ -210,7 +210,8 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund esbuild@0.28.1 \
 # The package uses the standard library only; PYTHONPATH (the guest gets it
 # from the OCI config) reaches other interpreters such as `uv run` scripts.
 # `aiqsa-browser` (and `aiqsa.browser`) drives one full Chromium per turn; its
-# host process alone imports the pinned Playwright above. Only the full build
+# host process alone imports the pinned Playwright above, and AIQSA's live view
+# runs `python3 -I -m aiqsa.browser.live` beside it. Only the full build
 # is installed: sites block the headless shell (queue measurements 2026-10-26).
 # A default `p.chromium.launch()` in user scripts still finds a browser: the
 # shell's path links to the full build (playwright-default-launch.py).
@@ -226,7 +227,7 @@ COPY ops/workspace-guest/playwright-default-launch.py /tmp/playwright-default-la
 RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-browser /usr/local/bin/aiqsa-office-pdf \
   && chmod -R u=rwX,go=rX /opt/aiqsa-guest \
   && echo /opt/aiqsa-guest/python > "$(/opt/aiqsa-python/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/aiqsa-guest.pth" \
-  && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp, aiqsa.browser, aiqsa.browser._host; print("aiqsa", aiqsa.__version__)' \
+  && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp, aiqsa.browser, aiqsa.browser._host, aiqsa.browser.live; print("aiqsa", aiqsa.__version__)' \
   && aiqsa-mcp --version \
   && (aiqsa-mcp list; test $? -eq 3) \
   && aiqsa-browser --version \
@@ -249,7 +250,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.37 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.38 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.
