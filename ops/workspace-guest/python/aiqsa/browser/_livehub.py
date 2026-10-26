@@ -9,9 +9,11 @@ Control lives here, so it survives a streamer's rotation. While the user holds i
 the agent asked for), the agent's browser actions wait `_live.CONTROL_WAIT_SECONDS` and then fail with
 `user_in_control`; the action after the user gives it back says so with the page the user left. Control the
 user took returns to the agent `_live.CONTROL_GRACE_SECONDS` after the last view closed; a handoff's ends only
-with its own end message. What the user typed never reaches the agent: each value joins the host's hidden
-values and the field reads as a hidden value, as for values typed from the environment. The panel's own
-address line masks only those (`Host.env_hidden`): the user sees their own input.
+with its own end message. Whenever control leaves the user, the mouse buttons and keys the user's input left
+pressed are let go first: the panel sends its own ups, but a closed tab or a dropped network loses them. What the
+user typed never reaches the agent: each value joins the host's hidden values and the field reads as a hidden
+value, as for values typed from the environment. The panel's own address line masks only those
+(`Host.env_hidden`): the user sees their own input.
 """
 
 from __future__ import annotations
@@ -47,6 +49,10 @@ CAPTURE_DELAY = 0.4
 FRAME_BUFFER_BYTES = 2 * 1024 * 1024
 VIEW_BUFFER_BYTES = 16 * 1024 * 1024
 FRAME_SEARCH_LIMIT = 8
+#: Keys the user's input holds down at once; one more first lets the oldest go.
+HELD_KEYS_MAX = 16
+#: Seconds one release may take: a tab that went away holds nothing down.
+RELEASE_TIMEOUT = 1.0
 
 
 class Connection:
@@ -109,6 +115,10 @@ class LiveHub:
         self.frame_size: Optional[Tuple[int, int]] = None
         self.device: Optional[Tuple[float, float]] = None
         self.pressed = 0
+        #: Where the user's pointer input last went: the tab's CDP session and the page point.
+        self.pointer: Optional[Tuple[Any, float, float]] = None
+        #: Keys the user's input pressed and did not let go, by `code` (or `key`): the tab's session and the key up.
+        self.keys: Dict[str, Tuple[Any, Dict[str, Any]]] = {}
         #: What the user typed since the last capture.
         self.typed = ""
         self.capture: Optional[asyncio.TimerHandle] = None
@@ -245,18 +255,25 @@ class LiveHub:
         return {"t": "state", "browser": "running", "controller": self.controller, "handoff": self.handoff, "page": view}
 
     async def close(self) -> None:
-        """The host stops: views end (their streamers report the browser gone) and the cast stops with the browser."""
+        """The host stops: what the user held is let go, views end (their streamers report the browser gone) and the
+        cast stops with the browser."""
         for timer in (self.grace, self.capture, self.pump):
             if timer is not None:
                 timer.cancel()
         self.grace = self.capture = self.pump = None
         if self.watcher is not None:
             self.watcher.cancel()
+        self.controller, self.handoff = "agent", False
+        if not getattr(self.host, "crashed", False):
+            try:
+                await asyncio.wait_for(self.release_held(), 2 * RELEASE_TIMEOUT)
+            except asyncio.TimeoutError:
+                pass
+        self.pressed, self.keys = 0, {}
         for connection in list(self.connections):
             connection.close()
         self.connections.clear()
         self.cast = None
-        self.controller, self.handoff = "agent", False
         self.agent_turn.set()
 
     # Control and handoff -----------------------------------------------------------------------------------------
@@ -282,11 +299,34 @@ class LiveHub:
         await self.refresh()
 
     async def return_control(self) -> None:
+        await self.release_held()
         await self.capture_now()
         self.note = await self.returned_note()
         self.controller = "agent"
-        self.pressed = 0
         self.agent_turn.set()
+
+    async def release_held(self) -> None:
+        """Lets go of what the user's input left pressed before the agent gets the page back: each held mouse button
+        at the last pointer position, then each held key, newest first."""
+        pressed, pointer, keys = self.pressed, self.pointer, self.keys
+        self.pressed, self.keys = 0, {}
+        if pressed and pointer is not None:
+            session, x, y = pointer
+            for name, bit in _live.MOUSE_BUTTONS.items():
+                if bit and pressed & bit:
+                    pressed &= ~bit
+                    release = {"type": "mouseReleased", "x": x, "y": y, "button": name, "buttons": pressed, "clickCount": 1,
+                               "modifiers": 0}
+                    await self.dispatch(session, "Input.dispatchMouseEvent", release)
+        for session, release in reversed(list(keys.values())):
+            await self.dispatch(session, "Input.dispatchKeyEvent", release)
+
+    @staticmethod
+    async def dispatch(session: Any, method: str, params: Dict[str, Any]) -> None:
+        try:
+            await asyncio.wait_for(session.send(method, params), RELEASE_TIMEOUT)
+        except Exception:  # noqa: BLE001 - a tab that went away holds nothing down
+            pass
 
     async def grace_ended(self) -> None:
         self.grace = None
@@ -315,13 +355,13 @@ class LiveHub:
         outcome = message.get("outcome")
         if outcome not in ("completed", "cancelled", "timed_out"):
             raise _live.LiveError("message_invalid")
+        await self.release_held()
         await self.capture_now()
         saved: Optional[str] = None
         if outcome == "completed":
             saved = await self.host.save_site_session()
         self.handoff = False
         self.controller = "agent"
-        self.pressed = 0
         self.agent_turn.set()
         page = self.page()
         view = None
@@ -354,11 +394,13 @@ class LiveHub:
                 await self.capture_now()
             await session.send("Input.dispatchMouseEvent", params)
             self.pressed = pressed
+            self.pointer = (session, params["x"], params["y"])
         elif kind == "key":
             params, typed = _live.key_event(event)
             if params["type"] != "keyUp" and params["key"] in ("Tab", "Enter") and self.typed:
                 await self.capture_now()
             await session.send("Input.dispatchKeyEvent", params)
+            await self.track_key(session, params)
             if typed is not None:
                 self.typed += typed
                 self.schedule_capture()
@@ -371,6 +413,19 @@ class LiveHub:
             self.schedule_capture()
         else:
             raise _live.LiveError("input_invalid")
+
+    async def track_key(self, session: Any, params: Dict[str, Any]) -> None:
+        held = params["code"] or params["key"]
+        self.keys.pop(held, None)
+        if params["type"] == "keyUp":
+            return
+        self.keys[held] = (session, {"type": "keyUp", "key": params["key"], "code": params["code"], "modifiers": 0,
+                                     "windowsVirtualKeyCode": params["windowsVirtualKeyCode"],
+                                     "nativeVirtualKeyCode": params["nativeVirtualKeyCode"]})
+        while len(self.keys) > HELD_KEYS_MAX:
+            oldest = next(iter(self.keys))
+            old_session, release = self.keys.pop(oldest)
+            await self.dispatch(old_session, "Input.dispatchKeyEvent", release)
 
     def schedule_capture(self) -> None:
         if self.capture is not None:

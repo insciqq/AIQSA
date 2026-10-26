@@ -77,6 +77,9 @@ PAGES = {
                 "<p><input id='user' name='user' aria-label='User name' style='width:300px;height:30px'></p>"
                 "<p><input id='password' name='password' type='password' aria-label='Password' style='width:300px;height:30px'></p>"
                 "<button id='go' style='width:120px;height:40px'>Sign in</button></form>"),
+    "/events": ("<!doctype html><title>Events</title><div id='pad' style='width:600px;height:400px;background:#eee'></div>"
+                "<script>window.seen = []; for (const t of ['mousedown', 'mouseup', 'keydown', 'keyup']) "
+                "addEventListener(t, (e) => seen.push(t + ':' + (e.code || e.button)), true);</script>"),
     "/anim": ("<!doctype html><title>Moving</title><style>@keyframes slide{from{left:0}to{left:1000px}}"
               "#box{position:absolute;top:100px;width:200px;height:200px;background:#c33;animation:slide 2s linear infinite alternate}"
               "</style><div id='box'></div>"),
@@ -591,6 +594,24 @@ class LiveBrowserTests(unittest.TestCase):
         view.drain()
         time.sleep(1.0)
         self.assertEqual(view.drain("frame"), [], "no frames once no view wants them")
+        self.assertEqual(view.close(), 0)
+
+    def test_9e_control_leaving_the_user_lets_go_of_a_held_button_and_key(self) -> None:
+        from aiqsa import browser
+
+        self.quiet(browser.open, self.base + "/events")
+        (pad,), viewport = self.centers(["#pad"])
+        view = self.view()
+        view.send({"t": "frames", "on": True})
+        frame = view.next("frame")
+        point = {"x": round(pad[0] * frame["width"] / viewport[0], 1), "y": round(pad[1] * frame["height"] / viewport[1], 1)}
+        self.assertTrue(view.ask({"t": "control", "action": "take"})["ok"])
+        self.assertTrue(view.ask({"t": "input", "input": {"kind": "mouse", "type": "down", "button": "left", "clickCount": 1, **point}})["ok"])
+        self.assertTrue(view.ask({"t": "input", "input": {"kind": "key", "type": "down", "key": "ArrowDown", "code": "ArrowDown"}})["ok"])
+        # The panel's tab closes here: neither up ever comes from it, and the page gets both before the agent goes on.
+        self.assertTrue(view.ask({"t": "control", "action": "return"})["ok"])
+        self.assertIn("gave the browser back", browser.text())
+        self.assertEqual(json.loads(browser_js("window.seen")), ["mousedown:0", "keydown:ArrowDown", "mouseup:0", "keyup:ArrowDown"])
         self.assertEqual(view.close(), 0)
 
 

@@ -49,7 +49,8 @@ CONTROL_GRACE_SECONDS = 20.0
 LIVE_CONNECTIONS_MAX = 4
 
 MODIFIER_ALT, MODIFIER_CTRL, MODIFIER_META, MODIFIER_SHIFT = 1, 2, 4, 8
-_BUTTONS = {"none": 0, "left": 1, "right": 2, "middle": 4}
+#: CDP mouse buttons and their bits in `buttons`.
+MOUSE_BUTTONS = {"none": 0, "left": 1, "right": 2, "middle": 4}
 _MOUSE_TYPES = {"move": "mouseMoved", "down": "mousePressed", "up": "mouseReleased", "wheel": "mouseWheel"}
 #: Windows virtual key codes Chromium needs to act on a key that inserts no text.
 _VIRTUAL_KEYS = {
@@ -168,20 +169,20 @@ def mouse_event(event: Mapping[str, Any], frame: Tuple[int, int], device: Tuple[
         raise LiveError("input_outside_frame")
     page_x, page_y = page_point(x, y, frame, device)
     button = event.get("button", "none" if kind in ("mouseMoved", "mouseWheel") else "left")
-    if button not in _BUTTONS:
+    if button not in MOUSE_BUTTONS:
         raise LiveError("input_invalid")
     modifiers = _int(event, "modifiers", 0, 15, 0)
     params: Dict[str, Any] = {"type": kind, "x": round(page_x, 2), "y": round(page_y, 2), "modifiers": modifiers}
     if kind == "mousePressed":
-        pressed |= _BUTTONS[button]
+        pressed |= MOUSE_BUTTONS[button]
     elif kind == "mouseReleased":
-        pressed &= ~_BUTTONS[button]
+        pressed &= ~MOUSE_BUTTONS[button]
     if kind in ("mousePressed", "mouseReleased"):
         params.update(button=button, clickCount=_int(event, "clickCount", 0, 3, 1))
     elif kind == "mouseWheel":
         params.update(deltaX=_number(event, "deltaX", -WHEEL_MAX, WHEEL_MAX, 0), deltaY=_number(event, "deltaY", -WHEEL_MAX, WHEEL_MAX, 0))
     else:
-        held = next((name for name, bit in _BUTTONS.items() if bit and pressed & bit), "none")
+        held = next((name for name, bit in MOUSE_BUTTONS.items() if bit and pressed & bit), "none")
         params["button"] = held
     params["buttons"] = pressed
     return params, pressed
