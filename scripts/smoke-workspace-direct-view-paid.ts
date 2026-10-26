@@ -198,9 +198,11 @@ async function setUp(api: Api, input: Readonly<{ apiRoot: string; contextWindow:
   const started = Date.now();
   const result = await json(api, "provider_setup", "/api/admin/providers/custom-setup", { body: {
     allowPrivateNetwork: input.privateNetwork, apiRoot: input.apiRoot, authenticationMode: "bearer",
+    // Reasoning controls only on the Responses route; a Chat model keeps its own default.
     capabilities: { contextWindow: input.contextWindow, defaultMaxOutputTokens: MAX_OUTPUT_TOKENS, streaming: true, toolCalling: true,
-      parallelToolCalls: false, reasoning: true, reasoningEfforts: ["low"], defaultReasoningEffort: "low", nativePdfInput: false,
-      nativeImageGeneration: false, nativeSearch: false, pdf: false, vision: input.vision },
+      parallelToolCalls: false, ...(input.protocol === "responses"
+        ? { reasoning: true, reasoningEfforts: ["low"], defaultReasoningEffort: "low" } : { reasoning: false }),
+      nativePdfInput: false, nativeImageGeneration: false, nativeSearch: false, pdf: false, vision: input.vision },
     confirmPaidRequest: true, connectionDisplayName: `Direct view ${input.label} ${randomUUID().slice(0, 8)}`,
     modelDisplayName: `Direct view ${input.label}`, modelId: input.model, protocol: input.protocol, responseTimeoutSeconds: 180,
     secret: input.secret
@@ -271,9 +273,12 @@ async function drain(response: Response): Promise<void> {
 /** Sends one message with the Workspace on after `leafId` and returns its settled answer. */
 async function sendTurn(api: Api, chatId: string, leafId: string | null, model: CatalogModel, prompt: string,
   expectFiles: boolean): Promise<ChatMessageWire> {
+  const params = journeyRunParams(model, MAX_OUTPUT_TOKENS);
+  // A model without reasoning controls keeps its provider's default rather than an explicit effort.
+  if (!model.parameterControls.reasoningEffort.supported) delete params.reasoning;
   const response = await request(api, "turn", `/api/chats/${encodeURIComponent(chatId)}/messages`, { body: {
     content: { blocks: [{ text: prompt, type: "text" }] }, expectedActiveLeafId: leafId, mcp: { mode: "off" }, modelId: model.modelId,
-    params: journeyRunParams(model, MAX_OUTPUT_TOKENS), provider: model.provider, searchPlan: { mode: "all_selected", optionIds: [] },
+    params, provider: model.provider, searchPlan: { mode: "all_selected", optionIds: [] },
     searchStrategy: "search-disabled", timeZone: "UTC", workspace: { enabled: true }
   }, method: "POST", timeoutMs: RUN_TIMEOUT_MS });
   if (!response.ok) fail("turn", await failureCode(response));
