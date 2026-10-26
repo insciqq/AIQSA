@@ -23,7 +23,7 @@ import {
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
-import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
+import type { NormalizedRunRequest, ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
 import { SKILL_MAX_AVAILABLE } from "../../contracts/skills";
@@ -39,7 +39,7 @@ import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
-import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
+import { DEFAULT_TOOL_RUN_BUDGETS, toolRunBudgetsForRequest } from "./toolBudgets";
 import { admittedRunGuidance, splitTurnGuidance } from "../engine/systemPrompt";
 import { logEvent } from "../observability";
 import { fetchUrlDigest } from "../webFetch/urls";
@@ -1317,7 +1317,8 @@ describe("run preparation", () => {
     }
   });
 
-  async function workspacePdfRetryFixture() {
+  type ToolLimits = Readonly<{ maxToolCalls: number | null; maxToolRounds: number | null }>;
+  async function workspacePdfRetryFixture(limits: ToolLimits = { maxToolCalls: 80, maxToolRounds: 32 }) {
     const bytes = Buffer.from("%PDF-synthetic-document");
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true },
       attachments: [runAttachment({ id: "retry-pdf", kind: "pdf", mimeType: "application/pdf", storageKey: "synthetic/pdf",
@@ -1337,7 +1338,10 @@ describe("run preparation", () => {
           syncToolTimeoutSeconds: 30, toolCatalogHash: String(revision).repeat(64), turnTimeoutSeconds: 300 }
       } };
     }) };
+    // Tool limits on by default, so the retry shows the Workspace allowance raising them.
+    let policy = { maxMcpToolsPerDiscovery: 10, ...limits };
     const deps: RunPreparationDeps = { ...harness.deps, workspace,
+      runPolicy: { load: async () => policy },
       chatPdf: { resolve: async () => ({ route: "local_text", authority: null, snapshot: null, policyVersion: null }) } };
     const result = await prepareRun(deps, sendInput(successBody({ content: { blocks: [{ type: "file", attachmentId: "retry-pdf" }] },
       workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" })));
@@ -1347,8 +1351,25 @@ describe("run preparation", () => {
     const buildRequestPreview = vi.fn((request: ProviderRunRequest) => ({ workspace: request.workspace, prompt: request.prompt, tools: request.tools }));
     return { deps, input: { ...result, adapter: { ...result.adapter, buildRequestPreview }, prepared,
       userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
-      changeWorkspace: () => { revision = 2; }, workspace };
+      changeWorkspace: () => { revision = 2; }, setLimits: (next: ToolLimits) => { policy = { ...policy, ...next }; }, workspace };
   }
+
+  it.each([
+    { label: "on, then switched off", accepted: { maxToolCalls: 80, maxToolRounds: 32 },
+      current: { maxToolCalls: null, maxToolRounds: null }, retried: { maxToolCalls: 140, maxToolRounds: 40 } },
+    { label: "off, then switched on", accepted: { maxToolCalls: null, maxToolRounds: null },
+      current: { maxToolCalls: 80, maxToolRounds: 32 }, retried: { maxToolCalls: null, maxToolRounds: null } }
+  ])("keeps the run's accepted tool limits on a PDF retry, not the installation's current ones: $label", async ({
+    accepted, current, retried
+  }) => {
+    const fixture = await workspacePdfRetryFixture(accepted);
+    fixture.setLimits(current);
+    fixture.changeWorkspace();
+    const result = preparedFrom(await preparePdfRetry(fixture.deps, fixture.input));
+    // The new admission's Workspace allowance (140/40) still raises limits that are on.
+    expect(result.normalizedRequest.toolBudgets).toEqual({ maxMcpToolsPerDiscovery: 10, ...retried });
+    expect(result.providerRequest.toolBudgets).toEqual(result.normalizedRequest.toolBudgets);
+  });
 
   it("re-admits a persisted Workspace PDF retry with fresh sibling IDs and rebuilt execution data", async () => {
     const fixture = await workspacePdfRetryFixture();
@@ -1515,6 +1536,24 @@ describe("run preparation", () => {
       maxToolCalls: 200,
       maxToolRounds: 17
     });
+  });
+
+  it.each([
+    { limits: { maxToolCalls: null, maxToolRounds: null }, workspace: false, frozen: { maxToolCalls: null, maxToolRounds: null } },
+    // No limit stays none: the Workspace allowance only raises a limit an administrator turned on.
+    { limits: { maxToolCalls: null, maxToolRounds: null }, workspace: true, frozen: { maxToolCalls: null, maxToolRounds: null } },
+    { limits: { maxToolCalls: 20, maxToolRounds: 8 }, workspace: true, frozen: { maxToolCalls: 64, maxToolRounds: 16 } },
+    { limits: { maxToolCalls: 200, maxToolRounds: 17 }, workspace: true, frozen: { maxToolCalls: 200, maxToolRounds: 17 } }
+  ])("freezes the installation's tool limits, none included, into the accepted request: %o", async ({ limits, workspace, frozen }) => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const load = vi.fn(async () => ({ maxMcpToolsPerDiscovery: 10, ...limits }));
+    const prepared = materializePreparedRunData(preparedFrom(await prepareRun({ ...harness.deps, runPolicy: { load },
+      workspace: contractWorkspace() }, sendInput(successBody({ workspace: { enabled: workspace } })))));
+    expect(prepared.normalizedRequest.toolBudgets).toEqual({ maxMcpToolsPerDiscovery: 10, ...frozen });
+    expect(prepared.providerRequest.toolBudgets).toEqual(prepared.normalizedRequest.toolBudgets);
+    // Stored as JSON, the explicit no-limit state survives and reads back as no limits.
+    expect(toolRunBudgetsForRequest(JSON.parse(JSON.stringify(prepared.normalizedRequest)) as NormalizedRunRequest))
+      .toEqual({ maxMcpToolsPerDiscovery: 10, ...frozen });
   });
 
   it("defensively separates and deeply freezes prepared data without freezing service dependencies", async () => {

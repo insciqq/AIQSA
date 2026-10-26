@@ -22,7 +22,7 @@ import {
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import type { ToolObservationSource, ToolObservationSourceBinding } from "../toolObservations/contract";
-import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "../tools/types";
+import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "../tools/types";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
@@ -34,10 +34,10 @@ import type { UnknownEffects } from "./unknownEffects";
 
 /**
  * One tool batch of a native run: every call of a model response goes
- * through `beforeToolCall` (unknown tool, arguments, call budget, repeat
- * guard, links, the initiator's approval), is recorded, runs, and goes
- * through `afterToolCall` (size bound with a saved whole result, settled
- * record, output events), in the response's order. A batch never re-sends a
+ * through `beforeToolCall` as it starts (unknown tool, arguments, tool time,
+ * call budget, repeat guard, links, the initiator's approval), is recorded,
+ * runs, and goes through `afterToolCall` (size bound with a saved whole
+ * result, settled record, output events), in the response's order. A batch never re-sends a
  * call: only a call of a read-only tool that failed in transport is tried
  * again, and a call whose run stopped meanwhile keeps an unknown outcome.
  * Neither does the model: a call equivalent to an earlier one whose effect
@@ -106,10 +106,15 @@ export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
+/** A call that would have started after the turn's time for tools ran out. */
+export const TOOL_TIME_EXHAUSTED_OUTPUT =
+  "Not run: this answer's time for tools has run out. Answer with what you have and say what you could not check.";
+
 export type ToolBatchDeps = Readonly<{
   chatId: string;
   history: ToolCallRepeatHistory;
-  maxToolCalls: number;
+  /** The run's call budget; null: no call count refuses a call (the repeat guard still does). */
+  maxToolCalls: number | null;
   /** Persisted output events (artifacts, cards); also sent live. */
   onEvent(event: ModelRunSseEvent): Promise<void>;
   /** Live-only events (a running step). */
@@ -127,6 +132,13 @@ export type ToolBatchDeps = Readonly<{
   signal: AbortSignal;
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
+  /**
+   * Whether the turn may still start this tool's call: the loop's tool time, and whether the call's own longest
+   * duration still fits before the deadline (`toolCallBounds`). Asked as each call is about to start and before a
+   * read-only call is tried again. A call that waited behind slower ones past it, or would outlast the answer's
+   * reserve, is refused like one past the call budget; calls already running settle. Absent: no time check here.
+   */
+  toolTimeLeft?(tool: RunTool): boolean;
   /** Effects of the chat's earlier calls that are still unknown; the batch adds its own. */
   unknownEffects: UnknownEffects;
   userId: string;
@@ -144,7 +156,7 @@ export type ToolBatchState = { calls: number; reservedCalled?: boolean };
 export type ToolBatchOutcome = Readonly<{
   /** Approval card ids of calls that wait for the initiator. */
   approvals: readonly string[];
-  /** A call was refused for the call budget: the next round may use no tools. */
+  /** A call was refused for the call budget or the tool time: the next round may use no tools. */
   budgetExhausted: boolean;
   /** Calls that were sent; a batch that sent none made no progress. */
   executed: number;
@@ -221,7 +233,11 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
         toolName: call.name };
     }
     const exempt = deps.reservedToolName !== undefined && call.name === deps.reservedToolName && state.reservedCalled !== true;
-    if (!exempt && state.calls >= deps.maxToolCalls) {
+    if (!exempt && deps.toolTimeLeft?.(tool.definition) === false) {
+      return { budget: true, kind: "refuse", output: TOOL_TIME_EXHAUSTED_OUTPUT, toolName: call.name,
+        result: jsonError(call, { error: "tool_time_exhausted", message: TOOL_TIME_EXHAUSTED_OUTPUT }) };
+    }
+    if (!exempt && deps.maxToolCalls !== null && state.calls >= deps.maxToolCalls) {
       const message = TOOL_CALL_LIMIT_OUTPUT(deps.maxToolCalls);
       return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
         toolName: call.name };
@@ -336,9 +352,12 @@ async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, executi
     try {
       return await tool.execute(execution);
     } catch (error) {
+      // A retry starts the call again, so past the tool time it fails as it is: the answer's reserve covers one attempt.
       if (execution.signal.aborted || tool.effects !== "none" || attempt >= TOOL_BATCH_LIMITS.readOnlyRetries ||
-        !transientToolFailure(error)) throw error;
+        !transientToolFailure(error) || deps.toolTimeLeft?.(tool.definition) === false) throw error;
       await (deps.sleep ?? sleepWithSignal)(TOOL_BATCH_LIMITS.retryBaseDelayMs * 2 ** attempt, execution.signal);
+      // The backoff may have crossed the tool time: asked again right before the call starts anew.
+      if (deps.toolTimeLeft?.(tool.definition) === false) throw error;
     }
   }
 }

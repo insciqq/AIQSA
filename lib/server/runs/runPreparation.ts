@@ -137,6 +137,8 @@ import type {
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
   normalizeToolObservationPolicy,
+  toolRunBudgetsForRequest,
+  workspaceToolLimit,
   type ToolRunBudgets
 } from "./toolBudgets";
 import type {
@@ -655,10 +657,10 @@ function resolveWorkspaceEnabled(
   return (value as { enabled: boolean }).enabled;
 }
 
-/** Explicit document retry retains the accepted reader/answer authority, but a
- * sibling needs its own current Workspace admission and derived request. */
+/** Explicit document retry retains the accepted reader/answer authority and tool
+ * limits, but a sibling needs its own current Workspace admission and derived request. */
 export async function preparePdfRetry(
-  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy">,
+  deps: Pick<RunPreparationDeps, "workspace">,
   input: Readonly<{
     adapter: ProviderAdapter;
     prepared: PreparedRun;
@@ -712,10 +714,12 @@ export async function preparePdfRetry(
       if (at < 0 || at !== system.lastIndexOf(oldSegment)) return failure("pdf_preparation_unavailable", 409);
       system = system.slice(0, at) + newSegments[index] + system.slice(at + oldSegment.length);
     }
-    const budgets = deps.runPolicy ? await deps.runPolicy.load() : DEFAULT_TOOL_RUN_BUDGETS;
+    // The retry keeps the run's accepted tool limits, on or off, never the installation's current ones; only the
+    // Workspace allowance comes from this admission, and it raises only a limit that is on.
+    const accepted = toolRunBudgetsForRequest(request);
     const toolBudgets = { ...request.toolBudgets,
-      maxToolCalls: Math.max(budgets.maxToolCalls, plan.normalized.maxToolCalls),
-      maxToolRounds: Math.max(budgets.maxToolRounds, plan.normalized.maxToolRounds) };
+      maxToolCalls: workspaceToolLimit(accepted.maxToolCalls, plan.normalized.maxToolCalls),
+      maxToolRounds: workspaceToolLimit(accepted.maxToolRounds, plan.normalized.maxToolRounds) };
     const prompt = { ...request.prompt, system };
     prepared.workspaceAdmissionPlan = plan;
     prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
@@ -1937,16 +1941,10 @@ export async function prepareRun(
     toolBudgets: {
       maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
       maxToolCalls: workspaceEnabled
-        ? Math.max(
-            toolBudgets.maxToolCalls,
-            workspaceAdmissionPlan?.normalized.maxToolCalls ?? toolBudgets.maxToolCalls
-          )
+        ? workspaceToolLimit(toolBudgets.maxToolCalls, workspaceAdmissionPlan?.normalized.maxToolCalls)
         : toolBudgets.maxToolCalls,
       maxToolRounds: workspaceEnabled
-        ? Math.max(
-            toolBudgets.maxToolRounds,
-            workspaceAdmissionPlan?.normalized.maxToolRounds ?? toolBudgets.maxToolRounds
-          )
+        ? workspaceToolLimit(toolBudgets.maxToolRounds, workspaceAdmissionPlan?.normalized.maxToolRounds)
         : toolBudgets.maxToolRounds
     },
     toolMode: workspaceEnabled || body?.tools !== "none" ? "auto" : "none",

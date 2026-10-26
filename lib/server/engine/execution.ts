@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
+import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
@@ -22,13 +23,13 @@ import { reportedAnswerCost, usageAttributionsWithEstimatedCost } from "../runs/
 import { withPinnedHostedSearchIdentity } from "../runs/searchArtifactIdentity";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
-import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
+import { toolCallBounds, turnSoftDeadlineMs } from "../runs/turnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
 import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecret";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
-import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
+import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -66,10 +67,9 @@ import { createUsageLedger } from "./usage";
  * handler: it cancels the run's row and aborts this run's controller.
  */
 export const NATIVE_TURN_LIMITS = Object.freeze({
-  /** A run without a Workspace answers within this long. */
-  turnMs: 60 * 60_000,
-  /** Before its deadline the turn stops calling tools and answers. */
-  answerReserveMs: 5 * 60_000
+  /** A run without a Workspace answers within this long; before it, the turn stops calling tools and answers
+   * (`turnSoftDeadlineMs`). */
+  turnMs: 60 * 60_000
 });
 
 export class EngineFailure extends Error {
@@ -256,9 +256,28 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   const workspace = normalizedRequest.workspace;
   const startedAt = now();
   const turnMs = workspace ? workspace.turnTimeoutSeconds * 1_000 : NATIVE_TURN_LIMITS.turnMs;
-  const toolTimeEndsAt = startedAt + (workspace
-    ? workspaceTurnSoftDeadlineMs(workspace.turnTimeoutSeconds, workspace.syncToolTimeoutSeconds)
-    : turnMs - NATIVE_TURN_LIMITS.answerReserveMs);
+  // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
+  // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
+  const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
+  // The longest one request of the answer model may take, which its rounds apply and the deadlines below leave room for.
+  const answerTimeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
+    snapshot.model.adapterKind === "fake" ? null : snapshot.model);
+  // Until when work that may take `workMs` once started may still start: the turn's soft deadline for it, and a
+  // scheduled run's occurrence's.
+  const admittedAt = input.created.acceptedAt?.getTime() ?? startedAt;
+  const bounds = toolCallBounds(normalizedRequest, answerTimeoutMs);
+  const startsUntil = (workMs: number) => Math.min(startedAt + turnSoftDeadlineMs(turnMs, workMs, bounds.answer),
+    input.scheduled ? admittedAt + turnSoftDeadlineMs(scheduledTurnMs, workMs, bounds.answer) : Infinity);
+  // Past its tool time the turn answers without tools, which is what ends an answer without tool limits. Rounds leave
+  // room for a common call or a round under way, then the answer; a call whose own bound is longer (a slow MCP server,
+  // Search source or image model) must also fit before the deadline as it starts, so a slow source the run never
+  // calls never shortens its tool time.
+  const toolTimeEndsAt = startsUntil(bounds.round);
+  // Asked before each round.
+  const toolTimeLeft = () => now() < toolTimeEndsAt;
+  // Asked as each call of a batch starts, so a call queued behind slower ones, or one that would outlast the answer's
+  // reserve, never starts.
+  const callTimeLeft = (tool: Pick<RunTool, "capability" | "name">) => toolTimeLeft() && now() < startsUntil(bounds.call(tool));
   const deadline = new AbortController();
   const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
     turnMs);
@@ -465,6 +484,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             text: save.text }),
           signal,
           store: engine.toolCalls,
+          toolTimeLeft: callTimeLeft,
           unknownEffects,
           userId: input.userId
         };
@@ -498,8 +518,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}), ...(reasoningScope ? { reasoningScope } : {}) };
         const params = nativeRequestParams(snapshot.model.adapterKind, windowOutputParams(base.params,
           { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
-        const timeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
-          snapshot.model.adapterKind === "fake" ? null : snapshot.model);
+        const timeoutMs = answerTimeoutMs;
         let pending: ModelRunSseEvent[] = [];
         let followupRevision = 0;
         const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),
@@ -657,7 +676,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return batch;
           },
           signal,
-          toolTimeLeft: () => now() < toolTimeEndsAt
+          toolTimeLeft
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
