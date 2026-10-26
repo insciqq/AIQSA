@@ -81,10 +81,27 @@ export function workspaceCodeMcpEligibility(request: WorkspaceCodeMcpRequest): W
   return { kind: "eligible", budgets };
 }
 
+/** The run's browser language and time zone (`browserBinding.ts`), read by the guest's `aiqsa.browser`. */
+export const WORKSPACE_BROWSER_LOCALE_ENV = "AIQSA_BROWSER_LOCALE";
+export const WORKSPACE_BROWSER_TIME_ZONE_ENV = "AIQSA_BROWSER_TIMEZONE";
+
+const BROWSER_LOCALE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/u;
+const BROWSER_TIME_ZONE = /^(?:UTC|[A-Za-z][A-Za-z0-9_+-]{0,30}(?:\/[A-Za-z0-9_+-]{1,30}){1,2})$/u;
+
+/** The exact shapes the guest accepts. */
+export function isWorkspaceBrowserLocale(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 35 && BROWSER_LOCALE.test(value);
+}
+
+export function isWorkspaceBrowserTimeZone(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64 && BROWSER_TIME_ZONE.test(value);
+}
+
 /**
  * Server-owned values the managed environment file adds to every command of
  * one run, after (and over) the owner's saved environment secrets: the
- * bearer with the relay origin, or the reason there is none.
+ * bearer with the relay origin, or the reason there is none, and the run's
+ * browser language and time zone.
  */
 export type WorkspaceRunEnvironment = Readonly<Record<string, string>>;
 
@@ -105,7 +122,9 @@ export function parseWorkspaceRunEnvironment(value: unknown, gatewayOrigin: stri
       : name === WORKSPACE_CODE_GATEWAY_ENV ? entry === gatewayOrigin
         : name === WORKSPACE_CODE_UNAVAILABLE_ENV
           ? (WORKSPACE_CODE_UNAVAILABLE_REASONS as readonly unknown[]).includes(entry)
-          : false);
+          : name === WORKSPACE_BROWSER_LOCALE_ENV ? isWorkspaceBrowserLocale(entry)
+            : name === WORKSPACE_BROWSER_TIME_ZONE_ENV ? isWorkspaceBrowserTimeZone(entry)
+              : false);
   // Exactly one shape: a bearer with its gateway, or a reason, or nothing.
   if (!valid || token !== names.has(WORKSPACE_CODE_GATEWAY_ENV) || (token && names.has(WORKSPACE_CODE_UNAVAILABLE_ENV))) {
     throw new Error("workspace_run_environment_invalid");

@@ -8,6 +8,7 @@ import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
+import { workspaceBrowserBinding } from "../workspace/browserBinding";
 import { workspaceFileContext, workspaceFileReferences } from "../workspace/fileContext";
 import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { textMessageContent } from "../../domain/content";
@@ -692,7 +693,8 @@ export async function preparePdfRetry(
     if (!admission.ok) return failure(admission.code, admission.status);
     // Only the current contract version can be rebuilt; the sibling keeps it.
     if (prior.normalized.guidanceVersion !== WORKSPACE_GUIDANCE_VERSION) return failure("pdf_preparation_unavailable", 409);
-    const plan = { ...admission.plan, normalized: { ...admission.plan.normalized, guidanceVersion: WORKSPACE_GUIDANCE_VERSION } };
+    const plan = { ...admission.plan, normalized: { ...admission.plan.normalized, guidanceVersion: WORKSPACE_GUIDANCE_VERSION,
+      browser: prior.normalized.browser ?? workspaceBrowserBinding({ timeZone: request.prompt.baseline?.timeZone }) } };
     // Changing admission values (tool names, per-run paths, network) render
     // only in the stable part and the leading turn lines. Chat facts (file
     // references, exports, Search) follow them and stay frozen, so neutral
@@ -1650,7 +1652,7 @@ export async function prepareRun(
       return failure(workspaceAdmission.code, workspaceAdmission.status);
     }
     workspaceAdmissionPlan = { ...workspaceAdmission.plan, normalized: { ...workspaceAdmission.plan.normalized,
-      guidanceVersion: WORKSPACE_GUIDANCE_VERSION } };
+      guidanceVersion: WORKSPACE_GUIDANCE_VERSION, browser: workspaceBrowserBinding({ timeZone: prompt.baseline?.timeZone }) } };
     workspaceTools = workspaceAdmission.tools;
     const references = workspaceFileReferences(conversationMessages).map(reference => ({
       ...reference,

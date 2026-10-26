@@ -1291,12 +1291,17 @@ describe("run preparation", () => {
         outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_browser",
         syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
     } })) };
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody({ workspace: { enabled } }))));
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, workspace },
+      sendInput(successBody({ workspace: { enabled }, timeZone: "Europe/Madrid" }))));
     const accepted = materializePreparedRunData(prepared);
     expect(accepted.followupAdmission?.budgetTokens).toBeGreaterThan(0);
     expect(accepted.normalizedRequest.followupContextReserveTokens).toBe(accepted.followupAdmission?.budgetTokens);
     if (enabled) {
       expect(workspace.prepare).toHaveBeenCalledOnce();
+      // The browser takes the run's own admitted zone; no interface language is stored yet.
+      expect(accepted.normalizedRequest.prompt.baseline?.timeZone).toBe("Europe/Madrid");
+      expect(accepted.normalizedRequest.workspace?.browser).toEqual({ locale: "en-US", timeZone: "Europe/Madrid" });
+      expect(accepted.workspaceAdmissionPlan?.normalized.browser).toEqual({ locale: "en-US", timeZone: "Europe/Madrid" });
       expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.browser);
       expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.psd);
       expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
@@ -1364,6 +1369,8 @@ describe("run preparation", () => {
     expect(retried.normalizedRequest.workspace).toEqual(plan.normalized);
     expect(retried.providerRequest.workspace).toEqual(plan.normalized);
     expect(plan.normalized.guidanceVersion).toBe(1);
+    expect(plan.normalized.browser).toEqual(before.workspaceAdmissionPlan!.normalized.browser);
+    expect(plan.normalized.browser?.locale).toBe("en-US");
     expect(retried.normalizedRequest.prompt.system).toContain(plan.normalized.outputDirectory);
     expect(retried.normalizedRequest.prompt.system).not.toContain(before.workspaceAdmissionPlan!.normalized.outputDirectory);
     expect(retried.normalizedRequest.prompt.system).toContain("Internet inside the workspace: disabled.");

@@ -54,6 +54,21 @@ describe("run environment for guest commands", () => {
     }
   });
 
+  it("accepts the run's browser language and time zone in their exact shapes, with either code shape", () => {
+    const browser = { AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "America/Argentina/Buenos_Aires" };
+    expect(parseWorkspaceRunEnvironment(browser, RUNNER_GATEWAY_ORIGIN)).toEqual(browser);
+    const bearer = { [WORKSPACE_CODE_TOKEN_ENV]: token, [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN };
+    expect(parseWorkspaceRunEnvironment({ ...bearer, ...browser }, RUNNER_GATEWAY_ORIGIN)).toEqual({ ...bearer, ...browser });
+    expect(parseWorkspaceRunEnvironment({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: "mcp_off", AIQSA_BROWSER_TIMEZONE: "UTC" }, RUNNER_GATEWAY_ORIGIN))
+      .toEqual({ [WORKSPACE_CODE_UNAVAILABLE_ENV]: "mcp_off", AIQSA_BROWSER_TIMEZONE: "UTC" });
+    for (const value of [
+      { AIQSA_BROWSER_LOCALE: "es_ES" }, { AIQSA_BROWSER_LOCALE: "x".repeat(40) }, { AIQSA_BROWSER_LOCALE: 1 },
+      { AIQSA_BROWSER_TIMEZONE: "../../etc/passwd" }, { AIQSA_BROWSER_TIMEZONE: "Europe/Madrid\n" }, { AIQSA_BROWSER_TIMEZONE: "" }
+    ]) {
+      expect(() => parseWorkspaceRunEnvironment(value, RUNNER_GATEWAY_ORIGIN)).toThrow("workspace_run_environment_invalid");
+    }
+  });
+
   it("refuses foreign names, malformed values, another gateway and mixed shapes", () => {
     for (const value of [
       null, [], "AIQSA_RUN_TOKEN=x",
