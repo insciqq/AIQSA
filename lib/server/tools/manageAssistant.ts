@@ -81,7 +81,8 @@ const INPUT_SCHEMA = {
     model: { description: "A model name or id, or \"default\".", type: "string" },
     fixedModel: { description: "true: every chat with the Assistant uses its model; false: a chat may change it.", type: "boolean" },
     webSearch: { enum: ["default", "off"], type: "string" },
-    mcpTools: { description: "\"default\", \"off\", or a list of the user's MCP server names.", type: ["string", "array"], items: { type: "string" } },
+    mcpTools: { anyOf: [{ type: "string" }, { items: { type: "string" }, type: "array" }],
+      description: "\"default\", \"off\", or a list of the user's MCP server names." },
     skills: {
       items: { additionalProperties: false, properties: { delivery: { enum: ["always", "on_demand"], type: "string" }, skill: { type: "string" } },
         required: ["skill"], type: "object" },
