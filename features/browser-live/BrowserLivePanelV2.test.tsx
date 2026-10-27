@@ -416,6 +416,9 @@ describe("BrowserLivePanelV2", () => {
       // Escape on a control while the user controls does not close the layer either.
       fireEvent.keyDown(within(layer).getByRole("button", { name: "Return control" }), { key: "Escape", code: "Escape" });
       expect(screen.getByRole("dialog")).toBe(layer);
+      // Nor does an Escape that reaches the page after focus fell out of the layer.
+      fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+      expect(screen.getByRole("dialog")).toBe(layer);
       await waitFor(() => expect(posted()).toHaveLength(2));
       expect(posted().map(([, body]) => body)).toEqual([
         { kind: "key", type: "down", key: "Escape", code: "Escape" },
