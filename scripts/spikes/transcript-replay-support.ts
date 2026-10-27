@@ -773,7 +773,7 @@ async function runRound(state: RunState, context: TurnContext, round: number): P
       usage
     }));
     stored.nextId = nextId;
-    const anchor = contextAnchor({ itemCount, target: runtime.target, usage });
+    const anchor = contextAnchor({ fixedTokens: runtime.fixedTokens, itemCount, target: runtime.target, usage });
     if (anchor) stored.anchors[anchorKey(runtime.target)] = anchor;
     context.chat.write(stored);
     return { kind: calls.length > 0 ? "tools" : "answer" };
