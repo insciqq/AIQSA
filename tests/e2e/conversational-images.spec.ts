@@ -187,6 +187,8 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: chatIds } } });
       await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: chatIds } } });
       await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: chatIds } } });
+      // A stand that offers Workspace opens a session for each chat.
+      await tx.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
       await tx.chat.deleteMany({ where: { id: { in: chatIds } } });
     });
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId, reasoningEffort: priorChat.reasoningEffort, version: { increment: 1 } } });
