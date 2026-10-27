@@ -76,6 +76,7 @@ describe("native system prompt", () => {
     expect(system).toContain("# Workspace");
     expect(system).toContain("`update_plan`");
     expect(system).toContain("`manage_secret`");
+    expect(system).toContain("look for a matching one among the saved secrets first and ask the user only when none fits");
     expect(system).not.toContain("You are a helpful AI assistant.");
     expect(system.indexOf("# Environment")).toBeGreaterThan(system.indexOf(mcpIndex));
     expect(environment).toBe(`# Environment\nToday is October 23, 2026 in the user's time zone (${zone}).\nSaved secrets: "GitLab" (text).`);

@@ -9,9 +9,13 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent
+  type PointerEvent as ReactPointerEvent,
+  type RefObject
 } from "react";
-import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
+import { createPortal } from "react-dom";
+import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
+import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
 import type { BrowserLiveHandoff, BrowserLiveInput, BrowserLiveStep } from "@/lib/contracts/browserLive";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
@@ -242,7 +246,16 @@ function announcement(snapshot: BrowserLiveSnapshot, host: string | null): strin
   return state.controller === "user" ? "You have control of the browser." : "The agent has control of the browser.";
 }
 
-function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: string): boolean; live: BrowserLiveController }>) {
+/** Where focus lands when full screen closes and its own control is gone: the Browser bar, or the composer once the panel is. */
+function fullScreenFallbackFocus(bar: HTMLElement | null): HTMLElement | null {
+  return bar?.isConnected ? bar : document.querySelector<HTMLElement>("textarea.v2-composer-input");
+}
+
+function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
+  barRef: RefObject<HTMLButtonElement | null>;
+  claimScroll(handoffId: string): boolean;
+  live: BrowserLiveController;
+}>) {
   const { snapshot } = live;
   const state = snapshot.state;
   const frame = snapshot.connection === "ended" || snapshot.connection === "failed" ? null : snapshot.frame;
@@ -259,7 +272,14 @@ function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: str
   const lastEscapeRef = useRef(0);
   const zoomAnchorRef = useRef<{ x: number; y: number; from: number } | null>(null);
   const placeholder = placeholderCopy(snapshot);
+  const showsFrame = Boolean(frame && !placeholder);
   const sendInput = live.sendInput;
+  const [fullScreen, setFullScreen] = useState(false);
+  const fullScreenButtonRef = useRef<HTMLButtonElement>(null);
+  // Full screen exists only while there is a picture: a closed browser, an ended run or a failed stream close it.
+  const expanded = fullScreen && showsFrame;
+  // iOS Safari lays its keyboard over the page without resizing it: the layer ends where the keyboard starts.
+  const keyboardInset = useVisualViewportInset();
 
   /** The key ups and the mouse up that free whatever this view still holds on the page; forgets them. */
   const takeHeld = useCallback((): BrowserLiveInput[] => {
@@ -284,6 +304,35 @@ function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: str
     };
   }, [live, takeHeld, userControls]);
   useEffect(() => () => releaseOnCloseRef.current(), []);
+
+  // Once the picture is gone, full screen stays closed until the person opens it again (adjusted while rendering).
+  if (fullScreen && !showsFrame) setFullScreen(false);
+
+  /** Enters or leaves full screen at 100%, after freeing what is held: the stage it was pressed on goes away. */
+  const showFullScreen = useCallback((next: boolean) => {
+    const held = takeHeld();
+    if (userControls && held.length > 0) sendInput(...held);
+    zoomAnchorRef.current = null;
+    setZoom(1);
+    setFullScreen(next);
+  }, [sendInput, takeHeld, userControls]);
+
+  // A window-sized layer drawn by CSS, not the Fullscreen API: that one leaves on Escape, which the remote page
+  // needs, and iPhone Safari has none. While the person controls the page Escape belongs to the page.
+  const { dialogRef, onDialogKeyDown, portalReady } = useModalLayerV2({
+    closeBlocked: userControls || handoff !== null,
+    enabled: expanded,
+    onClose: () => showFullScreen(false),
+    restoreFocus: () => fullScreenButtonRef.current ?? fullScreenFallbackFocus(barRef.current)
+  });
+
+  // Entering moves focus to the page; a control that disappears (Done, Return control) hands focus back to it,
+  // so the keyboard never falls out of the layer to the page behind.
+  useLayoutEffect(() => {
+    if (!expanded) return;
+    const layer = dialogRef.current;
+    if (layer && !layer.contains(document.activeElement)) stageRef.current?.focus({ preventScroll: true });
+  }, [dialogRef, expanded, handoff, userControls]);
 
   /** Ends the user's control (Done, Cancel, Return control) after freeing what is held, so the release arrives first. */
   const endControl = (end: () => Promise<void>) => {
@@ -367,7 +416,8 @@ function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: str
     };
     stage.addEventListener("wheel", wheel, { passive: false });
     return () => stage.removeEventListener("wheel", wheel);
-  }, [environment, frame, sendInput, userControls, zoomTo]);
+    // `expanded` swaps the stage element between the panel and the full-screen layer.
+  }, [environment, expanded, frame, sendInput, userControls, zoomTo]);
 
   const pointer = (kind: "down" | "move" | "up" | "cancel", event: ReactPointerEvent<HTMLDivElement>) => {
     if (!frame) return;
@@ -395,12 +445,12 @@ function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: str
       const now = Date.now();
       if (now - lastEscapeRef.current <= ESCAPE_TWICE_MS) {
         // Escape twice leaves the view without trapping keyboard users: to Return control, or to Done during a
-        // handoff, or to the Browser bar while those are busy.
+        // handoff, or, while those are busy, to Exit full screen or the Browser bar.
         event.preventDefault();
         lastEscapeRef.current = 0;
-        const stage = stageRef.current;
-        const exit = stage?.parentElement?.querySelector<HTMLButtonElement>("[data-browser-live-exit]:not(:disabled)") ??
-          stage?.closest("[data-testid='browser-live']")?.querySelector<HTMLButtonElement>(".v2-browser-live-bar");
+        const view = stageRef.current?.closest(".v2-browser-live-view");
+        const exit = view?.querySelector<HTMLButtonElement>("[data-browser-live-exit]:not(:disabled)") ??
+          (expanded ? view?.querySelector<HTMLButtonElement>("[data-browser-live-close]") : barRef.current);
         exit?.focus();
         return;
       }
@@ -426,92 +476,134 @@ function LiveViewV2({ claimScroll, live }: Readonly<{ claimScroll(handoffId: str
   } as CSSProperties;
   const label = state?.page?.title ? `Live view of the agent's browser: ${state.page.title}` : "Live view of the agent's browser";
   const zoomIndex = ZOOM_STEPS.findIndex((step) => step >= zoom - 0.001);
-  const showsFrame = Boolean(frame && !placeholder);
+
+  const handoffCard = handoff ? (
+    // In full screen the card never scrolls the page behind the layer.
+    <HandoffCardV2 claimScroll={expanded ? () => false : claimScroll} handoff={handoff} host={host} live={live}
+      onAnswer={(action) => endControl(() => live.answerHandoff(handoff.id, action))} remembered={state?.signInRemembered !== false} />
+  ) : null;
+  const address = state?.page && running ? (
+    <p className="v2-browser-live-address" title={expanded ? state.page.url : undefined}>
+      {state.page.title ? <span className="v2-browser-live-title">{state.page.title}</span> : null}
+      <span className="v2-browser-live-url">{state.page.url}</span>
+    </p>
+  ) : null;
+  const toolbar = running ? (
+    <div className="v2-browser-live-toolbar">
+      <span className="v2-browser-live-controller" data-controller={state?.controller}>
+        {handoff ? "You have control" : userControls ? "You have control · the agent waits"
+          : snapshot.connection === "reconnecting" ? "Reconnecting…" : "The agent is using the browser"}
+      </span>
+      {handoff ? null : userControls ? (
+        <UiV2Button busy={live.busy === "return"} disabled={live.busy !== null} onClick={() => endControl(() => live.control("return"))}
+          data-browser-live-exit="" type="button">Return control</UiV2Button>
+      ) : (
+        <UiV2Button busy={live.busy === "take"} disabled={live.busy !== null || snapshot.connection !== "live"}
+          onClick={() => void live.control("take")} tone="primary" type="button">Take control</UiV2Button>
+      )}
+      <div className="v2-browser-live-zoom" role="group" aria-label="Zoom">
+        <button aria-label="Zoom out" className="v2-browser-live-zoom-button v2-focusable" disabled={zoom <= 1}
+          onClick={() => zoomTo(ZOOM_STEPS[Math.max(0, (zoomIndex < 0 ? ZOOM_STEPS.length : zoomIndex) - 1)] ?? 1)}
+          type="button">−</button>
+        <button aria-label="Fit the page to the panel" className="v2-browser-live-zoom-button v2-browser-live-zoom-fit v2-focusable"
+          disabled={zoom === 1} onClick={() => zoomTo(1)} type="button">{Math.round(zoom * 100)}%</button>
+        <button aria-label="Zoom in" className="v2-browser-live-zoom-button v2-focusable" disabled={zoom >= ZOOM_MAX}
+          onClick={() => zoomTo(ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? ZOOM_MAX)} type="button">+</button>
+      </div>
+      {showsFrame && !expanded ? (
+        <UiV2IconButton className="v2-browser-live-full-screen" icon="expand" label="Full screen" onClick={() => showFullScreen(true)}
+          ref={fullScreenButtonRef} />
+      ) : null}
+    </div>
+  ) : null;
+  const failure = live.failure ? <p className="v2-browser-live-error" role="alert">{browserLiveErrorCopyV2(live.failure)}</p> : null;
+  // Above the frame, so the composer dock or an on-screen keyboard never hides the field under it.
+  const typing = userControls ? <BrowserLiveTypingV2 onInputs={sendInput} /> : null;
+  const stage = (
+    <div
+      aria-label={showsFrame ? label : undefined}
+      aria-roledescription={showsFrame ? "live browser" : undefined}
+      className="v2-browser-live-stage v2-focusable"
+      data-control={userControls ? "user" : "agent"}
+      data-reconnecting={snapshot.connection === "reconnecting" || undefined}
+      data-testid="browser-live-stage"
+      data-zoomed={zoom > 1 || undefined}
+      onContextMenu={(event) => { if (userControls) event.preventDefault(); }}
+      onBlur={() => {
+        // Focus left the page view: nothing stays pressed on the page.
+        const held = takeHeld();
+        if (userControls && held.length > 0) sendInput(...held);
+      }}
+      onKeyDown={keyDown}
+      onKeyUp={keyUp}
+      onPaste={(event) => {
+        if (!userControls) return;
+        event.preventDefault();
+        sendInput(...textInputsV2(event.clipboardData.getData("text/plain")));
+      }}
+      onPointerCancel={(event) => pointer("cancel", event)}
+      onPointerDown={(event) => pointer("down", event)}
+      onPointerMove={(event) => pointer("move", event)}
+      onPointerUp={(event) => pointer("up", event)}
+      ref={stageRef}
+      role={showsFrame ? userControls ? "application" : "img" : undefined}
+      style={stageStyle}
+      tabIndex={showsFrame ? 0 : -1}
+    >
+      {frame && showsFrame ? (
+        // eslint-disable-next-line @next/next/no-img-element -- a live in-memory frame, never a static asset
+        <img alt="" className="v2-browser-live-frame" draggable={false} height={frame.height} ref={imageRef}
+          src={`data:${frame.mime};base64,${frame.data}`} style={{ width: `${zoom * 100}%` }} width={frame.width} />
+      ) : placeholder ? (
+        <div className="v2-browser-live-placeholder">
+          {placeholder.busy ? <span aria-hidden="true" className="v2-spinner" /> : null}
+          <p>{placeholder.text}</p>
+          {placeholder.reopen ? <UiV2Button onClick={live.reopen} type="button">{placeholder.reopen}</UiV2Button> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+  const hint = userControls ? <p className="v2-browser-live-hint">Click the page, then type. Press Esc twice to leave the view.</p> : null;
+  const status = <p aria-atomic="true" aria-live="polite" className="v2-sr-only" role="status">{announcement(snapshot, host)}</p>;
+
+  if (expanded && portalReady) {
+    // The same view and stream, drawn over the whole window: the controls on top, then the page as large as it fits.
+    // Clicks stay in the layer: React would bubble them to the answer behind, which opens its actions on a click.
+    return createPortal(
+      <div className="v2-browser-live-layer" data-keyboard={keyboardInset > 0 || undefined}
+        style={keyboardInset > 0 ? { bottom: keyboardInset } : undefined}>
+        <section aria-label="Browser, full screen" aria-modal="true" className="v2-browser-live-view" data-full-screen=""
+          data-testid="browser-live-full-screen" onClick={(event) => event.stopPropagation()} onKeyDown={onDialogKeyDown}
+          ref={dialogRef} role="dialog">
+          <div className="v2-browser-live-top">
+            {address}
+            {toolbar}
+            <UiV2IconButton className="v2-browser-live-close" data-browser-live-close="" icon="collapse" label="Exit full screen"
+              onClick={() => showFullScreen(false)} />
+          </div>
+          {handoffCard}
+          {failure}
+          {typing}
+          <div className="v2-browser-live-fit">{stage}</div>
+          {hint}
+          {status}
+        </section>
+      </div>,
+      document.body
+    );
+  }
 
   return (
     <div className="v2-browser-live-view">
-      {handoff ? (
-        <HandoffCardV2 claimScroll={claimScroll} handoff={handoff} host={host} live={live}
-          onAnswer={(action) => endControl(() => live.answerHandoff(handoff.id, action))} remembered={state?.signInRemembered !== false} />
-      ) : null}
-      {state?.page && running ? (
-        <p className="v2-browser-live-address">
-          {state.page.title ? <span className="v2-browser-live-title">{state.page.title}</span> : null}
-          <span className="v2-browser-live-url">{state.page.url}</span>
-        </p>
-      ) : null}
-      {running ? (
-        <div className="v2-browser-live-toolbar">
-          <span className="v2-browser-live-controller" data-controller={state?.controller}>
-            {handoff ? "You have control" : userControls ? "You have control · the agent waits"
-              : snapshot.connection === "reconnecting" ? "Reconnecting…" : "The agent is using the browser"}
-          </span>
-          {handoff ? null : userControls ? (
-            <UiV2Button busy={live.busy === "return"} disabled={live.busy !== null} onClick={() => endControl(() => live.control("return"))}
-              data-browser-live-exit="" type="button">Return control</UiV2Button>
-          ) : (
-            <UiV2Button busy={live.busy === "take"} disabled={live.busy !== null || snapshot.connection !== "live"}
-              onClick={() => void live.control("take")} tone="primary" type="button">Take control</UiV2Button>
-          )}
-          <div className="v2-browser-live-zoom" role="group" aria-label="Zoom">
-            <button aria-label="Zoom out" className="v2-browser-live-zoom-button v2-focusable" disabled={zoom <= 1}
-              onClick={() => zoomTo(ZOOM_STEPS[Math.max(0, (zoomIndex < 0 ? ZOOM_STEPS.length : zoomIndex) - 1)] ?? 1)}
-              type="button">−</button>
-            <button aria-label="Fit the page to the panel" className="v2-browser-live-zoom-button v2-browser-live-zoom-fit v2-focusable"
-              disabled={zoom === 1} onClick={() => zoomTo(1)} type="button">{Math.round(zoom * 100)}%</button>
-            <button aria-label="Zoom in" className="v2-browser-live-zoom-button v2-focusable" disabled={zoom >= ZOOM_MAX}
-              onClick={() => zoomTo(ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? ZOOM_MAX)} type="button">+</button>
-          </div>
-        </div>
-      ) : null}
-      {live.failure ? <p className="v2-browser-live-error" role="alert">{browserLiveErrorCopyV2(live.failure)}</p> : null}
-      {/* Above the frame, so the composer dock or an on-screen keyboard never hides the field under it. */}
-      {userControls ? <BrowserLiveTypingV2 onInputs={sendInput} /> : null}
-      <div
-        aria-label={showsFrame ? label : undefined}
-        aria-roledescription={showsFrame ? "live browser" : undefined}
-        className="v2-browser-live-stage v2-focusable"
-        data-control={userControls ? "user" : "agent"}
-        data-reconnecting={snapshot.connection === "reconnecting" || undefined}
-        data-testid="browser-live-stage"
-        data-zoomed={zoom > 1 || undefined}
-        onContextMenu={(event) => { if (userControls) event.preventDefault(); }}
-        onBlur={() => {
-          // Focus left the page view: nothing stays pressed on the page.
-          const held = takeHeld();
-          if (userControls && held.length > 0) sendInput(...held);
-        }}
-        onKeyDown={keyDown}
-        onKeyUp={keyUp}
-        onPaste={(event) => {
-          if (!userControls) return;
-          event.preventDefault();
-          sendInput(...textInputsV2(event.clipboardData.getData("text/plain")));
-        }}
-        onPointerCancel={(event) => pointer("cancel", event)}
-        onPointerDown={(event) => pointer("down", event)}
-        onPointerMove={(event) => pointer("move", event)}
-        onPointerUp={(event) => pointer("up", event)}
-        ref={stageRef}
-        role={showsFrame ? userControls ? "application" : "img" : undefined}
-        style={stageStyle}
-        tabIndex={showsFrame ? 0 : -1}
-      >
-        {frame && showsFrame ? (
-          // eslint-disable-next-line @next/next/no-img-element -- a live in-memory frame, never a static asset
-          <img alt="" className="v2-browser-live-frame" draggable={false} height={frame.height} ref={imageRef}
-            src={`data:${frame.mime};base64,${frame.data}`} style={{ width: `${zoom * 100}%` }} width={frame.width} />
-        ) : placeholder ? (
-          <div className="v2-browser-live-placeholder">
-            {placeholder.busy ? <span aria-hidden="true" className="v2-spinner" /> : null}
-            <p>{placeholder.text}</p>
-            {placeholder.reopen ? <UiV2Button onClick={live.reopen} type="button">{placeholder.reopen}</UiV2Button> : null}
-          </div>
-        ) : null}
-      </div>
-      {userControls ? <p className="v2-browser-live-hint">Click the page, then type. Press Esc twice to leave the view.</p> : null}
+      {handoffCard}
+      {address}
+      {toolbar}
+      {failure}
+      {typing}
+      {stage}
+      {hint}
       <StepsV2 steps={snapshot.steps} />
-      <p aria-atomic="true" aria-live="polite" className="v2-sr-only" role="status">{announcement(snapshot, host)}</p>
+      {status}
     </div>
   );
 }
@@ -543,6 +635,7 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
     return true;
   }, []);
   const panelId = useId();
+  const barRef = useRef<HTMLButtonElement>(null);
   const live = useBrowserLive(chatId, visible && expanded, openEventSource);
   const streamHandoff = live.snapshot.state?.handoff?.id ?? null;
 
@@ -564,14 +657,14 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
     <section aria-label="Browser" className="v2-browser-live" data-expanded={expanded || undefined}
       data-needs-user={needsUser || undefined} data-testid="browser-live">
       <button aria-controls={expanded ? panelId : undefined} aria-expanded={expanded} className="v2-browser-live-bar v2-focusable"
-        onClick={() => setExpanded((current) => !current)} type="button">
+        onClick={() => setExpanded((current) => !current)} ref={barRef} type="button">
         <UiV2Icon name="globe" />
         <span className="v2-browser-live-bar-title">Browser</span>
         <span className="v2-browser-live-bar-status">{status}</span>
         <span className="v2-browser-live-bar-action">{expanded ? "Hide" : "Watch"}</span>
         <UiV2Icon name="chevron-down" />
       </button>
-      {expanded ? <div className="v2-browser-live-panel" id={panelId}><LiveViewV2 claimScroll={claimScroll} live={live} /></div> : null}
+      {expanded ? <div className="v2-browser-live-panel" id={panelId}><LiveViewV2 barRef={barRef} claimScroll={claimScroll} live={live} /></div> : null}
     </section>
   );
 }

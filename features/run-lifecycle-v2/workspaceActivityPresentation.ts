@@ -185,7 +185,7 @@ export function workspaceBrowserStepPhraseV2(step: WorkspaceBrowserStepV2): stri
     case "new_tab": return "Opened a new tab";
     case "close_tab": return "Closed a tab";
     case "screenshot": return `Took a screenshot${target && target !== "page" ? ` of ${target}` : ""}`;
-    case "save_session": return `Saved the sign-in for ${target ?? "this site"}`;
+    case "save_session": return `Saved the browser session for ${target ?? "this site"}`;
     case "download": return `Downloaded ${target ?? "a file"}`;
     default: return `Browser step: ${step.action}`;
   }

@@ -14,7 +14,7 @@ const ENTRY_COUNT = WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_C
  * model never invents login windows or buttons. Paid on every Workspace run.
  */
 export const WORKSPACE_BROWSER_SESSION_USER_PATH =
-  "A website sign-in the user has not saved goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. Never ask for a password or a code in the chat. As an advanced alternative, the user can import a Playwright storage_state JSON in Studio → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
+  "A website sign-in with no saved credentials and none the user gave goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. Never ask for a password or a code in the chat. As an advanced alternative, the user can import a Playwright storage_state JSON in Studio → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
 /** Ids, field names, name and a description whose JSON escaping is at most six bytes per character. */
 const ENTRY_METADATA_MAX_BYTES = 64 * 1024;
 /**
