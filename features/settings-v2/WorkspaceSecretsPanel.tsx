@@ -433,7 +433,7 @@ function SecretValues({ id, name, revealed, copied, keyPrefix, onCopy, onRetry }
       return <div className="v2-secret-value" key={key}>
         <span className={value.kind === "env" ? "v2-secret-value-label font-mono" : "v2-secret-value-label"}>{entry.label}</span>
         <ReadOnlySecretText aria-label={entry.label} value={entry.text} />
-        <UiV2Button type="button" icon="copy" aria-label={`Copy ${entry.label}`} onClick={() => onCopy(key, entry.text)}>{copied?.ok && copied.key === key ? "Copied" : "Copy"}</UiV2Button>
+        <UiV2Button className="v2-secret-value-copy" type="button" icon="copy" aria-label={`Copy ${entry.label}`} onClick={() => onCopy(key, entry.text)}>{copied?.ok && copied.key === key ? "Copied" : "Copy"}</UiV2Button>
       </div>;
     })}
     {failed ? <p className="text-xs text-critical" role="alert">Copying failed. Select the value and copy it yourself.</p> : null}
