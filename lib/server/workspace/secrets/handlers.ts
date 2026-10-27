@@ -2,7 +2,11 @@ import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readBoundedRequestBody, RequestBodyTooLargeError, requestBodyErrorResponse } from "../../http/requestBody";
 import { getRequestBodyConfig } from "../../http/requestBodyConfig";
 import type { WorkspaceSecretStore } from "./store";
-import { parseWorkspaceSecretMutation, WORKSPACE_SECRET_MUTATION_MAX_BYTES, WorkspaceSecretError } from "./validation";
+import {
+  parseWorkspaceSecretMutation, parseWorkspaceSecretReveal, WORKSPACE_SECRET_MUTATION_MAX_BYTES, WorkspaceSecretError
+} from "./validation";
+
+const NO_STORE = { "cache-control": "private, no-store" } as const;
 
 /** A browser-session import exceeds the generic JSON cap; the route owns its larger, still bounded body. */
 async function readMutationBody(request: Request): Promise<unknown> {
@@ -21,21 +25,28 @@ async function readMutationBody(request: Request): Promise<unknown> {
 export function createWorkspaceSecretHandlers(input: { resolveAuth: RequestAuthResolver; store: WorkspaceSecretStore }) {
   async function handle(request: Request, write: boolean): Promise<Response> {
     const auth = await input.resolveAuth(request);
-    if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
-    if (auth.user.status !== "active") return Response.json({ error: "forbidden" }, { status: 403 });
+    if (!auth) return Response.json({ error: "unauthorized" }, { headers: NO_STORE, status: 401 });
+    if (auth.user.status !== "active") return Response.json({ error: "forbidden" }, { headers: NO_STORE, status: 403 });
     try {
       if (write) {
         const raw = await readMutationBody(request);
         const bodyError = requestBodyErrorResponse(raw);
-        if (bodyError) return bodyError;
+        if (bodyError) {
+          bodyError.headers.set("cache-control", NO_STORE["cache-control"]);
+          return bodyError;
+        }
+        // The owner's own value (operator decision 2026-10-27); the store binds it to the caller.
+        const reveal = parseWorkspaceSecretReveal(raw);
+        if (reveal) return Response.json(await input.store.reveal(auth.userId, reveal.id), { headers: NO_STORE });
         await input.store.mutate(auth.userId, parseWorkspaceSecretMutation(raw));
       }
       const secrets = await input.store.list(auth.userId);
       const browserAutosave = await input.store.browserAutosave(auth.userId);
-      return Response.json({ secrets, ...(browserAutosave ? { browserAutosave } : {}) }, { headers: { "cache-control": "private, no-store" } });
+      return Response.json({ secrets, ...(browserAutosave ? { browserAutosave } : {}) }, { headers: NO_STORE });
     } catch (error) {
       const code = error instanceof WorkspaceSecretError ? error.code : "workspace_secret_unavailable";
-      return Response.json({ error: code }, { status: code === "workspace_secret_conflict" ? 409 : code === "workspace_secret_unavailable" ? 503 : 400 });
+      return Response.json({ error: code }, { headers: NO_STORE, status: code === "workspace_secret_conflict" ? 409
+        : code === "workspace_secret_not_found" ? 404 : code === "workspace_secret_unavailable" ? 503 : 400 });
     }
   }
   return { GET: (request: Request) => handle(request, false), POST: (request: Request) => handle(request, true) };

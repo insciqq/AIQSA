@@ -45,8 +45,10 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       if (request.url !== "/responses") { send({}, 404); return; }
       const body = JSON.parse(bytes.toString()) as Record<string, unknown>;
       const wire = JSON.stringify(body);
-      const input = body.input as { type?: string }[];
-      const afterTool = input.some((item) => item.type === "function_call_output");
+      const input = body.input as { type?: string; role?: string }[];
+      // Earlier turns' tool calls are replayed in context; only a result after the latest user message ends this turn's call.
+      const latestUser = input.map((item) => item.role ?? item.type).lastIndexOf("user");
+      const afterTool = input.slice(latestUser + 1).some((item) => item.type === "function_call_output");
       if (afterTool && synthesisFails) { send({ error: { code: "fixture_synthesis_failed" } }, 400); return; }
       if (!afterTool) chatCalls.push({ pixels: wire.includes("input_image"), referencesPresent: references.every((id) => wire.includes(id)),
         toolPresent: Array.isArray(body.tools) && body.tools.some((tool: { name?: string }) => tool.name === "generate_image") });
@@ -127,13 +129,18 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       await open.click();
       const viewer = page.getByRole("dialog");
       await expectWithinViewport(page, viewer);
-      await expect(viewer.getByRole("img", { name: "Generated image", exact: true })).toBeVisible();
+      const picture = viewer.getByRole("img", { name: "Generated image", exact: true });
+      await expect(picture).toBeVisible();
       await expect(viewer.getByRole("button", { name: /Edit/ })).toHaveCount(0);
       await page.screenshot({ path: testInfo.outputPath("image-viewer-" + theme + ".png") });
       const downloadEvent = page.waitForEvent("download");
       await viewer.getByRole("link", { name: "Download" }).click();
       const download = await downloadEvent;
       expect(await download.failure()).toBeNull();
+      // A click on the picture takes focus out of the viewer; Escape still closes it.
+      await picture.click();
+      await expect(viewer).toBeVisible();
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
       await page.keyboard.press("Escape");
       await expect(viewer).toHaveCount(0);
       await expect(open).toBeFocused();
@@ -182,6 +189,8 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: chatIds } } });
       await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: chatIds } } });
       await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: chatIds } } });
+      // A stand that offers Workspace opens a session for each chat.
+      await tx.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
       await tx.chat.deleteMany({ where: { id: { in: chatIds } } });
     });
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId, reasoningEffort: priorChat.reasoningEffort, version: { increment: 1 } } });

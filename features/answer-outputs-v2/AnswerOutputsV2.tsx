@@ -505,14 +505,16 @@ export function AnswerOutputsV2({
   if (live) {
     // A created or changed task, a saved Skill or a changed secret or Assistant already is so: its card does not wait for the answer.
     // A refused call's card shows at once; its decision waits for the answer.
+    // Drafts sit where the settled answer lists its files, as the same element
+    // (`key`): their cards and image previews stay in place when it settles.
     const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
     return drafts.length || scheduledTasks.length || skillSaves.length || resourceChanges.length || mcpApprovals.length
       ? <div className="v2-answer-outputs" data-testid="answer-outputs">
-        {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} previewImages /> : null}
         <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
         <SkillSaveCardsV2 cards={skillSaves} live onOpenLibrary={onOpenLibrary} />
         <ResourceChangeCardsV2 cards={resourceChanges} live navigation={cardNavigation} />
         <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
+        {drafts.length ? <GeneratedFilesV2 key="generated-files" canSave={canSaveFiles} files={drafts} previewImages /> : null}
       </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
@@ -550,7 +552,7 @@ export function AnswerOutputsV2({
       <ResourceChangeCardsV2 cards={resourceChanges} navigation={cardNavigation} />
       <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
-        <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} previewImages />
+        <GeneratedFilesV2 key="generated-files" canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} previewImages />
       ) : null}
       {artifact?.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
@@ -663,14 +665,25 @@ function previewableImageFile(file: ThreadGeneratedFile): boolean {
   return attachmentPreviewKind({ byteSize: file.byteSize, fileName: file.fileName, mimeType: file.mimeType, status: "ready" }) === "image";
 }
 
+/** A draft's description and the time it was saved. */
+function draftDetails(checkpoint: NonNullable<ThreadGeneratedFile["checkpoint"]>): readonly [string, string] {
+  return [checkpoint.description, new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" })
+    .format(new Date(checkpoint.createdAt))];
+}
+
 /** Generated files as compact cards: Download is the visible verb, saving a
  * copy to Files waits behind "⋯". The type tile also keeps the file text
  * clear of the floating jump control's left lane. An image file's name opens
  * the image viewer; with `previewImages` (an answer's outputs) its picture is
- * also shown inline above the cards, as generated images are. */
-export function GeneratedFilesV2({ files, canSave = false, onUseFile, previewImages = false, useDisabled = false }: Readonly<{
+ * also shown inline above the cards, as generated images are. A draft the
+ * agent saved while it worked keeps the final card's two lines, marked
+ * "Draft", so nothing moves when the answer settles; its description and
+ * time are the meta line's tooltip, or lines of their own with
+ * `describeDrafts` (Export history, where they tell same-named drafts apart). */
+export function GeneratedFilesV2({ files, canSave = false, describeDrafts = false, onUseFile, previewImages = false, useDisabled = false }: Readonly<{
   files: readonly ThreadGeneratedFile[];
   canSave?: boolean;
+  describeDrafts?: boolean;
   onUseFile?(attachmentId: string, fileName: string): void;
   previewImages?: boolean;
   useDisabled?: boolean;
@@ -686,6 +699,7 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, previewIma
       <ul>
         {files.map((file) => {
           const type = generatedFileType(file);
+          const details = file.checkpoint ? draftDetails(file.checkpoint) : null;
           return (
             <li key={file.attachmentId}>
               <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name={generatedFileIcon(file, type)} /></span>
@@ -696,12 +710,12 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, previewIma
                     <strong>{file.fileName}</strong>
                   </button>
                 ) : <strong title={file.relativePath}>{file.fileName}</strong>}
-                <small>{file.checkpoint ? "Saved draft · " : null}{type} · {formatAttachmentBytes(file.byteSize)}</small>
-                {file.checkpoint ? <>
-                  <small className="v2-generated-file-description">{file.checkpoint.description}</small>
-                  <small><time dateTime={file.checkpoint.createdAt}>{new Intl.DateTimeFormat(undefined, {
-                    dateStyle: "medium", timeStyle: "medium"
-                  }).format(new Date(file.checkpoint.createdAt))}</time></small>
+                <small title={details && !describeDrafts ? details.join("\n") : undefined}>
+                  {file.checkpoint ? "Draft · " : null}{type} · {formatAttachmentBytes(file.byteSize)}
+                </small>
+                {file.checkpoint && details && describeDrafts ? <>
+                  <small className="v2-generated-file-description">{details[0]}</small>
+                  <small><time dateTime={file.checkpoint.createdAt}>{details[1]}</time></small>
                 </> : null}
               </span>
               <span className="v2-generated-file-actions">

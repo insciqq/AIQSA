@@ -30,12 +30,27 @@ export type WorkspaceSecretValue =
   | Readonly<{ kind: "file"; originalName: string; base64: string }>
   | Readonly<{ kind: "browser_session"; originalName: string; base64: string }>;
 
-/** Write-only content. Reading settings returns only WorkspaceSecretSummary. */
+/** Content to save. Listing returns only WorkspaceSecretSummary; the owner reads a value only by a reveal. */
 export type WorkspaceSecretMutation =
   | Readonly<{ action: "create"; name: string; description: string; value: WorkspaceSecretValue }>
   | Readonly<{ action: "update"; id: string; expectedVersionId: string; name: string; description: string;
       value: Readonly<{ action: "preserve" }> | Readonly<{ action: "replace"; content: WorkspaceSecretValue }> }>
   | Readonly<{ action: "delete"; id: string; expectedVersionId: string }>;
+
+/** The owner asks for one saved secret's current value (Studio › Secrets, operator decision 2026-10-27). */
+export type WorkspaceSecretRevealRequest = Readonly<{ action: "reveal"; id: string }>;
+
+/**
+ * What a reveal shows, by kind. A file shows its UTF-8 text when it decodes,
+ * otherwise only its size. A browser session is never revealed.
+ */
+export type WorkspaceSecretRevealedValue =
+  | Readonly<{ kind: "text"; text: string }>
+  | Readonly<{ kind: "env"; entries: readonly Readonly<{ name: string; value: string }>[] }>
+  | Readonly<{ kind: "ssh_key"; privateKey: string; passphrase: string | null }>
+  | Readonly<{ kind: "file"; originalName: string; byteSize: number; text: string | null }>;
+
+export type WorkspaceSecretReveal = Readonly<{ id: string; versionId: string; value: WorkspaceSecretRevealedValue }>;
 
 export type WorkspaceSecretSummary = Readonly<{
   id: string;
@@ -73,6 +88,8 @@ export type WorkspaceSecretErrorCode =
   | "workspace_secret_ssh_invalid"
   | "workspace_browser_session_invalid"
   | "workspace_browser_session_conflict"
+  | "workspace_secret_not_found"
+  | "workspace_secret_not_revealable"
   | "workspace_secret_unavailable";
 
 /** Binary units for limit copy, for example 512 KiB or 8 MiB. */
@@ -94,6 +111,8 @@ export function workspaceSecretErrorMessage(code: unknown): string {
     case "workspace_browser_session_conflict": return "A browser session with this filename already exists. Edit that session to replace it.";
     case "workspace_secret_conflict": return "This secret changed in another window. Refresh the list before saving again. Your input is still here.";
     case "workspace_secret_env_conflict": return "An environment name is already used by another saved secret.";
+    case "workspace_secret_not_found": return "This secret no longer exists. Refresh the list.";
+    case "workspace_secret_not_revealable": return "Browser sessions hold sign-in cookies and are not shown.";
     case "workspace_secret_ssh_invalid": return "Enter a valid private SSH key and its matching passphrase, if encrypted. A public key alone is not enough.";
     default: return "Workspace secrets are unavailable. Try again; your input is still here.";
   }
@@ -168,6 +187,38 @@ export function decodeWorkspaceSecretList(value: unknown): readonly WorkspaceSec
   const browserCount = value.filter((entry) => entry.kind === "browser_session").length;
   if (browserCount > WORKSPACE_BROWSER_SESSION_MAX_COUNT || value.length - browserCount > WORKSPACE_SECRET_MAX_COUNT) return null;
   return value as WorkspaceSecretSummary[];
+}
+
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const present = Object.keys(value);
+  return present.length === allowed.length && present.every((key) => allowed.includes(key));
+}
+
+function revealText(value: unknown, nonempty = true): value is string {
+  return typeof value === "string" && (!nonempty || value.length > 0) && value.length <= WORKSPACE_SECRET_VALUE_MAX_BYTES;
+}
+
+function revealedValue(value: Record<string, unknown>): boolean {
+  switch (value.kind) {
+    case "text": return exactKeys(value, ["kind", "text"]) && revealText(value.text);
+    case "env":
+      return exactKeys(value, ["kind", "entries"]) && Array.isArray(value.entries) && value.entries.length > 0 && value.entries.length <= 64 &&
+        value.entries.every((entry) => record(entry) && exactKeys(entry, ["name", "value"]) && isWorkspaceEnvName(entry.name) && revealText(entry.value, false));
+    case "ssh_key":
+      return exactKeys(value, ["kind", "privateKey", "passphrase"]) && revealText(value.privateKey) &&
+        (value.passphrase === null || revealText(value.passphrase));
+    case "file":
+      return exactKeys(value, ["kind", "originalName", "byteSize", "text"]) && revealText(value.originalName) && value.originalName.length <= 255 &&
+        typeof value.byteSize === "number" && Number.isSafeInteger(value.byteSize) && value.byteSize >= 0 &&
+        value.byteSize <= WORKSPACE_SECRET_FILE_MAX_BYTES && (value.text === null || revealText(value.text, false));
+    default: return false;
+  }
+}
+
+/** A reveal of exactly the requested secret, or null when the answer is malformed. */
+export function decodeWorkspaceSecretReveal(value: unknown, id: string): WorkspaceSecretReveal | null {
+  return record(value) && exactKeys(value, ["id", "versionId", "value"]) && value.id === id && isWorkspaceSecretId(value.versionId) &&
+    record(value.value) && revealedValue(value.value) ? value as WorkspaceSecretReveal : null;
 }
 
 function reportCount(value: unknown): value is number {
