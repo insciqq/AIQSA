@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import { responsesHistoryFromOutput } from "../providers/history";
+import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import type { ProviderRunRequest } from "../providers/types";
 import {
@@ -622,7 +623,7 @@ describe("a native run's context", () => {
       const fixedTokens = estimate([PROMPT, null, []]);
       expect(earlier.context.requestAnchor({ inputTokens: null })).toBeNull();
       const anchor = earlier.context.requestAnchor({ inputTokens: 1_234 });
-      expect(anchor).toEqual({ baseId: null, fixedTokens, inputTokens: 1_234 });
+      expect(anchor).toEqual({ attachmentIds: [], baseId: null, fixedTokens, inputTokens: 1_234 });
       const answer: TranscriptItem = { id: "answer", kind: "assistant_text", origin: TARGET, requestAnchor: anchor!, text: "done" };
       const turn = (before: readonly TranscriptItem[]): TranscriptItem[] => [...before, answer,
         { id: "ctx-turn", kind: "user", runContext: true, text: "Today" }, { id: "next", kind: "user", text: "next question" }];
@@ -639,6 +640,33 @@ describe("a native run's context", () => {
       await later.context.prepare(request(compacted));
       expect(later.context.measured()!.tokens).toBe(measured(compacted));
     });
+
+  it("passes over a recorded count whose request carried an attachment the run no longer sends", async () => {
+    const chat = workChat(1, 200);
+    const window = { contextWindow: 1_000_000, maxOutputTokens: 1_000 };
+    const pdf: ProviderRunRequest["attachments"][number] = { byteSize: 4_000, extractedText: "p".repeat(4_000), fileName: "a.pdf",
+      id: "pdf-1", kind: "pdf", metadata: {}, mimeType: "application/pdf", status: "ready" };
+    const earlier = { attachmentIds: [], baseId: null, fixedTokens: estimate([PROMPT, null, []]), inputTokens: 1_000 };
+    const withPdf = { ...earlier, fixedTokens: earlier.fixedTokens + 1_100, inputTokens: 9_000 };
+    const items: TranscriptItem[] = [...chat.items, { id: "a1", kind: "assistant_text", origin: TARGET, requestAnchor: earlier, text: "one" },
+      { id: "u2", kind: "user", text: "read this" },
+      { id: "a2", kind: "assistant_text", origin: TARGET, requestAnchor: { ...withPdf, attachmentIds: ["pdf-1"] }, text: "two" },
+      { id: "u3", kind: "user", text: "and now?" }];
+    const measuredFrom = async (attachments: ProviderRunRequest["attachments"]) => {
+      const run = harness([...items], { call: async () => summaryReply(), window });
+      await run.context.prepare({ ...request(items), attachments });
+      return run.context.measured()!.tokens;
+    };
+    // The PDF's request counted it at the provider's figure: without it, the run starts from the request before it.
+    const later = (text: string) => estimate(text) + FRAMING.user;
+    const answer = (text: string) => estimate(text) + FRAMING.assistant_text;
+    expect(await measuredFrom([])).toBe(1_000 + answer("one") + later("read this") + answer("two") + later("and now?"));
+    // Still carried, the PDF counts by its estimate on both sides of the count that holds it.
+    const pdfTokens = providerAttachmentBudgetTokens({ attachments: [pdf], estimateTokens: estimate,
+      modelCapabilities: request(items).modelCapabilities });
+    expect(await measuredFrom([pdf])).toBe(9_000 - withPdf.fixedTokens + earlier.fixedTokens + pdfTokens + answer("two") +
+      later("and now?"));
+  });
 
   it("measures nothing without a window", async () => {
     const chat = workChat(8, 2_000);
