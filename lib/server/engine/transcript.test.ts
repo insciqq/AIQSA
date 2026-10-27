@@ -395,7 +395,7 @@ describe("transcript projection", () => {
       ]),
       nextId: (() => { let next = 0; return () => `n${++next}`; })(),
       origin: codex,
-      requestAnchor: { baseId: null, fixedTokens: 500, inputTokens: 2_000 },
+      requestAnchor: { attachmentIds: [], baseId: null, fixedTokens: 500, inputTokens: 2_000 },
       usage: { outputTokens: 120, reasoningTokens: 80 }
     });
     expect(items.map((item) => "outputTokens" in item ? item.outputTokens : undefined)).toEqual([80, 20, 20]);

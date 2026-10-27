@@ -81,8 +81,11 @@ function native(value: unknown, required: boolean): ProviderNativeData | undefin
 
 function requestAnchor(value: unknown): TranscriptRequestAnchor | undefined {
   if (value === undefined) return undefined;
-  if (!isRecord(value) || (value.baseId !== null && !boundedString(value.baseId, TRANSCRIPT_ITEM_LIMITS.identityLength))) return invalid();
-  return { baseId: value.baseId, fixedTokens: tokens(value.fixedTokens) ?? invalid(), inputTokens: tokens(value.inputTokens) ?? invalid() };
+  if (!isRecord(value) || (value.baseId !== null && !boundedString(value.baseId, TRANSCRIPT_ITEM_LIMITS.identityLength)) ||
+    !Array.isArray(value.attachmentIds) || value.attachmentIds.length > 64 ||
+    !value.attachmentIds.every((id) => boundedString(id, TRANSCRIPT_ITEM_LIMITS.identityLength))) return invalid();
+  return { attachmentIds: value.attachmentIds as string[], baseId: value.baseId, fixedTokens: tokens(value.fixedTokens) ?? invalid(),
+    inputTokens: tokens(value.inputTokens) ?? invalid() };
 }
 
 function optional<T>(key: string, value: T | undefined): Record<string, T> {

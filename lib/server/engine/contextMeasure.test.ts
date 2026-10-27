@@ -59,7 +59,7 @@ describe("anchored context measure", () => {
   it("adds what the anchored request did not carry to the provider's reported input", () => {
     const conversation = chat();
     conversation.user("hello");
-    const anchor = contextAnchor({ itemCount: conversation.items.length, target: codex, usage: { inputTokens: 1_000 } });
+    const anchor = contextAnchor({ fixedTokens: 300, itemCount: conversation.items.length, target: codex, usage: { inputTokens: 1_000 } });
     conversation.respond(codex, toolRound(), { outputTokens: 70, reasoningTokens: 60 });
     conversation.result("call_1", "result");
     const added = 10 + FRAMING.tool_call + "tool".length + "result".length + FRAMING.tool_result;
@@ -77,7 +77,7 @@ describe("anchored context measure", () => {
     conversation.respond(codex, responsesHistoryFromOutput([
       { content: [{ text: "first answer", type: "output_text" }], role: "assistant", type: "message" }
     ]), { outputTokens: 3, reasoningTokens: 0 });
-    const anchor = contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: 500 } });
+    const anchor = contextAnchor({ fixedTokens: 0, itemCount: 1, target: codex, usage: { inputTokens: 500 } });
     conversation.user("two");
     conversation.respond(deepseek, toolRound("D"), { outputTokens: 900, reasoningTokens: 880 });
     conversation.result("call_1", "result");
@@ -108,7 +108,7 @@ describe("anchored context measure", () => {
     ]), { outputTokens: 50, reasoningTokens: 40 });
     conversation.result("call_1", "result");
     // The anchored request carried the first turn's reasoning: it was the current turn then.
-    const anchor = contextAnchor({ itemCount: conversation.items.length, target: deepseek, usage: { inputTokens: 700 } });
+    const anchor = contextAnchor({ fixedTokens: 0, itemCount: conversation.items.length, target: deepseek, usage: { inputTokens: 700 } });
     conversation.respond(deepseek, responsesHistoryFromOutput([
       { content: [{ text: "answer", type: "output_text" }], role: "assistant", type: "message" }
     ]), { outputTokens: 6, reasoningTokens: 0 });
@@ -137,20 +137,26 @@ describe("anchored context measure", () => {
     expect(measureContext({ estimate, fixedTokens: 0, images: { attached: () => undefined, note: IMAGE_VIEW_NOTE }, items, target: codex })
       .tokens).toBe("look".length + FRAMING.user + call + result + estimate(IMAGE_VIEW_NOTE));
     // A newly viewed image is added on top of the anchor, like any new item.
-    const anchor = contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: 500 } });
+    const anchor = contextAnchor({ fixedTokens: 0, itemCount: 1, target: codex, usage: { inputTokens: 500 } });
     expect(measureContext({ anchor, estimate, fixedTokens: 0, images: held, items, target: codex }).tokens).toBe(500 + call + result + 1_200);
+    // A preview the run released after the anchored request comes off with the fixed part (Codex review of #62).
+    const viewed = measureContext({ estimate, fixedTokens: 0, images: held, items, target: codex });
+    const atView = contextAnchor({ fixedTokens: viewed.fixedTokens, itemCount: items.length, target: codex, usage: { inputTokens: 2_000 } });
+    const released = { attached: () => undefined, note: IMAGE_VIEW_NOTE };
+    expect(measureContext({ anchor: atView, estimate, fixedTokens: 0, images: released, items, target: codex }).tokens)
+      .toBe(2_000 - 1_200 + estimate(IMAGE_VIEW_NOTE));
   });
 
   it("drops the anchor once a compaction changed where replay starts, and without reported input", () => {
     const conversation = chat();
     conversation.user("old");
-    const anchor = contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: 90_000 } });
+    const anchor = contextAnchor({ fixedTokens: 100, itemCount: 1, target: codex, usage: { inputTokens: 90_000 } });
     conversation.items.push({ id: "c", kind: "compaction", origin: codex, summary: "short" });
     conversation.user("new");
     const measure = measureContext({ anchor, estimate, fixedTokens: 100, items: conversation.items, target: codex });
     expect(measure.anchored).toBe(false);
     expect(measure.tokens).toBeLessThan(1_000);
-    expect(contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: null } })).toBeNull();
+    expect(contextAnchor({ fixedTokens: 0, itemCount: 1, target: codex, usage: { inputTokens: null } })).toBeNull();
   });
 });
 
@@ -175,6 +181,27 @@ describe("the part rebuilt for every request", () => {
     const carried = { ...anchor!, itemCount: 1 };
     expect(measureContext({ anchor: carried, estimate, fixedTokens: 300, items: next, target: codex }).tokens)
       .toBe(1_000 - first.fixedTokens + 300 + 9 + FRAMING.user + 4 + FRAMING.assistant_text + 5 + FRAMING.user);
+  });
+});
+
+describe("items later runs read in a smaller form", () => {
+  it("counts a Memory result in full only in its run, so the next run starts without it", () => {
+    const conversation = chat();
+    conversation.user("what do you remember?");
+    conversation.respond(codex, toolRound(), { outputTokens: 70, reasoningTokens: 60 });
+    conversation.result("call_1", "m".repeat(10_000));
+    const note = "Memory results stay in their run.";
+    const recorded = (item: TranscriptItem) => item.kind === "tool_result" ? { ...item, output: note } : item;
+    const now = measureContext({ estimate, fixedTokens: 300, items: conversation.items, recorded, target: codex });
+    expect(now.tokens).toBe(measureContext({ estimate, fixedTokens: 300, items: conversation.items, target: codex }).tokens);
+    const anchor = contextAnchor({ fixedTokens: now.fixedTokens, itemCount: conversation.items.length, target: codex,
+      usage: { inputTokens: 20_000 } });
+    // Within the run the result is in the provider's count and stays there.
+    expect(measureContext({ anchor, estimate, fixedTokens: 300, items: conversation.items, recorded, target: codex }).tokens).toBe(20_000);
+    // The next run reads the result as its note under the same id (Codex review of #62).
+    const next = conversation.items.map(recorded);
+    expect(measureContext({ anchor, estimate, fixedTokens: 300, items: next, recorded, target: codex }).tokens)
+      .toBe(20_000 - 10_000 + note.length);
   });
 });
 

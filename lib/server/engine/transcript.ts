@@ -52,6 +52,8 @@ export type TranscriptTarget = TranscriptOrigin & Readonly<{
  * request carried on record.
  */
 export type TranscriptRequestAnchor = Readonly<{
+  /** The attachments that request carried (`ProviderAttachment.id`), counted in `fixedTokens` by estimate. */
+  attachmentIds: readonly string[];
   /** The compaction that request replayed from, or null (`TranscriptSelection.base`). */
   baseId: string | null;
   /** The estimated part a later run rebuilds: instructions, personal context, tool declarations, attachments and run
