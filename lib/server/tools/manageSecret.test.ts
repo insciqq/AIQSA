@@ -53,15 +53,15 @@ describe("manage_secret", () => {
   });
 
   it("leaves logins, emails and regions out of the masked values and keeps anything secret-looking masked", () => {
-    const variables = [
-      ["SAUCEDEMO_USERNAME", "standard_user"], ["SAUCEDEMO_PASSWORD", "secret_sauce"], ["AWS_DEFAULT_REGION", "eu-central-1"],
-      ["AWS_ACCESS_KEY_ID", "AKIA-not-real"], ["AWS_SECRET_ACCESS_KEY", "secret-key-not-real"], ["smtp_mail", "me@example.test"],
+    const shown = [["SAUCEDEMO_USERNAME", "standard_user"], ["AWS_DEFAULT_REGION", "eu-central-1"], ["smtp_mail", "me@example.test"],
+      ["DB_HOST", "db.internal"], ["DB_PORT", "5432"], ["MAIL_LOGIN", "bob"]];
+    const masked = [["SAUCEDEMO_PASSWORD", "secret_sauce"], ["AWS_ACCESS_KEY_ID", "AKIA-not-real"], ["AWS_SECRET_ACCESS_KEY", "secret-key-not-real"],
       ["DB_USER_PASSWORD", "db-pass-not-real"], ["API_USER_TOKEN", "token-not-real"], ["DATABASE_URL", "postgres://u:p@db/app"],
-      ["SUPERUSER", "admin-not-split"], ["DB_HOST", "db.internal"], ["DB_PORT", "5432"]
-    ].map(([name, value]) => ({ name, value }));
-    expect(manageSecretValues({ action: "create", kind: "env", name: "Shop", variables })).toEqual([
-      "secret_sauce", "AKIA-not-real", "secret-key-not-real", "db-pass-not-real", "token-not-real", "postgres://u:p@db/app", "admin-not-split"
-    ]);
+      ["SUPERUSER", "admin-not-split"], ["USER_PW", "pw-not-real"], ["MAIL_URL", "smtp://bob:hunter2@smtp.example"], ["LOGIN_CODE", "481516"],
+      ["HOST_DSN", "dsn-not-real"], ["USER_CERT", "cert-not-real"], ["ACCOUNT_RECOVERY_CODES", "codes-not-real"], ["DB_HOST", "bob:hunter2@db"],
+      ["USER_SALT", "salt-not-real"], ["LOGIN_MFA", "mfa-not-real"]];
+    const variables = [...shown, ...masked].map(([name, value]) => ({ name, value }));
+    expect(manageSecretValues({ action: "create", kind: "env", name: "Shop", variables })).toEqual(masked.map(([, value]) => value));
     expect(manageSecretValues({ action: "create", kind: "text", name: "USERNAME", text: "text-is-always-masked" })).toEqual(["text-is-always-masked"]);
   });
 

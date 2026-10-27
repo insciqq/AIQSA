@@ -96,27 +96,30 @@ export const manageSecretTool: HarnessToolDescriptor = Object.freeze({
 });
 
 type Refusal = Readonly<{ code: string; message: string; extra?: Record<string, unknown> }>;
-/** Whole name parts that mark an env variable as an identifier the answer may name: a login, an email, a region. */
+/** Last name parts that mark an env variable as an identifier the answer may name: a login, an email, a region. */
 const IDENTIFIER_NAME_PARTS = new Set(["ACCOUNT", "BUCKET", "DOMAIN", "EMAIL", "HOST", "HOSTNAME", "LOGIN", "MAIL", "PORT", "PROJECT", "REGION", "USER", "USERNAME"]);
-/** Anywhere in a name, these keep the value masked even beside an identifier part, as in AWS_ACCESS_KEY_ID or DB_USER_PASSWORD. */
-const SECRET_NAME_PATTERN = /AUTH|COOKIE|CRED|KEY|OTP|PASS|PIN|PRIVATE|PWD|SECRET|SEED|SESSION|TOKEN/u;
+/** Anywhere in a name, these keep the value masked, as in AWS_ACCESS_KEY_ID, DB_USER_PASSWORD or MAIL_URL. */
+const SECRET_NAME_PATTERN = /AUTH|BEARER|CERT|CODE|CONN|COOKIE|CRED|DSN|HASH|KEY|LICENSE|MFA|OTP|PASS|PIN|PRIVATE|PW|SALT|SECRET|SEED|SESSION|TOKEN|URI|URL/u;
+/** A value that carries a password itself, such as smtp://bob:pw@host or bob:pw@host. */
+const CREDENTIAL_VALUE = /(?:^|:\/\/)[^\s:@/]+:[^\s@/]+@/u;
 
-function identifierVariable(name: unknown): boolean {
-  if (typeof name !== "string") return false;
+/** Only the name's last part decides (DB_USER, AWS_DEFAULT_REGION), so USER_PW or LOGIN_CODE stay masked. */
+function identifierVariable(name: unknown, value: unknown): boolean {
+  if (typeof name !== "string" || typeof value !== "string" || CREDENTIAL_VALUE.test(value)) return false;
   const upper = name.toUpperCase();
-  return !SECRET_NAME_PATTERN.test(upper) && upper.split("_").some((part) => IDENTIFIER_NAME_PARTS.has(part));
+  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(upper.split("_").at(-1) ?? "");
 }
 
 /**
  * The values a create or update call passes inline, which its answer must not
  * repeat (issue #52): the engine masks them in the answer text. Identifier
  * variables are left out so the answer can say which login or region it used
- * (operator decision 2026-10-27); a URL stays masked, it may carry a password.
+ * (operator decision 2026-10-27); a URL or a value with a password in it stays masked.
  */
 export function manageSecretValues(args: Record<string, unknown>): string[] {
   if (args.action !== "create" && args.action !== "update") return [];
   const variables = Array.isArray(args.variables)
-    ? args.variables.map((item: unknown) => record(item) && !identifierVariable(item.name) ? item.value : undefined)
+    ? args.variables.map((item: unknown) => record(item) && !identifierVariable(item.name, item.value) ? item.value : undefined)
     : [];
   return [args.text, args.privateKey, args.passphrase, ...variables].filter((value): value is string => typeof value === "string");
 }
