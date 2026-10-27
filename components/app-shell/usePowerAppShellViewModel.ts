@@ -275,13 +275,20 @@ export function usePowerAppShellViewModel({
       sessionSnapshot?.phase === "after_answer" && liveSnapshot?.phase === "request"
       ? sessionSnapshot : null;
     const preferredLiveSnapshot = onAnswerLeaf && !settledSnapshot ? liveSnapshot : null;
+    // Right after Send the new turn has no measure yet: the branch's last one plus what was sent since stands in until
+    // the run's first status, instead of the text-only estimate far below it (issue #62).
+    const snapshotIndex = !persistedMatchesBranch && sessionSnapshot && sessionMessageId
+      ? visibleMessages.findIndex((message) => message.id === sessionMessageId) : -1;
+    const sentSince = snapshotIndex >= 0 ? visibleMessages.slice(snapshotIndex + 1) : [];
+    const sentSinceSnapshot = sentSince.some((message) => message.id === renderActiveLeafId)
+      ? sentSince.reduce((total, message) => total + estimateApproxTokens(message.content), 0) : null;
     const rejectedBranch = rejectedSource.sourceKey === sourceKey && rejectedSource.rejected;
     const snapshot = !requestRejected && !rejectedBranch
-      ? preferredLiveSnapshot ?? (persistedMatchesBranch ? sessionSnapshot : null)
+      ? preferredLiveSnapshot ?? (persistedMatchesBranch || sentSinceSnapshot !== null ? sessionSnapshot ?? null : null)
       : null;
     const snapshotSource = preferredLiveSnapshot ? "live" : "persisted";
     const afterSnapshotTokens = snapshotSource === "persisted"
-      ? activeThreadContextStats?.approximateInputTokensAfterSession ?? 0 : 0;
+      ? sentSinceSnapshot ?? activeThreadContextStats?.approximateInputTokensAfterSession ?? 0 : 0;
     // A draft can already exhaust the model window. Bound low-fidelity file
     // proxies to one full window while preserving the measured base unchanged.
     const deltaLimit = currentContextWindow || Number.MAX_SAFE_INTEGER;
