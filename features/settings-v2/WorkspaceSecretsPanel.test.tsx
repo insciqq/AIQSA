@@ -240,6 +240,21 @@ describe("WorkspaceSecretsPanel", () => {
       value: { kind: "file", originalName: "credentials.bin", base64: "AP8NCiQ=" } });
   });
 
+  it("closes the discard confirmation, not the sheet, on Escape after focus left both", async () => {
+    request.mockResolvedValueOnce(listed([]));
+    render(<WorkspaceSecretsPanel />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add secret" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Fixture draft" } });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Add secret" }), { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Unsaved Workspace secret" })).toBeVisible();
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Unsaved Workspace secret" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Add secret" })).toBeVisible();
+    expect(screen.getByLabelText("Name")).toHaveValue("Fixture draft");
+  });
+
   it("merges .env locally, retains pasted drafts on close and sends only explicit Save", async () => {
     request.mockResolvedValueOnce(listed([]));
     render(<WorkspaceSecretsPanel />);
@@ -385,6 +400,11 @@ describe("WorkspaceSecretsPanel", () => {
       reveal.mockRejectedValueOnce(new Error("This secret no longer exists. Refresh the list."));
       fireEvent.click(await screen.findByRole("button", { name: "Show values of Saved access" }));
       expect(await screen.findByRole("alert")).toHaveTextContent("This secret no longer exists. Refresh the list.");
+      // Saved again in another window: the newer value never shows under this row.
+      reveal.mockResolvedValueOnce({ id: saved.id, versionId: "10000000-0000-4000-8000-000000000009", value: { kind: "text", text: "newer-text" } });
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("This secret changed after the list loaded. Refresh the list.");
+      expect(screen.queryByText("newer-text")).toBeNull();
       reveal.mockResolvedValueOnce({ id: saved.id, versionId: saved.versionId, value: { kind: "text", text: "synthetic-text" } });
       fireEvent.click(screen.getByRole("button", { name: "Try again" }));
       const values = await screen.findByRole("group", { name: "Values of Saved access" });

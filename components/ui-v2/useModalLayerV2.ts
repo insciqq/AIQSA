@@ -146,6 +146,8 @@ function restoreClosedLayerFocus() {
  */
 function escapeFellOutOfDialogs(target: EventTarget | null, dialog: HTMLElement | null): boolean {
   if (!dialog?.isConnected) return false;
+  // A confirmation open inside this dialog (not a layer of its own, such as a non-portal ConfirmationDialog) owns Escape.
+  if (dialog.querySelector("[role='dialog'], [role='alertdialog']")) return false;
   if (!(target instanceof Element) || target === document.body || target === document.documentElement) return true;
   if (!(target instanceof HTMLElement)) return false;
   if (dialog.contains(target) || target.closest("[role='dialog'], [role='alertdialog']")) return false;

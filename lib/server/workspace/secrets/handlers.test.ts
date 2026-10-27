@@ -56,6 +56,7 @@ describe("personal Workspace secrets API", () => {
     expect(fixture.store.mutate).toHaveBeenCalledOnce();
     const oversized = await fixture.handlers.POST(new Request(url, { method: "POST", body: "x".repeat(WORKSPACE_SECRET_MUTATION_MAX_BYTES + 1) }));
     expect(oversized.status).toBe(413);
+    expect(oversized.headers.get("cache-control")).toBe("private, no-store");
     expect(fixture.store.mutate).toHaveBeenCalledOnce();
   });
 
@@ -103,10 +104,12 @@ describe("personal Workspace secrets API", () => {
       const fixture = setup();
       fixture.resolveAuth.mockResolvedValueOnce(null);
       const unauthorized = post({ action: "reveal", id: fixture.summary.id });
-      expect((await fixture.handlers.POST(unauthorized)).status).toBe(401);
+      const refusedSignedOut = await fixture.handlers.POST(unauthorized);
+      expect([refusedSignedOut.status, refusedSignedOut.headers.get("cache-control")]).toEqual([401, "private, no-store"]);
       expect(unauthorized.bodyUsed).toBe(false);
       fixture.resolveAuth.mockResolvedValueOnce({ userId: fixture.userId, user: { id: fixture.userId, status: "disabled" } });
-      expect((await fixture.handlers.POST(post({ action: "reveal", id: fixture.summary.id }))).status).toBe(403);
+      const refusedDisabled = await fixture.handlers.POST(post({ action: "reveal", id: fixture.summary.id }));
+      expect([refusedDisabled.status, refusedDisabled.headers.get("cache-control")]).toEqual([403, "private, no-store"]);
       expect(fixture.store.reveal).not.toHaveBeenCalled();
 
       fixture.store.reveal.mockRejectedValue(new WorkspaceSecretError("workspace_secret_not_found"));
