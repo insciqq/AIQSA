@@ -1,15 +1,16 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSecretsPanel } from "./WorkspaceSecretsPanel";
-import { requestWorkspaceSecrets, type WorkspaceSecretsState } from "./workspaceSecretsApi";
+import { requestWorkspaceSecrets, revealWorkspaceSecret, type WorkspaceSecretsState } from "./workspaceSecretsApi";
 import {
   WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_SECRET_MAX_COUNT,
   type WorkspaceBrowserAutosaveReport, type WorkspaceSecretSummary
 } from "@/lib/contracts/workspaceSecrets";
 
-vi.mock("./workspaceSecretsApi", () => ({ requestWorkspaceSecrets: vi.fn() }));
+vi.mock("./workspaceSecretsApi", () => ({ requestWorkspaceSecrets: vi.fn(), revealWorkspaceSecret: vi.fn() }));
 const request = vi.mocked(requestWorkspaceSecrets);
+const reveal = vi.mocked(revealWorkspaceSecret);
 function listed(secrets: readonly WorkspaceSecretSummary[], browserAutosave: WorkspaceBrowserAutosaveReport | null = null): WorkspaceSecretsState {
   return { secrets, browserAutosave };
 }
@@ -306,5 +307,112 @@ describe("WorkspaceSecretsPanel", () => {
     expect(text.selectionEnd).toBe(7);
     await act(async () => new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())));
     expect(screen.getByLabelText("Name")).not.toHaveFocus();
+  });
+
+  describe("showing saved values", () => {
+    const env: WorkspaceSecretSummary = { ...saved, id: "10000000-0000-4000-8000-000000000011", versionId: "10000000-0000-4000-8000-000000000012",
+      kind: "env", name: "Fixture environment", envNames: ["FIXTURE_USER", "FIXTURE_TOKEN"] };
+    const browser: WorkspaceSecretSummary = { ...saved, id: "10000000-0000-4000-8000-000000000021", kind: "browser_session", name: "Shop session",
+      originalName: "shop.example.json", browserSession: { autoSaved: true } };
+    let writeText: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      reveal.mockReset();
+      writeText = vi.fn(async () => undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    });
+
+    it("shows, copies and hides each value of the owner's env and text secrets without browser storage", async () => {
+      request.mockResolvedValueOnce(listed([saved, env, browser]));
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      render(<WorkspaceSecretsPanel />);
+      await screen.findByRole("heading", { name: "Shop session" });
+      expect(screen.queryByRole("button", { name: "Show values of Shop session" })).toBeNull();
+
+      reveal.mockResolvedValueOnce({ id: env.id, versionId: env.versionId, value: { kind: "env", entries: [
+        { name: "FIXTURE_USER", value: "synthetic-user" }, { name: "FIXTURE_TOKEN", value: "synthetic\nmultiline" }
+      ] } });
+      const show = screen.getByRole("button", { name: "Show values of Fixture environment" });
+      expect(show).toHaveTextContent("Show values");
+      expect(show).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(show);
+      const values = await screen.findByRole("group", { name: "Values of Fixture environment" });
+      expect(reveal).toHaveBeenCalledWith(env.id, expect.any(AbortSignal));
+      const hide = screen.getByRole("button", { name: "Hide values of Fixture environment" });
+      expect(hide).toHaveAttribute("aria-expanded", "true");
+      expect(hide).toHaveAttribute("aria-controls", values.id);
+      expect(within(values).getByRole("textbox", { name: "FIXTURE_USER" })).toHaveValue("synthetic-user");
+      expect(within(values).getByRole("textbox", { name: "FIXTURE_TOKEN" })).toHaveValue("synthetic\nmultiline");
+      expect(within(values).getByRole("textbox", { name: "FIXTURE_TOKEN" })).toHaveAttribute("readonly");
+      fireEvent.click(within(values).getByRole("button", { name: "Copy FIXTURE_TOKEN" }));
+      await waitFor(() => expect(within(values).getByRole("button", { name: "Copy FIXTURE_TOKEN" })).toHaveTextContent("Copied"));
+      expect(writeText).toHaveBeenCalledWith("synthetic\nmultiline");
+      expect(within(values).getByRole("button", { name: "Copy FIXTURE_USER" })).toHaveTextContent("Copy");
+
+      reveal.mockResolvedValueOnce({ id: saved.id, versionId: saved.versionId, value: { kind: "text", text: "synthetic-text" } });
+      fireEvent.click(screen.getByRole("button", { name: "Show values of Saved access" }));
+      const text = await screen.findByRole("group", { name: "Values of Saved access" });
+      expect(within(text).getByRole("textbox", { name: "Text" })).toHaveValue("synthetic-text");
+
+      fireEvent.click(hide);
+      expect(screen.queryByRole("group", { name: "Values of Fixture environment" })).toBeNull();
+      expect(document.body.textContent).not.toContain("synthetic-user");
+      expect(screen.getByRole("button", { name: "Show values of Fixture environment" })).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByRole("textbox", { name: "Text" })).toHaveValue("synthetic-text");
+      expect(setItem).not.toHaveBeenCalled();
+      setItem.mockRestore();
+    });
+
+    it("shows an SSH key with its passphrase, a text file and only a binary file's size", async () => {
+      const ssh = { ...saved, id: "10000000-0000-4000-8000-000000000031", kind: "ssh_key" as const, name: "Deploy key" };
+      const file = { ...saved, id: "10000000-0000-4000-8000-000000000041", kind: "file" as const, name: "Blob", originalName: "blob.bin" };
+      request.mockResolvedValueOnce(listed([ssh, file]));
+      render(<WorkspaceSecretsPanel />);
+      reveal.mockResolvedValueOnce({ id: ssh.id, versionId: ssh.versionId, value: { kind: "ssh_key", privateKey: "synthetic key", passphrase: "synthetic phrase" } });
+      fireEvent.click(await screen.findByRole("button", { name: "Show values of Deploy key" }));
+      const key = await screen.findByRole("group", { name: "Values of Deploy key" });
+      expect(within(key).getByRole("textbox", { name: "Private key" })).toHaveValue("synthetic key");
+      expect(within(key).getByRole("textbox", { name: "Passphrase" })).toHaveValue("synthetic phrase");
+      reveal.mockResolvedValueOnce({ id: file.id, versionId: file.versionId, value: { kind: "file", originalName: "blob.bin", byteSize: 2048, text: null } });
+      fireEvent.click(screen.getByRole("button", { name: "Show values of Blob" }));
+      const blob = await screen.findByRole("group", { name: "Values of Blob" });
+      expect(blob).toHaveTextContent(/Binary file, .+\. Its contents cannot be shown as text\./);
+      expect(within(blob).queryByRole("textbox")).toBeNull();
+    });
+
+    it("reports a failed reveal with a retry and a failed copy, and drops values when the secret is saved again", async () => {
+      request.mockResolvedValueOnce(listed([saved]));
+      render(<WorkspaceSecretsPanel />);
+      reveal.mockRejectedValueOnce(new Error("This secret no longer exists. Refresh the list."));
+      fireEvent.click(await screen.findByRole("button", { name: "Show values of Saved access" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("This secret no longer exists. Refresh the list.");
+      reveal.mockResolvedValueOnce({ id: saved.id, versionId: saved.versionId, value: { kind: "text", text: "synthetic-text" } });
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      const values = await screen.findByRole("group", { name: "Values of Saved access" });
+      writeText.mockRejectedValueOnce(new Error("denied"));
+      fireEvent.click(within(values).getByRole("button", { name: "Copy Text" }));
+      expect(await within(values).findByRole("alert")).toHaveTextContent("Copying failed. Select the value and copy it yourself.");
+
+      request.mockResolvedValueOnce(listed([{ ...saved, versionId: "10000000-0000-4000-8000-000000000003" }]));
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await waitFor(() => expect(screen.queryByRole("group", { name: "Values of Saved access" })).toBeNull());
+      expect(screen.getByRole("button", { name: "Show values of Saved access" })).toBeEnabled();
+    });
+
+    it("cancels a pending reveal on hide and unmount and never shows its late answer", async () => {
+      request.mockResolvedValueOnce(listed([saved]));
+      const { unmount } = render(<WorkspaceSecretsPanel />);
+      const signals: AbortSignal[] = [];
+      let answer!: (value: Awaited<ReturnType<typeof revealWorkspaceSecret>>) => void;
+      reveal.mockImplementation((_id, signal) => { signals.push(signal!); return new Promise(resolve => { answer = resolve; }); });
+      fireEvent.click(await screen.findByRole("button", { name: "Show values of Saved access" }));
+      expect(screen.getByRole("status")).toHaveTextContent("Loading values…");
+      fireEvent.click(screen.getByRole("button", { name: "Hide values of Saved access" }));
+      expect(signals[0]!.aborted).toBe(true);
+      await act(async () => answer({ id: saved.id, versionId: saved.versionId, value: { kind: "text", text: "synthetic-late" } }));
+      expect(document.body.textContent).not.toContain("synthetic-late");
+      fireEvent.click(screen.getByRole("button", { name: "Show values of Saved access" }));
+      unmount();
+      expect(signals[1]!.aborted).toBe(true);
+    });
   });
 });

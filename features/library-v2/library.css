@@ -1616,11 +1616,15 @@
 .v2-secret-env-head, .v2-secret-env-row { display: grid; grid-template-columns: 35% minmax(0, 1fr) 2rem; align-items: start; gap: 0.5rem; }
 .v2-secret-env-head { color: var(--v2-color-text2); font-size: 0.75rem; }
 .v2-secret-env-row textarea, .v2-secret-metadata textarea { resize: none; overflow-y: auto; }
+.v2-secret-values { grid-column: 2 / -1; display: flex; min-width: 0; flex-direction: column; gap: 0.75rem; }
+.v2-secret-value { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.375rem 0.5rem; min-width: 0; }
+.v2-secret-value-label { grid-column: 1 / -1; color: var(--v2-color-text2); font-size: 0.75rem; line-height: 1.4; overflow-wrap: anywhere; }
+.v2-secret-value-text { resize: none; overflow-y: auto; }
 @media (max-width: 479px) {
   .v2-secret-types { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .v2-secret-metadata { grid-template-columns: minmax(0, 1fr); }
   .v2-secret-row { grid-template-columns: 2.5rem minmax(0, 1fr); }
-  .v2-secret-row > div:last-child { grid-column: 2; }
+  .v2-secret-row > .v2-secret-actions, .v2-secret-row > .v2-secret-values { grid-column: 2; }
 }
 @media (pointer: coarse) {
   .v2-secret-env-head, .v2-secret-env-row { grid-template-columns: 35% minmax(0, 1fr) 2.75rem; }
