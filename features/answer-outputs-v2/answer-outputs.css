@@ -896,7 +896,7 @@
 .v2-skill-save-card[data-undo="undone"] .v2-skill-save-card-tile { color: var(--v2-color-text3); }
 .v2-skill-save-card-copy { display: grid; min-width: 0; flex: 1 1 auto; gap: 0.125rem; }
 .v2-skill-save-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
-.v2-skill-save-card-copy strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.v2-skill-save-card-copy strong { overflow: hidden; font-size: 0.875rem; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .v2-skill-save-card-copy small, .v2-skill-save-unchanged { color: var(--v2-color-text3); font-size: 0.75rem; overflow-wrap: anywhere; }
 .v2-skill-save-card-warning { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.5rem 0.625rem; border-radius: var(--v2-radius-s); color: var(--v2-color-text); background: color-mix(in srgb, var(--v2-color-warn) 12%, transparent); font-size: 0.8125rem; line-height: 1.45; overflow-wrap: anywhere; }
 .v2-skill-save-card-warning > svg { flex: 0 0 auto; margin-top: 0.125rem; color: var(--v2-color-warn); }
