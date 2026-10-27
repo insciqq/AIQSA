@@ -56,11 +56,13 @@
   .v2-export-history { padding: 0.75rem; max-height: calc(100dvh - 1rem); }
 }
 
-/* Answer results (artifacts, then generated files) share one card grid: a
-   file is a compact object, not a full-measure banner, so cards keep a
-   bounded width and two sit side by side on a desktop measure. */
+/* Answer results (artifacts, generated files, changes to the user's own
+   resources) share one card grid: a file is a compact object, not a
+   full-measure banner, so cards keep a bounded width and two sit side by
+   side on a desktop measure. */
 .v2-generated-artifacts > ul,
-.v2-generated-files ul {
+.v2-generated-files ul,
+.v2-resource-change-cards > ul {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
   gap: 0.5rem;
@@ -853,9 +855,9 @@
 /* A scheduled task the answer created: what, when and its two verbs. */
 .v2-scheduled-task-cards { margin-top: 0.375rem; }
 .v2-scheduled-task-cards > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
-.v2-scheduled-task-card { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
-.v2-scheduled-task-card-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-text2); background: var(--v2-color-active); }
-.v2-scheduled-task-card[data-state="deleted"] .v2-scheduled-task-card-tile { color: var(--v2-color-text3); background: var(--v2-color-surface2); }
+.v2-scheduled-task-card { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.625rem; padding: 0.5rem 0.625rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
+.v2-scheduled-task-card-tile { display: grid; width: 2rem; height: 2rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-s); color: var(--v2-color-text2); background: var(--v2-color-surface2); }
+.v2-scheduled-task-card[data-state="deleted"] .v2-scheduled-task-card-tile { color: var(--v2-color-text3); }
 .v2-scheduled-task-card-copy { display: grid; min-width: 0; flex: 1 1 14rem; gap: 0.125rem; }
 .v2-scheduled-task-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
 .v2-scheduled-task-card-heading:focus { outline: none; }
@@ -869,7 +871,7 @@
 .v2-scheduled-task-card-error { flex: 1 1 100%; margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
 @media (max-width: 30rem) {
   /* The verbs move under the text, aligned with it, instead of squeezing it. */
-  .v2-scheduled-task-card-actions { margin-left: 3.25rem; }
+  .v2-scheduled-task-card-actions { margin-left: 2.625rem; }
 }
 .v2-scheduled-task-card-webhook { flex: 1 1 100%; min-width: 0; padding-top: 0.5rem; border-top: 1px solid var(--v2-color-border); }
 
@@ -888,10 +890,10 @@
 
 .v2-skill-save-cards { margin-top: 0.375rem; }
 .v2-skill-save-cards > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
-.v2-skill-save-card { display: grid; min-width: 0; gap: 0.5rem; padding: 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
-.v2-skill-save-card-top { display: flex; min-width: 0; align-items: flex-start; gap: 0.75rem; }
-.v2-skill-save-card-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-text2); background: var(--v2-color-active); }
-.v2-skill-save-card[data-undo="undone"] .v2-skill-save-card-tile { color: var(--v2-color-text3); background: var(--v2-color-surface2); }
+.v2-skill-save-card { display: grid; min-width: 0; gap: 0.5rem; padding: 0.5rem 0.625rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
+.v2-skill-save-card-top { display: flex; min-width: 0; align-items: flex-start; gap: 0.625rem; }
+.v2-skill-save-card-tile { display: grid; width: 2rem; height: 2rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-s); color: var(--v2-color-text2); background: var(--v2-color-surface2); }
+.v2-skill-save-card[data-undo="undone"] .v2-skill-save-card-tile { color: var(--v2-color-text3); }
 .v2-skill-save-card-copy { display: grid; min-width: 0; flex: 1 1 auto; gap: 0.125rem; }
 .v2-skill-save-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
 .v2-skill-save-card-copy strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -919,32 +921,28 @@
 .v2-skill-save-error { margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
 
 /* A change the answer made to the user's own secret or Assistant, or a proposal it asks about. */
+/* The generated-file card's frame (the shared card grid above): tile, name,
+   one quiet line and icon verbs. A question, what deleting changes, a status,
+   an error or an open diff takes rows of its own and the whole measure. */
 .v2-resource-change-cards { margin-top: 0.375rem; }
-.v2-resource-change-cards > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
-.v2-resource-change-card { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
-.v2-resource-change-card-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-text2); background: var(--v2-color-active); }
-.v2-resource-change-card:is([data-state="done"], [data-state="missing"]) .v2-resource-change-card-tile { color: var(--v2-color-text3); background: var(--v2-color-surface2); }
-.v2-resource-change-card-copy { display: grid; min-width: 0; flex: 1 1 14rem; gap: 0.125rem; }
-.v2-resource-change-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
+.v2-resource-change-card { display: grid; min-width: 0; grid-template-columns: 2rem minmax(0, 1fr) auto; align-items: center; gap: 0.5rem 0.625rem; padding: 0.5rem 0.375rem 0.5rem 0.625rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
+.v2-resource-change-card:has(> .v2-resource-change-card-confirm, > .v2-resource-change-card-consequences, > .v2-resource-change-card-status, > .v2-resource-change-card-error, > details[open]) { grid-column: 1 / -1; }
+.v2-resource-change-card-tile { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: var(--v2-radius-s); color: var(--v2-color-text2); background: var(--v2-color-surface2); }
+.v2-resource-change-card:is([data-state="done"], [data-state="missing"]) .v2-resource-change-card-tile { color: var(--v2-color-text3); }
+.v2-resource-change-card-copy { display: grid; min-width: 0; gap: 0.125rem; }
+.v2-resource-change-card-copy > strong, .v2-resource-change-card-copy > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-resource-change-card-copy > strong { color: var(--v2-color-text); font-size: 0.875rem; font-weight: 500; }
+.v2-resource-change-card-copy > small { color: var(--v2-color-text3); font-size: 0.75rem; }
 .v2-resource-change-card-heading:focus { outline: none; }
-.v2-resource-change-card-copy > strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.v2-resource-change-card-copy small { color: var(--v2-color-text3); font-size: 0.75rem; overflow-wrap: anywhere; }
-/* The verbs keep one line while it fits; on a line of their own they shrink to the card and wrap whole, never past its edge. */
-.v2-resource-change-card-actions { display: flex; min-width: 0; max-width: 100%; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin-left: auto; }
-.v2-resource-change-card-link { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.5rem; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); font-size: 0.8125rem; text-decoration: none; }
-.v2-resource-change-card-link:hover { background: var(--v2-color-hover); }
-.v2-resource-change-card-changes, .v2-resource-change-card-consequences { display: grid; gap: 0.25rem; margin: 0.25rem 0 0; padding: 0; list-style: none; font-size: 0.8125rem; line-height: 1.45; }
-.v2-resource-change-card-changes > li, .v2-resource-change-card-consequences > li { min-width: 0; overflow-wrap: anywhere; }
-.v2-resource-change-card-changes strong { font-weight: 600; }
-.v2-resource-change-card-confirm { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--v2-color-border); }
+.v2-resource-change-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.125rem; }
+.v2-resource-change-card > :is(.v2-resource-change-card-consequences, .v2-resource-change-card-status, .v2-resource-change-card-error, .v2-skill-save-changes) { grid-column: 2 / -1; min-width: 0; }
+.v2-resource-change-card-consequences { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; font-size: 0.8125rem; line-height: 1.45; }
+.v2-resource-change-card-consequences > li { min-width: 0; overflow-wrap: anywhere; }
+.v2-resource-change-card-confirm { display: flex; grid-column: 1 / -1; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--v2-color-border); }
 .v2-resource-change-card-confirm > p { flex: 1 1 14rem; margin: 0; font-size: 0.8125rem; line-height: 1.45; overflow-wrap: anywhere; }
 .v2-resource-change-card-confirm > span { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.v2-resource-change-card-status { flex: 1 1 100%; margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
-.v2-resource-change-card-error { flex: 1 1 100%; margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
-@media (max-width: 30rem) {
-  /* The verbs move under the text, aligned with it, instead of squeezing it. */
-  .v2-resource-change-card-actions { margin-left: 3.25rem; }
-}
+.v2-resource-change-card-status { margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.v2-resource-change-card-error { margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
 
 .v2-answer-skill-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
 .v2-answer-skill-pin [role="alert"] { color: var(--v2-color-danger); overflow-wrap: anywhere; }
