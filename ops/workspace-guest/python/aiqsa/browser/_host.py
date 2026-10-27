@@ -11,7 +11,8 @@ they change. Nothing it prints carries a value typed from the environment
 (`type N --env NAME`) or by the user in the live view: such a field reads as a
 hidden value, and the value itself is masked in every answer. The live view
 (`_livehub.py`) is served on the same socket; while the user holds control,
-the agent's actions wait for it (`user_in_control`).
+the agent's actions wait for it (`user_in_control`), and the first page action
+after the user gives it back does not run (`user_returned_control`).
 
     python3 -m aiqsa.browser._host
 """
@@ -43,6 +44,8 @@ CONTROL_FREE_OPS = frozenset({"status", "steps"})
 USER_IN_CONTROL = ("The user took control of the browser in the chat and is using it, so this was not done. Do not act on "
                    "the page meanwhile: wait a little and try again (your next browser command says when the user gives it "
                    "back), or answer with what you have.")
+USER_RETURNED = ("Nothing of this request ran: it was planned before the user's changes. Look at the page and continue from "
+                 "it as the user left it.")
 REQUEST_MAX_BYTES = 1024 * 1024
 #: The turn's browser idles out after this; the next call starts a new one from the saved sessions.
 IDLE_SECONDS = 1800
@@ -602,7 +605,6 @@ class Host:
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         response: Dict[str, Any]
-        agent_request = False
         try:
             raw = await asyncio.wait_for(reader.readline(), 30)
             request = json.loads(raw.decode("utf-8"))
@@ -615,10 +617,14 @@ class Host:
                 # The connection stays open; the hub owns and closes it.
                 await self.live.serve(reader, writer, request.get("args", {}))
                 return
-            agent_request = True
             # One action at a time, and none while the user holds the browser (checked again under the lock).
             async with self.live.agent_action(self.lock, control_free=request["op"] in CONTROL_FREE_OPS):
                 self.last_used = time.monotonic()
+                # The first page action after the user gave the browser back says so instead of running, so neither a
+                # script that drops results nor a plan made before the user's changes acts on the page they left.
+                note = None if request["op"] in CONTROL_FREE_OPS else self.live.take_note()
+                if note:
+                    raise HostError("user_returned_control", note + " " + USER_RETURNED)
                 response = {"ok": True, "result": await self.dispatch(request["op"], request.get("args", {}))}
                 self.last_used = time.monotonic()
         except _livehub.UserInControl:
@@ -629,13 +635,6 @@ class Host:
             response = {"ok": False, "error": {"code": "protocol_error", "message": "The request could not be read."}}
         except Exception as error:  # noqa: BLE001 - one failed request must not end the browser
             response = {"ok": False, "error": {"code": "browser_error", "message": self._error_text(error)}}
-        # The first answer after the user gave the browser back says so, with the page the user left.
-        note = self.live.take_note() if agent_request and response.get("error", {}).get("code") != "user_in_control" else None
-        if note and response.get("ok"):
-            text = response["result"].get("text")
-            response["result"]["text"] = note + ("\n" + text if isinstance(text, str) and text else "")
-        elif note:
-            response["error"]["message"] = note + " " + response["error"]["message"]
         # A value typed from the environment may come back in a field, an address, page text or a script result.
         response = self.hidden.mask(response)
         try:
