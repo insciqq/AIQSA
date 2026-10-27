@@ -127,13 +127,18 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       await open.click();
       const viewer = page.getByRole("dialog");
       await expectWithinViewport(page, viewer);
-      await expect(viewer.getByRole("img", { name: "Generated image", exact: true })).toBeVisible();
+      const picture = viewer.getByRole("img", { name: "Generated image", exact: true });
+      await expect(picture).toBeVisible();
       await expect(viewer.getByRole("button", { name: /Edit/ })).toHaveCount(0);
       await page.screenshot({ path: testInfo.outputPath("image-viewer-" + theme + ".png") });
       const downloadEvent = page.waitForEvent("download");
       await viewer.getByRole("link", { name: "Download" }).click();
       const download = await downloadEvent;
       expect(await download.failure()).toBeNull();
+      // A click on the picture takes focus out of the viewer; Escape still closes it.
+      await picture.click();
+      await expect(viewer).toBeVisible();
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
       await page.keyboard.press("Escape");
       await expect(viewer).toHaveCount(0);
       await expect(open).toBeFocused();
