@@ -90,7 +90,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       ...tool(HARNESS_TOOL_NAMES.loadSkill, `- The user's Skills are listed by name and description. Load a Skill's instructions with \`${HARNESS_TOOL_NAMES.loadSkill}\` before you follow it; this needs no Workspace.`),
       ...tool(HARNESS_TOOL_NAMES.updatePlan, `- \`${HARNESS_TOOL_NAMES.updatePlan}\` shows your plan to the user as progress; use it for work with several steps.`),
       ...tool(HARNESS_TOOL_NAMES.applyPatch, `- Edit text files in the Workspace with \`${HARNESS_TOOL_NAMES.applyPatch}\`; create binary or generated files with code.`),
-      ...tool(HARNESS_TOOL_NAMES.readSecret, `- The user's saved secrets (tokens, passwords, keys) are yours to use for their tasks: \`${HARNESS_TOOL_NAMES.readSecret}\` returns a value by name, in any chat. A value you read is stored in this chat's history; do not repeat it in your answer unless the user asks for it.`)
+      ...tool(HARNESS_TOOL_NAMES.readSecret, `- The user's saved secrets (tokens, passwords, keys) are yours to use for their tasks: \`${HARNESS_TOOL_NAMES.readSecret}\` returns a value by name, in any chat. When a task needs a login, token or key, look for a matching one among the saved secrets first and ask the user only when none fits. A value you read is stored in this chat's history; do not repeat it in your answer unless the user asks for it.`)
     ],
     ...(search ? [[
       "# Web search",
