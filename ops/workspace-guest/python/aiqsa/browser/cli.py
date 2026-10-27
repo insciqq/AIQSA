@@ -42,7 +42,7 @@ def exit_code(code: str) -> int:
         return EXIT_PAGE
     if code == "captcha_requires_user":
         return EXIT_CAPTCHA
-    if code == "user_in_control":
+    if code in ("user_in_control", "user_returned_control"):
         return EXIT_USER_IN_CONTROL
     if code.startswith("session_") or code.startswith("browser_session_"):
         return EXIT_SESSION

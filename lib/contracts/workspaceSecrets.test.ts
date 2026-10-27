@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeWorkspaceBrowserAutosaveReport, decodeWorkspaceSecretList, formatWorkspaceSecretLimit, isReservedWorkspaceEnvName,
+  decodeWorkspaceBrowserAutosaveReport, decodeWorkspaceSecretList, decodeWorkspaceSecretReveal, formatWorkspaceSecretLimit, isReservedWorkspaceEnvName,
   isWorkspaceEnvName, isWorkspaceSavedEnvName, workspaceBrowserAutosaveMessage, WORKSPACE_RESERVED_ENV_PREFIX,
   workspaceSecretErrorMessage, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
   WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, WORKSPACE_SECRET_VALUE_MAX_BYTES, type WorkspaceSecretSummary
@@ -67,5 +67,33 @@ describe("Workspace secret wire contract", () => {
     const failed = workspaceBrowserAutosaveMessage({ saved: 1, unchanged: 0, skipped: {}, failure: "browser_session_save_failed" });
     expect(failed.attention).toBe(true);
     expect(failed.text).toContain("did not finish");
+  });
+});
+
+describe("Workspace secret reveal", () => {
+  const { id, versionId } = summary;
+  it("accepts each revealable kind for exactly the requested secret", () => {
+    for (const value of [
+      { kind: "text", text: "synthetic" },
+      { kind: "env", entries: [{ name: "SYNTHETIC", value: "" }] },
+      { kind: "ssh_key", privateKey: "synthetic key", passphrase: null },
+      { kind: "file", originalName: "notes.txt", byteSize: 9, text: "synthetic" },
+      { kind: "file", originalName: "blob.bin", byteSize: 4, text: null }
+    ]) expect(decodeWorkspaceSecretReveal({ id, versionId, value }, id)).toEqual({ id, versionId, value });
+  });
+
+  it("rejects another secret's answer, extra fields, a browser session and malformed values", () => {
+    const text = { kind: "text", text: "synthetic" };
+    expect(decodeWorkspaceSecretReveal({ id, versionId, value: text }, browser.id)).toBeNull();
+    for (const answer of [
+      { id, versionId, value: text, secrets: [] },
+      { id, versionId, value: { ...text, base64: "" } },
+      { id, versionId, value: { kind: "browser_session", originalName: "shop.example.json", base64: "e30=" } },
+      { id, versionId, value: { kind: "text", text: "" } },
+      { id, versionId, value: { kind: "env", entries: [{ name: "not a name", value: "x" }] } },
+      { id, versionId, value: { kind: "ssh_key", privateKey: "synthetic key", passphrase: "" } },
+      { id, versionId, value: { kind: "file", originalName: "big.bin", byteSize: Number.MAX_SAFE_INTEGER, text: null } },
+      { id, versionId: "not-a-version", value: text }, null, []
+    ]) expect(decodeWorkspaceSecretReveal(answer, id)).toBeNull();
   });
 });

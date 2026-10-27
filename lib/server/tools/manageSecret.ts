@@ -58,7 +58,7 @@ const DESCRIPTION = `Creates, updates or renames one of the user's saved secrets
 create: name, kind and its value: text (kind text: a token, password or note), variables (kind env: [{name, value}] with names like GITLAB_TOKEN), privateKey and an optional passphrase (kind ssh_key), or fileName and text (kind file). attachmentId instead takes the value from a file of this conversation (kinds text, ssh_key and file). A name the user already uses is refused.
 update: the secret by name (or the secretId a result returned); newName renames it, description replaces its description, value fields replace its value with one of the same kind. Earlier values are not kept.
 propose_delete: deletes nothing; the answer shows a card in which the user confirms.
-The answer shows a card with a link, and Undo for a new secret. The secret reaches read_secret and the Workspace from the next message: Workspace commands get an env secret's variables, and a text secret named like a variable (capitals, digits and underscores, such as DEMO_API_TOKEN) under that name. The result never contains the value; do not repeat a value in your answer unless the user asks.`;
+The answer shows a card with a link, and Undo for a new secret. The secret reaches read_secret and the Workspace from the next message: Workspace commands get an env secret's variables, and a text secret named like a variable (capitals, digits and underscores, such as DEMO_API_TOKEN) under that name. The result never contains the value; do not repeat a password, token or key in your answer unless the user asks (a login, email or region you may name).`;
 
 const INPUT_SCHEMA = {
   additionalProperties: false,
@@ -96,13 +96,31 @@ export const manageSecretTool: HarnessToolDescriptor = Object.freeze({
 });
 
 type Refusal = Readonly<{ code: string; message: string; extra?: Record<string, unknown> }>;
+/** Last name parts that mark an env variable as an identifier the answer may name: a login, an email, a region. */
+const IDENTIFIER_NAME_PARTS = new Set(["ACCOUNT", "BUCKET", "DOMAIN", "EMAIL", "HOST", "HOSTNAME", "LOGIN", "MAIL", "PORT", "PROJECT", "REGION", "USER", "USERNAME"]);
+/** Anywhere in a name, these keep the value masked, as in AWS_ACCESS_KEY_ID, DB_USER_PASSWORD or MAIL_URL. */
+const SECRET_NAME_PATTERN = /AUTH|BEARER|CERT|CODE|CONN|COOKIE|CRED|DSN|HASH|KEY|LICENSE|MFA|OTP|PASS|PIN|PRIVATE|PW|SALT|SECRET|SEED|SESSION|TOKEN|URI|URL/u;
+/** A value that carries a password itself, such as smtp://bob:pw@host or bob:pw@host. */
+const CREDENTIAL_VALUE = /(?:^|:\/\/)[^\s:@/]+:[^\s@/]+@/u;
+
+/** Only the name's last part decides (DB_USER, AWS_DEFAULT_REGION), so USER_PW or LOGIN_CODE stay masked. */
+function identifierVariable(name: unknown, value: unknown): boolean {
+  if (typeof name !== "string" || typeof value !== "string" || CREDENTIAL_VALUE.test(value)) return false;
+  const upper = name.toUpperCase();
+  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(upper.split("_").at(-1) ?? "");
+}
+
 /**
  * The values a create or update call passes inline, which its answer must not
- * repeat (issue #52): the engine masks them in the answer text.
+ * repeat (issue #52): the engine masks them in the answer text. Identifier
+ * variables are left out so the answer can say which login or region it used
+ * (operator decision 2026-10-27); a URL or a value with a password in it stays masked.
  */
 export function manageSecretValues(args: Record<string, unknown>): string[] {
   if (args.action !== "create" && args.action !== "update") return [];
-  const variables = Array.isArray(args.variables) ? args.variables.map((item: unknown) => record(item) ? item.value : undefined) : [];
+  const variables = Array.isArray(args.variables)
+    ? args.variables.map((item: unknown) => record(item) && !identifierVariable(item.name, item.value) ? item.value : undefined)
+    : [];
   return [args.text, args.privateKey, args.passphrase, ...variables].filter((value): value is string => typeof value === "string");
 }
 

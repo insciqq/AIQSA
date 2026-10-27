@@ -18,6 +18,21 @@ describe("chat images", () => {
     expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("download");
   });
 
+  it("closes on Escape after a click on the picture took focus out of the viewer", async () => {
+    render(<ChatImageV2 attachmentId="private-image" label="Blue circle" />);
+    const opener = screen.getByRole("button", { name: "Open image: Blue circle" });
+    opener.focus();
+    fireEvent.click(opener);
+    const picture = screen.getByRole("img", { name: "Blue circle" });
+    fireEvent.click(picture);
+    // A click on content that cannot take focus leaves it on the page.
+    (document.activeElement as HTMLElement).blur();
+    expect(screen.getByRole("dialog", { name: "Blue circle" })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
   it("attaches once while pending and allows retry after a failed attachment", async () => {
     let rejectAttachment!: (error: Error) => void;
     const onUseInArtifact = vi.fn()

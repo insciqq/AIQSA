@@ -140,10 +140,10 @@ function SkillSaveCardV2({ card, live, onOpenLibrary }: Readonly<{ card: SkillSa
       <div className="v2-skill-save-card-top">
         <span className="v2-skill-save-card-tile" aria-hidden="true"><UiV2Icon name="wand" /></span>
         <div className="v2-skill-save-card-copy">
+          <strong title={card.name}>{card.name}</strong>
           <p className="v2-skill-save-card-heading" id={headingId}>
             {HEADINGS[card.outcome]} · {outcomeLine(card)}
           </p>
-          <strong title={card.name}>{card.name}</strong>
           {card.outcome === "restored" ? (
             <small>The content of v{card.restoredRevision} is current again as v{card.toRevision}; every version stays in history.</small>
           ) : null}
