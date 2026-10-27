@@ -137,6 +137,23 @@ function restoreClosedLayerFocus() {
   else if (topDialog) focusableElements(topDialog)[0]?.focus();
 }
 
+/*
+ * Whether an Escape that reached the document belongs to the topmost layer: focus fell out of every dialog, for
+ * example to the page after a click on a picture, onto the layer's own wrapper around its dialog, or onto the
+ * isolated page behind it. A target inside a dialog belongs to that dialog's own key handler, which already ran
+ * (or deliberately let the key through, as the live browser does while the person controls the page), so the
+ * document never handles it a second time.
+ */
+function escapeFellOutOfDialogs(target: EventTarget | null, dialog: HTMLElement | null): boolean {
+  if (!dialog?.isConnected) return false;
+  if (!(target instanceof Element) || target === document.body || target === document.documentElement) return true;
+  if (!(target instanceof HTMLElement)) return false;
+  if (dialog.contains(target) || target.closest("[role='dialog'], [role='alertdialog']")) return false;
+  if (target.contains(dialog)) return true;
+  const root = bodyChildContaining(target);
+  return root !== null && isolated.has(root);
+}
+
 function openLayer(layer: ModalLayer) {
   // StrictMode re-runs the effect after its cleanup; the layer is open again.
   closedLayers = closedLayers.filter((entry) => entry.layer.dialogRef !== layer.dialogRef);
@@ -170,9 +187,13 @@ export function useModalLayerV2({
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const restoreFocusRef = useRef(restoreFocus);
+  const closeBlockedRef = useRef(closeBlocked);
+  const onCloseRef = useRef(onClose);
   useLayoutEffect(() => {
     restoreFocusRef.current = restoreFocus;
-  }, [restoreFocus]);
+    closeBlockedRef.current = closeBlocked;
+    onCloseRef.current = onClose;
+  }, [closeBlocked, onClose, restoreFocus]);
   const portalReady = useSyncExternalStore(
     subscribeToBrowser,
     browserSnapshot,
@@ -197,7 +218,19 @@ export function useModalLayerV2({
       restoreFocus: () => restoreFocusRef.current?.() ?? null
     };
     openLayer(layer);
-    return () => closeLayer(layer);
+    // Escape still closes the topmost layer when focus has left its dialog; the dialog's own handler runs first.
+    const closeFromPage = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      if (layerStack.at(-1) !== layer || !escapeFellOutOfDialogs(event.target, dialogRef.current)) return;
+      if (closeBlockedRef.current) return;
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    document.addEventListener("keydown", closeFromPage);
+    return () => {
+      document.removeEventListener("keydown", closeFromPage);
+      closeLayer(layer);
+    };
   }, [enabled, portalReady]);
 
   const onDialogKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
@@ -206,7 +239,7 @@ export function useModalLayerV2({
     const owner = event.target instanceof Element ? event.target.closest("[role='dialog']") : null;
     if (owner && owner !== dialogRef.current) return;
     if (event.key === "Escape") {
-      if (closeBlocked) return;
+      if (closeBlocked || event.nativeEvent.isComposing) return;
       event.preventDefault();
       onClose();
       return;
