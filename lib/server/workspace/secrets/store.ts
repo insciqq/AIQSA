@@ -4,13 +4,15 @@ import {
   WORKSPACE_SECRET_MAX_COUNT, WORKSPACE_SECRET_TOTAL_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES,
   WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES,
   decodeWorkspaceBrowserAutosaveReport,
-  type WorkspaceBrowserAutosaveReport, type WorkspaceSecretMutation, type WorkspaceSecretSummary, type WorkspaceSecretValue
+  type WorkspaceBrowserAutosaveReport, type WorkspaceSecretMutation, type WorkspaceSecretReveal, type WorkspaceSecretSummary,
+  type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { decryptSecretEnvelope, encryptSecretEnvelope, getSecretEncryptionKey } from "../../secrets/envelope";
 import { requestMemorySavedSecretScrub } from "../../memory/savedSecretScrubRequest";
 import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue, WorkspaceSecretError } from "./validation";
 import { validateWorkspaceSshKey } from "./sshKey";
 import { workspaceBrowserSessionChecksum } from "./browserSession";
+import { revealedWorkspaceSecretValue } from "./reveal";
 
 const PURPOSE = "workspace-user-secret";
 // The largest serialized value of this purpose; kind limits are enforced by
@@ -34,6 +36,12 @@ export interface WorkspaceSecretStore {
   /** Latest recorded personal browser autosave outcome, content-free. */
   browserAutosave(userId: string): Promise<WorkspaceBrowserAutosaveReport | null>;
   mutate(userId: string, mutation: WorkspaceSecretMutation): Promise<void>;
+  /**
+   * The current value of one of the owner's own secrets. Another user's secret
+   * and a missing one are the same `workspace_secret_not_found`; a browser
+   * session is refused before decryption.
+   */
+  reveal(userId: string, id: string): Promise<WorkspaceSecretReveal>;
 }
 
 /** Raw bytes of the current saved browser sessions, optionally excluding one secret being replaced. */
@@ -219,6 +227,13 @@ export function createWorkspaceSecretStore(prisma: PrismaClient, options: Readon
         : mutation.action === "update" && mutation.value.action === "replace" ? mutation.value.content : null;
       if (replacement?.kind === "ssh_key") await validateSshKey(replacement.privateKey, replacement.passphrase);
       await prisma.$transaction((tx) => mutateWorkspaceSecretInTransaction(tx, userId, mutation, encryptionKey));
+    },
+    async reveal(userId, id) {
+      const row = await prisma.workspaceSecret.findFirst({ select: { value: true }, where: { id, userId, user: { status: "active" } } });
+      if (!row) throw new WorkspaceSecretError("workspace_secret_not_found");
+      if (row.value.kind === "browser_session") throw new WorkspaceSecretError("workspace_secret_not_revealable");
+      const secret = decryptWorkspaceSecret(row.value, userId, encryptionKey());
+      return { id: secret.id, versionId: secret.versionId, value: revealedWorkspaceSecretValue(secret.value) };
     }
   };
 }

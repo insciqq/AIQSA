@@ -115,6 +115,82 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
+const revealable: WorkspaceSecretSummary[] = [
+  { ...saved, id: "21000000-0000-4000-8000-000000000011", versionId: "21000000-0000-4000-8000-000000000012",
+    name: "Fixture environment", description: "Sign-in for the fixture service", envNames: ["FIXTURE_USER", "FIXTURE_TOKEN"] },
+  { ...saved, id: "21000000-0000-4000-8000-000000000021", versionId: "21000000-0000-4000-8000-000000000022",
+    kind: "text", name: "Fixture text", envNames: [] }
+];
+const revealedValues: Record<string, unknown> = {
+  [revealable[0]!.id]: { kind: "env", entries: [{ name: "FIXTURE_USER", value: "synthetic-user@example.test" },
+    { name: "FIXTURE_TOKEN", value: "synthetic-token-0123456789abcdefghijklmnopqrstuvwxyz-0123456789abcdefghijklmnopqrstuvwxyz" }] },
+  [revealable[1]!.id]: { kind: "text", text: "synthetic first line\nsynthetic second line" }
+};
+
+for (const theme of ["light", "dark"] as const) {
+  test(`owner shows, copies and hides saved values on desktop, tablet and phone · ${theme}`, async ({ page }, info) => {
+    test.setTimeout(120_000);
+    page.setDefaultTimeout(15_000);
+    await page.context().addCookies([{ name: "aiqsa.theme", value: theme, url: info.project.use.baseURL! }]);
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: info.project.use.baseURL! });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const reveals: unknown[] = [];
+    await page.route("**/api/me/workspace/secrets", async route => {
+      if (route.request().method() === "GET") return route.fulfill({ json: { secrets: revealable } });
+      const body = route.request().postDataJSON() as { action: string; id: string };
+      reveals.push(body);
+      if (body.action !== "reveal") return route.fulfill({ status: 400, json: { error: "workspace_secret_invalid" } });
+      const secret = revealable.find(row => row.id === body.id);
+      if (!secret) return route.fulfill({ status: 404, json: { error: "workspace_secret_not_found" } });
+      await route.fulfill({ json: { id: secret.id, versionId: secret.versionId, value: revealedValues[secret.id] },
+        headers: { "cache-control": "private, no-store" } });
+    });
+    await prepare(page);
+    const panel = page.getByTestId("workspace-secrets-panel");
+    for (const size of [sizes[0]!, { width: 820, height: 1180 }, sizes[3]!]) {
+      await page.setViewportSize(size);
+      await runAccountMenuAction(page, "Secrets");
+      await expect(panel.getByRole("heading", { name: "Fixture text", exact: true })).toBeVisible();
+      await page.screenshot({ path: info.outputPath(`secret-values-hidden-${theme}-${size.width}x${size.height}.png`) });
+
+      await panel.getByRole("button", { name: "Show values of Fixture environment", exact: true }).click();
+      const env = panel.getByRole("group", { name: "Values of Fixture environment", exact: true });
+      await expect(env.getByRole("textbox", { name: "FIXTURE_USER", exact: true })).toHaveValue("synthetic-user@example.test");
+      await expect(env.getByRole("textbox", { name: "FIXTURE_TOKEN", exact: true })).toHaveValue(/^synthetic-token-/);
+      await panel.getByRole("button", { name: "Show values of Fixture text", exact: true }).click();
+      const text = panel.getByRole("group", { name: "Values of Fixture text", exact: true });
+      await expect(text.getByRole("textbox", { name: "Text", exact: true })).toHaveValue("synthetic first line\nsynthetic second line");
+      await expect(panel.getByRole("button", { name: "Hide values of Fixture environment", exact: true })).toHaveAttribute("aria-expanded", "true");
+
+      await env.getByRole("button", { name: "Copy FIXTURE_TOKEN", exact: true }).click();
+      await expect(env.getByRole("button", { name: "Copy FIXTURE_TOKEN", exact: true })).toHaveText("Copied");
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^synthetic-token-/);
+      await text.getByRole("button", { name: "Copy Text", exact: true }).click();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("synthetic first line\nsynthetic second line");
+
+      for (const [field, copy] of [[env.getByRole("textbox", { name: "FIXTURE_TOKEN", exact: true }), env.getByRole("button", { name: "Copy FIXTURE_TOKEN", exact: true })],
+        [text.getByRole("textbox", { name: "Text", exact: true }), text.getByRole("button", { name: "Copy Text", exact: true })]] as const) {
+        await copy.scrollIntoViewIfNeeded();
+        await expectWithinViewport(page, copy);
+        const [fieldBox, copyBox] = [(await field.boundingBox())!, (await copy.boundingBox())!];
+        expect(fieldBox.x + fieldBox.width).toBeLessThanOrEqual(copyBox.x);
+      }
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`secret-values-shown-${theme}-${size.width}x${size.height}.png`) });
+      expect(await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }))).not.toContain("synthetic");
+
+      await panel.getByRole("button", { name: "Hide values of Fixture environment", exact: true }).click();
+      await panel.getByRole("button", { name: "Hide values of Fixture text", exact: true }).click();
+      await expect(env).toHaveCount(0);
+      await expect(text).toHaveCount(0);
+      await expect(panel).not.toContainText("synthetic");
+      await expect(panel.getByRole("button", { name: "Show values of Fixture environment", exact: true })).toHaveAttribute("aria-expanded", "false");
+      await page.getByRole("button", { name: "Back to chat", exact: true }).click();
+    }
+    expect(reveals).toEqual(Array.from({ length: 3 }, () => revealable.map(({ id }) => ({ action: "reveal", id }))).flat());
+  });
+}
+
 test("an in-flight secret Save owns the sheet until failure, then every close preserves the draft", async ({ page }, info) => {
   test.setTimeout(60_000);
   await page.setViewportSize(sizes[0]);

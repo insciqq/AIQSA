@@ -319,6 +319,24 @@ describe("persisted personal Workspace secrets", () => {
     expect(await store().list(userId)).toEqual([]);
   });
 
+  it("reveals the owner's current value and answers another user's or a browser session's without content", async () => {
+    const userId = await owner();
+    const otherId = await owner();
+    const instance = store();
+    await instance.mutate(userId, { action: "create", name: "Env", description: "", value: { kind: "env", entries: [{ name: "SYNTHETIC_TOKEN", value: "synthetic-value" }] } });
+    const [env] = await instance.list(userId);
+    expect(await instance.reveal(userId, env!.id)).toEqual({ id: env!.id, versionId: env!.versionId,
+      value: { kind: "env", entries: [{ name: "SYNTHETIC_TOKEN", value: "synthetic-value" }] } });
+    await expect(instance.reveal(otherId, env!.id)).rejects.toMatchObject({ code: "workspace_secret_not_found" });
+    await expect(instance.reveal(userId, randomUUID())).rejects.toMatchObject({ code: "workspace_secret_not_found" });
+    await instance.mutate(userId, { action: "create", name: "Shop", description: "",
+      value: { kind: "browser_session", originalName: "shop.example.json", base64: browserBytes().toString("base64") } });
+    const browser = (await instance.list(userId)).find(({ kind }) => kind === "browser_session")!;
+    await expect(instance.reveal(userId, browser.id)).rejects.toMatchObject({ code: "workspace_secret_not_revealable" });
+    await prisma.user.update({ where: { id: userId }, data: { status: "disabled" } });
+    await expect(instance.reveal(userId, env!.id)).rejects.toMatchObject({ code: "workspace_secret_not_found" });
+  });
+
   it("persists all four types, preserves exact bytes and write-only metadata across restart, and cascades account deletion", async () => {
     const userId = await owner();
     const otherId = await owner();
