@@ -25,13 +25,16 @@ async function readMutationBody(request: Request): Promise<unknown> {
 export function createWorkspaceSecretHandlers(input: { resolveAuth: RequestAuthResolver; store: WorkspaceSecretStore }) {
   async function handle(request: Request, write: boolean): Promise<Response> {
     const auth = await input.resolveAuth(request);
-    if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
-    if (auth.user.status !== "active") return Response.json({ error: "forbidden" }, { status: 403 });
+    if (!auth) return Response.json({ error: "unauthorized" }, { headers: NO_STORE, status: 401 });
+    if (auth.user.status !== "active") return Response.json({ error: "forbidden" }, { headers: NO_STORE, status: 403 });
     try {
       if (write) {
         const raw = await readMutationBody(request);
         const bodyError = requestBodyErrorResponse(raw);
-        if (bodyError) return bodyError;
+        if (bodyError) {
+          bodyError.headers.set("cache-control", NO_STORE["cache-control"]);
+          return bodyError;
+        }
         // The owner's own value (operator decision 2026-10-27); the store binds it to the caller.
         const reveal = parseWorkspaceSecretReveal(raw);
         if (reveal) return Response.json(await input.store.reveal(auth.userId, reveal.id), { headers: NO_STORE });

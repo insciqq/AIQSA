@@ -174,8 +174,12 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     reveals.current.set(id, { controller, versionId });
     setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "loading" } }));
     try {
-      const { value } = await revealWorkspaceSecret(id, controller.signal);
-      if (active.current && !controller.signal.aborted) setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "shown", value } }));
+      const answer = await revealWorkspaceSecret(id, controller.signal);
+      if (!active.current || controller.signal.aborted) return;
+      // Saved again elsewhere since the list loaded: never show a newer value under this row's details.
+      if (answer.versionId !== versionId) {
+        setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "failed", message: "This secret changed after the list loaded. Refresh the list." } }));
+      } else setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "shown", value: answer.value } }));
     } catch (failure) {
       if (active.current && !controller.signal.aborted) setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "failed",
         message: failure instanceof Error ? failure.message : "The values could not be shown. Try again." } }));
