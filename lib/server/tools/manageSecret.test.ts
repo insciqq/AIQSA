@@ -52,6 +52,19 @@ describe("manage_secret", () => {
     expect(manageSecretValues({ action: "propose_delete", name: "DEMO", text: "abc-123-not-real" })).toEqual([]);
   });
 
+  it("leaves logins, emails and regions out of the masked values and keeps anything secret-looking masked", () => {
+    const variables = [
+      ["SAUCEDEMO_USERNAME", "standard_user"], ["SAUCEDEMO_PASSWORD", "secret_sauce"], ["AWS_DEFAULT_REGION", "eu-central-1"],
+      ["AWS_ACCESS_KEY_ID", "AKIA-not-real"], ["AWS_SECRET_ACCESS_KEY", "secret-key-not-real"], ["smtp_mail", "me@example.test"],
+      ["DB_USER_PASSWORD", "db-pass-not-real"], ["API_USER_TOKEN", "token-not-real"], ["DATABASE_URL", "postgres://u:p@db/app"],
+      ["SUPERUSER", "admin-not-split"], ["DB_HOST", "db.internal"], ["DB_PORT", "5432"]
+    ].map(([name, value]) => ({ name, value }));
+    expect(manageSecretValues({ action: "create", kind: "env", name: "Shop", variables })).toEqual([
+      "secret_sauce", "AKIA-not-real", "secret-key-not-real", "db-pass-not-real", "token-not-real", "postgres://u:p@db/app", "admin-not-split"
+    ]);
+    expect(manageSecretValues({ action: "create", kind: "text", name: "USERNAME", text: "text-is-always-masked" })).toEqual(["text-is-always-masked"]);
+  });
+
   it("is an account change that needs neither approval nor the VM", () => {
     expect(manageSecretTool).toMatchObject({ effects: "local", name: "manage_secret", needsApproval: false, requiresVm: false });
     expect(manageSecretTool.tool).toMatchObject({ capability: "session", name: "manage_secret" });
