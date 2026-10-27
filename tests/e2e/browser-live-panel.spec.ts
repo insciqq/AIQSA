@@ -1,9 +1,9 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { BrowserLiveInput, BrowserLiveStateEvent } from "../../lib/contracts/browserLive";
 import type { ThreadWorkspaceActivityEntry } from "../../lib/contracts/workspace";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
-import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
+import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
 /**
@@ -160,6 +160,48 @@ async function shot(page: Page, testInfo: TestInfo, name: string) {
   await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
 }
 
+/** A synthetic chat whose answer is running and has used the browser; returns the hooks that drive it. */
+async function startBrowsingRun(page: Page, context: BrowserContext, testInfo: TestInfo, theme: "light" | "dark") {
+  await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
+  await installMatrixCatalogFixture(page, { folders: [], chats: [{
+    id: chatId, title: "Two-week shopping cart", activeLeafMessageId: null, createdAt: timestamp, updatedAt: timestamp,
+    defaultProvider: "openai", defaultModelId: "gpt-5.5", folderId: null, pinned: false, messageCount: 0, messages: []
+  }] });
+  await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
+  await page.route(`**/api/model-runs/${runId}`, (route) => route.fulfill({ json: { version: 1, run: { id: runId, status: "streaming" } } }));
+  const posted: Array<{ path: string; body: unknown }> = [];
+  await page.route(`**/api/chats/${chatId}/browser/*`, (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") return route.fallback();
+    posted.push({ path: new URL(request.url()).pathname, body: request.postDataJSON() });
+    return route.fulfill({ status: 204, body: "" });
+  });
+  const stream = createGatedRunStreamFixture({ key: "browser-live", abortMessage: "Synthetic stream stopped", notReadyError: "browser_live_stream_not_ready" });
+  await stream.install(page, chatId);
+  await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
+    ? route.fulfill({ status: 409, json: { error: "unexpected_browser_live_run" } }) : route.fallback());
+  await page.addInitScript(installScriptedEventSource);
+  await signInWithLocalToken(page, `/c/${chatId}`);
+  const shopFrame = await syntheticFrame(page, "shop");
+  const signInFrame = await syntheticFrame(page, "sign-in");
+  const emitLive = (type: string, data: unknown) => page.evaluate(([eventType, eventData]) =>
+    (window as unknown as LiveWindow).__browserLive.emit(eventType as string, eventData), [type, data] as const);
+
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("Look at my previous purchases and prepare a cart for two weeks.");
+  await composer.press("Enter");
+  await stream.waitForRequestCount(page, 1);
+  await stream.emit(page, "run_start", { provider: "openai", modelId: "gpt-5.5", runId, status: "streaming" });
+  await stream.emit(page, "message_start", { assistantMessageId: "browser-live-answer", userMessageId: "browser-live-question" });
+  const browserEntry: ThreadWorkspaceActivityEntry = { id: "browser-1", kind: "command", phase: "succeeded", durationMs: 4_200,
+    command: { preview: "aiqsa-browser open https://shop.example/", exitCode: 0,
+      stdoutPreview: "[browser #1] open @ shop.example/\n[browser #2] click: link \"Buy again\" @ shop.example/" } };
+  await stream.emit(page, "artifact", { artifactType: "workspace_activity", payload: { ...browserEntry, sequence: 1 } });
+  await stream.emit(page, "artifact", { artifactType: "workspace_activity", payload: { id: "browser-2", kind: "command",
+    phase: "running", sequence: 2, command: { preview: "aiqsa-browser click 'button \"Add to cart\"'" } } });
+  return { emitLive, posted, shopFrame, signInFrame, stream };
+}
+
 for (const viewport of viewports) {
   for (const theme of ["light", "dark"] as const) {
     test.describe(`${viewport.name} ${theme}`, () => {
@@ -168,43 +210,7 @@ for (const viewport of viewports) {
       test(`live Browser panel states at ${viewport.width}x${viewport.height} ${theme}`, async ({ page, context }, testInfo) => {
         test.setTimeout(120_000);
         const prefix = `${viewport.name}-${theme}`;
-        await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
-        await installMatrixCatalogFixture(page, { folders: [], chats: [{
-          id: chatId, title: "Two-week shopping cart", activeLeafMessageId: null, createdAt: timestamp, updatedAt: timestamp,
-          defaultProvider: "openai", defaultModelId: "gpt-5.5", folderId: null, pinned: false, messageCount: 0, messages: []
-        }] });
-        await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
-        await page.route(`**/api/model-runs/${runId}`, (route) => route.fulfill({ json: { version: 1, run: { id: runId, status: "streaming" } } }));
-        const posted: Array<{ path: string; body: unknown }> = [];
-        await page.route(`**/api/chats/${chatId}/browser/*`, (route) => {
-          const request = route.request();
-          if (request.method() !== "POST") return route.fallback();
-          posted.push({ path: new URL(request.url()).pathname, body: request.postDataJSON() });
-          return route.fulfill({ status: 204, body: "" });
-        });
-        const stream = createGatedRunStreamFixture({ key: "browser-live", abortMessage: "Synthetic stream stopped", notReadyError: "browser_live_stream_not_ready" });
-        await stream.install(page, chatId);
-        await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
-          ? route.fulfill({ status: 409, json: { error: "unexpected_browser_live_run" } }) : route.fallback());
-        await page.addInitScript(installScriptedEventSource);
-        await signInWithLocalToken(page, `/c/${chatId}`);
-        const shopFrame = await syntheticFrame(page, "shop");
-        const signInFrame = await syntheticFrame(page, "sign-in");
-        const emitLive = (type: string, data: unknown) => page.evaluate(([eventType, eventData]) =>
-          (window as unknown as LiveWindow).__browserLive.emit(eventType as string, eventData), [type, data] as const);
-
-        const composer = page.getByRole("textbox", { name: "Message" });
-        await composer.fill("Look at my previous purchases and prepare a cart for two weeks.");
-        await composer.press("Enter");
-        await stream.waitForRequestCount(page, 1);
-        await stream.emit(page, "run_start", { provider: "openai", modelId: "gpt-5.5", runId, status: "streaming" });
-        await stream.emit(page, "message_start", { assistantMessageId: "browser-live-answer", userMessageId: "browser-live-question" });
-        const browserEntry: ThreadWorkspaceActivityEntry = { id: "browser-1", kind: "command", phase: "succeeded", durationMs: 4_200,
-          command: { preview: "aiqsa-browser open https://shop.example/", exitCode: 0,
-            stdoutPreview: "[browser #1] open @ shop.example/\n[browser #2] click: link \"Buy again\" @ shop.example/" } };
-        await stream.emit(page, "artifact", { artifactType: "workspace_activity", payload: { ...browserEntry, sequence: 1 } });
-        await stream.emit(page, "artifact", { artifactType: "workspace_activity", payload: { id: "browser-2", kind: "command",
-          phase: "running", sequence: 2, command: { preview: "aiqsa-browser click 'button \"Add to cart\"'" } } });
+        const { emitLive, posted, shopFrame, signInFrame, stream } = await startBrowsingRun(page, context, testInfo, theme);
 
         // Collapsed: a quiet bar with the agent's last step; nothing streams yet.
         const panel = page.getByTestId("browser-live");
@@ -314,10 +320,168 @@ for (const viewport of viewports) {
         await page.evaluate(() => { (window as unknown as LiveWindow).__browserLive.mode = "native"; });
         await stage.getByRole("button", { name: "Reopen" }).click();
         await expect(panel.locator(".v2-browser-live-steps summary")).toContainText("5 steps");
-        await expect(panel.locator(".v2-browser-live-steps summary")).toContainText("Saved the sign-in for shop.example");
+        await expect(panel.locator(".v2-browser-live-steps summary")).toContainText("Saved the browser session for shop.example");
         await expect(stage.getByText("The live view stopped because of an error.")).toBeVisible();
         await expectNoHorizontalOverflow(page);
         await shot(page, testInfo, `${prefix}-5-error`);
+      });
+    });
+  }
+}
+
+const fullScreenViewports = [
+  { name: "desktop", width: 1440, height: 900, touch: false, fill: { area: 0.6 } },
+  { name: "tablet-portrait", width: 820, height: 1180, touch: true, fill: { width: 0.9 } },
+  { name: "tablet-landscape", width: 1180, height: 820, touch: true, fill: { area: 0.6 } },
+  { name: "phone-portrait", width: 390, height: 844, touch: true, fill: { width: 0.9 } },
+  { name: "phone-landscape", width: 844, height: 390, touch: true, fill: { height: 0.75 } }
+] as const;
+
+/** A viewport shot (never an element shot taller than the viewport: Chromium then drops touch emulation), attached to the report. */
+async function attachShot(page: Page, testInfo: TestInfo, name: string) {
+  await page.waitForTimeout(150);
+  await testInfo.attach(name, { body: await page.screenshot(), contentType: "image/png" });
+}
+
+/** The displayed page picture, once it stopped moving. */
+async function settledFrameBox(page: Page, stage: Locator) {
+  const image = stage.locator("img");
+  await expect(image).toBeVisible();
+  let box = (await image.boundingBox())!;
+  await expect.poll(async () => {
+    const previous = box;
+    await page.waitForTimeout(100);
+    box = (await image.boundingBox())!;
+    return Math.abs(box.x - previous.x) + Math.abs(box.y - previous.y) + Math.abs(box.width - previous.width) + Math.abs(box.height - previous.height);
+  }).toBeLessThan(0.5);
+  return box;
+}
+
+for (const viewport of fullScreenViewports) {
+  for (const theme of ["light", "dark"] as const) {
+    test.describe(`full screen ${viewport.name} ${theme}`, () => {
+      test.use({ hasTouch: viewport.touch, isMobile: viewport.touch, viewport: { width: viewport.width, height: viewport.height } });
+
+      test(`full-screen Browser view at ${viewport.width}x${viewport.height} ${theme}`, async ({ page, context }, testInfo) => {
+        test.setTimeout(120_000);
+        const prefix = `full-screen-${viewport.name}-${theme}`;
+        const { emitLive, posted, shopFrame, signInFrame, stream } = await startBrowsingRun(page, context, testInfo, theme);
+        const panel = page.getByTestId("browser-live");
+        await panel.getByRole("button", { name: /Watch/u }).click();
+        await expect.poll(() => page.evaluate(() => (window as unknown as LiveWindow).__browserLive.count())).toBe(1);
+        await emitLive("state", liveState());
+        await emitLive("frame", { seq: 1, mime: "image/jpeg", data: shopFrame, width: 1280, height: 800 });
+        await emitLive("steps", steps);
+        await expect(panel.getByTestId("browser-live-stage").locator("img")).toBeVisible();
+
+        // Watching: the layer covers the whole window, the chat behind is out of reach and the page is the main thing.
+        const enter = panel.getByRole("button", { name: "Full screen" });
+        await enter.click();
+        const layer = page.getByRole("dialog", { name: "Browser, full screen" });
+        await expect(layer).toBeVisible();
+        const stage = layer.getByTestId("browser-live-stage");
+        await expect(stage).toBeFocused();
+        expect(await page.locator(".v2-browser-live-layer").boundingBox()).toEqual({ x: 0, y: 0, width: viewport.width, height: viewport.height });
+        expect(await page.evaluate(() => ({
+          behind: Boolean(document.querySelector("[data-testid='browser-live']")?.closest("[aria-hidden='true']")),
+          overflow: getComputedStyle(document.body).overflow
+        }))).toEqual({ behind: true, overflow: "hidden" });
+        let frame = await settledFrameBox(page, stage);
+        expect(Math.abs(frame.width / frame.height - 1.6)).toBeLessThan(0.02);
+        expect(frame.x).toBeGreaterThanOrEqual(0);
+        expect(frame.y).toBeGreaterThanOrEqual(0);
+        expect(frame.x + frame.width).toBeLessThanOrEqual(viewport.width + 1);
+        expect(frame.y + frame.height).toBeLessThanOrEqual(viewport.height + 1);
+        const fill: Partial<Record<"area" | "width" | "height", number>> = viewport.fill;
+        if (fill.area) expect(frame.width * frame.height).toBeGreaterThanOrEqual(viewport.width * viewport.height * fill.area);
+        if (fill.width) expect(frame.width).toBeGreaterThanOrEqual(viewport.width * fill.width);
+        if (fill.height) expect(frame.height).toBeGreaterThanOrEqual(viewport.height * fill.height);
+        // Nothing of the app shell or the composer dock shows through: not over the page, not at the window's bottom.
+        expect(await page.evaluate(({ x, y, bottom }) => [
+          Boolean(document.elementFromPoint(x, y)?.closest("[data-testid='browser-live-stage']")),
+          Boolean(document.elementFromPoint(x, bottom)?.closest(".v2-browser-live-layer"))
+        ], { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2, bottom: viewport.height - 2 })).toEqual([true, true]);
+        await expect(layer.getByRole("button", { name: "Exit full screen" })).toBeVisible();
+        await expectNoHorizontalOverflow(page);
+        await attachShot(page, testInfo, `${prefix}-1-watch`);
+
+        // Zoom works inside the layer and fits back.
+        await layer.getByRole("button", { name: "Zoom in" }).click();
+        await expect(stage).toHaveAttribute("data-zoomed", "true");
+        expect((await stage.locator("img").boundingBox())!.width).toBeGreaterThan(frame.width * 1.4);
+        await layer.getByRole("button", { name: "Fit the page to the panel" }).click();
+        await expect(stage).not.toHaveAttribute("data-zoomed", "true");
+
+        // Take control in the layer: a tap or click on the enlarged picture arrives in frame pixels.
+        await layer.getByRole("button", { name: "Take control" }).click();
+        await expect.poll(() => posted.at(-1)).toEqual({ path: `/api/chats/${chatId}/browser/control`, body: { action: "take" } });
+        await emitLive("state", liveState({ controller: "user" }));
+        await expect(layer.getByRole("button", { name: "Return control" })).toBeVisible();
+        if (viewport.touch) await expect(layer.getByRole("textbox", { name: "Type into the page" })).toBeVisible();
+        frame = await settledFrameBox(page, stage);
+        const target = { x: frame.x + frame.width * 0.25, y: frame.y + frame.height * 0.5 };
+        if (viewport.touch) await page.touchscreen.tap(target.x, target.y);
+        else await page.mouse.click(target.x, target.y);
+        await expect.poll(() => posted.filter((entry) => entry.path.endsWith("/input")).length).toBeGreaterThanOrEqual(2);
+        const clicks = posted.filter((entry) => entry.path.endsWith("/input")).map((entry) => entry.body as BrowserLiveInput)
+          .filter((input) => input.kind === "mouse" && (input.type === "down" || input.type === "up"));
+        expect(clicks.map((input) => input.kind === "mouse" && input.type)).toEqual(["down", "up"]);
+        for (const input of clicks) {
+          if (input.kind !== "mouse") continue;
+          expect(Math.abs(input.x - 320)).toBeLessThanOrEqual(8);
+          expect(Math.abs(input.y - 400)).toBeLessThanOrEqual(8);
+        }
+        if (!viewport.touch) {
+          // One Escape belongs to the page; the layer stays.
+          await expect(stage).toBeFocused();
+          await page.keyboard.press("Escape");
+          await expect.poll(() => posted.some((entry) => JSON.stringify(entry.body) ===
+            JSON.stringify({ kind: "key", type: "down", key: "Escape", code: "Escape" }))).toBe(true);
+          await expect(layer).toBeVisible();
+        }
+        await expectNoHorizontalOverflow(page);
+        await attachShot(page, testInfo, `${prefix}-2-control`);
+
+        // A handoff in the layer: the reason, the agent's words, the time left, Done and Cancel all in the window.
+        await stream.emit(page, "artifact", { artifactType: "tool_call", payload: { name: "browser_handoff", round: 3, ordinal: 0, status: "requested" } });
+        const now = Date.now();
+        await emitLive("state", liveState({ controller: "user", signInRemembered: false,
+          page: { url: "https://shop.example/ap/signin?return=%2Fbuy-again", title: "Sign in · Synthetic Shop" },
+          handoff: { id: "handoff-1", reason: "sign_in", message: "Please sign in to your Synthetic Shop account so I can read your previous orders. I will not place an order.",
+            startedAt: new Date(now).toISOString(), expiresAt: new Date(now + 9 * 60_000 + 42_000).toISOString() } }));
+        await emitLive("frame", { seq: 2, mime: "image/jpeg", data: signInFrame, width: 1280, height: 800 });
+        const card = layer.getByTestId("browser-live-handoff");
+        await expect(card.getByRole("heading", { name: "Sign in to shop.example" })).toBeVisible();
+        await expect(card).toContainText("left");
+        await expectWithinViewport(page, card.getByRole("button", { name: "Done" }));
+        await expectWithinViewport(page, card.getByRole("button", { name: "Cancel" }));
+        frame = await settledFrameBox(page, stage);
+        expect(frame.y + frame.height).toBeLessThanOrEqual(viewport.height + 1);
+        expect(frame.height).toBeGreaterThanOrEqual(viewport.height * 0.25);
+        await expectNoHorizontalOverflow(page);
+        await attachShot(page, testInfo, `${prefix}-3-handoff`);
+        await card.getByRole("button", { name: "Done" }).click();
+        await expect.poll(() => posted.at(-1)).toEqual({ path: `/api/chats/${chatId}/browser/handoff`, body: { action: "done", handoffId: "handoff-1" } });
+        await stream.emit(page, "artifact", { artifactType: "tool_call", payload: { name: "browser_handoff", round: 3, ordinal: 0, status: "complete" } });
+        await emitLive("state", liveState());
+        await expect(card).toBeHidden();
+        await expect(stage).toBeFocused();
+
+        // Leaving: Escape while watching (a keyboard), or Exit full screen; focus returns to the Full screen control.
+        if (viewport.touch) await layer.getByRole("button", { name: "Exit full screen" }).click();
+        else await page.keyboard.press("Escape");
+        await expect(layer).toBeHidden();
+        await expect(enter).toBeFocused();
+        await expectNoHorizontalOverflow(page);
+
+        // The layer closes by itself when the browser closes, and focus stays in the panel.
+        await enter.click();
+        await expect(layer).toBeVisible();
+        await emitLive("state", liveState({ browser: "stopped" }));
+        await expect(layer).toBeHidden();
+        await expect(panel.getByRole("button", { name: /Hide/u })).toBeFocused();
+        expect(await page.evaluate(() => getComputedStyle(document.body).overflow)).not.toBe("hidden");
+        await expectNoHorizontalOverflow(page);
       });
     });
   }
