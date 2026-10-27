@@ -121,7 +121,7 @@ async function main() {
     const privateKeys = pairs.map(({ privateKey }, index) => privateKey.export({ type: "pkcs1", format: "pem",
       ...(index === 1 ? { cipher: "aes-256-cbc", passphrase: "synthetic key passphrase" } : {}) }).toString());
     const exact = "synthetic '\"$HOME`touch /workspace/project/INJECTED`\nПривет\tvalue";
-    const textToken = "synthetic-text-token", fileToken = "synthetic-file-token";
+    const textToken = "synthetic-text-token", noteToken = "synthetic-note-token", fileToken = "synthetic-file-token";
     const original = Buffer.from(`{\r\n  "token": "${fileToken}", "unicode": "Привет"\r\n}\n`);
     const secrets: AcceptedWorkspaceSecret[] = [
       ...privateKeys.map((privateKey, index): AcceptedWorkspaceSecret => ({ id: randomUUID(), versionId: randomUUID(),
@@ -131,7 +131,9 @@ async function main() {
         { name: "SERVICE_TOKEN", value: "synthetic-api-token" }, { name: "BASIC_LOGIN", value: "synthetic-login" },
         { name: "BASIC_PASSWORD", value: "synthetic-password" }, { name: "EXACT_VALUE", value: exact }
       ] } },
-      { id: randomUUID(), versionId: randomUUID(), name: "Website token", description: "Fixture text access", value: { kind: "text", text: textToken } },
+      { id: randomUUID(), versionId: randomUUID(), name: "WEBSITE_TOKEN", description: "Fixture text access", value: { kind: "text", text: textToken } },
+      // Issue #63: a text secret that is no variable reaches only read_secret, never the guide or commands.
+      { id: randomUUID(), versionId: randomUUID(), name: "shop.example.com", description: "Fixture website login", value: { kind: "text", text: noteToken } },
       { id: randomUUID(), versionId: randomUUID(), name: "Credentials original", description: "Fixture JSON access", value: { kind: "file", originalName: "credentials.json", base64: original.toString("base64") } }
     ];
     phase = "key_parser";
@@ -155,12 +157,12 @@ async function main() {
     phase = "secret_preparation";
     await sync(remote, secrets);
     await python(remote, `import hashlib,pathlib\nfor path in ${JSON.stringify(binaryPaths)}:\n data=pathlib.Path(path).read_bytes()\n assert len(data)==524288 and hashlib.sha256(data).hexdigest()==${JSON.stringify(createHash("sha256").update(binary).digest("hex"))}`);
-    await python(remote, `import subprocess\nresult=subprocess.run(['ssh-keygen','-y','-P','','-f',${JSON.stringify(workspaceSecretAssetPath(secrets[5]!.id, "ssh_key"))}],capture_output=True,timeout=5)\nassert result.returncode==0 and result.stdout.startswith(b'ssh-ed25519 ')`);
+    await python(remote, `import subprocess\nresult=subprocess.run(['ssh-keygen','-y','-P','','-f',${JSON.stringify(workspaceSecretAssetPath(secrets[6]!.id, "ssh_key"))}],capture_output=True,timeout=5)\nassert result.returncode==0 and result.stdout.startswith(b'ssh-ed25519 ')`);
     const envProof = `import base64,os,pathlib\nassert base64.b64encode(os.environ['EXACT_VALUE'].encode()).decode() == ${JSON.stringify(Buffer.from(exact).toString("base64"))}\nassert 'AIQSA_WORKSPACE_SECRET_HOST_CANARY' not in os.environ\nassert not pathlib.Path('/workspace/project/INJECTED').exists()`;
     await python(remote, envProof);
     assert.equal((await call(remote, "sandbox_shell", { command: `python3 <<'PY'\n${envProof}\nPY`, treatNonZeroAsError: true })).success, true);
-    const filePath = workspaceSecretAssetPath(secrets[4]!.id, "file");
-    await python(remote, `import hashlib,pathlib\nassert hashlib.sha256(pathlib.Path(${JSON.stringify(filePath)}).read_bytes()).hexdigest() == ${JSON.stringify(createHash("sha256").update(original).digest("hex"))}\nassert ${JSON.stringify(textToken)} in pathlib.Path('/workspace/SECRETS.md').read_text()`);
+    const filePath = workspaceSecretAssetPath(secrets[5]!.id, "file");
+    await python(remote, `import hashlib,os,pathlib,subprocess\nassert hashlib.sha256(pathlib.Path(${JSON.stringify(filePath)}).read_bytes()).hexdigest() == ${JSON.stringify(createHash("sha256").update(original).digest("hex"))}\nguide=pathlib.Path('/workspace/SECRETS.md').read_text()\nassert os.environ['WEBSITE_TOKEN'] == ${JSON.stringify(textToken)}\nassert 'shop.example.com' in guide\nassert ${JSON.stringify(textToken)} not in guide and ${JSON.stringify(noteToken)} not in guide\nassert ${JSON.stringify(noteToken)} not in os.environ.values()\nassert subprocess.run(['grep','-rqF',${JSON.stringify(noteToken)},'/workspace/secrets']).returncode == 1`);
 
     phase = "fixture_install";
     assert.equal((await call(remote, "sandbox_shell", { command: "mkdir -p /workspace/tmp/access-fixture && npm install --ignore-scripts --omit=optional --no-audit --no-fund --prefix /workspace/tmp/access-fixture ssh2@1.17.0", treatNonZeroAsError: true })).success, true);
@@ -181,7 +183,7 @@ async function main() {
     assert.equal((await call(remote, "sandbox_shell", { command: "git clone --quiet ssh://git@127.0.0.1:22022/work.git /workspace/project/work", treatNonZeroAsError: true,
       env: { GIT_SSH_COMMAND: `ssh -F /dev/null -i ${workKeyPath} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new` } })).success, true);
     phase = "http_access";
-    await python(remote, `import base64,json,os,pathlib,re,urllib.request\nguide=pathlib.Path('/workspace/SECRETS.md').read_text()\nmatch=re.search(r'Text secret:\\n(\x60{3,})\\n(.*?)\\n\\1',guide,re.S)\nassert match is not None\ntext_access=match.group(2)\nroot='http://127.0.0.1:28080'\ncredentials=[('/token','Bearer '+os.environ['SERVICE_TOKEN']),('/basic','Basic '+base64.b64encode((os.environ['BASIC_LOGIN']+':'+os.environ['BASIC_PASSWORD']).encode()).decode()),('/file','Bearer '+json.loads(pathlib.Path(${JSON.stringify(filePath)}).read_bytes())['token']),('/text','Bearer '+text_access)]\nassert ${JSON.stringify(textToken)} in pathlib.Path('/workspace/SECRETS.md').read_text()\nfor path,authorization in credentials:\n with urllib.request.urlopen(urllib.request.Request(root+path,headers={'Authorization':authorization}),timeout=5) as response: assert json.load(response)=={'ok':True}\nfor name in ['personal','work']: assert pathlib.Path('/workspace/project/'+name+'/README.txt').read_text()=='synthetic '+name+' repository\\n'`);
+    await python(remote, `import base64,json,os,pathlib,urllib.request\ntext_access=os.environ['WEBSITE_TOKEN']\nroot='http://127.0.0.1:28080'\ncredentials=[('/token','Bearer '+os.environ['SERVICE_TOKEN']),('/basic','Basic '+base64.b64encode((os.environ['BASIC_LOGIN']+':'+os.environ['BASIC_PASSWORD']).encode()).decode()),('/file','Bearer '+json.loads(pathlib.Path(${JSON.stringify(filePath)}).read_bytes())['token']),('/text','Bearer '+text_access)]\nfor path,authorization in credentials:\n with urllib.request.urlopen(urllib.request.Request(root+path,headers={'Authorization':authorization}),timeout=5) as response: assert json.load(response)=={'ok':True}\nfor name in ['personal','work']: assert pathlib.Path('/workspace/project/'+name+'/README.txt').read_text()=='synthetic '+name+' repository\\n'`);
 
     phase = "receiver_restart";
     const originalRuntime = runtimeSandboxId;
@@ -212,6 +214,7 @@ async function main() {
     const tar = gunzipSync(Buffer.from(await new Response(archive.body).arrayBuffer()));
     assert.equal(tar.includes(Buffer.from("SECRETS.md")), false);
     assert.equal(tar.includes(Buffer.from(textToken)), false);
+    assert.equal(tar.includes(Buffer.from(noteToken)), false);
     assert.equal(tar.includes(Buffer.from("PRIVATE KEY")), false);
     assert.equal(tar.includes(Buffer.from(fileToken)), false);
     assert.equal(tar.includes(Buffer.from("synthetic personal repository")), true);
