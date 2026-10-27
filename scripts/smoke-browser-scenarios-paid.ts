@@ -43,6 +43,10 @@
  * - AIQSA_BROWSER_SCENARIOS_LABEL: tree or branch label echoed in the output
  * - AIQSA_BROWSER_SCENARIOS_MARGIN_SECONDS (60..3600, default 600)
  * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL: optional installed browser for S5 (for example `chrome`)
+ * - AIQSA_BROWSER_SCENARIOS_CHAT_ROUTE (`codex-lb`, default, or `openrouter`) with
+ *   AIQSA_BROWSER_SCENARIOS_CHAT_MODEL (an OpenRouter model id) and OPENROUTER_API_KEY: runs on a
+ *   text-only OpenRouter chat model added as an OpenAI-compatible Chat Completions connection;
+ *   System Vision stays on the codex-lb model, so screenshots reach the model only through it
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -60,6 +64,7 @@ import {
 import {
   BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_LOGIN_VALUES, SAUCEDEMO_SECRET,
   checkBrowserResult, cleanUpRun, parseBrowserResult, requireBrowserScenarioStand, runBounds, scenarioSummary, selectedScenarios,
+  OPENROUTER_API_ROOT, chatRoute, openRouterTextModel, textChatCapabilities,
   toolCallStats, usageEvidence, type BrowserBlockedCode, type BrowserScenario, type BrowserScenarioId, type BrowserScenarioStand,
   type HandoffCallRow, type RunBounds, type RunRecord, type StandTarget, type ToolCallRow, type TypedValueLeaks, type UsageRow
 } from "./browser-scenarios-support";
@@ -186,6 +191,53 @@ async function ensureModel(api: Api, route: Readonly<{ apiRoot: string; model: s
   const connectionId = (result as { connectionId: string }).connectionId;
   const model = modelInConnection(await checksIdle(api, connectionId), route.model) ?? fail("model_not_configured");
   return { connectionId, contextWindow, providerModelId: model.id, reused: false };
+}
+
+const TEXT_MODEL_DISPLAY_NAME = "Browser scenarios text model";
+
+/**
+ * The text-only OpenRouter chat model, added as an OpenAI-compatible Chat
+ * Completions connection: custom setup probes only this model, whereas the
+ * OpenRouter family's first key would add and check every built-in OpenRouter
+ * model. The public listing (no key) proves tool calling and text-only input.
+ */
+async function ensureTextModel(api: Api, model: string, secret: string) {
+  let listing: unknown = null;
+  try {
+    const response = await fetch(`${OPENROUTER_API_ROOT}/models`, { redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    listing = response.ok ? await response.json() : null;
+  } catch {
+    fail("openrouter_listing_unavailable");
+  }
+  const listed = openRouterTextModel(listing, model);
+  if ("code" in listed) return fail(listed.code);
+  const decision = journeyReuseDecision(await connections(api), {
+    apiRoot: OPENROUTER_API_ROOT, family: "openai_compatible", upstreamModelId: model
+  });
+  const reusable = decision.match && decision.match.model.displayName === TEXT_MODEL_DISPLAY_NAME ? decision.match : null;
+  if (reusable) return { connectionId: reusable.connection.id, contextWindow: listed.contextWindow, providerModelId: reusable.model.id, reused: true };
+  let catalogProof: string | undefined;
+  const discovery = await request(api, "/api/admin/providers/custom-setup/discover", { body: {
+    allowPrivateNetwork: false, apiRoot: OPENROUTER_API_ROOT, authenticationMode: "bearer", responseTimeoutSeconds: 180, secret
+  }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  if (discovery.ok) {
+    const value = await discovery.json().catch(() => null) as unknown;
+    if (record(value) && Array.isArray(value.models) && value.models.some((entry) => record(entry) && entry.id === model) &&
+      typeof value.catalogProof === "string") catalogProof = value.catalogProof;
+  }
+  const result = await json(api, "/api/admin/providers/custom-setup", { body: {
+    allowPrivateNetwork: false, apiRoot: OPENROUTER_API_ROOT, authenticationMode: "bearer",
+    capabilities: textChatCapabilities(listed.contextWindow),
+    confirmPaidRequest: true, connectionDisplayName: `Browser scenarios OpenRouter ${randomUUID().slice(0, 8)}`,
+    modelDisplayName: TEXT_MODEL_DISPLAY_NAME, protocol: "chat_completions", responseTimeoutSeconds: 180, secret,
+    ...(catalogProof ? { catalogProof, modelIds: [model] } : { modelId: model })
+  }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
+  if (!record(result) || typeof result.connectionId !== "string" || (result.outcome !== "ready" && result.outcome !== "partial")) {
+    fail(`text_setup_${record(result) ? safeCode(result.outcome) ?? "invalid" : "invalid"}`);
+  }
+  const connectionId = (result as { connectionId: string }).connectionId;
+  const added = modelInConnection(await checksIdle(api, connectionId), model) ?? fail("text_model_not_configured");
+  return { connectionId, contextWindow: listed.contextWindow, providerModelId: added.id, reused: false };
 }
 
 async function ensureSystemVision(api: Api, providerModelId: string): Promise<void> {
@@ -523,6 +575,7 @@ async function main() {
   if (!/^[A-Za-z0-9._/-]{1,80}$/u.test(label)) fail("label_invalid");
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
   const secret = process.env.CODEX_LB_API_KEY ?? fail("codex_lb_key_required");
+  const chat = chatRoute(process.env);
   const db = new PostgresClient({ connectionString: target.databaseUrl });
   await db.connect();
   const started = Date.now();
@@ -540,15 +593,21 @@ async function main() {
     }, method: "PATCH" });
     await ensureWorkspaceInternet(api);
     const provider = await ensureModel(api, route, secret);
+    // System Vision stays on the vision-capable codex-lb model whichever chat route runs.
     await ensureSystemVision(api, provider.providerModelId);
+    const chatProvider = chat.route === "openrouter"
+      ? await ensureTextModel(api, chat.model, process.env.OPENROUTER_API_KEY ?? fail("openrouter_key_required"))
+      : provider;
     const model = await poll(SETUP_TIMEOUT_MS, async () => {
       const catalog = decodeCatalogResponse(await json(api, "/api/me/catalog")) ?? fail("catalog_response_invalid");
       const entry = catalog.models.find((candidate) =>
-        candidate.provider === provider.connectionId && candidate.modelId === provider.providerModelId);
+        candidate.provider === chatProvider.connectionId && candidate.modelId === chatProvider.providerModelId);
       return entry && entry.capabilities.toolCalling ? entry : null;
     }, "catalog_model_missing", 5_000);
+    if (chat.route === "openrouter" && model.capabilities.imageInput) fail("text_model_has_image_input");
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model,
-      contextWindow: provider.contextWindow, reused: provider.reused, systemVision: true, workspaceInternet: true,
+      chatRoute: chat.route, chatModel: chat.route === "openrouter" ? chat.model : route.model, chatImageInput: model.capabilities.imageInput,
+      contextWindow: chatProvider.contextWindow, reused: chatProvider.reused, systemVision: true, workspaceInternet: true,
       configuredBounds: target.configuredBounds, scenarios, runs });
     const context: RunContext = { api, db, keepChats: process.env.AIQSA_BROWSER_SCENARIOS_KEEP_CHATS === "1",
       marginSeconds, model, standBounds: target.configuredBounds };
@@ -563,7 +622,7 @@ async function main() {
     const summary = scenarios.map((id: BrowserScenarioId) => BROWSER_SCENARIOS[id].availability === "available"
       ? scenarioSummary(id, records) : { scenario: id, status: "not_available" });
     for (const row of summary) emit({ stage: "summary", ...row });
-    emit({ status: "finished", label, model: route.model, runs: records.length,
+    emit({ status: "finished", label, model: chat.route === "openrouter" ? chat.model : route.model, runs: records.length,
       successes: records.filter((entry) => entry.success).length, elapsedSeconds: Math.round((Date.now() - started) / 1000) });
   } finally {
     await db.end().catch(() => undefined);

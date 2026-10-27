@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_SCENARIOS, BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, SAUCEDEMO_LOGIN_VALUES, blockedCodes, canonicalPageKey,
-  checkBrowserResult, cleanUpRun, frameToClientPoint, handoffOutcome, median, parseBrowserResult, priceValue,
+  chatRoute, checkBrowserResult, cleanUpRun, frameToClientPoint, openRouterTextModel, textChatCapabilities, handoffOutcome, median, parseBrowserResult, priceValue,
   requireBrowserScenarioStand, resultShapeErrors, runBounds, saucedemoUsernameFramePoint, scenarioSummary, selectedScenarios,
   toolCallStats, urlOnDomain, usageEvidence,
   type BrowserScenarioStand, type RunRecord
@@ -331,9 +331,34 @@ describe("selection and evidence", () => {
     expect(toolCallStats([
       { roundIndex: 1, state: "complete", toolName: "mcp_workspace_sandbox_exec" },
       { roundIndex: 1, state: "error", toolName: "mcp_workspace_sandbox_exec" },
-      { roundIndex: 3, state: "complete", toolName: "analyze_image" }
-    ])).toEqual({ analyzeImageCalls: 1, failedToolCalls: 1, rounds: 3, toolCalls: 3 });
-    expect(toolCallStats([])).toEqual({ analyzeImageCalls: 0, failedToolCalls: 0, rounds: 0, toolCalls: 0 });
+      { roundIndex: 3, state: "complete", toolName: "analyze_image" },
+      { roundIndex: 4, state: "complete", toolName: "view_workspace_image" }
+    ])).toEqual({ analyzeImageCalls: 1, failedToolCalls: 1, rounds: 4, toolCalls: 4, viewWorkspaceImageCalls: 1 });
+    expect(toolCallStats([])).toEqual({ analyzeImageCalls: 0, failedToolCalls: 0, rounds: 0, toolCalls: 0, viewWorkspaceImageCalls: 0 });
+  });
+
+  it("selects the chat route: codex-lb by default, or a text-only OpenRouter model with its key", () => {
+    expect(chatRoute({})).toEqual({ route: "codex-lb" });
+    expect(() => chatRoute({ AIQSA_BROWSER_SCENARIOS_CHAT_MODEL: "deepseek/deepseek-v3.2" })).toThrow("browser_scenarios_chat_model_unexpected");
+    const openRouter = { AIQSA_BROWSER_SCENARIOS_CHAT_MODEL: "deepseek/deepseek-v3.2", AIQSA_BROWSER_SCENARIOS_CHAT_ROUTE: "openrouter",
+      OPENROUTER_API_KEY: "synthetic" };
+    expect(chatRoute(openRouter)).toEqual({ model: "deepseek/deepseek-v3.2", route: "openrouter" });
+    expect(() => chatRoute({ ...openRouter, OPENROUTER_API_KEY: " " })).toThrow("browser_scenarios_openrouter_key_required");
+    expect(() => chatRoute({ ...openRouter, AIQSA_BROWSER_SCENARIOS_CHAT_MODEL: "https://evil.invalid/x" }))
+      .toThrow("browser_scenarios_chat_model_invalid");
+    expect(() => chatRoute({ ...openRouter, AIQSA_BROWSER_SCENARIOS_CHAT_ROUTE: "anthropic" })).toThrow("browser_scenarios_chat_route_invalid");
+  });
+
+  it("admits only a listed text-only OpenRouter model with tool calling, taking its listed window", () => {
+    const entry = { architecture: { input_modalities: ["text"] }, context_length: 163_840, id: "deepseek/deepseek-v3.2",
+      supported_parameters: ["tools", "tool_choice"] };
+    expect(openRouterTextModel({ data: [entry] }, "deepseek/deepseek-v3.2")).toEqual({ contextWindow: 163_840 });
+    expect(openRouterTextModel({ data: [entry] }, "deepseek/other")).toEqual({ code: "chat_model_not_listed" });
+    expect(openRouterTextModel({ data: [{ ...entry, supported_parameters: [] }] }, entry.id)).toEqual({ code: "chat_model_without_tools" });
+    expect(openRouterTextModel({ data: [{ ...entry, architecture: { input_modalities: ["text", "image"] } }] }, entry.id))
+      .toEqual({ code: "chat_model_not_text_only" });
+    expect(openRouterTextModel(null, entry.id)).toEqual({ code: "chat_model_not_listed" });
+    expect(textChatCapabilities(163_840)).toMatchObject({ contextWindow: 163_840, toolCalling: true, vision: false });
   });
 
   it("keeps cost unknown unless every usage row carries a provider-reported charge", () => {
