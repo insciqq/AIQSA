@@ -532,7 +532,14 @@ class LiveBrowserTests(unittest.TestCase):
         # The user reads their own input; the agent never does.
         self.assertEqual(welcome["page"]["title"], "Welcome fixture-user")
         answered: Dict[str, Any] = {}
-        agent = threading.Thread(target=lambda: answered.update(text=browser.text()))
+
+        def agent_reads() -> None:
+            try:
+                answered.update(text=browser.text())
+            except browser.BrowserError as error:
+                answered.update(code=error.code, message=error.message)
+
+        agent = threading.Thread(target=agent_reads)
         started = time.monotonic()
         agent.start()
         time.sleep(1.0)
@@ -540,10 +547,14 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertTrue(view.ask({"t": "control", "action": "return"})["ok"])
         agent.join(15)
         self.assertLess(time.monotonic() - started, 10)
-        self.assertTrue(answered["text"].startswith("The user gave the browser back to you after using it. The page is now " +
-                                                    self.base + "/signin"), answered["text"][:200])
-        self.assertIn("Welcome back, [hidden]", answered["text"])
-        everything = answered["text"] + str(browser.page_info(all=True)) + browser.text() + browser.js("document.title") + \
+        # The action planned before the user's changes does not run; it says where the user left the page.
+        self.assertEqual(answered.get("code"), "user_returned_control", answered)
+        self.assertTrue(answered["message"].startswith("The user gave the browser back to you after using it. The page is now " +
+                                                       self.base + "/signin"), answered["message"][:200])
+        self.assertIn("Nothing of this request ran", answered["message"])
+        text = browser.text()
+        self.assertIn("Welcome back, [hidden]", text)
+        everything = answered["message"] + text + str(browser.page_info(all=True)) + browser.js("document.title") + \
             browser.steps() + browser.tabs()
         for value in ("fixture-user", "fixture-password", MARKER):
             self.assertNotIn(value, everything, value)
@@ -610,7 +621,11 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertTrue(view.ask({"t": "input", "input": {"kind": "key", "type": "down", "key": "ArrowDown", "code": "ArrowDown"}})["ok"])
         # The panel's tab closes here: neither up ever comes from it, and the page gets both before the agent goes on.
         self.assertTrue(view.ask({"t": "control", "action": "return"})["ok"])
-        self.assertIn("gave the browser back", browser.text())
+        browser.status()  # reads no page, so it leaves the note to the next page action
+        with self.assertRaises(browser.BrowserError) as raised:
+            browser.text()
+        self.assertEqual(raised.exception.code, "user_returned_control")
+        self.assertIn("gave the browser back", raised.exception.message)
         self.assertEqual(json.loads(browser_js("window.seen")), ["mousedown:0", "keydown:ArrowDown", "mouseup:0", "keyup:ArrowDown"])
         self.assertEqual(view.close(), 0)
 
