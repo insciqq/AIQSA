@@ -69,7 +69,7 @@ describe("browser steps in Workspace activity", () => {
     expect(workspaceActivityLabelV2(browser("succeeded", '[browser #3] click: button "Add to cart" @ shop.example/cart\nURL: x')))
       .toBe('Browser: Clicked button "Add to cart"');
     expect(workspaceActivityLabelV2(browser("succeeded", "[browser #1] open @ shop.example/\n[browser #2] type: textbox \"Login\" (5 characters) @ shop.example/\n[browser #3] save_session: shop.example @ shop.example/account",
-      "python3 -c 'from aiqsa import browser'"))).toBe("Browser: 3 steps, last: Saved the sign-in for shop.example");
+      "python3 -c 'from aiqsa import browser'"))).toBe("Browser: 3 steps, last: Saved the browser session for shop.example");
     expect(workspaceActivityLabelV2(browser("failed", "[browser #3] click: button \"X\" @ a.example/"))).toBe("aiqsa-browser click 7 failed");
     expect(workspaceActivityLabelV2(browser("running", ""))).toBe("Running aiqsa-browser click 7…");
     expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", where: "www.amazon.es/" })).toBe("Opened www.amazon.es/");
