@@ -204,7 +204,9 @@ for (const viewport of [
         // Replayed settled event must not create a third card or follow a same-name version.
         await stream.emit(page, "artifact", { artifactType: "workspace_checkpoint", payload: { checkpoint: drafts[0]!.checkpoint, files: [drafts[0]] } });
         await expect(files.getByRole("listitem")).toHaveCount(2);
-        await expect(files).toContainText("Saved draft");
+        // Two-line draft cards: the description is a tooltip, not a line that grows the card.
+        await expect(files.getByText("Draft · PSD · 18 bytes", { exact: true })).toHaveCount(2);
+        await expect(files).not.toContainText("Adjusted composition");
         await expect(files).not.toContainText("Final export");
         await expect(page.getByRole("button", { name: "Stop answer", exact: true })).toBeVisible();
         for (let index = 0; index < drafts.length; index++) {
@@ -319,5 +321,92 @@ for (const viewport of [
           .toEqual({ sends: 0, cancels: 0, unexpected: 0 });
       });
     }
+  });
+}
+
+// A 4×2 synthetic PNG: the draft's inline preview.
+const previewPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAADklEQVR4nGM4gQQYkDkA89oSwaI+MosAAAAASUVORK5CYII=", "base64");
+const imageDraft: ThreadGeneratedFile = {
+  attachmentId: "checkpoint-layout-image", byteSize: previewPng.length, fileName: "cart.png", mimeType: "image/png", relativePath: "cart.png",
+  checkpoint: { id: "checkpoint-image", createdAt: timestamp, description: "Cart page before checkout" }
+};
+const imageAnswer = "The cart screenshot is ready.";
+
+for (const viewport of [
+  { width: 1440, height: 900, theme: "light", touch: false },
+  { width: 390, height: 844, theme: "dark", touch: true }
+] as const) {
+  test.describe(`draft card ${viewport.width}px`, () => {
+    test.use({ isMobile: viewport.touch, hasTouch: viewport.touch });
+    test("a draft keeps its card and preview in place when the answer completes", async ({ page, context }, testInfo) => {
+      test.setTimeout(60_000);
+      await page.setViewportSize(viewport);
+      await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
+      const chat = { id: chatId, title: "Saved Workspace drafts", createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai",
+        defaultModelId: "gpt-5.5", folderId: null, pinned: false, workspace };
+      await installMatrixCatalogFixture(page, { folders: [], chats: [{ ...chat, activeLeafMessageId: null, messageCount: 0, messages: [] }] });
+      await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
+      await page.route(`**/api/chats/${chatId}/workspace`, route => route.fulfill({ json: { workspace } }));
+      let runStatus: "streaming" | "complete" = "streaming";
+      await page.route(`**/api/model-runs/${runId}`, route => route.fulfill({ json: { version: 1, run: { id: runId, status: runStatus } } }));
+      await page.route(url => url.pathname === `/api/attachments/${imageDraft.attachmentId}/content`,
+        route => route.fulfill({ body: previewPng, contentType: "image/png" }));
+      const stream = createGatedRunStreamFixture({ key: "checkpoint-geometry", abortMessage: "Synthetic Stop", notReadyError: "checkpoint_geometry_not_ready" });
+      await stream.install(page, chatId);
+      await signInWithLocalToken(page, `/c/${chatId}`);
+      const composer = page.getByRole("textbox", { name: "Message" });
+      await composer.fill("Take a screenshot of the cart.");
+      await composer.press("Enter");
+      await stream.waitForRequestCount(page, 1);
+      await stream.emit(page, "run_start", { provider: "openai", modelId: "gpt-5.5", runId, status: "streaming" });
+      await stream.emit(page, "message_start", { assistantMessageId: answerId, userMessageId: questionId });
+      await stream.emit(page, "token", { delta: imageAnswer });
+      await stream.emit(page, "artifact", { artifactType: "workspace_checkpoint", payload: { checkpoint: imageDraft.checkpoint, files: [imageDraft] } });
+
+      const answer = page.locator('article[data-role="assistant"]').last();
+      const files = answer.getByRole("region", { name: "Generated files" });
+      const card = files.getByRole("listitem");
+      await expect(card).toHaveCount(1);
+      await expect(card.getByText(`Draft · PNG · ${previewPng.length} bytes`, { exact: true })).toBeVisible();
+      // The description is the meta line's tooltip, not a line of the card.
+      await expect(card).not.toContainText(imageDraft.checkpoint!.description);
+      await files.scrollIntoViewIfNeeded();
+      await expect.poll(() => files.locator("img").evaluate((image: HTMLImageElement) => image.complete ? image.naturalWidth : 0)).toBe(4);
+      // Measured from the end of the answer text, so a scroll cannot fake a match.
+      const measure = () => answer.evaluate((article) => {
+        const text = article.querySelector(".v2-conversation-markdown");
+        const parts = ['[aria-label="Generated files"] li', '[aria-label="Generated files"] [data-testid="chat-image"]', '[data-testid="answer-outputs"]']
+          .map(selector => article.querySelector(selector));
+        if (!text || parts.some(part => !part)) return null;
+        const end = text.getBoundingClientRect().bottom;
+        return parts.flatMap(part => { const box = part!.getBoundingClientRect(); return [box.top - end, box.height]; });
+      });
+      const draft = await measure();
+      expect(draft).not.toBeNull();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`draft-card-live-${viewport.width}.png`) });
+
+      runStatus = "complete";
+      const { checkpoint: _checkpoint, ...finalFile } = imageDraft;
+      await installMatrixCatalogFixture(page, { folders: [], chats: [{ ...chat, activeLeafMessageId: answerId, messageCount: 2, messages: [
+        { id: questionId, role: "user", status: "complete", parentMessageId: null, createdAt: timestamp, content: "Take a screenshot of the cart.",
+          errorMessage: null, citationMessageId: null, modelId: null, modelRunId: null, provider: null },
+        { id: answerId, role: "assistant", status: "complete", parentMessageId: questionId, createdAt: timestamp, content: imageAnswer,
+          errorMessage: null, citationMessageId: null, modelId: "gpt-5.5", modelRunId: runId, provider: "openai",
+          artifactSummary: { citations: [], reasoningText: [], sources: [], generatedFiles: [finalFile] } }
+      ] }] });
+      await stream.emit(page, "done", { runId, status: "complete" });
+      await stream.close(page);
+      await expect(page.getByRole("button", { name: "Stop answer", exact: true })).toHaveCount(0);
+      await expect(card.getByText(`PNG · ${previewPng.length} bytes`, { exact: true })).toBeVisible();
+      await expect(card).toHaveCount(1);
+      // Only the marker went: the card's top and height, the preview and the end of the outputs stay within a pixel.
+      await expect.poll(async () => {
+        const settled = await measure();
+        return settled ? Math.max(...settled.map((value, index) => Math.abs(value - draft![index]!))) : Number.POSITIVE_INFINITY;
+      }).toBeLessThanOrEqual(1);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`draft-card-final-${viewport.width}.png`) });
+    });
   });
 }
