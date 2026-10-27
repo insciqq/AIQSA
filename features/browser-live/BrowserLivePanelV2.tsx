@@ -15,6 +15,7 @@ import {
 import { createPortal } from "react-dom";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
+import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
 import type { BrowserLiveHandoff, BrowserLiveInput, BrowserLiveStep } from "@/lib/contracts/browserLive";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
@@ -277,6 +278,8 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
   const fullScreenButtonRef = useRef<HTMLButtonElement>(null);
   // Full screen exists only while there is a picture: a closed browser, an ended run or a failed stream close it.
   const expanded = fullScreen && showsFrame;
+  // iOS Safari lays its keyboard over the page without resizing it: the layer ends where the keyboard starts.
+  const keyboardInset = useVisualViewportInset();
 
   /** The key ups and the mouse up that free whatever this view still holds on the page; forgets them. */
   const takeHeld = useCallback((): BrowserLiveInput[] => {
@@ -567,7 +570,8 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
     // The same view and stream, drawn over the whole window: the controls on top, then the page as large as it fits.
     // Clicks stay in the layer: React would bubble them to the answer behind, which opens its actions on a click.
     return createPortal(
-      <div className="v2-browser-live-layer">
+      <div className="v2-browser-live-layer" data-keyboard={keyboardInset > 0 || undefined}
+        style={keyboardInset > 0 ? { bottom: keyboardInset } : undefined}>
         <section aria-label="Browser, full screen" aria-modal="true" className="v2-browser-live-view" data-full-screen=""
           data-testid="browser-live-full-screen" onClick={(event) => event.stopPropagation()} onKeyDown={onDialogKeyDown}
           ref={dialogRef} role="dialog">
