@@ -46,7 +46,8 @@ describe("anchored context measure", () => {
     const conversation = chat();
     conversation.user("hello");
     expect(measureContext({ estimate, fixedTokens: 300, items: conversation.items, target: codex })).toEqual({
-      addedItems: 1, addedTokens: 5 + FRAMING.user, anchored: false, removedItems: 0, removedTokens: 0, tokens: 300 + 5 + FRAMING.user
+      addedItems: 1, addedTokens: 5 + FRAMING.user, anchored: false, fixedTokens: 300, removedItems: 0, removedTokens: 0,
+      tokens: 300 + 5 + FRAMING.user
     });
     conversation.respond(codex, toolRound(), { outputTokens: 70, reasoningTokens: 60 });
     conversation.result("call_1", "result");
@@ -63,7 +64,7 @@ describe("anchored context measure", () => {
     conversation.result("call_1", "result");
     const added = 10 + FRAMING.tool_call + "tool".length + "result".length + FRAMING.tool_result;
     expect(measureContext({ anchor, estimate, fixedTokens: 300, items: conversation.items, target: codex })).toEqual({
-      addedItems: 3, addedTokens: added, anchored: true, removedItems: 0, removedTokens: 0, tokens: 1_000 + added
+      addedItems: 3, addedTokens: added, anchored: true, fixedTokens: 300, removedItems: 0, removedTokens: 0, tokens: 1_000 + added
     });
     // The provider-figure policy counts the reasoning tokens the call reported.
     expect(measureContext({ anchor, estimate, fixedTokens: 300, items: conversation.items, reasoning: "reported", target: codex }).tokens)
@@ -150,6 +151,30 @@ describe("anchored context measure", () => {
     expect(measure.anchored).toBe(false);
     expect(measure.tokens).toBeLessThan(1_000);
     expect(contextAnchor({ itemCount: 1, target: codex, usage: { inputTokens: null } })).toBeNull();
+  });
+});
+
+describe("the part rebuilt for every request", () => {
+  const answer = (text: string) => responsesHistoryFromOutput([{ content: [{ text, type: "output_text" }], role: "assistant", type: "message" }]);
+
+  it("counts what changed in it since the anchored request, and an earlier run's own context not at all (issue #62)", () => {
+    const conversation = chat();
+    conversation.items.push({ id: "ctx-0", kind: "user", runContext: true, text: "skills" });
+    conversation.user("hello");
+    const first = measureContext({ estimate, fixedTokens: 300, items: conversation.items, target: codex });
+    expect(first).toMatchObject({ addedItems: 1, fixedTokens: 300 + 6 + FRAMING.user, tokens: 300 + 6 + 5 + 2 * FRAMING.user });
+    const anchor = contextAnchor({ fixedTokens: first.fixedTokens, itemCount: conversation.items.length, target: codex,
+      usage: { inputTokens: 1_000 } });
+    // A tool loaded since adds its declaration.
+    expect(measureContext({ anchor, estimate, fixedTokens: 340, items: conversation.items, target: codex }).tokens).toBe(1_040);
+    conversation.respond(codex, answer("done"), { outputTokens: 4, reasoningTokens: 0 });
+
+    // The next run: the earlier run's context is gone and its own sits before its input; the answer weighs its output.
+    const next = [...conversation.items.filter((item) => item.id !== "ctx-0"),
+      { id: "ctx-1", kind: "user" as const, runContext: true as const, text: "skills v2" }, { id: "u9", kind: "user" as const, text: "again" }];
+    const carried = { ...anchor!, itemCount: 1 };
+    expect(measureContext({ anchor: carried, estimate, fixedTokens: 300, items: next, target: codex }).tokens)
+      .toBe(1_000 - first.fixedTokens + 300 + 9 + FRAMING.user + 4 + FRAMING.assistant_text + 5 + FRAMING.user);
   });
 });
 

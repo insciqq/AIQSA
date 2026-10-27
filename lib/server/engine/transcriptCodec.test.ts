@@ -14,8 +14,10 @@ const items: TranscriptItem[] = [
   { id: "a1", kind: "assistant_text", native: { fields: { phase: "commentary" }, format: "openai_responses" }, origin,
     outputTokens: 12, text: "Checking." },
   { id: "a2", kind: "assistant_text", text: "Imported answer" },
+  // The first item of a response keeps its request's anchor for the chat's next run.
+  { id: "a3", kind: "assistant_text", origin, requestAnchor: { baseId: "k1", fixedTokens: 900, inputTokens: 4_200 }, text: "Done." },
   { id: "r1", kind: "reasoning", native: { fields: { encrypted_content: "ENC", id: "rs_1", type: "reasoning" }, format: "openai_responses" },
-    origin, outputTokens: 40 },
+    origin, outputTokens: 40, requestAnchor: { baseId: null, fixedTokens: 900, inputTokens: 3_100 } },
   // An Anthropic thinking block, whole, with what it was produced after.
   { id: "r2", kind: "reasoning", native: { fields: { binding: { prefix: "DIGEST", previous: null },
     block: { signature: "SIG", thinking: "", type: "thinking" } }, format: "anthropic_messages" }, origin: { model: "claude-haiku-5-5",
@@ -70,6 +72,9 @@ describe("transcript codec", () => {
       { body: { origin, retained: 3, summary: "s" }, callId: null, id: "x", kind: "compaction" },
       { body: { origin, outputTokens: 1.5, summary: "s" }, callId: null, id: "x", kind: "compaction" },
       { body: { outputTokens: -1, text: "x" }, callId: null, id: "x", kind: "assistant_text" },
+      { body: { origin, requestAnchor: { baseId: null, fixedTokens: 1, inputTokens: -1 }, text: "x" }, callId: null, id: "x",
+        kind: "assistant_text" },
+      { body: { origin, requestAnchor: { fixedTokens: 1, inputTokens: 1 }, text: "x" }, callId: null, id: "x", kind: "assistant_text" },
       { body: [], callId: null, id: "x", kind: "user" }
     ];
     for (const row of invalid) expect(() => decodeTranscriptItem(row)).toThrow(TranscriptItemInvalidError);

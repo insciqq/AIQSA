@@ -12,7 +12,7 @@ import {
 } from "./compaction";
 import { handleFor, transcriptBuilder } from "./compaction/compaction.testFixtures";
 import { SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
-import { contextMeasureCalibration, measureContext } from "./contextMeasure";
+import { CONTEXT_ITEM_FRAMING_TOKENS as FRAMING, contextMeasureCalibration, measureContext } from "./contextMeasure";
 import { createDetachedCompactions, DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions } from "./detachedCompactions";
 import { COMPACTION_LIFECYCLE, createRunContext, windowOutputParams } from "./runContext";
 import { COMPACTION_SUMMARY_HEADING, projectTranscript, type TranscriptItem, type TranscriptTarget } from "./transcript";
@@ -612,6 +612,33 @@ describe("a native run's context", () => {
     const large = { thinking: { budgetTokens: 32_000, enabled: true, type: "enabled" } };
     expect(windowOutputParams(large, { contextWindow: 200_000, maxOutputTokens: 64_000 })).toBe(large);
   });
+
+  it("starts from the count its chat's last run recorded, unless a compaction that run did not replay entered before it (issue #62)",
+    async () => {
+      const chat = workChat(2, 500);
+      const window = { contextWindow: 1_000_000, maxOutputTokens: 1_000 };
+      const earlier = harness(chat.items, { call: async () => summaryReply(), window });
+      await earlier.context.prepare(request(chat.items));
+      const fixedTokens = estimate([PROMPT, null, []]);
+      expect(earlier.context.requestAnchor({ inputTokens: null })).toBeNull();
+      const anchor = earlier.context.requestAnchor({ inputTokens: 1_234 });
+      expect(anchor).toEqual({ baseId: null, fixedTokens, inputTokens: 1_234 });
+      const answer: TranscriptItem = { id: "answer", kind: "assistant_text", origin: TARGET, requestAnchor: anchor!, text: "done" };
+      const turn = (before: readonly TranscriptItem[]): TranscriptItem[] => [...before, answer,
+        { id: "ctx-turn", kind: "user", runContext: true, text: "Today" }, { id: "next", kind: "user", text: "next question" }];
+
+      const items = turn(chat.items);
+      const next = harness(items, { call: async () => summaryReply(), window });
+      await next.context.prepare(request(items));
+      expect(next.context.measured()!.tokens).toBe(1_234 + estimate("done") + FRAMING.assistant_text + estimate("Today") + FRAMING.user +
+        estimate("next question") + FRAMING.user);
+
+      // A compaction its run recorded after that request now replays: the run measures from estimates.
+      const compacted = turn([...chat.items, { id: "late", kind: "compaction", origin: TARGET, summary: "Earlier work." }]);
+      const later = harness(compacted, { call: async () => summaryReply(), window });
+      await later.context.prepare(request(compacted));
+      expect(later.context.measured()!.tokens).toBe(measured(compacted));
+    });
 
   it("measures nothing without a window", async () => {
     const chat = workChat(8, 2_000);

@@ -1,7 +1,7 @@
 import type { ProviderHistoryFormat, ProviderNativeData } from "../providers/history";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { parseWorkspaceImageEvidence, type WorkspaceImageEvidence } from "../workspace/directImageEvidence";
-import type { TranscriptItem, TranscriptOrigin } from "./transcript";
+import type { TranscriptItem, TranscriptOrigin, TranscriptRequestAnchor } from "./transcript";
 
 /**
  * The row form of one transcript item (`RunTranscriptItem`): its kind, the
@@ -79,6 +79,12 @@ function native(value: unknown, required: boolean): ProviderNativeData | undefin
   return { fields: value.fields, format: value.format as ProviderHistoryFormat };
 }
 
+function requestAnchor(value: unknown): TranscriptRequestAnchor | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || (value.baseId !== null && !boundedString(value.baseId, TRANSCRIPT_ITEM_LIMITS.identityLength))) return invalid();
+  return { baseId: value.baseId, fixedTokens: tokens(value.fixedTokens) ?? invalid(), inputTokens: tokens(value.inputTokens) ?? invalid() };
+}
+
 function optional<T>(key: string, value: T | undefined): Record<string, T> {
   return value === undefined ? {} : { [key]: value };
 }
@@ -98,12 +104,14 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
         return { text: item.text, ...(item.followup ? { followup: true } : {}) };
       case "assistant_text":
         return { text: item.text, ...optional("native", item.native), ...optional("origin", item.origin),
-          ...optional("outputTokens", item.outputTokens) };
+          ...optional("outputTokens", item.outputTokens), ...optional("requestAnchor", item.requestAnchor) };
       case "reasoning":
-        return { native: item.native, origin: item.origin, ...optional("outputTokens", item.outputTokens) };
+        return { native: item.native, origin: item.origin, ...optional("outputTokens", item.outputTokens),
+          ...optional("requestAnchor", item.requestAnchor) };
       case "tool_call":
         return { arguments: item.arguments, name: item.name, ...optional("native", item.native),
-          ...optional("origin", item.origin), ...optional("outputTokens", item.outputTokens) };
+          ...optional("origin", item.origin), ...optional("outputTokens", item.outputTokens),
+          ...optional("requestAnchor", item.requestAnchor) };
       case "tool_result":
         return { name: item.name, outcome: item.outcome, output: item.output, ...optional("handle", item.handle),
           ...optional("image", item.image), ...(item.inFlight ? { inFlight: true } : {}) };
@@ -136,22 +144,25 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
       const itemNative = native(body.native, false);
       const itemOrigin = origin(body.origin, false);
       const outputTokens = tokens(body.outputTokens);
+      const anchor = requestAnchor(body.requestAnchor);
       return { id, kind, ...(itemNative ? { native: itemNative } : {}), ...(itemOrigin ? { origin: itemOrigin } : {}),
-        ...(outputTokens !== undefined ? { outputTokens } : {}), text: text(body.text) };
+        ...(outputTokens !== undefined ? { outputTokens } : {}), ...(anchor ? { requestAnchor: anchor } : {}), text: text(body.text) };
     }
     case "reasoning": {
       const outputTokens = tokens(body.outputTokens);
+      const anchor = requestAnchor(body.requestAnchor);
       return { id, kind, native: native(body.native, true), origin: origin(body.origin, true),
-        ...(outputTokens !== undefined ? { outputTokens } : {}) };
+        ...(outputTokens !== undefined ? { outputTokens } : {}), ...(anchor ? { requestAnchor: anchor } : {}) };
     }
     case "tool_call": {
       if (typeof body.arguments !== "string" || !boundedString(body.name, TRANSCRIPT_ITEM_LIMITS.nameLength)) return invalid();
       const itemNative = native(body.native, false);
       const itemOrigin = origin(body.origin, false);
       const outputTokens = tokens(body.outputTokens);
+      const anchor = requestAnchor(body.requestAnchor);
       return { arguments: body.arguments, callId: row.callId!, id, kind, name: body.name,
         ...(itemNative ? { native: itemNative } : {}), ...(itemOrigin ? { origin: itemOrigin } : {}),
-        ...(outputTokens !== undefined ? { outputTokens } : {}) };
+        ...(outputTokens !== undefined ? { outputTokens } : {}), ...(anchor ? { requestAnchor: anchor } : {}) };
     }
     case "tool_result": {
       if (!boundedString(body.name, TRANSCRIPT_ITEM_LIMITS.nameLength) ||

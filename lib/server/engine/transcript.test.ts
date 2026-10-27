@@ -395,9 +395,12 @@ describe("transcript projection", () => {
       ]),
       nextId: (() => { let next = 0; return () => `n${++next}`; })(),
       origin: codex,
+      requestAnchor: { baseId: null, fixedTokens: 500, inputTokens: 2_000 },
       usage: { outputTokens: 120, reasoningTokens: 80 }
     });
     expect(items.map((item) => "outputTokens" in item ? item.outputTokens : undefined)).toEqual([80, 20, 20]);
+    // Only the first item keeps its request's anchor: the items before it are what the request carried.
+    expect(items.map((item) => "requestAnchor" in item ? item.requestAnchor?.inputTokens : undefined)).toEqual([2_000, undefined, undefined]);
     expect(items.every((item) => "origin" in item && item.origin?.provider === "codex-lb")).toBe(true);
     const unknown = modelResponseItems({ estimate, history: responsesHistoryFromOutput([
       { encrypted_content: "ENC", id: "rs", summary: [], type: "reasoning" },

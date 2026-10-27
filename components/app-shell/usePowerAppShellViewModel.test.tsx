@@ -425,6 +425,40 @@ describe("usePowerAppShellViewModel", () => {
     expect(view.result.current.composerContextStats.session).toBeUndefined();
   });
 
+  it("keeps the branch's last measure plus what was sent until the new run's first status (issue #62)", () => {
+    const snapshot: SessionContextStatus = {
+      approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
+      safetyMarginTokens: 1000, version: 1
+    };
+    const catalog: Catalog = { ...emptyCatalog, models: [{
+      capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+      contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
+      parameterControls: defaultParameterControls(), searchStrategyIds: []
+    }] };
+    const question = "What changed since then?";
+    // The send added a question and an empty answer; the chat's stats still describe the earlier leaf.
+    const sent: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
+      activeChatStreaming: true, catalog, maxOutputTokens: "1024", renderActiveLeafId: "answer-2",
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot, sessionMessageId: "answer",
+        sessionBranchLeafId: "answer", approximateInputTokensAfterSession: 0 },
+      runSurface: { ...acceptedSurface(), contextMessageId: "answer-2", events: [{ type: "message_start", data: { assistantMessageId: "answer-2" } }] },
+      visibleMessages: [
+        { id: "answer", parentMessageId: null, role: "assistant", status: "complete", content: "Answer" },
+        { id: "question-2", parentMessageId: "answer", role: "user", status: "complete", content: question },
+        { id: "answer-2", parentMessageId: "question-2", role: "assistant", status: "streaming", content: "" }
+      ]
+    };
+    const view = renderViewModel(sent);
+    expect(view.result.current.composerContextStats).toMatchObject({ approximateInputTokens: 6000 + estimateApproxTokens(question),
+      basis: "preliminary", session: snapshot, snapshotSource: "persisted" });
+    const measured = { ...snapshot, approximateInputTokens: 6050, phase: "request" as const };
+    view.rerender({ ...sent, runSurface: { ...sent.runSurface!, events: [...sent.runSurface!.events,
+      { type: "artifact", data: { artifactType: "context_status", payload: measured } }] } });
+    expect(view.result.current.composerContextStats).toMatchObject({ approximateInputTokens: 6050, session: measured, snapshotSource: "live" });
+  });
+
   it("retains a rejected-request state only for the exact rejected inputs", () => {
     const view = renderViewModel({ draft: "rejected", contextRejectionGeneration: 1 });
     expect(view.result.current.composerContextStats.requestRejected).toBe(true);

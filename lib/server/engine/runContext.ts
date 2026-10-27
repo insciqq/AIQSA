@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { makeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { contextOutputReserveTokens } from "../../domain/contextBudget";
+import { imageTokenEstimator } from "../../domain/imageTokenEstimate";
 import { maxOutputTokenParamKeys } from "../../domain/providerParams";
 import { contextTokenEstimator, tokenEstimateProfileFor } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import { logEvent } from "../observability";
+import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import { observedFailure } from "../providers/providerObservability";
 import { PROVIDER_CONTEXT_LENGTH_EXCEEDED, providerContextLengthFacts } from "../providers/responseFailure";
 import type { ProviderRunRequest } from "../providers/types";
@@ -25,9 +27,14 @@ import {
   type CompactionOutcome,
   type CompactionPath
 } from "./compaction";
-import { contextAnchor, contextMeasureCalibration, measureContext, type ContextAnchor, type ContextMeasureCalibration } from "./contextMeasure";
+import {
+  contextAnchor, contextMeasureCalibration, measureContext, type ContextAnchor, type ContextMeasure, type ContextMeasureCalibration
+} from "./contextMeasure";
 import { DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions, type DetachedStopCode } from "./detachedCompactions";
-import { projectTranscript, type TranscriptItem, type TranscriptProjectionOptions, type TranscriptTarget } from "./transcript";
+import {
+  projectTranscript, sameTranscriptOrigin, selectTranscript, type TranscriptItem, type TranscriptProjectionOptions,
+  type TranscriptRequestAnchor, type TranscriptTarget
+} from "./transcript";
 
 /**
  * The context of one native run's model requests, between the agent loop and
@@ -123,6 +130,9 @@ export type RunContext = Readonly<{
   prepare(request: ProviderRunRequest): Promise<ProviderRunRequest>;
   /** The request completed: its reported input count anchors the next measure. */
   observe(usage: Pick<TokenUsage, "inputTokens">): void;
+  /** The latest request's anchor for its response to keep, so the chat's next run starts from it; null for a fitted
+   * request or without a usable count. */
+  requestAnchor(usage: Pick<TokenUsage, "inputTokens">): TranscriptRequestAnchor | null;
   /**
    * The context the run's latest request carries with what the transcript
    * holds now (an answer added after it included), as the next request is
@@ -226,6 +236,24 @@ export function windowOutputParams(params: Record<string, unknown>,
   return cappedReasoningBudgets(capped, reserve);
 }
 
+/**
+ * The anchor the chat's last response from this route and model recorded on
+ * its first item: the request carried the items before it, unless a
+ * compaction that request did not replay has entered among them since (one
+ * an earlier run recorded after it finished).
+ */
+function recordedAnchor(items: readonly TranscriptItem[], target: TranscriptTarget): ContextAnchor | null {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const item = items[index]!;
+    if (item.kind !== "assistant_text" && item.kind !== "reasoning" && item.kind !== "tool_call") continue;
+    if (!item.requestAnchor || !item.origin || !sameTranscriptOrigin(item.origin, target)) continue;
+    const recorded = item.requestAnchor;
+    if ((selectTranscript(items.slice(0, index), target).base?.id ?? null) !== recorded.baseId) return null;
+    return { fixedTokens: recorded.fixedTokens, inputTokens: recorded.inputTokens, itemCount: index, target: item.origin };
+  }
+  return null;
+}
+
 export function createRunContext(deps: RunContextDeps): RunContext {
   const now = deps.now ?? Date.now;
   const target = deps.target;
@@ -239,8 +267,11 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   /** Tokens a request may carry; a size rejection that states a smaller window lowers it for the rest of the run. */
   let usable = window ? usableContextTokens(window) : 0;
   let weights: Readonly<{ calibration: ContextMeasureCalibration; estimate: (value: unknown) => number }> | null = null;
-  let anchor: ContextAnchor | null = null;
+  // The chat's last request to this route and model, from its earlier run (issue #62).
+  let anchor: ContextAnchor | null = recordedAnchor(deps.items, target);
   let requestItems = deps.items.length;
+  /** What the latest request was built from, for its anchor. */
+  let requestShape: Omit<TranscriptRequestAnchor, "inputTokens"> | null = null;
   let fitted = false;
   let latest: ProviderRunRequest | null = null;
   let background: Job | null = null;
@@ -262,11 +293,17 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     return weights;
   }
 
-  function measure(request: ProviderRunRequest, items: readonly TranscriptItem[] = deps.items): number {
+  function measureOf(request: ProviderRunRequest, items: readonly TranscriptItem[] = deps.items): ContextMeasure {
     const { calibration, estimate } = measuring(request);
+    const attachments = providerAttachmentBudgetTokens({ attachments: request.attachments, estimateImageTokens: imageTokenEstimator(request),
+      estimateTokens: estimate, modelCapabilities: request.modelCapabilities });
     return measureContext({ anchor, calibration, estimate,
-      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]),
-      ...(deps.projection.images ? { images: deps.projection.images } : {}), items, target }).tokens;
+      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]) + attachments,
+      ...(deps.projection.images ? { images: deps.projection.images } : {}), items, target });
+  }
+
+  function measure(request: ProviderRunRequest, items: readonly TranscriptItem[] = deps.items): number {
+    return measureOf(request, items).tokens;
   }
 
   function state(): BackgroundCompactionState {
@@ -529,6 +566,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       }
     }
     requestItems = deps.items.length;
+    requestShape = window
+      ? { baseId: selectTranscript(deps.items, target).base?.id ?? null, fixedTokens: measureOf(next).fixedTokens } : null;
     latest = next;
     return next;
   }
@@ -568,7 +607,13 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     observe(usage) {
       // A request fitted by handle measured less than the transcript replays next time.
       if (fitted) return;
-      anchor = contextAnchor({ itemCount: requestItems, target, usage }) ?? anchor;
+      anchor = contextAnchor({ fixedTokens: requestShape?.fixedTokens, itemCount: requestItems, target, usage }) ?? anchor;
+    },
+
+    requestAnchor(usage) {
+      const inputTokens = usage.inputTokens;
+      return !fitted && requestShape && typeof inputTokens === "number" && Number.isSafeInteger(inputTokens) && inputTokens >= 0
+        ? { ...requestShape, inputTokens } : null;
     },
 
     measured() {
