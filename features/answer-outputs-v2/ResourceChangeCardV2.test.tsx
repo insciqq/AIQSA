@@ -59,14 +59,17 @@ describe("ResourceChangeCardsV2: secrets", () => {
     const fetchMock = respond({ "GET /api/me/workspace/secrets": summary(card.versionId), "POST /api/me/workspace/secrets": { secrets: [] } });
     render(<ResourceChangeCardsV2 cards={[card]} />);
     const item = screen.getByTestId("resource-change-card");
-    expect(item).toHaveTextContent("Secret saved");
-    expect(item).toHaveTextContent("GitLab");
-    expect(item).toHaveTextContent("Text");
+    expect(item).toHaveTextContent(/^GitLabSecret saved · Text$/u);
+    expect(item).toHaveAccessibleName("Secret saved");
     expect(within(item).getByRole("link", { name: "Open Secrets" })).toHaveAttribute("href", "/?library=secrets");
     await waitFor(() => expect(item).toHaveAttribute("data-state", "current"));
-    fireEvent.click(within(item).getByRole("button", { name: "Undo saving GitLab" }));
+    const undo = within(item).getByRole("button", { name: "Undo saving GitLab" });
+    // The verbs are icons with a tooltip; their accessible names say what they act on.
+    expect(undo).toHaveAttribute("data-tooltip", "Undo");
+    expect(undo).toHaveTextContent("");
+    fireEvent.click(undo);
     await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Undone: the secret is deleted."));
-    expect(item).toHaveTextContent("Secret removed");
+    expect(item).toHaveTextContent(/^GitLabSecret removed · Text/u);
     expect(within(item).queryByRole("button")).toBeNull();
     expect(bodies(fetchMock, "POST")).toEqual([["/api/me/workspace/secrets", { action: "delete", expectedVersionId: card.versionId, id: SECRET_ID }]]);
   });
@@ -89,11 +92,22 @@ describe("ResourceChangeCardsV2: secrets", () => {
     render(<ResourceChangeCardsV2 cards={[{ ...secret, action: "updated", envNames: ["GITLAB_TOKEN"], kind: "env", name: "GitLab work",
       previousName: "GitLab", valueReplaced: true }]} />);
     const item = screen.getByTestId("resource-change-card");
-    expect(item).toHaveTextContent("Secret updated");
-    expect(item).toHaveTextContent("Environment · GITLAB_TOKEN");
-    expect(item).toHaveTextContent("Renamed from “GitLab”.");
-    expect(item).toHaveTextContent("The value was replaced; earlier values are not kept.");
+    // Two lines: the name, then the heading with the kind; what is not needed at a glance is the line's tooltip.
+    const meta = within(item).getByText((_, element) => element?.tagName === "SMALL");
+    expect(meta).toHaveTextContent(/^Secret updated · Environment · GITLAB_TOKEN$/u);
+    expect(meta).toHaveAttribute("title",
+      "Secret updated · Environment · GITLAB_TOKEN\nRenamed from “GitLab”.\nThe value was replaced; earlier values are not kept.");
+    expect(item).not.toHaveTextContent("Renamed from");
     expect(within(item).queryByRole("button")).toBeNull();
+    expect(within(item).getByRole("link", { name: "Open Secrets" })).toHaveAttribute("data-tooltip", "Open Secrets");
+    cleanup();
+    // Several variables read as a count; their names are in the tooltip.
+    render(<ResourceChangeCardsV2 cards={[{ ...secret, action: "updated", envNames: ["SAUCEDEMO_USERNAME", "SAUCEDEMO_PASSWORD"], kind: "env",
+      name: "Saucedemo", valueReplaced: true }]} />);
+    const several = within(screen.getByTestId("resource-change-card")).getByText((_, element) => element?.tagName === "SMALL");
+    expect(several).toHaveTextContent(/^Secret updated · Environment · 2 variables$/u);
+    expect(several).toHaveAttribute("title", "Secret updated · Environment · 2 variables\nSAUCEDEMO_USERNAME, SAUCEDEMO_PASSWORD\n" +
+      "The value was replaced; earlier values are not kept.");
   });
 
   it("asks before deleting, deletes only on the click and keeps the secret on Keep", async () => {
@@ -254,11 +268,14 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     render(<ResourceChangeCardsV2 cards={[{ ...assistant, action: "updated", changes: [{ field: "instructions", summary: null },
       { field: "model", summary: "GPT-5.5 → Claude Sonnet" }], instructionsDiff: { lines: [{ kind: "del", text: "Be brief." },
       { kind: "add", text: "Be thorough." }], truncated: false } }]} />);
-    const changes = screen.getByRole("list", { name: "Changes to Reporter" });
-    expect(changes).toHaveTextContent("Instructions changed");
-    expect(changes).toHaveTextContent("Model: GPT-5.5 → Claude Sonnet");
+    const item = screen.getByTestId("resource-change-card");
+    // The changed fields at a glance, what each became in the tooltip, the diff behind its disclosure.
+    const meta = within(item).getByText((_, element) => element?.tagName === "SMALL");
+    expect(meta).toHaveTextContent(/^Assistant updated · Instructions, Model$/u);
+    expect(meta).toHaveAttribute("title", "Assistant updated · Instructions, Model\nInstructions changed\nModel: GPT-5.5 → Claude Sonnet");
     expect(screen.getByLabelText("Changes in the instructions of Reporter")).toHaveTextContent("− Be brief.");
     expect(screen.queryByRole("button")).toBeNull();
+    expect(within(item).getByRole("link", { name: "Open in Studio" })).toBeVisible();
   });
 
   it("asks before deleting with the consequences and deletes the version it named", async () => {
@@ -321,8 +338,8 @@ describe("ResourceChangeCardsV2: Assistants", () => {
   });
 });
 
-describe("ResourceChangeCardsV2: narrow screens", () => {
-  it("lets every row of verbs wrap whole inside its card instead of running past its edge", () => {
+describe("ResourceChangeCardsV2: layout", () => {
+  it("keeps the file card's frame: two one-line rows of text, icon verbs, and questions that wrap inside the card", () => {
     respond({});
     const cards = [
       fresh(secret),
@@ -339,21 +356,26 @@ describe("ResourceChangeCardsV2: narrow screens", () => {
     const items = screen.getAllByTestId("resource-change-card");
     expect(items).toHaveLength(cards.length);
     for (const item of items) {
-      expect(getComputedStyle(item).flexWrap).toBe("wrap");
+      const style = getComputedStyle(item);
+      expect([style.display, style.gridTemplateColumns]).toEqual(["grid", "2rem minmax(0, 1fr) auto"]);
+      for (const line of item.querySelectorAll(".v2-resource-change-card-copy > *")) {
+        expect([getComputedStyle(line).whiteSpace, getComputedStyle(line).textOverflow]).toEqual(["nowrap", "ellipsis"]);
+      }
       const rows = item.querySelectorAll(".v2-resource-change-card-actions, .v2-resource-change-card-confirm, .v2-resource-change-card-confirm > span");
       expect(rows.length).toBeGreaterThan(0);
-      for (const row of rows) {
-        expect(getComputedStyle(row).flexWrap).toBe("wrap");
-        expect(getComputedStyle(row).flexShrink).not.toBe("0");
+      for (const row of rows) expect(getComputedStyle(row).flexWrap).toBe("wrap");
+      // Every verb beside the text is an icon with an accessible name and a tooltip.
+      for (const verb of within(item).queryAllByRole("link")) {
+        expect(verb).toHaveClass("v2-icon-button");
+        expect(verb.getAttribute("data-tooltip")).toBe(verb.getAttribute("aria-label"));
       }
     }
-    // A new Assistant's three verbs share one row, which shrinks to the card's width and wraps there.
+    // A compact card fits its grid cell; a question takes the whole measure while it asks.
+    expect(items.map((item) => getComputedStyle(item).gridColumn === "1 / -1")).toEqual([false, false, true, true, false, false, true, true]);
+    // A new Assistant's three verbs are icons beside its text.
     const created = within(items[4]!).getByRole("link", { name: "Open in Studio" }).closest(".v2-resource-change-card-actions") as HTMLElement;
-    expect(within(created).getByRole("button", { name: "Undo creating Reporter" })).toBeVisible();
-    expect(within(created).getByRole("link", { name: "Start a chat" })).toBeVisible();
-    const style = getComputedStyle(created);
-    expect([style.flexShrink, style.flexWrap, style.maxWidth]).toEqual(["1", "wrap", "100%"]);
-    expect(["0", "0px"]).toContain(style.minWidth);
+    expect(within(created).getByRole("button", { name: "Undo creating Reporter" })).toHaveClass("v2-icon-button");
+    expect(within(created).getByRole("link", { name: "Start a chat" })).toHaveAttribute("href", "/assistant/asst_1");
   });
 });
 

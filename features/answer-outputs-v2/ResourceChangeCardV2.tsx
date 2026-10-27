@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
-import { UiV2Button, UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
+import { UiV2Button, UiV2Icon, UiV2IconButton, type UiV2IconName } from "@/components/ui-v2";
 import { deleteSkill, loadSkillDetail, SkillRequestError } from "@/components/app-shell/skillLibraryStore";
 import {
   deleteAssistant,
@@ -64,27 +64,40 @@ export type ResourceChangeNavigationV2 = Readonly<{
 const NO_NAVIGATION: ResourceChangeNavigationV2 = {};
 const CardNavigationContext = createContext<ResourceChangeNavigationV2>(NO_NAVIGATION);
 
-/** A Studio link: a plain click opens Studio in the shell, so the address and the view agree. */
-function CardLinkV2({ href, icon, children }: Readonly<{ href: string; icon: UiV2IconName; children: ReactNode }>) {
-  const { onOpenLibrary } = useContext(CardNavigationContext);
+/**
+ * A card's verb as an icon link, named and labelled like `UiV2IconButton`:
+ * it stays a link, so a modified click keeps the browser's own behavior.
+ * Tooltips open leftwards, since the verbs end the card's row.
+ */
+function IconLinkV2({ href, icon, label, onOpen }: Readonly<{ href: string; icon: UiV2IconName; label: string; onOpen?: () => void }>) {
   return (
-    <a className="v2-resource-change-card-link v2-focusable" href={href}
-      onClick={shellLinkClick(onOpenLibrary ? () => onOpenLibrary(href) : undefined)}>
+    <a className="v2-icon-button v2-focusable" aria-label={label} data-tooltip={label} data-tooltip-side="left" href={href}
+      onClick={shellLinkClick(onOpen)}>
       <UiV2Icon name={icon} />
-      <span>{children}</span>
     </a>
   );
+}
+
+/** A Studio link: a plain click opens Studio in the shell, so the address and the view agree. */
+function CardLinkV2({ href, icon, label }: Readonly<{ href: string; icon: UiV2IconName; label: string }>) {
+  const { onOpenLibrary } = useContext(CardNavigationContext);
+  return <IconLinkV2 href={href} icon={icon} label={label} onOpen={onOpenLibrary ? () => onOpenLibrary(href) : undefined} />;
 }
 
 /** "Start a chat" with an Assistant: a plain click starts it in the shell, as `/assistant/<id>` does. */
 function StartAssistantChatLinkV2({ assistantId }: Readonly<{ assistantId: string }>) {
   const { onStartAssistantChat } = useContext(CardNavigationContext);
   return (
-    <a className="v2-resource-change-card-link v2-focusable" href={formatAssistantEntryPath(assistantId)}
-      onClick={shellLinkClick(onStartAssistantChat ? () => onStartAssistantChat(assistantId) : undefined)}>
-      <UiV2Icon name="chat" />
-      <span>Start a chat</span>
-    </a>
+    <IconLinkV2 href={formatAssistantEntryPath(assistantId)} icon="chat" label="Start a chat"
+      onOpen={onStartAssistantChat ? () => onStartAssistantChat(assistantId) : undefined} />
+  );
+}
+
+/** Undo as an icon verb; `label` names what it undoes. */
+function UndoButtonV2({ busy, label, onClick }: Readonly<{ busy: boolean; label: string; onClick(): void }>) {
+  return (
+    <UiV2IconButton aria-busy={busy || undefined} disabled={busy} icon="history" label={label} tooltip="Undo" tooltipSide="left"
+      onClick={onClick} />
   );
 }
 
@@ -127,29 +140,43 @@ function ConfirmV2({ busy, confirmLabel, keepLabel, label, onConfirm, onKeep, te
   );
 }
 
-function CardV2({ actions, children, confirm, error, heading, headingRef, icon, name, resource, state, status }: Readonly<{
+/**
+ * One card in the generated-file card's frame: the name, then one quiet line
+ * joining the heading (what happened or what is asked) with `meta`; `detail`
+ * (what is not needed at a glance, and stays visible in Studio) is that
+ * line's tooltip. The verbs are icons beside the text; `children` (what a
+ * deletion changes, a diff), the question, the status and the error take
+ * rows of their own, which may widen the card while shown.
+ */
+function CardV2({ actions, children, confirm, detail = null, error, heading, headingRef, icon, meta = null, name, resource, state, status }: Readonly<{
   actions?: ReactNode;
   children?: ReactNode;
   confirm?: ReactNode;
+  detail?: string | null;
   error: string | null;
   heading: string;
-  headingRef: RefObject<HTMLParagraphElement | null>;
+  headingRef: RefObject<HTMLSpanElement | null>;
   icon: UiV2IconName;
+  meta?: string | null;
   name: string;
   resource: ResourceChangeCard["resource"];
   state: string;
   status: string | null;
 }>) {
   const headingId = useId();
+  const line = meta ? `${heading} · ${meta}` : heading;
   return (
     <li className="v2-resource-change-card" data-resource={resource} data-state={state} data-testid="resource-change-card" aria-labelledby={headingId}>
       <span className="v2-resource-change-card-tile" aria-hidden="true"><UiV2Icon name={icon} /></span>
-      <div className="v2-resource-change-card-copy">
-        <p className="v2-resource-change-card-heading" id={headingId} ref={headingRef} tabIndex={-1}>{heading}</p>
+      <span className="v2-resource-change-card-copy">
         <strong title={name}>{name}</strong>
-        {children}
-      </div>
-      {actions ? <div className="v2-resource-change-card-actions">{actions}</div> : null}
+        <small title={detail ? `${line}\n${detail}` : line}>
+          <span className="v2-resource-change-card-heading" id={headingId} ref={headingRef} tabIndex={-1}>{heading}</span>
+          {meta ? ` · ${meta}` : null}
+        </small>
+      </span>
+      {actions ? <span className="v2-resource-change-card-actions">{actions}</span> : null}
+      {children}
       {confirm}
       {status ? <p className="v2-resource-change-card-status" role="status">{status}</p> : null}
       {error ? <p className="v2-resource-change-card-error" role="alert">{error}</p> : null}
@@ -160,7 +187,7 @@ function CardV2({ actions, children, confirm, error, heading, headingRef, icon, 
 /** Local card state: the user's outcome on this page, the resource as read now, a request in flight and its error. */
 function useCardState(card: ResourceChangeCard) {
   const key = resourceChangeCardKey(card);
-  const headingRef = useRef<HTMLParagraphElement>(null);
+  const headingRef = useRef<HTMLSpanElement>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(() => outcomes.get(key) ?? null);
   const [remote, setRemote] = useState<Remote>("unknown");
   const [busy, setBusy] = useState(false);
@@ -216,49 +243,44 @@ function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: b
     });
   }
 
-  const kind = `${SECRET_KINDS[card.kind]}${card.envNames.length ? ` · ${card.envNames.join(", ")}` : ""}`;
-  const link = <CardLinkV2 href={SECRETS_LIBRARY_PATH} icon="key">Open Secrets</CardLinkV2>;
+  // "Environment · GITLAB_TOKEN", or "Environment · 2 variables" with the names in the tooltip.
+  const [only] = card.envNames;
+  const kind = [SECRET_KINDS[card.kind], card.envNames.length > 1 ? plural(card.envNames.length, "variable", "variables") : only]
+    .filter(Boolean).join(" · ");
+  const names = card.envNames.length > 1 ? card.envNames.join(", ") : null;
+  const link = <CardLinkV2 href={SECRETS_LIBRARY_PATH} icon="key" label="Open Secrets" />;
   if (card.action === "updated") {
+    const detail = [names, card.previousName ? `Renamed from “${card.previousName}”.` : null,
+      card.valueReplaced ? "The value was replaced; earlier values are not kept." : null].filter(Boolean).join("\n");
     return (
-      <CardV2 actions={link} error={null} heading={card.previousName && !card.valueReplaced ? "Secret renamed" : "Secret updated"}
-        headingRef={state.headingRef} icon="key" name={card.name} resource="secret" state="done" status={null}>
-        <small>{kind}</small>
-        {card.previousName ? <small>Renamed from “{card.previousName}”.</small> : null}
-        {card.valueReplaced ? <small>The value was replaced; earlier values are not kept.</small> : null}
-      </CardV2>
+      <CardV2 actions={link} detail={detail || null} error={null} heading={card.previousName && !card.valueReplaced ? "Secret renamed" : "Secret updated"}
+        headingRef={state.headingRef} icon="key" meta={kind} name={card.name} resource="secret" state="done" status={null} />
     );
   }
   if (card.action === "created") {
     const gone = remote === "missing" || remote === "changed";
     return (
-      <CardV2 error={state.error} heading={outcome?.heading ?? "Secret saved"} headingRef={state.headingRef} icon="key" name={card.name}
-        resource="secret" state={outcome ? "done" : remote} status={outcome?.message ?? (remote === "missing" ? "This secret no longer exists."
+      <CardV2 detail={names} error={state.error} heading={outcome?.heading ?? "Secret saved"} headingRef={state.headingRef} icon="key" meta={kind}
+        name={card.name} resource="secret" state={outcome ? "done" : remote} status={outcome?.message ?? (remote === "missing" ? "This secret no longer exists."
           : remote === "changed" ? "Undo is not available: the secret changed after this, and that change is kept." : null)}
         actions={outcome ? null : <>
-          {gone ? null : (
-            <UiV2Button busy={state.busy} disabled={state.busy} icon="history" type="button" aria-label={`Undo saving ${card.name}`}
-              onClick={() => remove(true)}>Undo</UiV2Button>
-          )}
+          {gone ? null : <UndoButtonV2 busy={state.busy} label={`Undo saving ${card.name}`} onClick={() => remove(true)} />}
           {link}
-        </>}>
-        <small>{kind}</small>
-      </CardV2>
+        </>} />
     );
   }
   const asking = !outcome && remote !== "missing" && remote !== "changed";
   return (
-    <CardV2 actions={asking || outcome ? null : link} error={state.error}
+    <CardV2 actions={asking || outcome ? null : link} detail={names} error={state.error}
       heading={outcome?.heading ?? (remote === "missing" ? "Secret already deleted" : remote === "changed" ? "Secret not deleted" : "Delete secret?")}
       headingRef={state.headingRef}
-      icon="key" name={card.name} resource="secret" state={outcome ? "done" : asking ? "asking" : remote}
+      icon="key" meta={kind} name={card.name} resource="secret" state={outcome ? "done" : asking ? "asking" : remote}
       status={outcome?.message ?? (remote === "changed" ? "The secret changed after this proposal, so nothing was deleted. Review it in Studio › Secrets." : null)}
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete secret" keepLabel="Keep secret" label={`Delete ${card.name}`}
           text={`Delete “${card.name}”? Chats and the Workspace stop receiving it. This cannot be undone.`}
           onConfirm={() => remove(false)} onKeep={() => state.finish({ heading: "Secret kept", message: null })} />
-      ) : null}>
-      <small>{kind}</small>
-    </CardV2>
+      ) : null} />
   );
 }
 
@@ -295,7 +317,7 @@ function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalC
     ...card.scheduledTasks.length ? [`Pinned by automations ${quoted(card.scheduledTasks.map((task) => task.title))}; their next runs fail until they are changed.`] : []
   ];
   return (
-    <CardV2 actions={asking ? null : <CardLinkV2 href={SKILL_LIBRARY_PATH} icon="library">Open library</CardLinkV2>} error={state.error}
+    <CardV2 actions={asking ? null : <CardLinkV2 href={SKILL_LIBRARY_PATH} icon="wand" label="Open library" />} error={state.error}
       heading={outcome?.heading ?? (remote === "missing" ? "Skill no longer available" : remote === "changed" ? "Skill not deleted" : "Delete Skill?")}
       headingRef={state.headingRef} icon="wand" name={card.name} resource="skill" state={outcome ? "done" : asking ? "asking" : remote}
       status={outcome?.message ?? (remote === "changed" ? "The Skill changed after this proposal, so nothing was deleted. Review it in Studio › Skills." : null)}
@@ -357,7 +379,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
     });
   }
 
-  const open = <CardLinkV2 href={assistantLibraryPath(card.assistantId)} icon="assistant">Open in Studio</CardLinkV2>;
+  const open = <CardLinkV2 href={assistantLibraryPath(card.assistantId)} icon="assistant" label="Open in Studio" />;
   const remoteStatus = remote === "missing" ? "This Assistant no longer exists."
     : remote === "archived" ? "The Assistant is archived; restore it in Studio › Assistants first."
       : remote === "changed" ? card.action === "created"
@@ -366,17 +388,14 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
   const settled = remote === "missing" || remote === "archived" || remote === "changed";
 
   if (card.action === "updated") {
+    // The changed fields at a glance; what each became in the tooltip; the instructions diff behind its own disclosure.
     return (
-      <CardV2 actions={open} error={null} heading="Assistant updated" headingRef={state.headingRef} icon="assistant" name={card.name}
-        resource="assistant" state="done" status={null}>
-        <ul className="v2-resource-change-card-changes" aria-label={`Changes to ${card.name}`}>
-          {card.changes.map((change) => (
-            <li key={change.field}>
-              <strong>{ASSISTANT_FIELDS[change.field]}</strong>{change.summary ? `: ${change.summary}` : " changed"}
-              {change.field === "instructions" && card.instructionsDiff ? <DiffV2 diff={card.instructionsDiff} label={`Changes in the instructions of ${card.name}`} /> : null}
-            </li>
-          ))}
-        </ul>
+      <CardV2 actions={open} error={null} heading="Assistant updated" headingRef={state.headingRef} icon="assistant"
+        meta={card.changes.map((change) => ASSISTANT_FIELDS[change.field]).join(", ") || null}
+        detail={card.changes.map((change) => `${ASSISTANT_FIELDS[change.field]}${change.summary ? `: ${change.summary}` : " changed"}`).join("\n") || null}
+        name={card.name} resource="assistant" state="done" status={null}>
+        {card.instructionsDiff && card.changes.some((change) => change.field === "instructions")
+          ? <DiffV2 diff={card.instructionsDiff} label={`Changes in the instructions of ${card.name}`} /> : null}
       </CardV2>
     );
   }
@@ -386,11 +405,9 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
         resource="assistant" state={outcome ? "done" : remote} status={outcome?.message ?? remoteStatus}
         actions={<>
           {outcome || settled ? null : (
-            <UiV2Button busy={state.busy} disabled={state.busy} icon="history" type="button" aria-label={`Undo creating ${card.name}`}
+            <UndoButtonV2 busy={state.busy} label={`Undo creating ${card.name}`}
               onClick={() => act(() => setAssistantArchived(card.assistantId, card.definitionVersion, true),
-                { heading: "Assistant archived", message: "Undone: the Assistant is archived. You can restore it in Studio › Assistants." }, "Undo failed. Try again.")}>
-              Undo
-            </UiV2Button>
+                { heading: "Assistant archived", message: "Undone: the Assistant is archived. You can restore it in Studio › Assistants." }, "Undo failed. Try again.")} />
           )}
           {outcome || remote === "missing" ? null : <StartAssistantChatLinkV2 assistantId={card.assistantId} />}
           {remote === "missing" ? null : open}
@@ -432,7 +449,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
   return (
     <CardV2 actions={asking || remote === "missing" ? null : open} error={state.error}
       heading={outcome?.heading ?? (settled ? "Not published" : "Publish Assistant?")} headingRef={state.headingRef}
-      icon="share" name={card.name} resource="assistant" state={outcome ? "done" : asking ? "asking" : remote} status={outcome?.message ?? remoteStatus}
+      icon="share" meta={audience?.kind === "group" ? `To ${audience.groupName}` : "For everyone"} name={card.name} resource="assistant" state={outcome ? "done" : asking ? "asking" : remote} status={outcome?.message ?? remoteStatus}
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel={everyone ? "Request listing" : "Publish"} keepLabel="Not now" label={`Publish ${card.name}`} tone="primary"
           text={audience?.kind === "group"
@@ -444,9 +461,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
             : act(() => requestAssistantListing(card.assistantId, card.definitionVersion),
               { heading: "Listing requested", message: "An administrator reviews it; Studio › Assistants shows the outcome." }, "The listing request failed. Try again.")}
           onKeep={() => state.finish({ heading: "Not published", message: null })} />
-      ) : null}>
-      <small>{audience?.kind === "group" ? `To ${audience.groupName}` : "For everyone"}</small>
-    </CardV2>
+      ) : null} />
   );
 }
 
