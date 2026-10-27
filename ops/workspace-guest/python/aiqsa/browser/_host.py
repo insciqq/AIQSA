@@ -44,8 +44,9 @@ CONTROL_FREE_OPS = frozenset({"status", "steps"})
 USER_IN_CONTROL = ("The user took control of the browser in the chat and is using it, so this was not done. Do not act on "
                    "the page meanwhile: wait a little and try again (your next browser command says when the user gives it "
                    "back), or answer with what you have.")
-USER_RETURNED = ("Nothing of this request ran: it was planned before the user's changes. Look at the page and continue from "
-                 "it as the user left it.")
+USER_RETURNED = ("Nothing of this request ran: it was planned before the user's changes. What changed while the user had the "
+                 "browser is theirs: look at the page, keep their changes, continue from it and say in your answer what they "
+                 "changed.")
 REQUEST_MAX_BYTES = 1024 * 1024
 #: The turn's browser idles out after this; the next call starts a new one from the saved sessions.
 IDLE_SECONDS = 1800
