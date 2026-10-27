@@ -14,7 +14,7 @@ describe("Workspace browser guide", () => {
   it("drives the persistent helper by element numbers and keeps saved values out of commands", () => {
     for (const phrase of ["`aiqsa-browser`", "from aiqsa import browser as b", "stays open between your commands",
       "Act by number", "keeps its number while it stays on the page", "`type N --env NAME`",
-      "never put a saved password in an argument", "run `save-session` once", namespacedWorkspaceToolName("sandbox_exec")]) {
+      "never put such a value in an argument", "holds no values", "read only the one for this site", "run `save-session` once", namespacedWorkspaceToolName("sandbox_exec")]) {
       expect(guide, phrase).toContain(phrase);
     }
   });

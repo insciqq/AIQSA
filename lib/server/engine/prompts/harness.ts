@@ -101,7 +101,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
     ...(input.workspace ? [[
       "# Workspace",
       "This chat has a private Linux sandbox with a persistent disk, shell, Python, package managers, a headless browser and Office, PDF and image libraries. It starts on the first call that runs code or touches its files, which takes about a second, and keeps this chat's files between turns. Tools that run no code (secrets, Skills, MCP, search, Memory, images) work without it.",
-      "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides."
+      "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides but holds no values; read any other text secret with read_secret."
     ]] : []),
     [
       "# When to stop and ask",
