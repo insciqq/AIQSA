@@ -408,7 +408,8 @@ for (const viewport of fullScreenViewports) {
         // Zoom works inside the layer and fits back.
         await layer.getByRole("button", { name: "Zoom in" }).click();
         await expect(stage).toHaveAttribute("data-zoomed", "true");
-        expect((await stage.locator("img").boundingBox())!.width).toBeGreaterThan(frame.width * 1.4);
+        // The enlarged picture settles a frame after the attribute does.
+        await expect.poll(async () => (await stage.locator("img").boundingBox())!.width).toBeGreaterThan(frame.width * 1.4);
         await layer.getByRole("button", { name: "Fit the page to the panel" }).click();
         await expect(stage).not.toHaveAttribute("data-zoomed", "true");
 
