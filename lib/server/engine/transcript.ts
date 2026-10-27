@@ -43,6 +43,26 @@ export type TranscriptTarget = TranscriptOrigin & Readonly<{
   reasoningScope?: "all" | "current_turn";
 }>;
 
+/**
+ * The provider's count of the request a response answered, kept on the
+ * response's first item so the chat's next run measures its first request
+ * from it too (issue #62: measured from local estimates alone, every run's
+ * first request read about twice the provider's count on Gemini, and
+ * compaction planned on that). The items before that item are the ones the
+ * request carried on record.
+ */
+export type TranscriptRequestAnchor = Readonly<{
+  /** The attachments that request carried (`ProviderAttachment.id`), counted in `fixedTokens` by estimate. */
+  attachmentIds: readonly string[];
+  /** The compaction that request replayed from, or null (`TranscriptSelection.base`). */
+  baseId: string | null;
+  /** The estimated part a later run rebuilds: instructions, personal context, tool declarations, attachments and run
+   * context (`ContextMeasure.fixedTokens`). */
+  fixedTokens: number;
+  /** Provider-reported input tokens of that request. */
+  inputTokens: number;
+}>;
+
 export type TranscriptUserItem = Readonly<{
   /** A follow-up delivered into a running turn; it does not start a turn. */
   followup?: true;
@@ -62,6 +82,7 @@ export type TranscriptAssistantTextItem = Readonly<{
   origin?: TranscriptOrigin;
   /** The provider-reported output tokens attributed to this item. */
   outputTokens?: number;
+  requestAnchor?: TranscriptRequestAnchor;
   text: string;
 }>;
 
@@ -71,6 +92,7 @@ export type TranscriptReasoningItem = Readonly<{
   native: ProviderNativeData;
   origin: TranscriptOrigin;
   outputTokens?: number;
+  requestAnchor?: TranscriptRequestAnchor;
 }>;
 
 export type TranscriptToolCallItem = Readonly<{
@@ -82,6 +104,7 @@ export type TranscriptToolCallItem = Readonly<{
   native?: ProviderNativeData;
   origin?: TranscriptOrigin;
   outputTokens?: number;
+  requestAnchor?: TranscriptRequestAnchor;
 }>;
 
 export type TranscriptToolResultItem = Readonly<{
@@ -165,6 +188,8 @@ export function modelResponseItems(input: Readonly<{
   history: readonly ProviderHistoryItem[];
   nextId: () => string;
   origin: TranscriptOrigin;
+  /** The request's anchor (`RunContext.requestAnchor`), kept on the first item. */
+  requestAnchor?: TranscriptRequestAnchor | null;
   usage?: Pick<TokenUsage, "outputTokens" | "reasoningTokens"> | null;
 }>): TranscriptItem[] {
   const origin = { model: input.origin.model, provider: input.origin.provider };
@@ -188,14 +213,23 @@ export function modelResponseItems(input: Readonly<{
     }
   });
 
+  const attributed = attributedOutput(items, input);
+  const first = attributed[0];
+  return input.requestAnchor && first && first.kind !== "compaction" && first.kind !== "tool_result" && first.kind !== "user"
+    ? [{ ...first, requestAnchor: input.requestAnchor }, ...attributed.slice(1)] : attributed;
+}
+
+/** Each item's share of the reported output tokens, when the report covers them. */
+function attributedOutput(items: readonly TranscriptItem[], input: Readonly<{ estimate: (value: unknown) => number;
+  usage?: Pick<TokenUsage, "outputTokens" | "reasoningTokens"> | null }>): TranscriptItem[] {
   const output = reportedCount(input.usage?.outputTokens);
   const reasoning = reportedCount(input.usage?.reasoningTokens);
   const reasoningItems = items.filter((item) => item.kind === "reasoning");
   const visibleItems = items.filter((item) => item.kind === "assistant_text" || item.kind === "tool_call");
   if (output === null || items.some((item) => item.kind === "compaction") ||
-    (reasoningItems.length > 0 && reasoning === null)) return items;
+    (reasoningItems.length > 0 && reasoning === null)) return [...items];
   const visible = output - (reasoning ?? 0);
-  if (visible < 0) return items;
+  if (visible < 0) return [...items];
   const attributed = new Map<string, number>();
   shares(visible, visibleItems.map((item) => Math.max(1, item.kind === "assistant_text"
     ? input.estimate(item.text) : item.kind === "tool_call" ? input.estimate(item.name) + input.estimate(item.arguments) : 1)))

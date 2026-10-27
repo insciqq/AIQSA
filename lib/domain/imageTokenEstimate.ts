@@ -3,7 +3,8 @@ import { tokenEstimateProfileFor } from "./tokenEstimate";
 /**
  * Upper-bound input tokens of one image, from a declared policy per provider
  * family. The key is the family `tokenEstimateProfileFor` selects, so text and
- * image estimates of one request follow the same admitted provider and model.
+ * image estimates of one request follow the same admitted provider and model;
+ * OpenRouter routes keep the fallback whatever their vendor.
  *
  * Primary documentation read 2026-09-27 (targeted usage measurements are
  * recorded with the task; a model name is never capability evidence):
@@ -72,6 +73,8 @@ function documented(tokens: number): number {
 }
 
 export function imageTokenPolicyFor(input: Readonly<{ modelId?: string | null; provider: string }>): ImageTokenPolicy {
+  // OpenRouter's text follows its vendor's tokenizer; its images keep the fallback until a policy is declared for them.
+  if (input.provider === "openrouter") return "conservative_patches";
   switch (tokenEstimateProfileFor(input)?.family) {
     case "anthropic":
       return "anthropic_visual_patches";

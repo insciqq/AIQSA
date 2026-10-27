@@ -30,11 +30,13 @@ describe("Workspace variables of saved secrets", () => {
     expect(workspaceSecretEnvironment(secrets)).toEqual({ DEMO_API_TOKEN: "synthetic-demo-token", SERVICE_TOKEN: "synthetic-service" });
     expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SERVICE_TOKEN"], ["DEMO_API_TOKEN"], [], [], [], []]);
     const guide = workspaceSecretsGuide(secrets);
-    expect(guide).toContain("## DEMO\\_API\\_TOKEN\n\nEnvironment variable (the value is already in command environments): `DEMO_API_TOKEN`\n" +
-      "Text secret:\n```\nsynthetic-demo-token\n```");
-    expect(guide).toContain("## Notes\n\nText secret:\n```\nsynthetic note\n```");
-    expect(guide).toContain("## github\\_token\n\nText secret:\n```\nsynthetic lowercase\n```");
-    expect(guide).toContain("## SSH\\_AUTH\\_SOCK\n\nNot an environment variable here; use the text below.\nText secret:");
+    expect(guide).toContain("## DEMO\\_API\\_TOKEN\n\nText secret in an environment variable (the value is already in command environments): `DEMO_API_TOKEN`\n");
+    const unset = "Text secret, not in command environments: read its value with `read_secret` when the task needs it.\n";
+    expect(guide).toContain(`## Notes\n\n${unset}`);
+    expect(guide).toContain(`## github\\_token\n\n${unset}`);
+    expect(guide).toContain(`## SSH\\_AUTH\\_SOCK\n\n${unset}`);
+    // Issue #63: one read of the guide sent every saved password to the provider.
+    expect(guide).not.toMatch(/synthetic-demo-token|synthetic note|synthetic lowercase|synthetic reserved/u);
   });
 
   it("stages a stored secret whose names were reserved later, and keeps those names out of commands and the prompt", () => {
@@ -58,7 +60,7 @@ describe("Workspace variables of saved secrets", () => {
     ];
     expect(workspaceSecretEnvironment(secrets)).toEqual({ SHARED_TOKEN: "synthetic env" });
     expect(workspaceSecretVariables(secrets.map(stored))).toEqual([[], ["SHARED_TOKEN"], [], []]);
-    expect(workspaceSecretsGuide(secrets).match(/Not an environment variable here/gu)).toHaveLength(3);
+    expect(workspaceSecretsGuide(secrets).match(/not in command environments: read its value/gu)).toHaveLength(3);
   });
 
   it("bounds a text variable like one env value, and the saved environment by its budget, as the stored sizes predict", () => {
@@ -87,7 +89,7 @@ describe("Workspace variables of saved secrets", () => {
 });
 
 describe("accepted Workspace secret installation", () => {
-  it("keeps original files separate, names literal, and text accessible without exposing env/key values in the guide", () => {
+  it("keeps original files separate and names literal without any value in the guide", () => {
     const shared = { id: randomUUID(), versionId: randomUUID(), name: "# `name`", description: "```\nPurpose $HOME\n```" };
     const secrets: AcceptedWorkspaceSecret[] = [
       { ...shared, value: { kind: "text", text: "````\nsynthetic text\n````" } },
@@ -99,11 +101,10 @@ describe("accepted Workspace secret installation", () => {
     expect(workspaceSecretEnvironment(secrets)).toEqual({ SERVICE_TOKEN: "'\"$HOME`command`\nline" });
     const guide = workspaceSecretsGuide(secrets);
     expect(guide).toContain("## \\# \\`name\\`");
-    expect(guide).toContain("~~~\n````\nsynthetic text\n````\n~~~");
     expect(guide).toContain(`/workspace/secrets/files/${secrets[2]!.id}`);
     expect(guide).toContain(`ssh -F /dev/null -i /workspace/secrets/ssh/${secrets[3]!.id}`);
     expect(guide).toContain("SERVICE_TOKEN");
-    expect(guide).not.toMatch(/file-only-contents|key-only-contents|password-only-contents|`command`/);
+    expect(guide).not.toMatch(/synthetic text|file-only-contents|key-only-contents|password-only-contents|`command`/);
     expect(workspaceSecretsGuide([])).toContain("No personal secrets");
   });
 
@@ -118,7 +119,7 @@ describe("accepted Workspace secret installation", () => {
     }));
     parseAcceptedWorkspaceSecrets(secrets);
     const guide = workspaceSecretsGuide(secrets);
-    expect(guide).toContain(text);
+    expect(guide).not.toContain(text);
     expect(Buffer.byteLength(JSON.stringify({ secrets, guide, environment: {}, runId: "fixture" }))).toBeLessThan(WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES);
   }, 15_000);
 

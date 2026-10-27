@@ -383,7 +383,7 @@ async function converse(run: Run, items: readonly TranscriptItem[], prompt: stri
     const produced: readonly ProviderHistoryItem[] = result.history ?? (result.finalText ? [{ text: result.finalText, type: "assistant_text" }] : []);
     const itemCount = transcript.length;
     transcript.push(...modelResponseItems({ estimate: run.estimate, history: produced, nextId: run.build.nextId, origin: run.target, usage }));
-    anchor = contextAnchor({ itemCount, target: run.target, usage }) ?? anchor;
+    anchor = contextAnchor({ fixedTokens: measure.fixedTokens, itemCount, target: run.target, usage }) ?? anchor;
     text = result.finalText;
     const requested = produced.flatMap((item) => item.type === "tool_call" ? [item] : []);
     if (requested.length === 0) break;

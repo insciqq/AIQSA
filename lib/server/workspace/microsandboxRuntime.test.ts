@@ -541,7 +541,8 @@ describe("Microsandbox Workspace lifecycle", () => {
     ] });
     const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: unknown; guide: string };
     expect(bundle.environment).toEqual({ DEMO_API_TOKEN: token });
-    expect(bundle.guide).toContain("Environment variable (the value is already in command environments): `DEMO_API_TOKEN`");
+    expect(bundle.guide).toContain("Text secret in an environment variable (the value is already in command environments): `DEMO_API_TOKEN`");
+    expect(bundle.guide).not.toContain(token);
     sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
     for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
       await value.runtime.callBoundTool({ ...callInput, originalName, arguments: { command: "env" } });
