@@ -1,0 +1,9 @@
+#!/opt/aiqsa-python/bin/python3 -I
+"""aiqsa-browser: drive this turn's Workspace browser. See `aiqsa-browser --help`."""
+import sys
+
+sys.path.insert(0, "/opt/aiqsa-guest/python")
+
+from aiqsa.browser.cli import main  # noqa: E402
+
+sys.exit(main())

@@ -12,7 +12,7 @@ import { getWorkspaceConfig, workspaceToolTransportMaxBytes, type WorkspaceConfi
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
-import { WorkspaceRuntimeError, workspaceOutputCollection } from "./runtime";
+import { WorkspaceRuntimeError, workspaceOutputCollection, type WorkspaceRuntime } from "./runtime";
 import { tarGzipStream } from "../chats/tarArchive";
 import { SKILL_RUNTIME_ARCHIVE_MAX_BYTES } from "./skillBundles";
 
@@ -282,6 +282,37 @@ describe("remote Workspace runner protocol", () => {
     expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ cursor: "cursor fixture", signal: expect.any(AbortSignal) }));
     expect(stop).not.toHaveBeenCalled();
     expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it("carries the live browser channel's actions and replies under the run's operation", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    let malformed = false;
+    const browserLive = vi.fn(async (input: Parameters<NonNullable<WorkspaceRuntime["browserLive"]>>[0]) => {
+      if (input.action === "start") return { action: "start" as const, execSessionId: "live_exec" };
+      if (input.action === "poll") return malformed ? { action: "poll" as const, chunks: [7] as unknown as string[], done: false, nextCursor: 1,
+        truncated: false } : { action: "poll" as const, chunks: ["@2 {}\n"], done: false, nextCursor: input.cursor + 1, truncated: false };
+      return input.action === "write" ? { action: "write" as const } : { action: "close" as const, exited: true };
+    });
+    const server = createWorkspaceRunnerServer({ runtime: Object.assign(local, { browserLive }), token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "live_channel_fixture";
+    await remote.claimSessionOperation({ operation, runtimeSandboxId: null, sessionId });
+    const live = { modelRunId: "run_fixture", operation, runtimeSandboxId: "sandbox_fixture", sessionId };
+    expect(await remote.browserLive({ ...live, action: "start", stdin: "{\"t\":\"frames\",\"on\":true}\n" }))
+      .toEqual({ action: "start", execSessionId: "live_exec" });
+    expect(await remote.browserLive({ ...live, action: "poll", cursor: 3, execSessionId: "live_exec" }))
+      .toEqual({ action: "poll", chunks: ["@2 {}\n"], done: false, nextCursor: 4, truncated: false });
+    expect(await remote.browserLive({ ...live, action: "write", data: "{}\n", execSessionId: "live_exec" })).toEqual({ action: "write" });
+    expect(await remote.browserLive({ ...live, action: "close", execSessionId: "live_exec" })).toEqual({ action: "close", exited: true });
+    expect(browserLive).toHaveBeenCalledWith(expect.objectContaining({ action: "poll", cursor: 3, modelRunId: "run_fixture", sessionId }));
+    await expect(remote.browserLive({ ...live, action: "poll", cursor: 0, execSessionId: "live_exec",
+      operation: { generation: 1, owner: "run:other" } })).rejects.toMatchObject({ code: "workspace_operation_stale" });
+    malformed = true;
+    await expect(remote.browserLive({ ...live, action: "poll", cursor: 0, execSessionId: "live_exec" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
   });
 
   it("forwards the continuation restorability request to the runner's project archive", async () => {

@@ -15,6 +15,11 @@ import type { PersistedToolLoopCall, PersistedToolLoopCallState, ToolLoopJsonVal
  *   equal and no call that may change state ran since the older one (nor
  *   runs beside it in its batch), a further call is persisted already settled
  *   as an undispatched `tool_call_repeat_blocked` error.
+ *
+ * A repeated `view_workspace_image` is never blocked: each success carries its
+ * own call's key and a descriptor of its own capture
+ * (`lib/server/workspace/directImageView.ts`), so no two are equal. A
+ * descriptor that stayed stable across views would start blocking them here.
  */
 export const TOOL_CALL_REPEAT_BLOCKED = "tool_call_repeat_blocked";
 

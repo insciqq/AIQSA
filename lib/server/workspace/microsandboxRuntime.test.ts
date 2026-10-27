@@ -20,6 +20,7 @@ import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSe
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { BOUND_WORKSPACE_UV_CACHE, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS, WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
+import { parseWorkspaceSecretValue } from "./secrets/validation";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -178,7 +179,8 @@ function fixture() {
     id: runtimeSandboxId,
     name: sandboxName,
     get status() { return state; },
-    stopWithTimeout: vi.fn(async () => { state = "stopped"; })
+    stopWithTimeout: vi.fn(async () => { state = "stopped"; }),
+    touch: vi.fn(async () => ({ activitySeq: 1, name: sandboxName }))
   };
   const builder = {
     connectOrCreate: vi.fn(async () => { state = "running"; return sandbox; }),
@@ -547,6 +549,26 @@ describe("Microsandbox Workspace lifecycle", () => {
     }
   });
 
+  it("stages a secret saved before the browser's names were reserved, without letting its reserved entries reach commands", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    // A revision as it was stored: the settings would refuse this name today, staging must not.
+    const legacy = parseWorkspaceSecretValue({ kind: "env", entries: [
+      { name: "AIQSA_BROWSER_LOCALE", value: "de-DE" }, { name: "AIQSA_BROWSER_SESSIONS_DIR", value: "/workspace/project" },
+      { name: "SHOP_TOKEN", value: "synthetic-shop-token" }] }, "stored");
+    const run = { AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "CET" };
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, runEnvironment: run, secrets: [
+      { id: randomUUID(), versionId: randomUUID(), name: "Legacy shop", description: "", value: legacy }
+    ] });
+    const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: unknown; guide: string };
+    expect(bundle.environment).toEqual({ SHOP_TOKEN: "synthetic-shop-token", ...run });
+    expect(bundle.guide).toContain("Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):\n" +
+      "- `AIQSA_BROWSER_LOCALE`\n- `AIQSA_BROWSER_SESSIONS_DIR`");
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
+    await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", arguments: { command: "env" } });
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, SHOP_TOKEN: "synthetic-shop-token", ...run });
+  });
+
   it("adds the run's code bearer over saved env, and each command's own invocation id over requested env", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
@@ -569,6 +591,13 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, ...run });
     await expect(value.runtime.callBoundTool({ ...callInput, invocationId: "../escape", originalName: "sandbox_shell",
       arguments: { command: "env" } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    // Only AIQSA sets the browser's names: a command's own env never reaches the guest with one.
+    const dispatched = sdk.callTool.mock.calls.length;
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await expect(value.runtime.callBoundTool({ ...callInput, originalName,
+        arguments: { command: "env", env: { AIQSA_BROWSER_TIMEZONE: "UTC" } } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    }
+    expect(sdk.callTool.mock.calls.length).toBe(dispatched);
     await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "foreign", secrets: [],
       runEnvironment: { ...run, AIQSA_GATEWAY_URL: "https://attacker.example" } })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
   });
@@ -869,12 +898,72 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(value.handle.stopWithTimeout).not.toHaveBeenCalled();
   });
 
+  it("touches only a running guest of the session, and never starts or resumes one", async () => {
+    const value = fixture();
+    await value.runtime.touchSession({ sessionId: ensureInput.sessionId });
+    expect(value.handle.touch).toHaveBeenCalledOnce();
+    // A guest the idle stop or a retirement stopped meanwhile stays stopped.
+    value.setState("stopped");
+    await value.runtime.touchSession({ sessionId: ensureInput.sessionId });
+    value.setState("missing");
+    await value.runtime.touchSession({ sessionId: ensureInput.sessionId });
+    expect(value.handle.touch).toHaveBeenCalledOnce();
+    expect(value.handle.connectOrStart).not.toHaveBeenCalled();
+    expect(value.builder.connectOrCreate).not.toHaveBeenCalled();
+    // A guest that stops between the look and the touch is no failure either.
+    value.setState("running");
+    value.handle.touch.mockRejectedValueOnce(new SandboxNotRunningError(sandboxName));
+    await expect(value.runtime.touchSession({ sessionId: ensureInput.sessionId })).resolves.toBeUndefined();
+  });
+
+  it("runs the live browser streamer on its own MCP connection, for its own run only, and never starts a guest", async () => {
+    const value = fixture();
+    const live = { ...sessionInput, modelRunId: "run_fixture" };
+    // A guest this runner does not hold is never started for a view.
+    await expect(value.runtime.browserLive({ ...live, action: "start", stdin: "" })).rejects.toMatchObject({ code: "workspace_session_lost" });
+    expect(value.handle.connectOrStart).not.toHaveBeenCalled();
+    await value.runtime.ensureSession(ensureInput);
+    await value.runtime.callBoundTool(callInput);
+    const transports = sdk.transports.length;
+    const envelope = (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, data }, null, 2) }] });
+    sdk.callTool.mockImplementation(async (params: { arguments: Record<string, unknown>; name: string }) => {
+      if (params.name === "sandbox_exec_start") return envelope({ execSessionId: "live_exec" });
+      if (params.name !== "sandbox_exec_poll") return envelope({});
+      return envelope({ done: params.arguments.cursor === Number.MAX_SAFE_INTEGER, error: null, exitStatus: null, nextCursor: 2,
+        events: [{ event: { data: "@2 {}\n", kind: "stdout" }, index: 0 }, { event: { data: "Traceback", kind: "stderr" }, index: 1 }] });
+    });
+    expect(await value.runtime.browserLive({ ...live, action: "start", stdin: "{}\n" })).toEqual({ action: "start", execSessionId: "live_exec" });
+    expect(sdk.transports.length).toBe(transports + 1);
+    const start = sdk.callTool.mock.calls.at(-1)![0] as { arguments: Record<string, unknown>; name: string };
+    expect(start).toMatchObject({ name: "sandbox_exec_start", arguments: { args: ["-I", "-m", "aiqsa.browser.live"],
+      command: "/opt/aiqsa-python/bin/python3", name: sandboxName, stdin: "{}\n" } });
+    // No saved secret, run bearer or invocation id reaches the streamer.
+    expect(start.arguments.env).toBeUndefined();
+    expect(await value.runtime.browserLive({ ...live, action: "poll", cursor: 0, execSessionId: "live_exec" }))
+      .toEqual({ action: "poll", chunks: ["@2 {}\n"], done: false, nextCursor: 2, truncated: false });
+    expect((sdk.callTool.mock.calls.at(-1)![0] as { arguments: Record<string, unknown> }).arguments)
+      .toMatchObject({ limit: 28, maxBytes: execPollEventMaxBytes(28, config.toolOutputMaxBytes) });
+    const dispatched = sdk.callTool.mock.calls.length;
+    await expect(value.runtime.browserLive({ ...live, action: "poll", cursor: 0, execSessionId: "live_exec", modelRunId: "other_run" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(value.runtime.browserLive({ ...live, action: "write", data: "{}\n", execSessionId: "synthetic_exec" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(sdk.callTool.mock.calls.length).toBe(dispatched);
+    expect(await value.runtime.browserLive({ ...live, action: "close", execSessionId: "live_exec" })).toEqual({ action: "close", exited: true });
+    expect(sdk.callTool.mock.calls.slice(dispatched).map(([params]) => (params as { name: string }).name))
+      .toEqual(["sandbox_exec_write_stdin", "sandbox_exec_poll", "sandbox_exec_close"]);
+    await expect(value.runtime.browserLive({ ...live, action: "poll", cursor: 2, execSessionId: "live_exec" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+  });
+
   it("creates a persistent VM detached from the creator handle", async () => {
     const value = fixture();
     value.setState("missing");
     await value.runtime.ensureSession({ ...ensureInput, runtimeSandboxId: null });
     expect(value.builder.detached).toHaveBeenCalledWith(true);
     expect(value.builder.connectOrCreate).toHaveBeenCalledTimes(1);
+    // Microsandbox's own idle stop waits a whole default turn and its hand-off, never the 30-minute idle time alone.
+    expect(value.builder.idleTimeout).toHaveBeenCalledWith(3_900);
   });
 
   it.each([false, true])("resumes an exact stopped disk detached (cached=%s)", async (cached) => {

@@ -232,6 +232,15 @@ describe("create_scheduled_task tool", () => {
     expect(JSON.stringify(result.content)).not.toContain("task-1");
   });
 
+  it("accepts null for every unused list, as its anyOf schema offers", async () => {
+    const create = creator(task({ schedule: { kind: "daily", time: "08:30" } }));
+    const result = await executeCreateScheduledTask(call({ ...reminder, schedule: { ...weekdays, kind: "daily", time: "08:30", days: null },
+      skills: null, telegram: null, historyRetentionDays: null }), context(), create);
+    expect(result.status).toBe("complete");
+    expect(create.mock.calls[0]![0].body).toMatchObject({ pinnedSkillIds: [], schedule: { kind: "daily", time: "08:30" } });
+    expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time"]);
+  });
+
   it("gives the task Memory only when its creating run was admitted to read it", async () => {
     for (const [frozen, expected] of [[true, true], [false, false], [undefined, false]] as const) {
       const create = creator(task({ memoryEnabled: expected }));

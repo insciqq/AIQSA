@@ -1,5 +1,5 @@
 import {
-  isWorkspaceEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
+  isWorkspaceEnvName, isWorkspaceSavedEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
   WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES, WORKSPACE_SECRET_VALUE_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES,
   type WorkspaceSecretMutation, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
@@ -32,7 +32,12 @@ function text(value: unknown, maxBytes: number, nonempty = false): value is stri
     Buffer.from(value, "utf8").toString("utf8") === value;
 }
 
-export function parseWorkspaceSecretValue(value: unknown): WorkspaceSecretValue {
+/**
+ * A secret value in the shape AIQSA stores. A value being saved may not use the reserved environment names
+ * (`isWorkspaceSavedEnvName`); a stored one is read as it was saved, so an older secret keeps loading.
+ */
+export function parseWorkspaceSecretValue(value: unknown, purpose: "save" | "stored" = "save"): WorkspaceSecretValue {
+  const envName = purpose === "save" ? isWorkspaceSavedEnvName : isWorkspaceEnvName;
   let valid = false;
   if (record(value)) {
     switch (value.kind) {
@@ -42,7 +47,7 @@ export function parseWorkspaceSecretValue(value: unknown): WorkspaceSecretValue 
       case "text": valid = keys(value, ["kind", "text"]) && text(value.text, 256 * 1024, true); break;
       case "env":
         valid = keys(value, ["kind", "entries"]) && Array.isArray(value.entries) && value.entries.length > 0 && value.entries.length <= 64 &&
-          value.entries.every((entry) => record(entry) && keys(entry, ["name", "value"]) && isWorkspaceEnvName(entry.name) && text(entry.value, 16 * 1024)) &&
+          value.entries.every((entry) => record(entry) && keys(entry, ["name", "value"]) && envName(entry.name) && text(entry.value, 16 * 1024)) &&
           new Set(value.entries.map((entry) => (entry as { name: string }).name)).size === value.entries.length;
         break;
       case "file":
@@ -70,7 +75,8 @@ export function parseWorkspaceSecretValue(value: unknown): WorkspaceSecretValue 
   return value as WorkspaceSecretValue;
 }
 
-export function parseWorkspaceSecretMutation(value: unknown): WorkspaceSecretMutation {
+/** A settings mutation; `stored` reads an accepted revision as it was saved (`parseWorkspaceSecretValue`). */
+export function parseWorkspaceSecretMutation(value: unknown, purpose: "save" | "stored" = "save"): WorkspaceSecretMutation {
   const invalid = () => { throw new WorkspaceSecretError("workspace_secret_invalid"); };
   if (!record(value)) return invalid();
   if (value.action === "delete") {
@@ -80,7 +86,7 @@ export function parseWorkspaceSecretMutation(value: unknown): WorkspaceSecretMut
       !text(value.description, 8000) || value.description.length > 2000) return invalid();
     if (value.action === "create") {
       if (!keys(value, ["action", "name", "description", "value"])) return invalid();
-      parseWorkspaceSecretValue(value.value);
+      parseWorkspaceSecretValue(value.value, purpose);
     } else if (value.action === "update") {
       if (!keys(value, ["action", "id", "expectedVersionId", "name", "description", "value"]) ||
         !isWorkspaceSecretId(value.id) || !isWorkspaceSecretId(value.expectedVersionId) || !record(value.value)) return invalid();
@@ -88,7 +94,7 @@ export function parseWorkspaceSecretMutation(value: unknown): WorkspaceSecretMut
         if (!keys(value.value, ["action"])) return invalid();
       } else if (value.value.action === "replace") {
         if (!keys(value.value, ["action", "content"])) return invalid();
-        parseWorkspaceSecretValue(value.value.content);
+        parseWorkspaceSecretValue(value.value.content, purpose);
       } else return invalid();
     } else return invalid();
   }

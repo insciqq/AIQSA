@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { responsesHistoryFromOutput } from "../../providers/history";
-import { COMPACTION_SUMMARY_HEADING, projectTranscript, type TranscriptItem } from "../transcript";
+import { COMPACTION_SUMMARY_HEADING, IMAGE_REFERENCE_NOTE, projectTranscript, type TranscriptItem } from "../transcript";
 import {
   compact,
   COMPACTION_DEFAULTS,
@@ -223,6 +223,43 @@ describe("native compaction", () => {
     expect(await compact(input(chat, keep, refused.call, { options: { nativeFallback: false } }))).toMatchObject({
       code: "compaction_native_failed", metadata: { calls: 1, kind: "native" }, ok: false
     });
+  });
+});
+
+describe("viewed images", () => {
+  it("never carry pixels into a compaction: the summary reads the result's text, the native span its reference", async () => {
+    const image = { consumerKey: "tool-1", descriptor: { byteSize: 10, checksum: "b".repeat(64), frames: 1, height: 8, id: "a".repeat(64),
+      mimeType: "image/png", source: { byteSize: 20, captureId: "c".repeat(32), checksum: "d".repeat(64), height: 16,
+        relativePath: "project/code.png", width: 20 }, transform: null, version: 1, width: 10 } } as const;
+    const chat = transcriptBuilder();
+    chat.user("Read the code on the screenshot.");
+    const callId = chat.call("view_workspace_image", { path: "/workspace/project/code.png" });
+    chat.items.push({ callId, id: chat.nextId(), image, kind: "tool_result", name: "view_workspace_image", outcome: "complete",
+      output: "Preview of /workspace/project/code.png: 10×8 pixels of the 20×16 image." });
+    chat.answer("The code is 4F7Q.");
+    const keep = chat.user("Thanks.");
+    chat.answer("You are welcome.");
+
+    const summary = fakeCall(summaryReply());
+    const summarized = await compact(input(chat, keep, summary.call, { path: "summary" }));
+    expect(summarized.ok).toBe(true);
+    const text = requestText(summary.requests[0]!);
+    expect(text).toContain("Preview of /workspace/project/code.png");
+    // Neither pixels nor the capture's identities reach the summarizer.
+    expect(text).not.toMatch(new RegExp(`${"c".repeat(32)}|${"b".repeat(64)}|UElYRUxT`, "u"));
+
+    const native = fakeCall(nativeReply);
+    expect((await compact(input(chat, keep, native.call))).ok).toBe(true);
+    const result = native.requests[0]!.history.find((item) => item.type === "tool_result");
+    expect(result).toEqual({ callId, name: "view_workspace_image", type: "tool_result",
+      output: `Preview of /workspace/project/code.png: 10×8 pixels of the 20×16 image.\n\n${IMAGE_REFERENCE_NOTE}` });
+
+    // The figures before count the preview the run's requests carry; the summarizer still sees none of it.
+    const held = { attached: () => ({ image: { data: "UElYRUxT", mimeType: "image/png" as const }, tokens: 9_000 }), note: "[note]" };
+    const counted = fakeCall(summaryReply());
+    const withPreview = await compact(input(chat, keep, counted.call, { images: held, path: "summary" }));
+    expect(withPreview.metadata.tokensBefore - summarized.metadata.tokensBefore).toBe(9_000 - charTokens(IMAGE_REFERENCE_NOTE));
+    expect(requestText(counted.requests[0]!)).not.toContain("UElYRUxT");
   });
 });
 

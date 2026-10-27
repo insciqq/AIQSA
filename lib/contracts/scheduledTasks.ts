@@ -26,6 +26,11 @@ export const SCHEDULED_TASK_RUN_DEADLINE_MINUTES = 30;
 /** Scheduled runs in a row that complete without a relevant source before the task pauses (`source_unavailable`). */
 export const SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD = 3;
 /**
+ * A run whose agent asked to hand the browser to the user (an expired sign-in, a code, a check): unattended,
+ * nobody could take over, so the run fails visibly and its owner signs in again in a chat.
+ */
+export const SCHEDULED_TASK_BROWSER_SIGN_IN_CODE = "browser_sign_in_required";
+/**
  * The reason a pending run carries while it waits for a free scheduled
  * Workspace slot (the installation's cap, or a runner capacity refusal). A
  * wait, not a failure; the next start attempt clears it.
@@ -996,6 +1001,9 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "run_unavailable": return "The automation's chat was deleted before the run finished.";
     case "model_run_cancelled": return "Stopped in the chat.";
     case "run_deadline": return `Stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes.`;
+    case SCHEDULED_TASK_BROWSER_SIGN_IN_CODE:
+      return "A website needed you to sign in again or pass a check. Open the automation's chat and ask the agent to open the " +
+        "site; sign in in the live browser there, and later runs use the saved sign-in.";
     default: return "The run did not complete.";
   }
 }

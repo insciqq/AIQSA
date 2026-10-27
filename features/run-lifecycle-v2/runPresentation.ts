@@ -369,6 +369,12 @@ export function describeToolCallV2(
 ): string {
   const running = phase === "running";
   const origin = toolActivityOriginV2(call);
+  // The agent handed the live browser to the user (`features/browser-live/`).
+  if ((origin === "tool" || origin === "workspace") && safeToolName(call.toolName) === "browser_handoff") {
+    if (phase === "failed") return "Browser handoff failed";
+    if (phase === "cancelled") return "Browser handoff stopped";
+    return running ? "Waiting for you in the browser" : "Asked for your help in the browser";
+  }
   if (origin === "skill") {
     const name = boundedText(call.skillName, 160);
     const path = boundedText(call.skillPath, 256);

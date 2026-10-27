@@ -106,6 +106,7 @@ function usageSources(): ProviderUsageSources {
         maxToolCalls: 8,
         maxToolRounds: 4,
         reasoningEffort: null,
+        toolLimitsEnabled: false,
         updatedAt: "2026-09-07T12:00:00.000Z",
         updatedBy: null,
         version: 1

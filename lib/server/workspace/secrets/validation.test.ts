@@ -29,6 +29,9 @@ describe("Workspace secret inputs", () => {
     { kind: "env", entries: [{ name: "NOT-ENV", value: "value" }] },
     { kind: "env", entries: [{ name: "HOME\nCOMMAND", value: "value" }] },
     { kind: "env", entries: [{ name: "GIT_SSH_COMMAND", value: "value" }] },
+    // Reserved for the Workspace browser: only AIQSA sets these in guest commands.
+    { kind: "env", entries: [{ name: "AIQSA_BROWSER_SESSIONS_DIR", value: "/workspace/project" }] },
+    { kind: "env", entries: [{ name: "AIQSA_BROWSER_TIMEZONE", value: "UTC" }] },
     { kind: "env", entries: [{ name: "TOKEN", value: "a" }, { name: "TOKEN", value: "b" }] },
     { kind: "env", entries: [{ name: "TOKEN", value: "a\0b" }] },
     { kind: "file", originalName: "../escape", base64: "AA==" },
@@ -39,6 +42,12 @@ describe("Workspace secret inputs", () => {
     { kind: "text", text: "valid", host: "unexpected" }
   ])("rejects invalid or oversized secret values", (value) => {
     expect(() => parseWorkspaceSecretValue(value)).toThrow("workspace_secret_");
+  });
+
+  it("keeps loading a stored secret saved before the browser's names were reserved", () => {
+    const legacy = { kind: "env", entries: [{ name: "AIQSA_BROWSER_LOCALE", value: "de-DE" }] };
+    expect(() => parseWorkspaceSecretValue(legacy)).toThrow("workspace_secret_invalid");
+    expect(parseWorkspaceSecretValue(legacy, "stored")).toEqual(legacy);
   });
 
   it("does not derive paths from labels and rejects value-bearing settings responses", () => {

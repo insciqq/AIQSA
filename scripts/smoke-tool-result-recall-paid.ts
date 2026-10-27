@@ -38,13 +38,15 @@
  *
  * Expected paid calls in `recall` mode at the default 400k window: about ten
  * prefill turns (reading up to ~220k input tokens), the run's tool rounds and
- * final answer (at most 33 calls of ~220k-290k input, largely cached) and one
- * or two summary calls. `budget` and `repeat` send no prefill.
+ * final answer (calls of ~220k-290k input, largely cached; at most 33 while
+ * the installation's tool limits are on at 32 rounds, otherwise bounded by the
+ * turn's time) and one or two summary calls. `budget` and `repeat` send no prefill.
  *
  * AIQSA_RECALL_MODE selects the scenario (default `recall`, the above):
- * - `budget`: the installation's `maxToolCalls` is lowered through the Admin
- *   ModelPolicy to AIQSA_RECALL_BUDGET_CALLS (default 12, 2..79) for the same
- *   request, which wants far more calls, and restored afterwards. Passes when
+ * - `budget`: the installation's tool limits are turned on through the Admin
+ *   ModelPolicy with `maxToolCalls` at AIQSA_RECALL_BUDGET_CALLS (default 12,
+ *   2..79) for the same request, which wants far more calls, and restored
+ *   afterwards (off again on a default installation). Passes when
  *   the run still ends with an answer within that limit (the refused batch
  *   ends in one tool-free synthesis that names the unverified records).
  * - `repeat`: the fixture adds a status tool whose answer never changes and
@@ -497,6 +499,8 @@ type ToolLimits = Readonly<{
   maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
+  /** Off (the default), no count applies; the budget scenario turns them on and restores the saved state. */
+  toolLimitsEnabled: boolean;
 }>;
 
 const MODEL_POLICY_PATH = "/api/admin/providers/model-policy";
@@ -505,15 +509,16 @@ async function modelPolicy(api: Api, stage: JourneyStage): Promise<ToolLimits & 
   const policy = decodeAdminModelPolicyResponse(await json(api, stage, MODEL_POLICY_PATH))?.modelPolicy.policy ??
     fail(stage, "model_policy_response_invalid");
   return { maxMcpToolsPerDiscovery: policy.maxMcpToolsPerDiscovery, maxToolCalls: policy.maxToolCalls,
-    maxToolRounds: policy.maxToolRounds, version: policy.version };
+    maxToolRounds: policy.maxToolRounds, toolLimitsEnabled: policy.toolLimitsEnabled, version: policy.version };
 }
 
-/** Writes all tool limits at once, as the Admin API requires. */
+/** Writes all tool limits at once, their switch included, as the Admin API requires. */
 async function writeToolLimits(api: Api, stage: JourneyStage, limits: ToolLimits): Promise<void> {
   const current = await modelPolicy(api, stage);
   const response = decodeAdminModelPolicyResponse(await json(api, stage, MODEL_POLICY_PATH, {
     body: { expectedVersion: current.version, ...limits }, method: "PATCH" }));
-  if (response?.modelPolicy.policy.maxToolCalls !== limits.maxToolCalls) fail(stage, "model_policy_not_saved");
+  if (response?.modelPolicy.policy.maxToolCalls !== limits.maxToolCalls ||
+    response.modelPolicy.policy.toolLimitsEnabled !== limits.toolLimitsEnabled) fail(stage, "model_policy_not_saved");
 }
 
 /**
@@ -692,7 +697,7 @@ async function main(): Promise<number> {
       void _version;
       // Captured first: a change that commits but times out is still restored.
       savedLimits = limits;
-      await writeToolLimits(api, "provider_setup", { ...limits, maxToolCalls: budgetCalls });
+      await writeToolLimits(api, "provider_setup", { ...limits, maxToolCalls: budgetCalls, toolLimitsEnabled: true });
     }
     stage = "turn";
     // Only the recall scenario needs context pressure; the ledger below counts the recall run alone.

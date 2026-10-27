@@ -15,8 +15,8 @@ const body = { cpus: 1, diskMiB: 1024, memoryMiB: 512, imageRef: "fixture_image"
   operation: { generation: 1, owner: "run:fixture" } };
 
 /** The real request callback, without opening a socket or launching a server. */
-function fixture(runtime: Partial<WorkspaceRuntime>) {
-  const server = createWorkspaceRunnerServer({ runtime: runtime as WorkspaceRuntime, token });
+function fixture(runtime: Partial<WorkspaceRuntime>, idleRefresh?: Readonly<{ intervalMs: number; lifetimeMs: number }>) {
+  const server = createWorkspaceRunnerServer({ ...(idleRefresh ? { idleRefresh } : {}), runtime: runtime as WorkspaceRuntime, token });
   const handler = server.listeners("request")[0] as (request: IncomingMessage, response: ServerResponse) => Promise<void>;
   return async (url: string, value?: unknown, raw?: { body: Readable; headers: Record<string, string> }) => {
     const request = Object.assign(raw?.body ?? Readable.from(value === undefined ? [] : [JSON.stringify(value)]), {
@@ -38,6 +38,27 @@ function capture() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Workspace runner lifecycle diagnostics", () => {
+  it("keeps the guest of a claimed operation awake until the operation is retired", async () => {
+    vi.useFakeTimers();
+    try {
+      const touchSession = vi.fn(async () => undefined);
+      const request = fixture({ stopSession: vi.fn(async () => undefined), touchSession },
+        { intervalMs: 300_000, lifetimeMs: 3_900_000 });
+      const operation = { operation: body.operation, runtimeSandboxId: null };
+      expect((await request(`/v1/sessions/${sessionId}/operations/claim`, operation)).writeHead)
+        .toHaveBeenCalledWith(200, expect.any(Object));
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(touchSession).toHaveBeenCalledTimes(2);
+      expect(touchSession).toHaveBeenCalledWith({ sessionId });
+      expect((await request(`/v1/sessions/${sessionId}/operations/retire`, operation)).writeHead)
+        .toHaveBeenCalledWith(200, expect.any(Object));
+      await vi.advanceTimersByTimeAsync(900_000);
+      expect(touchSession).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not read the original ahead while guest staging is stalled", async () => {
     let produced = 0;
     const stageAttachments = vi.fn(async (input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]) => {
@@ -143,6 +164,34 @@ describe("Workspace runner lifecycle diagnostics", () => {
     expect(runtimeContexts[0]?.trace_id).not.toBe("a".repeat(32));
     expect(output.lines.join("")).not.toContain("PRIVATE");
     expect(output.lines.join("")).not.toContain("foreign_");
+  });
+
+  it("serves the live browser channel under the run's operation, quietly, with exact actions only", async () => {
+    const output = capture();
+    const browserLive = vi.fn(async (input: Parameters<NonNullable<WorkspaceRuntime["browserLive"]>>[0]) =>
+      input.action === "poll" ? { action: "poll" as const, chunks: ["@2 {}\n"], done: false, nextCursor: input.cursor + 1, truncated: false }
+        : { action: "start" as const, execSessionId: "exec_fixture" });
+    const request = fixture({ browserLive, stopSession: vi.fn(async () => undefined),
+      ensureSession: vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const })) });
+    await request("/v1/sessions/ensure", body);
+    const identity = { operation: body.operation, modelRunId: "run_fixture", runtimeSandboxId: "sandbox_fixture" };
+    const live = (value: Record<string, unknown>) => request(`/v1/sessions/${sessionId}/browser-live`, { ...identity, ...value });
+    const started = await live({ action: "start", stdin: "{\"t\":\"frames\",\"on\":true}\n" });
+    expect(started.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(started.end).toHaveBeenCalledWith(JSON.stringify({ action: "start", execSessionId: "exec_fixture" }));
+    expect((await live({ action: "poll", cursor: 4, execSessionId: "exec_fixture" })).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(browserLive).toHaveBeenLastCalledWith(expect.objectContaining({ action: "poll", cursor: 4, execSessionId: "exec_fixture",
+      modelRunId: "run_fixture", runtimeSandboxId: "sandbox_fixture", sessionId }));
+    for (const invalid of [{ action: "exec", command: "sh" }, { action: "poll", cursor: -1, execSessionId: "exec_fixture" },
+      { action: "write", data: "x".repeat(70_000), execSessionId: "exec_fixture" }, { action: "close", execSessionId: "../x" }]) {
+      expect((await live(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+    }
+    const stale = await live({ action: "poll", cursor: 0, execSessionId: "exec_fixture", operation: { generation: 9, owner: "run:other" } });
+    expect(stale.writeHead).toHaveBeenCalledWith(409, expect.any(Object));
+    expect(browserLive).toHaveBeenCalledTimes(2);
+    // Answered requests write nothing; only refusals leave a content-free record.
+    expect(output.records().every((record) => record.event === "runtime_lifecycle" && record.outcome !== "completed")).toBe(true);
+    expect(output.lines.join("")).not.toContain("frames");
   });
 
   it("rejects a tool call body above its bound before dispatch and serves no Agent routes", async () => {

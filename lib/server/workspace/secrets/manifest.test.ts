@@ -23,17 +23,30 @@ describe("Workspace variables of saved secrets", () => {
       saved("DEMO_API_TOKEN", { kind: "text", text: "synthetic-demo-token" }),
       saved("Notes", { kind: "text", text: "synthetic note" }),
       saved("github_token", { kind: "text", text: "synthetic lowercase" }),
-      saved("SSH_AUTH_SOCK", { kind: "text", text: "synthetic reserved" })
+      saved("SSH_AUTH_SOCK", { kind: "text", text: "synthetic reserved" }),
+      saved("AIQSA_BROWSER_SESSIONS_DIR", { kind: "text", text: "/workspace/project" })
     ];
     expect(parseAcceptedWorkspaceSecrets(secrets)).toEqual(secrets);
     expect(workspaceSecretEnvironment(secrets)).toEqual({ DEMO_API_TOKEN: "synthetic-demo-token", SERVICE_TOKEN: "synthetic-service" });
-    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SERVICE_TOKEN"], ["DEMO_API_TOKEN"], [], [], []]);
+    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SERVICE_TOKEN"], ["DEMO_API_TOKEN"], [], [], [], []]);
     const guide = workspaceSecretsGuide(secrets);
     expect(guide).toContain("## DEMO\\_API\\_TOKEN\n\nEnvironment variable (the value is already in command environments): `DEMO_API_TOKEN`\n" +
       "Text secret:\n```\nsynthetic-demo-token\n```");
     expect(guide).toContain("## Notes\n\nText secret:\n```\nsynthetic note\n```");
     expect(guide).toContain("## github\\_token\n\nText secret:\n```\nsynthetic lowercase\n```");
     expect(guide).toContain("## SSH\\_AUTH\\_SOCK\n\nNot an environment variable here; use the text below.\nText secret:");
+  });
+
+  it("stages a stored secret whose names were reserved later, and keeps those names out of commands and the prompt", () => {
+    const secrets = [saved("Legacy shop", { kind: "env", entries: [
+      { name: "AIQSA_BROWSER_LOCALE", value: "de-DE" }, { name: "SHOP_TOKEN", value: "synthetic-shop" }] })];
+    // Staging reads revisions as they were saved; the settings refuse such a name for anything new.
+    expect(parseAcceptedWorkspaceSecrets(secrets)).toEqual(secrets);
+    expect(workspaceSecretEnvironment(secrets)).toEqual({ SHOP_TOKEN: "synthetic-shop" });
+    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SHOP_TOKEN"]]);
+    const guide = workspaceSecretsGuide(secrets);
+    expect(guide).toContain("Environment variables (values are already in command environments):\n- `SHOP_TOKEN`\n" +
+      "Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):\n- `AIQSA_BROWSER_LOCALE`");
   });
 
   it("keeps an env secret's variable over a text secret of that name and leaves two text secrets of one name out", () => {

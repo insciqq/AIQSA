@@ -31,6 +31,9 @@ describe("pinned official Microsandbox MCP catalog", () => {
         }))
       });
       expect(catalog.hash).toBe(WORKSPACE_BOUND_TOOL_CATALOG_HASH);
+      // Every provider accepts it: no type list naming a container type (`lib/server/tools/toolSchemaPortability.test.ts`).
+      expect(catalog.tools.filter((tool) => /"type":\[[^\]]*"(?:array|object)"/u.test(JSON.stringify(tool.inputSchema)))
+        .map((tool) => tool.originalName)).toEqual([]);
     } finally {
       await transport.close();
     }
