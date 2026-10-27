@@ -66,6 +66,8 @@ export type ToolExecutionResult = {
 
 export type ToolExecutionContext = {
   persistedToolCallId?: string;
+  /** Starts the run's Workspace as its first command would, before a tool reads guest files without one. */
+  prepareWorkspace?: (signal?: AbortSignal) => Promise<void>;
   request: ProviderRunRequest;
   runId?: string;
   userId?: string;

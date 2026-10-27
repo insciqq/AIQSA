@@ -174,10 +174,10 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
             kind: { enum: Object.keys(SCHEDULE_FIELDS), type: "string" },
             time: { description: "24-hour local time HH:MM; for hourly the window start.", type: "string" },
             date: { description: "once: the local date YYYY-MM-DD; otherwise null.", type: ["string", "null"] },
+            // A nullable list is `anyOf`, never a type list naming "array" (`toolSchemaPortability.test.ts`).
             days: {
-              description: "weekly and hourly: the days it runs; otherwise null.",
-              items: { enum: [...SCHEDULED_TASK_WEEKDAYS], type: "string" },
-              type: ["array", "null"]
+              anyOf: [{ items: { enum: [...SCHEDULED_TASK_WEEKDAYS], type: "string" }, type: "array" }, { type: "null" }],
+              description: "weekly and hourly: the days it runs; otherwise null."
             },
             dayOfMonth: { description: "monthly: the day of the month, 1-31; otherwise null.", type: ["integer", "null"] },
             everyHours: {

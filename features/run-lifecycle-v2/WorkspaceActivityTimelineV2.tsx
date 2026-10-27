@@ -14,6 +14,8 @@ import {
   WORKSPACE_RECREATED_NOTICE_V2,
   aggregateWorkspaceActivityV2,
   workspaceActivityLabelV2,
+  workspaceBrowserStepPhraseV2,
+  workspaceBrowserStepsV2,
   workspaceCodeMcpCopyV2,
   workspaceDurationV2,
   workspaceOutputSkipsCopyV2
@@ -106,6 +108,8 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
   const duration = workspaceDurationV2(entry.durationMs);
   const label = workspaceActivityLabelV2(entry);
   const failure = failureCopy(entry);
+  // Browser steps read as prose: the label names the last one, the body lists them all.
+  const steps = entry.phase === "succeeded" ? workspaceBrowserStepsV2(entry) : [];
   if (!command) return null;
   const streams = failed
     ? [["stderr", command.stderrPreview], ["stdout", command.stdoutPreview]] as const
@@ -114,11 +118,16 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
     <details className="v2-workspace-command" data-phase={entry.phase}>
       <summary className="v2-focusable">
         <ActivityMarkV2 phase={entry.phase} />
-        <span className="v2-workspace-row-label">{label}</span>
+        <span className="v2-workspace-row-label" data-kind={steps.length ? "browser" : undefined}>{label}</span>
         {duration ? <span className="v2-workspace-row-meta">{duration}</span> : null}
       </summary>
       <div className="v2-workspace-command-body">
         {failure ? <p className="v2-workspace-row-note" role="note">{failure}</p> : null}
+        {steps.length > 1 ? (
+          <ol aria-label="Browser steps" className="v2-workspace-browser-steps">
+            {steps.map((step, index) => <li key={`${step.number}-${index}`}>{workspaceBrowserStepPhraseV2(step)}</li>)}
+          </ol>
+        ) : null}
         <div className="v2-workspace-output">
           <div className="v2-workspace-command-line">
             <span className="v2-workspace-output-label">Command</span>

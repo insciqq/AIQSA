@@ -116,6 +116,9 @@ export type ProviderImageProvenance = Readonly<
  * and is never accepted from the browser as configuration. */
 export type NormalizedRunWorkspace = Readonly<{
   enabled: true;
+  /** The guest browser's language and time zone, frozen at admission. Absent
+   * for older runs: the browser then uses its documented defaults. */
+  browser?: import("../workspace/browserBinding").WorkspaceBrowserBinding;
   /** Guest code of this Internet-On run can reach the run gateway, with these
    * code-call budgets. Absent: no code token (older runs too). */
   codeMcp?: import("../workspace/codeMcp").NormalizedWorkspaceCodeMcp;
@@ -153,7 +156,8 @@ export type NormalizedRunRequest = {
   artifactEdit?: import("../../contracts/artifacts").ArtifactEdit;
   /** Owner selection fenced at initial acceptance; texts live in prompt. */
   instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
-  /** Verified image-input and supported Responses tool-output route, frozen at admission. */
+  /** Direct view frozen at admission: the chat model's image input is verified on a route that renders result images,
+   * so the run offers `view_workspace_image` (`lib/server/workspace/directImageView.ts`). */
   workspaceImageView?: true;
   workspaceCheckpoints?: true;
   /** Exact server-owned tool text; absent accepted rows use the legacy text. */
@@ -300,13 +304,14 @@ export type NormalizedRunRequest = {
   /** Frozen store/reader policy. Absent on accepted historical runs; 0 is a
    * newly accepted explicit Off mode and 1 is the observation-store contract. */
   toolObservationVersion?: 0 | 1;
-  /** Exact installation tool-loop limits frozen when the run is accepted.
+  /** Exact installation tool-loop limits frozen when the run is accepted;
+   * both counts null when tool limits were off (`toolBudgets.ts`).
    * Older accepted requests may also carry the retired router allowances
    * `mcpAutoDiscoveryTimeoutSeconds` and `mcpAutoDiscoveryMaxOutputTokens`. */
   toolBudgets?: Readonly<{
     maxMcpToolsPerDiscovery?: number;
-    maxToolCalls: number;
-    maxToolRounds: number;
+    maxToolCalls: number | null;
+    maxToolRounds: number | null;
   }>;
   /** Durable operator/client suppression for all client-side run tools. */
   toolMode: "auto" | "none";

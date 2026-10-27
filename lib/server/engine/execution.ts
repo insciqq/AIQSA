@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
+import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
@@ -22,15 +23,18 @@ import { reportedAnswerCost, usageAttributionsWithEstimatedCost } from "../runs/
 import { withPinnedHostedSearchIdentity } from "../runs/searchArtifactIdentity";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
-import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
+import { toolCallBounds, turnSoftDeadlineMs } from "../runs/turnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/service";
 import { logRunPersistence, settleRunWrite } from "../runs/runObservability";
 import { MANAGE_SECRET_TOOL_NAME, manageSecretValues } from "../tools/manageSecret";
 import { reservedToolCallForRequest } from "../tools/reservedToolCall";
-import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
+import { invalidProviderToolArguments, type ModelToolCall, type RunTool } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
+import { browserLiveRelay, type BrowserLiveRunHandle } from "../workspace/browserLive";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { getAuthConfig } from "../auth/config";
+import type { BrowserHandoffMode } from "../tools/browserHandoff";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
@@ -52,7 +56,9 @@ import {
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
 import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
-import { modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptTarget, type TranscriptUserItem } from "./transcript";
+import {
+  modelResponseItems, projectTranscript, type TranscriptItem, type TranscriptProjectionOptions, type TranscriptTarget, type TranscriptUserItem
+} from "./transcript";
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
 import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
@@ -66,10 +72,9 @@ import { createUsageLedger } from "./usage";
  * handler: it cancels the run's row and aborts this run's controller.
  */
 export const NATIVE_TURN_LIMITS = Object.freeze({
-  /** A run without a Workspace answers within this long. */
-  turnMs: 60 * 60_000,
-  /** Before its deadline the turn stops calling tools and answers. */
-  answerReserveMs: 5 * 60_000
+  /** A run without a Workspace answers within this long; before it, the turn stops calling tools and answers
+   * (`turnSoftDeadlineMs`). */
+  turnMs: 60 * 60_000
 });
 
 export class EngineFailure extends Error {
@@ -117,9 +122,20 @@ export type NativeRunExecutionInput = Readonly<{
    */
   scheduled?: true;
   services: NativeRunServices;
+  /** A Telegram turn: its chat shows no live browser, so a handoff points to the web chat. */
+  telegram?: true;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>;
+
+/** The web chat's address a Telegram turn's handoff points to; the chat id is its only parameter. */
+function webChatUrl(chatId: string): string {
+  try {
+    return new URL(`/c/${encodeURIComponent(chatId)}`, getAuthConfig().appBaseUrl).toString();
+  } catch {
+    return `/c/${encodeURIComponent(chatId)}`;
+  }
+}
 
 /** The Responses family streams on the native engine (Codex LB included), always in the foreground. */
 export function nativeRequestParams(adapterKind: string, params: Record<string, unknown>): Record<string, unknown> {
@@ -256,9 +272,28 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
   const workspace = normalizedRequest.workspace;
   const startedAt = now();
   const turnMs = workspace ? workspace.turnTimeoutSeconds * 1_000 : NATIVE_TURN_LIMITS.turnMs;
-  const toolTimeEndsAt = startedAt + (workspace
-    ? workspaceTurnSoftDeadlineMs(workspace.turnTimeoutSeconds, workspace.syncToolTimeoutSeconds)
-    : turnMs - NATIVE_TURN_LIMITS.answerReserveMs);
+  // A scheduled task's run is stopped at its occurrence's deadline after admission, which comes before a long turn's
+  // own: its tool time ends that much earlier, so it answers before the scheduler stops it.
+  const scheduledTurnMs = Math.min(turnMs, SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60_000);
+  // The longest one request of the answer model may take, which its rounds apply and the deadlines below leave room for.
+  const answerTimeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
+    snapshot.model.adapterKind === "fake" ? null : snapshot.model);
+  // Until when work that may take `workMs` once started may still start: the turn's soft deadline for it, and a
+  // scheduled run's occurrence's.
+  const admittedAt = input.created.acceptedAt?.getTime() ?? startedAt;
+  const bounds = toolCallBounds(normalizedRequest, answerTimeoutMs);
+  const startsUntil = (workMs: number) => Math.min(startedAt + turnSoftDeadlineMs(turnMs, workMs, bounds.answer),
+    input.scheduled ? admittedAt + turnSoftDeadlineMs(scheduledTurnMs, workMs, bounds.answer) : Infinity);
+  // Past its tool time the turn answers without tools, which is what ends an answer without tool limits. Rounds leave
+  // room for a common call or a round under way, then the answer; a call whose own bound is longer (a slow MCP server,
+  // Search source or image model) must also fit before the deadline as it starts, so a slow source the run never
+  // calls never shortens its tool time.
+  const toolTimeEndsAt = startsUntil(bounds.round);
+  // Asked before each round.
+  const toolTimeLeft = () => now() < toolTimeEndsAt;
+  // Asked as each call of a batch starts, so a call queued behind slower ones, or one that would outlast the answer's
+  // reserve, never starts.
+  const callTimeLeft = (tool: Pick<RunTool, "capability" | "name">) => toolTimeLeft() && now() < startsUntil(bounds.call(tool));
   const deadline = new AbortController();
   const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
     turnMs);
@@ -305,10 +340,18 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "started" });
       let runRecords: TranscriptWriter | null = null;
       let runContext: RunContext | null = null;
+      let live: BrowserLiveRunHandle | null = null;
       try {
         const control = await input.repository.getRunControlForUser(runId, input.userId);
         if (!control || !["in_progress", "queued", "streaming"].includes(control.status)) {
           throw new EngineFailure("model_run_not_active", "The answer is no longer running.");
+        }
+        // The live browser of an interactive web run (`browserLive.ts`): its owner watches it and answers handoffs.
+        const coordinator = input.workspace;
+        if (workspace && coordinator?.browserLive && !input.scheduled && !input.telegram) {
+          live = browserLiveRelay().register({ channel: (request) => coordinator.browserLive!({ request, runId }), chatId: scope.chatId,
+            runId, signInRemembered: () => coordinator.browserSaveBack?.({ runId, userId: input.userId }) ?? Promise.resolve(false),
+            userId: input.userId });
         }
         sink.send({ data: { modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, runId, status: "streaming" },
           type: "run_start" });
@@ -411,7 +454,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
 
         const mcpBindings = engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId));
         const delivered: string[] = [];
+        const browserHandoff: BrowserHandoffMode | undefined = !workspace ? undefined
+          : input.scheduled ? { kind: "unattended" }
+            : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
+              : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now() };
         const registry = await buildToolRegistry({
+          ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
           followupTexts: () => delivered,
           loadMcpBindingRows: () => engine.mcpBindingRows(runId),
@@ -465,6 +513,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             text: save.text }),
           signal,
           store: engine.toolCalls,
+          toolTimeLeft: callTimeLeft,
           unknownEffects,
           userId: input.userId
         };
@@ -496,10 +545,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const reasoningScope = reasoningReplayScope(snapshot);
         const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId,
           ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}), ...(reasoningScope ? { reasoningScope } : {}) };
+        // How the run's requests render the transcript: its input with its attachments, and the Workspace previews it viewed.
+        const projection: TranscriptProjectionOptions = {
+          ...(conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {}),
+          ...(registry.images ? { images: registry.images } : {})
+        };
         const params = nativeRequestParams(snapshot.model.adapterKind, windowOutputParams(base.params,
           { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
-        const timeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
-          snapshot.model.adapterKind === "fake" ? null : snapshot.model);
+        const timeoutMs = answerTimeoutMs;
         let pending: ModelRunSseEvent[] = [];
         let followupRevision = 0;
         const recordModelUsage = (reported: ModelRunUsage, costUsd: number | undefined) => usage.add({ ...reportedAnswerCost(costUsd),
@@ -527,7 +580,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           now,
           // Server-minted, so recorded as it is: the provider projection never keeps capacity statuses.
           onStatus: (status) => sink.record(contextCompactionArtifact(status)),
-          projection: conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {},
+          projection,
           record: (item) => transcriptRecord(registry, item),
           rules: engineItemRules(input.approvalContinuation ? conversation.currentInputId : null),
           runId,
@@ -617,7 +670,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const tools = [...registry.definitions()];
             const request: ProviderRunRequest = {
               ...base,
-              history: projectTranscript(items, target, { ...(conversation.currentInputId ? { currentInputId: conversation.currentInputId } : {}) }),
+              history: projectTranscript(items, target, projection),
               params,
               parallelToolCalls: true,
               previousProviderResponseId: undefined,
@@ -657,7 +710,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return batch;
           },
           signal,
-          toolTimeLeft: () => now() < toolTimeEndsAt
+          toolTimeLeft
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });
@@ -687,6 +740,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           await input.chatTitleGenerator.schedule({ answerText: answer.text, chatId: scope.chatId, runId, userId: input.userId,
             userMessageId: input.created.userMessageId }).catch(() => undefined);
         }
+        // The live browser ends before the Workspace hands off: no view or streamer outlives the turn.
+        await live?.end("run_finished");
         if (workspace && input.workspace) {
           const handoff = await input.workspace.handoff({ onActivity: onWorkspaceActivity, runId, signal, userId: input.userId, workspace });
           if (handoff.status !== "ready") throw new EngineFailure("workspace_operation_stale", "The Workspace could not hand off this turn.");
@@ -715,6 +770,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspaceRun: Boolean(workspace) }) });
         answer.stop();
         await runContext?.close();
+        await live?.end("run_finished");
         if (workspace && input.workspace) {
           await input.workspace.settle({ onActivity: onWorkspaceActivity,
             outcome: cancelled ? "cancelled" : deadline.signal.aborted ? "timed_out" : "failed", runId, userId: input.userId, workspace })
@@ -748,6 +804,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         if (failed) sink.send({ data: payload, type: "error" });
         else await chatUpdate();
       } finally {
+        void live?.end("run_finished");
         stopKeepalive();
         clearTimeout(deadlineTimer);
         if (activeRunControllers.get(runId) === stop) activeRunControllers.delete(runId);

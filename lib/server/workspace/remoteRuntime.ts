@@ -18,11 +18,14 @@ import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateS
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { decodeWorkspaceOutputSkips } from "@/lib/contracts/workspace";
+import { parseBrowserLiveReply, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
   WORKSPACE_RUNTIME_INVENTORY_STATES,
   workspaceOutputCollection,
+  type WorkspaceBrowserLiveReply,
+  type WorkspaceBrowserLiveRequest,
   type WorkspaceRuntimeInventoryInput,
   type WorkspaceRuntimeInventoryPage,
   type WorkspaceBoundTool,
@@ -528,6 +531,21 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     } finally {
       input.signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  /** The live view's streamer on the runner (`browserLiveChannel.ts`); no request is logged here either. */
+  async browserLive(input: WorkspaceBrowserLiveRequest): Promise<WorkspaceBrowserLiveReply> {
+    const { operation, sessionId, signal, ...request } = input;
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/browser-live`, {
+      body: JSON.stringify({ ...request, operation: parseWorkspaceOperation(operation) }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(WORKSPACE_BROWSER_LIVE_LIMITS.requestTimeoutMs + 5_000)])
+        : AbortSignal.timeout(WORKSPACE_BROWSER_LIVE_LIMITS.requestTimeoutMs + 5_000)
+    });
+    const value = await jsonResponse(response, { maxBytes: WORKSPACE_BROWSER_LIVE_LIMITS.replyBytes, oversize: "workspace_runtime_incompatible" });
+    if (!response.ok) throw workspaceError(value);
+    return parseBrowserLiveReply(input.action, value);
   }
 
   async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {

@@ -530,6 +530,24 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
 
+  it("starts the Workspace for a call that reads guest files before any command, once, as the first command would", async () => {
+    const value = fixture();
+    const prepare = () => value.coordinator.prepareExecution!({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    await prepare();
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    await prepare();
+    // The command after it reuses the started Workspace.
+    await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+    // A Workspace that cannot start fails the call with its own code.
+    const other = fixture();
+    vi.mocked(other.runtime.ensureSession).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_runtime_unavailable"));
+    await expect(other.coordinator.prepareExecution!({ runId: other.runId, userId: "user_1", workspace: other.workspace }))
+      .rejects.toMatchObject({ code: "workspace_runtime_unavailable" });
+  });
+
   it("reports a carried project whose Workspace cannot start as unavailable, and nothing else", async () => {
     const value = fixture();
     const pendingCarryover = vi.fn(async () => true);
@@ -2129,7 +2147,11 @@ describe("Workspace coordinator export database retries", () => {
     expect(elapsed).toBeLessThan(4_000);
     expect(records.at(-1)).toMatchObject({ work_stage: "seal", outcome: "failed", code: "workspace_output_export_failed",
       prisma_code: "P2010", db_failure: "lock_timeout" });
-    expect(records.filter((record) => record.outcome === "degraded" && record.work_stage === "seal")).toHaveLength(starts.length - 1);
+    // Every attempt but the last was followed by one; the last also logs one when the failing heartbeat ended the pause
+    // after it, before another attempt (both orders are valid, and the fake clock does not fix which comes first).
+    const degraded = records.filter((record) => record.outcome === "degraded" && record.work_stage === "seal").length;
+    expect(degraded).toBeGreaterThanOrEqual(starts.length - 1);
+    expect(degraded).toBeLessThanOrEqual(starts.length);
     expect(databaseFailureKind(caught)).toBe("lock_timeout");
     expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(false);
   });
@@ -2234,6 +2256,33 @@ describe("Workspace coordinator activity projection", () => {
     expect(new Set(entries.map((entry) => entry.id)).size).toBe(1);
     expect(entries[2]).toMatchObject({ command: { exitCode: 0 }, phase: "succeeded" });
     expect(JSON.stringify(entries)).not.toMatch(/provider-start|durable-start|exec_activity/);
+  });
+
+  it("refuses a command's own env that sets a reserved browser name, before touching the runtime", async () => {
+    const value = fixture();
+    for (const tool of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      const result = await value.coordinator.execute({
+        call: {
+          arguments: { command: "aiqsa-browser", args: ["save-session"], env: { SHOP: "x", AIQSA_BROWSER_SESSIONS_DIR: "/workspace/project" } },
+          id: `call_${tool}_reserved`,
+          name: namespacedWorkspaceToolName(tool)
+        },
+        modelRunToolCallId: `stored_${tool}_reserved`,
+        runId: value.runId,
+        userId: "user_1",
+        workspace: value.workspace
+      });
+      expect(result.status).toBe("error");
+      expect(result.content[0]).toMatchObject({
+        text: expect.stringContaining("Environment names starting with AIQSA_BROWSER_ are reserved for the Workspace browser")
+      });
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Remove AIQSA_BROWSER_SESSIONS_DIR from `env`") });
+      expect(result.artifacts).toEqual([expect.objectContaining({
+        data: expect.objectContaining({ payload: expect.objectContaining({ kind: "command", phase: "failed" }) })
+      })]);
+    }
+    expect(value.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
   });
 
   it("rejects shell syntax in direct exec with an actionable error before touching the runtime", async () => {
@@ -2849,6 +2898,23 @@ describe("Workspace coordinator guest-code MCP", () => {
     const stale = fixture();
     withCode(stale).issueCodeGrant.mockRejectedValue(new WorkspaceRuntimeError("workspace_operation_stale"));
     await expect(shell(stale, "call")).rejects.toMatchObject({ code: "workspace_operation_stale" });
+  });
+
+  it("hands commands the run's admitted browser language and time zone beside the code authority", async () => {
+    const value = fixture();
+    withCode(value);
+    const browser = { ...value, workspace: { ...value.workspace, browser: { locale: "es-ES", timeZone: "Europe/Madrid" } } };
+    await shell(browser, "call_browser");
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: {
+      AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token, AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "Europe/Madrid" } }));
+    // Without guest-code MCP the browser values still arrive; a malformed binding sends nothing.
+    const plain = fixture();
+    await shell({ ...plain, workspace: { ...plain.workspace, browser: { locale: "en-US", timeZone: "UTC" } } }, "call_plain");
+    expect(plain.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: {
+      AIQSA_BROWSER_LOCALE: "en-US", AIQSA_BROWSER_TIMEZONE: "UTC" } }));
+    const malformed = fixture();
+    await shell({ ...malformed, workspace: { ...malformed.workspace, browser: { locale: "en US", timeZone: "../etc" } } }, "call_bad");
+    expect(malformed.runtime.syncPersonalSecrets).not.toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: expect.anything() }));
   });
 
   it("never mints guest-code authority while exporting outputs", async () => {

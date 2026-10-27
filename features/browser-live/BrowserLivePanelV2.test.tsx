@@ -1,0 +1,369 @@
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  browserLiveControlPath,
+  browserLiveHandoffPath,
+  browserLiveInputPath,
+  browserLiveStreamPath,
+  type BrowserHandoffReason,
+  type BrowserLiveHandoff
+} from "@/lib/contracts/browserLive";
+import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
+import { BrowserLivePanelV2 } from "./BrowserLivePanelV2";
+import { fakeEventSources, liveFrame, liveState, type FakeBrowserLiveEventSource } from "./browserLive.testFixtures";
+
+const CHAT = "chat-1";
+
+const browsing: ThreadWorkspaceActivity = { entries: [{
+  id: "command-1", kind: "command", phase: "succeeded", command: {
+    preview: "aiqsa-browser open https://shop.example/",
+    stdoutPreview: "[browser #1] open @ shop.example/\n[browser #2] click: button \"Cart\" @ shop.example/cart"
+  }
+}] };
+
+const handoffCall: ThreadToolActivity = { calls: [{ round: 2, status: "running", toolName: "browser_handoff" }] };
+
+function handoff(reason: BrowserHandoffReason, overrides: Partial<BrowserLiveHandoff> = {}): BrowserLiveHandoff {
+  return { id: "handoff-1", reason, message: "Please sign in with your own account.",
+    startedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 125_000).toISOString(), ...overrides };
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+let sources: FakeBrowserLiveEventSource[];
+let openSource: (url: string) => FakeBrowserLiveEventSource;
+
+beforeEach(() => {
+  fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const fake = fakeEventSources();
+  sources = fake.sources;
+  openSource = fake.open;
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+function renderPanel(props: Partial<Parameters<typeof BrowserLivePanelV2>[0]> = {}) {
+  return render(<BrowserLivePanelV2 chatId={CHAT} live openEventSource={openSource} toolActivity={null}
+    workspaceActivity={browsing} {...props} />);
+}
+
+function send(type: string, data: unknown, source = sources.at(-1)!) {
+  act(() => source.send(type, data));
+}
+
+function posted(): Array<[string, unknown]> {
+  return fetchMock.mock.calls.map(([path, init]) => [String(path), JSON.parse(String((init as RequestInit).body))]);
+}
+
+function stubFrameBox() {
+  const image = screen.getByTestId("browser-live-stage").querySelector("img")!;
+  vi.spyOn(image, "getBoundingClientRect").mockReturnValue({
+    left: 100, top: 50, width: 640, height: 400, right: 740, bottom: 450, x: 100, y: 50, toJSON: () => ({})
+  } as DOMRect);
+}
+
+async function openAsUser() {
+  renderPanel();
+  fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+  send("state", liveState({ controller: "user" }));
+  send("frame", liveFrame(1));
+  stubFrameBox();
+}
+
+describe("BrowserLivePanelV2", () => {
+  it("shows nothing without browser activity or once the run ended", () => {
+    const { rerender } = renderPanel({ workspaceActivity: { entries: [{ id: "c", kind: "command", phase: "succeeded",
+      command: { preview: "echo '[browser #1] open @ x/'", stdoutPreview: "[browser #1] open @ x/" } }] } });
+    expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+    rerender(<BrowserLivePanelV2 chatId={CHAT} live={false} openEventSource={openSource} toolActivity={null} workspaceActivity={browsing} />);
+    expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+    expect(sources).toHaveLength(0);
+  });
+
+  it("starts collapsed with the last step and streams only while expanded", () => {
+    renderPanel({ workspaceActivity: { entries: [{ id: "c", kind: "command", phase: "running",
+      command: { preview: "aiqsa-browser open https://shop.example/" } }] } });
+    const region = screen.getByRole("region", { name: "Browser" });
+    expect(region).toHaveTextContent("The agent is using the browser");
+    expect(sources).toHaveLength(0);
+    cleanup();
+
+    renderPanel();
+    const bar = screen.getByRole("button", { name: /Watch/u });
+    expect(bar).toHaveAttribute("aria-expanded", "false");
+    expect(bar).toHaveTextContent("Clicked button \"Cart\"");
+    expect(sources).toHaveLength(0);
+    fireEvent.click(bar);
+    expect(bar).toHaveAttribute("aria-expanded", "true");
+    expect(sources[0]!.url).toBe(browserLiveStreamPath(CHAT));
+    expect(screen.getByText("Connecting to the browser…")).toBeVisible();
+    send("state", liveState());
+    send("frame", liveFrame(1));
+    send("steps", { steps: [
+      { n: 1, action: "open", target: "", host: "shop.example", path: "/" },
+      { n: 2, action: "type", target: "textbox \"Search\"", host: "shop.example", path: "/" }
+    ] });
+    const stage = screen.getByRole("img", { name: "Live view of the agent's browser: Cart · Shop" });
+    expect(stage.querySelector("img")).toHaveAttribute("src", expect.stringMatching(/^data:image\/jpeg;base64,/u));
+    expect(screen.getByText("https://shop.example/cart")).toBeVisible();
+    expect(screen.getByText("The agent is using the browser")).toBeVisible();
+    const steps = screen.getByRole("list", { name: "Browser steps" });
+    expect(within(steps).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Opened shop.example/", "Typed into textbox \"Search\""]);
+    expect(screen.getByRole("status")).toHaveTextContent("The agent has control of the browser.");
+    fireEvent.click(screen.getByRole("button", { name: /Hide/u }));
+    expect(sources[0]!.closed).toBe(true);
+    expect(screen.queryByTestId("browser-live-stage")).toBeNull();
+  });
+
+  it.each([
+    ["sign_in", "Sign in to shop.example"],
+    ["verification_code", "Enter the verification code"],
+    ["captcha", "Complete the check on the page"],
+    ["consent", "Review the consent request"],
+    ["user_choice", "Make a choice on the page"],
+    ["other", "The agent needs your help"]
+  ] as const)("opens itself for a %s handoff with a plain title", (reason, title) => {
+    renderPanel({ toolActivity: handoffCall });
+    expect(screen.getByRole("button", { name: /Hide/u })).toHaveTextContent("Needs your help");
+    send("state", liveState({ controller: "user", handoff: handoff(reason) }));
+    const card = screen.getByTestId("browser-live-handoff");
+    expect(within(card).getByRole("heading", { level: 3 })).toHaveTextContent(title);
+    expect(card).toHaveTextContent("Please sign in with your own account.");
+    expect(card).toHaveTextContent(/2:0[45] left/u);
+    expect(card).not.toHaveTextContent("will need to sign in again");
+    // During a handoff the user is in control by definition: no Take or Return.
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Return control" })).toBeNull();
+  });
+
+  it("answers the handoff with Done or Cancel, says when it will not be remembered, and shows a stale answer", async () => {
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", signInRemembered: false, handoff: handoff("sign_in") }));
+    const card = screen.getByTestId("browser-live-handoff");
+    expect(card).toHaveTextContent("This chat does not save browser sign-ins");
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This request has already ended.");
+    expect(posted()[1]).toEqual([browserLiveHandoffPath(CHAT), { action: "cancel", handoffId: "handoff-1" }]);
+  });
+
+  it("keeps Done and Cancel usable when the client clock says the time is up", async () => {
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("captcha", { expiresAt: new Date(Date.now() - 1_000).toISOString() }) }));
+    const card = screen.getByTestId("browser-live-handoff");
+    expect(card).toHaveTextContent("Time is up");
+    expect(card).toHaveTextContent("Your keystrokes are not sent to the agent. When you press Done, the agent continues from the page as you leave it.");
+    // The server, not the client clock, decides: a late Done gets its own refusal.
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This request has already ended.");
+    expect(within(card).getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("scrolls the handoff card into view once per handoff, without taking focus", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "nearest" }));
+    expect(document.activeElement).toBe(document.body);
+    // Closing and opening the panel again does not scroll a second time.
+    fireEvent.click(screen.getByRole("button", { name: /Hide/u }));
+    fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    send("state", liveState({ controller: "user", handoff: handoff("verification_code", { id: "handoff-2" }) }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+
+  it("frees held keys and buttons before control ends, and when focus leaves the view", async () => {
+    await openAsUser();
+    const stage = screen.getByTestId("browser-live-stage");
+    fireEvent.keyDown(stage, { key: "Shift", code: "ShiftLeft", shiftKey: true });
+    fireEvent.keyDown(stage, { key: "Control", code: "ControlLeft", ctrlKey: true });
+    fireEvent.keyDown(stage, { key: "a", code: "KeyA", ctrlKey: true });
+    fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 420, clientY: 250 });
+    fireEvent.click(screen.getByRole("button", { name: "Return control" }));
+    await waitFor(() => expect(posted().at(-1)?.[0]).toBe(browserLiveControlPath(CHAT)));
+    expect(posted().map(([, body]) => body)).toEqual([
+      { kind: "key", type: "down", key: "a", code: "KeyA", modifiers: 2 },
+      { kind: "mouse", type: "down", x: 640, y: 400, button: "left", clickCount: 1 },
+      { kind: "key", type: "up", key: "a", code: "KeyA" },
+      { kind: "mouse", type: "up", x: 640, y: 400, button: "left", clickCount: 1 },
+      { action: "return" }
+    ]);
+    cleanup();
+    fetchMock.mockClear();
+
+    await openAsUser();
+    const again = screen.getByTestId("browser-live-stage");
+    again.focus();
+    fireEvent.keyDown(again, { key: "ArrowDown", code: "ArrowDown" });
+    act(() => again.blur());
+    await waitFor(() => expect(posted()).toHaveLength(2));
+    expect(posted()[1]![1]).toEqual({ kind: "key", type: "up", key: "ArrowDown", code: "ArrowDown" });
+  });
+
+  it("leaves the view with Escape twice to the Browser bar while Done is busy", async () => {
+    let finish: (response: Response) => void = () => undefined;
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    send("frame", liveFrame(1));
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Done" })).toBeDisabled());
+    const stage = screen.getByTestId("browser-live-stage");
+    stage.focus();
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    expect(screen.getByRole("button", { name: /Hide/u })).toHaveFocus();
+    await act(async () => finish(new Response(null, { status: 204 })));
+  });
+
+  it("takes and returns control", async () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+    send("state", liveState());
+    send("frame", liveFrame(1));
+    expect(screen.queryByRole("textbox", { name: "Type into the page" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveControlPath(CHAT), { action: "take" }]]));
+    send("state", liveState({ controller: "user" }));
+    expect(screen.getByText("You have control · the agent waits")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Hide/u })).toHaveTextContent("You have control");
+    expect(screen.getByRole("textbox", { name: "Type into the page" })).toBeInTheDocument();
+    expect(screen.getByRole("application", { name: /Live view/u })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Return control" }));
+    await waitFor(() => expect(posted()[1]).toEqual([browserLiveControlPath(CHAT), { action: "return" }]));
+  });
+
+  it("maps pointer and keyboard input to frame pixels while the user controls", async () => {
+    await openAsUser();
+    const stage = screen.getByTestId("browser-live-stage");
+    fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 420, clientY: 250 });
+    fireEvent.pointerUp(stage, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 420, clientY: 250 });
+    fireEvent.keyDown(stage, { key: "a", code: "KeyA" });
+    fireEvent.keyDown(stage, { key: "Enter", code: "Enter" });
+    fireEvent.keyUp(stage, { key: "Enter", code: "Enter" });
+    fireEvent.keyUp(stage, { key: "a", code: "KeyA" });
+    await waitFor(() => expect(posted()).toHaveLength(5));
+    expect(posted()).toEqual([
+      [browserLiveInputPath(CHAT), { kind: "mouse", type: "down", x: 640, y: 400, button: "left", clickCount: 1 }],
+      [browserLiveInputPath(CHAT), { kind: "mouse", type: "up", x: 640, y: 400, button: "left", clickCount: 1 }],
+      [browserLiveInputPath(CHAT), { kind: "text", text: "a" }],
+      [browserLiveInputPath(CHAT), { kind: "key", type: "down", key: "Enter", code: "Enter" }],
+      [browserLiveInputPath(CHAT), { kind: "key", type: "up", key: "Enter", code: "Enter" }]
+    ]);
+  });
+
+  it("leaves the view with Escape twice, sending only the first Escape to the page", async () => {
+    await openAsUser();
+    const stage = screen.getByTestId("browser-live-stage");
+    stage.focus();
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    fireEvent.keyUp(stage, { key: "Escape", code: "Escape" });
+    fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+    expect(screen.getByRole("button", { name: "Return control" })).toHaveFocus();
+    await waitFor(() => expect(posted()).toHaveLength(2));
+    expect(posted().map(([, body]) => body)).toEqual([
+      { kind: "key", type: "down", key: "Escape", code: "Escape" },
+      { kind: "key", type: "up", key: "Escape", code: "Escape" }
+    ]);
+  });
+
+  it("maps a touch tap and sends nothing while the agent controls", async () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+    send("state", liveState());
+    send("frame", liveFrame(1));
+    stubFrameBox();
+    const stage = screen.getByTestId("browser-live-stage");
+    fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "touch", clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(stage, { pointerId: 1, pointerType: "touch", clientX: 200, clientY: 100 });
+    fireEvent.keyDown(stage, { key: "a", code: "KeyA" });
+    send("state", liveState({ controller: "user" }));
+    stubFrameBox();
+    fireEvent.pointerDown(stage, { pointerId: 2, pointerType: "touch", clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(stage, { pointerId: 2, pointerType: "touch", clientX: 200, clientY: 100 });
+    await waitFor(() => expect(posted()).toHaveLength(2));
+    expect(posted().map(([, body]) => body)).toEqual([
+      { kind: "mouse", type: "down", x: 200, y: 100, button: "left", clickCount: 1 },
+      { kind: "mouse", type: "up", x: 200, y: 100, button: "left", clickCount: 1 }
+    ]);
+  });
+
+  it("types through the phone field: words, Backspace, Enter and Tab", async () => {
+    await openAsUser();
+    const field = screen.getByRole("textbox", { name: "Type into the page" });
+    act(() => {
+      field.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: "hi", inputType: "insertText" }));
+    });
+    fireEvent.compositionStart(field);
+    fireEvent.compositionEnd(field, { data: "привет" });
+    act(() => {
+      field.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteContentBackward" }));
+    });
+    fireEvent.keyDown(field, { key: "Enter", code: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Press Tab in the page" }));
+    await waitFor(() => expect(posted()).toHaveLength(8));
+    expect(posted().map(([, body]) => body)).toEqual([
+      { kind: "text", text: "hi" },
+      { kind: "text", text: "привет" },
+      { kind: "key", type: "down", key: "Backspace", code: "Backspace" },
+      { kind: "key", type: "up", key: "Backspace", code: "Backspace" },
+      { kind: "key", type: "down", key: "Enter", code: "Enter" },
+      { kind: "key", type: "up", key: "Enter", code: "Enter" },
+      { kind: "key", type: "down", key: "Tab", code: "Tab" },
+      { kind: "key", type: "up", key: "Tab", code: "Tab" }
+    ]);
+    expect(field).toHaveValue("");
+  });
+
+  it("shows a refusal and drops queued input when the agent has control", async () => {
+    await openAsUser();
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_not_in_control" }), { status: 409 }));
+    fireEvent.keyDown(screen.getByTestId("browser-live-stage"), { key: "x", code: "KeyX" });
+    expect(await screen.findByRole("alert")).toHaveTextContent("The agent has control. Take control to use the browser.");
+  });
+
+  it("names each state and end reason, and reopens only after replaced or error", () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+    send("state", liveState({ browser: "absent", page: null }));
+    const stage = () => within(screen.getByTestId("browser-live-stage"));
+    expect(stage().getByText(/The browser has not opened yet/u)).toBeVisible();
+    send("state", liveState({ browser: "stopped" }));
+    expect(stage().getByText("The browser was closed.")).toBeVisible();
+    send("end", { reason: "replaced" });
+    expect(stage().getByText("The live view opened in another tab or window.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Watch here" }));
+    expect(sources).toHaveLength(2);
+    send("end", { reason: "error" });
+    fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+    expect(sources).toHaveLength(3);
+    send("end", { reason: "run_finished" });
+    expect(stage().getByText("The answer finished, so the live view closed.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Reopen|Watch here/u })).toBeNull();
+  });
+
+  it("never stores or logs frames or typed text", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const logs = (["log", "info", "warn", "error", "debug"] as const).map((name) => vi.spyOn(console, name));
+    await openAsUser();
+    fireEvent.keyDown(screen.getByTestId("browser-live-stage"), { key: "s", code: "KeyS" });
+    fireEvent.paste(screen.getByTestId("browser-live-stage"), { clipboardData: { getData: () => "secret-marker" } });
+    await waitFor(() => expect(posted()).toHaveLength(2));
+    expect(posted()[1]![1]).toEqual({ kind: "text", text: "secret-marker" });
+    expect(setItem).not.toHaveBeenCalled();
+    for (const log of logs) expect(log).not.toHaveBeenCalled();
+  });
+});

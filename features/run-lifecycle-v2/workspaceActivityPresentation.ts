@@ -126,7 +126,85 @@ function commandSummary(preview: string): string {
   return collapsedCommandV2(rest.length > 0 ? `${first.trimEnd()} …` : first);
 }
 
+/**
+ * One step line of the Workspace browser helper, exactly as it prints it
+ * (`ops/workspace-guest/python/aiqsa/browser/_format.py`):
+ * `[browser #3] click: button "Add to cart" @ shop.example/cart`. A
+ * presentation hint read from the command's own output, never authority.
+ */
+const BROWSER_STEP = /^\[browser #(\d{1,5})\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$/u;
+/**
+ * Only a command that runs the helper reports steps, as the guide shows it: `aiqsa-browser …` (after
+ * optional variable assignments) or `python3 -c "from aiqsa import browser …"`. Output of any other
+ * command that imitates a step line stays output. The model could still print such lines itself.
+ */
+const ASSIGNMENTS = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+const BROWSER_COMMANDS = [
+  new RegExp(`^${ASSIGNMENTS}(?:/usr/local/bin/)?aiqsa-browser(?:\\s|$)`, "u"),
+  new RegExp(`^${ASSIGNMENTS}(?:/opt/aiqsa-python/bin/)?python3?\\s+-c\\s+["']\\s*(?:from aiqsa import browser\\b|import aiqsa\\.browser\\b|from aiqsa\\.browser import\\b)`, "u")
+];
+
+/** A command, running or finished, that runs the Workspace browser helper. A presentation hint, never authority. */
+export function isWorkspaceBrowserCommandV2(entry: ThreadWorkspaceActivityEntry): boolean {
+  const command = entry.kind === "command" ? entry.command?.preview.trimStart() ?? "" : "";
+  return command !== "" && BROWSER_COMMANDS.some((pattern) => pattern.test(command));
+}
+
+export type WorkspaceBrowserStepV2 = Readonly<{ number: number; action: string; target?: string; where?: string }>;
+
+/** The browser steps a finished command reported, in order. */
+export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): WorkspaceBrowserStepV2[] {
+  const output = entry.kind === "command" ? entry.command?.stdoutPreview : undefined;
+  if (!output || !output.includes("[browser #") || !isWorkspaceBrowserCommandV2(entry)) return [];
+  const steps: WorkspaceBrowserStepV2[] = [];
+  for (const line of output.split("\n")) {
+    const match = BROWSER_STEP.exec(line.trimEnd());
+    if (!match) continue;
+    steps.push({ number: Number(match[1]), action: match[2]!, ...(match[3] ? { target: match[3] } : {}),
+      ...(match[4] ? { where: match[4] } : {}) });
+  }
+  return steps;
+}
+
+/** What the agent did in the browser, in the reader's words. */
+export function workspaceBrowserStepPhraseV2(step: WorkspaceBrowserStepV2): string {
+  const target = step.target;
+  switch (step.action) {
+    case "open": return `Opened ${step.where ?? "a page"}`;
+    case "click": return `Clicked ${target ?? "an element"}`;
+    case "type": return `Typed into ${target ?? "a field"}`;
+    case "select": return `Selected ${target ?? "an option"}`;
+    case "upload": return `Uploaded ${target ?? "a file"}`;
+    case "press": return `Pressed ${target ?? "a key"}`;
+    case "scroll": return `Scrolled ${target ?? "the page"}`;
+    case "back": return "Went back";
+    case "forward": return "Went forward";
+    case "reload": return "Reloaded the page";
+    case "wait": return `Waited for ${target ?? "the page"}`;
+    case "tab": return target ? `Switched to tab ${target}` : "Switched tabs";
+    case "new_tab": return "Opened a new tab";
+    case "close_tab": return "Closed a tab";
+    case "screenshot": return `Took a screenshot${target && target !== "page" ? ` of ${target}` : ""}`;
+    case "save_session": return `Saved the sign-in for ${target ?? "this site"}`;
+    case "download": return `Downloaded ${target ?? "a file"}`;
+    default: return `Browser step: ${step.action}`;
+  }
+}
+
+/** A finished command that drove the browser reads as its steps, not as its command line. */
+function browserCommandLabel(entry: ThreadWorkspaceActivityEntry): string | null {
+  if (entry.phase !== "succeeded") return null;
+  const steps = workspaceBrowserStepsV2(entry);
+  const last = steps.at(-1);
+  if (!last) return null;
+  return steps.length === 1
+    ? `Browser: ${workspaceBrowserStepPhraseV2(last)}`
+    : `Browser: ${steps.length} steps, last: ${workspaceBrowserStepPhraseV2(last)}`;
+}
+
 function commandLabel(entry: ThreadWorkspaceActivityEntry): string {
+  const browser = browserCommandLabel(entry);
+  if (browser) return browser;
   const command = commandSummary(entry.command?.preview ?? "command");
   if (entry.phase === "failed") return `${command} failed`;
   if (entry.phase === "closed") return `${command} · exit not observed`;

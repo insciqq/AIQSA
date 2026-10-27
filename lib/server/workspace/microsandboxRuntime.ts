@@ -47,7 +47,7 @@ import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
-import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
@@ -63,10 +63,12 @@ import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection }
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
 import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceSkillRunState } from "./skillRunState";
+import { browserLiveMcpData, browserLivePollReply, WORKSPACE_BROWSER_LIVE_COMMAND, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
 import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
-import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION, workspaceToolOutputDataMaxBytes, workspaceToolTransportMaxBytes } from "./config";
+import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION, workspaceRuntimeIdleTimeoutSeconds, workspaceToolOutputDataMaxBytes,
+  workspaceToolTransportMaxBytes } from "./config";
 import {
   bindOfficialWorkspaceTools,
   injectWorkspaceToolArguments,
@@ -77,6 +79,8 @@ import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
   workspaceOutputCollection,
+  type WorkspaceBrowserLiveReply,
+  type WorkspaceBrowserLiveRequest,
   type WorkspaceRuntimeInventoryInput,
   type WorkspaceRuntimeInventoryPage,
   type WorkspaceExecutionTermination,
@@ -97,9 +101,14 @@ type McpConnection = Readonly<{
   state: { closed: boolean; inFlight: number; overflow: "sole" | "shared" | null };
 }>;
 
+/** A guest's live browser streamers (exec id -> the run that started it) on their own MCP connection. */
+type LiveChannel = { execs: Map<string, string>; idle?: ReturnType<typeof setTimeout>; mcp?: McpConnection };
+
 type LocalSession = {
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
   execOwners: Map<string, string>;
+  /** The live browser channel's own MCP connection and its streamers by run (`browserLive`). */
+  live?: LiveChannel;
   mcp?: McpConnection;
   runtimeSandboxId: string;
   sandbox: Sandbox;
@@ -860,7 +869,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           // Gateway-capable sessions use our fixed policy below, never guest input.
           .deploymentProfile(input.internetEnabled && this.config.agentGatewayEnabled ? "single-tenant" : "multi-tenant")
           .security("restricted")
-          .idleTimeout(this.config.idleTtlSeconds)
+          .idleTimeout(workspaceRuntimeIdleTimeoutSeconds(this.config))
           .labels({ "aiqsa.workspace": "true" });
         builder = input.internetEnabled
           ? builder.network((network) => network.policy(publicOnlyPolicy(this.config.agentGatewayEnabled))
@@ -1296,7 +1305,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (["sandbox_shell", "sandbox_exec", "sandbox_exec_start"].includes(input.originalName)) {
         const environment = await this.secretEnvironment(session, input.modelRunId);
         const requested = argumentsWithIdentity.env;
-        if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested))) {
+        if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested) ||
+          Object.keys(requested).some(isReservedWorkspaceEnvName))) {
+          // The coordinator refuses reserved names visibly; any other caller is refused here, before dispatch.
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
         if (input.invocationId !== undefined && !isWorkspaceCodeInvocationId(input.invocationId)) {
@@ -1401,6 +1412,98 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     // quiescence through the durable registry and falls back to a VM stop.
     await this.terminateExecutionIds(session, this.cachedExecutionIds(session, input.modelRunId))
       .catch(() => undefined);
+  }
+
+  /**
+   * The live browser channel (`browserLiveChannel.ts`): the guest's streamer on its own MCP connection, so a frame
+   * stream neither shares the agent's transport nor stays in that MCP's memory, and the connection closes a minute
+   * after the last streamer. Only a guest this runner holds: nothing here starts, resumes or reconnects one, and a
+   * streamer answers only the run that started it. No request is logged; failures surface as codes.
+   */
+  async browserLive(input: WorkspaceBrowserLiveRequest): Promise<WorkspaceBrowserLiveReply> {
+    const session = this.sessions.get(input.sessionId);
+    if (!session || session.runtimeSandboxId !== input.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
+    if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    const live: LiveChannel = session.live ??= { execs: new Map<string, string>() };
+    if (input.action !== "start" && live.execs.get(input.execSessionId) !== input.modelRunId) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    if (live.idle) {
+      clearTimeout(live.idle);
+      live.idle = undefined;
+    }
+    try {
+      if (!live.mcp || live.mcp.state.closed) {
+        if (live.mcp) void live.mcp.transport.close().catch(() => undefined);
+        live.mcp = await this.openMcpConnection();
+      }
+      const mcp = live.mcp;
+      const deadline = AbortSignal.timeout(WORKSPACE_BROWSER_LIVE_LIMITS.requestTimeoutMs);
+      const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+      const call = async (name: WorkspaceMcpToolName, args: Record<string, unknown>) => {
+        try {
+          return browserLiveMcpData(await trackedMcpRequest(mcp, () => mcp.client.callTool({ arguments: args, name }, undefined,
+            { maxTotalTimeout: WORKSPACE_BROWSER_LIVE_LIMITS.requestTimeoutMs, signal, timeout: WORKSPACE_BROWSER_LIVE_LIMITS.requestTimeoutMs })));
+        } catch {
+          if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+          throw new WorkspaceRuntimeError(deadline.aborted ? "workspace_tool_timeout" : "workspace_runtime_unavailable");
+        }
+      };
+      switch (input.action) {
+        case "start": {
+          const data = await call("sandbox_exec_start", { name: session.sandboxName, command: WORKSPACE_BROWSER_LIVE_COMMAND.command,
+            args: [...WORKSPACE_BROWSER_LIVE_COMMAND.args], stdin: input.stdin, timeoutMs: this.config.turnTimeoutSeconds * 1_000 });
+          const id = typeof data?.execSessionId === "string" && EXEC_SESSION_ID_PATTERN.test(data.execSessionId) ? data.execSessionId : null;
+          if (!id) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+          live.execs.set(id, input.modelRunId);
+          return { action: "start", execSessionId: id };
+        }
+        case "poll": {
+          const limit = WORKSPACE_BROWSER_LIVE_LIMITS.pollEvents;
+          const data = await call("sandbox_exec_poll", { execSessionId: input.execSessionId, cursor: input.cursor, limit,
+            maxBytes: execPollEventMaxBytes(limit, this.config.toolOutputMaxBytes) });
+          if (!data) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+          return browserLivePollReply(data, input.cursor);
+        }
+        case "write": {
+          if (!await call("sandbox_exec_write_stdin", { execSessionId: input.execSessionId, data: input.data })) {
+            throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+          }
+          return { action: "write" };
+        }
+        case "close": {
+          const id = input.execSessionId;
+          // Its stdin closes: the streamer ends by itself; one that lingers is killed. Its output goes with the handle.
+          await call("sandbox_exec_write_stdin", { execSessionId: id, data: "", close: true }).catch(() => null);
+          const ended = async () => (await call("sandbox_exec_poll", { execSessionId: id, cursor: Number.MAX_SAFE_INTEGER, limit: 1,
+            maxBytes: 1 }).catch(() => null))?.done === true;
+          let exited = false;
+          for (const until = Date.now() + WORKSPACE_BROWSER_LIVE_LIMITS.closeGraceMs; !exited && Date.now() < until;) {
+            exited = await ended();
+            if (!exited) await delay(100);
+          }
+          if (!exited) {
+            await call("sandbox_exec_signal", { execSessionId: id, signal: "kill" }).catch(() => null);
+            await delay(200);
+            exited = await ended();
+          }
+          await call("sandbox_exec_close", { execSessionId: id }).catch(() => null);
+          live.execs.delete(id);
+          return { action: "close", exited };
+        }
+        default:
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+    } finally {
+      if (live.execs.size === 0 && session.live === live) {
+        live.idle = setTimeout(() => {
+          if (session.live !== live || live.execs.size > 0) return;
+          session.live = undefined;
+          void live.mcp?.transport.close().catch(() => undefined);
+        }, 60_000);
+        live.idle.unref?.();
+      }
+    }
   }
 
   private cachedExecutionIds(session: LocalSession, modelRunId: string): string[] {
@@ -1728,7 +1831,10 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   private async closeMcp(session: LocalSession): Promise<void> {
     const mcp = session.mcp;
     session.mcp = undefined;
-    if (mcp) await mcp.transport.close().catch(() => undefined);
+    const live = session.live;
+    session.live = undefined;
+    if (live?.idle) clearTimeout(live.idle);
+    await Promise.all([mcp, live?.mcp].map((connection) => connection?.transport.close().catch(() => undefined)));
   }
 
   private async waitForInitialization(sessionId: string): Promise<void> {
@@ -1744,6 +1850,21 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       ]);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  async touchSession(input: Parameters<NonNullable<WorkspaceRuntime["touchSession"]>>[0]): Promise<void> {
+    const session = this.sessions.get(input.sessionId);
+    try {
+      const handle = await Sandbox.get(session?.sandboxName ?? workspaceSandboxName(input.sessionId));
+      // Only the session's own guest, and only while it runs: a touch never starts a stopped one or keeps another.
+      if (session && handle.id !== session.runtimeSandboxId) return;
+      if (handle.status !== "running") return;
+      await handle.touch();
+    } catch (error) {
+      // Stopped or removed meanwhile: there is nothing to keep awake.
+      if (error instanceof SandboxNotFoundError || error instanceof SandboxNotRunningError) return;
+      throw error;
     }
   }
 

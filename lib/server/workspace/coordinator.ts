@@ -5,6 +5,8 @@ import { measureTransaction, transactionTimingFields, transactionTimingOf } from
 import { WorkspaceActivityText, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
+import { workspaceBrowserEnvironment } from "./browserBinding";
+import { WORKSPACE_RESERVED_ENV_PREFIX, isReservedWorkspaceEnvName } from "@/lib/contracts/workspaceSecrets";
 import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
   type WorkspaceCodeRunIdentity } from "./codeMcpStore";
 import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
@@ -61,12 +63,14 @@ import {
 import type {
   WorkspaceAttachmentStream,
   WorkspaceBoundTool,
+  WorkspaceBrowserLiveReply,
   WorkspaceOutputCollection,
   WorkspaceOutputStream,
   WorkspaceRuntime,
   WorkspaceToolResult
 } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
+import type { BrowserLiveChannelRequest } from "./browserLive";
 import type { WorkspaceOperation } from "./operationFence";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import { workspaceRunTools } from "./admission";
@@ -222,6 +226,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   closeCodeInvocation?(input: Readonly<{ invocationId: string; runId: string }>): Promise<void>;
   codeCallSummary?(input: Readonly<{ runId: string; toolCallId: string }>): Promise<WorkspaceCodeCallSummary | null>;
   saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
+  /** Whether the run's browser sign-ins are saved back to its owner's Secrets after it (`saveBrowserSessions`). */
+  browserSaveBack?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   /** Persist before guest I/O, including attempts with an ambiguous result. */
   markGuestUsed(binding: WorkspaceExecutionBinding): Promise<boolean>;
@@ -462,6 +468,14 @@ export function createPrismaWorkspaceCoordinatorRepository(
   return {
     ...createPrismaWorkspaceCodeGrantRepository(prisma),
     saveBrowserSessions: (input) => saveWorkspaceBrowserSessions(prisma, input),
+    async browserSaveBack({ runId, userId }) {
+      // The same facts the save authorizes by (`browserStore.ts`): the run's accepted sequence in its owner's own chat.
+      const binding = await prisma.workspaceRunBinding.findFirst({
+        select: { modelRunId: true },
+        where: { browserSessionSequence: { not: null }, modelRun: { chat: { userId }, userId }, modelRunId: runId }
+      });
+      return binding !== null;
+    },
     async personalSecrets(binding) {
       const current = await loadBinding(binding.runId, binding.userId);
       if (!current || current.operationOwner !== binding.operationOwner || current.operationGeneration !== binding.operationGeneration) {
@@ -1122,6 +1136,14 @@ export type WorkspaceCoordinator = Readonly<{
   }>): Promise<string>;
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
   /**
+   * One request of a run's live browser channel (`browserLive.ts`), under the run's own operation, on the guest
+   * this process started for the run: `workspace_session_lost` before that guest runs and after the run settled.
+   * It never starts, resumes or recreates a guest, and never becomes a model tool.
+   */
+  browserLive?(input: Readonly<{ request: BrowserLiveChannelRequest; runId: string; signal?: AbortSignal }>): Promise<WorkspaceBrowserLiveReply>;
+  /** Whether the run's browser sign-ins are saved to its owner's Secrets after the turn. */
+  browserSaveBack?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
+  /**
    * Before a scheduled run's first model request: starts the Workspace and
    * restores the files its task's monthly rotation carried into the chat,
    * so no tool or command of the run meets an empty carried project. A
@@ -1129,6 +1151,18 @@ export type WorkspaceCoordinator = Readonly<{
    * Does nothing for any other run.
    */
   prepareCarryover?(input: Readonly<{
+    onActivity?: WorkspaceActivityListener;
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<void>;
+  /**
+   * Before a call that reads guest files without running a command (a
+   * direct view, a System Vision capture): starts the Workspace for the run
+   * the way its first command does, with the run's inputs staged.
+   */
+  prepareExecution?(input: Readonly<{
     onActivity?: WorkspaceActivityListener;
     runId: string;
     signal?: AbortSignal;
@@ -1596,7 +1630,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
     purpose: "execution" | "export",
     signal?: AbortSignal,
     onActivity?: WorkspaceActivityListener,
-    predecessor?: WorkspaceOperation
+    predecessor?: WorkspaceOperation,
+    browserEnvironment: Readonly<Record<string, string>> = {}
   ): Promise<WorkspaceExecutionBinding> {
     ownedOperation(binding);
     const ready = initialized.get(binding.runId);
@@ -1614,7 +1649,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     if (pending) {
       const resolved = await pending;
       if (purpose === "export" || skillPlans.has(binding.runId)) return resolved;
-      return initialize(resolved, purpose, signal, onActivity);
+      return initialize(resolved, purpose, signal, onActivity, undefined, browserEnvironment);
     }
     skillPlans.delete(binding.runId);
     const operation = (async () => {
@@ -1724,9 +1759,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const matches: WorkspaceSecretMatch[] = code?.token ? [{ name: WORKSPACE_CODE_TOKEN_ENV, value: code.token }] : [];
           activityTextByRun.set(binding.runId, new WorkspaceActivityText(matches));
           outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
+          // The run's admitted browser language and time zone ride in the same environment.
+          const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
           await input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId,
-            ...(code && Object.keys(code.environment).length > 0 ? { runEnvironment: code.environment } : {}),
+            ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
@@ -1839,8 +1876,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
   ): Promise<Readonly<{ binding: WorkspaceExecutionBinding; recreated: boolean }>> {
     let recreated = binding.runtimeSandboxId === null && binding.sessionErrorCode === "workspace_session_lost";
     let ready: WorkspaceExecutionBinding;
+    const browserEnvironment = workspaceBrowserEnvironment(workspace.browser);
     try {
-      ready = await initialize(binding, "execution", signal, onActivity);
+      ready = await initialize(binding, "execution", signal, onActivity, undefined, browserEnvironment);
     } catch (error) {
       if (
         !(error instanceof WorkspaceRuntimeError) ||
@@ -1851,7 +1889,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
       const fresh = await requireBinding(binding.runId, binding.userId, workspace);
       if (fresh.runtimeSandboxId !== null) throw error;
-      ready = await initialize(fresh, "execution", signal, onActivity);
+      ready = await initialize(fresh, "execution", signal, onActivity, undefined, browserEnvironment);
       recreated = true;
     }
     if (recreated) {
@@ -1868,6 +1906,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   const SHELL_SYNTAX = /&&|\|\||[|;<>`$\n]|\s/u;
+  // Commands whose own `env` reaches the guest; a few reserved names are named back, bounded.
+  const ENV_TOOLS = new Set(["sandbox_shell", "sandbox_exec", "sandbox_exec_start"]);
+  const reservedEnvNames = (env: unknown): string[] => env && typeof env === "object" && !Array.isArray(env)
+    ? Object.keys(env).filter(isReservedWorkspaceEnvName).slice(0, 5).map((name) => name.slice(0, 64)) : [];
 
   function projectionState(runId: string): Map<string, ExecOutputBuffer> {
     const existing = execOutputsByRun.get(runId);
@@ -2033,6 +2075,18 @@ export function createWorkspaceCoordinator(input: Readonly<{
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
+    async browserLive({ request, runId, signal }) {
+      // Only the guest this process initialized for the run, under the run's own operation: nothing starts one here.
+      const binding = initialized.get(runId);
+      if (!binding?.runtimeSandboxId || !input.runtime.browserLive) {
+        throw new WorkspaceRuntimeError(input.runtime.browserLive ? "workspace_session_lost" : "workspace_runtime_incompatible");
+      }
+      return input.runtime.browserLive({ ...request, modelRunId: runId, operation: ownedOperation(binding),
+        runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId, ...(signal ? { signal } : {}) });
+    },
+    async browserSaveBack({ runId, userId }) {
+      return await input.repository.browserSaveBack?.({ runId, userId }) ?? false;
+    },
     async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace, skipBrowserSave }) {
       // Every terminal path ends guest-code MCP authority first, before any
       // quiescence wait. A terminal run's bearer is refused by status anyway.
@@ -2132,6 +2186,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
             text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
+            result: rejected,
+            runId,
+            startedAt: new Date()
+          }, "settled");
+          return withActivity(rejected, entry);
+        }
+        const reserved = definitionByName && ENV_TOOLS.has(definitionByName.originalName) ? reservedEnvNames(call.arguments.env) : [];
+        if (definitionByName && reserved.length) {
+          // Only AIQSA sets these (the browser's admitted language and zone): refused before anything starts.
+          const rejected = executionErrorResult(call, `Environment names starting with ${WORKSPACE_RESERVED_ENV_PREFIX} are reserved ` +
+            `for the Workspace browser, which takes its language and time zone from AIQSA. Remove ${reserved.join(", ")} from \`env\`.`);
+          const entry = projectWorkspaceActivity({
+            arguments: call.arguments,
+            text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
+            callId: modelRunToolCallId,
+            originalName: definitionByName.originalName,
             result: rejected,
             runId,
             startedAt: new Date()
@@ -2743,6 +2813,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return { attempted, completed };
       })().finally(() => { recoveryWork = null; });
       return recoveryWork;
+    },
+    async prepareExecution({ onActivity, runId, signal, userId, workspace }) {
+      const { binding } = await initializeWithLostSessionRecovery(await requireBinding(runId, userId, workspace), workspace, signal, onActivity);
+      if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     },
     async prepareCarryover({ onActivity, runId, signal, userId, workspace }) {
       const initial = await input.repository.binding({ runId, userId });

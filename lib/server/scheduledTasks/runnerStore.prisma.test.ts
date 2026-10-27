@@ -318,6 +318,31 @@ describe("persisted scheduled task runner", () => {
     expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: second.id } })).toMatchObject({ unseenAt: null });
   });
 
+  it("fails a completed run for a sign-in only when its agent needed one nobody could do, never for a corrected call", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000));
+    const chat = await personalChat(userId);
+    let instant = 0;
+    async function settled(reason: string, error: string) {
+      const current = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } });
+      const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(Date.now() + ++instant),
+        startedAt: new Date(), taskId: created.id, trigger: "manual", userId } });
+      const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, current)));
+      // The handoff call's row as the tool batch stores it, then the run's answer.
+      await prisma.modelRunToolCall.create({ data: { arguments: { message: "Synthetic handoff", reason }, modelRunId: run.runId,
+        ordinal: 0, providerCallId: `handoff-${randomUUID()}`, result: { callId: "call-0", content: [{ type: "json",
+          value: { error, message: "Synthetic" } }], name: "browser_handoff", status: "error" }, roundIndex: 0, state: "error",
+        toolName: "browser_handoff" } });
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: run.runId } });
+      return runner.settleLinked(occurrence.id, new Date());
+    }
+    // A malformed call the model then corrected, and a consent nobody could give: the run's own outcome stands.
+    expect(await settled("sign_in", "browser_handoff_invalid")).toMatchObject({ state: "COMPLETED" });
+    expect(await settled("consent", "browser_handoff_unavailable")).toMatchObject({ state: "COMPLETED" });
+    expect(await settled("verification_code", "browser_handoff_unavailable"))
+      .toMatchObject({ reasonCode: "browser_sign_in_required", state: "FAILED" });
+  });
+
   it("counts a scheduled run against its owner's slot until it is terminal, even after its task is deleted", async () => {
     const userId = await owner();
     const created = await task(userId, null);

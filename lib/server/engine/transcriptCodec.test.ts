@@ -3,6 +3,10 @@ import { decodeTranscriptItem, encodeTranscriptItem, TranscriptItemInvalidError 
 import type { TranscriptItem } from "./transcript";
 
 const origin = { model: "gpt-6-astra", provider: "connection-1" };
+/** A Workspace preview's reference: what the transcript keeps of a viewed image, never its pixels. */
+const image = { consumerKey: "tool-1", descriptor: { byteSize: 10, checksum: "b".repeat(64), frames: 1, height: 8, id: "a".repeat(64),
+  mimeType: "image/png", source: { byteSize: 20, captureId: "c".repeat(32), checksum: "d".repeat(64), height: 16,
+    relativePath: "project/code.png", width: 20 }, transform: { resize: { height: 1024, width: 1024 } }, version: 1, width: 10 } } as const;
 
 const items: TranscriptItem[] = [
   { id: "u1", kind: "user", text: "Look up A-17" },
@@ -23,6 +27,7 @@ const items: TranscriptItem[] = [
   { callId: "call_2", id: "t2", kind: "tool_result", name: "lookup_order", outcome: "unknown", output: "No result." },
   // An approved call's record before it is sent again.
   { callId: "call_3", id: "t3", inFlight: true, kind: "tool_result", name: "create_order", outcome: "unknown", output: "In flight." },
+  { callId: "call_4", id: "t4", image, kind: "tool_result", name: "view_workspace_image", outcome: "complete", output: "Preview of code.png" },
   { id: "k1", kind: "compaction", origin, summary: "Earlier work." },
   { id: "k2", kind: "compaction", native: { fields: { type: "compaction" }, format: "openai_responses" }, origin },
   // A compaction that keeps a tail, with its retained record and the size its call reported.
@@ -52,6 +57,13 @@ describe("transcript codec", () => {
       // Only an unknown outcome is in flight, and the mark is true or absent.
       { body: { inFlight: true, name: "lookup", outcome: "complete", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
       { body: { inFlight: false, name: "lookup", outcome: "unknown", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
+      // Only a completed view keeps an image reference, and only one that parses as its evidence.
+      { body: { image, name: "lookup", outcome: "complete", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
+      { body: { image, name: "view_workspace_image", outcome: "error", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
+      { body: { image: { ...image, data: "UElYRUxT" }, name: "view_workspace_image", outcome: "complete", output: "" }, callId: "call_1",
+        id: "x", kind: "tool_result" },
+      { body: { image: { consumerKey: "tool-1", descriptor: { ...image.descriptor, checksum: "not-a-hash" } }, name: "view_workspace_image",
+        outcome: "complete", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
       { body: { native: { fields: {}, format: "other" }, origin }, callId: null, id: "x", kind: "reasoning" },
       { body: { origin }, callId: null, id: "x", kind: "compaction" },
       { body: { keepFromId: "", origin, summary: "s" }, callId: null, id: "x", kind: "compaction" },

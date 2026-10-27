@@ -5,7 +5,7 @@ import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
 import { Image, Sandbox, isInstalled } from "microsandbox";
 import { DeterministicWorkspaceRuntime } from "@/lib/server/workspace/deterministicRuntime";
-import { getWorkspaceConfig } from "@/lib/server/workspace/config";
+import { getWorkspaceConfig, workspaceIdleRefreshTiming } from "@/lib/server/workspace/config";
 import { createMicrosandboxImageStore, evictUnusedWorkspaceImages } from "@/lib/server/workspace/guestImageCache";
 import { ensureBundledMicrosandboxRuntime } from "@/lib/server/workspace/microsandboxInstall";
 import { MicrosandboxWorkspaceRuntime } from "@/lib/server/workspace/microsandboxRuntime";
@@ -44,7 +44,8 @@ async function main(): Promise<void> {
     : new MicrosandboxWorkspaceRuntime(config);
   const runtimeHome = process.env.MSB_HOME?.trim();
   if (!runtimeHome) throw new Error("workspace_runtime_unavailable");
-  const server = createWorkspaceRunnerServer({ operationDirectory: join(runtimeHome, "workspace-operations"), runtime, token });
+  const server = createWorkspaceRunnerServer({ idleRefresh: workspaceIdleRefreshTiming(config),
+    operationDirectory: join(runtimeHome, "workspace-operations"), runtime, token });
   const host = process.env.AIQSA_WORKSPACE_RUNNER_HOST?.trim() || "0.0.0.0";
   const portValue = Number(process.env.AIQSA_WORKSPACE_RUNNER_PORT ?? "4310");
   if (!Number.isSafeInteger(portValue) || portValue < 1 || portValue > 65_535) {

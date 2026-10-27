@@ -1,7 +1,7 @@
 export const WORKSPACE_RUNTIME_VERSION = "0.6.16";
 export const WORKSPACE_MCP_VERSION = "0.6.16";
 /** The guest version bundled with the runner image (its archive's own reference). */
-export const WORKSPACE_DEFAULT_IMAGE_REF = "aiqsa-workspace:0.1.36";
+export const WORKSPACE_DEFAULT_IMAGE_REF = "aiqsa-workspace:0.1.38";
 
 /**
  * One Workspace tool result crosses two JSON transports: the pinned MCP stdio
@@ -74,6 +74,36 @@ type IntegerSetting = Readonly<{
   minimum: number;
   name: string;
 }>;
+
+/**
+ * The longest Workspace turn an installation may configure. The default turn
+ * equals the turn without a Workspace (60 minutes), so long tool work fits one
+ * turn now that answers have no tool limits by default (operator decision
+ * 2026-10-26); an explicit `AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS` still wins.
+ */
+export const WORKSPACE_TURN_TIMEOUT_MAX_SECONDS = 7_200;
+
+/**
+ * Microsandbox's own idle stop, a backstop behind the app's idle sweep (`cleanup.ts`), which stops a VM no run owns
+ * once it was idle for `idleTtlSeconds`. It must not fire inside a turn: an answer may work longer than the idle time
+ * without the VM (Search, MCP, saved results) and then use it again, and a stop there would restart the VM mid-answer
+ * and lose the processes the turn started. So it waits at least a whole turn, plus a margin for the hand-off.
+ * Microsandbox fixes it when it creates a VM, so a VM created earlier keeps the one it was created with.
+ */
+export function workspaceRuntimeIdleTimeoutSeconds(config: Pick<WorkspaceConfig, "idleTtlSeconds" | "turnTimeoutSeconds">): number {
+  return Math.max(config.idleTtlSeconds, config.turnTimeoutSeconds + 300);
+}
+
+/**
+ * How the runner keeps the guest of a run awake (`WorkspaceIdleRefresh` in `operationFence.ts`), which also covers VMs
+ * created with an older, shorter idle stop: a touch every five minutes, or every third of the idle time when that is
+ * shorter, for as long as a new VM's own idle stop waits after the run's latest request.
+ */
+export function workspaceIdleRefreshTiming(config: Pick<WorkspaceConfig, "idleTtlSeconds" | "turnTimeoutSeconds">):
+  Readonly<{ intervalMs: number; lifetimeMs: number }> {
+  return { intervalMs: Math.min(300_000, Math.floor(config.idleTtlSeconds * 1_000 / 3)),
+    lifetimeMs: workspaceRuntimeIdleTimeoutSeconds(config) * 1_000 };
+}
 
 const integerSettings = Object.freeze({
   codeMcpMaxCalls: {
@@ -164,8 +194,8 @@ const integerSettings = Object.freeze({
     name: "AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES"
   },
   turnTimeoutSeconds: {
-    defaultValue: 1_800,
-    maximum: 3_600,
+    defaultValue: 3_600,
+    maximum: WORKSPACE_TURN_TIMEOUT_MAX_SECONDS,
     minimum: 60,
     name: "AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS"
   }
