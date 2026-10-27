@@ -407,6 +407,18 @@ for (const viewport of [
       }).toBeLessThanOrEqual(1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`draft-card-final-${viewport.width}.png`) });
+
+      // A click on the opened picture takes focus out of the viewer; Escape still closes it.
+      const open = files.getByRole("button", { name: `Open image: ${imageDraft.fileName}`, exact: true });
+      await open.click();
+      const viewer = page.getByRole("dialog", { name: imageDraft.fileName });
+      await expect(viewer).toBeVisible();
+      await viewer.getByRole("img", { name: imageDraft.fileName }).click();
+      await expect(viewer).toBeVisible();
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(viewer).toHaveCount(0);
+      await expect(open).toBeFocused();
     });
   });
 }
