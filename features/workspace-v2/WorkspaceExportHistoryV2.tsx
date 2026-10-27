@@ -47,6 +47,7 @@ export function WorkspaceExportHistoryV2({ branchKey, canSave, chatId, onClose, 
               </div>
               <GeneratedFilesV2
                 canSave={canSave}
+                describeDrafts
                 files={entry.files}
                 useDisabled={using}
                 onUseFile={onUse ? (id, fileName) => {

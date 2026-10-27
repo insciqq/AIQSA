@@ -66,13 +66,13 @@ test("saves, reuses and downloads a Workspace checkpoint draft", async ({ page }
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 800 });
 
-  const { files, storageKey } = await test.step("publish a Saved draft", async () => {
+  const { files, storageKey } = await test.step("publish a draft", async () => {
     await loginWithPassword(page, { email, password });
     await selectFakeModel(page);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:checkpoint_save]", "Workspace checkpoint saved.", 90_000);
     const chatId = await activeChatId(page);
     const files = lastAnswer(page).getByRole("region", { name: "Generated files" });
-    await expect(files).toContainText("Saved draft", { timeout: STEP_TIMEOUT });
+    await expect(files).toContainText("Draft · TXT", { timeout: STEP_TIMEOUT });
     await expect(files).toContainText("draft.txt");
     const checkpoint = await prisma.workspaceOutputCheckpoint.findFirstOrThrow({
       where: { binding: { modelRun: { chatId } } }, include: { files: { include: { attachment: true } } }
