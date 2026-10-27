@@ -25,12 +25,21 @@ import {
 
 /** A desktop window, as on the live panel's own desktop check. */
 const VIEWPORT = Object.freeze({ height: 900, width: 1440 });
-/** The live input contract allows 60 inputs a second and a key press is two (down and up). */
-const KEY_DELAY_MS = 45;
+/**
+ * The panel sends one input at a time and waits for each answer, and its queue
+ * refuses a batch once 64 inputs wait ("Too much input at once"). Over a
+ * remote link an answer takes about a tenth of a second, so the harness types
+ * like a person, about six inputs a second (a character is one input, a named
+ * key two: down and up), and lets the queue drain between fields. Measured on
+ * the final run (2026-10-27): at 45 ms per key the queue overflowed and both
+ * sign-in attempts lost keys.
+ */
+const KEY_DELAY_MS = 150;
+const KEY_PRESS_PAUSE_MS = 300;
+const DRAIN_PAUSE_MS = 2_000;
 const SIGNED_IN_WAIT_MS = 25_000;
 /** A second sign-in handoff gets one more try (the first may have missed); any other handoff gets Cancel. */
 const SIGN_IN_HANDOFFS_MAX = 2;
-const CLEAR_KEYS = 24;
 
 const fail = (code: string): never => { throw new BrowserScenarioError(code); };
 
@@ -50,17 +59,21 @@ function browserChannel(): string | undefined {
 
 async function press(page: Page, key: string): Promise<void> {
   await page.keyboard.press(key);
-  await sleep(KEY_DELAY_MS);
+  await sleep(KEY_PRESS_PAUSE_MS);
 }
 
+/** Types at a person's pace, then waits for the panel's queue to deliver it. */
 async function typeText(page: Page, text: string): Promise<void> {
   await page.keyboard.type(text, { delay: KEY_DELAY_MS });
+  await sleep(DRAIN_PAUSE_MS);
 }
 
-/** Select all, then erase character by character in case the page ignores the shortcut. */
-async function clearField(page: Page, characters: number): Promise<void> {
+/** Select all and erase; `characters` more Backspaces cover a page that ignores the shortcut. */
+async function clearField(page: Page, characters = 0): Promise<void> {
   await press(page, "Control+A");
+  await press(page, "Backspace");
   for (let index = 0; index < characters; index += 1) await press(page, "Backspace");
+  await sleep(DRAIN_PAUSE_MS);
 }
 
 /** The frame's box once the thread stops moving it (it may still settle its scroll). */
@@ -95,7 +108,21 @@ async function focusUsername(page: Page, stage: Locator, image: Locator, strateg
   if (strategy === "keyboard") await press(page, "Tab");
 }
 
+/**
+ * Optional local screenshots of the chat page for diagnosing the interaction
+ * (AIQSA_BROWSER_SCENARIOS_SHOTS_DIR, an existing directory on the harness
+ * host). They show the synthetic chat and the public demo page; they are
+ * never uploaded or printed, and a failed capture is ignored.
+ */
+async function shot(page: Page, name: string): Promise<void> {
+  const directory = process.env.AIQSA_BROWSER_SCENARIOS_SHOTS_DIR?.trim();
+  if (!directory) return;
+  await page.screenshot({ path: `${directory}/${Date.now()}-${name}.png` }).catch(() => undefined);
+}
+
 type Evidence = {
+  controlAtSignIn: string | null;
+  pageShown: boolean | null;
   cancelledHandoffs: number;
   doneHandoffs: number;
   handoffs: number;
@@ -113,24 +140,30 @@ async function signIn(page: Page, marker: string, evidence: Evidence, signal: Ab
   const image = stage.locator("img");
   await image.waitFor({ state: "visible", timeout: 60_000 });
   // The agent hands over on the sign-in page; let its picture settle.
-  await page.locator(".v2-browser-live-url", { hasText: "saucedemo.com" }).waitFor({ timeout: 30_000 }).catch(() => undefined);
+  evidence.pageShown = await page.locator(".v2-browser-live-url", { hasText: "saucedemo.com" }).waitFor({ timeout: 30_000 })
+    .then(() => true, () => false);
   await sleep(1_500, undefined, { signal });
   for (const strategy of ["field", "keyboard"] as const) {
     evidence.signInAttempts += 1;
+    // Typing reaches the page only while the panel hands control to the user.
+    evidence.controlAtSignIn = await stage.getAttribute("data-control");
+    await shot(page, `attempt-${evidence.signInAttempts}-before`);
     await focusUsername(page, stage, image, strategy);
     if (evidence.signInAttempts === 1) {
       // A value typed by mistake and erased again: the leak check looks for it in every stored row.
       await typeText(page, marker);
       await clearField(page, marker.length + 2);
     }
-    await clearField(page, CLEAR_KEYS);
+    await clearField(page);
     await typeText(page, username);
     await press(page, "Tab");
-    await clearField(page, CLEAR_KEYS);
+    await clearField(page);
     await typeText(page, password);
+    await shot(page, `attempt-${evidence.signInAttempts}-typed`);
     await press(page, "Enter");
     const signedIn = await page.locator(".v2-browser-live-url", { hasText: "/inventory.html" })
       .waitFor({ timeout: SIGNED_IN_WAIT_MS }).then(() => true, () => false);
+    await shot(page, `attempt-${evidence.signInAttempts}-after`);
     if (signedIn) {
       evidence.signedIn = true;
       evidence.signInStrategy = strategy;
@@ -147,8 +180,8 @@ async function openPanelThatNeedsUser(page: Page): Promise<void> {
 }
 
 export const signInThroughHandoff: ScenarioInteraction = async ({ baseUrl, chatId, cookie, marker, signal }) => {
-  const evidence: Evidence = { cancelledHandoffs: 0, doneHandoffs: 0, handoffs: 0, signInAttempts: 0, signInHandoffs: 0,
-    signInStrategy: null, signedIn: false };
+  const evidence: Evidence = { cancelledHandoffs: 0, controlAtSignIn: null, doneHandoffs: 0, handoffs: 0, pageShown: null,
+    signInAttempts: 0, signInHandoffs: 0, signInStrategy: null, signedIn: false };
   const result = (): InteractionEvidence => ({ ...evidence });
   if (signal.aborted) return result();
   if (!/^[A-Za-z0-9]{16,64}$/u.test(marker)) fail("interaction_marker_invalid");
