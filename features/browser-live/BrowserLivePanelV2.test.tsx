@@ -355,6 +355,149 @@ describe("BrowserLivePanelV2", () => {
     expect(screen.queryByRole("button", { name: /Reopen|Watch here/u })).toBeNull();
   });
 
+  describe("full screen", () => {
+    function openWatching() {
+      const view = renderPanel();
+      fireEvent.click(screen.getByRole("button", { name: /Watch/u }));
+      send("state", liveState());
+      send("frame", liveFrame(1));
+      return view;
+    }
+
+    it("opens a modal layer over the page on the same stream, focuses the page and restores focus on exit", async () => {
+      const { container } = openWatching();
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      const layer = screen.getByRole("dialog", { name: "Browser, full screen" });
+      expect(layer).toHaveAttribute("aria-modal", "true");
+      expect(layer.parentElement?.parentElement).toBe(document.body);
+      expect(within(layer).getByTestId("browser-live-stage")).toHaveFocus();
+      expect(within(layer).getByRole("img", { name: /Live view/u })).toBeInTheDocument();
+      expect(within(layer).getByText("https://shop.example/cart")).toBeInTheDocument();
+      expect(within(layer).getByRole("button", { name: "Take control" })).toBeEnabled();
+      expect(within(layer).getByRole("button", { name: "Zoom in" })).toBeEnabled();
+      // The chat behind is out of reach, and the page does not scroll under the layer.
+      expect(container).toHaveAttribute("aria-hidden", "true");
+      expect(document.body.style.overflow).toBe("hidden");
+      expect(sources).toHaveLength(1);
+      // The picture keeps arriving in the layer.
+      send("frame", liveFrame(2, 1280, 720));
+      expect(within(layer).getByTestId("browser-live-stage").querySelector("img")).toHaveAttribute("height", "720");
+
+      fireEvent.click(within(layer).getByRole("button", { name: "Exit full screen" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Full screen" })).toHaveFocus());
+      expect(container).not.toHaveAttribute("aria-hidden");
+      expect(document.body.style.overflow).toBe("");
+      expect(sources).toHaveLength(1);
+      expect(sources[0]!.closed).toBe(false);
+    });
+
+    it("leaves with Escape while only watching, sending nothing to the page", async () => {
+      openWatching();
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      fireEvent.keyDown(screen.getByTestId("browser-live-stage"), { key: "Escape", code: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Full screen" })).toHaveFocus());
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("sends a single Escape to the page while the user controls; Escape twice goes to Return control", async () => {
+      await openAsUser();
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      const layer = screen.getByRole("dialog", { name: "Browser, full screen" });
+      const stage = within(layer).getByTestId("browser-live-stage");
+      expect(stage).toHaveFocus();
+      expect(within(layer).getByRole("textbox", { name: "Type into the page" })).toBeInTheDocument();
+      fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+      fireEvent.keyUp(stage, { key: "Escape", code: "Escape" });
+      expect(screen.getByRole("dialog")).toBe(layer);
+      fireEvent.keyDown(stage, { key: "Escape", code: "Escape" });
+      expect(within(layer).getByRole("button", { name: "Return control" })).toHaveFocus();
+      // Escape on a control while the user controls does not close the layer either.
+      fireEvent.keyDown(within(layer).getByRole("button", { name: "Return control" }), { key: "Escape", code: "Escape" });
+      expect(screen.getByRole("dialog")).toBe(layer);
+      await waitFor(() => expect(posted()).toHaveLength(2));
+      expect(posted().map(([, body]) => body)).toEqual([
+        { kind: "key", type: "down", key: "Escape", code: "Escape" },
+        { kind: "key", type: "up", key: "Escape", code: "Escape" }
+      ]);
+    });
+
+    it("maps a click on the enlarged frame to frame pixels", async () => {
+      await openAsUser();
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      const stage = within(screen.getByRole("dialog")).getByTestId("browser-live-stage");
+      vi.spyOn(stage.querySelector("img")!, "getBoundingClientRect").mockReturnValue({
+        left: 20, top: 60, width: 1600, height: 1000, right: 1620, bottom: 1060, x: 20, y: 60, toJSON: () => ({})
+      } as DOMRect);
+      fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 420, clientY: 310 });
+      fireEvent.pointerUp(stage, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 420, clientY: 310 });
+      await waitFor(() => expect(posted()).toHaveLength(2));
+      expect(posted().map(([, body]) => body)).toEqual([
+        { kind: "mouse", type: "down", x: 320, y: 200, button: "left", clickCount: 1 },
+        { kind: "mouse", type: "up", x: 320, y: 200, button: "left", clickCount: 1 }
+      ]);
+    });
+
+    it("keeps the handoff with Done and Cancel in the layer and focus inside it once the handoff ends", async () => {
+      renderPanel({ toolActivity: handoffCall });
+      send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+      send("frame", liveFrame(1));
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      const layer = screen.getByRole("dialog", { name: "Browser, full screen" });
+      const card = within(layer).getByTestId("browser-live-handoff");
+      expect(within(card).getByRole("heading", { level: 3 })).toHaveTextContent("Sign in to shop.example");
+      expect(card).toHaveTextContent("Please sign in with your own account.");
+      expect(card).toHaveTextContent(/left/u);
+      expect(within(card).getByRole("button", { name: "Cancel" })).toBeEnabled();
+      // Escape belongs to the page during a handoff too.
+      fireEvent.keyDown(within(card).getByRole("button", { name: "Cancel" }), { key: "Escape", code: "Escape" });
+      expect(screen.getByRole("dialog")).toBe(layer);
+      fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+      await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]));
+      send("state", liveState());
+      expect(within(layer).queryByTestId("browser-live-handoff")).toBeNull();
+      expect(within(layer).getByTestId("browser-live-stage")).toHaveFocus();
+      fireEvent.click(within(layer).getByRole("button", { name: "Exit full screen" }));
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Take control" }));
+      await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveControlPath(CHAT), { action: "take" }]));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Exit full screen" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Full screen" })).toHaveFocus());
+    });
+
+    it("closes by itself when the browser closes or the run ends, with focus on the Browser bar", async () => {
+      const { container } = openWatching();
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      send("state", liveState({ browser: "stopped" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(screen.getByRole("button", { name: /Hide/u })).toHaveFocus());
+      expect(container).not.toHaveAttribute("aria-hidden");
+      // A new picture does not reopen it.
+      send("state", liveState());
+      send("frame", liveFrame(2));
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      send("end", { reason: "run_finished" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(screen.getByRole("button", { name: /Hide/u })).toHaveFocus());
+
+      // The answer ended: the panel is gone, so focus goes to the composer.
+      cleanup();
+      const composer = document.body.appendChild(document.createElement("textarea"));
+      composer.className = "v2-composer-input";
+      const again = openWatching();
+      fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+      again.rerender(<BrowserLivePanelV2 chatId={CHAT} live={false} openEventSource={openSource} toolActivity={null} workspaceActivity={browsing} />);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(composer).toHaveFocus());
+      expect(again.container).not.toHaveAttribute("aria-hidden");
+      expect(document.body.style.overflow).toBe("");
+      composer.remove();
+    });
+  });
+
   it("never stores or logs frames or typed text", async () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     const logs = (["log", "info", "warn", "error", "debug"] as const).map((name) => vi.spyOn(console, name));
