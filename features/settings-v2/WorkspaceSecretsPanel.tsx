@@ -11,14 +11,15 @@ import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuar
 import { mergeWorkspaceEnvPaste, WORKSPACE_ENV_ENTRY_LIMIT } from "./workspaceEnvPaste";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
+import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import {
   WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_SECRET_KINDS, WORKSPACE_SECRET_MAX_COUNT,
   WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_LIMIT_TEXT,
   formatWorkspaceSecretLimit, workspaceBrowserAutosaveMessage, workspaceSecretErrorMessage,
   type WorkspaceBrowserAutosaveReport, type WorkspaceSecretKind, type WorkspaceSecretMutation,
-  type WorkspaceSecretSummary, type WorkspaceSecretValue
+  type WorkspaceSecretRevealedValue, type WorkspaceSecretSummary, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
-import { requestWorkspaceSecrets } from "./workspaceSecretsApi";
+import { requestWorkspaceSecrets, revealWorkspaceSecret } from "./workspaceSecretsApi";
 
 const fileLimit = formatWorkspaceSecretLimit(WORKSPACE_SECRET_FILE_MAX_BYTES);
 const browserLimit = formatWorkspaceSecretLimit(WORKSPACE_BROWSER_SESSION_MAX_BYTES);
@@ -45,6 +46,24 @@ type Draft = {
   fileName: string;
   base64: string | null;
 };
+
+/**
+ * A shown value, by secret id and the listed version it belongs to. It lives
+ * only in this state: never in browser storage, and gone on Hide, unmount or
+ * when the listed version changes.
+ */
+type Revealed = Readonly<{ versionId: string } & ({ status: "loading" } | { status: "shown"; value: WorkspaceSecretRevealedValue } | { status: "failed"; message: string })>;
+type Copied = Readonly<{ key: string; ok: boolean }>;
+
+function revealedFields(value: WorkspaceSecretRevealedValue): readonly Readonly<{ key: string; label: string; text: string }>[] {
+  switch (value.kind) {
+    case "text": return [{ key: "text", label: "Text", text: value.text }];
+    case "env": return value.entries.map(({ name, value: text }) => ({ key: `env:${name}`, label: name, text }));
+    case "ssh_key": return [{ key: "private", label: "Private key", text: value.privateKey },
+      ...(value.passphrase !== null ? [{ key: "passphrase", label: "Passphrase", text: value.passphrase }] : [])];
+    case "file": return value.text !== null ? [{ key: "file", label: "Contents", text: value.text }] : [];
+  }
+}
 
 function blankDraft(original: WorkspaceSecretSummary | null = null): Draft {
   return { original, kind: original?.kind ?? "ssh_key", name: original?.name ?? "", description: original?.description ?? "",
@@ -93,8 +112,12 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const [revealed, setRevealed] = useState<Readonly<Record<string, Revealed>>>({});
+  const [copied, setCopied] = useState<Copied | null>(null);
   const formElementId = useId();
   const typeGroupId = useId();
+  const valuesIdBase = useId();
+  const reveals = useRef(new Map<string, Readonly<{ controller: AbortController; versionId: string }>>());
   const active = useRef(false);
   const pending = useRef(false);
   const addButton = useRef<HTMLButtonElement>(null);
@@ -111,7 +134,12 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     requestWorkspaceSecrets(undefined, controller.signal).then((state) => {
       if (active.current && !controller.signal.aborted) { setSecrets(state.secrets); setBrowserAutosave(state.browserAutosave); setError(null); setLoading(false); }
     }, () => { if (active.current && !controller.signal.aborted) { setError("Workspace secrets could not be loaded."); setLoading(false); } });
-    return () => { active.current = false; controller.abort(); };
+    const pendingReveals = reveals.current;
+    return () => {
+      active.current = false; controller.abort();
+      for (const { controller: reveal } of pendingReveals.values()) reveal.abort();
+      pendingReveals.clear();
+    };
   }, []);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   useEffect(() => {
@@ -131,6 +159,42 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
   }, [formId, secrets]);
 
   function change(patch: Partial<Draft>) { setDraft((current) => current ? { ...current, ...patch } : current); }
+  /** A new list drops every shown value whose secret was deleted or saved again. */
+  function showList(rows: readonly WorkspaceSecretSummary[]) {
+    const current = (id: string, versionId: string) => rows.some((row) => row.id === id && row.versionId === versionId);
+    for (const [id, { controller, versionId }] of reveals.current) if (!current(id, versionId)) { controller.abort(); reveals.current.delete(id); }
+    setSecrets(rows);
+    setRevealed((shown) => Object.fromEntries(Object.entries(shown).filter(([id, entry]) => current(id, entry.versionId))));
+    setCopied(null);
+  }
+  async function revealValues(secret: WorkspaceSecretSummary) {
+    reveals.current.get(secret.id)?.controller.abort();
+    const controller = new AbortController();
+    const { id, versionId } = secret;
+    reveals.current.set(id, { controller, versionId });
+    setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "loading" } }));
+    try {
+      const { value } = await revealWorkspaceSecret(id, controller.signal);
+      if (active.current && !controller.signal.aborted) setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "shown", value } }));
+    } catch (failure) {
+      if (active.current && !controller.signal.aborted) setRevealed((shown) => ({ ...shown, [id]: { versionId, status: "failed",
+        message: failure instanceof Error ? failure.message : "The values could not be shown. Try again." } }));
+    } finally {
+      if (reveals.current.get(id)?.controller === controller) reveals.current.delete(id);
+    }
+  }
+  function hideValues(id: string) {
+    reveals.current.get(id)?.controller.abort();
+    reveals.current.delete(id);
+    setRevealed((shown) => Object.fromEntries(Object.entries(shown).filter(([key]) => key !== id)));
+    setCopied((last) => last?.key.startsWith(`${id}:`) ? null : last);
+  }
+  async function copyValue(key: string, text: string) {
+    try {
+      await writeClipboardText(text);
+      if (active.current) setCopied({ key, ok: true });
+    } catch { if (active.current) setCopied({ key, ok: false }); }
+  }
   function open(original: WorkspaceSecretSummary | null) {
     const next = blankDraft(original);
     if (!original && secrets.filter((entry) => entry.kind !== "browser_session").length >= WORKSPACE_SECRET_MAX_COUNT) next.kind = "browser_session";
@@ -161,7 +225,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     try {
       const { secrets: rows, browserAutosave: autosave } = await requestWorkspaceSecrets();
       if (!active.current) return;
-      setSecrets(rows); setBrowserAutosave(autosave);
+      showList(rows); setBrowserAutosave(autosave);
       setDraft((current) => {
         if (!current?.original) return current;
         const latest = rows.find(({ id, kind }) => id === current.original!.id && kind === current.kind);
@@ -179,7 +243,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
       if (!active.current) return;
       restoreFocus.current = mutation.action === "delete" ? "add" : mutation.action === "update" ? mutation.id
         : rows.find(({ id }) => !secrets.some((old) => old.id === id))?.id ?? "add";
-      setInitialDraft(null); setSecrets(rows); setBrowserAutosave(autosave); setDraft(null); setDeleting(null); setDiscarding(false); setPasteText(""); setPasteOpen(false);
+      setInitialDraft(null); showList(rows); setBrowserAutosave(autosave); setDraft(null); setDeleting(null); setDiscarding(false); setPasteText(""); setPasteOpen(false);
       setNotice(mutation.action === "delete" ? "Secret deleted. Future requests will use the updated set." : "Secret saved. Available automatically in your personal Workspace requests.");
     } catch (failure) { if (active.current) setError(failure instanceof Error ? failure.message : workspaceSecretErrorMessage(null)); }
     finally { pending.current = false; if (active.current) setBusy(false); }
@@ -240,7 +304,9 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     {loading ? <p className="mt-5 text-sm text-ink-muted" role="status">Loading Workspace secrets…</p> : null}
     {!loading && !secrets.length && !error ? <p className="mt-5 text-sm text-ink-muted">No saved Workspace secrets.</p> : null}
     <ul className="v2-secret-list" aria-label="Saved Workspace secrets">
-      {secrets.map(secret => <li className="v2-secret-row" key={secret.id}>
+      {secrets.map(secret => { const shown = revealed[secret.id]?.versionId === secret.versionId ? revealed[secret.id] : undefined;
+        const valuesId = `${valuesIdBase}-${secret.id}`;
+        return <li className="v2-secret-row" key={secret.id}>
         <span className="v2-secret-type-icon"><UiV2Icon name={kinds[secret.kind].icon} /></span>
         <div className="min-w-0 flex-1"><h4 className="break-words text-sm font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" tabIndex={-1} ref={node => { if (node) headings.current.set(secret.id, node); else headings.current.delete(secret.id); }}>{secret.name}</h4>
           <p className="mt-1 text-xs text-ink-muted">{labels[secret.kind]} · Updated <time dateTime={secret.updatedAt}>{new Date(secret.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</time></p>
@@ -249,9 +315,14 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
           {secret.envNames.length ? <p className="mt-1 break-all font-mono text-xs text-ink-muted">{secret.envNames.join(", ")}</p> : null}
           {secret.originalName ? <p className="mt-1 break-all text-xs text-ink-muted">{secret.originalName}</p> : null}
         </div>
-        {deleting === secret.id ? <div className="flex flex-wrap items-center gap-2 text-xs text-ink-secondary"><span>Delete this secret?</span><UiV2Button type="button" disabled={busy} tone="destructive" onClick={() => void mutate({ action: "delete", id: secret.id, expectedVersionId: secret.versionId })}>Delete permanently</UiV2Button><UiV2Button type="button" disabled={busy} onClick={() => setDeleting(null)}>Keep secret</UiV2Button></div>
-          : <div className="flex items-center gap-2"><UiV2Button type="button" disabled={busy} aria-label={`Edit ${secret.name}`} onClick={() => open(secret)}>Edit</UiV2Button><SecretMenu name={secret.name} busy={busy} onDelete={() => setDeleting(secret.id)} /></div>}
-      </li>)}
+        {deleting === secret.id ? <div className="v2-secret-actions flex flex-wrap items-center gap-2 text-xs text-ink-secondary"><span>Delete this secret?</span><UiV2Button type="button" disabled={busy} tone="destructive" onClick={() => void mutate({ action: "delete", id: secret.id, expectedVersionId: secret.versionId })}>Delete permanently</UiV2Button><UiV2Button type="button" disabled={busy} onClick={() => setDeleting(null)}>Keep secret</UiV2Button></div>
+          : <div className="v2-secret-actions flex flex-wrap items-center gap-2">
+            {secret.kind !== "browser_session" ? <UiV2Button type="button" icon="eye" disabled={busy && !shown} aria-expanded={Boolean(shown)} aria-controls={shown ? valuesId : undefined}
+              aria-label={`${shown ? "Hide" : "Show"} values of ${secret.name}`} onClick={() => shown ? hideValues(secret.id) : void revealValues(secret)}>{shown ? "Hide values" : "Show values"}</UiV2Button> : null}
+            <UiV2Button type="button" disabled={busy} aria-label={`Edit ${secret.name}`} onClick={() => open(secret)}>Edit</UiV2Button><SecretMenu name={secret.name} busy={busy} onDelete={() => setDeleting(secret.id)} /></div>}
+        {shown ? <SecretValues id={valuesId} name={secret.name} revealed={shown} copied={copied} keyPrefix={`${secret.id}:`}
+          onCopy={(key, text) => void copyValue(key, text)} onRetry={() => void revealValues(secret)} /> : null}
+      </li>; })}
     </ul>
     {draft ? <UiV2Sheet open width="wide" testId="workspace-secret-sheet" title={draft.original ? "Edit secret" : "Add secret"}
       description="Saved secrets join your next Workspace request automatically." closeBlocked={busy} onClose={requestClose}
@@ -281,7 +352,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
           {draft.original ? <label className="flex min-h-touch items-center gap-2 text-sm text-ink-secondary">
             <input type="checkbox" checked={draft.replace} onChange={event => change({ replace: event.target.checked })} />Replace saved value
           </label> : null}
-          {!draft.replace ? <p className="text-xs text-ink-muted">The saved value is preserved and is never shown here.</p> : draft.kind === "ssh_key" ? <>
+          {!draft.replace ? <p className="text-xs text-ink-muted">{draft.kind === "browser_session" ? "The saved session is kept." : "The saved value is kept. To see it, use Show values in the list."}</p> : draft.kind === "ssh_key" ? <>
             <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Private SSH key
               <textarea aria-label="Private SSH key" autoComplete="off" spellCheck={false} className={`${field} font-mono`} rows={6} required value={draft.privateKey} onChange={event => change({ privateKey: event.target.value })} />
             </label>
@@ -342,6 +413,44 @@ function GrowingSecretText({ value, expandOnFocus = false, ...props }: TextareaH
   // Keep the expanded row after blur so the next pointer target cannot move
   // between pointerdown and click (for example Add variable below the table).
   return <textarea {...props} ref={ref} rows={1} value={value} onFocus={() => setExpanded(true)} />;
+}
+
+function SecretValues({ id, name, revealed, copied, keyPrefix, onCopy, onRetry }: Readonly<{
+  id: string; name: string; revealed: Revealed; copied: Copied | null; keyPrefix: string; onCopy(key: string, text: string): void; onRetry(): void;
+}>) {
+  if (revealed.status === "loading") return <div className="v2-secret-values" id={id}><p className="text-xs text-ink-muted" role="status">Loading values…</p></div>;
+  if (revealed.status === "failed") return <div className="v2-secret-values" id={id}>
+    <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-critical"><p className="break-words">{revealed.message}</p>
+      <UiV2Button type="button" onClick={onRetry}>Try again</UiV2Button></div>
+  </div>;
+  const { value } = revealed;
+  const fields = revealedFields(value);
+  const failed = copied && !copied.ok && copied.key.startsWith(keyPrefix);
+  return <div className="v2-secret-values" id={id} role="group" aria-label={`Values of ${name}`}>
+    {value.kind === "file" && value.text === null ? <p className="text-xs text-ink-secondary">Binary file, {formatAttachmentBytes(value.byteSize)}. Its contents cannot be shown as text.</p> : null}
+    {fields.map((entry) => {
+      const key = `${keyPrefix}${entry.key}`;
+      return <div className="v2-secret-value" key={key}>
+        <span className={value.kind === "env" ? "v2-secret-value-label font-mono" : "v2-secret-value-label"}>{entry.label}</span>
+        <ReadOnlySecretText aria-label={entry.label} value={entry.text} />
+        <UiV2Button type="button" icon="copy" aria-label={`Copy ${entry.label}`} onClick={() => onCopy(key, entry.text)}>{copied?.ok && copied.key === key ? "Copied" : "Copy"}</UiV2Button>
+      </div>;
+    })}
+    {failed ? <p className="text-xs text-critical" role="alert">Copying failed. Select the value and copy it yourself.</p> : null}
+  </div>;
+}
+
+/** A shown value: read-only, monospace, as tall as its text up to eight lines. */
+function ReadOnlySecretText({ value, ...props }: Readonly<{ value: string; "aria-label": string }>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.style.height = "auto";
+    const line = Number.parseFloat(getComputedStyle(node).lineHeight) || 20;
+    node.style.height = `${Math.min(node.scrollHeight, line * 8 + 16)}px`;
+  }, [value]);
+  return <textarea {...props} ref={ref} readOnly rows={1} autoComplete="off" spellCheck={false} className={`${field} v2-secret-value-text font-mono`} value={value} />;
 }
 
 function SecretMenu({ name, busy, onDelete }: Readonly<{ name: string; busy: boolean; onDelete(): void }>) {

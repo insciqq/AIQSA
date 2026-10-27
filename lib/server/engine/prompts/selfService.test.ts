@@ -40,6 +40,8 @@ describe("self-service prompt section", () => {
       expect(line).toContain(phrase);
     }
     expect(aiqsaGuideText("secrets")).toContain("The agent saves a secret the user gives it in a message by itself");
+    // Owners see their own saved values in Studio (operator decision 2026-10-27).
+    expect(aiqsaGuideText("secrets")).toContain("the user can show and copy their saved values with Show values, except browser sessions' cookies");
   });
 
   it("says how a webhook automation's body and token work only where the agent can make one", () => {

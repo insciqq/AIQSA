@@ -1,7 +1,7 @@
 import {
   isWorkspaceEnvName, isWorkspaceSavedEnvName, isWorkspaceSecretId, WORKSPACE_SECRET_FILE_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES,
   WORKSPACE_BROWSER_SESSION_VALUE_MAX_BYTES, WORKSPACE_SECRET_VALUE_MAX_BYTES, WORKSPACE_SECRET_ENV_MAX_BYTES,
-  type WorkspaceSecretMutation, type WorkspaceSecretValue
+  type WorkspaceSecretMutation, type WorkspaceSecretRevealRequest, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { workspaceBrowserSessionError } from "./browserSession";
 
@@ -99,4 +99,11 @@ export function parseWorkspaceSecretMutation(value: unknown, purpose: "save" | "
     } else return invalid();
   }
   return value as WorkspaceSecretMutation;
+}
+
+/** A reveal request, or null when the body asks for something else; a malformed reveal is invalid. */
+export function parseWorkspaceSecretReveal(value: unknown): WorkspaceSecretRevealRequest | null {
+  if (!record(value) || value.action !== "reveal") return null;
+  if (!keys(value, ["action", "id"]) || !isWorkspaceSecretId(value.id)) throw new WorkspaceSecretError("workspace_secret_invalid");
+  return value as WorkspaceSecretRevealRequest;
 }
