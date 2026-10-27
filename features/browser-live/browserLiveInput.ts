@@ -358,7 +358,10 @@ function isRelease(input: BrowserLiveInput): boolean {
   return holdOf(input)?.press === false;
 }
 
-/** Appends one input to a pending list, coalescing it into a trailing move or wheel. */
+/**
+ * Appends one input to a pending list, coalescing it into a trailing move or wheel. Typed text is never merged:
+ * one insertion per character keeps code fields that move focus after each digit working.
+ */
 function coalesce(queue: BrowserLiveInput[], input: BrowserLiveInput): void {
   const last = queue.at(-1);
   if (last && isMove(input) && isMove(last)) {
