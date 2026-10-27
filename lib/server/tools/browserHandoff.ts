@@ -22,12 +22,14 @@ export type BrowserHandoffMode =
 
 export const browserHandoffTool: RunTool = {
   capability: "workspace",
-  description: "Hand the Workspace browser to the user for a step only they should take: signing in, a code sent to them " +
+  description: "Hand the Workspace browser to the user for a step only they should take: signing in when the user saved no " +
+    "credentials for the site and gave none in the chat, a code sent to them " +
     "(SMS, email, an authenticator app), a CAPTCHA or bot check, a consent, or a choice that is theirs to make. Open the page " +
     "that needs them first. The chat shows the user the live browser with your message; they act in it and press Done or " +
     "Cancel, and this call returns then, or after at most 10 minutes, with the outcome and the page the browser shows. You " +
     "never see what the user typed. After `completed`, look at the page yourself (take a screenshot and view it) before you go " +
-    "on. Never ask for a password in the chat, never type a password the user did not save, and never try to solve a CAPTCHA.",
+    "on. Never ask for a password in the chat, type only credentials the user saved or gave you, and never try to solve a " +
+    "CAPTCHA.",
   inputSchema: {
     additionalProperties: false,
     properties: {
