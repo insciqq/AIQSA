@@ -762,15 +762,38 @@ it("offers immutable draft downloads before answer text and keeps them after fai
     actionsSlot={<AnswerOutputsV2 live artifact={summary} />} />);
   const downloads = () => screen.getAllByRole("link", { name: "Download" }).map(link => link.getAttribute("href"));
   expect(downloads()).toEqual(["/api/attachments/draft-1/content", "/api/attachments/draft-2/content"]);
-  expect(screen.getByText("Layout before risky export")).toBeVisible();
-  expect(screen.getByText("Revised layout")).toBeVisible();
-  expect(screen.getAllByText(/Saved draft ·/)).toHaveLength(2);
+  // A draft has the final card's two lines: its description and time are the meta line's tooltip.
+  const metas = screen.getAllByText(/^Draft · PSD · /u);
+  expect(metas).toHaveLength(2);
+  expect(metas[0]).toHaveAttribute("title", expect.stringMatching(/^Layout before risky export\n.+/u));
+  expect(metas[1]).toHaveAttribute("title", expect.stringMatching(/^Revised layout\n.+/u));
+  expect(screen.queryByText("Layout before risky export")).not.toBeInTheDocument();
   expect(screen.queryByText(/Final export ·/)).not.toBeInTheDocument();
+  for (const card of within(screen.getByRole("region", { name: "Generated files" })).getAllByRole("listitem")) {
+    expect(card.querySelectorAll("small")).toHaveLength(1);
+  }
   rerender(<AnswerOutputsV2 artifact={summary} workspaceOutputStatus={{ state: "failed", errorCode: "workspace_session_lost" }} />);
   expect(downloads()).toEqual(["/api/attachments/draft-1/content", "/api/attachments/draft-2/content", "/api/attachments/final/content"]);
   expect(screen.getAllByText("layout.psd")).toHaveLength(3);
-  expect(screen.getAllByText(/Saved draft ·/)).toHaveLength(2);
+  expect(screen.getAllByText(/^Draft · /u)).toHaveLength(2);
+  expect(screen.getByText(/^PSD · /u)).not.toHaveAttribute("title");
   expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared");
+});
+
+it("keeps a draft's card and image preview as the same elements when the answer settles", () => {
+  const checkpoint = { id: "cp-png", description: "Cart page before checkout", createdAt: "2026-10-27T10:49:43.000Z" };
+  const final = { attachmentId: "draft-png", byteSize: 56_115, fileName: "cart.png", mimeType: "image/png", relativePath: "cart.png" };
+  const summary = { citations: [], reasoningText: [], sources: [] };
+  const { rerender } = render(<AnswerOutputsV2 live artifact={{ ...summary, generatedFiles: [{ ...final, checkpoint }] }} />);
+  const files = () => screen.getByRole("region", { name: "Generated files" });
+  const card = within(files()).getByRole("listitem");
+  const image = within(files()).getByRole("img", { name: "cart.png" });
+  expect(card).toHaveTextContent(/^cart\.pngDraft · PNG · \S+ KB$/u);
+  rerender(<AnswerOutputsV2 artifact={{ ...summary, generatedFiles: [final] }} />);
+  // Only the marker goes: nothing is mounted again, so nothing reloads or moves.
+  expect(within(files()).getByRole("listitem")).toBe(card);
+  expect(within(files()).getByRole("img", { name: "cart.png" })).toBe(image);
+  expect(card).toHaveTextContent(/^cart\.pngPNG · \S+ KB$/u);
 });
 
 it("keeps historical failed commands in the disclosure without a false aggregate warning", () => {

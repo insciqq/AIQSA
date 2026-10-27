@@ -54,7 +54,8 @@ it("reloads and explicitly reuses the chosen draft when names match", async () =
   render(<WorkspaceExportHistoryV2 branchKey="leaf" canSave={false} chatId="chat" onClose={vi.fn()} onMessage={vi.fn()} onUse={onUse} />);
   expect(await screen.findByText("Original composition")).toBeVisible();
   expect(screen.getByText("Adjusted composition")).toBeVisible();
-  expect(screen.getAllByText(/Saved draft ·/)).toHaveLength(2);
+  // History tells same-named drafts apart by their visible descriptions.
+  expect(screen.getAllByText(/^Draft · PSD ·/)).toHaveLength(2);
   fireEvent.click(screen.getAllByRole("button", { name: "Use file" })[0]!);
   await waitFor(() => expect(onUse).toHaveBeenCalledWith("draft-one", "result.psd"));
 });
