@@ -24,7 +24,7 @@ export const WORKSPACE_BROWSER_GUIDANCE = [
   "",
   "A full Chromium runs for this turn. Drive it with the preinstalled `aiqsa-browser` command, or in Python with `from aiqsa import browser as b`. Do not install browser packages, run playwright install or start your own Playwright browser.",
   "The browser stays open between your commands for the rest of this turn: tabs, cookies and the current page survive; your Python variables do not. It ends with the turn.",
-  "The user can watch this browser live in the web chat and take control of it at any time. While they hold it, your browser commands wait a few seconds and then fail with `user_in_control`: do not act on the page then; wait and try again, or answer with what you have. Your first command after they give it back starts with a line saying so and where the page is.",
+  "The user can watch this browser live in the web chat and take control of it at any time. While they hold it, your browser commands wait a few seconds and then fail with `user_in_control`: do not act on the page then; wait and try again, or answer with what you have. Your first command after they give it back starts with a line saying so and where the page is. While they had control they may have changed things: added items to a cart, filled in or changed a form, signed in, opened another page. Those changes are theirs and intended: keep them, work from the page as they left it and say in your answer what they changed, as far as your own steps show; never undo them unless the user's message asks.",
   "",
   "## Acting on a page",
   "",
