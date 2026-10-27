@@ -461,6 +461,34 @@ for (const viewport of fullScreenViewports) {
         expect(frame.height).toBeGreaterThanOrEqual(viewport.height * 0.25);
         await expectNoHorizontalOverflow(page);
         await attachShot(page, testInfo, `${prefix}-3-handoff`);
+        if (viewport.touch) {
+          // iOS lays the keyboard over the window and only the visual viewport shrinks: the layer must end above it,
+          // with the page, the typing field and Done still there.
+          const visible = Math.round(viewport.height * 0.55);
+          await layer.getByRole("textbox", { name: "Type into the page" }).focus();
+          await page.evaluate((height) => {
+            const visual = window.visualViewport!;
+            Object.defineProperty(visual, "height", { configurable: true, value: height });
+            Object.defineProperty(visual, "offsetTop", { configurable: true, value: 0 });
+            visual.dispatchEvent(new Event("resize"));
+          }, visible);
+          await expect.poll(async () => (await page.locator(".v2-browser-live-layer").boundingBox())!.height).toBeLessThanOrEqual(visible + 1);
+          const typed = (await layer.getByRole("textbox", { name: "Type into the page" }).boundingBox())!;
+          expect(typed.y + typed.height).toBeLessThanOrEqual(visible + 1);
+          const done = (await card.getByRole("button", { name: "Done" }).boundingBox())!;
+          expect(done.y + done.height).toBeLessThanOrEqual(visible + 1);
+          const covered = await settledFrameBox(page, stage);
+          expect(covered.y + covered.height).toBeLessThanOrEqual(visible + 1);
+          expect(covered.height).toBeGreaterThanOrEqual(visible * (viewport.height > viewport.width ? 0.3 : 0.15));
+          await attachShot(page, testInfo, `${prefix}-4-keyboard`);
+          await page.evaluate(() => {
+            const visual = window.visualViewport!;
+            delete (visual as { height?: number }).height;
+            delete (visual as { offsetTop?: number }).offsetTop;
+            visual.dispatchEvent(new Event("resize"));
+          });
+          await expect.poll(async () => (await page.locator(".v2-browser-live-layer").boundingBox())!.height).toBe(viewport.height);
+        }
         await card.getByRole("button", { name: "Done" }).click();
         await expect.poll(() => posted.at(-1)).toEqual({ path: `/api/chats/${chatId}/browser/handoff`, body: { action: "done", handoffId: "handoff-1" } });
         await stream.emit(page, "artifact", { artifactType: "tool_call", payload: { name: "browser_handoff", round: 3, ordinal: 0, status: "complete" } });
