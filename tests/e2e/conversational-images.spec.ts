@@ -45,8 +45,10 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       if (request.url !== "/responses") { send({}, 404); return; }
       const body = JSON.parse(bytes.toString()) as Record<string, unknown>;
       const wire = JSON.stringify(body);
-      const input = body.input as { type?: string }[];
-      const afterTool = input.some((item) => item.type === "function_call_output");
+      const input = body.input as { type?: string; role?: string }[];
+      // Earlier turns' tool calls are replayed in context; only a result after the latest user message ends this turn's call.
+      const latestUser = input.map((item) => item.role ?? item.type).lastIndexOf("user");
+      const afterTool = input.slice(latestUser + 1).some((item) => item.type === "function_call_output");
       if (afterTool && synthesisFails) { send({ error: { code: "fixture_synthesis_failed" } }, 400); return; }
       if (!afterTool) chatCalls.push({ pixels: wire.includes("input_image"), referencesPresent: references.every((id) => wire.includes(id)),
         toolPresent: Array.isArray(body.tools) && body.tools.some((tool: { name?: string }) => tool.name === "generate_image") });
