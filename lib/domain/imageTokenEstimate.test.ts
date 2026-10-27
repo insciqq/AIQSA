@@ -9,6 +9,7 @@ describe("image token policy", () => {
     expect(imageTokenPolicyFor({ provider: "openai", modelId: "anything" })).toBe("openai_patches_or_tiles");
     expect(imageTokenPolicyFor({ provider: "openai_compatible", modelId: "gpt-5.5" })).toBe("openai_patches_or_tiles");
     for (const input of [{ provider: "openai_compatible", modelId: "visual-model" }, { provider: "openrouter", modelId: "openai/gpt-5.5" },
+      { provider: "openrouter", modelId: "anthropic/claude-sonnet-5" },
       { provider: "gemini" }, { provider: "deepseek" }, { provider: "fake" }])
       expect(imageTokenPolicyFor(input)).toBe("conservative_patches");
   });

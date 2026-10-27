@@ -688,8 +688,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               : prepared;
           },
           ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => toolState.reservedCalled !== true } } : {}),
+          // The response keeps its request's anchor, so the chat's next run measures its first request from it (issue #62).
           responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens,
-            history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target, usage: result.usage }),
+            history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target,
+            requestAnchor: context.requestAnchor(result.usage), usage: result.usage }),
           roundEnd: async (result) => {
             for (const event of pending) await sink.publish(event);
             pending = [];

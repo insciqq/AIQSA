@@ -93,13 +93,16 @@ const PROFILES: Readonly<Record<TokenEstimateFamily, TokenEstimateProfile>> = {
 const OPENAI_MODEL_ID = /^(?:gpt-|chatgpt-|codex-|o[1-9](?:$|[-.]))/iu;
 
 /** OpenRouter model ids whose vendor prefix names a calibrated tokenizer
- * family that shares the conservative image policy (spike 1, 2026-10-23:
- * `google/*` counted like native Gemini, far below the unknown profile).
- * Other vendors keep the unknown profile: `openai/` and `anthropic/` would
- * also switch the image estimate, which shares this family key. */
+ * family (spike 1, 2026-10-23: `google/*` counted like native Gemini, far
+ * below the unknown profile; the unknown profile read `openai/*` prose and
+ * JSON 55-65% above o200k). Images on OpenRouter keep the conservative
+ * policy whatever the vendor (`imageTokenPolicyFor`). Other vendors keep the
+ * unknown profile. */
 const OPENROUTER_MODEL_FAMILIES: Readonly<Record<string, TokenEstimateFamily>> = {
+  anthropic: "anthropic",
   deepseek: "deepseek",
-  google: "gemini"
+  google: "gemini",
+  openai: "openai"
 };
 
 /**

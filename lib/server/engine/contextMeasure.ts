@@ -23,14 +23,23 @@ import {
  * of the call that produced it) or nothing (`"opaque"`, for providers that
  * do not count replayed reasoning as input). Items a call produced weigh
  * their share of its reported output tokens when replayed to the same route
- * and model. Without a usable anchor (first call, a compaction since, another
- * route and model) the whole selection is estimated on top of `fixedTokens`.
+ * and model. What a request carries besides the transcript on record
+ * (instructions, personal context, tool declarations, attachments and the
+ * run's own context items) counts by its estimate, so a change in it since the
+ * anchored request (a tool loaded, the next run's context) moves the measure
+ * by that change. So does what an item weighs beyond the form later runs
+ * read it in (a Memory result recorded as its note, a result image sent only
+ * in the run that viewed it), since the item keeps its id while it shrinks.
+ * Without a usable anchor (no earlier call to this route and model, a
+ * compaction since) the whole selection is estimated on top of `fixedTokens`.
  */
 
 /** The last call to one route and model in this conversation. */
 export type ContextAnchor = Readonly<{
   /** Provider-reported input tokens of the anchored call. */
   inputTokens: number;
+  /** The estimated fixed part of the anchored request (`ContextMeasure.fixedTokens`). */
+  fixedTokens: number;
   /** Transcript items the anchored request was built from. */
   itemCount: number;
   target: TranscriptOrigin;
@@ -90,6 +99,9 @@ export type ContextMeasure = Readonly<{
   addedItems: number;
   addedTokens: number;
   anchored: boolean;
+  /** The estimated part rebuilt for every request: `fixedTokens`, the run's own context items and what items weigh beyond
+   * the form later runs read them in. */
+  fixedTokens: number;
   removedItems: number;
   removedTokens: number;
   tokens: number;
@@ -97,6 +109,8 @@ export type ContextMeasure = Readonly<{
 
 /** The anchor a completed call leaves for the next request to its route and model. */
 export function contextAnchor(input: Readonly<{
+  /** The request's `ContextMeasure.fixedTokens`. */
+  fixedTokens: number;
   /** Transcript length when the call's request was built. */
   itemCount: number;
   target: TranscriptOrigin;
@@ -104,7 +118,8 @@ export function contextAnchor(input: Readonly<{
 }>): ContextAnchor | null {
   const inputTokens = input.usage.inputTokens;
   return typeof inputTokens === "number" && Number.isSafeInteger(inputTokens) && inputTokens >= 0
-    ? { inputTokens, itemCount: input.itemCount, target: { model: input.target.model, provider: input.target.provider } }
+    ? { fixedTokens: input.fixedTokens, inputTokens, itemCount: input.itemCount,
+      target: { model: input.target.model, provider: input.target.provider } }
     : null;
 }
 
@@ -154,7 +169,7 @@ export function contextItemTokens(
 function usableAnchor(anchor: ContextAnchor | null | undefined, target: TranscriptTarget, itemCount: number) {
   return anchor && sameTranscriptOrigin(anchor.target, target) && Number.isSafeInteger(anchor.itemCount) &&
     anchor.itemCount > 0 && anchor.itemCount <= itemCount && Number.isSafeInteger(anchor.inputTokens) &&
-    anchor.inputTokens >= 0 ? anchor : null;
+    anchor.inputTokens >= 0 && Number.isFinite(anchor.fixedTokens) && anchor.fixedTokens >= 0 ? anchor : null;
 }
 
 export function measureContext(input: Readonly<{
@@ -163,45 +178,62 @@ export function measureContext(input: Readonly<{
   calibration?: ContextMeasureCalibration;
   /** Local token estimate for the target's tokenizer family. */
   estimate: (value: unknown) => number;
-  /** Instructions and tool declarations; counted only without a usable anchor. */
+  /** Instructions, personal context, tool declarations and attachments, by estimate. */
   fixedTokens: number;
   /** The result images the request carries (`TranscriptProjectionOptions.images`). */
   images?: TranscriptImages;
   items: readonly TranscriptItem[];
   reasoning?: ReasoningWeight;
+  /** The form later runs read an item in (`RunContextDeps.record`); absent, the item itself. */
+  recorded?: (item: TranscriptItem) => TranscriptItem;
   target: TranscriptTarget;
 }>): ContextMeasure {
   const reasoning = input.reasoning ?? "opaque";
-  const weigh = (entries: readonly SelectedTranscriptItem[]) => entries.reduce((total, entry) =>
-    total + contextItemTokens(entry.item, input.target, input.estimate, reasoning, input.calibration, input.images), 0);
+  const recorded = input.recorded ?? ((item: TranscriptItem) => item);
+  const notes: TranscriptImages | undefined = input.images ? { attached: () => undefined, note: input.images.note } : undefined;
+  const weight = (item: TranscriptItem, images: TranscriptImages | undefined) =>
+    contextItemTokens(item, input.target, input.estimate, reasoning, input.calibration, images);
+  // Items added or removed weigh as later runs read them; the rest of what this request carries counts with the fixed part.
+  const later = (entry: SelectedTranscriptItem) => weight(recorded(entry.item), notes);
+  const weigh = (entries: readonly SelectedTranscriptItem[]) => entries.reduce((total, entry) => total + later(entry), 0);
+  const beyond = (entry: SelectedTranscriptItem) => recorded(entry.item) !== entry.item || (entry.item.kind === "tool_result" &&
+    entry.item.image !== undefined && input.images?.attached(entry.item) !== undefined)
+    ? Math.max(0, weight(entry.item, input.images) - later(entry)) : 0;
+  // Run context is rebuilt for every run, so it counts with the fixed part, never as an item added or removed.
+  const rebuilt = (entry: SelectedTranscriptItem) => entry.item.kind === "user" && entry.item.runContext === true;
   const current = selectTranscript(input.items, input.target);
+  const fixedTokens = Math.max(0, input.fixedTokens) + weigh(current.entries.filter(rebuilt)) +
+    current.entries.reduce((total, entry) => total + beyond(entry), 0);
   const anchor = usableAnchor(input.anchor, input.target, input.items.length);
   if (anchor) {
     const anchored = selectTranscript(input.items.slice(0, anchor.itemCount), input.target);
     if (anchored.start === current.start) {
       const anchoredKeys = new Set(anchored.entries.map((entry) => entry.key));
       const currentKeys = new Set(current.entries.map((entry) => entry.key));
-      const added = current.entries.filter((entry) => !anchoredKeys.has(entry.key));
-      const removed = anchored.entries.filter((entry) => !currentKeys.has(entry.key));
+      const added = current.entries.filter((entry) => !rebuilt(entry) && !anchoredKeys.has(entry.key));
+      const removed = anchored.entries.filter((entry) => !rebuilt(entry) && !currentKeys.has(entry.key));
       const addedTokens = weigh(added);
       const removedTokens = weigh(removed);
       return {
         addedItems: added.length,
         addedTokens,
         anchored: true,
+        fixedTokens,
         removedItems: removed.length,
         removedTokens,
-        tokens: Math.max(0, anchor.inputTokens + addedTokens - removedTokens)
+        tokens: Math.max(0, anchor.inputTokens - anchor.fixedTokens + fixedTokens + addedTokens - removedTokens)
       };
     }
   }
-  const addedTokens = weigh(current.entries);
+  const items = current.entries.filter((entry) => !rebuilt(entry));
+  const addedTokens = weigh(items);
   return {
-    addedItems: current.entries.length,
+    addedItems: items.length,
     addedTokens,
     anchored: false,
+    fixedTokens,
     removedItems: 0,
     removedTokens: 0,
-    tokens: Math.max(0, input.fixedTokens) + addedTokens
+    tokens: fixedTokens + addedTokens
   };
 }
