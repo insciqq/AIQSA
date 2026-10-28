@@ -343,7 +343,9 @@ describe("AdminSearchSection", () => {
     expect(within(plan).getByText("No unsaved changes")).toBeInTheDocument();
     fireEvent.click(within(plan).getByRole("button", { name: "Perplexity Search" }));
     expect(within(plan).getByRole("button", { name: "Perplexity Search" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(within(plan).getByRole("button", { name: "Save default" }));
+    const save = within(plan).getByRole("button", { name: "Save default" });
+    save.focus();
+    fireEvent.click(save);
 
     await waitFor(() => expect(feedback.reportNotice).toHaveBeenCalledWith("Organization Search default saved."));
     expect(calls.find(({ method }) => method === "PATCH")?.body).toEqual({
@@ -355,6 +357,8 @@ describe("AdminSearchSection", () => {
       .queryByRole("button", { name: "Save default" })).not.toBeInTheDocument());
     expect(within(screen.getByRole("region", { name: "Recommended Search plan" })).getByRole("button", { name: "Perplexity Search" }))
       .toHaveAttribute("aria-pressed", "true");
+    // Save left with the change; the card remounted for the new version holds focus on its status line.
+    expect(within(screen.getByRole("region", { name: "Recommended Search plan" })).getByText("No unsaved changes")).toHaveFocus();
   });
 
   it("owns the source page topbar: Enabled switch, Run check with an inline result, and Archive behind one confirmation", async () => {

@@ -11,7 +11,7 @@ import {
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import type { SearchPlan } from "@/lib/domain/search";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
@@ -23,19 +23,30 @@ const touchTarget = "[@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:m
  * best working source automatically, never Off (operator decision 2026-10-24).
  * It never grants access, so only enabled, working sources can be picked.
  * Mount it keyed by the policy version so a saved plan becomes the new baseline.
+ * A Save from the footer leaves with the change, so the remounted card takes
+ * focus on its status line: the owner keeps `focusStatus` across the remount.
  */
 export function AdminSearchPlanCard({
   busy,
   catalog,
+  focusStatus = false,
+  onFocusStatusChange,
   onSave
 }: Readonly<{
   busy: boolean;
   catalog: AdminSearchCatalog;
+  focusStatus?: boolean;
+  onFocusStatusChange?(focusStatus: boolean): void;
   onSave(plan: SearchPlan): Promise<string | null>;
 }>) {
   const [optionIds, setOptionIds] = useState<string[]>([...catalog.policy.defaultPlan.optionIds]);
   const [formError, setFormError] = useState<string | null>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!focusStatus) return;
+    statusRef.current?.focus();
+    onFocusStatusChange?.(false);
+  }, [focusStatus, onFocusStatusChange]);
   const selectable = selectablePlanSources(catalog);
   const options: SearchPlanOption[] = selectable.map((source) => ({
     executionModes: source.executionModes,
@@ -148,9 +159,12 @@ export function AdminSearchPlanCard({
                 busy={busy}
                 disabled={!canSave}
                 onClick={() => {
+                  // Read before busy disables Save, which drops focus to the page.
+                  const footerFocused = statusRef.current?.parentElement?.contains(document.activeElement) === true;
                   setFormError(null);
                   void onSave({ mode: "all_selected", optionIds }).then((message) => {
                     if (message) setFormError(message);
+                    else if (footerFocused) onFocusStatusChange?.(true);
                   });
                 }}
                 tone="primary"
