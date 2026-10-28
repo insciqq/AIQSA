@@ -271,6 +271,53 @@ describe("AdminSearchSection", () => {
     expect(onSelectResource).toHaveBeenCalledWith("source-perplexity");
   });
 
+  it("folds archived sources behind one disclosure that still opens their pages", async () => {
+    state.current = {
+      ...state.current,
+      // The service lists archived sources first; the list still puts the active ones on top.
+      integrations: [
+        source({ archivedAt: NOW, displayName: "DeepSeek (model)", enabled: false, id: "source-old", strategyId: "deepseek-old" }),
+        ...state.current.integrations
+      ]
+    };
+    mockFetch(state);
+    const { onSelectResource } = renderSection();
+
+    const list = await screen.findByRole("list", { name: "Search sources" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.queryByRole("list", { name: "Archived Search sources" })).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Show archived (1)" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+    const archived = screen.getByRole("list", { name: "Archived Search sources" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAccessibleName("Hide archived");
+    expect(toggle).toHaveAttribute("aria-controls", archived.id);
+    const row = within(archived).getByRole("listitem");
+    expect(within(row).getByTestId("search-source-status")).toHaveTextContent("Archived");
+    fireEvent.click(within(row).getByRole("link"));
+    expect(onSelectResource).toHaveBeenCalledWith("source-old");
+
+    fireEvent.click(toggle);
+    expect(screen.queryByRole("list", { name: "Archived Search sources" })).not.toBeInTheDocument();
+  });
+
+  it("says every source is archived instead of showing an empty list", async () => {
+    state.current = {
+      ...state.current,
+      integrations: [source({ archivedAt: NOW, enabled: false })]
+    };
+    mockFetch(state);
+    renderSection();
+
+    expect(await screen.findByText("Every Search source is archived.")).toBeInTheDocument();
+    expect(screen.queryByText("No Search sources yet")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Search sources" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show archived (1)" }));
+    expect(within(screen.getByRole("list", { name: "Archived Search sources" })).getAllByRole("listitem")).toHaveLength(1);
+  });
+
   it("saves the recommended plan with the current policy version and reports it once", async () => {
     const calls = mockFetch(state, ({ body, method, url }) => {
       if (url === "/api/admin/search" && method === "PATCH") {
@@ -290,7 +337,10 @@ describe("AdminSearchSection", () => {
 
     const plan = await screen.findByRole("region", { name: "Recommended Search plan" });
     expect(within(plan).queryByRole("button", { name: "OpenAI Search" })).not.toBeInTheDocument();
-    expect(within(plan).getByRole("button", { name: "Save default" })).toBeDisabled();
+    // A clean card offers no actions (issue #66).
+    expect(within(plan).queryByRole("button", { name: "Save default" })).not.toBeInTheDocument();
+    expect(within(plan).queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    expect(within(plan).getByText("No unsaved changes")).toBeInTheDocument();
     fireEvent.click(within(plan).getByRole("button", { name: "Perplexity Search" }));
     expect(within(plan).getByRole("button", { name: "Perplexity Search" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(within(plan).getByRole("button", { name: "Save default" }));
@@ -301,8 +351,10 @@ describe("AdminSearchSection", () => {
       expectedVersion: 4
     });
     expect(onMutationCommitted).toHaveBeenCalled();
-    await waitFor(() => expect(within(plan).getByRole("button", { name: "Save default" })).toBeDisabled());
-    expect(within(plan).getByRole("button", { name: "Perplexity Search" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Recommended Search plan" }))
+      .queryByRole("button", { name: "Save default" })).not.toBeInTheDocument());
+    expect(within(screen.getByRole("region", { name: "Recommended Search plan" })).getByRole("button", { name: "Perplexity Search" }))
+      .toHaveAttribute("aria-pressed", "true");
   });
 
   it("owns the source page topbar: Enabled switch, Run check with an inline result, and Archive behind one confirmation", async () => {

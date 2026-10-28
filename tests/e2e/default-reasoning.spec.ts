@@ -91,7 +91,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     const save = defaults.getByRole("button", { name: "Save", exact: true });
     const savedNotice = page.getByTestId("admin-feedback").getByText("Chat defaults saved for new chats");
     await expect(model).toHaveValue(reasoningModel.id);
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveCount(0);
     await defaults.locator("summary").click();
     await effort.selectOption("high");
     await save.click();
@@ -110,7 +110,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await expect(effort).toHaveValue("high");
     await expect(mcpTools).toHaveValue("20");
     await expect(model).toHaveValue(reasoningModel.id);
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const box = await effort.boundingBox();
     expect(box!.x).toBeGreaterThanOrEqual(0);
@@ -146,19 +146,19 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await defaults.locator("summary").click();
     await effort.selectOption("");
     await save.click();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveCount(0);
     expect(saved.at(-1)).toMatchObject({ providerModelId: reasoningModel.id, reasoningEffort: null });
     await effort.selectOption("high");
     await model.selectOption(plainModel.id);
     await expect(effort).toHaveValue("");
     await expect(effort).toBeDisabled();
     await save.click();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveCount(0);
     expect(saved.at(-1)).toMatchObject({ providerModelId: plainModel.id, reasoningEffort: null });
     // Clearing the default is the empty choice of the same picker, saved the same way.
     await model.selectOption("");
     await save.click();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveCount(0);
     expect(saved.at(-1)).toMatchObject({ providerModelId: null, reasoningEffort: null });
   });
 }

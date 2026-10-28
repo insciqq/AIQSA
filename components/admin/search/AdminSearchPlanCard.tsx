@@ -11,7 +11,7 @@ import {
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import type { SearchPlan } from "@/lib/domain/search";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
@@ -35,6 +35,7 @@ export function AdminSearchPlanCard({
 }>) {
   const [optionIds, setOptionIds] = useState<string[]>([...catalog.policy.defaultPlan.optionIds]);
   const [formError, setFormError] = useState<string | null>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
   const selectable = selectablePlanSources(catalog);
   const options: SearchPlanOption[] = selectable.map((source) => ({
     executionModes: source.executionModes,
@@ -121,38 +122,44 @@ export function AdminSearchPlanCard({
               {automatic ? `Automatic: ${automatic.displayName}` : "Automatic: no working source yet"}
             </p>          ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
-          <p className="mr-auto min-w-0 text-xs text-ink-muted" role="status">
+        {/* The actions appear with a change, so a clean card offers none (issue #66). */}
+        <div className="flex min-h-14 flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
+          <p className="mr-auto min-w-0 text-xs text-ink-muted outline-none" ref={statusRef} role="status" tabIndex={-1}>
             {missing.length > 0
               ? "The saved recommendation includes an unavailable source. Remove it or make it work before saving."
               : formError ?? (dirty ? "Unsaved changes" : "No unsaved changes")}
           </p>
           {formError ? <span className="sr-only" role="alert">{formError}</span> : null}
-          <UiV2Button
-            disabled={!dirty || busy}
-            onClick={() => {
-              setOptionIds([...catalog.policy.defaultPlan.optionIds]);
-              setFormError(null);
-            }}
-            tone="ghost"
-            type="button"
-          >
-            Discard
-          </UiV2Button>
-          <UiV2Button
-            busy={busy && dirty}
-            disabled={!canSave}
-            onClick={() => {
-              setFormError(null);
-              void onSave({ mode: "all_selected", optionIds }).then((message) => {
-                if (message) setFormError(message);
-              });
-            }}
-            tone="primary"
-            type="button"
-          >
-            Save default
-          </UiV2Button>
+          {dirty ? (
+            <>
+              <UiV2Button
+                disabled={busy}
+                onClick={() => {
+                  setOptionIds([...catalog.policy.defaultPlan.optionIds]);
+                  setFormError(null);
+                  statusRef.current?.focus();
+                }}
+                tone="ghost"
+                type="button"
+              >
+                Discard
+              </UiV2Button>
+              <UiV2Button
+                busy={busy}
+                disabled={!canSave}
+                onClick={() => {
+                  setFormError(null);
+                  void onSave({ mode: "all_selected", optionIds }).then((message) => {
+                    if (message) setFormError(message);
+                  });
+                }}
+                tone="primary"
+                type="button"
+              >
+                Save default
+              </UiV2Button>
+            </>
+          ) : null}
         </div>
       </div>
     </section>
