@@ -504,10 +504,15 @@ describe("the tools a native run is offered by kind", () => {
     return { request: requests[0]!, tools: toolNames(requests[0]) };
   }
 
-  it("gives a web personal chat the self-service tools, and an Assistant chat, a scheduled run or a Telegram turn none", async () => {
+  it("gives a web personal chat the self-service tools, an Assistant chat its Skill saves, and a scheduled run or a Telegram turn none", async () => {
     expect((await offered({})).tools).toEqual(expect.arrayContaining(["read_secret", "manage_secret", "manage_skill", "manage_assistant"]));
-    for (const run of [await offered({ assistant: {} as never }), await offered({ chatAssistant: {} as never }),
-      await offered({}, {}, { scheduled: true }), await offered({}, {}, { telegram: true })]) {
+    // An Assistant's instructions are its author's: only the guide and Skill saves, which have Undo (operator decision 2026-10-29).
+    for (const run of [await offered({ assistant: {} as never }), await offered({ chatAssistant: {} as never })]) {
+      expect(run.tools).toEqual(expect.arrayContaining(["read_secret", "read_aiqsa_guide", "manage_skill"]));
+      expect(run.tools).not.toContain("manage_secret");
+      expect(run.tools).not.toContain("manage_assistant");
+    }
+    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { telegram: true })]) {
       expect(run.tools).toContain("read_secret");
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");

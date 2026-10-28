@@ -201,11 +201,12 @@ export type ToolRegistryServices = Readonly<{
   /** The saved secrets `read_secret` reads (`createRunSecretSource`), with or without a Workspace. */
   secrets?: RunSecretSource;
   /**
-   * The owners behind the self-service tools, given only for interactive
-   * personal and temporary chats (`nativeRunResponse`); the registry adds
-   * the run's own facts. They need `secrets` too, for the Skill save guard.
+   * The owners behind the self-service tools, given only for interactive web
+   * chats (`nativeRunResponse`), with the tools the chat takes when not all
+   * of them (`selfServiceToolsFor`); the registry adds the run's own facts.
+   * They need `secrets` too, for the Skill save guard.
    */
-  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage">;
+  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage"> & Readonly<{ tools?: readonly string[] }>;
   skillTools?: Pick<SkillToolService, "execute">;
   vision?: Pick<VisionAnalysisService, "execute">;
   workspace?: WorkspaceCoordinator;
@@ -233,6 +234,8 @@ export type ToolRegistryInput = Readonly<{
   request: ProviderRunRequest;
   runId: string;
   services: ToolRegistryServices;
+  /** A Telegram turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
+  telegram?: true;
   userId: string;
 }>;
 
@@ -418,6 +421,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const deps: SelfServiceRunDeps = { ...selfService, attachmentIds: admittedAttachmentIds(request), request: { skills: request.skills },
       run: { chatId: input.chatId, runId: input.runId, userId: input.userId }, secretSource: secrets };
     for (const descriptor of SELF_SERVICE_TOOLS) {
+      if (selfService.tools && !selfService.tools.includes(descriptor.name)) continue;
       add({ activity: listed(descriptor.name), definition: descriptor.tool, effects: descriptor.effects, observationSource: "workspace",
         execute: async (execution) => await executeSelfServiceTool(deps, execution.call, {
           callId: execution.persistedToolCallId, signal: execution.signal,
@@ -449,8 +453,9 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       execute: (execution) => executeManageScheduledTask(execution.call, context(execution), manage) });
   }
   for (const definition of skillSaveToolsForRequest(request)) {
-    // `manage_skill` saves Skills in any chat and supersedes the Workspace folder save (`SUPERSEDED_TOOLS`).
-    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered) continue;
+    // `manage_skill` saves Skills in any web chat and supersedes the Workspace folder save (`SUPERSEDED_TOOLS`);
+    // a Telegram turn saves none.
+    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered || input.telegram) continue;
     add({ activity: named(definition, "Skills"), definition, effects: "local", observationSource: "workspace",
       execute: (execution) => executeSaveSkill(execution.call, context(execution), {
         commit: runSkillSaveCommitter(input.services.repository, { callId: execution.persistedToolCallId, ...owner }),

@@ -634,12 +634,12 @@ describe("AdminRolesSection", () => {
     const tools = await screen.findByRole("spinbutton", { name: "MCP Auto tools" });
     expect(tools).toHaveValue(12);
     expect(tools.closest("details")).toBeNull();
-    const save = screen.getByRole("button", { name: "Save" });
     for (const value of ["", "0", "129", "4.5"]) {
       fireEvent.change(tools, { target: { value } });
-      expect(save).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     }
     fireEvent.change(tools, { target: { value: "20" } });
+    const save = screen.getByRole("button", { name: "Save" });
     const original = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       String(input) === "/api/admin/providers/model-policy" && init?.method === "PATCH"
@@ -675,18 +675,22 @@ describe("AdminRolesSection", () => {
     const { reportNotice } = renderSection();
     const model = await screen.findByRole("combobox", { name: "Default chat model" });
     expect(model).toHaveValue("luna");
-    const save = screen.getByRole("button", { name: "Save" });
-    expect(save).toBeDisabled();
+    // A clean card offers no actions (issue #66).
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
     fireEvent.change(model, { target: { value: "terra" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "Rounds" }), { target: { value: "10" } });
     expect(screen.getByText("2 unsaved changes")).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save" });
+    save.focus();
     fireEvent.click(save);
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
     expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
       expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 10,
       providerModelId: "terra", reasoningEffort: null, toolLimitsEnabled: true
     }]);
-    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+    expect(screen.getByText("No unsaved changes")).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
   });
 
   it("starts with tool limits off and saves them on with the numbers shown", async () => {
@@ -700,8 +704,7 @@ describe("AdminRolesSection", () => {
     expect(screen.queryByRole("spinbutton", { name: "Rounds" })).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton", { name: "Calls" })).not.toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "MCP Auto tools" })).toHaveValue(12);
-    const save = screen.getByRole("button", { name: "Save" });
-    expect(save).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
 
     fireEvent.click(limits);
     expect(limits).toHaveAttribute("aria-checked", "true");
@@ -712,7 +715,7 @@ describe("AdminRolesSection", () => {
     expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("spinbutton", { name: "Calls" }), { target: { value: "100" } });
     expect(screen.getByText("2 unsaved changes")).toBeInTheDocument();
-    fireEvent.click(save);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
     expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
       expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 100, maxToolRounds: 8, toolLimitsEnabled: true
@@ -727,8 +730,8 @@ describe("AdminRolesSection", () => {
     renderSection();
     const limits = await screen.findByRole("switch", { name: "Tool limits per answer" });
     await waitFor(() => expect(limits).toHaveAttribute("aria-checked", "true"));
-    const save = screen.getByRole("button", { name: "Save" });
     fireEvent.change(screen.getByRole("spinbutton", { name: "Rounds" }), { target: { value: "0" } });
+    const save = screen.getByRole("button", { name: "Save" });
     expect(save).toBeDisabled();
     expect(screen.getByText("Enter a valid Rounds to save.")).toBeVisible();
 
@@ -792,9 +795,9 @@ describe("AdminRolesSection", () => {
     const toggle = await screen.findByRole("switch", { name: "Tool result store and context compaction" });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     expect(screen.getByRole("option", { name: "Reasoning: xhigh (unavailable)" })).toBeInTheDocument();
-    const save = screen.getByRole("button", { name: "Save" });
     fireEvent.click(toggle);
     expect(screen.getByText("1 unsaved change")).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save" });
     expect(save).toBeEnabled();
     expect(save).not.toHaveAccessibleDescription();
 
@@ -827,7 +830,9 @@ describe("AdminRolesSection", () => {
     expect(save).toHaveAccessibleDescription("Enter a valid Rounds and Calls to save.");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.queryByText(/to save\.$/u)).not.toBeInTheDocument();
-    expect(save).toBeDisabled();
+    // The actions leave with the change; focus moves to the status line.
+    expect(save).not.toBeInTheDocument();
+    expect(screen.getByText("No unsaved changes")).toHaveFocus();
   });
 
   it("says the observation setting is loading while the chat defaults load", async () => {

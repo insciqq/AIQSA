@@ -182,6 +182,19 @@ describe("accepted PDF answer continuation", () => {
     expect(started()).toMatchObject({ created: { runId: "run" }, userId: "owner" });
   });
 
+  it("keeps a Telegram turn's origin, so its answer takes no self-service tools", async () => {
+    const h = fixture();
+    (h.prepared as { assistant?: unknown }).assistant = { assistantId: "shared-assistant" };
+    (h.loaded as { snapshot: unknown }).snapshot = { ...chatPdfRunSnapshot(h.prepared), native: { telegram: true } };
+    await h.run();
+    expect(started().telegram).toBe(true);
+    expect(started().approvalId).toBeUndefined();
+    vi.clearAllMocks();
+    // A web send keeps none.
+    await fixture().run();
+    expect(started().telegram).toBeUndefined();
+  });
+
   it("stops before any answer side effect when the final document context does not fit", async () => {
     const h = fixture();
     h.prepared.providerRequest.prompt.system = "x".repeat(1000);

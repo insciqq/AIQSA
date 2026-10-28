@@ -3,6 +3,7 @@ import type { ProviderAdapter } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import { endRetiredEngineRunsFor, type RetiredEngineRunDeps } from "../runs/retiredEngineRuns";
+import { MANAGE_SKILL_TOOL_NAME, READ_AIQSA_GUIDE_TOOL_NAME, SELF_SERVICE_TOOLS } from "../tools/selfServiceTools";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
@@ -28,17 +29,20 @@ export type NativeEngineHandlerDeps = Readonly<{
 }>;
 
 /**
- * Whether a run takes the self-service tools: an interactive run of a
- * personal or temporary chat in the web. Assistant runs, scheduled
- * occurrences and Telegram turns (the bridge cannot show
- * their confirmation cards or Undo) never take them, and every change fences
- * its run again as it commits (`selfServiceRunAllowedInTransaction`).
+ * The self-service tools a run takes: all of them in an interactive web run
+ * of a personal or temporary chat; in an Assistant chat only the guide and
+ * Skill saves (operator decision 2026-10-29), because the Assistant's
+ * instructions carry its author's authority and a replaced secret or an
+ * edited Assistant has no Undo, while a Skill save shows its changes with
+ * Undo. Scheduled occurrences and Telegram turns (the bridge cannot show
+ * their cards or Undo) take none, and every change fences its run again as
+ * it commits (`selfServiceRunAllowedInTransaction`).
  */
-export function selfServiceChat(prepared: MaterializedPreparedRunData,
-  options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): boolean {
-  const request = prepared.normalizedRequest;
-  return options.scheduled !== true && options.telegram !== true && !prepared.assistant &&
-    !prepared.chatAssistant && !request.monitoringVerdictTool;
+export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
+  options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): readonly string[] {
+  if (options.scheduled === true || options.telegram === true || prepared.normalizedRequest.monitoringVerdictTool) return [];
+  if (prepared.assistant || prepared.chatAssistant) return [READ_AIQSA_GUIDE_TOOL_NAME, MANAGE_SKILL_TOOL_NAME];
+  return SELF_SERVICE_TOOLS.map((tool) => tool.name);
 }
 
 /**
@@ -124,6 +128,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
   const tools = native.tools;
   const scheduled = input.scheduled === true;
   const telegram = input.telegram === true;
+  const selfServiceTools = selfServiceToolsFor(input.prepared, { scheduled, telegram });
   return createNativeRunExecutionResponse({
     adapter: input.adapter,
     ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),
@@ -139,7 +144,7 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
       ...(tools?.secrets ? { secrets: tools.secrets } : {}),
-      ...(tools?.selfService && selfServiceChat(input.prepared, { scheduled, telegram }) ? { selfService: tools.selfService } : {})
+      ...(tools?.selfService && selfServiceTools.length > 0 ? { selfService: { ...tools.selfService, tools: selfServiceTools } } : {})
     },
     userId: input.userId,
     ...(input.workspace ? { workspace: input.workspace } : {})

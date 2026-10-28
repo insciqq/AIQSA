@@ -8,7 +8,7 @@ import type { AdminDefaultAnswerModelCandidate, AdminModelPolicyCatalog } from "
 import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import type { ToolObservationPolicy } from "@/lib/contracts/toolObservationPolicy";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 type Draft = Readonly<{
   calls: string;
@@ -95,6 +95,7 @@ export function AdminChatDefaultsCard({
   const mcpToolsHelpId = useId();
   const observationHelpId = useId();
   const saveBlockedId = useId();
+  const statusRef = useRef<HTMLParagraphElement>(null);
   const current = draftFor(catalog);
   const draft = { ...current, ...edits };
   const reachable = useMemo(
@@ -142,6 +143,9 @@ export function AdminChatDefaultsCard({
 
   const save = async () => {
     if (!catalog || !canSave) return;
+    // Save leaves with the change. Whether it holds focus is read now: busy disables it, which drops focus to the page.
+    const footer = statusRef.current?.parentElement;
+    const footerFocused = footer?.contains(document.activeElement) === true;
     setFormError(null);
     const message = await onSave({
       ...(modelChanged ? {
@@ -158,7 +162,10 @@ export function AdminChatDefaultsCard({
       ...(observationChanged && draft.observation !== "" ? { toolObservationPolicy: draft.observation } : {})
     });
     if (message) setFormError(message);
-    else setEdits({});
+    else {
+      setEdits({});
+      if (footerFocused && (document.activeElement === document.body || footer?.contains(document.activeElement))) statusRef.current?.focus();
+    }
   };
 
   const limitInput = (
@@ -310,8 +317,9 @@ export function AdminChatDefaultsCard({
             onChange={(enabled) => setEdits((previous) => ({ ...previous, observation: enabled ? "v1" : "off" }))}
           />
         </div>
-        <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
-          <p className="mr-auto min-w-0 text-xs text-ink-muted" role="status">
+        {/* The actions appear with a change, so a clean card offers none (issue #66). */}
+        <div className="flex min-h-14 flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
+          <p className="mr-auto min-w-0 text-xs text-ink-muted outline-none" ref={statusRef} role="status" tabIndex={-1}>
             {error ?? (loading && !catalog
               ? "Loading chat defaults…"
               : formError ?? (changed > 0
@@ -322,25 +330,30 @@ export function AdminChatDefaultsCard({
             ) : null}
           </p>
           {formError ? <span className="sr-only" role="alert">{formError}</span> : null}
-          <UiV2Button
-            disabled={changed === 0 || busy}
-            onClick={() => {
-              setEdits({});
-              setFormError(null);
-            }}
-            tone="ghost"
-          >
-            Discard
-          </UiV2Button>
-          <UiV2Button
-            aria-describedby={shownBlockedReason ? saveBlockedId : undefined}
-            busy={busy && changed > 0}
-            disabled={!canSave}
-            onClick={() => void save()}
-            tone="primary"
-          >
-            Save
-          </UiV2Button>
+          {changed > 0 ? (
+            <>
+              <UiV2Button
+                disabled={busy}
+                onClick={() => {
+                  setEdits({});
+                  setFormError(null);
+                  statusRef.current?.focus();
+                }}
+                tone="ghost"
+              >
+                Discard
+              </UiV2Button>
+              <UiV2Button
+                aria-describedby={shownBlockedReason ? saveBlockedId : undefined}
+                busy={busy}
+                disabled={!canSave}
+                onClick={() => void save()}
+                tone="primary"
+              >
+                Save
+              </UiV2Button>
+            </>
+          ) : null}
         </div>
       </div>
     </section>

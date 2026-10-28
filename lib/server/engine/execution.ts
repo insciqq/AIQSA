@@ -468,6 +468,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           onUsage: (attribution) => usage.add(attribution),
           onWorkspaceActivity,
           request: base,
+          ...(input.telegram ? { telegram: true as const } : {}),
           runId,
           services: { ...input.services, mcpRuntime: input.mcpRuntime, repository: input.repository, savedResults: engine.savedResults,
             workspace: input.workspace },

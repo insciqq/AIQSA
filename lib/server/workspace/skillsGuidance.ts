@@ -1,7 +1,7 @@
 /**
  * Release-owned Skill authoring guide, staged read-only at
  * /workspace/guides/skills.md: AIQSA's counterpart of a skill-creator.
- * It documents `save_skill` and the guest `aiqsa.mcp` client.
+ * It documents saving with `manage_skill` and the guest `aiqsa.mcp` client.
  */
 export const WORKSPACE_SKILLS_GUIDANCE = [
   "# Script Skills",
@@ -45,7 +45,7 @@ export const WORKSPACE_SKILLS_GUIDANCE = [
   "",
   "## Secrets",
   "- Read credentials only from environment variables (`os.environ[\"GITLAB_TOKEN\"]`); /workspace/SECRETS.md lists the names. If one is missing, exit with a message naming the variable.",
-  "- Never write a value into any file: save_skill refuses a folder that contains one. Never print or log values, auth headers or URLs with tokens: command output is not masked and reaches the chat.",
+  "- Never write a value into any file: a save is refused when a file contains one. Never print or log values, auth headers or URLs with tokens: command output is not masked and reaches the chat.",
   "",
   "## MCP tools from code",
   "```",
@@ -76,7 +76,7 @@ export const WORKSPACE_SKILLS_GUIDANCE = [
   "## Test, then save",
   "- Save only when the user asked to create, save or change a Skill.",
   "- Run it once on real data (writers with `--dry-run`), show the user the result, fix and rerun until it works.",
-  "- Then call save_skill with the folder and every file in it (list them with `find . -type f`): target \"new\" for a new Skill, or the alias of the user's Skill to save a new version on top of the version staged in this run. Another user's Skill is saved as the user's own copy. On a conflict, merge the returned current files and save again with the returned skillId and expectedVersion.",
-  "- restoreRevision puts an earlier version back (0 lists the versions).",
+  "- Then call manage_skill with action save and every file of the folder (list them with `find . -type f`, then pass each file's path relative to the folder and its text): target \"new\" for a new Skill, or the alias of the user's Skill for a new version, in which files you leave out stay and removeFiles deletes files. Another user's Skill is saved as the user's own copy. On a conflict, merge the returned current files and save again with the returned skillId and expectedVersion.",
+  "- manage_skill with action restore puts an earlier version back (revision 0 lists the versions).",
   "- Tell the user that the card in the answer shows the changes and has Undo."
 ].join("\n");
