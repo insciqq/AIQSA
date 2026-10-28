@@ -1192,6 +1192,31 @@ describe("model run route handlers", () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
+  it("keeps a Telegram turn's origin in its deferred PDF admission for the continuation", async () => {
+    const { repository, state } = createMemoryRepository();
+    const bytes = Buffer.from("%PDF-settled-original");
+    repository.loadAttachments = async () => [{ byteSize: bytes.length,
+      checksum: createHash("sha256").update(bytes).digest("hex"), extractedText: null,
+      fileName: "report.pdf", id: "pdf-1", kind: "pdf", metadata: { pdfPageCount: 21 }, mimeType: "application/pdf",
+      processingErrorCode: null, status: "ready", storageKey: "private/original" }];
+    const createRun = repository.createRun;
+    repository.createRun = vi.fn<typeof repository.createRun>(async (input) => ({ ...await createRun(input), deferredPdf: true }));
+    repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", pdfPreparation: [] });
+    const POST = createSendMessageHandler({ ...authDeps, repository, providers: { fake: createFakeProviderAdapter() }, telegramTurn: true,
+      chatPdf: { kick: vi.fn(), resolve: async () => ({ route: "local_text", authority: null, snapshot: null, policyVersion: null }),
+        findAdmission: async () => null },
+      storage: { deleteObject: vi.fn(), putObject: vi.fn(), getObject: async (storageKey) => ({ body: bytes, contentType: "application/pdf", storageKey }) }
+    });
+    const response = await POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
+        admissionId: "telegram-invocation", expectedActiveLeafId: null, provider: "fake", modelId: "fake-qsa",
+        searchPlan: { mode: "all_selected", optionIds: [] }, content: { blocks: [{ attachmentId: "pdf-1", type: "file" }] }
+      })
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(202);
+    expect((state.created!.deferredPdf!.snapshot as import("./acceptedRunSnapshot").AcceptedRunSnapshot).native).toEqual({ telegram: true });
+  });
+
   it("returns the same committed PDF run on duplicate admission without starting the answer", async () => {
     const { repository, state } = createMemoryRepository();
     const bytes = Buffer.from("%PDF-settled-original");
@@ -1237,7 +1262,9 @@ describe("model run route handlers", () => {
     expect(kick).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(accepted)).not.toMatch(/private|snapshot|checksum|credential/);
 
-    const saved = state.created!.deferredPdf!.snapshot as { prepared: import("./runPreparation").MaterializedPreparedRunData };
+    const saved = state.created!.deferredPdf!.snapshot as import("./acceptedRunSnapshot").AcceptedRunSnapshot;
+    // A web send keeps no Telegram origin for the continuation.
+    expect(saved.native).toBeUndefined();
     repository.createRegenerationRun = vi.fn<typeof repository.createRegenerationRun>(async () => ({ assistantMessageId: "retry-assistant", runId: "run-1",
       userMessageId: "user-message-1", deferredPdf: true }));
     const resolveCurrentRoute = vi.fn();

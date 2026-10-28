@@ -103,6 +103,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await expect(save).toBeEnabled();
     await save.click();
     await expect(defaults.getByRole("status")).toHaveText("No unsaved changes");
+    // Save left with the change: focus is on the status line, not lost to the page.
+    await expect(defaults.getByRole("status")).toBeFocused();
     expect(saved.at(-1)).toEqual({ expectedVersion: 2, maxMcpToolsPerDiscovery: 20, maxToolCalls: 20, maxToolRounds: 8,
       toolLimitsEnabled: true });
     await page.reload();

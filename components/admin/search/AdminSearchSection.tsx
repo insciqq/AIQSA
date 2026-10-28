@@ -62,6 +62,8 @@ export function AdminSearchSection({
   resource
 }: AdminSearchSectionProps) {
   const [addingRequested, setAdding] = useState(false);
+  // A plan saved from its footer: the card remounted for the new version focuses its status line.
+  const [planStatusFocus, setPlanStatusFocus] = useState(false);
   // Keyed by the open page so a page change never carries a sheet along.
   const [configureOpenFor, setConfigureOpenFor] = useState<string | null>(null);
   const adding = addingRequested && resource === null;
@@ -200,7 +202,9 @@ export function AdminSearchSection({
           <AdminSearchPlanCard
             busy={busy}
             catalog={catalog}
+            focusStatus={planStatusFocus}
             key={catalog.policy.version}
+            onFocusStatusChange={setPlanStatusFocus}
             onSave={(plan) => controller.actions.savePolicy(plan, catalog.policy.version)}
           />
         ) : null}

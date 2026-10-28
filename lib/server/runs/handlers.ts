@@ -12,7 +12,7 @@ import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { chatPdfRunSnapshot } from "../uploads/chatPdfRunContinuation";
-import { acceptedRunSnapshot } from "./acceptedRunSnapshot";
+import { acceptedRunSnapshot, type AcceptedRunSnapshot } from "./acceptedRunSnapshot";
 import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
@@ -492,11 +492,13 @@ function pdfAdmissionKey(kind: "send" | "regenerate", sourceId: string, userId: 
     nonce: body?.admissionId ?? (kind === "send" && body && "expectedActiveLeafId" in body ? null : randomUUID()) });
 }
 
-function deferredPdfInput(prepared: ReturnType<typeof materializePreparedRunData>, admissionKey: string, sourceMessageId?: string) {
+/** `native`: the entry facts the PDF continuation starts the answer with, such as a Telegram turn's (no self-service tools). */
+function deferredPdfInput(prepared: ReturnType<typeof materializePreparedRunData>, admissionKey: string, sourceMessageId?: string,
+  native?: AcceptedRunSnapshot["native"]) {
   return prepared.chatPdfAdmissions?.length ? {
     chatPdfAdmissions: prepared.chatPdfAdmissions,
     ...(prepared.chatPdfAdmissions.some(({ route }) => route !== "direct_pdf")
-      ? { deferredPdf: { admissionKey, snapshot: chatPdfRunSnapshot(prepared, sourceMessageId) } } : {})
+      ? { deferredPdf: { admissionKey, snapshot: { ...chatPdfRunSnapshot(prepared, sourceMessageId), ...(native && Object.keys(native).length > 0 ? { native } : {}) } } } : {})
   } : {};
 }
 
@@ -655,15 +657,15 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const approvalId = typeof systemTurn?.approvalId === "string" ? systemTurn.approvalId : undefined;
     // A send behind the previous answer's Workspace hand-off waits for it, keeping the entry facts its execution needs
     // when the follow-up starts it.
-    const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), native: {
-      ...(approvalId ? { approvalId } : {}), ...(deps.telegramTurn ? { telegram: true as const } : {}) } });
+    const nativeEntry = { ...(approvalId ? { approvalId } : {}), ...(deps.telegramTurn ? { telegram: true as const } : {}) };
+    const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), native: nativeEntry });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: followupSnapshot()
         } } : {}),
-        ...deferredPdfInput(preparedData, admissionKey),
+        ...deferredPdfInput(preparedData, admissionKey, undefined, nativeEntry),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(preparedData.chatAssistant ? { chatAssistant: preparedData.chatAssistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
@@ -889,7 +891,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
-        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
+        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id, deps.telegramTurn ? { telegram: true } : undefined),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,

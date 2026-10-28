@@ -145,9 +145,13 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     }
     if (!await observeChatPdfPersistence(claim.runId, "dispatch", () => deps.pdfRepository.markAnswerDispatched(claim))) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     releaseRegistry();
+    // The entry facts the admitting send kept: an approval's Allow and a Telegram turn (no self-service tools).
+    const entry = snapshot.native;
     const response = nativeRunResponse(deps.nativeEngine, { adapter: runtime.adapter,
+      ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
-      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), userId: claim.userId,
+      repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(entry?.telegram ? { telegram: true } : {}),
+      userId: claim.userId,
       ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "complete" });
     // Answer persistence and its controller have taken ownership. Do not hold

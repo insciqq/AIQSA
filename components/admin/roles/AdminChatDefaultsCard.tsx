@@ -143,6 +143,9 @@ export function AdminChatDefaultsCard({
 
   const save = async () => {
     if (!catalog || !canSave) return;
+    // Save leaves with the change. Whether it holds focus is read now: busy disables it, which drops focus to the page.
+    const footer = statusRef.current?.parentElement;
+    const footerFocused = footer?.contains(document.activeElement) === true;
     setFormError(null);
     const message = await onSave({
       ...(modelChanged ? {
@@ -160,10 +163,8 @@ export function AdminChatDefaultsCard({
     });
     if (message) setFormError(message);
     else {
-      // Save leaves with the change: focus it held moves to the status line.
-      const footer = statusRef.current?.parentElement;
       setEdits({});
-      if (footer?.contains(document.activeElement)) statusRef.current?.focus();
+      if (footerFocused && (document.activeElement === document.body || footer?.contains(document.activeElement))) statusRef.current?.focus();
     }
   };
 
