@@ -38,7 +38,7 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 
 - A write grant to the Skill store permits changes only, never sharing or execution. A package missing from a client's listing does not mean it was deleted.
 - Every Skill write goes through `lib/server/skills/revisionWriteCore.ts`. Revisions are append-only: restoring makes an earlier revision current as a new revision, and the published revision never changes.
-- Skill saves by the agent (`save_skill`, operator decision 2026-10-07) follow the agent-initiated change rules in `agent_docs/RUN_CONTRACTS.md`. Files must be text, and a save is refused if any file contains a delivered secret value. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. The save commits with its tool call and card, and Undo restores the previous state as a new version. Code: `lib/server/skills/skillSave.ts`.
+- Skill saves by the agent (`manage_skill`, operator decision 2026-10-07) follow the agent-initiated change rules in `agent_docs/RUN_CONTRACTS.md`. Files must be text, and a save is refused if any file contains a delivered secret value. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. The save commits with its tool call and card, and Undo restores the previous state as a new version. Code: `lib/server/tools/manageSkill.ts`, `lib/server/skills/agentSkills.ts`.
 
 ## Files, jobs and shares
 

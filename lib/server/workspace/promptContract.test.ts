@@ -36,6 +36,8 @@ describe("Workspace capability contract", () => {
     expect(text).toContain("/workspace/SECRETS.md");
     expect(text).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
     expect(text).toContain(`Before building, changing or saving a reusable script Skill, read ${WORKSPACE_GUIDE_PATHS.skills}.`);
+    // A site's Skill holds what earlier work there learned: the agent loads it before it drives the site.
+    expect(text).toContain(`Before driving a website, read ${WORKSPACE_GUIDE_PATHS.browser} and load a listed Skill about that site, if there is one.`);
     for (const file of WORKSPACE_GUIDE_FILES) {
       expect(text.split(file.path)).toHaveLength(2);
       expect(text).not.toContain(file.content);
