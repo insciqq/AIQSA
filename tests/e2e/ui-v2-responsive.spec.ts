@@ -131,7 +131,8 @@ test("v2 sidebar transfers focus across desktop, compact, and mobile composition
     .toHaveAttribute("data-sidebar-composition", "mobile");
   await expect(opener).toBeFocused();
   await opener.click();
-  await expect(page.getByRole("button", { name: "Close sidebar" })).toBeFocused();
+  // A pointer open focuses the drawer itself, so no keyboard ring lands on ✕.
+  await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeFocused();
 
   await page.setViewportSize({ height: 390, width: 844 });
   await expect(page.locator(".v2-workspace-shell"))
@@ -243,7 +244,7 @@ test("v2 compact drawer isolates content, contains focus, and closes on Escape",
   const shell = page.locator(".v2-workspace-shell");
   await expect(shell).toHaveAttribute("data-sidebar-compact-expanded", "true");
   await expect(page.locator(".v2-workspace-content")).toHaveAttribute("inert", "");
-  await expect(page.getByRole("button", { name: "Close sidebar" })).toBeFocused();
+  await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeFocused();
 
   const firstRailDestination = page.getByRole("navigation", { name: "Workspace" })
     .getByRole("link", { name: "New chat", exact: true });
@@ -255,6 +256,12 @@ test("v2 compact drawer isolates content, contains focus, and closes on Escape",
   await page.keyboard.press("Escape");
   await expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded", "true");
   await expect(page.locator(".v2-workspace-content")).not.toHaveAttribute("inert", "");
+  await expect(opener).toBeFocused();
+
+  // A keyboard open keeps the visible landing on ✕.
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Close sidebar" })).toBeFocused();
+  await page.keyboard.press("Escape");
   await expect(opener).toBeFocused();
 
   await opener.click();

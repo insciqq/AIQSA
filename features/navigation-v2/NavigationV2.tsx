@@ -4,6 +4,7 @@ import { useDisclosurePreference } from "@/components/app-shell/disclosurePrefer
 import { ChatDragDropProvider, ChatRootDropTarget, useChatDraggable, useChatFolderDrop } from "./chatDragDrop";
 import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
 import { NEW_CHAT_PATH } from "@/lib/domain/chatRoute";
+import { openingFocusTarget } from "@/lib/browser/openingFocus";
 
 import {
   UiV2Icon,
@@ -842,6 +843,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     <aside
       className="v2-navigation"
       aria-label="Chat navigation"
+      tabIndex={-1}
     >
       <button
         className="v2-navigation-skip v2-focusable"
@@ -1484,9 +1486,13 @@ export function ReadingRoomShellV2({
       openButtonRef.current?.focus();
       handledFocusRequestRef.current = focusRequest.id;
     } else if (focusRequest.target === "sidebar" && sidebarPresented) {
-      document.querySelector<HTMLElement>(
-        ".v2-navigation .v2-navigation-close"
-      )?.focus();
+      const navigationElement = document.querySelector<HTMLElement>(".v2-navigation");
+      if (navigationElement) {
+        openingFocusTarget(
+          navigationElement,
+          navigationElement.querySelector<HTMLElement>(".v2-navigation-close")
+        ).focus();
+      }
       handledFocusRequestRef.current = focusRequest.id;
     } else if (focusRequest.target === "composer" && !drawerOpen && section === "chats") {
       document.querySelector<HTMLTextAreaElement>(
@@ -1549,10 +1555,13 @@ export function ReadingRoomShellV2({
     // the retry as soon as the modal closes or changes composition.
     const focusInitialControl = () => {
       if (cancelled) return;
-      const target = navigationElement.querySelector<HTMLElement>(".v2-navigation-close") ??
-        navigationElement.querySelector<HTMLElement>(focusableSelector);
-      target?.focus();
-      if (target && document.activeElement !== target && focusAttemptsRemaining > 0) {
+      const target = openingFocusTarget(
+        navigationElement,
+        navigationElement.querySelector<HTMLElement>(".v2-navigation-close") ??
+          navigationElement.querySelector<HTMLElement>(focusableSelector)
+      );
+      target.focus();
+      if (document.activeElement !== target && focusAttemptsRemaining > 0) {
         focusAttemptsRemaining -= 1;
         focusFrame = window.requestAnimationFrame(focusInitialControl);
       }
@@ -1564,7 +1573,8 @@ export function ReadingRoomShellV2({
       const first = items[0];
       const last = items.at(-1);
       if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) {
+      // The drawer itself holds focus after a pointer open; Tab enters it.
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === navigationElement)) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {

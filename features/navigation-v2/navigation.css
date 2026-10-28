@@ -45,6 +45,8 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border-right: 1px solid var(--v2-color-pane-divider);
+  /* A pointer-opened drawer focuses the column itself (lib/browser/openingFocus.ts). */
+  outline: none;
   color: var(--v2-color-text);
   background: var(--v2-color-sidebar);
   transition:

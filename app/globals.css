@@ -9,6 +9,10 @@
 html,
 body {
   min-height: 100%;
+  /* The page itself never rubber-bands: iOS moves the in-flow phone header
+     with an overscrolled document while the fixed menu island stays put
+     (GitHub #64). Inner scrollers keep their own bounce. */
+  overscroll-behavior-y: none;
 }
 
 html {
