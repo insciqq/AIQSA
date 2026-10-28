@@ -8,13 +8,13 @@ const prepared = (extra: Record<string, unknown> = {}, request: Record<string, u
   ({ normalizedRequest: { chatId: "chat-1", ...request }, ...extra }) as unknown as MaterializedPreparedRunData;
 
 describe("the self-service tools' chats", () => {
-  it("are interactive personal and temporary chats only", () => {
+  it("are interactive personal, temporary and Assistant chats", () => {
     expect(selfServiceChat(prepared())).toBe(true);
     expect(selfServiceChat(prepared({ initialChatMode: "TEMPORARY" }))).toBe(true);
-    for (const other of [prepared({ assistant: { id: "a" } }), prepared({ chatAssistant: { id: "a" } }),
-      prepared({}, { monitoringVerdictTool: true })]) {
-      expect(selfServiceChat(other)).toBe(false);
-    }
+    // The tools act for the run's own user, whose Assistant chat it is (operator decision 2026-10-29).
+    expect(selfServiceChat(prepared({ assistant: { id: "a" } }))).toBe(true);
+    expect(selfServiceChat(prepared({ chatAssistant: { id: "a" } }))).toBe(true);
+    expect(selfServiceChat(prepared({}, { monitoringVerdictTool: true }))).toBe(false);
   });
 
   it("never include a scheduled task's occurrence, which changes nothing of its owner's own", () => {

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
+import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { BROWSER_GUIDE_IMAGE_TOOLS, BROWSER_HANDOFF_TOOL, WORKSPACE_BROWSER_GUIDANCE, WORKSPACE_WEBSITE_ACTION_SAFETY } from "./browserGuidance";
 import { WORKSPACE_GUIDE_FILES, workspaceGuideInput } from "./guides";
@@ -53,6 +54,15 @@ describe("Workspace browser guide", () => {
     expect(BROWSER_GUIDE_IMAGE_TOOLS).toEqual({ view: VIEW_WORKSPACE_IMAGE, analyze: ANALYZE_IMAGE_TOOL_NAME });
     expect(guide).toContain(`${VIEW_WORKSPACE_IMAGE} when that tool is offered, otherwise ${ANALYZE_IMAGE_TOOL_NAME}`);
     expect(guide).not.toMatch(/No headed browser|cannot see those screenshots|aria_snapshot|sandbox_exec_start/u);
+  });
+
+  it("loads a site's Skill first and saves one from what the outputs showed, by names rather than element numbers", () => {
+    for (const phrase of ["Before you start on a site, load a listed Skill about it", `save it with ${MANAGE_SKILL_TOOL_NAME}`,
+      "never from guesses", "the site's domain and the tasks it covers, in the user's words", "never their values",
+      "never by element number: numbers change with every page", "what failed and what worked instead",
+      "Steps of earlier answers are in this chat's earlier tool results; `steps` lists only this turn's."]) {
+      expect(guide, phrase).toContain(phrase);
+    }
   });
 
   it("keeps scripts to reading page data and says what an older Workspace's browser is", () => {
