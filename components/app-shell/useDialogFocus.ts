@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 
+import { openingFocusTarget } from "@/lib/browser/openingFocus";
+
 const focusableSelector = [
   "button:not([disabled]):not([tabindex='-1'])",
   "a[href]:not([tabindex='-1'])",
@@ -70,6 +72,7 @@ export function useDialogFocus<T extends HTMLElement>({
   closeOnEscape = true,
   containFocus = true,
   onClose,
+  pointerFocusesDialog = false,
   restoreFocus
 }: {
   active?: boolean;
@@ -77,6 +80,8 @@ export function useDialogFocus<T extends HTMLElement>({
   closeOnEscape?: boolean;
   containFocus?: boolean;
   onClose(): void;
+  /** A drawer opened by a pointer focuses itself rather than its first control (`lib/browser/openingFocus.ts`). */
+  pointerFocusesDialog?: boolean;
   restoreFocus?(): HTMLElement | null;
 }) {
   const dialogRef = useRef<T | null>(null);
@@ -120,7 +125,10 @@ export function useDialogFocus<T extends HTMLElement>({
       : null;
     const focusTimer = autoFocus
       ? window.setTimeout(() => {
-          (firstFocusable ?? dialog)?.focus();
+          const target = dialog && pointerFocusesDialog
+            ? openingFocusTarget(dialog, firstFocusable ?? null)
+            : firstFocusable ?? dialog;
+          target?.focus();
         }, 0)
       : null;
 
@@ -167,7 +175,7 @@ export function useDialogFocus<T extends HTMLElement>({
         const last = focusable[focusable.length - 1];
         const activeElement = document.activeElement;
 
-        if (!activeElement || !currentDialog.contains(activeElement)) {
+        if (!activeElement || activeElement === currentDialog || !currentDialog.contains(activeElement)) {
           event.preventDefault();
           (event.shiftKey ? last : first).focus();
           return;
@@ -198,7 +206,7 @@ export function useDialogFocus<T extends HTMLElement>({
         document.removeEventListener("keydown", handleKeyDown);
       }
     };
-  }, [active, autoFocus, closeOnEscape, containFocus]);
+  }, [active, autoFocus, closeOnEscape, containFocus, pointerFocusesDialog]);
 
   return dialogRef;
 }

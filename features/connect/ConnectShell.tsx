@@ -100,7 +100,7 @@ export function ConnectShell({
   const [drawerRequested, setDrawerRequested] = useState(false);
   const drawerOpen = drawerComposition && drawerRequested;
   const closeDrawer = useCallback(() => setDrawerRequested(false), []);
-  const drawerRef = useDialogFocus<HTMLElement>({ active: drawerOpen, onClose: closeDrawer });
+  const drawerRef = useDialogFocus<HTMLElement>({ active: drawerOpen, onClose: closeDrawer, pointerFocusesDialog: true });
   const pathname = usePathname();
   const [drawerPath, setDrawerPath] = useState(pathname);
   if (drawerPath !== pathname) {
@@ -188,7 +188,7 @@ export function ConnectShell({
           aria-label="Machines and sessions"
           aria-modal={drawerOpen ? true : undefined}
           className={[
-            "flex min-h-0 min-w-0 flex-col border-r border-trace-subtle bg-workspace-rail",
+            "flex min-h-0 min-w-0 flex-col border-r border-trace-subtle bg-workspace-rail outline-none",
             "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 max-lg:w-[min(18rem,calc(100vw-3rem))] max-lg:shadow-overlay md:max-lg:left-14",
             "lg:h-[100dvh]",
             drawerOpen ? "" : "max-lg:hidden"
