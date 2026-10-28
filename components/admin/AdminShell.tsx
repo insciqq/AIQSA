@@ -274,7 +274,8 @@ export function AdminShell({
   const { closeSectionIndex } = navigation;
   const drawerRef = useDialogFocus<HTMLElement>({
     active: drawerOpen,
-    onClose: closeSectionIndex
+    onClose: closeSectionIndex,
+    pointerFocusesDialog: true
   });
 
   useEffect(() => {
@@ -362,7 +363,7 @@ export function AdminShell({
         aria-label="Control Center sections"
         aria-modal={drawerOpen ? true : undefined}
         className={[
-          "flex min-w-0 flex-col border-r border-trace-subtle bg-workspace-rail",
+          "flex min-w-0 flex-col border-r border-trace-subtle bg-workspace-rail outline-none",
           "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 max-lg:w-[min(17.5rem,calc(100vw-3rem))] max-lg:shadow-overlay md:max-lg:left-14 md:max-lg:w-[16.25rem]",
           "lg:sticky lg:top-0 lg:h-[100dvh]",
           drawerOpen ? "" : "max-lg:hidden"

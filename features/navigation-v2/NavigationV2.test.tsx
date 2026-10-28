@@ -1203,6 +1203,35 @@ describe("Navigation v2", () => {
     expect(screen.getByRole("button", { name: "Close sidebar" })).toHaveFocus();
   });
 
+  it("focuses a tapped-open mobile drawer itself and a key-opened one at its close button", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
+        <NavigationSidebar {...sidebarProps({ onClose: close })} />
+      )}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    const opener = screen.getByRole("button", { name: "Open sidebar" });
+    const drawer = screen.getByRole("complementary", { name: "Chat navigation" });
+    const close = screen.getByRole("button", { name: "Close sidebar" });
+
+    fireEvent.pointerDown(opener);
+    fireEvent.click(opener);
+    expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
+    expect(drawer).toHaveFocus();
+    fireEvent.keyDown(drawer, { key: "Tab", shiftKey: true });
+    expect(drawer).not.toHaveFocus();
+    expect(drawer.contains(document.activeElement)).toBe(true);
+
+    fireEvent.click(close);
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar", "true");
+    fireEvent.keyDown(opener, { key: "Enter" });
+    fireEvent.click(opener);
+    expect(close).toHaveFocus();
+  });
+
   it("moves focus to the mobile opener below 768px and restores the exact desktop source", () => {
     let width = 1281;
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));

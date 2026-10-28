@@ -350,4 +350,37 @@ describe("useDialogFocus", () => {
     expect(fallback).toHaveFocus();
     document.body.removeAttribute("tabindex");
   });
+
+  it("lets a drawer opened by a pointer focus itself, so no keyboard ring lands on its first button", async () => {
+    function Drawer({ field = false }: { field?: boolean }) {
+      const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: vi.fn(), pointerFocusesDialog: true });
+      return (
+        <div ref={dialogRef} role="dialog" aria-label="Sections">
+          {field ? <input aria-label="Filter sections" /> : null}
+          <button type="button">Close sections</button>
+          <a href="#usage">Usage</a>
+        </div>
+      );
+    }
+
+    fireEvent.pointerDown(document.body);
+    const pointerView = render(<Drawer />);
+    const drawer = screen.getByRole("dialog", { name: "Sections" });
+    await waitFor(() => expect(drawer).toHaveFocus());
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(screen.getByRole("link", { name: "Usage" })).toHaveFocus();
+    drawer.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(screen.getByRole("button", { name: "Close sections" })).toHaveFocus();
+    pointerView.unmount();
+
+    fireEvent.pointerDown(document.body);
+    const fieldView = render(<Drawer field />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Filter sections" })).toHaveFocus());
+    fieldView.unmount();
+
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    render(<Drawer />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close sections" })).toHaveFocus());
+  });
 });
