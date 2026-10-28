@@ -28,17 +28,16 @@ export type NativeEngineHandlerDeps = Readonly<{
 }>;
 
 /**
- * Whether a run takes the self-service tools: an interactive run of a
- * personal or temporary chat in the web. Assistant runs, scheduled
- * occurrences and Telegram turns (the bridge cannot show
- * their confirmation cards or Undo) never take them, and every change fences
- * its run again as it commits (`selfServiceRunAllowedInTransaction`).
+ * Whether a run takes the self-service tools: an interactive run in the web,
+ * of a personal, temporary or Assistant chat (operator decision 2026-10-29:
+ * the tools act for the run's own user, never for the Assistant's author).
+ * Scheduled occurrences and Telegram turns (the bridge cannot show their
+ * confirmation cards or Undo) never take them, and every change fences its
+ * run again as it commits (`selfServiceRunAllowedInTransaction`).
  */
 export function selfServiceChat(prepared: MaterializedPreparedRunData,
   options: Readonly<{ scheduled?: boolean; telegram?: boolean }> = {}): boolean {
-  const request = prepared.normalizedRequest;
-  return options.scheduled !== true && options.telegram !== true && !prepared.assistant &&
-    !prepared.chatAssistant && !request.monitoringVerdictTool;
+  return options.scheduled !== true && options.telegram !== true && !prepared.normalizedRequest.monitoringVerdictTool;
 }
 
 /**

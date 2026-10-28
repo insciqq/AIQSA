@@ -4644,12 +4644,12 @@ describe("interactive sends on the agent engine", () => {
     const system = provider.requests[0]!.prompt.system!;
     expect(system.startsWith(NEUTRAL_FAMILY_PROMPT)).toBe(true);
     expect(system.indexOf("Review carefully.")).toBeGreaterThan(NEUTRAL_FAMILY_PROMPT.length);
-    // Its fixed rows hold: no MCP or Search of its own, and an Assistant chat takes no self-service tools.
+    // Its fixed rows hold: no MCP or Search of its own; the self-service tools act for the chat's own user.
     const tools = toolNames(provider.requests[0]);
     expect(tools).toContain("read_secret");
     expect(tools.some((name) => name.startsWith("mcp_") || name === "find_tools")).toBe(false);
     expect(provider.requests[0]!.searchPlan.options).toEqual([]);
-    expect(tools).not.toContain("manage_assistant");
+    expect(tools).toEqual(expect.arrayContaining(["manage_skill", "manage_assistant"]));
   });
 
   it("gives personal chat the self-service tools", async () => {

@@ -46,7 +46,7 @@ export function workspacePromptContract(input: Readonly<{
     `Use ${toolName("sandbox_shell")} for pipelines, redirects, &&, ||, globbing and heredocs; ${toolName("sandbox_exec")} runs one program directly without shell parsing.`,
     "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. /workspace/SECRETS.md lists environment names and exact original file/key paths, never values; read a text secret that is no variable with read_secret. Use only the accesses the user's task needs. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
     `Before creating or editing XLSX, DOCX or PPTX files, read ${WORKSPACE_GUIDE_PATHS.office}.`,
-    `Before driving a website, read ${WORKSPACE_GUIDE_PATHS.browser}.`,
+    `Before driving a website, read ${WORKSPACE_GUIDE_PATHS.browser} and load a listed Skill about that site, if there is one.`,
     WORKSPACE_BROWSER_SESSION_USER_PATH,
     `Before working with PSD files, read ${WORKSPACE_GUIDE_PATHS.psd}.`,
     `Before building, changing or saving a reusable script Skill, read ${WORKSPACE_GUIDE_PATHS.skills}.`,
