@@ -2,29 +2,37 @@
 import { describe, expect, it, vi } from "vitest";
 import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
-import { engineAdmissionRefusal, recoverUserNativeRuns, selfServiceChat, type NativeEngineHandlerDeps } from "./handlerSupport";
+import { SELF_SERVICE_TOOLS } from "../tools/selfServiceTools";
+import { engineAdmissionRefusal, recoverUserNativeRuns, selfServiceToolsFor, type NativeEngineHandlerDeps } from "./handlerSupport";
 
 const prepared = (extra: Record<string, unknown> = {}, request: Record<string, unknown> = {}) =>
   ({ normalizedRequest: { chatId: "chat-1", ...request }, ...extra }) as unknown as MaterializedPreparedRunData;
 
 describe("the self-service tools' chats", () => {
-  it("are interactive personal, temporary and Assistant chats", () => {
-    expect(selfServiceChat(prepared())).toBe(true);
-    expect(selfServiceChat(prepared({ initialChatMode: "TEMPORARY" }))).toBe(true);
-    // The tools act for the run's own user, whose Assistant chat it is (operator decision 2026-10-29).
-    expect(selfServiceChat(prepared({ assistant: { id: "a" } }))).toBe(true);
-    expect(selfServiceChat(prepared({ chatAssistant: { id: "a" } }))).toBe(true);
-    expect(selfServiceChat(prepared({}, { monitoringVerdictTool: true }))).toBe(false);
+  const all = SELF_SERVICE_TOOLS.map((tool) => tool.name);
+
+  it("are all of them in interactive personal and temporary chats", () => {
+    expect(selfServiceToolsFor(prepared())).toEqual(all);
+    expect(selfServiceToolsFor(prepared({ initialChatMode: "TEMPORARY" }))).toEqual(all);
+    expect(selfServiceToolsFor(prepared({}, { monitoringVerdictTool: true }))).toEqual([]);
+  });
+
+  it("are the guide and Skill saves in an Assistant chat, whose instructions its author wrote", () => {
+    // A Skill save shows its changes with Undo; a replaced secret or an edited Assistant has none (operator decision 2026-10-29).
+    for (const chat of [prepared({ assistant: { id: "a" } }), prepared({ chatAssistant: { id: "a" } })]) {
+      expect(selfServiceToolsFor(chat)).toEqual(["read_aiqsa_guide", "manage_skill"]);
+    }
   });
 
   it("never include a scheduled task's occurrence, which changes nothing of its owner's own", () => {
-    expect(selfServiceChat(prepared(), { scheduled: true })).toBe(false);
-    expect(selfServiceChat(prepared(), { scheduled: false })).toBe(true);
+    expect(selfServiceToolsFor(prepared(), { scheduled: true })).toEqual([]);
+    expect(selfServiceToolsFor(prepared(), { scheduled: false })).toEqual(all);
   });
 
   it("never include a Telegram turn, whose bridge cannot show their cards", () => {
-    expect(selfServiceChat(prepared(), { telegram: true })).toBe(false);
-    expect(selfServiceChat(prepared(), { telegram: false })).toBe(true);
+    expect(selfServiceToolsFor(prepared(), { telegram: true })).toEqual([]);
+    expect(selfServiceToolsFor(prepared({ assistant: { id: "a" } }), { telegram: true })).toEqual([]);
+    expect(selfServiceToolsFor(prepared(), { telegram: false })).toEqual(all);
   });
 });
 

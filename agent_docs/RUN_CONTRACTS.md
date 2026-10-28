@@ -51,7 +51,7 @@ The agent may do for its user everything the user can do with their own resource
 - A change goes through the same service as the UI, with its validation, revisions and limits, commits with its tool call and shows a card, with Undo where the owner keeps revisions.
 - Deleting, and sharing or publishing beyond the user (other users, installation-wide listing), needs the user's confirmation in the card. Changing a scheduled task's history retention deletes chats, so it counts as deleting. Other users' resources and administrator settings are never touched.
 - Data-changing MCP calls are sent only after the initiator's approval (`agent_docs/SECURITY.md`); after an Allow the agent continues the same turn with the call's result. Once the user has written since, that turn has ended and a compaction may have cut past the call, so the Allow becomes the next instruction and the agent makes the call again, which the Allow covers only with the same arguments. In Auto the server loads the approved tool from the run's frozen catalog and sends exactly the approved call; one no longer available is refused visibly in the answer (decision 2026-10-23).
-- Assistant chats take the self-service tools too (operator decision 2026-10-29); an Assistant's or Skill's instructions never ask for a change.
+- Assistant chats take only the guide and Skill saves (operator decision 2026-10-29): the author's instructions steer them; only Skill saves have Undo.
 - Memory is frozen and keeps its own change rules (`agent_docs/MEMORY.md`). Skill store rules are in `agent_docs/BACKEND.md`.
 
 ## Scheduled tasks
@@ -70,7 +70,7 @@ Code: `lib/server/scheduledTasks/`.
 
 Code: `lib/server/telegram/`.
 
-- A Telegram message is the linked user's interactive personal run through the ordinary send handler; access is rechecked per message and delivery. The link belongs to the account (operator decision 2026-10-19): revoking all sessions, a password change or reset, deactivation or rejection (SCIM included) and disconnecting (settings, admin, `/unlink`) remove it, and disconnecting voids pending link codes; signing out of one browser does not. Approval buttons use the ordinary path. Telegram turns take no self-service tools, Skill saves included: the bridge shows only approval cards, never confirmations or Undo (decision 2026-10-23).
+- A Telegram message is the linked user's interactive personal run through the ordinary send handler; access is rechecked per message and delivery. The link belongs to the account (operator decision 2026-10-19): revoking all sessions, a password change or reset, deactivation or rejection (SCIM included) and disconnecting (settings, admin, `/unlink`) remove it, and disconnecting voids pending link codes; signing out of one browser does not. Approval buttons use the ordinary path. Telegram turns take no self-service tools or Skill saves: the bridge shows only approval cards, never confirmations or Undo (decision 2026-10-23).
 - Tasks with Telegram notification send their results and files through a durable outbox and never repeat an ambiguous send.
 - Answers and task results carry no Sources list; a `[N]` citation links to its source (operator decision 2026-10-25).
 - Telegram is a content egress destination (operator decision 2026-10-19); see `agent_docs/ARCHITECTURE.md`.
