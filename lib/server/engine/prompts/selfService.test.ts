@@ -23,9 +23,12 @@ describe("self-service prompt section", () => {
     expect(bare).toContain("only prepares a card in which the user confirms; nothing is deleted or shared until they click");
     expect(bare).toContain("administrator settings are out of your reach");
     for (const name of allTools) expect(bare).not.toContain(name);
-    // Without the tools (a Telegram turn, an automation) the agent names where the change can be made.
-    expect(bare).toContain("is not available in this conversation: the user can ask for it in a chat on the AIQSA website");
+    // Without the tools (a Telegram turn, an automation) the agent names where the change is made.
+    expect(bare).toContain("- Changing the user's Skills, secrets and Assistants is not available in this conversation; the user can make the change in Studio.");
     expect(selfServicePromptSection({ tools: allTools })).not.toContain("not available in this conversation");
+    // An Assistant chat saves Skills but changes no secrets or Assistants.
+    expect(selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.guide, SELF_SERVICE_TOOL_NAMES.skills] }))
+      .toContain("- Changing the user's secrets and Assistants is not available in this conversation;");
   });
 
   it("adds one line per offered tool", () => {
