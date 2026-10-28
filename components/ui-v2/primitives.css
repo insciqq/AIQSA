@@ -97,20 +97,27 @@ select.v2-focusable:focus-visible {
   opacity: 0.55;
 }
 
-/* A disabled text button keeps a legible label: the quiet text3 label and a
-   visible outline replace the fade, which left the label at about 2:1 on
-   the light canvas; the disabled primary keeps its surface2 fill. */
+/* A disabled text button drops its outline and fades its label to about 3:1,
+   so it no longer reads like the enabled ghost (text3 is nearly text2) while
+   the label stays legible; the plain fade left it at about 2:1 on the light
+   canvas. The disabled primary keeps a borderless surface2 fill (issue #66). */
 .v2-button:disabled {
-  border-color: var(--v2-color-border);
-  color: var(--v2-color-text3);
+  border-color: transparent;
+  color: color-mix(in srgb, var(--v2-color-text3) 75%, transparent);
   opacity: 1;
 }
 
 .v2-button[data-tone="primary"]:disabled {
-  border-color: var(--v2-color-border2);
-  color: var(--v2-color-text3);
+  border-color: var(--v2-color-surface2);
+  color: color-mix(in srgb, var(--v2-color-text3) 75%, transparent);
   background: var(--v2-color-surface2);
   filter: none;
+}
+
+/* A busy button is working, not unavailable: its outline and label stay. */
+.v2-button[data-busy]:disabled {
+  border-color: var(--v2-color-border2);
+  color: var(--v2-color-text2);
 }
 
 .v2-icon-button[data-round="true"] {
