@@ -760,6 +760,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         logEvent("run_execution", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
           duration_ms: Math.max(0, now() - startedAt), outcome: "completed", providerFamily: snapshot.providerFamily,
           providerModelId: snapshot.providerModelId, run_id: runId, stage: "completion" });
+        releaseGuardUsage();
         await usage.settle();
         await chatUpdate();
         sink.send({ data: { runId, status: "complete" }, type: "done" });
@@ -791,6 +792,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
                 run_id: runId, stage: "write", subsystem: "database" });
             });
           }
+          releaseGuardUsage();
           await usage.settle();
           await chatUpdate();
           sink.send({ data: { runId, status: "cancelled" }, type: "done" });
@@ -805,6 +807,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           logRunPersistence(runId, "fail", "unconfirmed", writeError);
           return false;
         });
+        releaseGuardUsage();
         await usage.settle();
         if (failed) sink.send({ data: payload, type: "error" });
         else await chatUpdate();
