@@ -104,21 +104,16 @@ describe("Navigation v2", () => {
     attentionSummary.current = null;
   });
 
-  it("puts an administrator's attention dot on the closed mobile drawer trigger", () => {
+  it("leaves the mobile drawer trigger and account row without a Control Center dot", () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
-    attentionSummary.current = { bad: 2, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [], warn: 0 };
-    const view = render(<ReadingRoomShellV2 adminEntryVisible onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+    attentionSummary.current = { bad: 2, checkedAt: "2026-10-07T12:00:00.000Z", unavailable: [], warn: 1 };
+    render(<ReadingRoomShellV2 adminEntryVisible onNewChat={vi.fn()} onSelectChat={vi.fn()}>
       <main>Conversation</main>
     </ReadingRoomShellV2>);
     const trigger = screen.getByRole("button", { name: "Open sidebar" });
-    expect(trigger).toHaveAttribute("data-admin-attention", "bad");
-    expect(trigger).toHaveAccessibleDescription("Control Center: 2 items need attention");
-    view.unmount();
-
-    render(<ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}><main>Conversation</main></ReadingRoomShellV2>);
-    const viewer = screen.getByRole("button", { name: "Open sidebar" });
-    expect(viewer).not.toHaveAttribute("data-admin-attention");
-    expect(viewer).not.toHaveAttribute("aria-describedby");
+    expect(trigger).not.toHaveAttribute("aria-describedby");
+    expect(trigger.className).not.toContain("before:bg-critical");
+    expect(screen.queryByTestId("admin-attention-dot")).toBeNull();
   });
 
   it.each(["Chats", "New chat", "shortcut", "chat"])("defers the entire %s exit until Studio releases it", (destination) => {
