@@ -53,6 +53,29 @@ describe("sub-agent liveness", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("stops polling a chat with a running sub-agent once it leaves the list (archived or deleted)", async () => {
+    const { calls, fetch } = subagentFetch([{ path: "/api/subagents", respond: (url) => jsonResponse({
+      chats: url.searchParams.getAll("chatId").includes("a") ? [subagentChat("a", [subagentThread("thread-alpha")])] : []
+    }) }]);
+    vi.stubGlobal("fetch", fetch);
+    useWorkspaceStore.getState().applyNavigationPage({ chats: [navigationChat("a"), navigationChat("b")], folders: [], nextCursor: null }, false);
+    render(<SubagentLivenessV2 />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(useSubagentStore.getState().chats.a?.running).toBe(1);
+    await act(async () => {
+      useWorkspaceStore.getState().removeNavigationChat("a");
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(useSubagentStore.getState().chats.a).toBeUndefined();
+    const before = calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SUBAGENT_POLL_INTERVAL_MS * 4);
+    });
+    expect(calls.slice(before).filter((call) => call.url.searchParams.getAll("chatId").includes("a"))).toHaveLength(0);
+  });
+
   it("refreshes the open chat on a branch switch and reports when its sub-agents settle while it is idle", async () => {
     let state: "done" | "running" = "running";
     const { calls, fetch } = subagentFetch([

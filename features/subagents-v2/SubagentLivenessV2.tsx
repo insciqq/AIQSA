@@ -4,7 +4,13 @@ import { useEffect, useRef } from "react";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { SUBAGENT_VIEW_LIMITS } from "@/lib/contracts/subagentViews";
-import { SUBAGENT_POLL_INTERVAL_MS, invalidateChatSubagents, refreshSubagentSummary, useSubagentStore } from "./subagentStore";
+import {
+  SUBAGENT_POLL_INTERVAL_MS,
+  invalidateChatSubagents,
+  pruneSubagentChats,
+  refreshSubagentSummary,
+  useSubagentStore
+} from "./subagentStore";
 import { useSubagentThreadAddress } from "./subagentThreadAddress";
 
 const split = (key: string): string[] => key ? key.split("\0") : [];
@@ -31,6 +37,8 @@ export function SubagentLivenessV2({
     : null);
   const listKey = useWorkspaceStore((state) => state.navigationChats
     .slice(0, SUBAGENT_VIEW_LIMITS.chatsPerSummary - 1).map((chat) => chat.id).join("\0"));
+  const navigationReady = useWorkspaceStore((state) => state.navigationReady);
+  const knownKey = useWorkspaceStore((state) => state.navigationChats.map((chat) => chat.id).join("\0"));
   const streamKey = useRunLifecycleStore((state) => Object.keys(state.activeStreams).sort().join("\0"));
   const runningKey = useSubagentStore((state) => Object.values(state.chats)
     .filter((chat) => chat.running > 0).map((chat) => chat.chatId).sort().join("\0"));
@@ -41,6 +49,13 @@ export function SubagentLivenessV2({
   });
 
   useSubagentThreadAddress(activeChatId);
+
+  // A chat that left the caller's list (archived, deleted) keeps nothing here
+  // and is never polled again; the open chat stays until it closes.
+  useEffect(() => {
+    if (!navigationReady) return;
+    pruneSubagentChats(new Set([...(activeChatId ? [activeChatId] : []), ...split(knownKey)]));
+  }, [activeChatId, knownKey, navigationReady]);
 
   useEffect(() => {
     const ids = [...new Set([...(activeChatId ? [activeChatId] : []), ...split(listKey)])];
