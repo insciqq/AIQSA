@@ -117,14 +117,19 @@ async function syntheticFrame(page: Page, kind: "shop" | "sign-in"): Promise<str
   }, kind);
 }
 
+/** The main agent browsing alone, as the panel showed before sub-agents; a `handoff` is the only pending one. */
 function liveState(overrides: Partial<BrowserLiveStateEvent> = {}): BrowserLiveStateEvent {
+  const page = overrides.page === undefined ? { url: "https://shop.example/buy-again?ref=nav", title: "Buy again · Synthetic Shop" }
+    : overrides.page;
+  const handoff = overrides.handoff ?? null;
   return {
-    version: 1, runId, browser: "running", controller: "agent", handoff: null, signInRemembered: true,
-    page: { url: "https://shop.example/buy-again?ref=nav", title: "Buy again · Synthetic Shop" }, ...overrides
+    version: 2, runId, browser: "running", controller: "agent", handoff, handoffs: handoff ? [handoff] : [], signInRemembered: true,
+    agents: [{ id: "main", name: null, controller: overrides.controller ?? "agent", waitingForUser: handoff !== null, page }],
+    selected: "main", page, ...overrides
   };
 }
 
-const steps = { steps: [
+const steps = { agent: "main", steps: [
   { n: 1, action: "open", target: "", host: "shop.example", path: "/" },
   { n: 2, action: "click", target: "link \"Buy again\"", host: "shop.example", path: "/" },
   { n: 3, action: "type", target: "searchbox \"Search\"", host: "shop.example", path: "/buy-again" },
@@ -225,7 +230,7 @@ for (const viewport of viewports) {
         await bar.click();
         await expect.poll(() => page.evaluate(() => (window as unknown as LiveWindow).__browserLive.count())).toBe(1);
         await emitLive("state", liveState());
-        await emitLive("frame", { seq: 1, mime: "image/jpeg", data: shopFrame, width: 1280, height: 800 });
+        await emitLive("frame", { agent: "main", seq: 1, mime: "image/jpeg", data: shopFrame, width: 1280, height: 800 });
         await emitLive("steps", steps);
         const stage = panel.getByTestId("browser-live-stage");
         await expect(stage.locator("img")).toBeVisible();
@@ -291,9 +296,9 @@ for (const viewport of viewports) {
         const now = Date.now();
         await emitLive("state", liveState({ controller: "user", signInRemembered: false,
           page: { url: "https://shop.example/ap/signin?return=%2Fbuy-again", title: "Sign in · Synthetic Shop" },
-          handoff: { id: "handoff-1", reason: "sign_in", message: "Please sign in to your Synthetic Shop account so I can read your previous orders. I will not place an order.",
+          handoff: { id: "handoff-1", agent: { id: "main", name: null }, reason: "sign_in", message: "Please sign in to your Synthetic Shop account so I can read your previous orders. I will not place an order.",
             startedAt: new Date(now).toISOString(), expiresAt: new Date(now + 9 * 60_000 + 42_000).toISOString() } }));
-        await emitLive("frame", { seq: 2, mime: "image/jpeg", data: signInFrame, width: 1280, height: 800 });
+        await emitLive("frame", { agent: "main", seq: 2, mime: "image/jpeg", data: signInFrame, width: 1280, height: 800 });
         const card = panel.getByTestId("browser-live-handoff");
         await expect(card.getByRole("heading", { name: "Sign in to shop.example" })).toBeVisible();
         await expect(card).toContainText("This chat does not save browser sign-ins");
@@ -313,7 +318,7 @@ for (const viewport of viewports) {
           status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store" },
           body: [
             `event: state\ndata: ${JSON.stringify(liveState())}\n\n`,
-            `event: steps\ndata: ${JSON.stringify({ steps: [...steps.steps, { n: 5, action: "save_session", target: "shop.example", host: "shop.example", path: "/" }] })}\n\n`,
+            `event: steps\ndata: ${JSON.stringify({ agent: "main", steps: [...steps.steps, { n: 5, action: "save_session", target: "shop.example", host: "shop.example", path: "/" }] })}\n\n`,
             `: heartbeat\n\n`,
             `event: end\ndata: ${JSON.stringify({ reason: "error" })}\n\n`
           ].join("")
@@ -371,7 +376,7 @@ for (const viewport of fullScreenViewports) {
         await panel.getByRole("button", { name: /Watch/u }).click();
         await expect.poll(() => page.evaluate(() => (window as unknown as LiveWindow).__browserLive.count())).toBe(1);
         await emitLive("state", liveState());
-        await emitLive("frame", { seq: 1, mime: "image/jpeg", data: shopFrame, width: 1280, height: 800 });
+        await emitLive("frame", { agent: "main", seq: 1, mime: "image/jpeg", data: shopFrame, width: 1280, height: 800 });
         await emitLive("steps", steps);
         await expect(panel.getByTestId("browser-live-stage").locator("img")).toBeVisible();
 
@@ -450,9 +455,9 @@ for (const viewport of fullScreenViewports) {
         const now = Date.now();
         await emitLive("state", liveState({ controller: "user", signInRemembered: false,
           page: { url: "https://shop.example/ap/signin?return=%2Fbuy-again", title: "Sign in · Synthetic Shop" },
-          handoff: { id: "handoff-1", reason: "sign_in", message: "Please sign in to your Synthetic Shop account so I can read your previous orders. I will not place an order.",
+          handoff: { id: "handoff-1", agent: { id: "main", name: null }, reason: "sign_in", message: "Please sign in to your Synthetic Shop account so I can read your previous orders. I will not place an order.",
             startedAt: new Date(now).toISOString(), expiresAt: new Date(now + 9 * 60_000 + 42_000).toISOString() } }));
-        await emitLive("frame", { seq: 2, mime: "image/jpeg", data: signInFrame, width: 1280, height: 800 });
+        await emitLive("frame", { agent: "main", seq: 2, mime: "image/jpeg", data: signInFrame, width: 1280, height: 800 });
         const card = layer.getByTestId("browser-live-handoff");
         await expect(card.getByRole("heading", { name: "Sign in to shop.example" })).toBeVisible();
         await expect(card).toContainText("left");

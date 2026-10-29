@@ -52,16 +52,17 @@ The agent may do for its user everything the user can do with their own resource
 - Deleting, and sharing or publishing beyond the user (other users, installation-wide listing), needs the user's confirmation in the card. Changing a scheduled task's history retention deletes chats, so it counts as deleting. Other users' resources and administrator settings are never touched.
 - Interactive MCP writes follow the guard and approval rules in `agent_docs/SECURITY.md` (operator decision 2026-10-29). After an Allow the agent continues the same turn with the call's result. Once the user has written since, that turn has ended and a compaction may have cut past the call, so the Allow becomes the next instruction and the agent makes the call again, which the Allow covers only with the same arguments. In Auto the server loads the approved tool from the run's frozen catalog and sends exactly the approved call; one no longer available is refused visibly in the answer (decision 2026-10-23).
 - Assistant chats take only the guide and Skill saves (operator decision 2026-10-29): the author's instructions steer them; only Skill saves have Undo.
-- Memory is frozen and keeps its own change rules (`agent_docs/MEMORY.md`). Skill store rules are in `agent_docs/BACKEND.md`.
+- Custom sub-agents (operator decision 2026-10-29) are personal, change like Assistants with Undo, and list in run context (`lib/server/subagents/typeCatalog.ts`).
+- Memory is frozen and keeps its own change rules (`agent_docs/MEMORY.md`).
 
 ## Sub-agents
 
 Operator decisions 2026-10-29, Claude Code's Agent tool the reference (`lib/server/engine/subagents/`).
 
 - A sub-agent inherits its parent's frozen binding; `model` and `effort` come only from the chat models admission froze (`subagentModels`, decision 2026-10-30), never substituted.
-- It never changes the user's resources or nests. An MCP write the guard does not allow returns to the main agent, which makes it, so the user sees the card.
+- It never changes the user's resources or nests; an MCP write the guard does not allow goes back to the main agent.
 - Only the user's message, passed verbatim, authorizes irreversible website actions; a brief or report is never user speech.
-- Thread rows stay out of the main context, Memory and exports. Threads branch with the run that started them; at most 20 run per chat, and a restart never replays one.
+- Thread rows stay out of the main context, Memory and exports. Threads branch with their anchor run; at most 20 run per chat, never replayed after a restart.
 
 ## Scheduled tasks
 
@@ -115,6 +116,6 @@ Code: `lib/server/telegram/`.
 - Workspace is available in every chat whenever the installation offers it, so its tools ride on every request (accepted cost, operator decision 2026-10-20). The VM is not started per chat: it boots at the first call that needs code execution, may be prewarmed when that is cheap, and keeps the chat's files. A capability that needs no code execution, such as secrets, Skill instructions, MCP, Memory, search or images, never requires the VM (operator decision 2026-10-22).
 - Admission binds the Workspace runtime, image, tool catalog, network policy and secret revisions. The server controls sandbox identity and VM lifecycle; execution and export are exclusive per chat. Guests receive verified originals and the user's saved secrets under `agent_docs/SECURITY.md`.
 - Every terminal path retires guest execution authority: it stops registered processes, or stops the VM (disk intact) when execution state is unknown. Stop keeps the environment; a successful turn leaves no background processes. Completion requires closed output obligations; an export failure keeps the answer. Path escapes fail closed and links or special files are skipped visibly.
-- `browser_handoff` (operator decisions 2026-10-26) waits inside the turn for the user's Done or Cancel within the tool time and returns only the outcome and page; Stop and the deadline end it. Telegram turns and unattended runs get `browser_handoff_unavailable`; an unattended occurrence that asked fails as `browser_sign_in_required`.
+- `browser_handoff` (operator decisions 2026-10-26) waits for Done or Cancel within the tool time, returning only outcome and page; Stop and the deadline end it. Each agent's handoff holds only its tab, shown oldest first (2026-10-29). Telegram and unattended runs refuse every agent (`browser_handoff_unavailable`); an unattended occurrence that asked fails as `browser_sign_in_required`.
 - Vision-capable models read chat images natively, and verified ones view Workspace images (`view_workspace_image`, operator decision 2026-10-26), only in the answer that viewed them. Other images reach models only through admitted System Vision, with untrusted results.
 - The removed Codex Agent mode (operator decision 2026-10-23): its requests and leftover turns end as `agent_mode_removed`, never replayed (`lib/server/runs/retiredEngineRuns.ts`).

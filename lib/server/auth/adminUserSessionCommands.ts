@@ -402,6 +402,7 @@ async function countUserOwnedAppData(
     modelRuns,
     assistantDefinitions,
     skillDefinitions,
+    subagentDefinitions,
     settings,
     sharedSnapshots,
     usageEvents,
@@ -462,6 +463,12 @@ async function countUserOwnedAppData(
         ownerUserId: userId
       }
     }),
+    // Custom sub-agents are owned content like Skills and Assistants.
+    tx.subagentDefinition.count({
+      where: {
+        ownerUserId: userId
+      }
+    }),
     tx.userSettings.count({
       where: {
         userId
@@ -494,6 +501,7 @@ async function countUserOwnedAppData(
     modelRuns,
     assistantDefinitions,
     skillDefinitions,
+    subagentDefinitions,
     settings,
     sharedSnapshots,
     usageEvents
