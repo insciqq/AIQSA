@@ -17,7 +17,7 @@ describe("durable code MCP effect identity", () => {
     expect(updateMany).toHaveBeenCalledWith({ where: { id: "current", modelRunId: "run", state: "dispatching", serverId: "server", toolName: "tool" },
       data: { argumentHash: codeMcpEffectDigest(key) } });
     const sql = query.mock.calls[1][0] as Prisma.Sql;
-    expect(sql.text).toContain('r."assistantMessageId" = b."id" OR r."id" = b."branchSourceModelRunId"');
+    expect(sql.text).toContain('r."assistantMessageId" = b."id" OR r."userMessageId" = b."id" OR r."id" = b."branchSourceModelRunId"');
     expect(sql.text).toContain('prior."sequence" < current."sequence"');
     expect(sql.text).toContain('r."userId" =');
     expect(sql.text).toContain('c."userId" =');

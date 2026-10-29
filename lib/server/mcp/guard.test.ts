@@ -1,3 +1,4 @@
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
@@ -19,8 +20,8 @@ const tool = { serverName: "Issues", toolName: "create", description: "Creates a
 const allow = { decision: "allow", reason: "You requested this change." } as const;
 function fixture() {
   const findMessages = vi.fn(async () => [{ id: "own", content: { blocks: [{ type: "text", text: "My earlier request" }] } }]);
-  const followups = vi.fn(async (): Promise<Array<{ id: string; text: string }>> => []);
-  const db = { message: { findMany: findMessages }, runFollowup: { findMany: followups } } as unknown as PrismaClient;
+  const followups = vi.fn(async (): Promise<Array<{ id: string; text: string; authorUserId: string | null }>> => []);
+  const db = { message: { findMany: findMessages }, modelRun: { findFirst: vi.fn(async () => ({ chatId: "chat", userMessageId: "current" })) }, runFollowup: { findMany: followups } } as unknown as PrismaClient;
   const execute = vi.fn(async () => allow as Record<string, unknown>);
   const collectUsage = vi.fn();
   const resolve = vi.fn(async () => plan);
@@ -51,15 +52,16 @@ describe("bounded MCP guard", () => {
   });
   it("only loads this user's original branch messages, current first, and no synthetic authority", async () => {
     const f = fixture();
-    const admission = await f.service.admit({ chatId: "chat", userId: "user", currentMessage: "Current request", messages: [
+    const admission = await f.service.admit({ chatId: "chat", userId: "user", currentMessageId: "current", messages: [
       { id: "own", role: "user", content: { blocks: [{ type: "text", text: "MODEL_ENRICHED_CONTENT" }] } },
       { id: "other", role: "user", content: { blocks: [] } },
       { id: "tool", role: "assistant", content: { blocks: [{ type: "text", text: "INJECTED" }] } }
     ] });
-    expect(admission?.userMessages).toEqual(["Current request", "My earlier request"]);
+    expect(admission).toMatchObject({ version: 2, messages: [{ kind: "message", id: "current" }, { kind: "message", id: "own" }] });
+    expect(JSON.stringify(admission)).not.toContain("My earlier request");
     expect(f.findMessages).toHaveBeenCalledWith({ where: { id: { in: ["other", "own"] }, chatId: "chat",
       OR: [{ authorUserId: "user" }, { authorUserId: null, chat: { userId: "user", importSource: null } }],
-      role: "user", scheduledTaskPrompt: false, systemTurnKind: null, answerReviewSessionId: null }, select: { id: true, content: true } });
+      role: "user", scheduledTaskPrompt: false, systemTurnKind: null, answerReviewSessionId: null }, select: { id: true } });
     expect(f.execute).not.toHaveBeenCalled();
   });
   it("role unset preserves legacy consent; configured unavailable never allows standing consent", async () => {
@@ -78,14 +80,13 @@ describe("bounded MCP guard", () => {
   });
   it("runs only the frozen snapshot and accepts delivered own follow-ups before older authority", async () => {
     const f = fixture();
-    f.followups.mockResolvedValue([{ id: "followup", text: "Use the new title" }]);
+    f.followups.mockResolvedValue([{ id: "followup", text: "Use the new title", authorUserId: "user" }]);
     expect(await f.service.check(f.input)).toEqual(allow);
     expect(f.execute).toHaveBeenCalledExactlyOnceWith(plan.snapshot, expect.objectContaining({ schema: MCP_GUARD_SCHEMA }), expect.any(Object));
     const request = (f.execute.mock.calls[0] as unknown as [unknown, { userPrompt: string }])[1];
     expect(JSON.parse(request.userPrompt).user_messages_newest_first).toEqual(["Use the new title", ...f.input.admission.userMessages]);
     expect(f.resolve).not.toHaveBeenCalled();
-    expect(f.followups).toHaveBeenCalledWith(expect.objectContaining({ where: { modelRunId: "run", authorUserId: "user",
-      deliveredAt: { not: null }, modelRun: { userId: "user" } } }));
+    expect(f.followups).toHaveBeenCalledWith(expect.objectContaining({ where: { modelRunId: "run", deliveredAt: { not: null } } }));
   });
   it("asks on provider failure, malformed output, oversized input and cancellation without retries", async () => {
     const f = fixture();
@@ -127,4 +128,33 @@ describe("bounded MCP guard", () => {
       expect(writeUsageRows).toHaveBeenCalledTimes(1);
     } finally { release(); }
   });
+});
+
+it("explains when the newest message alone is too long for the automatic check", async () => {
+  const observed = await captureRunObservation();
+  const f = fixture();
+  f.findMessages.mockResolvedValue([{ id: "current", content: { blocks: [{ type: "text", text: "x".repeat(48_000) }] } }]);
+  const result = await f.service.check({ ...f.input, admission: { version: 2, plan, currentMessageId: "current",
+    messages: [{ kind: "message", id: "current" }] } });
+  expect(result).toEqual({ decision: "ask", reason: "The conversation is too long for the automatic check. Please review this call." });
+  expect(observed.records()).toContainEqual(expect.objectContaining({ code: "mcp_guard_conversation_too_long" }));
+  expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("collects usage reported after a timed-out verdict without changing the refusal", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const execute: NonNullable<Parameters<typeof createMcpGuardService>[1]>["execute"] = async (_snapshot, _request, options) => {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    options?.onUsage?.({ inputTokens: 7, outputTokens: 3, totalTokens: 10 });
+    return allow;
+  };
+  const service = createMcpGuardService(f.db, { execute, collectUsage: f.collectUsage, timeoutMs: 100 });
+  const verdict = service.check(f.input);
+  await vi.advanceTimersByTimeAsync(101);
+  expect(await verdict).toEqual(mcpGuardAsk());
+  expect(f.collectUsage).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.collectUsage).toHaveBeenCalledExactlyOnceWith("run", expect.objectContaining({ purpose: "mcp_guard",
+    usage: expect.objectContaining({ inputTokens: 7, outputTokens: 3 }) }));
 });

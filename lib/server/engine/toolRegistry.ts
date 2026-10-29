@@ -630,7 +630,8 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
         return { origin: "mcp", ...(current ? { serverName: current.tool.serverName, toolName: current.originalName } : {}) };
       },
       approval: (call) => mcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot }),
-      ...(request.mcpApproval?.guard?.approvedBy ? { approvedBy: request.mcpApproval.guard.approvedBy } : {}),
+      ...((request.mcpApproval?.approvedBy ?? request.mcpApproval?.guard?.approvedBy)
+        ? { approvedBy: request.mcpApproval?.approvedBy ?? request.mcpApproval?.guard?.approvedBy } : {}),
       ...(request.mcpApproval?.guard ? { guardedApproval: (call: ModelToolCall, signal: AbortSignal) =>
         guardedMcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot, signal,
           runId: input.runId, userId: input.userId, check: input.services.mcpGuard?.check }) } : {}),

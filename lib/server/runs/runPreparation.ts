@@ -1876,14 +1876,16 @@ export async function prepareRun(
     ...(mcpPlan?.ok ? mcpPlan.snapshot.servers.map((server) => server.serverId) : []),
     ...(mcpDiscoveryEnabled && mcpCatalog ? mcpCatalog.servers.map((server) => server.serverId) : [])
   ])];
+  const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
   const guard = !scheduledOccurrence && approvalServerIds.length > 0 ? await deps.mcpGuard?.admit({
     chatId: chat.id, userId: input.userId, messages: conversationMessages,
-    ...(input.source.kind === "send" && !input.serverAuthoredInput ? { currentMessage: textFromContentBlocks(content) } : {})
+    ...(input.source.kind === "send" && !input.serverAuthoredInput
+      ? { currentMessageId: workspaceAdmissionPlan?.userMessageId ?? randomUUID() } : {}),
+    ...(inheritedFollowups ? { inheritedFollowups } : {})
   }) : undefined;
   const mcpApproval = !scheduledOccurrence && approvalServerIds.length > 0
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
-        serverIds: approvalServerIds, userId: input.userId }) ?? [], guard
-          ? { ...guard, ...(input.mcpApprovalId ? { approvedBy: input.mcpApprovalId } : {}) } : undefined)
+        serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, input.mcpApprovalId)
     : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
@@ -1992,7 +1994,6 @@ export async function prepareRun(
       ])
   ];
 
-  const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
   const budgetAnsweringRequest = () => applyProviderRequestContextBudget({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     request: requestWithRunFollowups({

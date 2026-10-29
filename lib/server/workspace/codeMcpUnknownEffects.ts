@@ -13,7 +13,8 @@ export type CodeMcpUnknownEffectInput = Readonly<{ callId: string; grant: Worksp
 /**
  * Serialized with other code claims. An earlier identical call still in flight is uncertain too;
  * it must not race a second dispatch. Branch ancestors (including copied source runs), never
- * sibling answers or other users' runs, carry unknown effects into the next turn.
+ * unrelated branches or other users' runs, carry unknown effects into the next turn.
+ * Regeneration of an ancestor question keeps its earlier attempts' uncertainty too.
  */
 export async function bindCodeMcpEffect(db: Pick<PrismaClient, "$transaction">, input: CodeMcpUnknownEffectInput): Promise<Date | null> {
   const { grant, key } = input;
@@ -39,7 +40,7 @@ export async function bindCodeMcpEffect(db: Pick<PrismaClient, "$transaction">, 
         SELECT "id" FROM scope
         UNION
         SELECT r."id" FROM "ModelRun" r JOIN branch b
-          ON r."assistantMessageId" = b."id" OR r."id" = b."branchSourceModelRunId"
+          ON r."assistantMessageId" = b."id" OR r."userMessageId" = b."id" OR r."id" = b."branchSourceModelRunId"
         JOIN "Chat" c ON c."id" = r."chatId"
         WHERE r."userId" = ${grant.userId} AND c."userId" = ${grant.userId} AND c."permanentDeletionAt" IS NULL
       )

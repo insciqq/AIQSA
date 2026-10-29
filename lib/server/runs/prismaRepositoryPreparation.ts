@@ -1111,7 +1111,8 @@ export async function admitPreparingRunWithClient(
             content: json(input.content),
             ...(input.workspaceAdmissionPlan
               ? { id: input.workspaceAdmissionPlan.userMessageId }
-              : {}),
+              : input.normalizedRequest.mcpApproval?.guard?.version === 2 && input.normalizedRequest.mcpApproval.guard.currentMessageId
+                ? { id: input.normalizedRequest.mcpApproval.guard.currentMessageId } : {}),
             modelId: input.modelId,
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,

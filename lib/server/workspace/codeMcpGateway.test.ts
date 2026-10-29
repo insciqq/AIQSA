@@ -410,3 +410,14 @@ it("carries earlier-run uncertainty into the gateway but leaves scheduled runs u
     if (interactive) expect(approvals.consume).toHaveBeenCalledWith(expect.anything(), expect.anything(), undefined, after);
   }
 });
+
+it("can apply a fresh exact Always allow decision to an unknown gateway call even with the guard unset", async () => {
+  const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: ["server-gitlab"], approvedBy: "fresh-card" } }));
+  const after = new Date("2026-10-29T00:00:00Z");
+  const approvals = { consume: vi.fn(async () => true), request: vi.fn() };
+  const deps = dependencies({ ...memory.store, unknownEffect: async () => after }, plan, { approvals });
+  await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+  expect(approvals.consume).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ definitionHash }), "fresh-card", after);
+  expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+  expect(approvals.request).not.toHaveBeenCalled();
+});
