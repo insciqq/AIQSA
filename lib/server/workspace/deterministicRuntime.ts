@@ -24,6 +24,7 @@ import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPrepara
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 import { WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide } from "./secrets/manifest";
+import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
 import { WORKSPACE_UV_CACHE_DIRECTORY, WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES } from "./guestCache";
 import {
   WorkspaceRuntimeError,
@@ -675,7 +676,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       if (path.startsWith(`${WORKSPACE_SECRETS_PATH}/ssh/`) || path.startsWith(`${WORKSPACE_SECRETS_PATH}/files/`)) session.files.delete(path);
       if (!sameRun && path.startsWith(`${WORKSPACE_BROWSER_SESSIONS_PATH}/`)) session.files.delete(path);
     }
-    session.secretEnvironment = { ...workspaceSecretEnvironment(secrets), ...input.runEnvironment };
+    session.secretEnvironment = { ...workspaceSecretEnvironment(secrets), ...input.runEnvironment,
+      ...(input.agent ? workspaceAgentEnvironment(input.agent) : {}) };
     session.secretsRunId = input.modelRunId;
     session.files.set(WORKSPACE_SECRETS_GUIDE_PATH, Buffer.from(workspaceSecretsGuide(secrets)));
     session.directories.add(`${WORKSPACE_SECRETS_PATH}/browser`);

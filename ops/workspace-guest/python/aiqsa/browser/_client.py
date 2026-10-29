@@ -12,6 +12,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from . import _identity, _paths
+from ..agents import AGENT_ID_ENV, AGENT_ID_PATTERN, AGENT_NAME_ENV, MAIN_AGENT_ID
 
 PROTOCOL = 1
 #: Starting the host launches Chromium twice: once to read its own identity, once for the turn.
@@ -154,10 +156,24 @@ def request_timeout(op: str, args: Mapping[str, Any]) -> float:
     return 100.0 if op in _SLOW else 70.0
 
 
+def _agent_request(environ: Mapping[str, str]) -> Dict[str, str]:
+    """The server-owned identity travels with every socket request.
+
+    The guest environment is the coordination input for the helper, not an
+    authorization boundary. Invalid or missing values use the main agent so an
+    old caller remains compatible while a malformed server value is harmless.
+    """
+    agent_id = environ.get(AGENT_ID_ENV, MAIN_AGENT_ID)
+    if not re.fullmatch(AGENT_ID_PATTERN, agent_id):
+        agent_id = MAIN_AGENT_ID
+    name = environ.get(AGENT_NAME_ENV, "")
+    return {"id": agent_id, **({"name": name} if name else {})}
+
+
 def call(op: str, args: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Dict[str, Any]:
     """One browser request; returns its result or raises `BrowserError`."""
     args = {key: value for key, value in (args or {}).items() if value is not None}
-    payload = (json.dumps({"v": PROTOCOL, "op": op, "args": args}, ensure_ascii=False) + "\n").encode("utf-8")
+    payload = (json.dumps({"v": PROTOCOL, "op": op, "args": args, "agent": _agent_request(os.environ)}, ensure_ascii=False) + "\n").encode("utf-8")
     wait = timeout if timeout is not None else request_timeout(op, args)
     client = _ensure_host(wait)
     chunks = []

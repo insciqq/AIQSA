@@ -225,6 +225,8 @@ class FormatTests(unittest.TestCase):
         ]
         self.assertEqual(lines[0], '[browser #3] click: button "Add to cart" @ www.saucedemo.com/inventory.html')
         self.assertEqual(lines[1], "[browser #1] open @ www.amazon.es/")
+        self.assertEqual(_format.step_line({"n": 3, "agent": "shop-amazon", "action": "click", "target": "button", "url": None}),
+                         "[browser #3 · shop-amazon] click: button")
         self.assertEqual(lines[3], "[browser #4] back")
         parsed = [UI_STEP_LINE.match(line) for line in lines]
         self.assertTrue(all(parsed))
@@ -437,7 +439,7 @@ class ClientAndCliTests(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, '[browser #2] click: button "Login" @ www.saucedemo.com/inventory.html\n'
                               "URL: https://www.saucedemo.com/inventory.html\n")
-        self.assertEqual(self.host.requests[-1], {"v": 1, "op": "click", "args": {"n": 7}})
+        self.assertEqual(self.host.requests[-1], {"v": 1, "op": "click", "args": {"n": 7}, "agent": {"id": "main"}})
         self.host.answers.append({"ok": True, "result": {"step": step, "text": "page"}})
         self.assertEqual(self.run_cli("click", "7", "--quiet")[1], '[browser #2] click: button "Login" @ www.saucedemo.com/inventory.html\n')
 
@@ -452,6 +454,11 @@ class ClientAndCliTests(unittest.TestCase):
         self.assertEqual(self.run_cli("type", "3", "more", "--append")[0], 0)
         self.assertEqual(self.host.requests[-1]["args"]["clear"], False)
         self.assertEqual(self.host.requests[-1]["args"]["masked"], False)
+
+    def test_each_request_carries_the_server_agent_identity(self) -> None:
+        with mock.patch.dict(os.environ, {"AIQSA_AGENT_ID": "thread-7", "AIQSA_AGENT_NAME": "shop-amazon"}):
+            self.assertEqual(self.run_cli("status")[0], 0)
+        self.assertEqual(self.host.requests[-1]["agent"], {"id": "thread-7", "name": "shop-amazon"})
 
     def test_failures_print_a_code_and_map_to_stable_exit_codes(self) -> None:
         cases = [("stale_element", cli.EXIT_ELEMENT), ("captcha_requires_user", cli.EXIT_CAPTCHA),
@@ -476,11 +483,12 @@ class ClientAndCliTests(unittest.TestCase):
             (["close-tab", "2"], "close_tab", {"index": 2}),
             (["new-tab"], "new_tab", {}),
             (["status", "--markers"], "status", {"markers": True}),
+            (["release"], "release", {}),
             (["select", "3", "Price (low to high)"], "select", {"n": 3, "option": "Price (low to high)"}),
         ]
         for argv, op, args in cases:
             self.assertEqual(self.run_cli(*argv)[0], 0, argv)
-            self.assertEqual(self.host.requests[-1], {"v": 1, "op": op, "args": args}, argv)
+            self.assertEqual(self.host.requests[-1], {"v": 1, "op": op, "args": args, "agent": {"id": "main"}}, argv)
         self.assertEqual(self.run_cli("click")[0], cli.EXIT_USAGE)
         self.assertEqual(self.run_cli("fly")[0], cli.EXIT_USAGE)
 
