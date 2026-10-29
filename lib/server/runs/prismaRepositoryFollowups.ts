@@ -40,10 +40,23 @@ export async function insertAdmittedRunFollowups(tx: Prisma.TransactionClient, i
   await tx.modelRun.update({ where: { id: runId }, data: { followupRevision: inherited.revision } });
 }
 
+/**
+ * The user's own follow-ups of a run, as every browser projection, export,
+ * share and regeneration reads them: a main agent's message to a sub-agent
+ * and a sub-agent's callback are never the user's clarifications.
+ */
 export const runFollowupSelect = {
   followupMode: true, followupClosedAt: true,
-  followups: { orderBy: { ordinal: "asc" }, select: {
+  followups: { orderBy: { ordinal: "asc" }, where: { origin: "user" }, select: {
     id: true, ordinal: true, text: true, authorName: true, createdAt: true, deliveredAt: true, precedingText: true
+  } }
+} satisfies Prisma.ModelRunSelect;
+
+/** Every follow-up the engine delivers into its run, with its origin. */
+const engineFollowupSelect = {
+  followupMode: true, followupClosedAt: true,
+  followups: { orderBy: { ordinal: "asc" }, select: {
+    id: true, ordinal: true, text: true, authorName: true, createdAt: true, deliveredAt: true, precedingText: true, origin: true
   } }
 } satisfies Prisma.ModelRunSelect;
 
@@ -78,9 +91,12 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         const access = actor && await resolveChatAccess(tx, { chatId: run.chatId, userId: input.userId });
         if (!actor || !access) return { kind: "not_found" };
         const previous = run.followups.find(entry => entry.nonce === input.nonce);
+        // The user's own follow-ups: the count and their position never include a sub-agent's messages or callbacks.
+        const userFollowups = run.followups.filter(entry => entry.origin === "user");
         if (previous) {
-          if (previous.authorUserId !== input.userId || previous.text !== decoded.text) return { kind: "conflict" };
-          return { kind: "accepted", entry: projectRunFollowups({ ...run, followups: [previous] }).entries[0]! };
+          if (previous.origin !== "user" || previous.authorUserId !== input.userId || previous.text !== decoded.text) return { kind: "conflict" };
+          return { kind: "accepted", entry: projectRunFollowups({ ...run, followups: [previous] },
+            userFollowups.findIndex(entry => entry.id === previous.id)).entries[0]! };
         }
         if (!run.followupMode || run.followupClosedAt || run.answerCompletedAt || !activeModelRunStatuses.includes(run.status) ||
           run.chat.archived || run.chat.activeLeafMessageId !== run.assistantMessageId) return { kind: "closed" };
@@ -89,8 +105,8 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         if (!validateRunAccess(entitlement, { provider: binding?.connectionId ?? run.provider,
           modelId: binding?.providerModelId ?? run.modelId }).ok) return { kind: "closed" };
         const cost = followupTokenCost(decoded.text);
-        if (run.followupRevision >= RUN_FOLLOWUP_MAX_COUNT || cost > run.followupBudgetTokens ||
-          run.followups.reduce((sum, entry) => sum + entry.text.length, decoded.text.length) > RUN_FOLLOWUP_MAX_TOTAL_CHARS) {
+        if (userFollowups.length >= RUN_FOLLOWUP_MAX_COUNT || cost > run.followupBudgetTokens ||
+          userFollowups.reduce((sum, entry) => sum + entry.text.length, decoded.text.length) > RUN_FOLLOWUP_MAX_TOTAL_CHARS) {
           return { kind: "context_full" };
         }
         const entry = await tx.runFollowup.create({ data: { chatId: run.chatId, modelRunId: run.id,
@@ -102,14 +118,16 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         await tx.modelRun.update({ where: { id: run.id }, data: {
           followupRevision: { increment: 1 }, followupBudgetTokens: { decrement: cost }
         } });
-        return { kind: "accepted", entry: projectRunFollowups({ ...run, followups: [entry] }).entries[0]! };
+        return { kind: "accepted", entry: projectRunFollowups({ ...run, followups: [entry] }, userFollowups.length).entries[0]! };
       });
     },
     load: async input => {
       const run = await db.modelRun.findFirst({ where: { id: input.runId, userId: input.userId }, select: {
-        ...runFollowupSelect, answerCompletedAt: true, status: true, followupRevision: true
+        ...engineFollowupSelect, answerCompletedAt: true, status: true, followupRevision: true
       } });
-      return run && run.followupMode ? { revision: run.followupRevision, entries: projectRunFollowups(run).entries } : null;
+      if (!run || !run.followupMode) return null;
+      const projected = projectRunFollowups(run, 0, { renumber: false }).entries;
+      return { revision: run.followupRevision, entries: projected.map((entry, index) => ({ ...entry, origin: run.followups[index]!.origin })) };
     },
     deliver: input => db.$transaction(async tx => {
       await lockRun(tx, input.runId);

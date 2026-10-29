@@ -74,6 +74,11 @@ export type ChatMessageRecord = {
   scheduledOutcome?: ChatMessageWire["scheduledOutcome"];
   status: string;
   systemTurnKind?: ChatMessageWire["systemTurnKind"];
+  /**
+   * A wake-up turn's sub-agents by name. Typed here until the wire field
+   * (`ChatMessageWire.subagentCallback`, the sub-agents UI task) merges.
+   */
+  subagentCallback?: Readonly<{ names: readonly string[] }>;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
@@ -302,6 +307,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     ...(message.scheduledOutcome ? { scheduledOutcome: message.scheduledOutcome } : {}),
     status: message.status,
     ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
+    ...(message.subagentCallback ? { subagentCallback: { names: [...message.subagentCallback.names] } } : {}),
     toolActivity: message.toolActivity ?? null,
     workspaceActivity: message.workspaceActivity ?? null
   };

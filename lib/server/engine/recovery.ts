@@ -17,7 +17,10 @@ import type { NativeRunStore } from "./runStore";
  * turn). A run whose answer was already published completes instead. A run
  * counts as cut off when it started before this process did, or when it
  * stopped changing for the stale window (a live run is always in the
- * process's registry, so a long tool call never qualifies).
+ * process's registry, so a long tool call never qualifies). Background
+ * sub-agent runs (`subagentTurnId`) answer no message: they have their own
+ * pass (`lib/server/runs/subagentBackground/recovery.ts`), which runs first,
+ * and never enter this batch, so they cannot starve the main agent's orphans.
  */
 export const NATIVE_RUN_INTERRUPTED = RUN_INTERRUPTED_FAILURE;
 
@@ -42,6 +45,8 @@ export type NativeRecoveryDeps = Readonly<{
   now?: () => Date;
   repository: Pick<RunRepository, "failRun">;
   runs: Pick<NativeRunStore, "complete">;
+  /** The background sub-agent runs' own pass, in the same scope; it ends them interrupted and flushes their callbacks. */
+  subagents?: (input: Readonly<{ chatId?: string; userId?: string }>) => Promise<number>;
   workspace?: Pick<WorkspaceCoordinator, "settle">;
 }>;
 
@@ -59,11 +64,17 @@ function runWorkspace(normalizedRequest: unknown): NormalizedRunWorkspace | unde
 /** Settles native runs no execution owns; returns how many it settled. */
 export async function reconcileNativeRuns(deps: NativeRecoveryDeps, input: Readonly<{ chatId?: string; userId?: string }> = {}):
   Promise<number> {
+  // Sub-agents first: their interruptions are owed before the main runs end, so each chat's terminal flushes and the
+  // sub-agents' own flush meet in one coalesced wake-up.
+  let settled = await deps.subagents?.(input).catch((error: unknown) => {
+    logEvent("run_recovery", { action: "retry", code: "subagent_run_recovery_failed", error, outcome: "failed", stage: "recovery",
+      subsystem: "run_recovery" });
+    return 0;
+  }) ?? 0;
   const now = deps.now?.() ?? new Date();
   const orphans = await deps.findOrphans({ bootedBefore: deps.bootedAt, limit: RECOVERY_BATCH, liveRunIds: deps.liveRunIds(),
     staleBefore: new Date(now.getTime() - NATIVE_RUN_STALE_MS), ...(input.chatId ? { chatId: input.chatId } : {}),
     ...(input.userId ? { userId: input.userId } : {}) });
-  let settled = 0;
   for (const run of orphans) {
     // A run that started executing here after the query keeps its execution.
     if (deps.liveRunIds().includes(run.id) || !run.assistantMessageId) continue;
@@ -110,6 +121,8 @@ export function createNativeOrphanFinder(client: Pick<PrismaClient, "modelRun">)
     where: {
       engine: "native",
       status: { in: activeModelRunStatuses },
+      // Main-agent runs only: a background sub-agent run has no answer to settle.
+      subagentTurnId: null,
       ...(input.liveRunIds.length > 0 ? { id: { notIn: [...input.liveRunIds] } } : {}),
       ...(input.chatId ? { chatId: input.chatId } : {}),
       ...(input.userId ? { userId: input.userId } : {}),

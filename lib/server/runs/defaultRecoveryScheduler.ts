@@ -10,6 +10,7 @@ import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
 import { defaultNativeRecoveryDeps } from "../engine/defaultEngine";
 import { reconcileNativeRuns } from "../engine/recovery";
 import { prisma } from "../prisma";
+import { getDefaultSubagentBackground } from "./subagentBackground/default";
 
 const globalForRecoveryScheduler = globalThis as unknown as {
   __aiqsaRunRecoveryScheduler?: RunRecoveryScheduler;
@@ -23,7 +24,10 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
     // same Workspace coordinator as run routes and independent worker slots.
     const repository = createPrismaRunRepository();
     const workspace = workspaceCoordinatorForStorage(storage);
-    const native = defaultNativeRecoveryDeps({ repository, workspace });
+    // Background sub-agent runs recover in the same pass, first; composing them registers the callbacks' terminal flush.
+    const subagents = getDefaultSubagentBackground();
+    const native = { ...defaultNativeRecoveryDeps({ repository, workspace }),
+      subagents: (input: Readonly<{ chatId?: string; userId?: string }>) => subagents.reconcile(input) };
     // The old core's runs still active after the upgrade end first, so their
     // document and Workspace jobs never wait for an engine that is gone.
     const retired = createRetiredEngineRunSweep({ findRuns: createRetiredEngineRunFinder(prisma), repository, workspace });
