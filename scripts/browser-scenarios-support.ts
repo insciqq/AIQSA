@@ -5,9 +5,11 @@
  *
  * Oracles read only the result file the agent writes into the turn's output
  * files, never the chat answer, so a verdict is reproducible. Evidence lines
- * carry codes, counts, booleans, timings, token counts and provider-reported
- * cost; never prompts, answers, page content, prices or URLs.
+ * carry codes, counts, booleans, timings, token counts (per run and per model
+ * request), provider-reported cost and cost estimates from token totals at
+ * fixed list prices; never prompts, answers, page content, prices or URLs.
  */
+import { createHash } from "node:crypto";
 
 export const BROWSER_RESULT_FILE = "browser-result.json";
 /** A result file larger than this is not read (a valid one is a few KiB). */
@@ -16,8 +18,10 @@ export const BROWSER_RESULT_MAX_BYTES = 256 * 1024;
 export const BROWSER_BLOCKED_CODES = ["captcha", "bot_wall", "sign_in_required", "code_required"] as const;
 export type BrowserBlockedCode = (typeof BROWSER_BLOCKED_CODES)[number] | "other";
 
-export const BROWSER_SCENARIO_IDS = ["S1", "S2", "S3", "S4", "S5"] as const;
+export const BROWSER_SCENARIO_IDS = ["S1", "S2", "S3", "S4", "S5", "S6"] as const;
 export type BrowserScenarioId = (typeof BROWSER_SCENARIO_IDS)[number];
+/** What runs when nothing is selected: S6 is long (hundreds of rounds) and runs only when named. */
+export const DEFAULT_BROWSER_SCENARIO_IDS: readonly BrowserScenarioId[] = Object.freeze(["S1", "S2", "S3", "S4", "S5"]);
 
 /** Published saucedemo.com demo credentials (public test shop, no real orders). */
 export const SAUCEDEMO_SECRET = Object.freeze({
@@ -161,6 +165,29 @@ export function runBounds(normalizedRequest: unknown): RunBounds {
     maxToolRounds: positive(budgets.maxToolRounds),
     turnTimeoutSeconds: positive(workspace.turnTimeoutSeconds)
   };
+}
+
+/**
+ * What the admitted bounds must be. `any` (default) only records them;
+ * `unlimited` demands the shipped defaults (operator decision 2026-10-26): no
+ * per-answer tool call or round limit and a 3600 s turn, so a long scenario is
+ * measured as users run it.
+ */
+export type BoundsExpectation = "any" | "unlimited";
+
+export function boundsExpectation(raw: string | undefined): BoundsExpectation {
+  const value = raw?.trim() || "any";
+  return value === "any" || value === "unlimited" ? value : fail("expect_bounds_invalid");
+}
+
+/** Stable codes for admitted bounds that differ from the expectation; empty when they match. */
+export function unexpectedBounds(bounds: RunBounds, expectation: BoundsExpectation): string[] {
+  if (expectation === "any") return [];
+  const codes: string[] = [];
+  if (bounds.maxToolCalls !== "none") codes.push("tool_calls_limited");
+  if (bounds.maxToolRounds !== "none") codes.push("tool_rounds_limited");
+  if (bounds.turnTimeoutSeconds !== 3_600) codes.push("turn_timeout_not_3600");
+  return codes;
 }
 
 // Result file and oracles ------------------------------------------------------------
@@ -331,6 +358,126 @@ function oracleS5(result: BrowserResult): OracleVerdict {
     unfinished: flag(checkout.finished === false) }, failed };
 }
 
+// S6: a long shopping task on amazon.es ------------------------------------------------
+
+/** S6's categories as the result file names them, in the order the prompt lists them. */
+export const S6_CATEGORIES = ["juice", "yogurt", "frozen_la_sirena", "coffee", "cereal"] as const;
+export type S6Category = (typeof S6_CATEGORIES)[number];
+
+/**
+ * A euro amount as a page shows it or the agent copies it: a JSON number, or
+ * a string with an optional `€`/`EUR` and Spanish (`1.234,56`) or English
+ * (`1,234.56`) separators, such as "12,34 €". A lone separator followed by
+ * three digits groups thousands; one followed by one or two digits is the
+ * decimal mark.
+ */
+export function euroAmount(value: unknown): number | null {
+  if (typeof value === "number") return priceValue(value);
+  if (typeof value !== "string" || value.length > 32) return null;
+  const text = value.replace(/[\u00a0\u202f]/gu, " ").trim().replace(/^(?:€|eur)\s*/iu, "").replace(/\s*(?:€|eur)$/iu, "").trim();
+  let number: number;
+  if (/^\d+$/u.test(text)) number = Number(text);
+  else if (/^\d{1,3}(?:[. ]\d{3})+(?:,\d{1,2})?$/u.test(text)) number = Number(text.replace(/[. ]/gu, "").replace(",", "."));
+  else if (/^\d{1,3}(?:[, ]\d{3})+(?:\.\d{1,2})?$/u.test(text)) number = Number(text.replace(/[, ]/gu, ""));
+  else if (/^\d+[.,]\d{1,2}$/u.test(text)) number = Number(text.replace(",", "."));
+  else return null;
+  return priceValue(number);
+}
+
+/** A star rating from 1 to 5: a number, or a decimal string such as "4,5". */
+export function ratingValue(value: unknown): number | null {
+  const number = typeof value === "number" ? value
+    : typeof value === "string" && /^\s*\d(?:[.,]\d{1,2})?\s*$/u.test(value) ? Number(value.trim().replace(",", ".")) : NaN;
+  return Number.isFinite(number) && number >= 1 && number <= 5 ? number : null;
+}
+
+/** A review count of at least one: an integer, or digits with thousands separators such as "1.234". */
+export function reviewCount(value: unknown): number | null {
+  const number = typeof value === "number" ? value
+    : typeof value === "string" && /^\s*(?:\d+|\d{1,3}(?:[., \u00a0]\d{3})+)\s*$/u.test(value) ? Number(value.replace(/[^\d]/gu, "")) : NaN;
+  return Number.isSafeInteger(number) && number >= 1 ? number : null;
+}
+
+/** The identity of an amazon.es product page (`amazon.es/dp/<ASIN>`), or null for any other URL. */
+export function amazonProductKey(value: unknown): string | null {
+  if (!urlOnDomain(value, "amazon.es")) return null;
+  const key = canonicalPageKey(String(value));
+  return key?.startsWith("amazon.es/dp/") ? key : null;
+}
+
+const categoryKey = (value: unknown) => typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/gu, "_") : "";
+const quantityOne = (value: unknown) => value === 1 || (typeof value === "string" && value.trim() === "1");
+
+/**
+ * S6: at least 3 candidates per category and 15 distinct amazon.es products
+ * in all, each with price, rating, review count and product link; one chosen
+ * candidate with a reason per category; the cart holds exactly those 5, one
+ * each, and its subtotal is the sum of its lines within rounding. A reported
+ * block fails with its own code, so a bot wall is a stable reason.
+ */
+function oracleS6(result: BrowserResult): OracleVerdict {
+  const failed: string[] = [];
+  const groups = Array.isArray(result.categories) ? result.categories.filter(record) : [];
+  const products = new Set<string>();
+  const chosen = new Map<S6Category, Readonly<{ key: string; name: string }>>();
+  let listed = 0;
+  for (const category of S6_CATEGORIES) {
+    const entries = groups.filter((group) => categoryKey(group.category) === category);
+    const group = entries[0];
+    if (!group) {
+      failed.push(`category_missing_${category}`);
+      continue;
+    }
+    if (entries.length > 1) failed.push(`category_repeated_${category}`);
+    const candidates = Array.isArray(group.candidates) ? group.candidates.filter(record) : [];
+    listed += candidates.length;
+    const valid = candidates.filter((candidate) => nonEmptyText(candidate.name) && euroAmount(candidate.price) !== null &&
+      ratingValue(candidate.rating) !== null && reviewCount(candidate.reviews) !== null && amazonProductKey(candidate.url) !== null);
+    const own = new Set(valid.map((candidate) => amazonProductKey(candidate.url)!));
+    for (const key of own) products.add(key);
+    if (own.size < 3) failed.push(`candidates_lt_3_${category}`);
+    const pick = record(group.chosen) ? group.chosen : {};
+    const pickKey = amazonProductKey(pick.url);
+    const match = pickKey ? valid.find((candidate) => amazonProductKey(candidate.url) === pickKey) : undefined;
+    if (!match) failed.push(`chosen_not_candidate_${category}`);
+    else if (!nonEmptyText(pick.reason)) failed.push(`chosen_reason_missing_${category}`);
+    else chosen.set(category, { key: pickKey!, name: nameKey(String(match.name)) });
+  }
+  if (products.size < 15) failed.push("candidates_lt_15");
+  const chosenKeys = [...chosen.values()].map((product) => product.key);
+  if (new Set(chosenKeys).size !== chosenKeys.length) failed.push("chosen_repeated");
+
+  const cart = record(result.cart) ? result.cart : {};
+  const lines = Array.isArray(cart.lines) ? cart.lines.filter(record) : [];
+  if (lines.length !== S6_CATEGORIES.length) failed.push("cart_lines_not_5");
+  // Each line takes one chosen product, by its product page or, when the cart shows no link, its exact name.
+  const open = new Map(chosen);
+  let matchedLines = 0;
+  for (const line of lines) {
+    const key = amazonProductKey(line.url);
+    const name = nonEmptyText(line.name) ? nameKey(String(line.name)) : null;
+    const hit = [...open].find(([, product]) => key ? product.key === key : name !== null && product.name === name);
+    if (!hit) continue;
+    open.delete(hit[0]);
+    matchedLines += 1;
+  }
+  if (matchedLines < lines.length || open.size > 0) failed.push("cart_line_mismatch");
+  if (lines.some((line) => !quantityOne(line.quantity))) failed.push("cart_quantity_not_1");
+  const totals = lines.map((line) => euroAmount(line.line_total));
+  const priced = lines.length > 0 && totals.every((total) => total !== null);
+  if (!priced) failed.push("cart_line_price_invalid");
+  const subtotal = euroAmount(cart.subtotal);
+  // A cent of rounding per line, at least two.
+  const matches = subtotal !== null && priced &&
+    near(subtotal, totals.reduce<number>((sum, total) => sum + (total ?? 0), 0), Math.max(0.02, 0.01 * lines.length));
+  if (subtotal === null) failed.push("cart_subtotal_invalid");
+  else if (priced && !matches) failed.push("cart_subtotal_mismatch");
+  if (blockedCodes(result.blocked).length > 0) failed.push("blocked_reported");
+  return { counts: { candidates: listed, cartLines: lines.length, categories: S6_CATEGORIES.length - failed.filter((code) =>
+    code.startsWith("category_missing_")).length, chosen: chosen.size, distinctCandidates: products.size, matchedLines,
+  pricedLines: totals.filter((total) => total !== null).length, subtotalMatches: flag(matches) }, failed };
+}
+
 // Live handoff evidence (S5) ---------------------------------------------------------
 
 /** A `browser_handoff` row of `ModelRunToolCall`: read in memory only, never printed. */
@@ -416,7 +563,7 @@ export function frameToClientPoint(point: Readonly<{ x: number; y: number }>, fr
 }
 
 /** The section of the result file a scenario's oracle reads. */
-export type ResultSection = "cart" | "checkout" | "items";
+export type ResultSection = "cart" | "checkout" | "items" | "shopping";
 
 /**
  * The fixed schema every result file must satisfy before an oracle reads it:
@@ -432,7 +579,10 @@ export function resultShapeErrors(value: BrowserResult, section: ResultSection |
   if (section === "items" && (!Array.isArray(value.items) || value.items.some((entry) => !record(entry)))) {
     errors.push("result_items_invalid");
   }
-  if (section === "cart" && (!record(value.cart) || !Array.isArray(value.cart.lines) ||
+  if (section === "shopping" && (!Array.isArray(value.categories) || value.categories.some((entry) => !record(entry)))) {
+    errors.push("result_categories_invalid");
+  }
+  if ((section === "cart" || section === "shopping") && (!record(value.cart) || !Array.isArray(value.cart.lines) ||
     value.cart.lines.some((entry) => !record(entry)))) errors.push("result_cart_invalid");
   if (section === "checkout" && !record(value.checkout)) errors.push("result_checkout_invalid");
   return errors;
@@ -492,6 +642,14 @@ function resultInstruction(fields: string, blocked: string = BLOCKED_ANY): strin
     `Цены пиши числами без символа валюты, например 2.49. ${blocked} и всё равно сохрани файл с тем, что удалось собрать. Ответь коротко.`
   ].join("\n");
 }
+
+const S6_FIELDS = [
+  '  "categories": [{"category": "juice" | "yogurt" | "frozen_la_sirena" | "coffee" | "cereal",',
+  '    "candidates": [{"name": "...", "price": 2.49, "rating": 4.5, "reviews": 1234, "url": "https://www.amazon.es/dp/..."}],',
+  '    "chosen": {"url": "https://www.amazon.es/dp/...", "reason": "..."}}],',
+  '  "cart": {"lines": [{"category": "juice", "name": "...", "url": "https://www.amazon.es/dp/...", "quantity": 1, "line_total": 2.49}],',
+  '    "subtotal": 12.45}'
+].join("\n");
 
 const ITEM_FIELDS = '  "items": [{"name": "...", "price": 2.49, "currency": "EUR", "url": "https://...", "offer": true}]';
 
@@ -572,6 +730,24 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
       resultInstruction('  "checkout": {"url": "https://...", "item_total": 0.0, "tax": 0.0, "total": 0.0, "finished": false}',
         BLOCKED_AFTER_USER_SIGN_IN)
     ].join("\n\n")
+  },
+  S6: {
+    // The long task (issue #67): many searches and product pages in one turn, then a cart of five.
+    availability: "available",
+    id: "S6",
+    oracle: oracleS6,
+    section: "shopping",
+    prompt: [
+      "Зайди на amazon.es без входа в аккаунт. Хочу выбрать самые выгодные продукты в пяти категориях: сок (zumo), " +
+        "йогурт (yogur), замороженные продукты La Sirena, кофе (café) и хлопья для завтрака (cereales).",
+      "В каждой категории найди не меньше 3 разных товаров и для каждого запиши название, текущую цену в евро, " +
+        "рейтинг в звёздах, число отзывов и ссылку на страницу товара на amazon.es в виде https://www.amazon.es/dp/<ASIN>.",
+      "В каждой категории выбери один товар с лучшим соотношением цены и качества и одной строкой объясни почему. " +
+        "Положи 5 выбранных товаров в корзину, по одной штуке каждого. Потом открой корзину и запиши её строки " +
+        "и промежуточную сумму так, как их показывает корзина.",
+      `В аккаунт не входи и не регистрируйся. ${SAFETY} Корзину не оформляй.`,
+      resultInstruction(S6_FIELDS)
+    ].join("\n\n")
   }
 });
 
@@ -582,7 +758,7 @@ export function checkBrowserResult(scenario: BrowserScenario, value: BrowserResu
 }
 
 export function selectedScenarios(raw: string | undefined): BrowserScenarioId[] {
-  const value = raw?.trim() || BROWSER_SCENARIO_IDS.join(",");
+  const value = raw?.trim() || DEFAULT_BROWSER_SCENARIO_IDS.join(",");
   const ids = value.split(",").map((entry) => entry.trim().toUpperCase());
   if (ids.length === 0 || ids.some((id) => !(BROWSER_SCENARIO_IDS as readonly string[]).includes(id)) ||
     new Set(ids).size !== ids.length) fail("scenarios_invalid");
@@ -706,12 +882,130 @@ export function usageEvidence(rows: readonly UsageRow[]): Readonly<{
   };
 }
 
+// Per-request input series and cost estimates ---------------------------------------
+
+/**
+ * The id the native engine gives the usage record of a run's `index`th paid
+ * call (`nativeUsageRowId` in `lib/server/engine/runStore.ts`). The engine
+ * writes a run's records in one batch under one timestamp, numbered in the
+ * order the calls were made (`lib/server/engine/usage.ts`), so these ids are
+ * the only stored order of a run's model requests.
+ */
+export function engineUsageRowId(runId: string, index: number): string {
+  const hex = createHash("sha256").update(`native-usage:${runId}:${index}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** A `UsageEvent` row of the run, read for the series: numbers and the stored id only. */
+export type UsageSeriesRow = Readonly<{
+  cachedInputTokens: number | null;
+  id: string;
+  inputTokens: number | null;
+  purpose: string;
+}>;
+
+export type RequestSeries = Readonly<{
+  /** Provider-reported cached input tokens over the series; null when any request did not report them. */
+  cachedInputTokens: number | null;
+  /** Input tokens of every model request in call order (loop rounds, retries and compaction calls alike); null where unreported. */
+  inputSeries: readonly (number | null)[];
+  /** Rows linked to the run that its engine ledger did not write (System Vision, titles): not in the series. */
+  otherRows: number;
+}>;
+
+/**
+ * The run's model requests in the order they were made. Every model call of a
+ * native run, compaction calls included, is a `chat_answer` record of the
+ * run's ledger; its Search calls are `web_search` records and are left out.
+ */
+export function requestSeries(runId: string, rows: readonly UsageSeriesRow[]): RequestSeries {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const ordered: UsageSeriesRow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = byId.get(engineUsageRowId(runId, index));
+    if (row) ordered.push(row);
+  }
+  const requests = ordered.filter((row) => row.purpose === "chat_answer");
+  return {
+    cachedInputTokens: requests.length > 0 && requests.every((row) => row.cachedInputTokens !== null)
+      ? requests.reduce((sum, row) => sum + (row.cachedInputTokens ?? 0), 0) : null,
+    inputSeries: requests.map((row) => row.inputTokens),
+    otherRows: rows.length - ordered.length
+  };
+}
+
+export type SeriesStats = Readonly<{
+  max: number | null;
+  median: number | null;
+  min: number | null;
+  /** Requests in the series, and how many reported their input tokens. */
+  requests: number;
+  reported: number;
+  /** Least-squares growth of input tokens per request (x = the request's position from 0); null below two reported points. */
+  slopePerRequest: number | null;
+}>;
+
+export function seriesStats(series: readonly (number | null)[]): SeriesStats {
+  const points = series.flatMap((value, index) => value === null ? [] : [{ x: index, y: value }]);
+  const values = points.map((point) => point.y);
+  let slope: number | null = null;
+  if (points.length >= 2) {
+    const meanX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+    const meanY = values.reduce((sum, value) => sum + value, 0) / points.length;
+    const spread = points.reduce((sum, point) => sum + (point.x - meanX) ** 2, 0);
+    slope = points.reduce((sum, point) => sum + (point.x - meanX) * (point.y - meanY), 0) / spread;
+  }
+  return {
+    max: values.length > 0 ? Math.max(...values) : null,
+    median: median(values),
+    min: values.length > 0 ? Math.min(...values) : null,
+    reported: points.length,
+    requests: series.length,
+    slopePerRequest: tenth(slope)
+  };
+}
+
+/** List prices the estimates use, in USD per million tokens: a frontier chat model and a budget one. */
+export const PRICE_TIERS = Object.freeze({
+  frontier: Object.freeze({ input: 4, output: 20 }),
+  budget: Object.freeze({ input: 0.1, output: 0.5 })
+});
+/** The assumed share of input tokens read from the provider's prompt cache, and the price of a cached token against a fresh one. */
+export const ASSUMED_CACHE_HIT = 0.85;
+export const CACHED_INPUT_PRICE_FACTOR = 0.1;
+
+export type CostEstimates = Readonly<Record<keyof typeof PRICE_TIERS, Readonly<{ cached85: number; noCache: number }>>>;
+
+/**
+ * Cost estimates from token totals, never a reported charge:
+ *   noCache  = (input × inputPrice + output × outputPrice) / 1e6
+ *   cached85 = (input × ((1 − 0.85) + 0.85 × 0.1) × inputPrice + output × outputPrice) / 1e6
+ * i.e. 85% of input tokens are cache reads billed at a tenth of the input
+ * price (the usual cached-input discount); output is never cached. Null when
+ * either total is unknown. USD, rounded to 1e-4.
+ */
+export function costEstimates(inputTokens: number | null, outputTokens: number | null): CostEstimates | null {
+  if (inputTokens === null || outputTokens === null) return null;
+  const round = (value: number) => Math.round(value * 10_000) / 10_000;
+  const cachedShare = (1 - ASSUMED_CACHE_HIT) + ASSUMED_CACHE_HIT * CACHED_INPUT_PRICE_FACTOR;
+  const tier = (price: Readonly<{ input: number; output: number }>) => ({
+    cached85: round((inputTokens * cachedShare * price.input + outputTokens * price.output) / 1_000_000),
+    noCache: round((inputTokens * price.input + outputTokens * price.output) / 1_000_000)
+  });
+  return { budget: tier(PRICE_TIERS.budget), frontier: tier(PRICE_TIERS.frontier) };
+}
+
 export type RunRecord = Readonly<{
   blocked: readonly BrowserBlockedCode[];
+  /** Compactions recorded in the run's transcript; null when not read. */
+  compactions?: number | null;
   costUsd: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** The per-request input series' statistics; absent when not read. */
+  requestStats?: SeriesStats;
   rounds: number | null;
+  run?: number;
   scenario: BrowserScenarioId;
   success: boolean;
   toolCalls: number | null;
@@ -741,8 +1035,12 @@ export function scenarioSummary(scenario: BrowserScenarioId, runs: readonly RunR
   const blocked: Record<string, number> = {};
   for (const run of own) for (const code of run.blocked) blocked[code] = (blocked[code] ?? 0) + 1;
   const costs = own.map((run) => run.costUsd);
+  const compactions = own.map((run) => run.compactions ?? null);
   return {
     blocked,
+    compactionsTotal: own.length > 0 && compactions.every((count) => count !== null)
+      ? compactions.reduce<number>((sum, count) => sum + (count ?? 0), 0) : null,
+    costEstimates: costEstimates(total("inputTokens"), total("outputTokens")),
     costKnownRuns: costs.filter((cost) => cost !== null).length,
     costUsdTotal: own.length > 0 && costs.every((cost) => cost !== null)
       ? Math.round(costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0) * 1_000_000) / 1_000_000 : null,
@@ -752,6 +1050,19 @@ export function scenarioSummary(scenario: BrowserScenarioId, runs: readonly RunR
     medianWallSeconds: tenth(median(numbers("wallSeconds"))),
     outputTokensTotal: total("outputTokens"),
     runs: own.length,
+    // One results-table row per run: the long-task curve is per run, so medians alone would hide it.
+    runsDetail: own.map((run) => ({
+      compactions: run.compactions ?? null,
+      costEstimates: costEstimates(run.inputTokens, run.outputTokens),
+      inputTokens: run.inputTokens,
+      outputTokens: run.outputTokens,
+      requestStats: run.requestStats ?? null,
+      rounds: run.rounds,
+      run: run.run ?? null,
+      success: run.success,
+      toolCalls: run.toolCalls,
+      wallSeconds: run.wallSeconds
+    })),
     scenario,
     successes: own.filter((run) => run.success).length
   };
