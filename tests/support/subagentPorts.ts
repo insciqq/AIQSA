@@ -6,14 +6,24 @@
  */
 import {
   SUBAGENT_END_REASONS,
+  SUBAGENT_ERROR_CODES,
+  SUBAGENT_LIMITS,
   WORKSPACE_SUBAGENTS_RUNNING_CODE,
-  type EndedSubagentCallResult
+  type EndedSubagentCallResult,
+  type SubagentErrorCode
 } from "@/lib/contracts/subagents";
 import { workspaceAgentEnvironment, type WorkspaceAgent } from "@/lib/server/subagents/guestProtocol";
 import {
   WORKSPACE_OPERATIONS_BLOCKED_BY_SUBAGENTS,
   type BrowserAgentIdentity,
   type BrowserAgentReleaseInput,
+  type SubagentBackgroundAvailability,
+  type SubagentBackgroundControl,
+  type SubagentBackgroundMessageInput,
+  type SubagentBackgroundStartInput,
+  type SubagentBackgroundStartResult,
+  type SubagentBackgroundStopResult,
+  type SubagentCallerScope,
   type SubagentCallback,
   type SubagentCallbackDisposition,
   type SubagentCallbackSink,
@@ -127,6 +137,68 @@ export class FakeSubagentRunner implements SubagentRunner {
     const turn = this.turns.get(handle.turnId);
     if (!turn) throw new Error("fake_subagent_turn_missing");
     return turn;
+  }
+}
+
+type FakeBackgroundTurn = {
+  input: SubagentBackgroundStartInput;
+  messages: SubagentMessage[];
+  result: EndedSubagentCallResult | null;
+  turnId: string;
+};
+
+/**
+ * Background turns of one process: `start` admits until the chat runs
+ * `SUBAGENT_LIMITS.runningPerChat` turns, refuses a thread that already runs,
+ * and honours a scripted refusal (`refuse`, such as `subagent_usage_limited`)
+ * or an unavailable mode (`available: false`). Turns run until `finish`.
+ */
+export class FakeSubagentBackgroundControl implements SubagentBackgroundControl {
+  readonly turns: FakeBackgroundTurn[] = [];
+
+  constructor(private readonly options: Readonly<{ available?: boolean; refuse?: SubagentErrorCode }> = {}) {}
+
+  async availability(): Promise<SubagentBackgroundAvailability> {
+    return this.options.available === false
+      ? { available: false, code: SUBAGENT_ERROR_CODES.backgroundUnavailable } : { available: true };
+  }
+
+  async start(input: SubagentBackgroundStartInput): Promise<SubagentBackgroundStartResult> {
+    if (this.options.available === false) return { code: SUBAGENT_ERROR_CODES.backgroundUnavailable, kind: "refused" };
+    if (this.options.refuse) return { code: this.options.refuse, kind: "refused" };
+    const active = this.turns.filter((turn) => turn.input.chatId === input.chatId && turn.result === null);
+    if (active.some((turn) => turn.input.threadId === input.threadId)) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
+    if (active.length >= SUBAGENT_LIMITS.runningPerChat) return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" };
+    const turnId = `background-turn-${this.turns.length + 1}`;
+    this.turns.push({ input, messages: [], result: null, turnId });
+    return { kind: "started", name: input.name, state: "running", turnId };
+  }
+
+  async deliver(input: SubagentBackgroundMessageInput): Promise<SubagentDeliveryOutcome> {
+    const turn = this.latest(input.chatId, (candidate) => candidate.input.threadId === input.threadId);
+    if (!turn) return { kind: "not_found" };
+    if (turn.result) return { kind: "ended", result: turn.result };
+    if (!turn.messages.some((message) => message.nonce === input.message.nonce)) turn.messages.push(input.message);
+    return { kind: "delivered", state: "running" };
+  }
+
+  async stop(input: SubagentCallerScope & Readonly<{ name: string }>): Promise<SubagentBackgroundStopResult> {
+    const turn = this.latest(input.chatId, (candidate) => candidate.input.name === input.name);
+    if (!turn) return { kind: "not_found" };
+    if (!turn.result) this.finish(turn.turnId, endedSubagentResult(input.name, { outcome: undefined, reason: SUBAGENT_END_REASONS.stoppedByAgent,
+      state: "stopped" }));
+    return { kind: "stopped", result: turn.result! };
+  }
+
+  /** Ends a running background turn with this result, as its run would. */
+  finish(turnId: string, result: EndedSubagentCallResult): void {
+    const turn = this.turns.find((candidate) => candidate.turnId === turnId);
+    if (!turn) throw new Error("fake_background_turn_missing");
+    turn.result ??= result;
+  }
+
+  private latest(chatId: string, matches: (turn: FakeBackgroundTurn) => boolean): FakeBackgroundTurn | undefined {
+    return this.turns.filter((turn) => turn.input.chatId === chatId && matches(turn)).at(-1);
   }
 }
 
