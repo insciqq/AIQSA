@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { endedSubagentResult } from "@/tests/support/subagentPorts";
-import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
+import type { SubagentCallback } from "@/lib/server/subagents/ports";
+import { MemorySubagentStore, type MemoryTurn } from "@/tests/support/subagentBackgroundStore";
 import { createSubagentCallbacks, type SubagentWakeUpAdmitter, type SubagentWakeUpOutcome } from "./callbacks";
 
 const scope = { chatId: "chat-1", userId: "user-1" };
@@ -22,8 +23,11 @@ function setup(outcomes: SubagentWakeUpOutcome[] = []) {
   return { admitWakeUp, callbacks, store, wakeUps };
 }
 
-const callbackOf = (turn: Readonly<{ name: string; result: ReturnType<typeof endedSubagentResult>; threadId: string; turnId: string }>) =>
-  ({ ...scope, name: turn.name, parentRunId: "parent-run", result: turn.result, threadId: turn.threadId, turnId: turn.turnId });
+/** The callback of an ended fixture turn, as its run's settlement sends it. */
+function callbackOf(turn: MemoryTurn): SubagentCallback {
+  if (!turn.result) throw new Error("fixture turn has not ended");
+  return { ...scope, name: turn.name, parentRunId: turn.parentRunId, result: turn.result, threadId: turn.threadId, turnId: turn.turnId };
+}
 
 describe("background sub-agent callbacks", () => {
   it("goes into the running main answer as a callback follow-up, claimed once", async () => {

@@ -665,6 +665,8 @@ export type ChatRouteServerErrorCode =
   | "chat_revision_stale"
   | "chat_title_too_long"
   | "search_plan_invalid"
+  /** Only background sub-agents run: archive and restore wait until the user stops them. */
+  | "subagents_running"
   | "workspace_state_invalid"
   | "workspace_not_found";
 
