@@ -379,14 +379,17 @@ class Host:
             self._closing = False
             self.command_condition.notify_all()
 
-    def live_agents(self) -> List[Dict[str, Any]]:
-        """Per-agent stream targets consumed by the live-panel worker."""
+    def live_targets(self) -> List[_livehub.Target]:
+        """Each browsing agent's current tab, action lock and state for the live view."""
         result = []
         for state in self._states.values():
             page = state.current if state.current is not None and not state.current.is_closed() else None
-            result.append({"agent": state.agent_id, "name": state.name or None,
-                           "page": page.url if page is not None else None,
-                           "controller": "agent", "handoff": False})
+            if page is None and not state.slot:
+                continue
+            result.append(_livehub.Target(state.agent_id, state.name or None, page, state.lock, int(state.last_used * 1000),
+                                          cdp=state.cdp, hidden=state.hidden, env_hidden=state.env_hidden,
+                                          masked=state.masked, steps=state.steps,
+                                          touch=lambda used=state: setattr(used, "last_used", time.monotonic())))
         return result
 
     def select_live_agent(self, agent_id: str) -> None:
@@ -901,7 +904,6 @@ class Host:
                 # The connection stays open; the hub owns and closes it.
                 args = dict(request.get("args", {}))
                 args.setdefault("agent", state.agent_id)
-                self._selected_agent_id = state.agent_id
                 await self.live.serve(reader, writer, args)
                 return
             op = request["op"]
@@ -910,8 +912,8 @@ class Host:
             else:
                 # Taking the per-agent lock before admission serializes slot
                 # acquisition, release and tab cleanup with that agent's work.
-                async with self.live.agent_action(self.lock, control_free=op in CONTROL_FREE_OPS):
-                    note = None if op in CONTROL_FREE_OPS else self.live.take_note()
+                async with self.live.agent_action(state.lock, control_free=op in CONTROL_FREE_OPS, agent=state.agent_id):
+                    note = None if op in CONTROL_FREE_OPS else self.live.take_note(state.agent_id)
                     if note:
                         raise HostError("user_returned_control", note + " " + USER_RETURNED)
                     if op not in CONTROL_FREE_OPS:
@@ -1365,11 +1367,19 @@ class Host:
         return {"step": step, "data": saved,
                 "text": f"{verb}: /workspace/secrets/browser/{name} ({saved['bytes']} bytes). It stays current while you browse in this turn."}
 
-    async def save_site_session(self) -> Optional[str]:
-        """After the user finished a handoff: the current site's sign-in, kept current from now on (`op_save_session`).
+    async def save_site_session(self, agent: str = MAIN_AGENT_ID) -> Optional[str]:
+        """After the user's handoff, save that agent's site and keep it current (`op_save_session`).
 
-        The site's name, or None when the tab shows no site or the save failed; the previous version then stays.
+        Returns the site's name, or None if the tab has no site or saving failed; the previous version then stays.
+        Two agents saving one site keep the last complete save.
         """
+        token = self._agent_context.set(self._valid_agent_id(agent))
+        try:
+            return await self._save_site_session()
+        finally:
+            self._agent_context.reset(token)
+
+    async def _save_site_session(self) -> Optional[str]:
         try:
             await asyncio.wait_for(self.lock.acquire(), 20)
         except asyncio.TimeoutError:
