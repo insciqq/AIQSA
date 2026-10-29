@@ -75,7 +75,8 @@ import type { BrowserLiveChannelRequest } from "./browserLive";
 import type { WorkspaceOperation } from "./operationFence";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import {
-  acknowledgeWorkspaceRunCommandsStopped, closeWorkspaceRunOperation, currentWorkspaceAttachments, isWorkspaceRunOperation, withWorkspaceSessionExclusive,
+  acknowledgeWorkspaceRunCommandsStopped, closeWorkspaceRunOperation, currentWorkspaceAttachments, evictOtherWorkspaceAttachments,
+  isWorkspaceRunOperation, withWorkspaceSessionExclusive,
   workspaceActiveRunsWhere, workspaceRunAgentIds, workspaceRunHoldsOperation, type WorkspaceAttachedRun
 } from "./attachments";
 import type { WorkspaceDetachInput, WorkspaceDetachResult } from "../subagents/ports";
@@ -319,6 +320,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   markSessionFailed(input: Readonly<{ code: string; operation: WorkspaceOperation; sessionId: string }>): Promise<void>;
   markSessionLost(input: Readonly<{
     operation: WorkspaceOperation;
+    /** The run that found the loss: the only attached run that goes on in the recreated Workspace. */
+    runId?: string;
     runtimeSandboxId: string;
     sessionId: string;
   }>): Promise<WorkspaceOperation | null>;
@@ -360,6 +363,11 @@ export type WorkspaceCoordinatorRepository = Readonly<{
    * (`closeWorkspaceRunOperation`). Without `force`, false when another run attached meanwhile.
    */
   closeRunOperation?(input: Readonly<{ binding: WorkspaceExecutionBinding; force: boolean }>): Promise<boolean>;
+  /**
+   * The run's VM is about to stop under the other attached runs: the operation closes to joins and the others lose
+   * their attachments in one step, so none dispatches under the stop. Returns the runs that ended with it.
+   */
+  evictAttachedRuns?(input: Readonly<{ binding: WorkspaceExecutionBinding }>): Promise<readonly string[]>;
   /** The agent ids whose guest processes belong to the run (`workspaceRunAgentIds`). */
   runAgentIds?(input: Readonly<{ runId: string }>): Promise<readonly string[]>;
   /**
@@ -590,7 +598,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         });
         if (!unused) return false;
         const attached = await currentWorkspaceAttachments(tx, session);
-        if (attached.some((run) => run.modelRunId !== binding.runId)) {
+        if (attached.some((run) => run.active && run.modelRunId !== binding.runId)) {
           // Other runs of the chat go on under the shared operation: only this run's attachment goes.
           if (!attached.some((run) => run.modelRunId === binding.runId)) return false;
           await tx.workspaceRunAttachment.deleteMany({ where: { modelRunId: binding.runId } });
@@ -743,7 +751,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         const claim = await claimExportWith(tx, request);
         // Other runs still use the session: the capture runs under their shared operation, leased on the binding
         // alone, so no new generation drains the VM under them.
-        if (runOwner && attached.some((run) => run.modelRunId !== request.runId)) {
+        if (runOwner && attached.some((run) => run.active && run.modelRunId !== request.runId)) {
           return claim.status === "claimed" ? { ...claim, operation: request.operation } : claim;
         }
         return ownExportClaim(tx, session, claim, request);
@@ -930,6 +938,12 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     runAgentIds: ({ runId }) => workspaceRunAgentIds(prisma, runId),
+    async evictAttachedRuns({ binding }) {
+      if (!binding.operationOwner) return [];
+      const owner = binding.operationOwner;
+      return prisma.$transaction((tx) => evictOtherWorkspaceAttachments(tx, { generation: binding.operationGeneration,
+        owner, runId: binding.runId, sessionId: binding.sessionId }));
+    },
     async closeRunOperation({ binding, force }) {
       if (!binding.operationOwner) return false;
       const owner = binding.operationOwner;
@@ -942,7 +956,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         where: { ...workspaceOperationWhere(operation), id: sessionId, state: { not: "DELETING" } }
       });
     },
-    async markSessionLost({ operation, runtimeSandboxId, sessionId }) {
+    async markSessionLost({ operation, runId, runtimeSandboxId, sessionId }) {
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, sessionId);
         if (!session || session.version !== operation.generation || session.operationOwner !== operation.owner ||
@@ -963,12 +977,16 @@ export function createPrismaWorkspaceCoordinatorRepository(
         });
         if (updated.count === 1) await failWorkspaceExportsForLostDisk(tx, sessionId,
           operation.owner.startsWith("run:") ? operation.owner.slice(4) : undefined);
-        // The runs attached under the lost generation keep their authority in the recreated Workspace (the
-        // coordinator ends the others as interrupted: their processes went with the disk).
-        if (updated.count === 1) await tx.workspaceRunAttachment.updateMany({
-          data: { operationGeneration: operation.generation + 1 },
-          where: { chatId: session.chatId, operationGeneration: operation.generation }
-        });
+        // Only the run that found the loss goes on, in the recreated Workspace; the others' processes and files went
+        // with the disk, so they lose their authority and end interrupted, never silently start over empty.
+        if (updated.count === 1) {
+          const discoverer = runId ? await tx.workspaceRunAttachment.updateMany({
+            data: { operationGeneration: operation.generation + 1 },
+            where: { chatId: session.chatId, modelRunId: runId, operationGeneration: operation.generation }
+          }) : { count: 0 };
+          await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId,
+            ...(discoverer.count === 1 && runId ? { modelRunId: { not: runId } } : {}) } });
+        }
         return updated.count === 1 ? { generation: operation.generation + 1, owner: operation.owner } : null;
       });
     },
@@ -1359,6 +1377,8 @@ export type WorkspaceCoordinator = Readonly<{
    * this run's processes stop while other runs stay attached; an unproven stop ends them all with the VM.
    */
   detach?(input: WorkspaceDetachInput): Promise<WorkspaceDetachResult>;
+  /** Whether the run still holds its chat's Workspace (the live channel's `attached`, `browserLive.ts`). */
+  holdsWorkspace?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
   tools(input: Readonly<{
     runId: string;
     userId: string;
@@ -2002,7 +2022,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         ) {
           const others = await otherAttachedRuns(binding);
           lostOperation = await input.repository.markSessionLost({
-            runtimeSandboxId: binding.runtimeSandboxId,
+            runId: binding.runId, runtimeSandboxId: binding.runtimeSandboxId,
             operation: ownedOperation(binding), sessionId: binding.sessionId
           }).catch(() => null);
           if (lostOperation) await interruptAttachedRuns(binding, others);
@@ -2327,8 +2347,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // Not proven: the VM stops below as it does for a single run, and every other attached run ends with it.
         logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", outcome: "degraded",
           code: "workspace_agent_stop_unproven", action: "stop" });
-        await input.repository.closeRunOperation?.({ binding: current, force: true }).catch(() => false);
-        others = await otherAttachedRuns(current);
+        // Fence first: no run joins the closing operation and none dispatches under it while the VM stops.
+        others = await input.repository.evictAttachedRuns?.({ binding: current }).catch(() => null) ?? others;
       }
       let quiescence = await quiesceRun(current);
       if (quiescence.proven && !skipBrowserSave && isWorkspaceRunOperation(current.operationOwner)) {
@@ -2382,6 +2402,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const interruptedRunIds = others;
       await interruptAttachedRuns(binding, interruptedRunIds);
       return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm, ...(interruptedRunIds.length > 0 ? { interruptedRunIds } : {}) };
+    },
+    async holdsWorkspace({ runId, userId }) {
+      const binding = await input.repository.binding({ runId, userId });
+      return binding !== null && runHoldsOperation(binding, runId);
     },
     async detach({ chatId, execution, modelRunId, userId }) {
       const binding = await input.repository.binding({ runId: modelRunId, userId });
@@ -2541,7 +2565,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
             initialized.delete(binding.runId);
             const others = await otherAttachedRuns(binding);
             if (!(await input.repository.markSessionLost({
-              runtimeSandboxId: binding.runtimeSandboxId,
+              runId: binding.runId, runtimeSandboxId: binding.runtimeSandboxId,
               operation: ownedOperation(binding), sessionId: binding.sessionId
             }))) {
               throw error;
@@ -2822,48 +2846,62 @@ export function createWorkspaceCoordinator(input: Readonly<{
           // whose steps are idempotent for this same operation.
           const binding = await exportStep(() => initialize(initial, "export", exportSignal, undefined, predecessor));
           if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
-          if (!quiesced) {
-            // Freeze the output set: no process of this run may still be writing
-            // between the listing/hash and the upload. The proof outlives a
-            // later attempt, which starts no process of the run either.
+          const sandbox = binding.runtimeSandboxId;
+          // Other runs still use the shared VM: only this run's processes stop, with proof. Without it the VM stops,
+          // so first no run may join or dispatch under it, every affected run ends, and stop, restart and capture run
+          // as one exclusive step before any execution resumes.
+          let fenced = false;
+          const others = !quiesced && sharedExport ? await otherAttachedRuns(binding) : [];
+          if (others.length > 0) {
             step = "quiesce";
-            const others = sharedExport ? await otherAttachedRuns(binding) : [];
-            const quiescence: WorkspaceQuiescence = others.length > 0 && await stopRunProcesses(binding)
-              ? { proven: true, stoppedVm: false }
-              : await quiesceRun(binding, exportSignal);
-            // The VM stopped under the other attached runs: they end as interrupted, never silently.
-            if (quiescence.stoppedVm) await interruptAttachedRuns(binding, others);
-            if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
-            quiesced = true;
-            if (quiescence.stoppedVm) {
-              // Stopping proves descendants are gone; resume only this exact disk
-              // for file I/O. No accepted command is dispatched again.
-              step = "resume";
-              const resumed = await input.runtime.ensureSession({
-                cpus: input.config.cpus, diskMiB: input.config.diskMiB, imageRef: binding.imageRef,
-                internetEnabled: binding.internetEnabled, memoryMiB: input.config.memoryMiB,
-                runtimeSandboxId: binding.runtimeSandboxId, sandboxName: binding.sandboxName,
-                operation: ownedOperation(binding), sessionId: binding.sessionId, signal: exportSignal
-              });
-              if (resumed.runtimeSandboxId !== binding.runtimeSandboxId || resumed.sandboxName !== binding.sandboxName) {
-                throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-              }
+            if (await stopRunProcesses(binding)) {
+              quiesced = true;
+            } else {
+              const evicted = await input.repository.evictAttachedRuns?.({ binding }).catch(() => null) ?? others;
+              await interruptAttachedRuns(binding, evicted);
+              fenced = true;
             }
           }
-          step = "collect";
-          await renew();
-          if (!browserSessionsSaved) {
-            browserSessionsSaved = true;
-            await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
-          }
-          return { binding: { ...binding, runtimeSandboxId: binding.runtimeSandboxId }, outputs: await input.runtime.collectOutputs({
-            capture: { create: capture.create, id: capture.id },
-            modelRunId: runId,
-            outputDirectory: binding.outputDirectory,
-            runtimeSandboxId: binding.runtimeSandboxId,
-            operation: ownedOperation(binding), sessionId: binding.sessionId,
-            signal: exportSignal
-          }) };
+          const finish = async () => {
+            if (!quiesced) {
+              // Freeze the output set: no process of this run may still be writing
+              // between the listing/hash and the upload. The proof outlives a
+              // later attempt, which starts no process of the run either.
+              step = "quiesce";
+              const quiescence = await quiesceRun(binding, exportSignal);
+              if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
+              quiesced = true;
+              if (quiescence.stoppedVm) {
+                // Stopping proves descendants are gone; resume only this exact disk
+                // for file I/O. No accepted command is dispatched again.
+                step = "resume";
+                const resumed = await input.runtime.ensureSession({
+                  cpus: input.config.cpus, diskMiB: input.config.diskMiB, imageRef: binding.imageRef,
+                  internetEnabled: binding.internetEnabled, memoryMiB: input.config.memoryMiB,
+                  runtimeSandboxId: binding.runtimeSandboxId, sandboxName: binding.sandboxName,
+                  operation: ownedOperation(binding), sessionId: binding.sessionId, signal: exportSignal
+                });
+                if (resumed.runtimeSandboxId !== binding.runtimeSandboxId || resumed.sandboxName !== binding.sandboxName) {
+                  throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+                }
+              }
+            }
+            step = "collect";
+            await renew();
+            if (!browserSessionsSaved) {
+              browserSessionsSaved = true;
+              await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
+            }
+            return { binding: { ...binding, runtimeSandboxId: sandbox }, outputs: await input.runtime.collectOutputs({
+              capture: { create: capture.create, id: capture.id },
+              modelRunId: runId,
+              outputDirectory: binding.outputDirectory,
+              runtimeSandboxId: sandbox,
+              operation: ownedOperation(binding), sessionId: binding.sessionId,
+              signal: exportSignal
+            }) };
+          };
+          return fenced ? withWorkspaceSessionExclusive(binding.sessionId, exportSignal, finish) : finish();
         };
         let collected: Awaited<ReturnType<typeof collect>>;
         try {
@@ -2884,7 +2922,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
             if (!(retryError instanceof WorkspaceSandboxMissing) || exportSignal.aborted) throw retryError;
             // The second lookup by name in this lease proves the disk gone.
             await renew();
-            const lost = await input.repository.markSessionLost({ operation: lease.operation, runtimeSandboxId, sessionId: initial.sessionId });
+            const others = await otherAttachedRuns(initial);
+            const lost = await input.repository.markSessionLost({ operation: lease.operation, runId, runtimeSandboxId, sessionId: initial.sessionId });
+            if (lost) await interruptAttachedRuns(initial, others);
             throw lost ? new WorkspaceConfirmedSessionLoss(lost) : retryError;
           }
         }

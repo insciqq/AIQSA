@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient, type WorkspaceSession } from "@prisma/client";
 import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "@/lib/contracts/subagents";
+import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { WORKSPACE_AGENT_PROTOCOL, type WorkspaceAgent } from "../subagents/guestProtocol";
 import {
   WORKSPACE_OPERATIONS_BLOCKED_BY_SUBAGENTS,
@@ -139,6 +140,25 @@ export async function closeWorkspaceRunOperation(
 }
 
 /**
+ * Before a run's unknown execution stops the shared VM: in one step the operation closes to joins and every other
+ * run loses its attachment (so its next call is refused, none dispatches under the stop). Returns those runs, the
+ * complete set the stop ends. Empty when the run no longer holds the operation. Takes Chat -> WorkspaceSession.
+ */
+export async function evictOtherWorkspaceAttachments(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ generation: number; owner: string; runId: string; sessionId: string }>
+): Promise<readonly string[]> {
+  const session = await lockWorkspaceSession(tx, input.sessionId);
+  if (!session || session.operationOwner !== input.owner || session.version !== input.generation ||
+    !(await workspaceRunHoldsOperation(tx, session, input.runId))) return [];
+  await closeWorkspaceRunOperation(tx, { ...input, force: true });
+  const others = (await currentWorkspaceAttachments(tx, session)).filter((run) => run.modelRunId !== input.runId);
+  await recordWorkspaceAttachment(tx, { chatId: session.chatId, generation: session.version, runId: input.runId });
+  await tx.workspaceRunAttachment.deleteMany({ where: { chatId: session.chatId, modelRunId: { not: input.runId } } });
+  return others.map((run) => run.modelRunId);
+}
+
+/**
  * Nothing of an earlier operation may still run or stream outputs before a new run operation starts: the same
  * checks run admission holds (open executions, unregistered commands, a live export lease).
  */
@@ -210,7 +230,7 @@ export async function workspaceSubagentRunsAttached(
 ): Promise<boolean> {
   const session = await tx.workspaceSession.findUnique({ select: { chatId: true, operationOwner: true, version: true }, where: { chatId } });
   if (!session) return false;
-  return (await currentWorkspaceAttachments(tx, session)).some((run) => run.subagentThreadId !== null);
+  return (await currentWorkspaceAttachments(tx, session)).some((run) => run.active && run.subagentThreadId !== null);
 }
 
 /**
@@ -284,7 +304,8 @@ export async function bindSubagentRunWorkspace(
     internetEnabled: parent.internetEnabled,
     mcpVersion: parent.mcpVersion,
     modelRunId: input.runId,
-    outputDirectory: parent.outputDirectory,
+    // Its own folder, never the parent's: the main agent's export reads only its own output directory.
+    outputDirectory: workspaceRunOutputDirectory(input.runId),
     policyRevision: parent.policyRevision,
     runtimeVersion: parent.runtimeVersion,
     toolCatalogHash: parent.toolCatalogHash,
@@ -334,7 +355,9 @@ export async function withWorkspaceSessionExclusive<T>(sessionId: string, signal
     return await work();
   } finally {
     release();
-    if (tails.get(sessionId) === tail) tails.delete(sessionId);
+    // A waiter that gave up still waits behind its predecessor: its tail is registered until both resolved, so a
+    // later caller never enters while the predecessor holds the step.
+    void tail.then(() => { if (tails.get(sessionId) === tail) tails.delete(sessionId); });
   }
 }
 
