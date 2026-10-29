@@ -83,6 +83,10 @@ PAGES = {
     "/anim": ("<!doctype html><title>Moving</title><style>@keyframes slide{from{left:0}to{left:1000px}}"
               "#box{position:absolute;top:100px;width:200px;height:200px;background:#c33;animation:slide 2s linear infinite alternate}"
               "</style><div id='box'></div>"),
+    "/background": ("<!doctype html><title>Background</title><p id='state'>loading</p><script>"
+                     "window.ticks = 0; window.loaded = false; setTimeout(() => { window.loaded = true; }, 300);"
+                     "setInterval(() => { window.ticks += 1; }, 100);"
+                     "</script>"),
 }
 
 
@@ -219,6 +223,25 @@ class LiveBrowserTests(unittest.TestCase):
         found = [item for item in page.items if item.get("name") == name]
         self.assertEqual(len(found), 1, f"{name}: {[item.get('name') for item in page.items]}")
         return found[0]
+
+    def test_0_a_background_tab_keeps_loading_and_running_timers(self) -> None:
+        """The guest launches headless Chromium with Playwright's default throttling flags."""
+        from aiqsa import browser
+
+        try:
+            self.quiet(browser.open, self.base + "/background")
+            self.quiet(browser.new_tab, self.base + "/background")
+            # Keep the second tab current while the first one loads and runs its timer.
+            time.sleep(1.5)
+            self.quiet(browser.switch_tab, 1)
+            self.assertEqual(browser.js("window.loaded"), "true")
+            self.assertGreaterEqual(int(browser.js("window.ticks")), 8)
+        finally:
+            try:
+                browser.close()
+            except browser.BrowserError:
+                pass
+            self.wait_for_host_exit()
 
     def test_1_numbered_elements_describe_the_page(self) -> None:
         from aiqsa import browser
