@@ -397,23 +397,23 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         reason: SUBAGENT_END_REASONS.stoppedByAgent, reasoningEffort: turn.model.effort, state: "stopped" }) };
     },
 
-    async stopThread(input) {
+    async stopThread(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number> {
       return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.stoppedByUser,
         (execution) => execution.threadId === input.threadId);
     },
 
-    async stopAll(input) {
+    async stopAll(input: SubagentChatScope): Promise<number> {
       return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.stoppedAll, () => true);
     },
 
-    async stopUnderMessage(input) {
+    async stopUnderMessage(input: SubagentChatScope & Readonly<{ messageId: string }>): Promise<number> {
       const scope = { chatId: input.chatId, userId: input.userId };
       const [turns, parents] = await Promise.all([deps.store.activeTurns({ ...scope, underMessageId: input.messageId }),
         deps.store.runIdsUnderMessage({ ...scope, messageId: input.messageId })]);
       return stopMany(scope, turns, SUBAGENT_END_REASONS.stoppedByUser, (execution) => parents.includes(execution.parentRunId));
     },
 
-    async stopChat(input) {
+    async stopChat(input: SubagentChatScope): Promise<number> {
       return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.chatDeleted, () => true);
     }
   });
