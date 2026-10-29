@@ -44,7 +44,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 
 ## Management surfaces
 
-- Studio holds Assistants, Instructions, Skills, Memory, Files, Artifacts, Automations, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Memory holds health and limits.
+- Studio holds Assistants, Instructions, Skills, Sub-agents, Memory, Files, Artifacts, Automations, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Memory holds health and limits.
 - Users, notifications and the agent's tool texts call scheduled tasks Automations; code, routes, tables, contracts, tool names and exports keep their `scheduled-task` identifiers, because renaming them breaks links and upgrades (operator decision 2026-10-25).
 - Destructive actions name the target and the consequences. Secret fields explain keep or replace and never echo the value.
 - Memory consent for connected apps covers facts, not chat history. Viewing MCP servers never wakes an idle one, and nothing re-enables a server the user deliberately disabled except completing its setup.

@@ -1,4 +1,5 @@
 import { BROWSER_HANDOFF_REASONS, BROWSER_LIVE_LIMITS, type BrowserHandoffReason } from "@/lib/contracts/browserLive";
+import type { BrowserAgentRef } from "@/lib/contracts/subagents";
 import type { BrowserLiveRunHandle } from "../workspace/browserLive";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "./types";
 
@@ -13,10 +14,13 @@ export const BROWSER_HANDOFF_UNAVAILABLE = "browser_handoff_unavailable";
 /**
  * Where the run's handoff goes: the live browser in the web chat, a Telegram turn (whose chat has no live
  * browser, so the user gets the web chat's address), or an unattended run (a scheduled task or a webhook),
- * where nobody can take over and the occurrence then fails visibly with a sign-in-again action.
+ * where nobody can take over and the occurrence then fails visibly with a sign-in-again action. Every agent of a run
+ * (the main agent and its sub-agents) gets the run's mode, so Telegram and unattended runs refuse every agent's
+ * handoff; in a web chat each agent's handoff is its own pending request, labelled with `agent` (the main agent when
+ * absent), and the user is given that agent's tab only.
  */
 export type BrowserHandoffMode =
-  | Readonly<{ kind: "interactive"; live: BrowserLiveRunHandle | null; toolTimeLeftMs(): number }>
+  | Readonly<{ agent?: BrowserAgentRef; kind: "interactive"; live: BrowserLiveRunHandle | null; toolTimeLeftMs(): number }>
   | Readonly<{ chatUrl: string; kind: "telegram" }>
   | Readonly<{ kind: "unattended" }>;
 
@@ -126,14 +130,15 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
         : "Too little time is left in this answer for the user to take over the browser. Tell the user what the site needs and " +
           "finish with what you have; they can ask you again to continue." });
   }
-  const handoff = await mode.live.handoff({ message, reason: reason as BrowserHandoffReason, signal, waitMs });
+  const handoff = await mode.live.handoff({ ...(mode.agent ? { agent: mode.agent } : {}), message,
+    reason: reason as BrowserHandoffReason, signal, waitMs });
   switch (handoff.kind) {
     case "no_browser":
       return result(call, "error", { error: "browser_handoff_no_browser", message: "No page is open in the Workspace browser. " +
         "Open the page that needs the user first (for example `aiqsa-browser open URL`), then call browser_handoff again." });
     case "busy":
-      return result(call, "error", { error: "browser_handoff_busy", message: "Another handoff is already waiting for the user; " +
-        "wait for its result." });
+      return result(call, "error", { error: "browser_handoff_busy", message: "Your previous handoff is still waiting for the " +
+        "user; wait for its result." });
     case "unavailable":
       return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE, message: "The live browser cannot reach this chat's " +
         "Workspace browser now: it may not be running, or the Workspace runs an older image (a new chat uses the current one). " +

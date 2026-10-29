@@ -1,0 +1,159 @@
+// @vitest-environment node
+import { describe, expect, it, vi } from "vitest";
+import { decodeResourceChangeCard, type SubagentChangeCard } from "@/lib/contracts/resourceChanges";
+import type { SubagentModelOption } from "@/lib/contracts/subagentDefinitions";
+import { MemorySubagentDefinitionStore, immediateTransactionDb } from "@/tests/support/subagentDefinitionStore";
+import type { SelfServiceCallStore } from "../tools/selfServiceCall";
+import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
+import type { SubagentDefinitionDb } from "./definitionService";
+import {
+  SUBAGENT_MANAGEMENT_TOOLS,
+  executeSubagentManagementTool,
+  subagentManagementToolNames,
+  type SubagentManagementRunDeps
+} from "./managementTools";
+import { SUBAGENT_EXCLUDED_TOOL_NAMES } from "./tools";
+
+const MODELS: SubagentModelOption[] = [
+  { defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium"], modelId: "model-cheap" },
+  { defaultEffort: null, displayName: "Big Model", efforts: [], modelId: "model-big" }
+];
+
+function harness(models: SubagentModelOption[] | null = MODELS) {
+  const memory = new MemorySubagentDefinitionStore();
+  const settled: ToolExecutionResult[] = [];
+  let claim: Awaited<ReturnType<SelfServiceCallStore["claim"]>> = { kind: "open" };
+  const store: SelfServiceCallStore = {
+    claim: vi.fn(async () => claim),
+    settle: vi.fn(async (_tx, result: ToolExecutionResult) => { settled.push(result); })
+  };
+  const deps: SubagentManagementRunDeps = { db: immediateTransactionDb<SubagentDefinitionDb>(), definitions: memory.store, models: async () => models,
+    run: { chatId: "chat-1", runId: "run-1", userId: "user-a" } };
+  let sequence = 0;
+  async function call(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    sequence += 1;
+    const execution = executeSubagentManagementTool(deps, { arguments: args, id: `call-${sequence}`, name } satisfies ModelToolCall,
+      { callId: `persisted-${sequence}`, store });
+    if (!execution) throw new Error("not a management tool");
+    return execution;
+  }
+  return { call, memory, setClaim: (next: typeof claim) => { claim = next; }, settled, store };
+}
+
+const json = (result: ToolExecutionResult) => (result.content[0] as { value: Record<string, unknown> }).value;
+function cardOf(result: ToolExecutionResult): SubagentChangeCard {
+  const event = result.artifacts?.[0] as { data: { payload: unknown } } | undefined;
+  const card = decodeResourceChangeCard(event?.data.payload);
+  if (!card || card.resource !== "subagent") throw new Error("no sub-agent card");
+  return card;
+}
+
+const BROWSER = { description: "Long browsing.", instructions: "Browse and report.", model: "Cheap Model", effort: "low", name: "browser",
+  tools: ["workspace"] };
+
+describe("sub-agent management tools", () => {
+  it("are offered only to the main agent of an interactive web chat", () => {
+    const names = SUBAGENT_MANAGEMENT_TOOLS.map((tool) => tool.name);
+    expect(subagentManagementToolNames({ assistant: false })).toEqual(names);
+    for (const blocked of [{ assistant: true }, { assistant: false, telegram: true }, { assistant: false, scheduled: true },
+      { assistant: false, monitoring: true }, { assistant: false, subagent: true }]) {
+      expect(subagentManagementToolNames(blocked)).toEqual([]);
+    }
+    for (const name of names) expect(SUBAGENT_EXCLUDED_TOOL_NAMES).toContain(name);
+    expect(executeSubagentManagementTool({} as SubagentManagementRunDeps, { arguments: {}, id: "x", name: "manage_skill" },
+      { callId: "x", store: {} as SelfServiceCallStore })).toBeNull();
+  });
+
+  it("creates through the service, settles the call with its card and resolves the model by name", async () => {
+    const { call, memory, settled } = harness();
+    const result = await call("create_subagent", BROWSER);
+    expect(result.status).toBe("complete");
+    expect(json(result)).toMatchObject({ action: "created", saved: true, subagent: { effort: "low", model: "Cheap Model", name: "browser", version: 1 } });
+    expect(cardOf(result)).toMatchObject({ action: "created", definitionVersion: 1, name: "browser", proposalId: null, undoRevisionId: null });
+    expect(settled).toEqual([result]);
+    const [row] = [...memory.rows.values()];
+    expect(row).toMatchObject({ ownerUserId: "user-a", version: 1 });
+    expect(await memory.store.find({} as never, "user-a", { name: "browser" })).toMatchObject({ providerModelId: "model-cheap", toolGroups: ["workspace"] });
+  });
+
+  it("refuses an unknown model, an unsupported effort and a duplicate name without writing", async () => {
+    const { call, memory, settled } = harness();
+    const unknown = await call("create_subagent", { ...BROWSER, model: "Someone Else's Model" });
+    expect(unknown.status).toBe("error");
+    expect(json(unknown)).toMatchObject({ code: "subagent_model_unavailable", saved: false });
+    expect(String(json(unknown).message)).toContain("\"Cheap Model\"");
+    expect(json(await call("create_subagent", { ...BROWSER, effort: "high" }))).toMatchObject({ code: "subagent_effort_unsupported" });
+    expect(memory.rows.size).toBe(0);
+    await call("create_subagent", BROWSER);
+    expect(json(await call("create_subagent", BROWSER))).toMatchObject({ code: "subagent_definition_exists" });
+    expect(memory.rows.size).toBe(1);
+    expect(settled).toHaveLength(1);
+  });
+
+  it("edits only the fields passed, shows what changed and offers Undo of that revision", async () => {
+    const { call, memory } = harness();
+    const created = cardOf(await call("create_subagent", BROWSER));
+    const before = await memory.store.find({} as never, "user-a", { name: "browser" });
+    const result = await call("edit_subagent", { name: "browser", newName: "web", model: null, instructions: "Browse, then summarize." });
+    expect(json(result)).toMatchObject({ action: "updated", changed: ["name", "instructions", "model"], subagent: { name: "web", version: 2 } });
+    const card = cardOf(result);
+    expect(card).toMatchObject({ action: "updated", definitionId: created.definitionId, definitionVersion: 2, name: "web", previousName: "browser",
+      undoRevisionId: before!.revisionId });
+    expect(card.changes.find((change) => change.field === "model")?.summary).toBe("The caller's model");
+    expect(card.instructionsDiff?.lines.some((line) => line.kind === "add")).toBe(true);
+    const after = await memory.store.find({} as never, "user-a", { name: "web" });
+    // Unchanged fields stay: description, effort and tools.
+    expect(after).toMatchObject({ description: "Long browsing.", providerModelId: null, reasoningEffort: "low", toolGroups: ["workspace"] });
+  });
+
+  it("refuses a stale expectedVersion with the current definition and reports an edit that changes nothing", async () => {
+    const { call } = harness();
+    await call("create_subagent", BROWSER);
+    await call("edit_subagent", { name: "browser", description: "Second." });
+    const stale = await call("edit_subagent", { name: "browser", expectedVersion: 1, description: "Third." });
+    expect(json(stale)).toMatchObject({ code: "subagent_definition_conflict", current: { description: "Second.", version: 2 } });
+    const same = await call("edit_subagent", { name: "browser", description: "Second." });
+    expect(same.status).toBe("complete");
+    expect(json(same)).toMatchObject({ saved: false, unchanged: true });
+    expect(same.artifacts).toBeUndefined();
+  });
+
+  it("proposes deletion with its consequences and deletes nothing", async () => {
+    const { call, memory, settled } = harness();
+    const created = cardOf(await call("create_subagent", BROWSER));
+    memory.threads.set(created.definitionId, 3);
+    const result = await call("delete_subagent", { name: "browser" });
+    expect(json(result)).toMatchObject({ deleted: false, deletionProposed: true });
+    expect(cardOf(result)).toMatchObject({ action: "delete_proposed", consequences: { threadCount: 3 }, definitionVersion: 1 });
+    expect(cardOf(result).proposalId).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(memory.rows.size).toBe(1);
+    // A proposal changes nothing, so it does not settle through the change store.
+    expect(settled).toHaveLength(1);
+    expect(json(await call("delete_subagent", { name: "nobody" }))).toMatchObject({ code: "subagent_not_found" });
+  });
+
+  it("never touches another user's definition", async () => {
+    const { memory, call } = harness();
+    await memory.store.create({} as never, "user-b", { description: "B's.", effort: null, instructions: "B.", modelId: null, name: "browser", tools: null });
+    expect(json(await call("edit_subagent", { name: "browser", description: "Mine now." }))).toMatchObject({ code: "subagent_not_found" });
+    expect(json(await call("delete_subagent", { name: "browser" }))).toMatchObject({ code: "subagent_not_found" });
+    expect(json(await call("create_subagent", BROWSER))).toMatchObject({ saved: true });
+  });
+
+  it("returns the settled result of a repeated call and refuses once the run can no longer change anything", async () => {
+    const { call, memory, setClaim } = harness();
+    const first = await call("create_subagent", BROWSER);
+    setClaim({ kind: "settled", result: first });
+    expect(await call("create_subagent", { ...BROWSER, name: "other" })).toBe(first);
+    setClaim({ kind: "unavailable" });
+    expect(json(await call("create_subagent", { ...BROWSER, name: "third" }))).toMatchObject({ code: "subagent_change_unavailable" });
+    expect(memory.rows.size).toBe(1);
+  });
+
+  it("validates arguments with the shared parsers", async () => {
+    const { call } = harness();
+    expect(json(await call("create_subagent", { ...BROWSER, name: "Not A Slug" }))).toMatchObject({ code: "subagent_name_invalid" });
+    expect(json(await call("create_subagent", { ...BROWSER, tools: ["manage_skill"] }))).toMatchObject({ code: "subagent_arguments_invalid" });
+    expect(json(await call("edit_subagent", { name: "browser" }))).toMatchObject({ code: "subagent_arguments_invalid" });
+  });
+});
