@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { ModelRunStatus, PrismaClient } from "@prisma/client";
 import { SUBAGENT_ERROR_CODES } from "../../../contracts/subagents";
 import { parameterControlsForModel, type CatalogAdapterKind } from "../../../domain/catalog";
 import { canonicalizeMaxOutputTokenParams } from "../../../domain/providerParams";
@@ -6,7 +6,7 @@ import { resolveAcceptedRunReasoningEffort } from "../../../domain/runParams";
 import { logEvent } from "../../observability";
 import { loadProviderAdmissionPlan, ProviderAdmissionError, type AdmissionPrisma } from "../../providerRuntime/admission";
 import type { ProviderRuntimeResolver } from "../../providerRuntime/runtimeResolver";
-import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
+import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderModelCapabilities, ProviderRunRequest } from "../../providers/types";
 import { json } from "../../runs/prismaRepositoryShared";
 import type { RunModelConfiguration } from "../../runs/runRepositoryContract";
@@ -88,7 +88,7 @@ export function paramsWithReasoningEffort(dialect: string, params: Readonly<Reco
   return next;
 }
 
-type ModelFacts = Readonly<{ adapterKind: string; capabilities: ProviderModelCapabilities; defaultParams: Record<string, unknown>;
+export type ModelFacts = Readonly<{ adapterKind: string; capabilities: ProviderModelCapabilities; defaultParams: Record<string, unknown>;
   providerFamily: string; reasoningModePath?: boolean; upstreamModelId: string }>;
 
 function controlsFor(facts: ModelFacts) {
@@ -96,6 +96,12 @@ function controlsFor(facts: ModelFacts) {
   return { controls: parameterControlsForModel({ adapterKind: facts.adapterKind as CatalogAdapterKind, defaultParams: facts.defaultParams,
     modelCapabilities: facts.capabilities, modelId: facts.upstreamModelId, provider: dialect,
     supportsReasoningMode: facts.adapterKind === "openai_responses_native" || facts.reasoningModePath === true }), dialect };
+}
+
+/** The efforts a model's reasoning control offers, as its route checks them; empty without one. */
+export function modelEffortOptions(facts: ModelFacts): readonly string[] {
+  const control = controlsFor(facts).controls.reasoningEffort;
+  return control.supported ? [...control.options] : [];
 }
 
 /**
@@ -139,55 +145,66 @@ export function subagentBindingKey(entry: Pick<SubagentModelEntry, "connectionId
   return `subagent:${entry.connectionId}:${entry.providerModelId}`;
 }
 
-type CatalogPrisma = AdmissionPrisma & Pick<PrismaClient, "$transaction">;
+type CatalogPrisma = AdmissionPrisma & Pick<PrismaClient, "$transaction" | "modelRun" | "providerRunBinding">;
 
 /**
- * The production catalog: the model's answer role admitted for the run's
- * owner exactly as an answer model is (entitlement, connection, credential,
- * verified tool calling), its binding recorded once on the run, its adapter
- * from the runtime resolver that reads that binding.
+ * The production catalog. The first use of a model in a run admits its
+ * answer role for the run's owner exactly as an answer model is admitted
+ * (entitlement, connection, credential, verified tool calling) and records
+ * its binding once per run, connection and model; every use, that one and
+ * later ones with any effort, derives the route from that stored execution
+ * snapshot, and the runtime resolver reads the same binding, so a model's
+ * fields and its credential always come from one admission.
  */
 export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: CatalogPrisma; runtime: ProviderRuntimeResolver }>):
   SubagentModelCatalog {
   const unavailable = { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false } as const;
+  const active = { in: ["queued", "streaming", "in_progress"] as ModelRunStatus[] };
   return {
     async route({ effort, entry, runId, userId }) {
       try {
-        const plan = await loadProviderAdmissionPlan(input.prisma, { providerConnectionId: entry.connectionId,
-          providerModelId: entry.providerModelId, requiresClientToolCoexistence: true, searchPlan: { mode: "all_selected", optionIds: [] },
-          userId });
-        const role = plan.answer;
-        const configuration = role.modelConfiguration;
-        if (configuration.capabilities.toolCalling !== true) return unavailable;
-        const facts: ModelFacts = { adapterKind: configuration.adapterKind, capabilities: configuration.capabilities,
-          defaultParams: configuration.defaultParams, providerFamily: role.snapshot.providerFamily,
-          reasoningModePath: Boolean(configuration.reasoningRequestMapping?.modePath), upstreamModelId: role.snapshot.model.upstreamModelId };
+        const bindingKey = subagentBindingKey(entry);
+        const owned = await input.prisma.modelRun.findFirst({ select: { id: true }, where: { id: runId, status: active, userId } });
+        if (!owned) return unavailable;
+        const stored = () => input.prisma.providerRunBinding.findUnique({ select: { executionSnapshot: true },
+          where: { modelRunId_bindingKey: { bindingKey, modelRunId: runId } } });
+        let binding = await stored();
+        if (!binding) {
+          const role = (await loadProviderAdmissionPlan(input.prisma, { providerConnectionId: entry.connectionId,
+            providerModelId: entry.providerModelId, requiresClientToolCoexistence: true, searchPlan: { mode: "all_selected", optionIds: [] },
+            userId })).answer;
+          if (role.modelConfiguration.capabilities.toolCalling !== true) return unavailable;
+          const data = { bindingKey, connectionId: role.snapshot.connectionId, credentialId: role.snapshot.credentialId,
+            credentialSource: role.credentialSource, credentialVersionId: role.snapshot.credentialVersionId,
+            executionSnapshot: json(role.snapshot), modelRunId: runId, providerModelId: role.snapshot.providerModelId, role: "answer" as const };
+          const recorded = await input.prisma.$transaction(async (tx) => {
+            const run = await tx.modelRun.findFirst({ select: { id: true }, where: { id: runId, status: active, userId } });
+            if (!run) return false;
+            // Two first uses at once meet the binding's unique key: the one that wrote it wins, the other reads it.
+            await tx.providerRunBinding.createMany({ data: [data], skipDuplicates: true });
+            return true;
+          });
+          if (!recorded) return unavailable;
+          binding = await stored();
+          if (!binding) return unavailable;
+        }
+        const snapshot = normalizeProviderExecutionSnapshot(binding.executionSnapshot);
+        const model = snapshot.model;
+        if (model.capabilities.toolCalling !== true) return unavailable;
+        const facts: ModelFacts = { adapterKind: model.adapterKind, capabilities: model.capabilities, defaultParams: model.defaultParams,
+          providerFamily: snapshot.providerFamily,
+          reasoningModePath: "reasoningRequestMapping" in model && Boolean(model.reasoningRequestMapping?.modePath),
+          upstreamModelId: model.upstreamModelId };
         const { controls } = controlsFor(facts);
-        const base = { ...canonicalizeMaxOutputTokenParams({ ...configuration.defaultParams }),
+        const base = { ...canonicalizeMaxOutputTokenParams({ ...model.defaultParams }),
           maxOutputTokens: controls.maxOutputTokens.defaultValue,
           ...(controls.temperature.supported ? { temperature: controls.temperature.defaultValue } : {}) };
         const params = paramsForEffort(facts, base, effort);
         if (!params) return { code: SUBAGENT_ERROR_CODES.effortUnsupported, ok: false };
-        const bindingKey = subagentBindingKey(entry);
-        const recorded = await input.prisma.$transaction(async (tx) => {
-          const run = await tx.modelRun.findFirst({ select: { id: true },
-            where: { id: runId, status: { in: ["queued", "streaming", "in_progress"] }, userId } });
-          if (!run) return false;
-          const existing = await tx.providerRunBinding.findUnique({ select: { id: true },
-            where: { modelRunId_bindingKey: { bindingKey, modelRunId: runId } } });
-          // The run keeps the binding its first use admitted.
-          if (existing) return true;
-          await tx.providerRunBinding.create({ data: { bindingKey, connectionId: role.snapshot.connectionId,
-            credentialId: role.snapshot.credentialId, credentialSource: role.credentialSource,
-            credentialVersionId: role.snapshot.credentialVersionId, executionSnapshot: json(role.snapshot), modelRunId: runId,
-            providerModelId: role.snapshot.providerModelId, role: "answer" } });
-          return true;
-        });
-        if (!recorded) return unavailable;
         const runtime = await input.runtime.resolve(runId, "answer", bindingKey);
-        return { ok: true, route: { adapter: runtime.adapter, request: { modelCapabilities: configuration.capabilities,
-          modelId: role.snapshot.model.upstreamModelId, params, provider: role.snapshot.providerFamily, reasoningEffort: effort },
-        snapshot: role.snapshot, timeoutMs: runtime.responseTimeoutMs } };
+        return { ok: true, route: { adapter: runtime.adapter, request: { modelCapabilities: model.capabilities,
+          modelId: model.upstreamModelId, params, provider: snapshot.providerFamily, reasoningEffort: effort },
+        snapshot, timeoutMs: runtime.responseTimeoutMs } };
       } catch (error) {
         if (!(error instanceof ProviderAdmissionError)) {
           logEvent("service_operation", { action: "degrade", code: "subagent_model_unavailable", error, outcome: "degraded",
