@@ -13,9 +13,11 @@ import os
 import re
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
@@ -748,7 +750,7 @@ class HostStartTests(unittest.TestCase):
             "import json, os, socket, sys\n"
             "assert sys.argv[1:4] == ['-m', 'aiqsa.browser._host', '--test-root'], sys.argv\n"
             "run = os.path.join(sys.argv[4], 'tmp', 'aiqsa-browser')\n"
-            "assert 'AIQSA_RUN_TOKEN' not in os.environ and 'AIQSA_INVOCATION_ID' not in os.environ\n"
+            "assert all(name not in os.environ for name in ('AIQSA_RUN_TOKEN', 'AIQSA_INVOCATION_ID', 'AIQSA_AGENT_ID', 'AIQSA_AGENT_NAME'))\n"
             "assert os.getsid(0) == os.getpid()\n"
             "server = socket.socket(socket.AF_UNIX); server.bind(os.path.join(run, 'control.sock')); server.listen(4)\n"
             "server.settimeout(20)\n"
@@ -759,12 +761,16 @@ class HostStartTests(unittest.TestCase):
             "        chunk = connection.recv(4096)\n"
             "        if not chunk: break\n"
             "        data += chunk\n"
-            "    if data: connection.sendall(json.dumps({'ok': True, 'result': {'text': 'served ' + json.loads(data)['op']}}).encode() + b'\\n')\n"
+            "    if data:\n"
+            "        request = json.loads(data)\n"
+            "        assert request['agent'] == {'id': 'thread-7', 'name': 'shop-amazon'}, request\n"
+            "        connection.sendall(json.dumps({'ok': True, 'result': {'text': 'served ' + request['op']}}).encode() + b'\\n')\n"
             "    connection.close()\n")
         # Paths in the command environment move nothing: the client and host never read them.
         with mock.patch.dict(os.environ, {"AIQSA_BROWSER_RUN_DIR": str(self.root / "elsewhere"),
                                           "AIQSA_BROWSER_SESSIONS_DIR": "/workspace/project",
-                                          "AIQSA_RUN_TOKEN": "x" * 43, "AIQSA_INVOCATION_ID": "a" * 32}):
+                                          "AIQSA_RUN_TOKEN": "x" * 43, "AIQSA_INVOCATION_ID": "a" * 32,
+                                          "AIQSA_AGENT_ID": "thread-7", "AIQSA_AGENT_NAME": "shop-amazon"}):
             self.assertEqual(_client.call("info")["text"], "served info")
         self.assertFalse((self.root / "elsewhere").exists())
         self.assertEqual(stat.S_IMODE(self.run_dir.stat().st_mode), 0o700)
@@ -781,6 +787,37 @@ class HostStartTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "browser_start_failed")
         self.assertIn("no chromium", raised.exception.message)
         self.assertEqual(_client._STARTED[-1].wait(timeout=20), 1)
+
+
+class LiveStartTests(unittest.TestCase):
+    def test_streamer_process_starts_without_agent_environment(self) -> None:
+        root = tempfile.TemporaryDirectory()
+        package_root = str(Path(__file__).resolve().parents[1])
+        environment = {**os.environ, "PYTHONPATH": os.pathsep.join([package_root, os.environ.get("PYTHONPATH", "")]),
+                       "AIQSA_AGENT_ID": "thread-7", "AIQSA_AGENT_NAME": "shop-amazon"}
+        process = subprocess.Popen([sys.executable, "-m", "aiqsa.browser.live", "--test-root", root.name],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+        try:
+            process_environment = b""
+            for _ in range(100):
+                if process.poll() is not None:
+                    break
+                try:
+                    process_environment = Path(f"/proc/{process.pid}/environ").read_bytes()
+                except FileNotFoundError:
+                    break
+                if b"AIQSA_AGENT_ID=" not in process_environment and b"AIQSA_AGENT_NAME=" not in process_environment:
+                    break
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            self.assertNotIn(b"AIQSA_AGENT_ID=", process_environment)
+            self.assertNotIn(b"AIQSA_AGENT_NAME=", process_environment)
+        finally:
+            process.stdin.close()
+            process.wait(timeout=10)
+            process.stdout.close()
+            process.stderr.close()
+            root.cleanup()
 
 
 if __name__ == "__main__":

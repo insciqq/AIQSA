@@ -24,8 +24,10 @@ WINDOW = (1440, 900)
 SCREEN = (1920, 1080)
 #: Playwright's own default flag that turns `navigator.webdriver` on.
 IGNORED_DEFAULT_ARGS = ["--enable-automation"]
-#: Command values the browser process must not inherit.
-DROPPED_ENV = frozenset({"AIQSA_INVOCATION_ID", "AIQSA_RUN_TOKEN", "AIQSA_GATEWAY_URL"})
+#: Command values the browser process must not inherit. Agent identity travels in the browser protocol instead.
+DROPPED_ENV = frozenset({
+    "AIQSA_INVOCATION_ID", "AIQSA_RUN_TOKEN", "AIQSA_GATEWAY_URL", "AIQSA_AGENT_ID", "AIQSA_AGENT_NAME"
+})
 AGENT_ENV_PREFIX = "AIQSA_AGENT_"
 
 _LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$")
