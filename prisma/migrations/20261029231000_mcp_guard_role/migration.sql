@@ -1,4 +1,4 @@
-ALTER TYPE "UsagePurpose" ADD VALUE 'mcp_guard';
+ALTER TYPE "UsagePurpose" ADD VALUE 'mcp_guard' AFTER 'subagent';
 ALTER TYPE "ProviderRunRole" ADD VALUE 'mcp_guard';
 
 ALTER TABLE "SystemModelPolicy"
