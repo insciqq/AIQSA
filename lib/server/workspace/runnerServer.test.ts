@@ -7,6 +7,8 @@ import { getContext, runWithContext } from "../observability";
 import { observeWorkspaceHealth } from "./lifecycleObservability";
 import { createWorkspaceRunnerServer } from "./runnerServer";
 import { WorkspaceRuntimeError, type WorkspaceRuntime, type WorkspaceRuntimeHealth } from "./runtime";
+import { parseWorkspaceRunEnvironment } from "./codeMcp";
+import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 
 const token = "synthetic_runner_token_with_at_least_32_characters";
 const sessionId = "ws_" + "a".repeat(40);
@@ -133,7 +135,9 @@ describe("Workspace runner lifecycle diagnostics", () => {
     const agent = { kind: "subagent", name: "shop-amazon", threadId: "thread-7" };
     expect((await secrets(bearer, agent)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ agent,
-      runEnvironment: { ...bearer, AIQSA_AGENT_ID: "thread-7", AIQSA_AGENT_NAME: "shop-amazon" } }));
+      runEnvironment: bearer }));
+    const forwardedEnvironment = syncPersonalSecrets.mock.lastCall?.[0].runEnvironment;
+    expect(parseWorkspaceRunEnvironment(forwardedEnvironment, RUNNER_GATEWAY_ORIGIN)).toEqual(bearer);
     for (const invalid of [{ ...bearer, AIQSA_GATEWAY_URL: "https://attacker.example" }, { PATH: "/tmp" }, "AIQSA_RUN_TOKEN=x"]) {
       expect((await secrets(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
     }

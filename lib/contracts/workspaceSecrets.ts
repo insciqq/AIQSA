@@ -105,7 +105,7 @@ export const WORKSPACE_BROWSER_SESSION_LIMIT_TEXT =
 
 export function workspaceSecretErrorMessage(code: unknown): string {
   switch (code) {
-    case "workspace_secret_invalid": return `Check the name, value and file size. Environment names must be unique, use letters, digits and underscores, and not start with ${WORKSPACE_RESERVED_ENV_PREFIX}.`;
+    case "workspace_secret_invalid": return `Check the name, value and file size. Environment names must be unique, use letters, digits and underscores, and not start with ${WORKSPACE_RESERVED_ENV_PREFIX} or ${WORKSPACE_AGENT_ENV_PREFIX}.`;
     case "workspace_secret_limit": return `Workspace secrets allow up to ${WORKSPACE_SECRET_MAX_COUNT} entries and ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_TOTAL_MAX_BYTES)} in total, including up to ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_ENV_MAX_BYTES)} of environment variables. Each file can be up to ${formatWorkspaceSecretLimit(WORKSPACE_SECRET_FILE_MAX_BYTES)}. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT}`;
     case "workspace_browser_session_invalid": return `Choose a Playwright storage_state JSON file with cookies and origins, up to ${browserLimit}. Use a safe filename such as shop.example.json.`;
     case "workspace_browser_session_conflict": return "A browser session with this filename already exists. Edit that session to replace it.";
@@ -128,14 +128,16 @@ export function isWorkspaceEnvName(value: unknown): value is string {
 }
 
 /**
- * Names only AIQSA sets in guest commands: the browser's admitted language and time zone arrive in the
- * run's own environment. Neither a saved secret nor a command's `env` may set them, so nothing poses as
+ * Names only AIQSA sets in guest commands: the browser's admitted language and time zone and the per-call
+ * agent identity arrive in server-owned environments. Neither a saved secret nor a command's `env` may set them, so nothing poses as
  * the admitted values or points the browser helper elsewhere (saved sign-ins into exported folders).
  */
 export const WORKSPACE_RESERVED_ENV_PREFIX = "AIQSA_BROWSER_";
+/** The per-call agent identity is server-owned and never a saved or requested variable. */
+export const WORKSPACE_AGENT_ENV_PREFIX = "AIQSA_AGENT_";
 
 export function isReservedWorkspaceEnvName(value: string): boolean {
-  return value.startsWith(WORKSPACE_RESERVED_ENV_PREFIX);
+  return value.startsWith(WORKSPACE_RESERVED_ENV_PREFIX) || value.startsWith(WORKSPACE_AGENT_ENV_PREFIX);
 }
 
 /** A name a user or the agent may save as an environment variable. */
