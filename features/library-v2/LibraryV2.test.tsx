@@ -64,7 +64,7 @@ function memoryStatusElement(container: HTMLElement): HTMLElement {
 }
 
 describe("LibraryV2", () => {
-  it("renders ten sections in visual keyboard order even when supplied in reverse", () => {
+  it("renders every section in visual keyboard order even when supplied in reverse", () => {
     const ids = libraryTabGroups.flatMap(group => group.tabs);
     render(<LibraryV2 onBack={vi.fn()} tabs={[...ids].reverse().map(id => ({ id, label: id, content: <p>{id} content</p> }))} />);
     expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(ids);
