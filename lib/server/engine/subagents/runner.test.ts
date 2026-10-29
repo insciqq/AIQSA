@@ -11,8 +11,16 @@ import { SUBAGENT_ROLE_SECTION } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
+import { createUnknownEffects, type UnknownEffects } from "../unknownEffects";
 import { subagentRequestShape } from "./runSubagents";
-import { createSubagentRunner, parseSubagentOutcome, type SubagentHost } from "./runner";
+import { workspacePromptContract } from "../../workspace/promptContract";
+import {
+  WORKSPACE_TURN_GUIDANCE_PREFIX,
+  createSubagentRunner,
+  parseSubagentOutcome,
+  subagentRequest,
+  type SubagentHost
+} from "./runner";
 
 type Step = Readonly<{ calls?: ModelToolCall[]; hang?: true; text?: string }>;
 
@@ -60,9 +68,10 @@ const request = {
 const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "connection-1",
   providerModelId: "model-1", reasoningEffort: null };
 
-function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; followups?: () => { id: string; text: string }[] }> = {}) {
+function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptItem[]; fence?: UnknownEffects;
+  followups?: () => { id: string; text: string }[]; tools?: EngineTool[] }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
-  const appended: Array<{ items: readonly TranscriptItem[]; thread: unknown }> = [];
+  const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
   const begun: unknown[] = [];
   const rows = new Map<string, ToolCallRow>();
   const row = (input: { arguments: Record<string, unknown>; ordinal: number; providerCallId: string; roundIndex: number; toolName: string },
@@ -83,7 +92,8 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     engineTool("manage_secret", "session", vi.fn()),
     engineTool("load_skill", "skill", vi.fn()),
     engineTool("mcp_jira_get_issue", "mcp", lookup),
-    engineTool("mcp_jira_create_issue", "mcp", vi.fn(), { approval: () => approval, effects: "external" })
+    engineTool("mcp_jira_create_issue", "mcp", vi.fn(), { approval: () => approval, effects: "external" }),
+    ...options.tools ?? []
   ];
   const registry: ToolRegistry = { definitions: () => tools.map((entry) => entry.definition),
     resolve: (name) => tools.find((entry) => entry.definition.name === name) };
@@ -102,7 +112,6 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     maxToolRounds: null,
     now: Date.now,
     onWorkspaceLifecycle: vi.fn(async () => undefined),
-    pendingUserFollowups: vi.fn(async () => options.followups?.() ?? []),
     recordDetachedCompaction: vi.fn(async () => true),
     request,
     requestShape: subagentRequestShape,
@@ -118,13 +127,16 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
     toolState: { calls: 0 },
     toolTimeLeft: () => true,
     transcripts: {
-      append: vi.fn(async (scope, _from, items) => { appended.push({ items, thread: scope.thread }); }),
-      loadRuns: vi.fn(async (input) => new Map(input.runIds.map((runId) => [runId,
-        input.threadId === "thread-1" && runId === "run-earlier" ? options.earlier ?? [] : []]))),
+      append: vi.fn(async (scope, from, items) => { appended.push({ from, items, thread: scope.thread }); }),
+      loadRuns: vi.fn(async (input: Readonly<{ runIds: readonly string[]; threadId?: string }>) =>
+        new Map<string, TranscriptItem[]>(input.runIds.map((runId: string): [string, TranscriptItem[]] => [runId,
+          input.threadId === "thread-1" && runId === "run-earlier" ? options.earlier ?? [] : []]))),
       nextSequence: vi.fn(async () => 0),
       runLive: vi.fn(async () => true)
     },
+    unknownEffects: options.fence ?? createUnknownEffects(),
     usage: (attribution) => usage.push(attribution),
+    userFollowups: vi.fn(async () => options.followups?.() ?? []),
     userId: "user"
   };
   const runner = createSubagentRunner(host);
@@ -237,6 +249,61 @@ describe("sub-agent runner", () => {
     const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
     expect(result).toMatchObject({ reason: "subagent_model_unavailable", state: "failed" });
     expect(ctx.requests).toHaveLength(0);
+  });
+
+  it("shares the run's one fence: a sub-agent's lost write fences others, and an effect others left fences it", async () => {
+    const order = { arguments: { item: "laptop" }, name: "place_order" };
+    const lost = vi.fn(async () => { throw new Error("socket hang up"); });
+    const fence = createUnknownEffects();
+    const ctx = setup([{ calls: [{ ...order, id: "c1" }] }, { text: "Outcome: partial\nThe order may have gone through." }],
+      { fence, tools: [engineTool("place_order", "session", lost, { effects: "external" })] });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect(fence.find(order)).toMatchObject({ userSpokeSince: false });
+    // Another sub-agent of the run (or the main agent) asking for the same call is refused until the user decides.
+    const again = vi.fn();
+    const other = setup([{ calls: [{ ...order, id: "c2" }] }, { text: "Outcome: blocked (needs_approval)\nNot sent." }],
+      { fence, tools: [engineTool("place_order", "session", again, { effects: "external" })] });
+    const result = await other.runner.wait(await other.runner.start(other.input({ threadId: "thread-2", turnId: "turn-2" })));
+    expect(again).not.toHaveBeenCalled();
+    expect(result.steps[0]).toMatchObject({ outcome: "error", tool: "Jira: place_order" });
+  });
+
+  it("gives the sub-agent the user's corrections the main agent already read, before its first request, once per thread", async () => {
+    const ctx = setup([{ text: "Outcome: done\nCompared only." }], { followups: () => [{ id: "f0", text: "Do not buy anything, just compare." }] });
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    expect(userTexts(ctx.requests[0]!).filter((text) => text.includes("Do not buy anything, just compare."))).toHaveLength(1);
+    expect(ctx.appended[0]!.items.map((item) => item.kind === "user" && item.followup === true)).toEqual([false, true]);
+    // The thread's next turn in this answer does not get it again.
+    await ctx.runner.wait(await ctx.runner.continue(ctx.input({ brief: "And the second?", turnId: "turn-2" })));
+    expect(userTexts(ctx.requests.at(-1)!).filter((text) => text.includes("Do not buy anything, just compare."))).toHaveLength(0);
+  });
+
+  it("continues a thread's rounds and sequence across its turns in one run", async () => {
+    const step = { calls: [{ arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }] };
+    const ctx = setup([step, { text: "Outcome: done\nOne." }, step, { text: "Outcome: done\nTwo." }]);
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    await ctx.runner.wait(await ctx.runner.continue(ctx.input({ brief: "Again", turnId: "turn-2" })));
+    expect((ctx.begun as Array<{ roundIndex: number; thread: { turnId: string } }>).map((call) => [call.thread.turnId, call.roundIndex]))
+      .toEqual([["turn-1", 1], ["turn-2", 2]]);
+    expect(ctx.host.transcripts.nextSequence).toHaveBeenCalledTimes(1);
+    const writes = ctx.appended.map((write) => [write.from, write.items.length] as const);
+    for (let index = 1; index < writes.length; index += 1) {
+      expect(writes[index]![0]).toBe(writes[index - 1]![0] + writes[index - 1]![1]);
+    }
+  });
+
+  it("keeps only the turn's Workspace paths of the parent's turn guidance", () => {
+    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
+    const files = "Images in this chat: image_1 is the user's photo.";
+    const sub = subagentRequest({ ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}\n\n${files}`,
+      turnGuidance: [paths, files] } }, { adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities,
+      modelId: "fake-qsa", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 1 });
+    expect(sub.prompt).toMatchObject({ system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] });
+    expect(workspacePromptContract({ currentAttachmentCount: 0, fileContext: "", hasEarlierExports: false, hasIndexedFiles: false,
+      searchEnabled: false, workspace: { normalized: { inboxIndexPath: "/i", internetEnabled: true, messageManifestPath: "/m",
+        outputDirectory: "/o", projectDirectory: "/p" }, toolDefinitions: [] } as never }).turn.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX))
+      .toBe(true);
   });
 
   it("reads the outcome line of a report", () => {

@@ -8,6 +8,8 @@ import {
 } from "../../../contracts/subagents";
 import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryShared";
 import type { SubagentBinding } from "../../subagents/ports";
+import type { TranscriptItem } from "../transcript";
+import { decodeTranscriptItem } from "../transcriptCodec";
 
 /**
  * Sub-agent threads and turns of a chat (`SubagentThread`, `SubagentTurn`).
@@ -80,6 +82,8 @@ export type SubagentTurnSettlement = Readonly<{
 }>;
 
 const ACTIVE: SubagentTurnState[] = ["running", "waiting"];
+/** An active turn that still runs: a background one (its own run settles it), or a foreground one whose parent runs. */
+const LIVE_TURN = { OR: [{ mode: "background" as const }, { parentRun: { status: { in: dispatchableModelRunStatuses } } }] };
 
 const turnSelect = {
   definitionRevisionId: true, effortSource: true, id: true, mode: true, modelId: true, modelSource: true, parentRunId: true,
@@ -87,7 +91,10 @@ const turnSelect = {
 } as const;
 const threadSelect = { anchorRunId: true, definitionId: true, id: true, name: true, typeName: true } as const;
 
-type StoreClient = Pick<PrismaClient, "$transaction" | "subagentThread" | "subagentTurn">;
+type StoreClient = Pick<PrismaClient, "$transaction" | "runTranscriptItem" | "subagentThread" | "subagentTurn">;
+
+/** Runs one fence read takes: a branch longer than this is beyond any context window (`TRANSCRIPT_LOAD_RUN_LIMIT`). */
+const EFFECT_RUN_LIMIT = 2_000;
 
 /** The transaction lock under which a chat's sub-agent admissions count its running turns (the 20-running cap). */
 export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, chatId: string): Promise<void> {
@@ -148,8 +155,10 @@ export function createSubagentThreadStore(client: StoreClient) {
       const [latest, active] = await Promise.all([
         client.subagentTurn.findFirst({ orderBy: { startedAt: "desc" }, select: turnSelect,
           where: { chatId: input.chatId, parentRunId: { in: [...new Set(input.branchRunIds)] }, threadId: thread.id, userId: input.userId } }),
+        // A foreground turn whose parent run ended (a restart) no longer runs: it is no active turn, and the next locked
+        // admission ends it as interrupted.
         client.subagentTurn.findFirst({ orderBy: { startedAt: "desc" }, select: turnSelect,
-          where: { chatId: input.chatId, state: { in: ACTIVE }, threadId: thread.id, userId: input.userId } })
+          where: { chatId: input.chatId, state: { in: ACTIVE }, threadId: thread.id, userId: input.userId, ...LIVE_TURN } })
       ]);
       return { active, latest, thread };
     },
@@ -207,6 +216,14 @@ export function createSubagentThreadStore(client: StoreClient) {
       });
     },
 
+    /** Ends, under the chat's admission lock, the foreground turns whose parent run no longer runs; how many it ended. */
+    async endOrphanedTurns(input: Readonly<{ chatId: string; userId: string }>): Promise<number> {
+      return client.$transaction(async (tx) => {
+        await lockChatSubagentAdmission(tx, input.chatId);
+        return endOrphanedForegroundTurns(tx, input.chatId, input.userId);
+      });
+    },
+
     /** Marks an active turn as waiting for the user (a browser handoff) or running again. */
     async setActiveState(input: Readonly<{ chatId: string; state: "running" | "waiting"; turnId: string; userId: string }>): Promise<boolean> {
       const updated = await client.subagentTurn.updateMany({ data: { state: input.state },
@@ -223,6 +240,33 @@ export function createSubagentThreadStore(client: StoreClient) {
         where: { chatId: input.chatId, id: input.turnId, state: { in: ACTIVE }, userId: input.userId }
       });
       return updated.count === 1;
+    },
+
+    /**
+     * The tool calls and results of every sub-agent thread in these runs of
+     * the chat, one list per run and thread in sequence order, runs in the
+     * order given: what the run's one unknown-effect fence must respect
+     * (`unknownEffects.ts`). Only the fence reads them; they never enter any
+     * model's context.
+     */
+    async threadEffectItems(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>): Promise<TranscriptItem[][]> {
+      const runIds = [...new Set(input.runIds)];
+      if (runIds.length === 0) return [];
+      if (runIds.length > EFFECT_RUN_LIMIT) throw new Error("transcript_load_too_large");
+      const rows = await client.runTranscriptItem.findMany({
+        orderBy: [{ modelRunId: "asc" }, { subagentThreadId: "asc" }, { sequence: "asc" }],
+        select: { body: true, callId: true, createdAt: true, id: true, kind: true, modelRunId: true, subagentThreadId: true },
+        where: { chatId: input.chatId, kind: { in: ["tool_call", "tool_result"] }, modelRunId: { in: runIds },
+          subagentThreadId: { not: null }, userId: input.userId }
+      });
+      const lists = new Map<string, TranscriptItem[]>();
+      for (const row of rows) {
+        const key = `${row.modelRunId}\n${row.subagentThreadId ?? ""}`;
+        const item = decodeTranscriptItem(row);
+        const recorded = item.kind === "tool_call" || item.kind === "tool_result" ? { ...item, recordedAt: row.createdAt } : item;
+        lists.set(key, [...lists.get(key) ?? [], recorded]);
+      }
+      return runIds.flatMap((runId) => [...lists].filter(([key]) => key.startsWith(`${runId}\n`)).map(([, items]) => items));
     },
 
     /** The stored result of an ended turn of the chat; null while it runs or when it is not the chat's. */

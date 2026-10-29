@@ -47,7 +47,7 @@ import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopTo
 import { callModel } from "../modelCall";
 import { SUBAGENT_ROLE_SECTION, subagentFollowupText, subagentTurnText } from "../prompts";
 import { createRunContext, type RunContext } from "../runContext";
-import { withNativeSystemPrompt } from "../systemPrompt";
+import { splitTurnGuidance, withNativeSystemPrompt } from "../systemPrompt";
 import {
   runToolBatch,
   SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT,
@@ -69,7 +69,7 @@ import {
 } from "../transcript";
 import type { TranscriptRepository, TranscriptThreadKey } from "../transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "../transcriptWriter";
-import { unknownEffectsOf } from "../unknownEffects";
+import type { UnknownEffects } from "../unknownEffects";
 import type { SubagentModelRoute, SubagentRouteResult } from "./modelRoutes";
 import { subagentToolRegistry } from "./registry";
 
@@ -116,8 +116,6 @@ export type SubagentHost = Readonly<{
   now(): number;
   /** The run's Workspace lifecycle rows (the VM starting or stopping), which the answer shows whoever caused them. */
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
-  /** The user's follow-ups accepted into the parent run and not yet delivered there, oldest first. */
-  pendingUserFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
   /** Records a compaction of a thread that finished after its turn, at a sequence its writer reserved. */
   recordDetachedCompaction(input: Readonly<{ item: TranscriptItem; sequence: number; thread: TranscriptThreadKey }>): Promise<boolean>;
   /** The run's admitted request, which a sub-agent's requests start from (`subagentRequest`). */
@@ -144,8 +142,19 @@ export type SubagentHost = Readonly<{
   toolState: ToolBatchState;
   toolTimeLeft(): boolean;
   transcripts: Pick<TranscriptRepository, "append" | "loadRuns" | "nextSequence" | "runLive">;
+  /**
+   * The run's one unknown-effect fence, shared with the main agent and every other sub-agent of the run and seeded
+   * with the effects the branch's threads left (`execution.ts`): an effect any of them left unknown fences them all,
+   * and a handed-back retry keeps its approval fence.
+   */
+  unknownEffects: UnknownEffects;
   /** The run's usage ledger. */
   usage(attribution: RunUsageAttribution): void;
+  /**
+   * Every follow-up the user wrote into the parent answer, delivered there or not yet, oldest first: a correction the
+   * main agent already read reaches the sub-agent before its first request, and each reaches a thread once.
+   */
+  userFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
   userId: string;
 }>;
 
@@ -156,6 +165,12 @@ export class SubagentTurnFailure extends Error {
     this.name = "SubagentTurnFailure";
   }
 }
+
+/**
+ * How the turn part of the Workspace prompt contract begins (`workspacePromptContract().turn`, its test keeps them
+ * equal): the only turn guidance a sub-agent keeps.
+ */
+export const WORKSPACE_TURN_GUIDANCE_PREFIX = "This turn's output directory: ";
 
 /** Workspace activity kinds whose rows name a file the agent wrote. */
 const WRITTEN_FILE_KINDS = new Set(["file_write", "file_copy", "file_move", "file_change"]);
@@ -186,11 +201,17 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  * model, with neither the parent's answer rules nor anything personal to the
  * user's own conversation (personal instructions, Memory context, the
  * current message's attachments); the Workspace contract, the tool index and
- * the run's other admitted guidance stay.
+ * the run's other admitted guidance stay. Of the turn's own guidance only its
+ * Workspace paths stay: the attachment, image and artifact facts describe what
+ * the sub-agent was not given.
  */
 export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute): ProviderRunRequest {
   const { personalContext: _personal, ...rest } = request;
   void _personal;
+  const recorded = request.prompt.turnGuidance ?? [];
+  const split = splitTurnGuidance(request.prompt.system ?? "", recorded);
+  const kept = split.turn.filter((part) => part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
+  const system = [split.chat, ...kept].filter((part) => part.trim()).join("\n\n");
   return {
     ...rest,
     attachmentIds: [],
@@ -201,8 +222,8 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
     prompt: {
       ...(request.prompt.baseline ? { baseline: request.prompt.baseline } : {}),
       developer: null,
-      system: request.prompt.system,
-      ...(request.prompt.turnGuidance ? { turnGuidance: request.prompt.turnGuidance } : {})
+      system: system || null,
+      ...(kept.length > 0 ? { turnGuidance: kept } : {})
     },
     provider: route.request.provider,
     reasoningEffort: route.request.reasoningEffort
@@ -268,6 +289,17 @@ function waitingDuringHandoff(registry: ToolRegistry, mark: (state: "running" | 
     }
   };
 }
+
+/**
+ * What one thread keeps across its turns in a host run: the highest round its calls took, the writer whose sequence
+ * a later turn continues, and the user's follow-ups it already received.
+ */
+type ThreadState = {
+  deliveredTexts: string[];
+  rounds: number;
+  seenFollowups: Set<string>;
+  writer: TranscriptWriter | null;
+};
 
 type TurnRecord = {
   readonly controller: AbortController;
@@ -339,6 +371,17 @@ const bindingKey = (binding: SubagentBinding) =>
 
 export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
   const turns = new Map<string, TurnRecord>();
+  const threadStates = new Map<string, ThreadState>();
+  /** A thread's allocators and receipts in one host run, for the life of the run. */
+  const threadStateOf = (input: Pick<SubagentTurnInput, "hostRunId" | "threadId">): ThreadState => {
+    const key = `${input.hostRunId}\n${input.threadId}`;
+    let state = threadStates.get(key);
+    if (!state) {
+      state = { deliveredTexts: [], rounds: 0, seenFollowups: new Set(), writer: null };
+      threadStates.set(key, state);
+    }
+    return state;
+  };
   const routes = new Map<string, Promise<SubagentRouteResult>>();
 
   const routeFor = (binding: SubagentBinding, signal?: AbortSignal) => {
@@ -375,7 +418,10 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     const steps: SubagentStep[] = [];
     const approvals: SubagentApprovalRequest[] = [];
     const files = new Set<string>();
-    const deliveredTexts: string[] = [];
+    const threadState = threadStateOf(input);
+    const deliveredTexts = threadState.deliveredTexts;
+    // The thread's rounds continue across its turns in this run, so their calls never take each other's keys.
+    const roundBase = threadState.rounds;
     let writer: TranscriptWriter | null = null;
     let context: RunContext | null = null;
     let report = "";
@@ -409,13 +455,45 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const base = native.request;
       const inputItem: TranscriptUserItem = { id: `sub-${input.turnId}`, kind: "user",
         text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", userMessage: input.userMessage }) };
-      const items: TranscriptItem[] = [...host.runContextItems, ...history, turnContextItem(native.turnContext), inputItem];
+      // The run's one fence (`SubagentHost.unknownEffects`): only the user's own words count as them speaking, never the
+      // main agent's brief or messages.
+      const unknownEffects = host.unknownEffects;
+      const seenFollowups = threadState.seenFollowups;
+      const incoming = async (): Promise<TranscriptUserItem[]> => {
+        const added: TranscriptUserItem[] = [];
+        for (const followup of await host.userFollowups().catch(() => [])) {
+          if (seenFollowups.has(followup.id)) continue;
+          seenFollowups.add(followup.id);
+          added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(followup.text) });
+          deliveredTexts.push(followup.text);
+          unknownEffects.userSpoke();
+        }
+        for (const message of turn.mailbox.splice(0)) {
+          if (message.origin === "user") {
+            added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(message.text) });
+            deliveredTexts.push(message.text);
+            unknownEffects.userSpoke();
+          } else {
+            // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
+            added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true,
+              userMessage: input.userMessage }) });
+          }
+        }
+        return added;
+      };
+      // What the user already wrote into this answer (a correction the main agent read before it called) comes with the brief.
+      const earlier = await incoming();
+      const items: TranscriptItem[] = [...host.runContextItems, ...history, turnContextItem(native.turnContext), inputItem, ...earlier];
+      // One sequence per thread for the life of the run: a later turn continues where the last one stopped, and a compaction
+      // that finished after its turn reserves from the thread's current writer.
       const activeWriter = createTranscriptWriter({ append: (from, added) => host.transcripts.append(scope, from, added),
-        firstSequence: await host.transcripts.nextSequence(scope), runId: input.hostRunId });
+        firstSequence: threadState.writer ? threadState.writer.reserve(0) : await host.transcripts.nextSequence(scope),
+        runId: input.hostRunId });
+      threadState.writer = activeWriter;
       writer = activeWriter;
       const record = (added: readonly TranscriptItem[]) => activeWriter.record(added.map((item) => transcriptRecord(registry, item)));
       // The brief is on record before the turn's first request, so a later turn of the thread reads it.
-      await record([inputItem]);
+      await record([inputItem, ...earlier]);
       const append = async (added: readonly TranscriptItem[]) => {
         if (added.length === 0) return;
         items.push(...added);
@@ -426,8 +504,6 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         items.push(...added);
         await record(added);
       };
-      // Only the user's own words count as them speaking: never the main agent's brief or messages.
-      const unknownEffects = unknownEffectsOf(history, (item) => item.followup === true);
       const recordUsage = (usage: ModelRunUsage, costUsd: number | undefined) => host.usage({ ...reportedAnswerCost(costUsd),
         modelId: route.request.modelId, operationCount: 1, provider: route.request.provider, providerModelId: route.snapshot.providerModelId,
         purpose: SUBAGENT_USAGE_PURPOSE, usage } satisfies RunUsageAttribution);
@@ -468,7 +544,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         // next turn joins it.
         detached: { chatId: `${host.chatId}:subagent:${input.threadId}`, live: () => host.transcripts.runLive(scope),
           record: (item) => {
-            const sequence = detachedSequences.get(item.id) ?? activeWriter.reserve(1);
+            const sequence = detachedSequences.get(item.id) ?? (threadState.writer ?? activeWriter).reserve(1);
             detachedSequences.set(item.id, sequence);
             return host.recordDetachedCompaction({ item, sequence, thread });
           }, registry: detachedCompactions, settleUsage: host.settleUsage, userId: host.userId },
@@ -495,29 +571,6 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           if (!retry) throw error;
           return send(retry);
         }
-      };
-      const seenFollowups = new Set<string>();
-      const incoming = async (): Promise<TranscriptUserItem[]> => {
-        const added: TranscriptUserItem[] = [];
-        for (const followup of await host.pendingUserFollowups().catch(() => [])) {
-          if (seenFollowups.has(followup.id)) continue;
-          seenFollowups.add(followup.id);
-          added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(followup.text) });
-          deliveredTexts.push(followup.text);
-          unknownEffects.userSpoke();
-        }
-        for (const message of turn.mailbox.splice(0)) {
-          if (message.origin === "user") {
-            added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(message.text) });
-            deliveredTexts.push(message.text);
-            unknownEffects.userSpoke();
-          } else {
-            // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
-            added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true,
-              userMessage: input.userMessage }) });
-          }
-        }
-        return added;
       };
       let pending: TranscriptUserItem[] = [];
       const outcome = await runAgentLoop({
@@ -558,7 +611,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         runTools: async (calls, round) => {
           // Narration before tool calls is no report: the report is what the agent says once it stops calling tools.
           report = "";
-          const batch = await runToolBatch(batchDeps, host.toolState, { calls, round });
+          const threadRound = roundBase + round;
+          threadState.rounds = Math.max(threadState.rounds, threadRound);
+          const batch = await runToolBatch(batchDeps, host.toolState, { calls, round: threadRound });
           calls.forEach((call, index) => {
             const result = batch.results[index];
             if (result) steps.push(subagentStep(registry, call, result));

@@ -155,6 +155,41 @@ describe("sub-agent threads on PostgreSQL", () => {
       .resolves.toBe(SUBAGENT_LIMITS.runningPerChat);
   });
 
+  it("never counts a turn a restart left behind as running: its name is free and stopping it ends it as interrupted", async () => {
+    const userId = await owner();
+    const { id: chatId } = await chat(userId);
+    const run = await turn(userId, chatId, { status: "streaming" });
+    const admitted = await store.admitForeground(admission(userId, chatId, run.runId, await callRow(run.runId, 0), "shop"));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    await prisma.modelRun.update({ data: { status: "error" }, where: { id: run.runId } });
+    const found = await store.find({ branchRunIds: [run.runId], chatId, name: "shop", userId });
+    expect(found).toMatchObject({ active: null, latest: { id: admitted.turn.id, state: "running" } });
+    await expect(store.endOrphanedTurns({ chatId, userId })).resolves.toBe(1);
+    await expect(store.result({ chatId, turnId: admitted.turn.id, userId })).resolves.toMatchObject({ reason: "restart",
+      state: "interrupted" });
+    await expect(store.endOrphanedTurns({ chatId, userId })).resolves.toBe(0);
+  });
+
+  it("keeps a thread's keys apart across two turns of one run, and reads every thread's effects for the run's fence", async () => {
+    const userId = await owner();
+    const { id: chatId } = await chat(userId);
+    const run = await turn(userId, chatId, { status: "streaming" });
+    const call = (turnId: string, roundIndex: number) => ({ arguments: {}, chatId, ordinal: 0, providerCallId: "c1", roundIndex,
+      runId: run.runId, thread: { threadId: "thread-a", turnId }, toolName: "place_order", userId });
+    // The runner continues a thread's rounds across its turns: the second turn's first round is the thread's round 2.
+    await expect(toolCalls.begin(call("turn-1", 1))).resolves.toMatchObject({ kind: "running" });
+    await expect(toolCalls.begin(call("turn-2", 2))).resolves.toMatchObject({ kind: "running" });
+    await expect(toolCalls.begin(call("turn-2", 1))).rejects.toThrow();
+    const scope = (turnId: string) => ({ chatId, runId: run.runId, thread: { threadId: "thread-a", turnId }, userId });
+    const toolCall: TranscriptItem = { arguments: "{}", callId: "c1", id: randomUUID(), kind: "tool_call", name: "place_order", origin };
+    await transcripts.append(scope("turn-1"), 0, [toolCall]);
+    await transcripts.append(scope("turn-2"), 1, items("Second turn."));
+    await transcripts.append({ chatId, runId: run.runId, userId }, 0, items("Main answer."));
+    const effects = await store.threadEffectItems({ chatId, runIds: [run.runId], userId });
+    expect(effects).toEqual([[expect.objectContaining({ callId: "c1", kind: "tool_call", recordedAt: expect.any(Date) })]]);
+    await expect(store.threadEffectItems({ chatId, runIds: [run.runId], userId: "someone-else" })).resolves.toEqual([]);
+  });
+
   it("deletes threads, turns and thread items with the chat", async () => {
     const userId = await owner();
     const { id: chatId } = await chat(userId);

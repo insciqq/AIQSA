@@ -63,6 +63,22 @@ describe("a sub-agent's MCP write", () => {
       { decision: "allow", reason: "Requested." } }), thread: { threadId: "thread-1", turnId: "turn-1" } }));
   });
 
+  it("that repeats an unknown effect goes back too, and the main agent's call keeps the fence of the uncertain attempt", async () => {
+    const uncertainAt = new Date("2026-10-30T08:00:00.000Z");
+    const ctx = setup({ retryApproval: () => approval });
+    ctx.deps.unknownEffects.record(calls[0]!, "unknown", uncertainAt);
+    await runToolBatch(ctx.deps, { calls: 0 }, { calls, round: 1 });
+    expect(ctx.handedBack).toEqual([{ approval, call: calls[0] }]);
+    expect(ctx.execute).not.toHaveBeenCalled();
+    // The main agent makes the handed-back call on the run's same fence: only a decision newer than the attempt sends it.
+    const main = setup({ retryApproval: () => approval }, false);
+    const { approvalHandBack: _handBack, thread: _thread, ...mainDeps } = { ...main.deps, unknownEffects: ctx.deps.unknownEffects };
+    void _handBack; void _thread;
+    await runToolBatch(mainDeps, { calls: 0 }, { calls, round: 1 });
+    expect(main.store.hasApproval).toHaveBeenCalledWith(expect.objectContaining({ approvalAfter: uncertainAt }));
+    expect(main.store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval, approvalAfter: uncertainAt }));
+  });
+
   it("that the user already allowed is sent", async () => {
     const ctx = setup({}, true);
     await runToolBatch(ctx.deps, { calls: 0 }, { calls, round: 1 });
