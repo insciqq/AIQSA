@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeSubagentName, SUBAGENT_LIMITS } from "./subagents";
 
 /**
  * Wire contract of the live Workspace browser (operator decisions 2026-10-26):
@@ -10,9 +11,19 @@ import { z } from "zod";
  * learns only a handoff's outcome and, after the user returns control, the
  * current page. The routes are keyed by chat (a chat runs one turn at a time)
  * and accept only the run owner's signed-in browser session.
+ *
+ * Several agents may browse at once (the main agent and sub-agents, up to the
+ * browser's slots, operator decision 2026-10-29), each in its own tabs of one
+ * shared browser. The stream shows one agent's current tab at a time,
+ * `selected`; the panel lists every browsing agent, Take control holds only
+ * the agent it names, and each agent's handoff is its own pending request,
+ * oldest first. A request without an agent is the main agent's.
  */
 
-export const BROWSER_LIVE_PROTOCOL_VERSION = 1;
+export const BROWSER_LIVE_PROTOCOL_VERSION = 2;
+
+/** The main agent's id (`ops/workspace-guest/python/aiqsa/agents.py`); a sub-agent's is its thread id. */
+export const BROWSER_LIVE_MAIN_AGENT = "main";
 
 export const BROWSER_LIVE_LIMITS = Object.freeze({
   /** Base64 characters of one JPEG frame. */
@@ -38,7 +49,9 @@ export const BROWSER_LIVE_LIMITS = Object.freeze({
   /** Seconds between SSE heartbeats. */
   heartbeatSeconds: 15,
   /** Input requests one owner may send per second; more get `browser_live_rate_limited`. */
-  inputsPerSecond: 60
+  inputsPerSecond: 60,
+  /** Agents one state lists: the browser's slots and a few whose control or handoff outlived their slot. */
+  agentsPerEvent: 8
 });
 
 /** Why the agent hands the browser to the user. */
@@ -127,8 +140,17 @@ const modifiersSchema = boundedInt(0, 15);
 const coordinateSchema = z.number().finite().min(0).max(BROWSER_LIVE_LIMITS.frameMaxSide);
 const wheelDeltaSchema = z.number().finite().min(-10_000).max(10_000);
 
+const agentNameSchema = z.string().max(SUBAGENT_LIMITS.nameCharacters)
+  .refine((value) => normalizeSubagentName(value) === value, "agent name");
+
+/** An agent of the shared browser: the main agent (`name: null`) or a sub-agent with its name (`BrowserAgentRef`). */
+export const browserLiveAgentRefSchema = z.strictObject({ id: idSchema, name: agentNameSchema.nullable() });
+export type BrowserLiveAgentRef = z.infer<typeof browserLiveAgentRefSchema>;
+
 export const browserLiveHandoffSchema = z.strictObject({
   id: idSchema,
+  /** The agent that asked; Done and Cancel answer exactly this request. */
+  agent: browserLiveAgentRefSchema,
   reason: z.enum(BROWSER_HANDOFF_REASONS),
   message: text(BROWSER_LIVE_LIMITS.handoffMessageChars),
   startedAt: timestampSchema,
@@ -136,20 +158,41 @@ export const browserLiveHandoffSchema = z.strictObject({
 });
 export type BrowserLiveHandoff = z.infer<typeof browserLiveHandoffSchema>;
 
+const pageSchema = z.strictObject({ url: text(BROWSER_LIVE_LIMITS.urlChars), title: text(BROWSER_LIVE_LIMITS.titleChars) });
+
+/** One browsing agent of the switcher: who it is, who drives its tab, whether it waits for the user, its page. */
+export const browserLiveAgentSchema = z.strictObject({
+  id: idSchema,
+  name: agentNameSchema.nullable(),
+  controller: z.enum(BROWSER_LIVE_CONTROLLERS),
+  /** A handoff of this agent is pending. */
+  waitingForUser: z.boolean(),
+  page: pageSchema.nullable()
+});
+export type BrowserLiveAgent = z.infer<typeof browserLiveAgentSchema>;
+
 /** The panel's whole state; sent on connect and on every change. */
 export const browserLiveStateEventSchema = z.strictObject({
   version: z.literal(BROWSER_LIVE_PROTOCOL_VERSION),
   runId: idSchema,
   browser: z.enum(BROWSER_LIVE_BROWSER_STATES),
+  /** The browsing agents in a stable order, the main agent first; only the main agent when no sub-agent browses. */
+  agents: z.array(browserLiveAgentSchema).min(1).max(BROWSER_LIVE_LIMITS.agentsPerEvent),
+  /** The agent whose tab the frames, the page, the controller and the steps show. */
+  selected: idSchema,
+  /** Who drives the selected agent's tab. */
   controller: z.enum(BROWSER_LIVE_CONTROLLERS),
+  /** The oldest pending handoff, the one the panel shows: `handoffs[0]`. */
   handoff: browserLiveHandoffSchema.nullable(),
+  /** Every pending handoff, oldest first, each with its agent (the chat labels a sub-agent's card with its name). */
+  handoffs: z.array(browserLiveHandoffSchema).max(BROWSER_LIVE_LIMITS.agentsPerEvent),
   /**
    * Whether sign-ins made in this browser are saved to the user's Secrets after the turn (the run's binding
    * authorizes save-back, `lib/server/workspace/secrets/browserStore.ts`); when false, the card says it will not be remembered.
    */
   signInRemembered: z.boolean(),
-  /** The page the browser shows, for the panel's address line; the owner's own content. */
-  page: z.strictObject({ url: text(BROWSER_LIVE_LIMITS.urlChars), title: text(BROWSER_LIVE_LIMITS.titleChars) }).nullable()
+  /** The page the selected agent's tab shows, for the panel's address line; the owner's own content. */
+  page: pageSchema.nullable()
 });
 export type BrowserLiveStateEvent = z.infer<typeof browserLiveStateEventSchema>;
 
@@ -158,6 +201,8 @@ export type BrowserLiveStateEvent = z.infer<typeof browserLiveStateEventSchema>;
  * pixels; the server maps them to the page.
  */
 export const browserLiveFrameEventSchema = z.strictObject({
+  /** The agent whose tab this is; the panel shows only the selected agent's. */
+  agent: idSchema,
   seq: boundedInt(0, Number.MAX_SAFE_INTEGER),
   mime: z.literal("image/jpeg"),
   data: z.string().min(4).max(BROWSER_LIVE_LIMITS.frameBase64Chars).regex(BASE64_PATTERN),
@@ -176,8 +221,9 @@ export const browserLiveStepSchema = z.strictObject({
 });
 export type BrowserLiveStep = z.infer<typeof browserLiveStepSchema>;
 
-/** The newest steps of the turn, oldest first; each event replaces the panel's list. */
+/** The newest steps of the selected agent, oldest first; each event replaces the panel's list. */
 export const browserLiveStepsEventSchema = z.strictObject({
+  agent: idSchema,
   steps: z.array(browserLiveStepSchema).max(BROWSER_LIVE_LIMITS.stepsPerEvent)
 });
 export type BrowserLiveStepsEvent = z.infer<typeof browserLiveStepsEventSchema>;
@@ -215,10 +261,12 @@ export function decodeBrowserLiveEvent(name: string, data: string): BrowserLiveE
 /**
  * One input from the panel, applied with CDP `Input.dispatchMouseEvent`,
  * `dispatchKeyEvent` or `insertText`. Touch arrives as mouse input; a phone
- * keyboard types through a real text field that sends `text`.
+ * keyboard types through a real text field that sends `text`. `agent` names
+ * the agent whose tab the user controls (absent: the main agent).
  */
 export const browserLiveInputSchema = z.discriminatedUnion("kind", [
   z.strictObject({
+    agent: idSchema.optional(),
     kind: z.literal("mouse"),
     type: z.enum(["move", "down", "up", "wheel"]),
     x: coordinateSchema,
@@ -230,6 +278,7 @@ export const browserLiveInputSchema = z.discriminatedUnion("kind", [
     modifiers: modifiersSchema.optional()
   }),
   z.strictObject({
+    agent: idSchema.optional(),
     kind: z.literal("key"),
     type: z.enum(["down", "up"]),
     key: z.string().min(1).max(BROWSER_LIVE_LIMITS.keyChars),
@@ -237,13 +286,21 @@ export const browserLiveInputSchema = z.discriminatedUnion("kind", [
     modifiers: modifiersSchema.optional()
   }),
   z.strictObject({
+    agent: idSchema.optional(),
     kind: z.literal("text"),
     text: z.string().min(1).max(BROWSER_LIVE_LIMITS.textChars).refine((value) => !CONTROL_PATTERN.test(value), "control characters")
   })
 ]);
 export type BrowserLiveInput = z.infer<typeof browserLiveInputSchema>;
 
-export const browserLiveControlRequestSchema = z.strictObject({ action: z.enum(["take", "return"]) });
+/**
+ * Take control or Return control of one agent's tab (absent: the main agent), or `select`: the agent whose tab the
+ * stream shows, the user's own choice until that agent stops browsing or a newer handoff comes first.
+ */
+export const browserLiveControlRequestSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.enum(["take", "return"]), agent: idSchema.optional() }),
+  z.strictObject({ action: z.literal("select"), agent: idSchema })
+]);
 export type BrowserLiveControlRequest = z.infer<typeof browserLiveControlRequestSchema>;
 
 export const browserLiveHandoffRequestSchema = z.strictObject({ handoffId: idSchema, action: z.enum(["done", "cancel"]) });

@@ -1,7 +1,8 @@
 """The live view's wire, shared by the browser host and the streamer. Standard library only.
 
-While the agent's browser runs in a turn, the run owner can watch it in the chat, take control, and answer a
-handoff the agent asked for (`lib/contracts/browserLive.ts`). AIQSA starts the streamer
+While the agents' browser runs in a turn, the run owner can watch any browsing agent's tab in the chat, take
+control of it, and answer a handoff that agent asked for (`lib/contracts/browserLive.ts`; the per-agent messages are
+`aiqsa/agents.py`'s). AIQSA starts the streamer
 (`python3 -I -m aiqsa.browser.live`) through the exec channel under the run's operation and polls its output;
 the streamer relays between AIQSA and this boot's browser host over the host's private socket. Every message,
 in both directions, is one JSON object; on the streamer's stdout each is one length-tagged line
