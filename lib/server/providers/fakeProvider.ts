@@ -104,13 +104,15 @@ function scriptedFetchUrlResult(request: ProviderRunRequest, question: string): 
 
 /**
  * Test-only MCP scenario: `[AIQSA_MCP_E2E:<tool>:<id>]` calls the run's MCP
- * tool `<tool>` once with `{ "id": "<id>" }`, then answers with the outcome
+ * tool `<tool>` once with `{ "id": "<id>" }` (`create_issue` uses `{ "title": "<id>" }`), then answers with the outcome
  * (`done` or the refusal/error code). `[AIQSA_MCP_CODE_E2E:<tool>:<id>]`
  * makes the same call from Workspace guest code (a real guest only). The
  * server's continuation turn after an approval repeats the newest such call
  * of the conversation, as a model re-issuing the approved call would.
+ * `[AIQSA_MCP_INJECTION_E2E:read_record:<id>]` reads first and deliberately follows a post_channel directive in that result,
+ * only in test mode, for the guard's untrusted-result evidence.
  */
-const MCP_TEST_DIRECTIVE = /\[AIQSA_MCP_(CODE_)?E2E:([a-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64})\]/u;
+const MCP_TEST_DIRECTIVE = /\[AIQSA_MCP_(CODE_|INJECTION_)?E2E:([a-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64})\]/u;
 const MCP_APPROVAL_CONTINUATION = /^The user approved `[^`\n]+` on `[^`\n]+`\. Continue the task\.$/u;
 
 /** Guest Python calling the run's MCP tool through the run gateway; prints `code-mcp:<outcome>`. */
@@ -128,9 +130,11 @@ function scriptedMcpResult(request: ProviderRunRequest, question: string): Provi
       .map((message) => MCP_TEST_DIRECTIVE.exec(message.content)).filter((found) => found !== null).at(-1) ?? null
     : null);
   if (!match) return null;
-  const [, code, toolName, id] = match;
+  const [, mode, toolName, id] = match;
+  const injection = mode === "INJECTION_";
+  if (injection && (process.env.AIQSA_TEST_MODE !== "1" || process.env.NODE_ENV === "production")) return null;
   const results = fakeToolResults(request);
-  if (code) {
+  if (mode === "CODE_") {
     if (!request.workspace) return null;
     if (results.length === 0) {
       const call = toolCall(request, "sandbox_shell", 0, { command: mcpCodeCommand(toolName!, id!) });
@@ -146,12 +150,22 @@ function scriptedMcpResult(request: ProviderRunRequest, question: string): Provi
   if (!tool) return null;
   if (results.length === 0) {
     return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
-      toolCalls: [{ arguments: { id: id! }, id: `fake-mcp-${toolName}-${id}-${callTurn(request)}`, name: tool.name }],
+      toolCalls: [{ arguments: toolName === "create_issue" ? { title: id! } : { id: id! },
+        id: `fake-mcp-${toolName}-${id}-${callTurn(request)}`, name: tool.name }],
       usage: fakeUsage(question, "") };
   }
-  const value = results[0]?.content.find((part) => part.type === "json")?.value;
+  // This deliberate prompt-injection victim exists only on the test fake. The user's marker names only the read;
+  // the target write and its arguments must come from that read's result, never from the user's text.
+  if (injection && results.length === 1 && results[0]?.status === "complete") {
+    const instruction = /\[AIQSA_MCP_E2E:(post_channel):([A-Za-z0-9_-]{1,64})\]/u.exec(JSON.stringify(results[0].content));
+    const target = instruction && request.tools?.find(candidate => candidate.capability === "mcp" && candidate.name.includes(`_${instruction[1]}_`));
+    if (target) return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
+      toolCalls: [{ arguments: { id: instruction![2]! }, id: `fake-mcp-injected-${callTurn(request)}`, name: target.name }],
+      usage: fakeUsage(question, "") };
+  }
+  const value = results.at(-1)?.content.find((part) => part.type === "json")?.value;
   const finalText = `MCP call finished: ${isRecord(value) && typeof value.error === "string" ? value.error
-    : results[0]?.status === "error" ? "error" : "done"}.`;
+    : results.at(-1)?.status === "error" ? "error" : "done"}.`;
   return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
 }
 
