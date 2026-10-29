@@ -36,7 +36,7 @@ DO $$ BEGIN
       AND (to_jsonb(p) - 'toolLimitsEnabled') = f.policy)
     THEN RAISE EXCEPTION 'tool_limits_off_changed_policy'; END IF;
   IF NOT EXISTS (SELECT 1 FROM "ModelRun" run CROSS JOIN "_ToolLimitsOffFixture" f
-    WHERE run.id = 'tool-limits-run' AND to_jsonb(run) = f.run)
+    WHERE run.id = 'tool-limits-run' AND to_jsonb(run) - ARRAY['subagentThreadId', 'subagentTurnId'] = f.run)
     THEN RAISE EXCEPTION 'tool_limits_off_changed_accepted_run'; END IF;
   IF (SELECT column_default FROM information_schema.columns WHERE table_schema = 'public'
       AND table_name = 'ModelPolicy' AND column_name = 'toolLimitsEnabled') IS DISTINCT FROM 'false'

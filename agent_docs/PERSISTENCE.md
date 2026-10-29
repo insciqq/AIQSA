@@ -23,6 +23,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 
 - Deleting an account removes its group memberships; nullable actor references keep history readable.
 - Publishing a Skill grants future use only; accepted revisions survive unpublication and deletion. Deleting an Assistant clears run and chat references but keeps their snapshots.
+- A sub-agent thread belongs to the run that started it and goes with that run's branch or chat, taking its turns and background runs (decision 2026-10-29). Its transcript items and tool calls carry the thread id as a plain value, because they go with their runs, which are on its branch. A background turn's callback is owed until a main-agent run received it; deleting that run makes it owed again.
 - Removing a personal saved file keeps copies already admitted into chats. Temporary chat attachments never become personal files implicitly. Artifact deduplication is scoped to one owner.
 - The protected `Full access` group gives its explicit members every current and future active provider connection, answer model and Search source; its name and lifecycle cannot change. MCP servers are never included implicitly and the group never confers personal identity or secrets.
 

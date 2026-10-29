@@ -1,4 +1,5 @@
 import { normalizeTokenUsage, reportedCostMicros, usageCostMicros, type ModelTokenPricing } from "../../domain/usage";
+import { isChatModelUsagePurpose } from "../../domain/usagePurpose";
 import { providerModelUsageCostMicros } from "../usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 
@@ -9,12 +10,12 @@ type PricingRepository = Pick<RunRepository, "loadModelPricing" | "loadProviderM
 /**
  * Whether an attribution's cost is settled, so pricing keeps it: a Knowledge
  * retrieval or Search engine call with a cost (reported, or recorded by an
- * earlier write of its row), or an answer call whose provider reported its
- * charge (`costReported`).
+ * earlier write of its row), or an answer or sub-agent call whose provider
+ * reported its charge (`costReported`).
  */
 function hasSettledRunUsageCost(attribution: RunUsageAttribution): boolean {
   if (attribution.estimatedCostMicros === undefined) return false;
-  return attribution.purpose === "chat_answer" ? attribution.costReported === true
+  return isChatModelUsagePurpose(attribution.purpose) ? attribution.costReported === true
     : attribution.purpose === "knowledge_retrieval" || attribution.purpose === "web_search";
 }
 
