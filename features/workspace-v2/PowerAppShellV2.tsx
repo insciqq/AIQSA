@@ -1109,7 +1109,7 @@ export function PowerAppShellV2({
     }
   });
   const studio = useStudioNavigation({
-    available: ["assistants", "instructions", "skills", "memory", "files", "artifacts", "scheduled", "mcp",
+    available: ["assistants", "instructions", "skills", "subagents", "memory", "files", "artifacts", "scheduled", "mcp",
       "secrets", "defaults"],
     onExit() {
       assistantLibraryActions.closeLibrary();
