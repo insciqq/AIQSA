@@ -289,7 +289,8 @@ export function createPrismaMessageBranchRepository(
                   select: {
                     providerRunBindings: {
                       select: { providerModelId: true },
-                      where: { role: "answer" }
+                      // The answer model's own binding, never a sub-agent model's.
+                      where: { bindingKey: "answer", role: "answer" }
                     }
                   },
                   where: {

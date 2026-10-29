@@ -10,6 +10,16 @@ import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
 import type { StorageAdapter } from "../uploads/storage";
 import { visionAnalysisForStorage } from "../vision/defaultVision";
+import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
+import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
+
+const loadCatalogData = createPrismaCatalogDataLoader({ checkDefaultAssistant: false, prisma });
+
+/** The user's chat models as `/api/me/catalog` filters them: what admission freezes for sub-agents. */
+async function subagentModelCatalog(userId: string) {
+  const data = await loadCatalogData(userId);
+  return data ? resolveCurrentUserCatalogSelection(data).models : [];
+}
 
 /**
  * The tool services and dispatch policies of every entry point that executes
@@ -35,6 +45,7 @@ export function defaultRunServices(storage: StorageAdapter) {
     providerRuntime: providerRuntimeResolver,
     skillTools: defaultSkillTools,
     storage,
+    subagentModels: subagentModelCatalog,
     vision: visionAnalysisForStorage(storage)
   };
 }
