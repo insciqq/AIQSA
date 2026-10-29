@@ -32,6 +32,8 @@ export type ToolCallRow = Readonly<{
 export type ToolCallBegin = Readonly<{
   /** The call needs its initiator's approval (`mcpApprovalRequestForCall`). */
   approval?: McpApprovalRequest;
+  /** An unknown-outcome retry needs an exact human decision after the uncertain attempt. */
+  approvalAfter?: Date;
   /**
    * The approval continuation's Allow, which must name exactly this call
    * (`approval`): an Allow once is consumed, an Always allow stands. Without
@@ -114,8 +116,8 @@ async function lockActiveRun(tx: Prisma.TransactionClient, runId: string, userId
 
 export function createToolCallStore(client: ToolCallClient) {
   return {
-    hasApproval(input: Pick<ToolCallBegin, "chatId" | "runId" | "userId" | "approvedBy"> & { approval: McpApprovalRequest }) {
-      return hasMcpCallApproval(client, input, input.approval, input.approvedBy);
+    hasApproval(input: Pick<ToolCallBegin, "chatId" | "runId" | "userId" | "approvedBy" | "approvalAfter"> & { approval: McpApprovalRequest }) {
+      return hasMcpCallApproval(client, input, input.approval, input.approvedBy, input.approvalAfter);
     },
     /** Records one call before it is sent, under the run's lock. */
     async begin(input: ToolCallBegin): Promise<ToolCallBeginResult> {
@@ -125,7 +127,8 @@ export function createToolCallStore(client: ToolCallClient) {
         if (!await lockActiveRun(tx, input.runId, input.userId)) return { kind: "inactive" as const };
         const scope = { chatId: input.chatId, runId: input.runId, userId: input.userId };
         const now = new Date();
-        const humanApproved = input.approval ? await consumeMcpCallApproval(tx, scope, input.approval, input.approvedBy) : true;
+        const humanApproved = input.approval
+          ? await consumeMcpCallApproval(tx, scope, input.approval, input.approvedBy, input.approvalAfter) : true;
         const approved = humanApproved || input.approval?.guard?.decision === "allow";
         const base = {
           arguments: json(boundedArguments(input.arguments)),
