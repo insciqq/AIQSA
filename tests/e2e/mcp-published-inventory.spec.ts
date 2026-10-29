@@ -140,9 +140,19 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
       sharedValues: {}
     } });
     expect(created.status()).toBe(201);
-    const server = (await created.json() as { server: AdminMcpServer }).server;
-    serverId = server.id;
-    const id = server.id;
+    const createdServer = (await created.json() as { server: AdminMcpServer }).server;
+    serverId = createdServer.id;
+    const id = createdServer.id;
+    // Installation servers apply upstream tool changes on their own by default
+    // (operator decision 2026-10-24): the runtime that records the held-back
+    // tools also asks for an automatic Test & Save, which publishes them within
+    // seconds. This scenario is the administrator's review path, so trust is off.
+    const untrusted = await page.request.patch(`/api/admin/mcp/${id}`, { data: {
+      autoApplyToolUpdates: false, expectedUpdatedAt: createdServer.updatedAt
+    } });
+    expect(untrusted.status()).toBe(200);
+    const server = (await untrusted.json() as { server: AdminMcpServer }).server;
+    expect(server.autoApplyToolUpdates).toBe(false);
 
     const baseline = await test.step("publish a checked server and admit its tools", async () => {
       const checked = await page.request.post(`/api/admin/mcp/${id}/test`, { data: {

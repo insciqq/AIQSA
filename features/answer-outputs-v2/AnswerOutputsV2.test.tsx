@@ -387,6 +387,16 @@ describe("answer outputs v2", () => {
     expect(document.body.textContent).not.toMatch(/Searched the web|Searching the web/iu);
   });
 
+  it("names a call waiting for approval as not sent, never as failed", () => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [{
+      approvalRequired: true, origin: "mcp", round: 1, serverName: "Records", status: "error", toolName: "delete_record"
+    }] }} />);
+    openProcess();
+
+    expect(screen.getByRole("listitem")).toHaveTextContent(/^Records: delete recordNot sent · needs approval$/u);
+    expect(document.body.textContent).not.toMatch(/failed/iu);
+  });
+
   it("leaves a server named Workspace in MCP steps and keeps actual Workspace owned by its timeline", () => {
     render(<AnswerProcessV2 toolActivity={{ calls: [
       { origin: "mcp", round: 1, serverName: "Workspace", status: "complete", toolName: "find_tools" },

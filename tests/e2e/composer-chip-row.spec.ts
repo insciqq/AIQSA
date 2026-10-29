@@ -64,10 +64,13 @@ for (const viewport of [
         await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
         await page.goto("/ui-v2-fixture?fixture=composer&state=chips-wide");
         await page.evaluate(() => document.fonts.ready);
+        const composer = page.getByTestId("composer-v2");
+        // A phone's composer rests as one line until engaged (operator decision 2026-10-29); a draft opens it.
+        const resting = viewport.width < 768;
+        if (resting) await composer.getByRole("textbox", { name: "Message" }).fill("Draft");
         // A phone's narrow chip row may move the level whole to a second row.
         const phone = viewport.width <= 390;
         await expectContainedControls(page, 4, phone);
-        const composer = page.getByTestId("composer-v2");
         // The level is the fourth chip (Workspace has no chip since 2026-10-20,
         // Agent and Knowledge none since 2026-10-23): labels follow the composer
         // width as in the capability row without a level; the raw level stays text.
@@ -83,20 +86,23 @@ for (const viewport of [
           for (const button of await composer.locator("button:visible").all()) await expectTouchSafe(button);
         }
         if (viewport.width <= 390) {
+          // As on chatgpt.com, the text takes the full width and "+", the chips and Send share the row under it.
           const [add, input, send, chips] = await Promise.all([
             composer.getByRole("button", { name: "Add", exact: true }).boundingBox(),
             composer.getByRole("textbox", { name: "Message" }).boundingBox(),
             composer.getByRole("button", { name: "Send message", exact: true }).boundingBox(),
             composer.locator(".v2-composer-indicators").boundingBox()
           ]);
-          expect(add!.x + add!.width).toBeLessThanOrEqual(input!.x);
-          expect(input!.x + input!.width).toBeLessThanOrEqual(send!.x);
-          expect(Math.abs(add!.y + add!.height / 2 - input!.y - input!.height / 2)).toBeLessThan(2);
-          expect(chips!.y).toBeGreaterThanOrEqual(send!.y + send!.height);
+          expect(input!.width).toBeGreaterThanOrEqual(composerWidth - 24);
+          expect(add!.y).toBeGreaterThanOrEqual(input!.y + input!.height - 0.5);
+          expect(Math.abs(add!.y - send!.y)).toBeLessThan(1);
+          expect(add!.x + add!.width).toBeLessThanOrEqual(chips!.x + 0.5);
+          expect(chips!.x + chips!.width).toBeLessThanOrEqual(send!.x + 0.5);
         }
         await page.screenshot({ path: testInfo.outputPath("chips-wide.png") });
         await expect(composer.getByRole("button", { name: "Agent", exact: true })).toHaveCount(0);
         await page.goto("/ui-v2-fixture?fixture=composer&state=chips-off-pinned");
+        if (resting) await composer.getByRole("textbox", { name: "Message" }).fill("Draft");
         await expectContainedControls(page, 3);
         // Three capabilities without a reasoning level keep their labels near the full measure.
         const width = (await composer.boundingBox())!.width;
@@ -222,6 +228,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
       await page.evaluate(() => document.fonts.ready);
       const composer = page.getByTestId("composer-v2");
       const chip = composer.getByRole("button", { name: /^Reasoning effort:/u });
+      // A portrait phone's composer rests as one line until a tap opens it (operator decision 2026-10-29).
+      if (viewport.width < 768) await composer.getByRole("textbox", { name: "Message" }).tap();
       await expect(composer.getByLabel("Active capabilities").getByRole("button", { name: /^Reasoning effort:/u })).toBeVisible();
       await expectTouchSafe(chip);
       await expectReasoningValueVisible(page, "high");

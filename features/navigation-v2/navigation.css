@@ -928,6 +928,8 @@
     color: var(--v2-color-text);
     background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
     box-shadow: var(--v2-shadow-float);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
   }
 
   /* "New chat" is the right-hand island (ChatGPT/LibreChat placement); with
@@ -944,8 +946,15 @@
     content: none;
   }
 
+  /* In an open chat "+" joins the "⋯" island, which paints the shared
+     background (workspace.css). */
   .v2-workspace-shell[data-chat-active="true"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
-    right: calc(max(0.75rem, env(safe-area-inset-right)) + 3rem);
+    right: calc(max(0.75rem, env(safe-area-inset-right)) + 2.625rem);
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 
   .v2-workspace-shell:has(.v2-live-temporary) .v2-sidebar-floats > .v2-icon-button + .v2-icon-button,
@@ -1262,7 +1271,7 @@ html[data-motion="off"] .v2-sidebar-floats {
   }
 
   .v2-workspace-shell[data-chat-active="true"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
-    right: calc(max(0.75rem, env(safe-area-inset-right)) + 3.25rem);
+    right: calc(max(0.75rem, env(safe-area-inset-right)) + 2.875rem);
   }
 }
 .v2-rail-button:disabled,

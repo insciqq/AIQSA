@@ -1,6 +1,16 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { runAccountMenuAction } from "./page";
 
+/**
+ * A phone's composer rests as one line, its tools hidden, until the user
+ * engages it (operator decision 2026-10-29): a tap on the field shows them.
+ */
+export async function engageComposer(page: Page): Promise<void> {
+  if (await page.getByTestId("composer-v2-surface").getAttribute("data-resting") === null) return;
+  await page.getByRole("textbox", { name: "Message" }).click();
+  await expect(page.getByTestId("composer-v2-surface")).not.toHaveAttribute("data-resting");
+}
+
 export function composerRunSummary(page: Page): Locator {
   return page.getByTestId("header-model-trigger");
 }
@@ -69,6 +79,7 @@ export async function chooseSearchStrategy(page: Page, label: string): Promise<v
     await turnSearchOffInChatDefaults(page);
     return;
   }
+  await engageComposer(page);
   await page.getByRole("button", { name: /^Choose web search/u }).click();
   const search = page.getByRole("dialog", { name: "Web search" });
   const pattern = new RegExp(label, "iu");

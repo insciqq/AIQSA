@@ -365,7 +365,8 @@ test("Skills bundles: one 51-Skill ZIP supports 32 manual pins and an honest mod
   try {
     const imported = await importViaApi(page, writeZip(names.map((name, index) => ({
       path: `skill-${index}/SKILL.md`,
-      bytes: markdown(name, "A repeatable evidence review step.", "Check the evidence and cite clear sources.\n".repeat(10).trim())
+      // Large enough that 32 pins pass a quarter of the fake model's 65,536-token window.
+      bytes: markdown(name, "A repeatable evidence review step.", "Check the evidence and cite clear sources.\n".repeat(60).trim())
     }))), owned);
     expect(imported.ignoredFiles).toBe(0);
     expect(imported.results).toHaveLength(51);

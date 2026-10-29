@@ -808,24 +808,39 @@ html[data-motion="off"] .v2-skeleton {
     width: calc(100% - 1.5rem);
   }
 
-  /* The floating islands (PRD §4.8) have no bar behind them: a canvas band
-     that fades out below them keeps scrolled text from showing between and
-     around them. At rest the thread starts below it. */
-  .v2-conversation::before {
-    position: absolute;
-    z-index: 11;
-    top: 0;
-    right: 0;
-    left: 0;
-    height: calc(env(safe-area-inset-top) + 4.25rem);
-    background: linear-gradient(to bottom, var(--v2-color-canvas) calc(100% - 1rem), transparent);
-    content: "";
+  /* Jump to latest: a round control centred over the thread, slightly
+     translucent, hidden while the thread scrolls (operator decision
+     2026-10-29); workspace.css places it above the composer. */
+  .v2-conversation-jump-latest {
+    left: 50%;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--v2-color-surface) 88%, transparent);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    transform: translateX(-50%);
+    transition: opacity var(--v2-motion-fast);
+  }
+
+  .v2-conversation-jump-latest .v2-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+    stroke-width: 2.25;
+  }
+
+  .v2-conversation-jump-latest[data-scrolling] {
+    opacity: 0;
     pointer-events: none;
   }
 
+  /* An answer's action row is the gap to the next question on wider screens;
+     a phone's 44px actions need air before the question too. */
+  .v2-conversation-thread > li:has(> [data-role="assistant"]) + li:has(> [data-role="user"]) {
+    margin-top: 1rem;
+  }
+
   .v2-conversation-turn[data-role="user"] .v2-conversation-turn-content {
-    /* Reserve the left lane for the jump-to-latest control even when the
-       question saturates its normal mobile measure. */
+    /* The question bubble keeps a left margin even when it saturates its
+       normal mobile measure. */
     max-width: min(88%, calc(100% - 3rem));
   }
 

@@ -29,6 +29,13 @@ describe("fake provider on the native engine's history", () => {
   it("calls the MCP tool once and reads its result from the current turn, an approval continuation included", async () => {
     const asked = [{ currentInput: true as const, text: "Remove it [AIQSA_MCP_E2E:delete_record:r-1]", type: "user" as const }];
     expect((await run(request(asked))).toolCalls?.[0]).toMatchObject({ arguments: { id: "r-1" }, name: deleteRecord.name });
+    // The same request in a later turn gets its own call id: the engine pairs results by id across the chat's turns.
+    const again = await run(request([{ text: asked[0].text, type: "user" },
+      { arguments: "{\"id\":\"r-1\"}", callId: "fake-mcp-delete_record-r-1-0", name: deleteRecord.name, type: "tool_call" },
+      { callId: "fake-mcp-delete_record-r-1-0", isError: true, name: deleteRecord.name, output: "{\"error\":\"mcp_approval_required\"}",
+        type: "tool_result" },
+      { text: "MCP call finished: mcp_approval_required.", type: "assistant_text" }, { ...asked[0] }]));
+    expect(again.toolCalls?.[0]?.id).toBe("fake-mcp-delete_record-r-1-4");
     // The continuation adds no user turn: the approved call's result follows the stopped turn.
     const continued = await run(request([{ text: asked[0].text, type: "user" },
       { arguments: "{\"id\":\"r-1\"}", callId: "fake-mcp-delete_record-r-1", name: deleteRecord.name, type: "tool_call" },

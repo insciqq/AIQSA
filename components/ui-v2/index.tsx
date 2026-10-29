@@ -14,6 +14,7 @@ export type UiV2IconName =
   | "alert"
   | "artifact"
   | "archive"
+  | "arrow-down"
   | "arrow-left"
   | "arrow-up"
   | "assistant"
@@ -106,6 +107,9 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-archive" viewBox="0 0 24 24">
           <path d="M4 8h16v12H4zM3 4h18v4H3zM9 12h6" />
+        </symbol>
+        <symbol id="v2-icon-arrow-down" viewBox="0 0 24 24">
+          <path d="M12 5v14M6.5 13.5 12 19l5.5-5.5" />
         </symbol>
         <symbol id="v2-icon-arrow-left" viewBox="0 0 24 24">
           <path d="M19 12H5M10.5 6.5 5 12l5.5 5.5" />

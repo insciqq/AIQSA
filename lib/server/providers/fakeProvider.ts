@@ -146,7 +146,8 @@ function scriptedMcpResult(request: ProviderRunRequest, question: string): Provi
   if (!tool) return null;
   if (results.length === 0) {
     return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
-      toolCalls: [{ arguments: { id: id! }, id: `fake-mcp-${toolName}-${id}`, name: tool.name }], usage: fakeUsage(question, "") };
+      toolCalls: [{ arguments: { id: id! }, id: `fake-mcp-${toolName}-${id}-${callTurn(request)}`, name: tool.name }],
+      usage: fakeUsage(question, "") };
   }
   const value = results[0]?.content.find((part) => part.type === "json")?.value;
   const finalText = `MCP call finished: ${isRecord(value) && typeof value.error === "string" ? value.error

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { UserMcpServer } from "../../lib/contracts/mcp";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
+import { engageComposer } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
 
@@ -344,6 +345,8 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(toolsTrigger).toHaveAttribute("data-tooltip", "MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
   await expect(toolsTrigger).toHaveAccessibleDescription("MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
   await page.setViewportSize({ height: 844, width: 390 });
+  // A phone's composer rests as one line until engaged (operator decision 2026-10-29).
+  await engageComposer(page);
   await expectTouchSafe(capabilitiesTrigger);
   await expectTouchSafe(toolsTrigger);
   await expectNoHorizontalOverflow(page);
@@ -468,6 +471,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   const skillsIndicator = page.getByRole("button", { name: "Change Skills mode" });
   await expect(skillsIndicator).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
   await page.setViewportSize({ height: 844, width: 390 });
+  await engageComposer(page);
   await skillsIndicator.click();
   await page.getByRole("menuitem", { name: /^Skills…/ }).click();
   skillLibrary = page.getByRole("dialog", { name: "Skills" });
