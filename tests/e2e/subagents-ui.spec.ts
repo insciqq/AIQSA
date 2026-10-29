@@ -147,6 +147,8 @@ async function navigation(page: Page) {
 
 test.describe("sub-agents · desktop and tablet", () => {
   test("the tree, the thread view with Stop, Stop all and the wake-up turn", async ({ page }, testInfo) => {
+    // Three states captured at five sizes in both themes, plus live polling waits.
+    test.setTimeout(180_000);
     await page.setViewportSize({ height: 900, width: 1440 });
     const chatState = { wakeUp: false };
     await installChat(page, chatState);
