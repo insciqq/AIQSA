@@ -348,6 +348,9 @@ class Host:
             return
         async with state.lock:
             async with self.browser_lock:
+                # Control can arrive while this release waits for either lock.
+                if self._agent_held_by_user(agent_id):
+                    raise _livehub.UserInControl()
                 if not state.slot:
                     return
                 if close_tabs and agent_id != MAIN_AGENT_ID:
@@ -369,6 +372,10 @@ class Host:
 
     async def _begin_browser_close(self) -> None:
         async with self.command_condition:
+            # No await between checking every agent and closing admission. The
+            # live hub checks this gate before starting Take control or a handoff.
+            if any(self._agent_held_by_user(agent) for agent in self._states):
+                raise _livehub.UserInControl()
             self._closing = True
             # The caller is itself counted as an active command.
             while self._active_commands > 1:
