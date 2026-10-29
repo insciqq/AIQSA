@@ -63,9 +63,18 @@ type Execution = {
   finish: () => void;
   handle: SubagentTurnHandle | null;
   name: string;
+  parentRunId: string;
+  /**
+   * A Stop that did not see it settle in time retired its Workspace authority
+   * (`execution: unknown`): a launch still attaching then detaches at once and
+   * never runs.
+   */
+  retired: boolean;
   runId: string;
   scope: SubagentChatScope;
   stopReason: SubagentStopReason | null;
+  threadId: string;
+  turnId: string;
 };
 
 const EXECUTIONS = Symbol.for("aiqsa.subagent-background-executions.v1");
@@ -165,8 +174,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const lease = registry.register(ids.runId);
     let finish: () => void = () => undefined;
     const done = new Promise<void>((resolve) => { finish = resolve; });
-    const execution: Execution = { done, finish, handle: null, name: input.name, runId: ids.runId,
-      scope: { chatId: input.chatId, userId: input.userId }, stopReason: null };
+    const execution: Execution = { done, finish, handle: null, name: input.name, parentRunId: input.parentRunId,
+      retired: false, runId: ids.runId, scope: { chatId: input.chatId, userId: input.userId }, stopReason: null,
+      threadId: input.threadId, turnId: ids.turnId };
     executions.set(ids.turnId, execution);
     return { abandon() {
       lease?.release();
@@ -182,7 +192,9 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const scope = execution.scope;
     const deadlineAt = new Date(now() + turnTimeMs);
     void (async () => {
-      const deadline = setTimeout(() => void stopLocal(ids.turnId, "deadline"), turnTimeMs);
+      // Its own tool time ends it through the same stop as the user's, so a runner that does not stop still settles.
+      const deadline = setTimeout(() => void deps.store.findTurn({ ...scope, turnId: ids.turnId })
+        .then((turn) => turn ? stopTurn(turn, SUBAGENT_END_REASONS.deadline) : null).catch(() => null), turnTimeMs);
       (deadline as { unref?: () => void }).unref?.();
       let attached = false;
       let executionUnknown = false;
@@ -195,6 +207,11 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
           attached = attach.kind === "attached";
           if (attach.kind === "refused") {
             logEvent("run_execution", { code: "subagent_workspace_unattached", outcome: "failed", run_id: ids.runId, stage: "dispatch" });
+          }
+          // A Stop retired this run's authority while it attached: the attachment it just got goes at once, before anything ran.
+          if (attached && (execution.retired || execution.stopReason)) {
+            attached = false;
+            await deps.workspace.detach({ ...scope, execution: "settled", modelRunId: ids.runId }).catch(() => undefined);
           }
         }
         if (execution.stopReason) throw new Error("subagent_stopped_before_start");
@@ -215,7 +232,8 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       } finally {
         clearTimeout(deadline);
       }
-      if (execution.stopReason && result.state !== "stopped" && result.state !== "done") {
+      // A stop ends the turn with its own reason, not the abort's that may have reached the runner first.
+      if (execution.stopReason && result.state !== "done") {
         const { outcome: _outcome, ...rest } = result;
         result = { ...rest, reason: execution.stopReason, state: "stopped" };
       }
@@ -232,18 +250,21 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     })().catch(() => pending.abandon());
   }
 
-  /** Stops a turn executing here and waits a bounded time for it to settle; false when none executes here. */
-  async function stopLocal(turnId: string, reason: SubagentStopReason): Promise<boolean> {
+  /**
+   * Stops a turn executing (or about to execute) here and waits, at most the
+   * stop bound in all, for it to settle: `settled`, `timeout` (it did not
+   * settle in time; its Workspace authority is not yet retired), or `none`
+   * when no execution here owns it. The runner's stop is asked first, then
+   * the run's own signal cuts what is in flight (provider, Workspace, MCP);
+   * neither is awaited past the bound.
+   */
+  async function stopLocal(turnId: string, reason: SubagentStopReason): Promise<"none" | "settled" | "timeout"> {
     const execution = executions.get(turnId);
-    if (!execution) return false;
+    if (!execution) return "none";
     execution.stopReason ??= reason;
-    if (execution.handle && deps.runner) {
-      await deps.runner.stop(execution.handle, execution.stopReason).catch(() => null);
-    }
-    // The run's own signal then cuts any I/O still in flight (provider, Workspace, MCP).
+    if (execution.handle && deps.runner) void deps.runner.stop(execution.handle, execution.stopReason).catch(() => null);
     registry.abort(execution.runId);
-    await bounded(execution.done, stopWaitMs);
-    return true;
+    return await bounded(execution.done.then(() => "settled" as const), stopWaitMs) ?? "timeout";
   }
 
   /**
@@ -262,7 +283,11 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     const local = await stopLocal(turn.turnId, reason);
     const current = await deps.store.findTurn({ chatId: turn.chatId, turnId: turn.turnId, userId: turn.userId });
     if (current && !isActiveSubagentState(current.state)) return current.result;
-    if (!local && turn.runId) {
+    // Not settled: its guest authority is retired before the durable settlement, with its execution state unknown, so the
+    // shared Workspace proves its processes stopped or stops the VM; a launch still attaching never keeps the attachment.
+    const execution = executions.get(turn.turnId);
+    if (local === "timeout" && execution) execution.retired = true;
+    if (turn.runId) {
       await deps.workspace?.detach({ chatId: turn.chatId, execution: "unknown", modelRunId: turn.runId, userId: turn.userId })
         .catch(() => undefined);
     }
@@ -275,12 +300,35 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     return settlement.result;
   }
 
-  /** Stops each turn; counts the turns that ended, so a turn still running is never reported stopped. */
-  async function stopMany(turns: readonly SubagentTurnRecord[], reason: SubagentStopReason): Promise<number> {
-    const ended = await Promise.all(turns.map(async (turn) => {
-      const result = await stopTurn(turn, reason).catch(() => null);
-      return result !== null && !isActiveSubagentState(result.state);
-    }));
+  /**
+   * Stops each turn, and every execution of this process in the same scope
+   * that the turns' read did not list (`pending`): one whose admission had not
+   * committed is marked, so its launch settles it stopped without running it,
+   * and one that committed since is stopped like a listed turn; each is
+   * awaited within the bound. Counts the turns that ended, so a turn still
+   * running is never reported stopped.
+   */
+  async function stopMany(scope: SubagentChatScope, turns: readonly SubagentTurnRecord[], reason: SubagentStopReason,
+    pending: (execution: Execution) => boolean): Promise<number> {
+    const listed = new Set(turns.map((turn) => turn.turnId));
+    const unlisted = [...executions.values()].filter((execution) => !listed.has(execution.turnId) &&
+      execution.scope.chatId === scope.chatId && execution.scope.userId === scope.userId && pending(execution));
+    const ended = await Promise.all([
+      ...turns.map(async (turn) => {
+        const result = await stopTurn(turn, reason).catch(() => null);
+        return result !== null && !isActiveSubagentState(result.state);
+      }),
+      ...unlisted.map(async (execution) => {
+        const local = await stopLocal(execution.turnId, reason);
+        if (local !== "settled") {
+          const turn = await deps.store.findTurn({ ...scope, turnId: execution.turnId }).catch(() => null);
+          if (turn) return (await stopTurn(turn, reason).catch(() => null))?.state === "stopped";
+          return false;
+        }
+        const turn = await deps.store.findTurn({ ...scope, turnId: execution.turnId }).catch(() => null);
+        return turn !== null && !isActiveSubagentState(turn.state);
+      })
+    ]);
     return ended.filter(Boolean).length;
   }
 
@@ -350,20 +398,23 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     },
 
     async stopThread(input) {
-      return stopMany(await deps.store.activeTurns(input), SUBAGENT_END_REASONS.stoppedByUser);
+      return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.stoppedByUser,
+        (execution) => execution.threadId === input.threadId);
     },
 
     async stopAll(input) {
-      return stopMany(await deps.store.activeTurns(input), SUBAGENT_END_REASONS.stoppedAll);
+      return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.stoppedAll, () => true);
     },
 
     async stopUnderMessage(input) {
-      return stopMany(await deps.store.activeTurns({ chatId: input.chatId, underMessageId: input.messageId, userId: input.userId }),
-        SUBAGENT_END_REASONS.stoppedByUser);
+      const scope = { chatId: input.chatId, userId: input.userId };
+      const [turns, parents] = await Promise.all([deps.store.activeTurns({ ...scope, underMessageId: input.messageId }),
+        deps.store.runIdsUnderMessage({ ...scope, messageId: input.messageId })]);
+      return stopMany(scope, turns, SUBAGENT_END_REASONS.stoppedByUser, (execution) => parents.includes(execution.parentRunId));
     },
 
     async stopChat(input) {
-      return stopMany(await deps.store.activeTurns(input), SUBAGENT_END_REASONS.chatDeleted);
+      return stopMany(input, await deps.store.activeTurns(input), SUBAGENT_END_REASONS.chatDeleted, () => true);
     }
   });
 }

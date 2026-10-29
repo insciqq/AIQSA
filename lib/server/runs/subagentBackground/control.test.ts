@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SubagentBackgroundStartInput, SubagentBinding } from "@/lib/server/subagents/ports";
+import type { SubagentBackgroundStartInput, SubagentBinding, WorkspaceAttachments } from "@/lib/server/subagents/ports";
 import { FakeSubagentCallbackSink, FakeSubagentRunner, FakeWorkspaceAttachments, endedSubagentResult } from "@/tests/support/subagentPorts";
 import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
 import type { UsageLimitStatus } from "@/lib/server/usageLimits/repository";
@@ -177,6 +177,88 @@ describe("background sub-agent runs", () => {
     expect(store.turns[0]).toMatchObject({ result: { reason: "stop_all" }, state: "stopped" });
     expect(runner.turns.size).toBe(0);
     expect(sink.callbacks).toHaveLength(1);
+  });
+
+  it.each(["stopAll", "stopThread", "stopUnderMessage"] as const)(
+    "never runs a turn whose admission had not committed when %s came", async (operation) => {
+      const { control, runner, store } = setup();
+      let release: () => void = () => undefined;
+      store.admitBeforeGate = () => new Promise<void>((resolve) => { release = resolve; });
+      const before = localSubagentTurnIds().length;
+      const starting = control.start(startInput("early"));
+      await vi.waitFor(() => expect(localSubagentTurnIds()).toHaveLength(before + 1));
+      expect(store.turns).toHaveLength(0);
+      const scope = { chatId: "chat-1", userId: "user-1" };
+      const stopping = operation === "stopAll" ? control.stopAll(scope)
+        : operation === "stopThread" ? control.stopThread({ ...scope, threadId: "thread-early" })
+          : control.stopUnderMessage({ ...scope, messageId: "answer-1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      release();
+      expect(await starting).toMatchObject({ kind: "started" });
+      expect(await stopping).toBe(1);
+      expect(runner.turns.size).toBe(0);
+      expect(store.turns[0]).toMatchObject({ result: { state: "stopped" }, state: "stopped" });
+    });
+
+  it("leaves another thread's admission alone when stopping one thread", async () => {
+    const { control, runner, store } = setup();
+    let release: () => void = () => undefined;
+    store.admitBeforeGate = () => new Promise<void>((resolve) => { release = resolve; });
+    const before = localSubagentTurnIds().length;
+    const starting = control.start(startInput("other"));
+    await vi.waitFor(() => expect(localSubagentTurnIds()).toHaveLength(before + 1));
+    expect(await control.stopThread({ chatId: "chat-1", threadId: "thread-unrelated", userId: "user-1" })).toBe(0);
+    release();
+    const started = await starting;
+    await vi.waitFor(() => expect(runner.turns.get(started.kind === "started" ? started.turnId : "")).toBeDefined());
+    await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+
+  it("answers a stop within its bound when the runner's own stop never settles, and retires the Workspace", async () => {
+    const store = new MemorySubagentStore();
+    store.callers.add("parent-run");
+    const hung = new FakeSubagentRunner();
+    hung.stop = () => new Promise(() => undefined);
+    const workspace = new FakeWorkspaceAttachments();
+    const detach = vi.spyOn(workspace, "detach");
+    const control = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink(), runner: hung, stopWaitMs: 20, store,
+      usageLimits: unlimited, workspace });
+    const started = await control.start(startInput("hung"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(hung.turns.get(turnId)).toBeDefined());
+    expect(await workspace.attached({ chatId: "chat-1", userId: "user-1" })).toHaveLength(1);
+    expect(await control.stop({ chatId: "chat-1", name: "hung", parentRunId: "parent-run", parentToolCallId: "s", userId: "user-1" }))
+      .toMatchObject({ kind: "stopped", result: { state: "stopped" } });
+    // Its guest authority went with the stop, its execution state unknown, before the turn settled on record.
+    expect(detach).toHaveBeenCalledWith(expect.objectContaining({ execution: "unknown", modelRunId: store.turns[0]!.runId }));
+    expect(await workspace.attached({ chatId: "chat-1", userId: "user-1" })).toEqual([]);
+    expect(store.turns[0]).toMatchObject({ state: "stopped" });
+  });
+
+  it("never lets a launch still attaching keep the Workspace after a stop retired it", async () => {
+    const store = new MemorySubagentStore();
+    store.callers.add("parent-run");
+    const runner = new FakeSubagentRunner();
+    const inner = new FakeWorkspaceAttachments();
+    let release: () => void = () => undefined;
+    const slowAttach: WorkspaceAttachments = {
+      attach: async (attachment, signal) => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return inner.attach(attachment, signal);
+      },
+      attached: (scope) => inner.attached(scope),
+      detach: (input) => inner.detach(input),
+      exclusive: (scope, work) => inner.exclusive(scope, work)
+    };
+    const control = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink(), runner, stopWaitMs: 20, store,
+      usageLimits: unlimited, workspace: slowAttach });
+    const started = await control.start(startInput("attaching"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    expect(await control.stopAll({ chatId: "chat-1", userId: "user-1" })).toBe(1);
+    release();
+    await vi.waitFor(() => expect(localSubagentTurnIds()).not.toContain(turnId));
+    expect(await inner.attached({ chatId: "chat-1", userId: "user-1" })).toEqual([]);
+    expect(runner.turns.size).toBe(0);
   });
 
   it("never stamps a message delivered that no execution here will read", async () => {

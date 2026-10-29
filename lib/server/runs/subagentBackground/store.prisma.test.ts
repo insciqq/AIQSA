@@ -243,7 +243,8 @@ describe("background sub-agent runs on PostgreSQL", () => {
       wakeUps.push([...input.turnIds]);
       return "admitted";
     } });
-    const recovery = { bootedAt: future, deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [], staleMs: 600_000, store };
+    const recovery = { backoff: new Map(), bootedAt: future, deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [],
+      staleMs: 600_000, store };
     const settled = await reconcileSubagentRuns(recovery, { chatId: f.chatId });
     expect(settled).toBe(2);
     expect(await prisma.subagentTurn.findMany({ select: { reasonCode: true, state: true }, where: { id: { in: turnIds } } }))
@@ -278,6 +279,33 @@ describe("background sub-agent runs on PostgreSQL", () => {
     expect(await prisma.subagentTurn.count({ where: { chatId: f.chatId, state: "running" } })).toBe(20);
     await prisma.subagentTurn.updateMany({ data: { endedAt: new Date(), reasonCode: "restart", state: "interrupted" },
       where: { chatId: f.chatId, mode: "foreground" } });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("never runs a turn whose admission had not committed when Stop all came", async () => fixture(async (f) => {
+    const thread = await f.thread("early");
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // Blocked before its transaction wrote anything: Stop all's read of the chat's turns finds no row of it.
+    const blocked = { ...store, admit: async (input: Parameters<typeof store.admit>[0]) => {
+      await gate;
+      return store.admit(input);
+    } };
+    const runner = new FakeSubagentRunner();
+    const background = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink("pending"), runner, stopWaitMs: 5_000,
+      store: blocked, usageLimits: { loadUsageLimitStatus: async () => NO_LIMITS } });
+    const starting = background.start(startInput(f, "early", thread));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await prisma.subagentTurn.count({ where: { threadId: thread.threadId } })).toBe(0);
+    const stopping = background.stopAll({ chatId: f.chatId, userId: f.userId });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    expect(await starting).toMatchObject({ kind: "started" });
+    expect(await stopping).toBe(1);
+    expect(runner.turns.size).toBe(0);
+    expect(await prisma.subagentTurn.findFirstOrThrow({ select: { reasonCode: true, state: true }, where: { threadId: thread.threadId } }))
+      .toEqual({ reasonCode: "stop_all", state: "stopped" });
+    expect(await prisma.modelRun.count({ where: { status: "cancelled", subagentThreadId: thread.threadId } })).toBe(1);
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 
@@ -332,8 +360,8 @@ describe("background sub-agent runs on PostgreSQL", () => {
       wakeUps.push([...input.turnIds]);
       return "admitted";
     } });
-    await reconcileSubagentRuns({ bootedAt: new Date(0), deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [],
-      staleMs: 600_000, store }, { chatId: f.chatId });
+    await reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(0), deferred: new Map(), flush: callbacks.flush,
+      liveRunIds: () => [], staleMs: 600_000, store }, { chatId: f.chatId });
     await expect.poll(() => wakeUps.length).toBe(1);
     expect(wakeUps[0]).toEqual([admitted.turnId]);
   }));

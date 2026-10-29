@@ -28,6 +28,11 @@ const OWED_GRACE_MS = 15_000;
 
 /** Callbacks a flush left owed on purpose, per chat: recovery passes the chat by while nothing new is owed there. */
 export type SubagentDeferredCallbacks = Map<string, ReadonlySet<string>>;
+/** Chats whose wake-up failed for a reason that may clear: retried once `until` passes, the wait doubling per failure. */
+export type SubagentFlushBackoff = Map<string, Readonly<{ failures: number; until: number }>>;
+
+const BACKOFF_FIRST_MS = 30_000;
+const BACKOFF_MAX_MS = 30 * 60_000;
 
 const DEFERRED: ReadonlySet<SubagentCallbackDisposition> = new Set(["pending", "inactive_branch"]);
 
@@ -35,6 +40,8 @@ export type SubagentRecoveryDeps = Readonly<{
   bootedAt: Date;
   /** Delivers a chat's owed callbacks (`SubagentCallbacks.flush`). */
   flush(scope: SubagentChatScope): Promise<SubagentFlushReport>;
+  /** Kept across passes by the composition. */
+  backoff: SubagentFlushBackoff;
   /** Kept across passes by the composition. */
   deferred: SubagentDeferredCallbacks;
   liveRunIds(): readonly string[];
@@ -47,15 +54,26 @@ export type SubagentRecoveryDeps = Readonly<{
 
 const chatKey = (scope: SubagentChatScope) => `${scope.userId}:${scope.chatId}`;
 
-async function flushChat(deps: SubagentRecoveryDeps, scope: SubagentChatScope): Promise<void> {
+function backOff(deps: SubagentRecoveryDeps, key: string, at: number): void {
+  const failures = (deps.backoff.get(key)?.failures ?? 0) + 1;
+  deps.backoff.set(key, { failures, until: at + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (failures - 1)) });
+}
+
+async function flushChat(deps: SubagentRecoveryDeps, scope: SubagentChatScope, at: number): Promise<void> {
+  const key = chatKey(scope);
   try {
     const report = await deps.flush(scope);
-    const deferred = [...report.dispositions].flatMap(([turnId, disposition]) => DEFERRED.has(disposition) ? [turnId] : []);
-    if (deferred.length > 0 && !report.chatGone) deps.deferred.set(chatKey(scope), new Set(deferred));
-    else deps.deferred.delete(chatKey(scope));
+    // Only usage limits and an inactive branch defer on purpose; a dispatch failure that may clear is retried later.
+    const deferred = [...report.dispositions].flatMap(([turnId, disposition]) =>
+      DEFERRED.has(disposition) && !report.retryable.has(turnId) ? [turnId] : []);
+    if (deferred.length > 0 && !report.chatGone) deps.deferred.set(key, new Set(deferred));
+    else deps.deferred.delete(key);
+    if (report.retryable.size > 0) backOff(deps, key, at);
+    else deps.backoff.delete(key);
   } catch (error) {
-    // A failed flush is retried by the next pass.
-    deps.deferred.delete(chatKey(scope));
+    // A failed flush is retried by a later pass, after its backoff.
+    deps.deferred.delete(key);
+    backOff(deps, key, at);
     logEvent("run_recovery", { action: "retry", code: "subagent_callback_flush_failed", error, outcome: "failed",
       prisma_code: databaseFailureCode(error), stage: "recovery", subsystem: "run_recovery" });
   }
@@ -94,7 +112,7 @@ export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
       prisma_code: databaseFailureCode(error), stage: "recovery", subsystem: "run_recovery" });
   });
   // Interrupted just now: flushed at once, one coalesced flush per chat.
-  for (const scope of interrupted.values()) void flushChat(deps, scope);
+  for (const scope of interrupted.values()) void flushChat(deps, scope, now.getTime());
   // Owed from before (an earlier flush that never ran or failed), whatever recovered above.
   const owed = await deps.store.findOwedCallbackChats({ endedBefore: new Date(now.getTime() - OWED_GRACE_MS),
     limit: BACKGROUND_RECOVERY_BATCH, ...scoped }).catch((error: unknown) => {
@@ -107,7 +125,8 @@ export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
     if (interrupted.has(chatKey(scope))) continue;
     const deferred = deps.deferred.get(chatKey(scope));
     if (deferred && chat.turnIds.every((turnId) => deferred.has(turnId))) continue;
-    void flushChat(deps, scope);
+    if ((deps.backoff.get(chatKey(scope))?.until ?? 0) > now.getTime()) continue;
+    void flushChat(deps, scope, now.getTime());
   }
   return settled;
 }

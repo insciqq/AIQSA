@@ -42,6 +42,12 @@ export type SubagentFlushReport = Readonly<{
   /** The chat is gone or being deleted: nothing is delivered. */
   chatGone: boolean;
   dispositions: ReadonlyMap<string, SubagentCallbackDisposition>;
+  /**
+   * Of the `pending` ones, those whose wake-up failed for a reason that may
+   * clear (the chat archived, the model unavailable), which recovery retries
+   * with a backoff; the rest of `pending` waited on usage limits.
+   */
+  retryable: ReadonlySet<string>;
 }>;
 
 export type SubagentCallbacks = Readonly<{
@@ -63,13 +69,14 @@ export function createSubagentCallbacks(deps: Readonly<{
 
   async function attempt(scope: SubagentChatScope): Promise<SubagentFlushReport> {
     const dispositions = new Map<string, SubagentCallbackDisposition>();
+    const retryable = new Set<string>();
     for (let round = 0; round < FLUSH_ATTEMPTS; round += 1) {
       const owed = await deps.store.owedCallbacks(scope);
-      if (!owed) return { chatGone: true, dispositions };
+      if (!owed) return { chatGone: true, dispositions, retryable };
       for (const turnId of owed.inactiveTurnIds) dispositions.set(turnId, "inactive_branch");
       const callbacks = owed.activeBranch.filter((callback) => !dispositions.has(callback.turnId) ||
         dispositions.get(callback.turnId) === "pending");
-      if (callbacks.length === 0) return { chatGone: false, dispositions };
+      if (callbacks.length === 0) return { chatGone: false, dispositions, retryable };
       if (owed.mainRun) {
         let closed = false;
         for (const callback of callbacks) {
@@ -79,7 +86,7 @@ export function createSubagentCallbacks(deps: Readonly<{
           if (outcome === "closed") closed = true;
           dispositions.set(callback.turnId, outcome === "closed" ? "after_run" : "delivered");
         }
-        return { chatGone: false, dispositions };
+        return { chatGone: false, dispositions, retryable };
       }
       const wakeUp = renderWakeUp(callbacks);
       const outcome = await deps.admitWakeUp({ ...scope, text: wakeUp.text, turnIds: wakeUp.turnIds });
@@ -88,16 +95,19 @@ export function createSubagentCallbacks(deps: Readonly<{
       if (outcome === "admitted") {
         for (const turnId of wakeUp.turnIds) dispositions.set(turnId, "wake_up");
         // What did not fit goes into the woken run next round.
-        if (wakeUp.turnIds.length === callbacks.length) return { chatGone: false, dispositions };
+        if (wakeUp.turnIds.length === callbacks.length) return { chatGone: false, dispositions, retryable };
         continue;
       }
       if (outcome === "usage_limited" || outcome === "failed") {
-        for (const callback of callbacks) dispositions.set(callback.turnId, "pending");
-        return { chatGone: false, dispositions };
+        for (const callback of callbacks) {
+          dispositions.set(callback.turnId, "pending");
+          if (outcome === "failed") retryable.add(callback.turnId);
+        }
+        return { chatGone: false, dispositions, retryable };
       }
     }
     // Still unresolved after every attempt (the user kept starting answers that closed first): owed for the next flush.
-    return { chatGone: false, dispositions };
+    return { chatGone: false, dispositions, retryable };
   }
 
   function flush(scope: SubagentChatScope): Promise<SubagentFlushReport> {
