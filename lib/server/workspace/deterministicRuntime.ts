@@ -24,7 +24,7 @@ import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPrepara
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 import { isReservedWorkspaceEnvName, WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide } from "./secrets/manifest";
-import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
+import { WORKSPACE_AGENT_PROTOCOL, workspaceAgentEnvironment } from "../subagents/guestProtocol";
 import { WORKSPACE_UV_CACHE_DIRECTORY, WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES } from "./guestCache";
 import {
   WorkspaceRuntimeError,
@@ -914,6 +914,20 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         return toolResult({ closed: true, execSessionId });
       }
     }
+  }
+
+  /**
+   * The fixture's per-agent cgroup: an exec belongs to the agent its environment named at start. A live exec without
+   * an agent, or an uncertain one of the agent, proves nothing, as the guest helper's groups do.
+   */
+  async terminateAgentProcesses(input: Parameters<NonNullable<WorkspaceRuntime["terminateAgentProcesses"]>>[0]) {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const live = [...session.allExecs].filter((exec) => exec.alive);
+    const agentOf = (exec: DeterministicExec) => exec.environment[WORKSPACE_AGENT_PROTOCOL.AGENT_ID_ENV];
+    const mine = live.filter((exec) => agentOf(exec) === input.agentId);
+    if (live.some((exec) => agentOf(exec) === undefined) || mine.some(uncertainExec)) return { outcome: "unknown" as const };
+    for (const exec of mine) terminateExec(exec, 137);
+    return { outcome: "closed" as const };
   }
 
   async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {
