@@ -69,11 +69,19 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
         return;
       }
       if (mode === 503) { json(503, { error: { message: "The server is overloaded.", type: "server_error" } }); return; }
+      const wire = JSON.stringify(body.input);
       const text = body.text?.format ? JSON.stringify({ ready: true, count: 2, label: "OK", tool_ids: ["alpha", "beta"] })
-        : JSON.stringify(body.input).includes("input_image") || JSON.stringify(body.input).includes("input_file") ? "PEARS"
-        : JSON.stringify(body.input).includes("Observability fixture") ? ANSWER : "OK";
-      const completed = { id: `fixture-${Date.now()}`, status: "completed", model: body.model,
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+        : wire.includes("input_image") || wire.includes("input_file") ? "PEARS"
+        : wire.includes("Observability fixture") ? ANSWER : "OK";
+      // Chats need a tool-calling model: the setup's tool probes get their calls.
+      const probe = wire.includes("Observability fixture") ? undefined
+        : body.tools?.find((item: { name?: string }) => item.name?.startsWith("aiqsa_"));
+      const output = probe
+        ? (probe.name === "aiqsa_parallel_probe" ? ["Oslo", "Rome"] : ["Oslo"]).map((city, index) => ({
+          type: "function_call", id: `function-${index}`, call_id: `call-${index}`, name: probe.name,
+          arguments: JSON.stringify({ city }), status: "completed"
+        })) : [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }];
+      const completed = { id: `fixture-${Date.now()}`, status: "completed", model: body.model, output,
         usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10 } };
       if (!body.stream) { json(200, completed); return; }
       response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
@@ -217,6 +225,9 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
         await tx.memoryJob.deleteMany({ where: { userId, chatId: { in: chatIds } } });
         await tx.memoryRetrievalAttempt.deleteMany({ where: { userId, chatId: { in: chatIds } } });
         await tx.memoryRecallChunk.deleteMany({ where: { userId, chatId: { in: chatIds } } });
+        // Every chat has the Workspace (2026-10-20), and its session restricts the chat's deletion.
+        await tx.workspaceCleanupJob.deleteMany({ where: { workspaceSession: { chatId: { in: chatIds }, chat: { userId } } } });
+        await tx.workspaceSession.deleteMany({ where: { chatId: { in: chatIds }, chat: { userId } } });
         await tx.chat.deleteMany({ where: { userId, id: { in: chatIds } } });
         await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: connectionId }, { providerModel: { connectionId } }] } });
         await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId } });

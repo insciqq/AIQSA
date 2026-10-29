@@ -265,10 +265,11 @@ for (const viewport of viewports) {
           Boolean(document.elementFromPoint(x, y)?.closest("[data-testid='browser-live-stage']")), target)).toBe(true);
         if (viewport.touch) await page.touchscreen.tap(target.x, target.y);
         else await page.mouse.click(target.x, target.y);
-        await expect.poll(() => posted.filter((entry) => entry.path.endsWith("/input")).length).toBeGreaterThanOrEqual(2);
-        const clicks = posted.filter((entry) => entry.path.endsWith("/input")).map((entry) => entry.body as BrowserLiveInput)
+        // A mouse posts its hover move first, and the up waits behind the down's request.
+        const pressed = () => posted.filter((entry) => entry.path.endsWith("/input")).map((entry) => entry.body as BrowserLiveInput)
           .filter((input) => input.kind === "mouse" && (input.type === "down" || input.type === "up"));
-        expect(clicks.map((input) => input.kind === "mouse" && input.type)).toEqual(["down", "up"]);
+        await expect.poll(() => pressed().map((input) => input.kind === "mouse" && input.type)).toEqual(["down", "up"]);
+        const clicks = pressed();
         for (const input of clicks) {
           if (input.kind !== "mouse") continue;
           expect(Math.abs(input.x - 320)).toBeLessThanOrEqual(8);
@@ -423,10 +424,11 @@ for (const viewport of fullScreenViewports) {
         const target = { x: frame.x + frame.width * 0.25, y: frame.y + frame.height * 0.5 };
         if (viewport.touch) await page.touchscreen.tap(target.x, target.y);
         else await page.mouse.click(target.x, target.y);
-        await expect.poll(() => posted.filter((entry) => entry.path.endsWith("/input")).length).toBeGreaterThanOrEqual(2);
-        const clicks = posted.filter((entry) => entry.path.endsWith("/input")).map((entry) => entry.body as BrowserLiveInput)
+        // A mouse posts its hover move first, and the up waits behind the down's request.
+        const pressed = () => posted.filter((entry) => entry.path.endsWith("/input")).map((entry) => entry.body as BrowserLiveInput)
           .filter((input) => input.kind === "mouse" && (input.type === "down" || input.type === "up"));
-        expect(clicks.map((input) => input.kind === "mouse" && input.type)).toEqual(["down", "up"]);
+        await expect.poll(() => pressed().map((input) => input.kind === "mouse" && input.type)).toEqual(["down", "up"]);
+        const clicks = pressed();
         for (const input of clicks) {
           if (input.kind !== "mouse") continue;
           expect(Math.abs(input.x - 320)).toBeLessThanOrEqual(8);
