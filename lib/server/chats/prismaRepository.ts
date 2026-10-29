@@ -17,6 +17,7 @@ import {
 import { foldSkillSaveCards } from "../../contracts/skillSaves";
 import { foldResourceChangeCards } from "../../contracts/resourceChanges";
 import { isMessageSystemTurnKind } from "../../contracts/mcpApprovals";
+import { SUBAGENT_CALLBACK_TURN_KIND, SUBAGENT_FOLLOWUP_LIMITS, normalizeSubagentName } from "../../contracts/subagents";
 import {
   collapseChatAnswerReviewTree,
   isAnswerReviewStepToolCall,
@@ -347,7 +348,10 @@ type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }
 type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
   select: typeof archivedChatSummarySelect;
 }>;
-type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
+type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }> & {
+  /** A wake-up turn's sub-agents (`loadSubagentCallbackNames`). */
+  subagentCallbackNames?: readonly string[];
+};
 type HydratedMessagePath = Readonly<{
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
@@ -626,14 +630,44 @@ async function hydrateMessagePath(
       : message.branchSourceModelRun?.id
         ? [message.branchSourceModelRun.id]
         : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks] = await Promise.all([
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, callbackNames] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
     loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
-      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId)
+      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
+    loadSubagentCallbackNames(tx, chatId, ordered)
   ]);
-  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, parents, scheduledTasks };
+  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, parents, scheduledTasks,
+    messages: ordered.map((message) => callbackNames.has(message.id)
+      ? { ...message, subagentCallbackNames: callbackNames.get(message.id)! } : message) };
+}
+
+/**
+ * The sub-agents whose callbacks each wake-up turn of the page carried (a
+ * user message of kind `subagent_callback`): the thread names of the turns
+ * the run answering it claimed (`SubagentTurn.callbackRunId`), in the order
+ * they ended, distinct and bounded like the run's callbacks.
+ */
+async function loadSubagentCallbackNames(tx: Prisma.TransactionClient, chatId: string,
+  messages: readonly Readonly<{ id: string; role: string; systemTurnKind: string | null }>[]): Promise<ReadonlyMap<string, readonly string[]>> {
+  const ids = messages.filter((message) => message.role === "user" && message.systemTurnKind === SUBAGENT_CALLBACK_TURN_KIND)
+    .map((message) => message.id);
+  if (ids.length === 0) return new Map();
+  const runs = await tx.modelRun.findMany({ select: { subagentCallbacks: {
+    orderBy: [{ endedAt: "asc" }, { id: "asc" }], select: { thread: { select: { name: true } } },
+    take: SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun
+  }, userMessageId: true }, where: { chatId, subagentTurnId: null, userMessageId: { in: ids } } });
+  const names = new Map<string, string[]>();
+  for (const run of runs) {
+    const list = names.get(run.userMessageId) ?? [];
+    for (const turn of run.subagentCallbacks) {
+      const name = normalizeSubagentName(turn.thread.name);
+      if (name === turn.thread.name && !list.includes(name) && list.length < SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) list.push(name);
+    }
+    names.set(run.userMessageId, list);
+  }
+  return names;
 }
 
 /** The reader's current tasks among those the given answers' cards name; one read per page, none without cards. */
@@ -887,6 +921,8 @@ function serializeHydratedMessage(
     ...(isScheduledTaskCheckOutcome(scheduledOutcome) ? { scheduledOutcome } : {}),
     status: message.status,
     ...(isMessageSystemTurnKind(message.systemTurnKind) ? { systemTurnKind: message.systemTurnKind } : {}),
+    ...(message.role === "user" && message.systemTurnKind === SUBAGENT_CALLBACK_TURN_KIND && message.subagentCallbackNames
+      ? { subagentCallback: { names: [...message.subagentCallbackNames] } } : {}),
     toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
   };
@@ -2543,6 +2579,8 @@ export function createPrismaChatRepository(
         }
 
         if (changesNextRun) {
+          // Only the main agent's answer: a branch switch, the Workspace switch or an Assistant binding shape the next
+          // main-agent run, while background sub-agents keep their own frozen bindings and their branch.
           const activeRun = await tx.modelRun.findFirst({
             select: {
               id: true
@@ -2551,7 +2589,8 @@ export function createPrismaChatRepository(
               chatId,
               status: {
                 in: ["preparing", "streaming", "queued", "in_progress"]
-              }
+              },
+              subagentTurnId: null
             }
           });
           if (activeRun) {

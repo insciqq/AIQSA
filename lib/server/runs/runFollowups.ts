@@ -5,6 +5,7 @@ import {
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
+import type { RunFollowupOrigin } from "../../contracts/subagents";
 import { requestHeadroomTokens } from "./requestContextBudget";
 
 export type RunFollowupAdmission = Readonly<{
@@ -36,12 +37,21 @@ export function projectMessageFollowups(message: {
   return copied ? { ...copied, available: false } : null;
 }
 
-export function projectRunFollowups(run: FollowupRunProjection): RunFollowupState {
+/**
+ * A run's follow-ups as the browser reads them. The rows are the user's own
+ * (`runFollowupSelect`); a sub-agent's callbacks and messages share the run's
+ * ordinals, so the user's are numbered by their own position from
+ * `precedingUserFollowups` (the entries before the first given). The engine's
+ * read keeps the stored ordinals (`renumber: false`).
+ */
+export function projectRunFollowups(run: FollowupRunProjection, precedingUserFollowups = 0,
+  options: Readonly<{ renumber?: boolean }> = {}): RunFollowupState {
   const active = ["preparing", "queued", "streaming", "in_progress"].includes(run.status) && !run.answerCompletedAt;
+  const renumber = options.renumber !== false;
   return {
     available: active && run.followupMode !== null && run.followupClosedAt === null,
-    entries: run.followups.map((entry): RunFollowup => ({
-      id: entry.id, ordinal: entry.ordinal, text: entry.text, author: entry.authorName,
+    entries: run.followups.map((entry, index): RunFollowup => ({
+      id: entry.id, ordinal: renumber ? precedingUserFollowups + index + 1 : entry.ordinal, text: entry.text, author: entry.authorName,
       createdAt: entry.createdAt.toISOString(),
       delivery: entry.deliveredAt ? "delivered" : active ? "accepted" : "undelivered",
       ...(entry.precedingText ? { precedingText: entry.precedingText } : {})
@@ -87,7 +97,8 @@ export type AcceptRunFollowupResult =
 
 export type RunFollowupBatch = Readonly<{
   revision: number;
-  entries: readonly RunFollowup[];
+  /** Every origin, in run order: the engine delivers a sub-agent's callback like a follow-up, never as the user's speech. */
+  entries: readonly (RunFollowup & Readonly<{ origin?: RunFollowupOrigin }>)[];
 }>;
 
 export type RunFollowupOperations = Readonly<{

@@ -497,6 +497,12 @@ export type CreateRunInput = {
   /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
   scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
+  /**
+   * A sub-agent wake-up turn: the background turns whose callbacks its text
+   * renders, claimed in the run's creating transaction or the run is not
+   * created (`claimSubagentCallbacksForRun`). It counts toward no message limit.
+   */
+  subagentCallbackClaim?: Readonly<{ turnIds: readonly string[] }>;
   /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
   systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
   userId: string;

@@ -422,8 +422,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         /** The sequence each compaction recorded after the run took, kept for a repeated write. */
         const detachedSequences = new Map<string, number>();
         // Effects of the branch's earlier calls that are still unknown. Only the user's own words count as them speaking, never
-        // a turn the server wrote: an approval continuation or a scheduled task's prompt.
-        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true;
+        // a turn the server wrote: an approval continuation, a scheduled task's prompt or a sub-agent wake-up turn, which the
+        // current message's own record tells (it may start behind a document or Workspace hand-off).
+        const currentServerTurn = await serverWrittenTurns(input.repository, { chatId: scope.chatId,
+          messageIds: [input.created.userMessageId], userId: input.userId });
+        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true ||
+          currentServerTurn.has(input.created.userMessageId);
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
@@ -437,7 +441,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const serverWritten = await serverWrittenTurns(input.repository, { chatId: scope.chatId, messageIds: laterTurns,
           userId: input.userId });
         const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
-        const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true ||
+        // A sub-agent's callback delivered into a turn is the server's, never the user speaking.
+        const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true && item.callback !== true ||
           (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
 
         let base = input.prepared.providerRequest;
@@ -655,17 +660,20 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await followupOps.load({ runId, userId: input.userId });
             const accepted = batch?.entries.filter((entry) => entry.delivery === "accepted") ?? [];
             if (!batch || accepted.length === 0) return [];
+            // Only the user's own follow-ups are their speech and link authority; a sub-agent's callback is untrusted data.
+            const fromUser = accepted.filter((entry) => entry.origin === undefined || entry.origin === "user");
             await answer.flush();
             if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: answer.text, revision: batch.revision, runId,
               userId: input.userId })) return [];
             followupRevision = batch.revision;
-            delivered.push(...accepted.map((entry) => entry.text));
-            unknownEffects.userSpoke();
+            delivered.push(...fromUser.map((entry) => entry.text));
+            if (fromUser.length > 0) unknownEffects.userSpoke();
             // The answer starts over after the user's follow-up, as the delivered record shows.
             answer.restart();
             sink.send({ data: { round: batch.revision }, type: "message_reset" });
             await chatUpdate();
-            return accepted.map((entry) => ({ followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
+            return accepted.map((entry) => ({ ...(entry.origin === "subagent_callback" ? { callback: true as const } : {}),
+              followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
           },
           maxToolRounds: budgets.maxToolRounds,
           prepareRequest: async ({ answerNow, reserved: reservedRound, toolChoice }: Readonly<{ answerNow?: true;

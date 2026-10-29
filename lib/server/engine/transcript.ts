@@ -64,6 +64,8 @@ export type TranscriptRequestAnchor = Readonly<{
 }>;
 
 export type TranscriptUserItem = Readonly<{
+  /** With `followup`: a background sub-agent's callback the server delivered into the turn, never the user's speech. */
+  callback?: true;
   /** A follow-up delivered into a running turn; it does not start a turn. */
   followup?: true;
   id: string;
