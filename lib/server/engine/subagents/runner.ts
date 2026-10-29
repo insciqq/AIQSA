@@ -35,6 +35,7 @@ import type {
   SubagentTurnInput
 } from "../../subagents/ports";
 import type { McpApprovalRequest } from "../../mcp/writeApproval";
+import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
 import type { ModelToolCall, RunTool } from "../../tools/types";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
 import { engineItemRules } from "../compaction";
@@ -130,6 +131,8 @@ export type SubagentHost = Readonly<{
   /** Saves a long result for a later read, as the parent does. */
   saveResult: ToolBatchDeps["saveResult"];
   secrets?: RunSecretSource;
+  /** Marks the turn as waiting for the user (its browser handoff) or running again; bookkeeping only. */
+  setTurnState?(input: Readonly<{ state: "running" | "waiting"; turnId: string }>): Promise<boolean>;
   /** Ends a turn's `SubagentTurn` row with its result. */
   settleTurn(input: Readonly<{ result: EndedSubagentCallResult; turnId: string }>): Promise<boolean>;
   /** Writes the run's usage records once more (a detached compaction's late usage). */
@@ -244,6 +247,25 @@ export function handedBackApproval(call: ModelToolCall, approval: McpApprovalReq
     reason: approval.guard ? "guard_refused" : "approval_required",
     serverName: boundLine(approval.serverName, SUBAGENT_LIMITS.approvalToolCharacters) || "MCP server",
     toolName: call.name
+  };
+}
+
+/** While a sub-agent waits in a browser handoff for the user, its turn is `waiting` (an active state), then `running` again. */
+function waitingDuringHandoff(registry: ToolRegistry, mark: (state: "running" | "waiting") => Promise<void>): ToolRegistry {
+  return {
+    ...registry,
+    resolve: (name) => {
+      const tool = registry.resolve(name);
+      if (!tool || name !== BROWSER_HANDOFF_TOOL_NAME) return tool;
+      return { ...tool, execute: async (execution) => {
+        await mark("waiting");
+        try {
+          return await tool.execute(execution);
+        } finally {
+          await mark("running");
+        }
+      } };
+    }
   };
 }
 
@@ -374,8 +396,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         const path = entry.file?.targetPath ?? entry.file?.displayPath;
         if (path && entry.kind !== "file_change") files.add(path);
       };
-      const registry = subagentToolRegistry(await host.buildRegistry({ agent,
-        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null);
+      const registry = waitingDuringHandoff(subagentToolRegistry(await host.buildRegistry({ agent,
+        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null),
+      (state) => host.setTurnState?.({ state, turnId: input.turnId }).then(() => undefined, () => undefined) ?? Promise.resolve());
       const runIds = [...new Set([...host.branchRunIds, input.hostRunId])];
       const loaded = await host.transcripts.loadRuns({ chatId: host.chatId, runIds, threadId: input.threadId, userId: host.userId });
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
