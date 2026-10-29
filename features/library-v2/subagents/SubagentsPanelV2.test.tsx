@@ -88,6 +88,21 @@ describe("Studio > Sub-agents", () => {
     expect(mutations().at(-1)).toEqual(["POST", "/api/me/subagents/def_1/restore", { expectedVersion: 2, revisionId: "rev_1" }]);
   });
 
+  it("offers no Undo after a save that changed nothing, so the previous real edit is never reversed", async () => {
+    const current = { ...VIEW, previousRevisionId: "rev_1", revisionId: "rev_2", revisionNumber: 2, version: 2 };
+    list = { ...list, definitions: [summary(current)] };
+    next["GET /api/me/subagents/def_1"] = () => Response.json({ definition: current });
+    next["PATCH /api/me/subagents/def_1"] = () => Response.json({ definition: current });
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit browser" }));
+    await screen.findByRole("form", { name: "Edit sub-agent browser" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/Saved “browser”/u)).toBeVisible();
+    expect(screen.getByText(/Nothing changed/u)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(calls.filter(([method, url]) => method === "POST" && url.endsWith("/restore"))).toEqual([]);
+  });
+
   it("shows the server's refusal and keeps the draft", async () => {
     render(<SubagentsPanelV2 />);
     fireEvent.click(await screen.findByRole("button", { name: "New sub-agent" }));
