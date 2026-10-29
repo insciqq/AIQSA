@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { normalizeTokenUsage } from "../../domain/usage";
-import { RUN_USAGE_ATTRIBUTION_PURPOSES } from "../../domain/usagePurpose";
+import { RUN_USAGE_ATTRIBUTION_PURPOSES, isChatModelUsagePurpose } from "../../domain/usagePurpose";
 import type { RunUsageAttribution } from "./runRepositoryContract";
 
 /**
@@ -29,7 +29,7 @@ export function runAttributionUsageRows(
       chatId: scope.chatId, operationCount: attribution.operationCount ?? null,
       cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens,
       // The rewrite re-reads its rows: a reported answer cost stays settled.
-      costReported: attribution.purpose === "chat_answer" && attribution.costReported === true,
+      costReported: isChatModelUsagePurpose(attribution.purpose) && attribution.costReported === true,
       estimatedCostMicros: attribution.estimatedCostMicros ?? null, inputTokens: usage.inputTokens,
       modelId: attribution.modelId, modelRunId: scope.runId, outputTokens: usage.outputTokens,
       provider: attribution.provider, providerModelId: attribution.providerModelId ?? null, purpose: attribution.purpose,

@@ -22,9 +22,10 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         // A retired Codex Agent turn's MCP calls never had displayable details.
         if (!run || record(run.normalizedRequest) && run.normalizedRequest.agent ||
           !await resolveChatAccess(tx, { chatId: run.chatId, userId: key.userId })) return null;
-        const call = await tx.modelRunToolCall.findUnique({ where: { modelRunId_roundIndex_ordinal: {
-          modelRunId: key.runId, roundIndex: key.roundIndex, ordinal: key.ordinal
-        } }, include: { observation: true, mcpRunBinding: true } });
+        // The main agent's call: a sub-agent thread numbers its own rounds (`ModelRunToolCall.subagentThreadId`).
+        const call = await tx.modelRunToolCall.findFirst({ where: {
+          modelRunId: key.runId, ordinal: key.ordinal, roundIndex: key.roundIndex, subagentThreadId: null
+        }, include: { observation: true, mcpRunBinding: true } });
         if (!call || call.workspaceRunBindingId || call.mcpRunBinding?.modelRunId !== run.id) return null;
         const identity = acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, call.mcpRunBinding.runtimeGenerationFingerprint);
         if (!identity || !await canReadAcceptedMcpCall(tx, { ...identity, userId: key.userId })) return null;
