@@ -187,10 +187,31 @@ describe("background sub-agent runs on PostgreSQL", () => {
     const view = decodeSubagentThreadView(await views.threadView({ chatId: f.chatId, threadId: thread.threadId, userId: f.userId }));
     expect(view?.turns[0]).toMatchObject({ brief: "Brief for shop", messages: [{ delivery: "delivered", text: "Check delivery too" }],
       mode: "background", state: "running" });
+    // The mailbox orders itself and never moves the run's follow-up revision, which a completing run's guard checks
+    // (`ModelRun_followup_completion_guard`), so a sub-agent that ends after a message still completes.
+    expect(await prisma.modelRun.findFirstOrThrow({ select: { followupRevision: true }, where: { subagentTurnId: turnId } }))
+      .toEqual({ followupRevision: 0 });
+    // A second message the sub-agent never reads before it ends.
+    expect(await background.deliver({ ...message, message: { ...message.message, nonce: "call-msg-2", text: "And returns" } }))
+      .toEqual({ kind: "delivered", state: "running" });
     runner.finish(turnId, endedSubagentResult("shop", { report: "Two shops" }));
     await expect.poll(async () => (await prisma.subagentTurn.findUniqueOrThrow({ where: { id: turnId } })).state).toBe("done");
+    expect(await prisma.modelRun.findFirstOrThrow({ select: { status: true }, where: { subagentTurnId: turnId } }))
+      .toEqual({ status: "complete" });
     expect(decodeSubagentThreadView(await views.threadView({ chatId: f.chatId, threadId: thread.threadId, userId: f.userId }))?.turns[0])
       .toMatchObject({ report: "Two shops", state: "done" });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("takes callbacks into an answer past the user's 32 follow-ups without using theirs up", async () => fixture(async (f) => {
+    const admitted = await store.admit(admission(f, await f.thread("late")));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    await store.settle({ chatId: f.chatId, result: endedSubagentResult("late"), turnId: admitted.turnId, userId: f.userId });
+    // As if the user's own follow-ups had used all 32 of their ordinals.
+    await prisma.modelRun.update({ data: { followupRevision: 32 }, where: { id: f.main.runId } });
+    expect(await store.deliverIntoRun({ chatId: f.chatId, runId: f.main.runId, turnId: admitted.turnId, userId: f.userId })).toBe("delivered");
+    expect(await prisma.runFollowup.findFirstOrThrow({ select: { ordinal: true }, where: { subagentTurnId: admitted.turnId } }))
+      .toEqual({ ordinal: 33 });
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
 

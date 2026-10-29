@@ -102,6 +102,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
+  subagentFollowupBoundsFixtureSql,
+  subagentFollowupBoundsProofSql
+} from "./subagent-followup-bounds-adoption";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
@@ -7924,6 +7929,9 @@ function main(
   // Tool limits go off for everyone, limits an administrator typed included; their numbers stay for turning them on.
   runForwardAdoptionProof(shadowDatabase, migrations, TOOL_LIMITS_OFF_MIGRATION,
     toolLimitsOffFixtureSql, toolLimitsOffProofSql, toolLimitsOffRepeatProofSql);
+  // Widen only: rows at the old follow-up bound stay, the widened bound holds, and the completion guard still refuses.
+  runForwardAdoptionProof(shadowDatabase, migrations, SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
+    subagentFollowupBoundsFixtureSql, subagentFollowupBoundsProofSql, subagentFollowupBoundsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

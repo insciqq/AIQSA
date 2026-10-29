@@ -1,4 +1,5 @@
 import { Prisma, type ModelRunStatus, type PrismaClient, type SubagentTurnState } from "@prisma/client";
+import { RUN_FOLLOWUP_MAX_COUNT } from "../../../contracts/runFollowups";
 import { RUN_INTERRUPTED_FAILURE } from "../../../contracts/runs";
 import {
   SUBAGENT_END_REASONS,
@@ -56,6 +57,14 @@ export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, ch
  */
 
 const ACTIVE_TURN_STATES: SubagentTurnState[] = ["running", "waiting"];
+
+/**
+ * A run's follow-up revision and ordinals take the user's own follow-ups and
+ * the sub-agent callbacks it receives, each within its own bound, so the
+ * callbacks never use up the user's (`20261030020000_subagent_background_runs`
+ * widens `ModelRun_followup_bounds` and `RunFollowup_bounds` to this).
+ */
+export const RUN_FOLLOWUP_REVISION_MAX = RUN_FOLLOWUP_MAX_COUNT + SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun;
 
 /** One turn as the control and the callbacks use it. */
 export type SubagentTurnRecord = Readonly<{
@@ -409,8 +418,8 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
     async insertMailbox({ chatId, nonce, runId, text, userId }) {
       return client.$transaction(async (tx): Promise<MailboxInsertOutcome> => {
         await lockRunSettlementScope(tx, runId);
-        const [run] = await tx.$queryRaw<Array<{ followupRevision: number; status: ModelRunStatus; subagentTurnId: string | null }>>`
-          SELECT "followupRevision", "status", "subagentTurnId" FROM "ModelRun"
+        const [run] = await tx.$queryRaw<Array<{ status: ModelRunStatus; subagentTurnId: string | null }>>`
+          SELECT "status", "subagentTurnId" FROM "ModelRun"
           WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR UPDATE`;
         if (!run?.subagentTurnId || !dispatchableModelRunStatuses.includes(run.status)) return "closed";
         const previous = await tx.runFollowup.findUnique({ select: { origin: true, text: true },
@@ -418,9 +427,11 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         if (previous) return previous.origin === "main_agent" && previous.text === text ? "exists" : "closed";
         const sent = await tx.runFollowup.count({ where: { modelRunId: runId, origin: "main_agent" } });
         if (sent >= SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun) return "full";
+        // Ordered by its own ordinals, never the run's follow-up revision: that revision is what an answer closes at, and a
+        // background run that ends with a message it never read must still settle (`ModelRun_followup_completion_guard`
+        // refuses completing a run whose revision moved while a follow-up is unread).
         await tx.runFollowup.create({ data: { authorName: "Main agent", chatId, modelRunId: runId, nonce,
-          ordinal: run.followupRevision + 1, origin: "main_agent", text } });
-        await tx.modelRun.update({ data: { followupRevision: { increment: 1 } }, where: { id: runId } });
+          ordinal: sent + 1, origin: "main_agent", text } });
         return "inserted";
       });
     },
@@ -482,7 +493,9 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
           FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR UPDATE`;
         // A scheduled occurrence's context stays as admission froze it: its callbacks wait for its end.
         if (!run || run.subagentTurnId !== null || run.scheduledTaskId !== null || !run.assistantMessageId || !run.followupMode ||
-          run.followupClosedAt || run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status)) return "closed";
+          run.followupClosedAt || run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status) ||
+          // The run's revision and ordinals hold the user's follow-ups and its callbacks (`ModelRun_followup_bounds`).
+          run.followupRevision >= RUN_FOLLOWUP_REVISION_MAX) return "closed";
         const chat = await tx.chat.findFirst({ select: { activeLeafMessageId: true },
           where: { id: chatId, permanentDeletionAt: null, userId } });
         if (!chat || chat.activeLeafMessageId !== run.assistantMessageId) return "closed";
