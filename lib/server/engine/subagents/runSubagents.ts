@@ -179,6 +179,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     runContextItems: input.runContextItems,
     saveResult: input.saveResult,
     ...(input.secrets ? { secrets: input.secrets } : {}),
+    setTurnState: ({ state, turnId }) => store.setActiveState({ chatId: input.chatId, state, turnId, userId: input.scope.userId }),
     settleTurn: ({ result, turnId }) => store.settle({ chatId: input.chatId, result, turnId, userId: input.scope.userId }),
     settleUsage: async () => { await input.usage.settle(); },
     signal: input.signal,

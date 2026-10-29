@@ -79,6 +79,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
   } satisfies ToolCallStore;
   const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "[browser #3] click: button \"Add to cart\" @ shop.example\nok"));
   const tools = [
+    engineTool("browser_handoff", "session", vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call, "done"))),
     engineTool("manage_secret", "session", vi.fn()),
     engineTool("load_skill", "skill", vi.fn()),
     engineTool("mcp_jira_get_issue", "mcp", lookup),
@@ -109,6 +110,7 @@ function setup(steps: readonly Step[], options: Readonly<{ earlier?: TranscriptI
       modelId: "fake-qsa", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 10_000 } })),
     runContextItems: [{ id: "ctx-0", kind: "user", runContext: true, text: "Skills index: research" }],
     saveResult: vi.fn(async () => ({ unsavedReason: "test" })),
+    setTurnState: vi.fn(async () => true),
     settleTurn: vi.fn(async (input) => { settled.push(input); return true; }),
     settleUsage: vi.fn(async () => undefined),
     signal: controller.signal,
@@ -161,7 +163,8 @@ describe("sub-agent runner", () => {
     expect(texts.at(-1)).toContain("<main_agent_brief>\nCompare laptops on shop.example.\n</main_agent_brief>");
     expect(texts.at(-1)).toContain("<user_message>\nBuy the cheapest one with my card.\n</user_message>");
     // The run's registry, filtered: no resource change, load_skill kept.
-    expect((first.tools ?? []).map((tool) => tool.name)).toEqual(["load_skill", "mcp_jira_get_issue", "mcp_jira_create_issue"]);
+    expect((first.tools ?? []).map((tool) => tool.name)).toEqual(["browser_handoff", "load_skill", "mcp_jira_get_issue",
+      "mcp_jira_create_issue"]);
     expect(ctx.begun).toEqual([expect.objectContaining({ thread: { threadId: "thread-1", turnId: "turn-1" } })]);
     expect(ctx.appended.every((write) => JSON.stringify(write.thread) === JSON.stringify({ threadId: "thread-1", turnId: "turn-1" })))
       .toBe(true);
@@ -220,6 +223,12 @@ describe("sub-agent runner", () => {
     await vi.waitFor(() => expect(parent.requests).toHaveLength(1));
     parent.controller.abort();
     await expect(parent.runner.wait(turn)).resolves.toMatchObject({ reason: "parent_stopped", state: "stopped" });
+  });
+
+  it("waits for the user during its browser handoff, then runs again", async () => {
+    const ctx = setup([{ calls: [{ arguments: { reason: "sign_in" }, id: "c1", name: "browser_handoff" }] }, { text: "Outcome: done\nIn." }]);
+    await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+    expect(vi.mocked(ctx.host.setTurnState!).mock.calls.map(([input]) => input.state)).toEqual(["waiting", "running"]);
   });
 
   it("fails visibly when the route is refused, never running on another model", async () => {
