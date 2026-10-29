@@ -2,7 +2,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
-import { workspaceRunOutputDirectory, workspaceSandboxName } from "@/lib/domain/workspace";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory, workspaceSandboxName } from "@/lib/domain/workspace";
+import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import { prisma } from "@/lib/server/prisma";
 import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "@/lib/contracts/subagents";
 import type { WorkspaceDetachInput, WorkspaceDetachResult } from "@/lib/server/subagents/ports";
@@ -23,9 +24,17 @@ import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { removeWorkspaceForDeletion } from "./removal";
 import { lockWorkspaceSession } from "./sessionOperation";
+import { namespacedWorkspaceToolName } from "./toolCatalog";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 const prefix = "workspace-attachment-test-";
+/** The pinned catalog's shape, as admission binds it (the binding's checks and `loadBinding` both require it). */
+const FIXTURE_TOOL_DEFINITIONS = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName) => ({
+  description: `Fixture ${originalName}`,
+  inputSchema: { type: "object" },
+  namespacedName: namespacedWorkspaceToolName(originalName),
+  originalName
+}));
 /** The coordinator's retirement is covered by its own tests; these cover the attachment rows and their races. */
 const retireNothing = async (_input: WorkspaceDetachInput): Promise<WorkspaceDetachResult> =>
   ({ interruptedRunIds: [], kind: "detached", remainingRuns: 0 });
@@ -51,7 +60,8 @@ async function chatFixture(subagents: number) {
   const bind = (modelRunId: string) => prisma.workspaceRunBinding.create({ data: {
     guestUsedAt: null, imageRef: config.imageRef, internetEnabled: false, mcpVersion: "0.6.16", modelRunId,
     outputDirectory: workspaceRunOutputDirectory(modelRunId), policyRevision: 1, runtimeVersion: "0.6.16",
-    toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: sessionId
+    toolCatalogHash: hashCanonicalMcpValue(FIXTURE_TOOL_DEFINITIONS), toolDefinitions: FIXTURE_TOOL_DEFINITIONS,
+    workspaceSessionId: sessionId
   } });
   const main = await run({ assistantMessageId: answer.id });
   await bind(main.id);
