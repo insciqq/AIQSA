@@ -58,7 +58,7 @@ import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
-import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
+import { workspaceAgentEnvironment, workspaceAgentId } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
@@ -66,7 +66,7 @@ import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { browserLiveMcpData, browserLivePollReply, WORKSPACE_BROWSER_LIVE_COMMAND, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
-import { parseWorkspaceAgentStopOutcome, WORKSPACE_AGENT_STOP_GUEST_SCRIPT, WORKSPACE_AGENT_STOP_TIMEOUT_MS,
+import { parseWorkspaceAgentStopOutcome, WORKSPACE_AGENT_STOP_GUEST_SCRIPT, WORKSPACE_AGENT_STOP_TIMEOUT_MS, WORKSPACE_UNATTRIBUTED_AGENT_ID, workspaceAgentLaunchArguments,
   workspaceAgentStopRequest, type WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
@@ -1324,6 +1324,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         argumentsWithIdentity.env = { ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment,
           ...(requested as Record<string, unknown> | undefined), ...invocation,
           ...(input.agent ? workspaceAgentEnvironment(input.agent) : {}) };
+        // Every command runs inside its agent's cgroup, so a run's end can stop exactly its processes.
+        Object.assign(argumentsWithIdentity, workspaceAgentLaunchArguments(input.originalName, argumentsWithIdentity,
+          input.agent ? workspaceAgentId(input.agent) : WORKSPACE_UNATTRIBUTED_AGENT_ID));
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {

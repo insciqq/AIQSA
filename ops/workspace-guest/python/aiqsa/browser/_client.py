@@ -79,6 +79,22 @@ def _host_environment(environ: Mapping[str, str]) -> Dict[str, str]:
     return env
 
 
+#: The cgroup every agent shares. The agent command that starts the host runs inside its agent's
+#: group, which that agent's stop kills whole (`lib/server/workspace/agentProcessGuest.ts`).
+SHARED_CGROUP = "/sys/fs/cgroup/aiqsa-shared"
+
+
+def _leave_agent_group() -> None:
+    """In the host before it runs: it and Chromium leave the starting agent's cgroup for the shared one."""
+    try:
+        os.makedirs(SHARED_CGROUP, exist_ok=True)
+        with open(os.path.join(SHARED_CGROUP, "cgroup.procs"), "w") as handle:
+            handle.write(str(os.getpid()))
+    except OSError:
+        # No cgroup v2 here: no agent group holds the host either, and agent stops are never proven.
+        pass
+
+
 def _start(run_dir: Path, socket_path: Path) -> None:
     python = _paths.python() or sys.executable
     status_path = run_dir / "host.status"
@@ -98,7 +114,7 @@ def _start(run_dir: Path, socket_path: Path) -> None:
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True, close_fds=True, cwd="/",
-                                   env=_host_environment(os.environ))
+                                   env=_host_environment(os.environ), preexec_fn=_leave_agent_group)
     except OSError as error:
         raise BrowserError("browser_start_failed", f"The browser host could not start ({error.strerror}).") from None
     finally:

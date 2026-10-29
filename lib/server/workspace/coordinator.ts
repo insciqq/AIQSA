@@ -79,6 +79,7 @@ import {
   workspaceActiveRunsWhere, workspaceRunAgentIds, workspaceRunHoldsOperation, type WorkspaceAttachedRun
 } from "./attachments";
 import type { WorkspaceDetachInput, WorkspaceDetachResult } from "../subagents/ports";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
 import { workspaceRunTools } from "./admission";
 import { retryWorkspaceExportStep } from "./exportRetry";
 import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./secrets/store";
@@ -120,6 +121,8 @@ export type WorkspaceExecutionBinding = Readonly<{
   operationAttached?: boolean;
   /** A background sub-agent run's thread: it shares the session, has no output obligations and no answer. */
   subagentThreadId?: string | null;
+  /** That thread's name, for the agent identity its commands carry. */
+  subagentName?: string | null;
   /** The user message the run answers; a sub-agent run's inputs come from its ancestry. */
   userMessageId?: string;
   policyRevision: number;
@@ -136,6 +139,13 @@ export type WorkspaceExecutionBinding = Readonly<{
   toolDefinitions: readonly WorkspaceBoundTool[];
   userId: string;
 }>;
+
+/** The agent a run's own commands run for: its background sub-agent thread, or the main agent. */
+function runAgent(binding: WorkspaceExecutionBinding): WorkspaceAgent {
+  return binding.subagentThreadId && binding.subagentName
+    ? { kind: "subagent", name: binding.subagentName, threadId: binding.subagentThreadId }
+    : { kind: "main" };
+}
 
 /** Whether the run holds guest authority under the binding's operation (shared by the chat's attached runs). */
 function runHoldsOperation(binding: WorkspaceExecutionBinding, runId: string): boolean {
@@ -428,6 +438,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         id: true,
         scheduledTaskId: true,
         subagentThreadId: true,
+        subagentTurn: { select: { thread: { select: { name: true } } } },
         subagentTurnId: true,
         userId: true,
         userMessageId: true,
@@ -477,6 +488,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       // A sub-agent run never publishes outputs (`finalize`), so nothing is ever recorded on its user message.
       assistantMessageId: run.assistantMessageId ?? run.userMessageId,
       operationAttached,
+      subagentName: subagent ? run.subagentTurn?.thread.name ?? null : null,
       subagentThreadId: subagent ? run.subagentThreadId : null,
       userMessageId: run.userMessageId,
       chatId: run.chatId,
@@ -1285,6 +1297,11 @@ export type WorkspaceCoordinator = Readonly<{
     workspace: NormalizedRunWorkspace;
   }>): Promise<void>;
   execute(input: Readonly<{
+    /**
+     * Who the command runs for: a foreground sub-agent turn's thread inside its parent's run. Absent: the run's own
+     * agent (`main`, or a background sub-agent run's thread). Its processes live in that agent's cgroup.
+     */
+    agent?: WorkspaceAgent;
     call: ModelToolCall;
     modelRunToolCallId: string;
     /** Receives client-safe activity entries in timeline order (lifecycle, then the running step). */
@@ -1894,7 +1911,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           // The run's admitted browser language and time zone ride in the same environment.
           const runEnvironment = purpose === "execution" ? { ...code?.environment, ...browserEnvironment } : {};
           await input.runtime.syncPersonalSecrets({
-            secrets, modelRunId: binding.runId,
+            secrets, modelRunId: binding.runId, agent: runAgent(binding),
             ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
             // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
             ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
@@ -2373,7 +2390,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const result = await this.settle({ outcome: execution === "unknown" ? "failed" : "completed", runId: modelRunId, userId });
       return { interruptedRunIds: result.interruptedRunIds ?? [], kind: "detached", remainingRuns: result.remainingRuns ?? 0 };
     },
-    async execute({ call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
+    async execute({ agent, call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
       return observeWorkspaceToolExecution(async () => {
         const initial = await requireBinding(runId, userId, workspace);
         const definitionByName = initial.toolDefinitions.find((tool) => tool.namespacedName === call.name);
@@ -2498,6 +2515,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           invocationId = await openInvocation(binding);
           const dispatch = (active: WorkspaceExecutionBinding) =>
             input.runtime.callBoundTool({
+              agent: agent ?? runAgent(active),
               arguments: call.arguments,
               ...(invocationId ? { invocationId } : {}),
               modelRunId: active.runId,

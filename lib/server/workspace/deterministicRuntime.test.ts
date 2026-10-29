@@ -539,6 +539,25 @@ describe("deterministic Workspace harness", () => {
 });
 
 describe("deterministic Workspace execution termination", () => {
+  it("stops one agent's executions, leaves another's, and proves nothing beside a command without an agent", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "0199aabc-12ef-7abc-8abc-0123456789c5";
+    const created = await runtime.ensureSession({ cpus: 2, diskMiB: 10_240, imageRef: config.imageRef, internetEnabled: false,
+      memoryMiB: 4_096, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId });
+    const start = (callId: string, agent?: { kind: "main" } | { kind: "subagent"; name: string; threadId: string }) => runtime.callBoundTool({
+      ...(agent ? { agent } : {}), arguments: { command: "sleep 30 && echo late > /workspace/project/late.txt" },
+      modelRunId: `run_${callId}`, modelRunToolCallId: callId, originalName: "sandbox_exec_start",
+      runtimeSandboxId: created.runtimeSandboxId, sessionId });
+    const scope = { runtimeSandboxId: created.runtimeSandboxId, sessionId };
+    await start("main_call", { kind: "main" });
+    const other = await start("thread_call", { kind: "subagent", name: "researcher", threadId: "thread-1" });
+    await expect(runtime.terminateAgentProcesses({ ...scope, agentId: "main" })).resolves.toEqual({ outcome: "closed" });
+    await expect(runtime.terminateExecutions({ ...scope, executions: [{ modelRunId: "run_thread_call", runtimeExecSessionId: other.execSessionId! }] }))
+      .resolves.toEqual([{ outcome: "closed", runtimeExecSessionId: other.execSessionId }]);
+    await start("unattributed_call");
+    await expect(runtime.terminateAgentProcesses({ ...scope, agentId: "thread-1" })).resolves.toEqual({ outcome: "unknown" });
+  });
+
   it("closes known executions, reports forgotten ones as unknown, and exposes exec ids", async () => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "0199aabc-12ef-7abc-8abc-0123456789b4";
