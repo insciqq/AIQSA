@@ -71,6 +71,21 @@ describe("page reader persistence reads", () => {
     expect(await operations.loadRunFetchUrlCalls({ runId: own.runId, userId: "someone-else" })).toEqual([]);
   });
 
+  it("lists the page reads of the run's sub-agents too: the cap is the answer's (integrator decision 2026-10-30)", async () => {
+    const own = await turn();
+    const read = (providerCallId: string) => ({ callId: providerCallId, content: [{ type: "json", value: {} }], name: "fetch_url",
+      status: "complete" });
+    await prisma.modelRunToolCall.createMany({ data: [
+      { arguments: { url: "https://news.example/today" }, modelRunId: own.runId, ordinal: 0, providerCallId: "main-read",
+        result: read("main-read"), roundIndex: 1, state: "complete", toolName: "fetch_url" },
+      // The same round and ordinal in a sub-agent's thread: its own keys, the same answer.
+      { arguments: { url: "https://news.example/today" }, modelRunId: own.runId, ordinal: 0, providerCallId: "thread-read",
+        result: read("thread-read"), roundIndex: 1, state: "complete", subagentThreadId: "thread-1", subagentTurnId: "turn-1",
+        toolName: "fetch_url" }
+    ] });
+    await expect(operations.loadRunFetchUrlCalls({ runId: own.runId, userId: own.userId })).resolves.toHaveLength(2);
+  });
+
   it("lists every page-reader call of the run in order, however many refusals precede a sent read", async () => {
     const own = await turn();
     const refusal = { callId: "refused", content: [{ type: "json", value: { error: "fetch_url_not_in_conversation" } }],
