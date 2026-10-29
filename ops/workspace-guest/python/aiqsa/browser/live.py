@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import signal
 import sys
@@ -181,13 +182,39 @@ async def run(source: TextIO, out: TextIO) -> int:
     return 0
 
 
-def main(argv: Optional[list] = None) -> None:
+def _restart_without_agent_environment(args: list) -> bool:
+    """Replace this process before the streamer starts so its start environment has no agent identity.
+
+    The process environment used to start a command remains visible as its start environment even after
+    ``os.environ.pop``. Re-exec makes the long-lived streamer itself start with the clean environment; the
+    selected agent still arrives in the live protocol messages.
+    """
+    environment = dict(os.environ)
+    for key in (_agents.AGENT_ID_ENV, _agents.AGENT_NAME_ENV):
+        environment.pop(key, None)
+    if environment == os.environ:
+        return False
+    command = [sys.executable]
+    if sys.flags.isolated:
+        command.append("-I")
+    command.extend(["-m", "aiqsa.browser.live", *args])
+    os.execve(sys.executable, command, environment)
+    return True  # pragma: no cover - execve replaces this process
+
+
+def start(argv: Optional[list] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if _restart_without_agent_environment(args):
+        return 0
     if len(args) == 2 and args[0] == _paths.TEST_ROOT_FLAG:
         _paths.use_test_root(args[1])
     elif args:
         sys.exit(2)
-    sys.exit(asyncio.run(run(sys.stdin, sys.stdout)))
+    return asyncio.run(run(sys.stdin, sys.stdout))
+
+
+def main(argv: Optional[list] = None) -> None:
+    sys.exit(start(argv))
 
 
 if __name__ == "__main__":
