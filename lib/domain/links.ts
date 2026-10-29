@@ -1,6 +1,7 @@
 const SAFE_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 /** Studio sections the AIQSA guide gives the agent as links (`lib/server/engine/prompts/selfService.ts`). */
-const STUDIO_SECTIONS = new Set(["artifacts", "assistants", "defaults", "files", "instructions", "mcp", "memory", "scheduled", "secrets", "skills"]);
+const STUDIO_SECTIONS = new Set(["artifacts", "assistants", "defaults", "files", "instructions", "mcp", "memory", "scheduled", "secrets", "skills",
+  "subagents"]);
 
 /** A Studio section address in this app (`/?library=<section>`, or one Assistant), else null. */
 export function studioHref(value: unknown): string | null {

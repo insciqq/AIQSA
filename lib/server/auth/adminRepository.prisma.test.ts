@@ -1479,6 +1479,22 @@ describe("Prisma-backed admin repository", () => {
     });
   });
 
+  it("blocks stale user deletion while the account owns custom sub-agents, like Skills and Assistants", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const owner = await createPasswordUser({
+        displayName: "Sub-agent Delete Block User",
+        domain,
+        emailLocalPart: "subagent-delete-block",
+        status: "disabled"
+      });
+      const definition = await prisma.subagentDefinition.create({ data: { name: "browser", ownerUserId: owner.id } });
+      await expect(repository.deleteStaleUser({ actingAdminUserId: adminId, userId: owner.id })).resolves.toBe("user_has_owned_data");
+      await expect(prisma.user.count({ where: { id: owner.id } })).resolves.toBe(1);
+      await prisma.subagentDefinition.delete({ where: { id: definition.id } });
+      await expect(repository.deleteStaleUser({ actingAdminUserId: adminId, userId: owner.id })).resolves.toBe("deleted");
+    });
+  });
+
   it("deletes only empty groups without active grants", async () => {
     await withAdminData(async ({ domain, repository }) => {
       const empty = await repository.createGroup({
