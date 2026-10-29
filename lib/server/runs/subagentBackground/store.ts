@@ -128,6 +128,8 @@ export type SubagentBackgroundStore = Readonly<{
   findThreadTurnOnBranch(input: SubagentChatScope & Readonly<{ name: string; parentRunId: string }>): Promise<SubagentTurnRecord | null>;
   /** Active turns of the chat: all, one thread's, or those of runs under a message's subtree. */
   activeTurns(input: SubagentChatScope & Readonly<{ threadId?: string; underMessageId?: string }>): Promise<readonly SubagentTurnRecord[]>;
+  /** The main-agent runs that answer, or start from, a message of the subtree under this one: whose sub-agents its deletion stops. */
+  runIdsUnderMessage(input: SubagentChatScope & Readonly<{ messageId: string }>): Promise<readonly string[]>;
   insertMailbox(input: SubagentChatScope & Readonly<{ nonce: string; runId: string; text: string }>): Promise<MailboxInsertOutcome>;
   markMailboxDelivered(input: SubagentChatScope & Readonly<{ nonce: string; runId: string }>): Promise<void>;
   owedCallbacks(input: SubagentChatScope): Promise<OwedCallbacks | null>;
@@ -394,6 +396,14 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
         ...(messageIds ? { parentRun: { OR: [{ userMessageId: { in: messageIds } }, { assistantMessageId: { in: messageIds } }] } } : {})
       } });
       return rows.map(turnRecord);
+    },
+
+    async runIdsUnderMessage({ chatId, messageId, userId }) {
+      const messageIds = await subtreeMessageIds(client, chatId, messageId);
+      if (messageIds.length === 0) return [];
+      const runs = await client.modelRun.findMany({ select: { id: true }, where: { chatId, subagentTurnId: null, userId,
+        OR: [{ userMessageId: { in: messageIds } }, { assistantMessageId: { in: messageIds } }] } });
+      return runs.map((run) => run.id);
     },
 
     async insertMailbox({ chatId, nonce, runId, text, userId }) {

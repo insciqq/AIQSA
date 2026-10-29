@@ -66,6 +66,8 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
   orphans: BackgroundOrphan[] = [];
   strandedInterrupts = 0;
   admitGate: (() => Promise<void>) | null = null;
+  /** Holds an admission before its row exists, as a transaction blocked before its insert would be. */
+  admitBeforeGate: (() => Promise<void>) | null = null;
   private sequence = 0;
 
   private record(turn: MemoryTurn): SubagentTurnRecord {
@@ -89,6 +91,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
   }
 
   async admit(input: SubagentAdmissionInput): Promise<SubagentAdmission> {
+    await this.admitBeforeGate?.();
     const active = this.turns.filter((turn) => turn.chatId === input.chatId && isActiveSubagentState(turn.state));
     if (active.some((turn) => turn.threadId === input.threadId)) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
     if (active.length >= SUBAGENT_LIMITS.runningPerChat) return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" };
@@ -126,6 +129,10 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     return this.turns.filter((turn) => turn.chatId === input.chatId && isActiveSubagentState(turn.state) &&
       (!input.threadId || turn.threadId === input.threadId) && (!input.underMessageId || turn.parentAnswerId === input.underMessageId))
       .map((turn) => this.record(turn));
+  }
+
+  async runIdsUnderMessage(input: SubagentChatScope & Readonly<{ messageId: string }>): Promise<readonly string[]> {
+    return input.messageId === "answer-1" ? ["parent-run"] : [];
   }
 
   async insertMailbox(input: SubagentChatScope & Readonly<{ nonce: string; runId: string; text: string }>): Promise<MailboxInsertOutcome> {
