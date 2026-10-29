@@ -72,16 +72,31 @@ export const useSubagentStore = create<SubagentStoreState>(initialState);
 let sequence = 0;
 /** Per chat: the sequence of the newest request whose result applied, or of the invalidation after it. */
 const appliedAt = new Map<string, number>();
+/**
+ * Per chat: the sequence of its latest branch switch (or removal). A thread
+ * view sent before it describes another branch and never applies.
+ */
+const invalidatedAt = new Map<string, number>();
 let viewApplied = 0;
-const viewControllers = new Set<AbortController>();
+/** Thread view requests in flight, with their chat. */
+const viewControllers = new Map<AbortController, string>();
 
 export function resetSubagentStoreForTest(): void {
   sequence = 0;
   appliedAt.clear();
+  invalidatedAt.clear();
   viewApplied = 0;
-  for (const controller of viewControllers) controller.abort();
+  for (const controller of viewControllers.keys()) controller.abort();
   viewControllers.clear();
   useSubagentStore.setState(initialState(), true);
+}
+
+function abortViewRequests(chatId?: string): void {
+  for (const [controller, owner] of viewControllers) {
+    if (chatId !== undefined && owner !== chatId) continue;
+    controller.abort();
+    viewControllers.delete(controller);
+  }
 }
 
 export function subagentThreadKey(target: SubagentThreadTarget): string {
@@ -181,32 +196,71 @@ export async function refreshChatSubagents(chatId: string, signal?: AbortSignal)
 
 /**
  * The chat's branch changed: results of requests already sent describe the
- * previous branch and are dropped; the rows refresh for the new one.
+ * previous branch and are dropped, the open thread view of the chat clears
+ * at once (its request is aborted), and both refresh for the branch now shown.
  */
 export function invalidateChatSubagents(chatId: string): Promise<void> {
-  appliedAt.set(chatId, nextSequence());
-  return refreshChatSubagents(chatId);
+  const at = nextSequence();
+  appliedAt.set(chatId, at);
+  invalidatedAt.set(chatId, at);
+  abortViewRequests(chatId);
+  const open = useSubagentStore.getState().openThread;
+  const reloads = [refreshChatSubagents(chatId)];
+  if (open?.chatId === chatId) {
+    useSubagentStore.setState({ view: { key: subagentThreadKey(open), status: "loading", view: null } });
+    reloads.push(refreshSubagentThreadView(open));
+  }
+  return Promise.all(reloads).then(() => undefined);
 }
 
-/** Loads or refreshes the open thread's view; a result for a thread no longer open is dropped. */
-export async function refreshSubagentThreadView(target: SubagentThreadTarget, options: Readonly<{ reset?: boolean }> = {}): Promise<void> {
+/**
+ * Forgets the sub-agents of chats that left the caller's chat list (archived,
+ * deleted, no longer theirs): their rows, errors and choices go, requests in
+ * flight for them are dropped, and nothing polls them any more.
+ */
+export function pruneSubagentChats(keep: ReadonlySet<string>): void {
+  const state = useSubagentStore.getState();
+  const gone = [...new Set([...Object.keys(state.chats), ...Object.keys(state.chatErrors), ...Object.keys(state.disclosure),
+    ...Object.keys(state.showAllEnded)])].filter((chatId) => !keep.has(chatId));
+  const openGone = state.openThread !== null && !keep.has(state.openThread.chatId);
+  if (gone.length === 0 && !openGone) return;
+  for (const chatId of gone) {
+    const at = nextSequence();
+    appliedAt.set(chatId, at);
+    invalidatedAt.set(chatId, at);
+    abortViewRequests(chatId);
+  }
+  const without = <T,>(record: Readonly<Record<string, T>>) =>
+    Object.fromEntries(Object.entries(record).filter(([chatId]) => keep.has(chatId))) as Record<string, T>;
+  if (openGone) abortViewRequests();
+  useSubagentStore.setState({
+    chatErrors: without(state.chatErrors),
+    chats: without(state.chats),
+    disclosure: without(state.disclosure),
+    showAllEnded: without(state.showAllEnded),
+    ...(openGone ? { openThread: null, view: null } : {})
+  });
+}
+
+/** Loads or refreshes the open thread's view; a result for a thread no longer open, or for another branch, is dropped. */
+export async function refreshSubagentThreadView(target: SubagentThreadTarget): Promise<void> {
   const key = subagentThreadKey(target);
   const at = nextSequence();
   const isCurrent = () => {
     const open = useSubagentStore.getState().openThread;
-    return open !== null && subagentThreadKey(open) === key;
+    return open !== null && subagentThreadKey(open) === key && at > (invalidatedAt.get(target.chatId) ?? 0);
   };
   if (!isCurrent()) return;
   useSubagentStore.setState((state) => {
-    const shown = state.view?.key === key && !options.reset ? state.view.view : null;
+    const shown = state.view?.key === key ? state.view.view : null;
     // A refresh keeps the shown view (and its error line) until it answers.
     return shown ? state : { view: { key, status: "loading", view: null } };
   });
   const controller = new AbortController();
-  viewControllers.add(controller);
+  viewControllers.set(controller, target.chatId);
   try {
     const view = await loadSubagentThread(target.chatId, target.threadId, controller.signal);
-    if (!isCurrent() || at <= viewApplied) return;
+    if (controller.signal.aborted || !isCurrent() || at <= viewApplied) return;
     viewApplied = at;
     useSubagentStore.setState({ view: { key, status: "ready", view } });
     mergeThread(target.chatId, view.thread);
@@ -229,8 +283,7 @@ export async function refreshSubagentThreadView(target: SubagentThreadTarget, op
 export function setOpenSubagentThread(target: SubagentThreadTarget | null): void {
   const current = useSubagentStore.getState().openThread;
   if (current === target || (current && target && subagentThreadKey(current) === subagentThreadKey(target))) return;
-  for (const controller of viewControllers) controller.abort();
-  viewControllers.clear();
+  abortViewRequests();
   useSubagentStore.setState({ openThread: target, view: null });
 }
 

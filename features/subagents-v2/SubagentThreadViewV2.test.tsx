@@ -7,7 +7,7 @@ import {
   subagentTurn,
   subagentView
 } from "@/tests/support/subagentViewFixtures";
-import { resetSubagentStoreForTest, setOpenSubagentThread, useSubagentStore } from "./subagentStore";
+import { invalidateChatSubagents, resetSubagentStoreForTest, setOpenSubagentThread, useSubagentStore } from "./subagentStore";
 import { SubagentThreadViewV2 } from "./SubagentThreadViewV2";
 
 const target = { chatId: "chat-a", threadId: "thread-researcher" };
@@ -15,7 +15,7 @@ const threadPath = "/api/chats/chat-a/subagents/thread-researcher";
 
 function renderView(onBack = vi.fn()) {
   act(() => setOpenSubagentThread(target));
-  return { onBack, view: render(<SubagentThreadViewV2 branchKey="leaf-1" target={target} onBack={onBack} />) };
+  return { onBack, view: render(<SubagentThreadViewV2 target={target} onBack={onBack} />) };
 }
 
 beforeEach(() => resetSubagentStoreForTest());
@@ -114,10 +114,12 @@ describe("sub-agent thread view", () => {
     vi.stubGlobal("fetch", subagentFetch([{ path: threadPath, respond: () => onBranch
       ? jsonResponse(subagentView("chat-a", subagentThread("thread-researcher", "done")))
       : jsonResponse({ error: "subagent_not_found" }, 404) }]).fetch);
-    const { onBack, view } = renderView();
+    renderView();
     expect(await screen.findByText("Found three laptops.")).toBeInTheDocument();
     onBranch = false;
-    view.rerender(<SubagentThreadViewV2 branchKey="leaf-2" target={target} onBack={onBack} />);
+    act(() => void invalidateChatSubagents("chat-a"));
+    // The previous branch's reply is gone at once, before the new answer.
+    expect(screen.queryByText("Found three laptops.")).toBeNull();
     expect(await screen.findByText(/This sub-agent is not available here/u)).toBeInTheDocument();
     expect(screen.queryByText("Found three laptops.")).toBeNull();
     expect(useSubagentStore.getState().view?.status).toBe("unavailable");

@@ -1752,7 +1752,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ) : null}
             {subagentThread ? (
               <SubagentThreadViewV2
-                branchKey={activeChatSummary?.activeLeafMessageId ?? null}
                 target={subagentThread}
                 onBack={closeSubagentThread}
               />
