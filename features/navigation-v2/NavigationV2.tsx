@@ -24,7 +24,6 @@ import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell"
 import { useAnnouncements } from "@/components/announcements/AnnouncementsProvider";
 import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./chatMenuActions";
 import { RailV2, type RailSectionV2 } from "./RailV2";
-import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 import {
   clearChatNavigationSearch,
   loadChatMessageMatches,
@@ -1380,8 +1379,6 @@ export function ReadingRoomShellV2({
 }: ReadingRoomShellV2Props) {
   const announcements = useAnnouncements();
   const announcementHintId = useId();
-  const adminAttention = adminAttentionIndicator(useAdminAttentionSummary(navigationOwnerProps.adminEntryVisible === true));
-  const adminAttentionHintId = useId();
   const { onNewChat } = navigationOwnerProps;
   const [composition, setComposition] = useState<SidebarCompositionV2>("desktop");
   const [compactExpanded, setCompactExpanded] = useState(false);
@@ -1713,9 +1710,9 @@ export function ReadingRoomShellV2({
     />
   );
 
-  // On phones the rail is hidden: the drawer toggle carries the hints of the entries inside it.
+  // On phones the rail is hidden: the drawer toggle carries the unread-announcements hint. Control Center
+  // attention gets no dot there, only the count in the account menu (operator decision 2026-10-29).
   const unreadAnnouncementsHint = composition === "mobile" && Boolean(announcements && announcements.unreadCount > 0);
-  const mobileAdminAttention = composition === "mobile" ? adminAttention : null;
 
   return (
     <div
@@ -1763,19 +1760,12 @@ export function ReadingRoomShellV2({
         inert={drawerOpen ? true : undefined}
       >
         {unreadAnnouncementsHint ? <span id={announcementHintId} className="sr-only">Unread announcements</span> : null}
-        {mobileAdminAttention ? <span id={adminAttentionHintId} className="sr-only">Control Center: {mobileAdminAttention.label}</span> : null}
         <UiV2IconButton
           ref={openButtonRef}
-          className={mobileAdminAttention || unreadAnnouncementsHint
-            ? `relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:ring-2 before:ring-answer-paper before:content-[''] ${
-              mobileAdminAttention?.severity === "bad" ? "before:bg-critical" : mobileAdminAttention ? "before:bg-caution" : "before:bg-proof"
-            }`
+          className={unreadAnnouncementsHint
+            ? "relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:ring-2 before:ring-answer-paper before:bg-proof before:content-['']"
             : undefined}
-          aria-describedby={[
-            ...(unreadAnnouncementsHint ? [announcementHintId] : []),
-            ...(mobileAdminAttention ? [adminAttentionHintId] : [])
-          ].join(" ") || undefined}
-          data-admin-attention={mobileAdminAttention?.severity}
+          aria-describedby={unreadAnnouncementsHint ? announcementHintId : undefined}
           data-announcements-unread={unreadAnnouncementsHint || undefined}
           icon={composition === "mobile" ? "menu" : "panel"}
           label="Open sidebar"

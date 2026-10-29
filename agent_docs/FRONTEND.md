@@ -52,7 +52,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 ## Interaction and visual intent
 
 - No page-wide horizontal overflow; code, tables and math wrap or scroll locally. Respect safe areas and software keyboards; the composer never covers the last answer.
-- On a phone the header islands float over the thread unbanded; jump-to-latest floats centred above the composer, may cover text and hides while scrolling (operator decision 2026-10-29).
+- On a phone, header islands float unbanded; jump-to-latest centres above the composer, may cover text, hides while scrolling; no Control Center dot (operator decision 2026-10-29).
 - A sent question moves to the top of the thread, and the space below a short answer is only what that placement needs: the end of the thread is that view, never a blank screen, and another chat never inherits it. Opening or closing part of an answer keeps the control under the pointer and stops following the tail (operator report 2026-10-20).
 - Primary actions work without hover or precise dragging. Modals trap focus, handle Escape with nested confirmations first, and restore focus. Keyboard submission respects IME composition. WCAG certification is deferred, but labels, keyboard and touch access, focus safety and reduced motion are required.
 - Streaming never animates layout. Busy controls keep their labels and reject duplicate submission.

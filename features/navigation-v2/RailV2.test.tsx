@@ -45,12 +45,15 @@ describe("Control Center attention badge", () => {
     expect(within(menuEntry!).getByTestId("admin-attention-count")).toHaveTextContent("3");
   });
 
-  it("shows a warning dot on the drawer account row, the only entry on phones", () => {
-    attentionSummary.current = summary(0, 1);
+  it("keeps the drawer account row, the only entry on phones, plain and counts in its menu", () => {
+    attentionSummary.current = summary(1, 1);
     render(<AccountMenuV2 accountId="admin-1" accountLabel="admin@example.test" adminEntryVisible />);
     const trigger = screen.getByRole("button", { name: "Account menu" });
-    expect(within(trigger).getByTestId("admin-attention-dot")).toHaveAttribute("data-severity", "warn");
-    expect(trigger).toHaveAccessibleDescription("Control Center: 1 item needs attention");
+    expect(within(trigger).queryByTestId("admin-attention-dot")).toBeNull();
+    expect(trigger).not.toHaveAttribute("aria-describedby");
+    fireEvent.click(trigger);
+    const entry = screen.getByRole("link", { name: "Control Center, 2 items need attention" });
+    expect(within(entry).getByTestId("admin-attention-count")).toHaveTextContent("2");
   });
 
   it("stays plain when nothing needs attention", () => {
