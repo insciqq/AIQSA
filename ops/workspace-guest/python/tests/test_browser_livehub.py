@@ -99,6 +99,8 @@ class AgentHost:
         self.crashed = False
         self.saved: List[str] = []
         self.selected: List[str] = []
+        #: Agents whose tab the hub marked as used, in order.
+        self.touched: List[str] = []
 
     def add(self, agent: str, name: Optional[str], url: str, title: str, acted: int = 0) -> FakePage:
         page = FakePage(url, title)
@@ -114,7 +116,8 @@ class AgentHost:
     def live_targets(self) -> List[_livehub.Target]:
         return [_livehub.Target(agent, self.names[agent], self.tabs[agent], self.locks[agent], self.acted[agent],
                                 cdp={self.tabs[agent]: self.sessions[self.tabs[agent]]}, hidden=self.hidden_by[agent],
-                                env_hidden=_format.HiddenValues(), masked=self.masked_by[agent], steps=self.steps_by[agent])
+                                env_hidden=_format.HiddenValues(), masked=self.masked_by[agent], steps=self.steps_by[agent],
+                                touch=lambda agent=agent: self.touched.append(agent))
                 for agent in self.order]
 
     def select_live_agent(self, agent: str) -> None:
@@ -407,6 +410,31 @@ class PerAgentTests(unittest.TestCase):
             await asyncio.sleep(0.05)
             self.assertNotIn("t_shop", hub.agents)
             self.assertEqual([entry["agent"] for entry in view.last("agents")["agents"]], ["main", "t_amazon"])
+            await view.close()
+            await hub.close()
+        run(scenario())
+
+
+class HeldByUserTests(unittest.TestCase):
+    """The host's idle expiry asks whether the user holds an agent's tab, and the user's work there counts as its use."""
+
+    def test_an_agent_is_held_while_the_user_controls_it_or_its_handoff_waits(self) -> None:
+        async def scenario() -> None:
+            host, hub = PerAgentTests.three()
+            view = await View(hub).open()
+            self.assertFalse(hub.agent_held_by_user("t_shop"))
+            self.assertFalse(hub.agent_held_by_user("t_never_seen"))
+            self.assertTrue((await view.ask({"t": "handoff", "action": "begin", "agent": "t_shop"}))["ok"])
+            self.assertTrue((await view.ask({"t": "control", "action": "take", "agent": "t_amazon"}))["ok"])
+            self.assertEqual([hub.agent_held_by_user(agent) for agent in ("main", "t_amazon", "t_shop")], [False, True, True])
+            self.assertTrue((await view.ask({"t": "input", "agent": "t_amazon", "input": {"kind": "text", "text": "x"}}))["ok"])
+            self.assertTrue((await view.ask({"t": "control", "action": "return", "agent": "t_amazon"}))["ok"])
+            self.assertFalse(hub.agent_held_by_user("t_amazon"))
+            self.assertTrue(hub.agent_held_by_user("t_shop"))
+            await view.ask({"t": "handoff", "action": "end", "agent": "t_shop", "outcome": "timed_out"})
+            self.assertFalse(hub.agent_held_by_user("t_shop"))
+            # Each request the user made through an agent's tab counted as that agent's use, and only that agent's.
+            self.assertEqual(host.touched, ["t_shop", "t_amazon", "t_amazon", "t_amazon", "t_shop"])
             await view.close()
             await hub.close()
         run(scenario())
