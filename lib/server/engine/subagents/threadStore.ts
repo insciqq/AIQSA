@@ -10,6 +10,7 @@ import { dispatchableModelRunStatuses, json } from "../../runs/prismaRepositoryS
 import type { SubagentBinding } from "../../subagents/ports";
 import type { TranscriptItem } from "../transcript";
 import { decodeTranscriptItem } from "../transcriptCodec";
+import { attemptRecordedAt, durableAttemptTimes } from "../transcriptRepository";
 
 /**
  * Sub-agent threads and turns of a chat (`SubagentThread`, `SubagentTurn`).
@@ -91,7 +92,7 @@ const turnSelect = {
 } as const;
 const threadSelect = { anchorRunId: true, definitionId: true, id: true, name: true, typeName: true } as const;
 
-type StoreClient = Pick<PrismaClient, "$transaction" | "runTranscriptItem" | "subagentThread" | "subagentTurn">;
+type StoreClient = Pick<PrismaClient, "$transaction" | "modelRunToolCall" | "runTranscriptItem" | "subagentThread" | "subagentTurn">;
 
 /** Runs one fence read takes: a branch longer than this is beyond any context window (`TRANSCRIPT_LOAD_RUN_LIMIT`). */
 const EFFECT_RUN_LIMIT = 2_000;
@@ -259,11 +260,19 @@ export function createSubagentThreadStore(client: StoreClient) {
         where: { chatId: input.chatId, kind: { in: ["tool_call", "tool_result"] }, modelRunId: { in: runIds },
           subagentThreadId: { not: null }, userId: input.userId }
       });
+      // A call without a result is fenced from its durable attempt, as the main agent's are (`durableAttemptTimes`).
+      const attempts = new Map<string, ReadonlyMap<string, Date>>();
+      for (const threadId of new Set(rows.flatMap((row) => row.subagentThreadId ? [row.subagentThreadId] : []))) {
+        attempts.set(threadId, await durableAttemptTimes(client, { callIds: rows.flatMap((row) => row.subagentThreadId === threadId &&
+          row.kind === "tool_call" && row.callId ? [row.callId] : []), runIds, threadId }));
+      }
       const lists = new Map<string, TranscriptItem[]>();
       for (const row of rows) {
         const key = `${row.modelRunId}\n${row.subagentThreadId ?? ""}`;
         const item = decodeTranscriptItem(row);
-        const recorded = item.kind === "tool_call" || item.kind === "tool_result" ? { ...item, recordedAt: row.createdAt } : item;
+        const recorded = item.kind === "tool_call"
+          ? { ...item, recordedAt: attemptRecordedAt(row, attempts.get(row.subagentThreadId ?? "") ?? new Map()) }
+          : item.kind === "tool_result" ? { ...item, recordedAt: row.createdAt } : item;
         lists.set(key, [...lists.get(key) ?? [], recorded]);
       }
       return runIds.flatMap((runId) => [...lists].filter(([key]) => key.startsWith(`${runId}\n`)).map(([, items]) => items));

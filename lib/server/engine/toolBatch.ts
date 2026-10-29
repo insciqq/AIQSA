@@ -428,7 +428,10 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     }
     let approval = before.retry?.approval ?? tool.approval?.(call);
     const approvalAfter = before.retry?.approvalAfter;
-    const approvedBy = before.retry?.approvedBy ?? (input.approved?.callId === call.id ? input.approved.approvalId : undefined) ?? (!before.retry && approval ? tool.approvedBy : undefined);
+    // The decision admission named (`tool.approvedBy`) counts for an unknown-outcome retry too: the exact-call match and
+    // `approvalAfter` still refuse a stale or different decision, so a fresh Always allow on the retry card is honoured.
+    const approvedBy = before.retry?.approvedBy ?? (input.approved?.callId === call.id ? input.approved.approvalId : undefined) ??
+      (approval ? tool.approvedBy : undefined);
     const humanApproved = approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
       userId: deps.userId, approval, approvalAfter, approvedBy });
     if (!before.retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);

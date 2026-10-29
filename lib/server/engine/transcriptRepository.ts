@@ -55,6 +55,40 @@ const unknownOldCoreCall = {
   OR: [{ state: "running" as const }, { result: { equals: "unknown", path: ["outcome"] }, state: "error" as const }]
 };
 
+/**
+ * When each of these calls was last attempted, by run and provider call id:
+ * the latest of its `ModelRunToolCall` rows' start and end (the dispatch, or
+ * the run's ending that closed it). A round's call items are recorded before
+ * its batch runs, so a call queued behind slower ones was sent later than its
+ * item says; an unknown effect without a result is fenced from the durable
+ * attempt, never from the model's response (`unknownEffects.ts`).
+ */
+export async function durableAttemptTimes(client: Pick<PrismaClient, "modelRunToolCall">, input: Readonly<{
+  callIds: readonly string[]; runIds: readonly string[]; threadId: string | null;
+}>): Promise<ReadonlyMap<string, Date>> {
+  const callIds = [...new Set(input.callIds)];
+  if (callIds.length === 0 || input.runIds.length === 0) return new Map();
+  const rows = await client.modelRunToolCall.findMany({
+    select: { completedAt: true, modelRunId: true, providerCallId: true, startedAt: true },
+    where: { modelRunId: { in: [...new Set(input.runIds)] }, providerCallId: { in: callIds }, subagentThreadId: input.threadId }
+  });
+  const times = new Map<string, Date>();
+  for (const row of rows) {
+    const key = `${row.modelRunId}\n${row.providerCallId}`;
+    for (const at of [row.startedAt, row.completedAt]) {
+      if (at && at.getTime() > (times.get(key)?.getTime() ?? Number.NEGATIVE_INFINITY)) times.set(key, at);
+    }
+  }
+  return times;
+}
+
+/** A call item's fence time: its durable attempt when later than the item's own record. */
+export function attemptRecordedAt(row: Readonly<{ callId: string | null; createdAt: Date; modelRunId: string }>,
+  attempts: ReadonlyMap<string, Date>): Date {
+  const attempt = row.callId ? attempts.get(`${row.modelRunId}\n${row.callId}`) : undefined;
+  return attempt && attempt.getTime() > row.createdAt.getTime() ? attempt : row.createdAt;
+}
+
 /** Runs one transcript load may read: a branch longer than this is beyond any context window. */
 export const TRANSCRIPT_LOAD_RUN_LIMIT = 2_000;
 
@@ -128,10 +162,12 @@ export function createTranscriptRepository(client: TranscriptClient) {
         select: { body: true, callId: true, createdAt: true, id: true, kind: true, modelRunId: true },
         where: { chatId: input.chatId, modelRunId: { in: runIds }, subagentThreadId: input.threadId ?? null, userId: input.userId }
       });
+      const attempts = await durableAttemptTimes(client, { callIds: rows.flatMap((row) => row.kind === "tool_call" && row.callId
+        ? [row.callId] : []), runIds, threadId: input.threadId ?? null });
       for (const row of rows) {
         const item = decodeTranscriptItem(row);
         loaded.get(row.modelRunId)?.push(item.kind === "tool_call" || item.kind === "tool_result"
-          ? { ...item, recordedAt: row.createdAt } : item);
+          ? { ...item, recordedAt: item.kind === "tool_call" ? attemptRecordedAt(row, attempts) : row.createdAt } : item);
       }
       return loaded;
     },
