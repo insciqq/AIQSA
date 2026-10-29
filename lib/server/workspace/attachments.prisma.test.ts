@@ -7,11 +7,15 @@ import { prisma } from "@/lib/server/prisma";
 import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "@/lib/contracts/subagents";
 import type { WorkspaceDetachInput, WorkspaceDetachResult } from "@/lib/server/subagents/ports";
 import {
+  bindSubagentRunWorkspace,
   closeWorkspaceRunOperation,
   createPrismaWorkspaceAttachments,
   currentWorkspaceAttachments,
+  evictOtherWorkspaceAttachments,
   joinWorkspaceRunOperation,
-  workspaceRunHoldsOperation
+  workspaceActiveRunsWhere,
+  workspaceRunHoldsOperation,
+  workspaceSubagentRunsAttached
 } from "./attachments";
 import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
@@ -140,6 +144,73 @@ describe("Workspace attachments on PostgreSQL", () => {
           .toEqual([f.main.id, f.background[0]!.runId].sort());
       }
     }
+  });
+
+  it("fences every run that joined before a stop's eviction, and lets none join after it", async () => {
+    const immediate = createPrismaWorkspaceAttachments({ prisma, retire: retireNothing, waitMs: 0 });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const f = await chatFixture(2);
+      expect(await attachments.attach({ agent: { kind: "main" }, chatId: f.chatId, modelRunId: f.main.id, userId: f.userId }))
+        .toMatchObject({ kind: "attached" });
+      expect(await attachments.attach(f.subagentAttachment(0))).toMatchObject({ kind: "attached" });
+      const held = await sessionRow(f.sessionId);
+      const evict = () => prisma.$transaction((tx) => evictOtherWorkspaceAttachments(tx, { generation: held.version,
+        owner: held.operationOwner!, runId: f.main.id, sessionId: f.sessionId }));
+      const late = () => immediate.attach(f.subagentAttachment(1));
+      const [evicted, joined] = attempt % 2 === 0 ? await Promise.all([evict(), late()])
+        : await Promise.all([late(), evict()]).then(([result, ids]) => [ids, result] as const);
+      // Whoever joined before the eviction is in the set the stop ends; nobody joins the closing operation after it.
+      expect(evicted).toContain(f.background[0]!.runId);
+      if (joined.kind === "attached") expect(evicted).toContain(f.background[1]!.runId);
+      else expect(joined).toEqual({ code: "workspace_busy", kind: "refused" });
+      const session = await sessionRow(f.sessionId);
+      expect(session.operationExpiresAt).not.toBeNull();
+      expect((await currentWorkspaceAttachments(prisma, session)).map((run) => run.modelRunId)).toEqual([f.main.id]);
+    }
+  });
+
+  it("never counts an ended run as attached, nor joins a generation only ended runs hold", async () => {
+    const f = await chatFixture(1);
+    expect(await attachments.attach(f.subagentAttachment(0))).toMatchObject({ kind: "attached" });
+    expect(await workspaceSubagentRunsAttached(prisma, f.chatId)).toBe(true);
+    // Recovery ended the sub-agent run without detaching it.
+    await prisma.modelRun.update({ data: { status: "error" }, where: { id: f.background[0]!.runId } });
+    expect(await workspaceSubagentRunsAttached(prisma, f.chatId)).toBe(false);
+    expect(await prisma.modelRun.count({ where: { ...workspaceActiveRunsWhere(f.chatId), subagentTurnId: { not: null } } })).toBe(0);
+    // The main agent's next message does not join the dead generation.
+    expect(await prisma.$transaction(async (tx) => joinWorkspaceRunOperation(tx, (await lockWorkspaceSession(tx, f.sessionId))!, f.main.id)))
+      .toBe(false);
+  });
+
+  it("retires an unused run's operation when only ended runs are attached beside it", async () => {
+    const f = await chatFixture(1);
+    expect(await attachments.attach({ agent: { kind: "main" }, chatId: f.chatId, modelRunId: f.main.id, userId: f.userId }))
+      .toMatchObject({ kind: "attached" });
+    expect(await attachments.attach(f.subagentAttachment(0))).toMatchObject({ kind: "attached" });
+    await prisma.modelRun.update({ data: { status: "error" }, where: { id: f.background[0]!.runId } });
+    const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+    const binding = (await repository.binding({ runId: f.main.id, userId: f.userId }))!;
+    expect(await repository.retireUnusedRun(binding)).toBe(true);
+    expect(await sessionRow(f.sessionId)).toMatchObject({ operationOwner: null });
+    expect(await prisma.workspaceRunAttachment.count({ where: { chatId: f.chatId } })).toBe(0);
+  });
+
+  it("binds a background run to its parent's admitted Workspace with its own output folder", async () => {
+    const f = await chatFixture(0);
+    const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: f.main.id, ordinal: 9,
+      providerCallId: "call-bind", roundIndex: 0, toolName: "call_subagent" } });
+    const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.main.id, chatId: f.chatId, name: "writer", userId: f.userId } });
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "background", modelId: "fake-qsa",
+      parentRunId: f.main.id, parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId: f.userId } });
+    const run = await prisma.modelRun.create({ data: { chatId: f.chatId, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+      status: "streaming", subagentThreadId: thread.id, subagentTurnId: turn.id, userId: f.userId,
+      userMessageId: f.main.userMessageId } });
+    expect(await prisma.$transaction((tx) => bindSubagentRunWorkspace(tx, { browserSessionSequence: null, parentRunId: f.main.id,
+      runId: run.id }))).toBe(true);
+    const bound = await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } });
+    expect(bound).toMatchObject({ exportState: "COMPLETE", outputDirectory: workspaceRunOutputDirectory(run.id),
+      workspaceSessionId: f.sessionId });
+    expect(bound.outputDirectory).not.toBe(workspaceRunOutputDirectory(f.main.id));
   });
 
   it("refuses Workspace removal while an attached run is active, and takes over the operation once it stopped", async () => {

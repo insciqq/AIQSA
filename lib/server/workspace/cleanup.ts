@@ -193,6 +193,11 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   // the idle TTL.
   const registry = createPrismaWorkspaceExecutionRegistry(input.prisma);
   const staleSessionBefore = new Date(now.getTime() - SESSION_BACKSTOP_STALE_MS);
+  // A run that ended without detaching (a crash, a recovery that only ended it) never counts as attached: its row
+  // goes once the run is stale, so idle stop, the backstop below, Reset and continuation are not held by it.
+  await input.prisma.workspaceRunAttachment.deleteMany({ where: { modelRun: {
+    status: { notIn: ["preparing", "queued", "in_progress", "streaming"] }, updatedAt: { lte: staleSessionBefore }
+  } } }).catch(retainDatabaseFailure);
   const staleSessions = await input.prisma.$queryRaw<SessionCandidate[]>(Prisma.sql`
     SELECT ws."id", ws."chatId", ws."sandboxName", ws."runtimeSandboxId"
     FROM "WorkspaceSession" ws

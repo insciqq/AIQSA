@@ -7,7 +7,7 @@ import type { WorkspaceAttachedRun } from "./attachments";
 import { getWorkspaceConfig } from "./config";
 import { createWorkspaceCoordinator, type WorkspaceCoordinatorRepository, type WorkspaceExecutionBinding } from "./coordinator";
 import { workspaceSyncCleanupId, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
-import type { WorkspaceBoundTool, WorkspaceRuntime } from "./runtime";
+import { WorkspaceRuntimeError, type WorkspaceBoundTool, type WorkspaceRuntime } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
@@ -36,7 +36,8 @@ function workspaceOf(runId: string): NormalizedRunWorkspace {
 function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "absent" }> = {}) {
   const attached = new Set([MAIN, SUBAGENT]);
   let operationOwner: string | null = `run:${MAIN}`;
-  const operationGeneration = 3;
+  let operationGeneration = 3;
+  let exportPending = false;
   const settled: string[] = [];
   const detached: Array<Readonly<{ runId: string; stopProven: boolean }>> = [];
   const binding = (runId: string): WorkspaceExecutionBinding => ({
@@ -72,33 +73,44 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
         : [];
     },
     binding: async ({ runId }) => binding(runId),
-    claimExport: async () => ({ status: "busy" }),
+    // The main run's capture while the sub-agent stays attached: leased on its binding under the shared operation.
+    claimExport: async (request) => ({ operation: request.operation, status: "claimed", token: "lease_token_1" }),
     claimExportForRecovery: async () => ({ status: "busy" }),
     detachRun: vi.fn(async ({ binding: current, stopProven }) => {
       if (!attached.delete(current.runId)) return false;
       detached.push({ runId: current.runId, stopProven });
       return true;
     }),
+    evictAttachedRuns: vi.fn(async ({ binding: current }) => {
+      const others = [...attached].filter((runId) => runId !== current.runId);
+      for (const runId of others) attached.delete(runId);
+      return others;
+    }),
     exportRecoveryCandidates: async () => [],
     generatedFiles: async () => [],
-    markExportComplete: async () => false,
+    markExportComplete: async () => { exportPending = true; return true; },
     markExportFailed: async () => false,
-    markExportPending: async () => false,
+    markExportPending: async () => { exportPending = true; return true; },
     markGuestUsed: async () => true,
     markSessionFailed: async () => undefined,
-    markSessionLost: async () => null,
+    // Only the run that found the loss keeps its attachment, under the next generation.
+    markSessionLost: vi.fn(async ({ operation, runId }) => {
+      operationGeneration = operation.generation + 1;
+      for (const attachedRun of [...attached]) if (attachedRun !== runId) attached.delete(attachedRun);
+      return { generation: operationGeneration, owner: operation.owner };
+    }),
     markSessionReady: async () => undefined,
     markSessionRunning: async () => true,
     markSessionStarting: async () => true,
-    outputHandoffReady: async () => false,
+    outputHandoffReady: async () => exportPending && (operationOwner === null || !attached.has(MAIN)),
     personalSecrets: async () => [],
     prepareOutput: async () => false,
-    renewExportLease: async () => false,
-    reserveOutputCapture: async () => null,
+    renewExportLease: async () => true,
+    reserveOutputCapture: async () => ({ create: true, id: "c".repeat(32), outputs: null }),
     retireUnusedRun: async () => false,
     runAgentIds: async ({ runId }) => runId === SUBAGENT ? [THREAD] : ["main"],
     saveBrowserSessions: vi.fn(async () => null),
-    sealOutputCapture: async () => false,
+    sealOutputCapture: async () => true,
     settleOutput: async () => { throw new Error("unused"); },
     settleSession: vi.fn(async ({ outcome }) => {
       settled.push(outcome);
@@ -185,6 +197,38 @@ describe("a Workspace session shared by attached runs", () => {
     expect(f.settled).toEqual(["stopped"]);
     expect(f.interrupted).toHaveBeenCalledWith({ chatId: "chat_1", runIds: [MAIN], userId: "user_1" });
     expect(f.detached).toEqual([]);
+  });
+
+  it("fences the other runs before a shared export's unproven stop, and ends them before the VM resumes", async () => {
+    const f = sharedFixture({ agentStop: "unknown" });
+    await expect(f.coordinator.handoff({ runId: MAIN, userId: "user_1", workspace: workspaceOf(MAIN) })).resolves.toEqual({ status: "ready" });
+    const order = (mock: { mock: { invocationCallOrder: number[] } }) => mock.mock.invocationCallOrder;
+    const evicted = order(vi.mocked(f.repository.evictAttachedRuns!))[0]!;
+    const interrupted = order(f.interrupted)[0]!;
+    const stopped = order(vi.mocked(f.runtime.stopSession))[0]!;
+    const resumed = order(vi.mocked(f.runtime.ensureSession)).at(-1)!;
+    expect(f.interrupted).toHaveBeenCalledWith({ chatId: "chat_1", runIds: [SUBAGENT], userId: "user_1" });
+    // No join or dispatch under the stop: the sub-agent lost its authority first, and ended before execution resumed.
+    expect(evicted).toBeLessThan(interrupted);
+    expect(interrupted).toBeLessThan(stopped);
+    expect(stopped).toBeLessThan(resumed);
+    expect(f.attached.has(SUBAGENT)).toBe(false);
+    expect(vi.mocked(f.runtime.collectOutputs).mock.invocationCallOrder[0]).toBeGreaterThan(resumed);
+  });
+
+  it("lets only the run that found a lost disk go on, and ends the others instead of starting them over empty", async () => {
+    const f = sharedFixture();
+    vi.mocked(f.runtime.callBoundTool).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_session_lost_before_dispatch"));
+    await expect(f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id: "lost", name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: "stored-lost", runId: SUBAGENT, userId: "user_1", workspace: workspaceOf(MAIN)
+    })).resolves.toMatchObject({ status: "complete" });
+    expect(f.repository.markSessionLost).toHaveBeenCalledWith(expect.objectContaining({ runId: SUBAGENT }));
+    expect(f.interrupted).toHaveBeenCalledWith({ chatId: "chat_1", runIds: [MAIN], userId: "user_1" });
+    await expect(f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id: "after", name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: "stored-after", runId: MAIN, userId: "user_1", workspace: workspaceOf(MAIN)
+    })).rejects.toMatchObject({ code: "workspace_operation_stale" });
   });
 
   it("never settles the shared operation for a run that is no longer attached", async () => {
