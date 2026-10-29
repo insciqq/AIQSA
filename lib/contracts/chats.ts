@@ -349,6 +349,8 @@ export type ThreadToolActivityCall = {
   subagent?: SubagentActivityRef;
   /** A call a sub-agent made inside this answer (a foreground turn): shown nested under its `call_subagent` step. */
   subagentThreadId?: string;
+  /** With `subagentThreadId`: the turn that made the call, matching that step's `subagent.turnId`. */
+  subagentTurnId?: string;
   toolName: string;
 };
 
@@ -1204,7 +1206,10 @@ export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | n
     if (candidate.approvalRequired !== undefined && (candidate.approvalRequired !== true || candidate.origin !== "mcp" ||
       status !== "error")) return null;
     const subagent = candidate.subagent === undefined ? undefined : decodeSubagentActivityRef(candidate.subagent);
-    if (subagent === null || (candidate.subagentThreadId !== undefined && !isSubagentIdentifier(candidate.subagentThreadId))) return null;
+    if (subagent === null || (candidate.subagentThreadId !== undefined && !isSubagentIdentifier(candidate.subagentThreadId)) ||
+      (candidate.subagentTurnId !== undefined && (candidate.subagentThreadId === undefined || !isSubagentIdentifier(candidate.subagentTurnId)))) {
+      return null;
+    }
     let mcpUnavailable: ThreadMcpUnavailableServer[] | undefined;
     if (candidate.mcpUnavailable !== undefined) {
       if (candidate.origin !== "discovery" || !Array.isArray(candidate.mcpUnavailable) ||
@@ -1245,6 +1250,7 @@ export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | n
       status,
       ...(subagent ? { subagent } : {}),
       ...(typeof candidate.subagentThreadId === "string" ? { subagentThreadId: candidate.subagentThreadId } : {}),
+      ...(typeof candidate.subagentTurnId === "string" ? { subagentTurnId: candidate.subagentTurnId } : {}),
       toolName
     });
   }

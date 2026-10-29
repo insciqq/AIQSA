@@ -11,6 +11,7 @@ import {
   isSubagentTurnOnBranch,
   normalizeSubagentName,
   projectSubagentThreadState,
+  subagentCallbackNonce,
   subagentCallbackOwed
 } from "./subagents";
 
@@ -66,6 +67,13 @@ describe("sub-agent states", () => {
     // A regenerated sibling answer and a run without an answer are off the branch.
     expect(isSubagentTurnOnBranch("answer-2b", branch)).toBe(false);
     expect(isSubagentTurnOnBranch(null, branch)).toBe(false);
+  });
+
+  it("gives each turn's callback follow-up one nonce within the follow-up store's bound", () => {
+    const nonce = subagentCallbackNonce("8b5a4f0e-1c2d-4e5f-9a0b-1c2d3e4f5a6b");
+    expect(nonce).toBe("subagent-callback:8b5a4f0e-1c2d-4e5f-9a0b-1c2d3e4f5a6b");
+    expect(nonce.length).toBeLessThanOrEqual(128);
+    expect(subagentCallbackNonce("turn-1")).not.toBe(subagentCallbackNonce("turn-2"));
   });
 
   it("owes a callback only for an ended background turn nobody received", () => {
@@ -139,6 +147,8 @@ describe("sub-agent vocabularies", () => {
   it("decodes the sub-agent reference of an answer's call row", () => {
     const ref = { mode: "background", name: "shop-amazon", threadId: "8b5a4f0e-1c2d-4e5f-9a0b-1c2d3e4f5a6b" };
     expect(decodeSubagentActivityRef(ref)).toEqual(ref);
+    expect(decodeSubagentActivityRef({ ...ref, turnId: "turn-1" })).toEqual({ ...ref, turnId: "turn-1" });
+    expect(decodeSubagentActivityRef({ ...ref, turnId: "a b" })).toBeNull();
     expect(decodeSubagentActivityRef({ ...ref, mode: "later" })).toBeNull();
     expect(decodeSubagentActivityRef({ ...ref, threadId: "../x" })).toBeNull();
     expect(decodeSubagentActivityRef({ ...ref, brief: "secret" })).toBeNull();

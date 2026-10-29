@@ -25,6 +25,7 @@ import {
   type SubagentTurnHandle,
   type SubagentTurnInput,
   type SubagentTypeEntry,
+  type SubagentTypeLookup,
   type SubagentTypeResolution,
   type SubagentTypeResolver,
   type SubagentTypeSnapshot,
@@ -216,8 +217,9 @@ export class FakeSubagentTypeResolver implements SubagentTypeResolver {
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  async resolve(input: Readonly<{ name: string; userId: string }>): Promise<SubagentTypeResolution> {
-    const type = (this.types[input.userId] ?? []).find((candidate) => candidate.name === input.name);
+  async resolve(input: SubagentTypeLookup): Promise<SubagentTypeResolution> {
+    const type = (this.types[input.userId] ?? []).find((candidate) =>
+      "definitionId" in input ? candidate.definitionId === input.definitionId : candidate.name === input.name);
     return type ? { kind: "found", type } : { kind: "unavailable" };
   }
 }
