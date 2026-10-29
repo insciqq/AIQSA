@@ -32,6 +32,18 @@ describe("an answer's steps with a foreground sub-agent", () => {
     expect(activity?.warning).toBeUndefined();
   });
 
+  it("offers MCP details only for the main agent's calls, whose round and ordinal name them", () => {
+    const normalizedRequest = { mcp: {
+      servers: [{ fingerprint: "fingerprint-fixture", revisionId: "revision-fixture", serverId: "server-fixture" }],
+      tools: [{ namespacedName: "mcp_search_fixture", originalName: "search", serverId: "server-fixture", serverName: "Repository Tools" }]
+    } };
+    const mcp = { mcpRunBinding: { runtimeGenerationFingerprint: "fingerprint-fixture" }, ordinal: 3, roundIndex: 2 };
+    const activity = summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest, status: "complete", userId: "user",
+      toolCalls: [call("mcp_search_fixture", mcp),
+        call("mcp_search_fixture", { ...mcp, subagentThreadId: "thread-1", subagentTurnId: "turn-1" })] }, "user");
+    expect(activity?.calls.map((entry) => entry.details)).toEqual([{ ordinal: 3, roundIndex: 2 }, undefined]);
+  });
+
   it("is a shape the chat wire decodes", () => {
     const activity = summarizeMessageRunToolActivity({ errorPayload: null, normalizedRequest: {}, status: "complete", userId: "user",
       toolCalls: [call("call_subagent", { subagentTurns: [{ id: "turn-1", mode: "foreground", thread: { id: "thread-1", name: "shop" } }] }),
