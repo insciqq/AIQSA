@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { nativeUsageRowId } from "../lib/server/engine/runStore";
 import {
-  BROWSER_SCENARIOS, BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, SAUCEDEMO_LOGIN_VALUES, blockedCodes, canonicalPageKey,
-  chatRoute, checkBrowserResult, cleanUpRun, frameToClientPoint, openRouterTextModel, textChatCapabilities, handoffOutcome, median, parseBrowserResult, priceValue,
-  requireBrowserScenarioStand, resultShapeErrors, runBounds, saucedemoUsernameFramePoint, scenarioSummary, selectedScenarios,
-  toolCallStats, urlOnDomain, usageEvidence,
+  BROWSER_SCENARIOS, BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, S6_CATEGORIES, SAUCEDEMO_LOGIN_VALUES, amazonProductKey, blockedCodes,
+  boundsExpectation, canonicalPageKey, chatRoute, checkBrowserResult, cleanUpRun, costEstimates, engineUsageRowId, euroAmount,
+  frameToClientPoint, openRouterTextModel, textChatCapabilities, handoffOutcome, median, parseBrowserResult, priceValue, ratingValue,
+  requestSeries, requireBrowserScenarioStand, resultShapeErrors, reviewCount, runBounds, saucedemoUsernameFramePoint, scenarioSummary,
+  selectedScenarios, seriesStats, toolCallStats, unexpectedBounds, urlOnDomain, usageEvidence,
   type BrowserScenarioStand, type RunRecord
 } from "./browser-scenarios-support";
 
@@ -323,7 +325,10 @@ describe("selection and evidence", () => {
   it("selects scenarios in canonical order and refuses unknown or repeated ids", () => {
     expect(selectedScenarios(undefined)).toEqual(["S1", "S2", "S3", "S4", "S5"]);
     expect(selectedScenarios("s3, S1")).toEqual(["S1", "S3"]);
-    expect(() => selectedScenarios("S6")).toThrow("browser_scenarios_scenarios_invalid");
+    expect(selectedScenarios("S6")).toEqual(["S6"]);
+    expect(selectedScenarios("S1")).toEqual(["S1"]);
+    expect(selectedScenarios("s6,s1")).toEqual(["S1", "S6"]);
+    expect(() => selectedScenarios("S7")).toThrow("browser_scenarios_scenarios_invalid");
     expect(() => selectedScenarios("S1,S1")).toThrow("browser_scenarios_scenarios_invalid");
   });
 
@@ -382,10 +387,205 @@ describe("selection and evidence", () => {
       run({ blocked: ["bot_wall", "captcha"], success: true, rounds: 6, outputTokens: null }),
       run({ scenario: "S2", success: true })
     ]);
-    expect(summary).toEqual({ blocked: { bot_wall: 2, captcha: 1 }, costKnownRuns: 0, costUsdTotal: null, inputTokensTotal: 2_000,
-      medianRounds: 4, medianToolCalls: 8, medianWallSeconds: 80.1, outputTokensTotal: null, runs: 2, scenario: "S1", successes: 1 });
+    expect(summary).toMatchObject({ blocked: { bot_wall: 2, captcha: 1 }, compactionsTotal: null, costEstimates: null, costKnownRuns: 0,
+      costUsdTotal: null, inputTokensTotal: 2_000, medianRounds: 4, medianToolCalls: 8, medianWallSeconds: 80.1, outputTokensTotal: null,
+      runs: 2, scenario: "S1", successes: 1 });
+    expect(summary.runsDetail.map((row) => [row.rounds, row.success, row.costEstimates === null])).toEqual([[2, false, false], [6, true, true]]);
     expect(scenarioSummary("S2", [run({ costUsd: 0.25, scenario: "S2" }), run({ costUsd: 0.5, scenario: "S2" })]).costUsdTotal).toBe(0.75);
     expect(median([3, 1, 2])).toBe(2);
     expect(median([])).toBeNull();
+  });
+});
+
+describe("S6 long shopping task", () => {
+  type Entry = Record<string, unknown>;
+  type S6Fixture = { blocked: string[]; cart: { lines: Entry[]; subtotal: unknown };
+    categories: { candidates: Entry[]; category: string; chosen: Entry }[]; status: string };
+  const asin = (category: number, index: number) => `B0S6C${category}N${index}XX`;
+  const result = (): S6Fixture => ({
+    blocked: [],
+    cart: {
+      lines: S6_CATEGORIES.map((category, c) => ({ category, line_total: 1.5 + c, name: `${category} 0`, quantity: 1,
+        url: `https://www.amazon.es/dp/${asin(c, 0)}` })),
+      subtotal: 17.5
+    },
+    categories: S6_CATEGORIES.map((category, c) => ({
+      candidates: [0, 1, 2].map((index) => ({ name: `${category} ${index}`, price: 1.5 + c + index / 10, rating: 4.2,
+        reviews: 100 + index, url: `https://www.amazon.es/Some-Product/dp/${asin(c, index)}/ref=sr_1_${index}?th=1` })),
+      category,
+      chosen: { reason: "Lowest price per kilo among well-rated options.", url: `https://www.amazon.es/dp/${asin(c, 0)}` }
+    })),
+    status: "completed"
+  });
+  const check = (value: unknown) => checkBrowserResult(BROWSER_SCENARIOS.S6, value as Record<string, unknown>);
+
+  it("passes 15 candidates, one reasoned choice per category and a cart of exactly those five", () => {
+    expect(check(result())).toEqual({ counts: { candidates: 15, cartLines: 5, categories: 5, chosen: 5, distinctCandidates: 15,
+      matchedLines: 5, pricedLines: 5, subtotalMatches: 1 }, failed: [] });
+  });
+
+  it("tolerates currency formatting, decimal commas, string counts and a cart line known only by its name", () => {
+    const value = result();
+    value.cart.lines = value.cart.lines.map((line, index) => ({ ...line,
+      line_total: `${(line.line_total as number).toFixed(2).replace(".", ",")} €`, quantity: "1", ...(index === 0 ? { url: undefined } : {}) }));
+    value.cart.subtotal = "17,50 €";
+    value.categories[0]!.candidates = value.categories[0]!.candidates.map((candidate) => ({ ...candidate, price: "1,50 €", rating: "4,2",
+      reviews: "1.234" }));
+    expect(check(value).failed).toEqual([]);
+    // A cent of rounding per line is accepted, more is not.
+    expect(check({ ...value, cart: { ...value.cart, subtotal: 17.54 } }).failed).toEqual([]);
+  });
+
+  it("fails a missing category", () => {
+    const value = result();
+    value.categories = value.categories.filter((group) => group.category !== "coffee");
+    expect(check(value).failed).toEqual(["category_missing_coffee", "candidates_lt_15", "cart_line_mismatch"]);
+    expect(check({ ...result(), categories: [...result().categories, result().categories[0]] }).failed).toEqual(["category_repeated_juice"]);
+  });
+
+  it("counts only amazon.es product pages with price, rating and review count", () => {
+    for (const change of [{ url: "https://www.amazon.com/dp/B0S6C0N1XX" }, { url: "https://www.amazon.es/s?k=zumo" },
+      { url: "https://amazon.es.evil.invalid/dp/B0S6C0N1XX" }, { rating: null }, { reviews: 0 }, { price: "gratis" }]) {
+      const value = result();
+      value.categories[0]!.candidates[1] = { ...value.categories[0]!.candidates[1]!, ...change };
+      expect(check(value).failed).toEqual(["candidates_lt_3_juice", "candidates_lt_15"]);
+    }
+    const repeated = result();
+    repeated.categories[1]!.candidates[2] = { ...repeated.categories[1]!.candidates[2]!, url: repeated.categories[0]!.candidates[2]!.url };
+    expect(check(repeated).failed).toEqual(["candidates_lt_15"]);
+  });
+
+  it("needs each choice to be one of its category's candidates, with a reason", () => {
+    const outside = result();
+    outside.categories[2]!.chosen = { ...outside.categories[2]!.chosen, url: "https://www.amazon.es/dp/B0OTHER000" };
+    expect(check(outside).failed).toEqual(["chosen_not_candidate_frozen_la_sirena", "cart_line_mismatch"]);
+    const unexplained = result();
+    unexplained.categories[3]!.chosen = { ...unexplained.categories[3]!.chosen, reason: " " };
+    expect(check(unexplained).failed).toEqual(["chosen_reason_missing_coffee", "cart_line_mismatch"]);
+  });
+
+  it("fails cart lines that do not match the chosen products one to one", () => {
+    const other = result();
+    other.cart.lines[4] = { ...other.cart.lines[4]!, name: "cereal 1", url: `https://www.amazon.es/dp/${asin(4, 1)}` };
+    expect(check(other).failed).toEqual(["cart_line_mismatch"]);
+    const twice = result();
+    twice.cart.lines[1] = { ...twice.cart.lines[0]! };
+    twice.cart.subtotal = 1.5 * 2 + 3.5 + 4.5 + 5.5;
+    expect(check(twice).failed).toEqual(["cart_line_mismatch"]);
+    const short = result();
+    short.cart.lines = short.cart.lines.slice(0, 4);
+    short.cart.subtotal = 12;
+    expect(check(short).failed).toEqual(["cart_lines_not_5", "cart_line_mismatch"]);
+    const doubled = result();
+    doubled.cart.lines[0] = { ...doubled.cart.lines[0]!, quantity: 2 };
+    expect(check(doubled).failed).toEqual(["cart_quantity_not_1"]);
+  });
+
+  it("fails a subtotal inconsistent with the lines", () => {
+    expect(check({ ...result(), cart: { ...result().cart, subtotal: 17.6 } }).failed).toEqual(["cart_subtotal_mismatch"]);
+    expect(check({ ...result(), cart: { ...result().cart, subtotal: undefined } }).failed).toEqual(["cart_subtotal_invalid"]);
+    const unpriced = result();
+    unpriced.cart.lines[2] = { ...unpriced.cart.lines[2]!, line_total: "n/a" };
+    expect(check(unpriced).failed).toEqual(["cart_line_price_invalid"]);
+  });
+
+  it("fails with a stable reason when the agent reports a bot wall", () => {
+    expect(check({ blocked: ["bot_wall"], cart: { lines: [] }, categories: [], status: "blocked" }).failed).toEqual([
+      ...S6_CATEGORIES.map((category) => `category_missing_${category}`), "candidates_lt_15", "cart_lines_not_5",
+      "cart_line_price_invalid", "cart_subtotal_invalid", "blocked_reported"]);
+    expect(check({ ...result(), blocked: ["captcha"] }).failed).toEqual(["blocked_reported"]);
+  });
+
+  it("checks the result shape first", () => {
+    expect(check({ blocked: [], cart: { lines: [] }, status: "completed" }).failed).toEqual(["result_categories_invalid"]);
+    expect(check({ blocked: [], categories: [], status: "completed" }).failed).toEqual(["result_cart_invalid"]);
+  });
+
+  it("asks for every category, the result fields and a guest cart without checkout", () => {
+    const prompt = BROWSER_SCENARIOS.S6.prompt;
+    for (const key of [...S6_CATEGORIES, "amazon.es", "rating", "reviews", "chosen", "subtotal", "не входи", "Корзину не оформляй"]) {
+      expect(prompt).toContain(key);
+    }
+  });
+
+  it("reads euro amounts, ratings, review counts and product keys as pages show them", () => {
+    expect(euroAmount("12,34 €")).toBe(12.34);
+    expect(euroAmount("€ 1.234,56")).toBe(1234.56);
+    expect(euroAmount("1,234.56 EUR")).toBe(1234.56);
+    expect(euroAmount("12.3")).toBe(12.3);
+    expect(euroAmount("1.234")).toBe(1234);
+    expect(euroAmount(3)).toBe(3);
+    expect(euroAmount("12,345,6")).toBeNull();
+    expect(euroAmount("0,00 €")).toBeNull();
+    expect(ratingValue("4,5")).toBe(4.5);
+    expect(ratingValue(5.5)).toBeNull();
+    expect(reviewCount("1.234")).toBe(1234);
+    expect(reviewCount(12.5)).toBeNull();
+    expect(amazonProductKey("https://www.amazon.es/x/dp/b0abcdef12?th=1")).toBe("amazon.es/dp/B0ABCDEF12");
+    expect(amazonProductKey("https://www.amazon.es/s?k=cafe")).toBeNull();
+  });
+});
+
+describe("per-request input series", () => {
+  const runId = "8f9b5a52-3f39-4a8e-9f3c-1f0c9d1e2a77";
+
+  it("derives the engine's own usage row ids", () => {
+    for (const index of [0, 1, 17]) expect(engineUsageRowId(runId, index)).toBe(nativeUsageRowId(runId, String(index)));
+  });
+
+  it("orders the run's model requests by their ledger index and leaves out Search and other writers' rows", () => {
+    const row = (index: number, inputTokens: number | null, purpose = "chat_answer") =>
+      ({ cachedInputTokens: 10 as number | null, id: engineUsageRowId(runId, index), inputTokens, purpose });
+    const rows = [row(3, 400), row(0, 100), row(2, null, "web_search"), row(1, 250),
+      { cachedInputTokens: null, id: "0e1c1d1a-0000-4000-8000-000000000000", inputTokens: 999, purpose: "chat_vision" }];
+    expect(requestSeries(runId, rows)).toEqual({ cachedInputTokens: 30, inputSeries: [100, 250, 400], otherRows: 1 });
+    expect(requestSeries(runId, [row(0, 100), { ...row(1, 200), cachedInputTokens: null }]).cachedInputTokens).toBeNull();
+    expect(requestSeries(runId, [])).toEqual({ cachedInputTokens: null, inputSeries: [], otherRows: 0 });
+  });
+
+  it("summarizes the series with min, median, max and a least-squares slope per request", () => {
+    expect(seriesStats([100, 200, 300, 400])).toEqual({ max: 400, median: 250, min: 100, reported: 4, requests: 4, slopePerRequest: 100 });
+    // A compaction drops the context; the slope is the fitted growth over the whole series.
+    expect(seriesStats([1_000, 5_000, 9_000, 2_000]).slopePerRequest).toBe(700);
+    expect(seriesStats([100, null, 300])).toEqual({ max: 300, median: 200, min: 100, reported: 2, requests: 3, slopePerRequest: 100 });
+    expect(seriesStats([5])).toEqual({ max: 5, median: 5, min: 5, reported: 1, requests: 1, slopePerRequest: null });
+    expect(seriesStats([])).toEqual({ max: null, median: null, min: null, reported: 0, requests: 0, slopePerRequest: null });
+  });
+
+  it("estimates cost at both list prices, with and without an 85% cache hit", () => {
+    expect(costEstimates(1_000_000, 100_000)).toEqual({
+      budget: { cached85: 0.0735, noCache: 0.15 },
+      frontier: { cached85: 2.94, noCache: 6 }
+    });
+    expect(costEstimates(null, 10)).toBeNull();
+    expect(costEstimates(10, null)).toBeNull();
+  });
+
+  it("carries compactions and per-run rows into the scenario summary", () => {
+    const run = (overrides: Partial<RunRecord>): RunRecord => ({ blocked: [], compactions: 1, costUsd: null, inputTokens: 1_000_000,
+      outputTokens: 100_000, rounds: 200, scenario: "S6", success: true, toolCalls: 250, wallSeconds: 1_800, ...overrides });
+    const summary = scenarioSummary("S6", [run({ run: 1 }), run({ compactions: 2, run: 2, requestStats: seriesStats([100, 200]) })]);
+    expect(summary).toMatchObject({ compactionsTotal: 3, costEstimates: { frontier: { cached85: 5.88, noCache: 12 } },
+      inputTokensTotal: 2_000_000, outputTokensTotal: 200_000 });
+    expect(summary.runsDetail).toEqual([
+      expect.objectContaining({ compactions: 1, requestStats: null, run: 1 }),
+      expect.objectContaining({ compactions: 2, costEstimates: costEstimates(1_000_000, 100_000),
+        requestStats: expect.objectContaining({ slopePerRequest: 100 }), run: 2 })
+    ]);
+    expect(scenarioSummary("S6", [run({ compactions: null })]).compactionsTotal).toBeNull();
+  });
+});
+
+describe("expected bounds", () => {
+  it("only records bounds by default and demands the shipped unlimited defaults when asked", () => {
+    expect(boundsExpectation(undefined)).toBe("any");
+    expect(boundsExpectation(" unlimited ")).toBe("unlimited");
+    expect(() => boundsExpectation("strict")).toThrow("browser_scenarios_expect_bounds_invalid");
+    const unlimited = { maxToolCalls: "none", maxToolRounds: "none", turnTimeoutSeconds: 3_600 } as const;
+    expect(unexpectedBounds(unlimited, "unlimited")).toEqual([]);
+    expect(unexpectedBounds({ maxToolCalls: 320, maxToolRounds: 160, turnTimeoutSeconds: 1_800 }, "unlimited"))
+      .toEqual(["tool_calls_limited", "tool_rounds_limited", "turn_timeout_not_3600"]);
+    expect(unexpectedBounds({ ...unlimited, turnTimeoutSeconds: "none" }, "unlimited")).toEqual(["turn_timeout_not_3600"]);
+    expect(unexpectedBounds({ maxToolCalls: 320, maxToolRounds: 160, turnTimeoutSeconds: 1_800 }, "any")).toEqual([]);
   });
 });
