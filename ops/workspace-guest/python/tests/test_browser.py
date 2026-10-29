@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 import asyncio
-import contextvars
 import json
 import os
 import re
@@ -427,10 +426,21 @@ class HostLeaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, _host.BROWSER_BUSY_CODE)
         state = host._states["thread-0"]
         state.tabs = [_HostPage("https://example/")]
-        pending = asyncio.create_task(host.release_agent(state.agent_id))
-        await asyncio.sleep(0)
-        self.assertTrue(state.slot)
-        await pending
+        closing, finish_close = asyncio.Event(), asyncio.Event()
+
+        async def close() -> None:
+            closing.set()
+            await finish_close.wait()
+            state.tabs[0].closed = True
+
+        with mock.patch.object(state.tabs[0], "close", side_effect=close):
+            pending = asyncio.create_task(host.release_agent(state.agent_id))
+            try:
+                await asyncio.wait_for(closing.wait(), 1)
+                self.assertTrue(state.slot)
+            finally:
+                finish_close.set()
+                await pending
         self.assertFalse(state.slot)
         self.assertTrue(state.tabs[0].closed)
 
@@ -557,18 +567,9 @@ class _HostDownload:
 
 
 def _bare_host() -> Any:
-    host = _host.Host.__new__(_host.Host)
-    host._states = {}
-    host._pages = {}
-    host._setups = {}
-    host._page_creation_lock = asyncio.Lock()
-    host._pending_page_owner = None
-    host._agent_context = contextvars.ContextVar("test_browser_agent", default=None)
-    host._selected_agent_id = "main"
-    host.browser_lock = asyncio.Lock()
-    host.slot_condition = asyncio.Condition()
-    host.live = type("Live", (), {"agent_held_by_user": lambda _self, _agent: False})()
-    return host
+    # Construction does no I/O; only start() launches Playwright. Use the real
+    # initializer so these fixtures keep the same locks and lifecycle as the host.
+    return _host.Host({})
 
 
 
