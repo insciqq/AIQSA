@@ -4,7 +4,7 @@ import { resolveAcceptedRunReasoningEffort } from "../../../domain/runParams";
 import { parameterControlsForModel } from "../../../domain/catalog";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderRunRequest } from "../../providers/types";
-import { paramsWithReasoningEffort, parentSubagentRoute } from "./modelRoutes";
+import { modelEffortOptions, paramsWithReasoningEffort, parentSubagentRoute } from "./modelRoutes";
 
 const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), stream: vi.fn() as never };
 const snapshot = { connection: { responseTimeoutMs: 300_000 }, connectionId: "connection-1",
@@ -25,6 +25,11 @@ describe("sub-agent model routes", () => {
       const params = paramsWithReasoningEffort(dialect, { reasoning: { effort: "high" } }, "low");
       expect(resolveAcceptedRunReasoningEffort({ controls, params, provider: dialect })).toEqual({ ok: true, reasoningEffort: "low" });
     }
+  });
+
+  it("reads a model's effort options from its parameter controls, as its route checks them", () => {
+    expect(modelEffortOptions({ adapterKind: "openai_responses_compatible", capabilities: request.modelCapabilities, defaultParams: {},
+      providerFamily: "openai", upstreamModelId: "gpt-6-sol" })).toEqual(expect.arrayContaining(["low", "medium", "high"]));
   });
 
   it("runs the parent's own route with the parent's params, or with an effort its model offers", () => {

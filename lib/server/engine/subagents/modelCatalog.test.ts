@@ -49,6 +49,16 @@ describe("sub-agent model catalog", () => {
       choice: { effort: "low", effortSource: "call", entry: null, modelSource: "call" } });
   });
 
+  it("never checks the parent's own admitted effort again, whatever options its capabilities list", () => {
+    // An Assistant chat, a failed catalog read or an older run: no frozen list and no declared efforts.
+    const bare = { ...parent, efforts: [] };
+    expect(chooseSubagentModel({ call: {}, catalog: null, parent: bare })).toEqual({ ok: true,
+      choice: { effort: "high", effortSource: "parent", entry: null, modelSource: "parent" } });
+    // Another effort on that model is still checked.
+    expect(chooseSubagentModel({ call: { effort: "low" }, catalog: null, parent: bare }))
+      .toMatchObject({ code: SUBAGENT_ERROR_CODES.effortUnsupported, ok: false });
+  });
+
   it("takes another frozen model the call names, with its own default effort", () => {
     const chosen = chooseSubagentModel({ call: { model: "GPT-6-LUNA" }, catalog, parent });
     expect(chosen).toMatchObject({ ok: true, choice: { effort: "medium", effortSource: "parent", modelSource: "call",

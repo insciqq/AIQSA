@@ -216,7 +216,9 @@ export function chooseSubagentModel(input: Readonly<{
     effort = chosen ? chosen.defaultEffort : input.parent.effort;
     effortSource = "parent";
   }
-  if (effort !== null && !efforts.includes(effort)) {
+  // The parent's own admitted effort on the parent's own model is the run's binding: it is never checked again.
+  const parentsOwn = chosen === null && effort === input.parent.effort;
+  if (effort !== null && !parentsOwn && !efforts.includes(effort)) {
     return { code: SUBAGENT_ERROR_CODES.effortUnsupported, ok: false,
       message: efforts.length > 0
         ? `${JSON.stringify(effort)} is not an effort this model supports; use one of ${efforts.join(", ")} or omit effort.`
