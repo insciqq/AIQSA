@@ -108,7 +108,6 @@ export type BrowserLiveHandoffResult =
   /** The live channel cannot reach this run's browser: a runtime or guest image without it, or a stopped guest. */
   | Readonly<{ kind: "unavailable" }>;
 
-/** What the engine holds of its run. */
 /** One agent's handoff: `agent` is the asking agent (the main agent when absent), whose tab the user is given. */
 export type BrowserLiveHandoffInput = Readonly<{
   agent?: BrowserLiveAgentRef;
@@ -118,6 +117,7 @@ export type BrowserLiveHandoffInput = Readonly<{
   waitMs: number;
 }>;
 
+/** What the engine holds of its run. */
 export type BrowserLiveRunHandle = Readonly<{
   end(reason?: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished">): Promise<void>;
   handoff(input: BrowserLiveHandoffInput): Promise<BrowserLiveHandoffResult>;

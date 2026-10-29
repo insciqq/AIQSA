@@ -1,10 +1,11 @@
-import type {
-  BrowserHandoffReason,
-  BrowserLiveAgent,
-  BrowserLiveAgentRef,
-  BrowserLiveEndReason,
-  BrowserLiveErrorCode,
-  BrowserLiveStep
+import {
+  BROWSER_LIVE_MAIN_AGENT,
+  type BrowserHandoffReason,
+  type BrowserLiveAgent,
+  type BrowserLiveAgentRef,
+  type BrowserLiveEndReason,
+  type BrowserLiveErrorCode,
+  type BrowserLiveStep
 } from "@/lib/contracts/browserLive";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
@@ -80,9 +81,10 @@ export function browserHandoffTitleV2(reason: BrowserHandoffReason, host: string
   }
 }
 
-/** Who an agent is in the panel: the main agent, or a sub-agent by its name. */
-export function browserLiveAgentLabelV2(agent: Pick<BrowserLiveAgentRef, "name">): string {
-  return agent.name ?? "Main agent";
+/** Who an agent is in the panel: the main agent, or a sub-agent by its name ("Sub-agent" when it has none). */
+export function browserLiveAgentLabelV2(agent: BrowserLiveAgentRef): string {
+  if (agent.id === BROWSER_LIVE_MAIN_AGENT) return "Main agent";
+  return agent.name ?? "Sub-agent";
 }
 
 /** What a browsing agent is doing, for the switcher: waiting for the person, driven by them, or browsing. */
