@@ -39,7 +39,7 @@ type Wiring = { runner: SubagentRunner | null; workspace?: WorkspaceAttachments 
 const STATE = Symbol.for("aiqsa.subagent-background.v1");
 type State = { backoff: SubagentFlushBackoff; composition: Composition | null; deferred: SubagentDeferredCallbacks; wiring: Wiring };
 const globalState = globalThis as typeof globalThis & { [STATE]?: State };
-const state = globalState[STATE] ??= { backoff: new Map(), composition: null, deferred: new Map(), wiring: { runner: null } };
+const state: State = globalState[STATE] ??= { backoff: new Map(), composition: null, deferred: new Map(), wiring: { runner: null } };
 
 function processBootedAt(): Date {
   return new Date(Date.now() - Math.round(process.uptime() * 1_000));
@@ -75,10 +75,11 @@ function compose(): Composition {
   return Object.freeze({
     callbacks,
     control,
-    reconcile: (input = {}) => reconcileSubagentRuns({ backoff: state.backoff, bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush,
+    reconcile: (input: Readonly<{ chatId?: string; userId?: string }> = {}) => reconcileSubagentRuns({ backoff: state.backoff,
+      bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush,
       liveRunIds: () => activeRunControllerRegistry.ids(), staleMs: STALE_MS, store,
       ...(state.wiring.workspace ? { workspace: state.wiring.workspace } : {}) }, input),
-    async stopUnderMessage({ messageId, userId }) {
+    async stopUnderMessage({ messageId, userId }: Readonly<{ messageId: string; userId: string }>): Promise<number> {
       const message = await prisma.message.findFirst({ select: { chatId: true }, where: { chat: { userId }, id: messageId } });
       return message ? control.stopUnderMessage({ chatId: message.chatId, messageId, userId }) : 0;
     },

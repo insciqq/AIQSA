@@ -175,7 +175,7 @@ describe("background sub-agent runs", () => {
     expect(await starting).toMatchObject({ kind: "started" });
     expect(await stopping).toBe(1);
     expect(store.turns[0]).toMatchObject({ result: { reason: "stop_all" }, state: "stopped" });
-    expect(runner.turns.size).toBe(0);
+    expect(runner!.turns.size).toBe(0);
     expect(sink.callbacks).toHaveLength(1);
   });
 
@@ -196,7 +196,7 @@ describe("background sub-agent runs", () => {
       release();
       expect(await starting).toMatchObject({ kind: "started" });
       expect(await stopping).toBe(1);
-      expect(runner.turns.size).toBe(0);
+      expect(runner!.turns.size).toBe(0);
       expect(store.turns[0]).toMatchObject({ result: { state: "stopped" }, state: "stopped" });
     });
 
@@ -210,7 +210,7 @@ describe("background sub-agent runs", () => {
     expect(await control.stopThread({ chatId: "chat-1", threadId: "thread-unrelated", userId: "user-1" })).toBe(0);
     release();
     const started = await starting;
-    await vi.waitFor(() => expect(runner.turns.get(started.kind === "started" ? started.turnId : "")).toBeDefined());
+    await vi.waitFor(() => expect(runner!.turns.get(started.kind === "started" ? started.turnId : "")).toBeDefined());
     await control.stopAll({ chatId: "chat-1", userId: "user-1" });
   });
 
@@ -242,9 +242,9 @@ describe("background sub-agent runs", () => {
     const inner = new FakeWorkspaceAttachments();
     let release: () => void = () => undefined;
     const slowAttach: WorkspaceAttachments = {
-      attach: async (attachment, signal) => {
+      attach: async (attachment) => {
         await new Promise<void>((resolve) => { release = resolve; });
-        return inner.attach(attachment, signal);
+        return inner.attach(attachment);
       },
       attached: (scope) => inner.attached(scope),
       detach: (input) => inner.detach(input),
