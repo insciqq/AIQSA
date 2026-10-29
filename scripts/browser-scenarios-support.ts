@@ -360,8 +360,13 @@ function oracleS5(result: BrowserResult): OracleVerdict {
 
 // S6: a long shopping task on amazon.es ------------------------------------------------
 
-/** S6's categories as the result file names them, in the order the prompt lists them. */
-export const S6_CATEGORIES = ["juice", "yogurt", "frozen_la_sirena", "coffee", "cereal"] as const;
+/**
+ * S6's categories as the result file names them, in the order the prompt
+ * lists them. Frozen pizza, not La Sirena: La Sirena is a separate retail
+ * chain whose products amazon.es does not sell (both real runs on 2026-10-29
+ * found none), so that category could never reach 3 candidates.
+ */
+export const S6_CATEGORIES = ["juice", "yogurt", "frozen_pizza", "coffee", "cereal"] as const;
 export type S6Category = (typeof S6_CATEGORIES)[number];
 
 /**
@@ -644,7 +649,7 @@ function resultInstruction(fields: string, blocked: string = BLOCKED_ANY): strin
 }
 
 const S6_FIELDS = [
-  '  "categories": [{"category": "juice" | "yogurt" | "frozen_la_sirena" | "coffee" | "cereal",',
+  '  "categories": [{"category": "juice" | "yogurt" | "frozen_pizza" | "coffee" | "cereal",',
   '    "candidates": [{"name": "...", "price": 2.49, "rating": 4.5, "reviews": 1234, "url": "https://www.amazon.es/dp/..."}],',
   '    "chosen": {"url": "https://www.amazon.es/dp/...", "reason": "..."}}],',
   '  "cart": {"lines": [{"category": "juice", "name": "...", "url": "https://www.amazon.es/dp/...", "quantity": 1, "line_total": 2.49}],',
@@ -739,7 +744,7 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
     section: "shopping",
     prompt: [
       "Зайди на amazon.es без входа в аккаунт. Хочу выбрать самые выгодные продукты в пяти категориях: сок (zumo), " +
-        "йогурт (yogur), замороженные продукты La Sirena, кофе (café) и хлопья для завтрака (cereales).",
+        "йогурт (yogur), замороженная пицца (pizza congelada), кофе (café) и хлопья для завтрака (cereales).",
       "В каждой категории найди не меньше 3 разных товаров и для каждого запиши название, текущую цену в евро, " +
         "рейтинг в звёздах, число отзывов и ссылку на страницу товара на amazon.es в виде https://www.amazon.es/dp/<ASIN>.",
       "В каждой категории выбери один товар с лучшим соотношением цены и качества и одной строкой объясни почему. " +
