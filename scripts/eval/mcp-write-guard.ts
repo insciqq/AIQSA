@@ -15,7 +15,7 @@ import { decodeMcpGuardVerdict, MCP_GUARD_LIMITS, mcpGuardRequest } from "../../
 import { MCP_GUARD_EVAL_CASES } from "./mcp-write-guard-cases";
 
 /** No I/O: the paid runner and its hermetic tests use exactly the same accepted snapshot. */
-export function createMcpGuardEvalSnapshot(env: NodeJS.ProcessEnv) {
+export function createMcpGuardEvalSnapshot(env: Readonly<Record<string, string | undefined>>) {
   const adapter = env.MCP_GUARD_EVAL_ADAPTER;
   if (env.MCP_GUARD_EVAL_PAID !== "1" || !env.MCP_GUARD_EVAL_ENDPOINT || !env.MCP_GUARD_EVAL_API_KEY || !env.MCP_GUARD_EVAL_MODEL ||
     (adapter !== "openai_responses_compatible" && adapter !== "openrouter_chat_completions")) {
