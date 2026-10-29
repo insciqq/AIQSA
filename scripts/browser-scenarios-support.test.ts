@@ -458,7 +458,7 @@ describe("S6 long shopping task", () => {
   it("needs each choice to be one of its category's candidates, with a reason", () => {
     const outside = result();
     outside.categories[2]!.chosen = { ...outside.categories[2]!.chosen, url: "https://www.amazon.es/dp/B0OTHER000" };
-    expect(check(outside).failed).toEqual(["chosen_not_candidate_frozen_la_sirena", "cart_line_mismatch"]);
+    expect(check(outside).failed).toEqual(["chosen_not_candidate_frozen_pizza", "cart_line_mismatch"]);
     const unexplained = result();
     unexplained.categories[3]!.chosen = { ...unexplained.categories[3]!.chosen, reason: " " };
     expect(check(unexplained).failed).toEqual(["chosen_reason_missing_coffee", "cart_line_mismatch"]);
@@ -503,9 +503,12 @@ describe("S6 long shopping task", () => {
 
   it("asks for every category, the result fields and a guest cart without checkout", () => {
     const prompt = BROWSER_SCENARIOS.S6.prompt;
-    for (const key of [...S6_CATEGORIES, "amazon.es", "rating", "reviews", "chosen", "subtotal", "не входи", "Корзину не оформляй"]) {
+    for (const key of [...S6_CATEGORIES, "amazon.es", "rating", "reviews", "chosen", "subtotal", "не входи", "Корзину не оформляй",
+      "замороженная пицца"]) {
       expect(prompt).toContain(key);
     }
+    // amazon.es does not sell La Sirena, a separate retail chain: a category of its products could never be filled.
+    expect(prompt).not.toMatch(/sirena/iu);
   });
 
   it("reads euro amounts, ratings, review counts and product keys as pages show them", () => {
