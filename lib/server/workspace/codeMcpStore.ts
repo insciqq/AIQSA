@@ -1,3 +1,4 @@
+import { bindCodeMcpEffect, type CodeMcpUnknownEffectInput } from "./codeMcpUnknownEffects";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
@@ -224,6 +225,8 @@ export type WorkspaceCodeGatewayStore = Readonly<{
     serverId: string;
     toolName: string;
   }>): Promise<WorkspaceCodeClaim>;
+  /** Bind the exact definition and find earlier uncertain effects before an interactive write. */
+  unknownEffect?(input: CodeMcpUnknownEffectInput): Promise<Date | null>;
   settle(input: Readonly<{
     durationMs: number;
     errorCode: string | null;
@@ -332,6 +335,8 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         return { kind: "claimed" as const, id, sequence: grant.callCount };
       });
     },
+
+    unknownEffect: input => bindCodeMcpEffect(prisma, input),
 
     async settle(input) {
       // The first terminal writer wins: a revocation may already have made it unknown.
