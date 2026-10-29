@@ -2632,6 +2632,7 @@ model WorkspaceSession {
   cleanupJob       WorkspaceCleanupJob?
   executions       WorkspaceExecution[]
   runBindings      WorkspaceRunBinding[]
+  attachments      WorkspaceRunAttachment[]
 
   @@index([state, expiresAt])
   @@index([state, lastActiveAt])
@@ -2986,6 +2987,7 @@ model ModelRun {
   userMessage                  Message                             @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
   workspaceRunBinding          WorkspaceRunBinding?
+  workspaceAttachment          WorkspaceRunAttachment?
   workspaceExecutions          WorkspaceExecution[]
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
   workspaceCaptureReferences   WorkspaceCaptureReference[]
@@ -3921,6 +3923,22 @@ model Attachment {
   @@index([uploaderUserId])
   @@index([messageId])
   @@index([storageKey])
+}
+
+/// One run attached to its chat's shared Workspace session: the main agent's run and background sub-agent runs
+/// share one VM and one runner operation (`WorkspaceSession.operationOwner` and `version`). The row is the run's
+/// guest execution authority under the session generation it attached at, removed when the run has retired its
+/// own processes (`lib/server/workspace/attachments.ts`). The agent comes from `ModelRun.subagentThreadId`.
+model WorkspaceRunAttachment {
+  modelRunId          String           @id
+  chatId              String
+  operationGeneration Int
+  attachedAt          DateTime         @default(now())
+  modelRun            ModelRun         @relation(fields: [chatId, modelRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceRunAttachment_modelRun_fkey")
+  workspaceSession    WorkspaceSession @relation(fields: [chatId], references: [chatId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceRunAttachment_session_fkey")
+
+  @@unique([chatId, modelRunId])
+  @@index([chatId, operationGeneration])
 }
 
 model WorkspaceRunBinding {
