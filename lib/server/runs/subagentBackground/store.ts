@@ -368,6 +368,12 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
     },
 
     async owedCallbacks(scope) {
+      // Every send and every main run's end flushes: a chat with no background turn that ended unclaimed, or whose
+      // callback sits unread in an answer that ended, takes no lock.
+      const candidate = await client.subagentTurn.findFirst({ select: { id: true }, where: { chatId: scope.chatId, endedAt: { not: null },
+        mode: "background", userId: scope.userId, OR: [{ callbackRunId: null },
+          { callbackRun: { status: { in: ["complete", "cancelled", "error"] } }, followups: { some: { deliveredAt: null } } }] } });
+      if (!candidate) return { activeBranch: [], inactiveTurnIds: [], mainRun: null };
       return client.$transaction(async (tx): Promise<OwedCallbacks | null> => {
         const chat = await lockChatScope(tx, scope);
         if (!chat || chat.permanentDeletionAt) return null;
@@ -406,13 +412,14 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       return client.$transaction(async (tx): Promise<CallbackIntoRunOutcome> => {
         await lockRunSettlementScope(tx, runId);
         const [run] = await tx.$queryRaw<Array<{ answerCompletedAt: Date | null; assistantMessageId: string | null;
-          followupClosedAt: Date | null; followupMode: string | null; followupRevision: number; status: ModelRunStatus;
-          subagentTurnId: string | null }>>`
-          SELECT "answerCompletedAt", "assistantMessageId", "followupClosedAt", "followupMode", "followupRevision", "status",
-            "subagentTurnId"
+          followupClosedAt: Date | null; followupMode: string | null; followupRevision: number; scheduledTaskId: string | null;
+          status: ModelRunStatus; subagentTurnId: string | null }>>`
+          SELECT "answerCompletedAt", "assistantMessageId", "followupClosedAt", "followupMode", "followupRevision", "scheduledTaskId",
+            "status", "subagentTurnId"
           FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR UPDATE`;
-        if (!run || run.subagentTurnId !== null || !run.assistantMessageId || !run.followupMode || run.followupClosedAt ||
-          run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status)) return "closed";
+        // A scheduled occurrence's context stays as admission froze it: its callbacks wait for its end.
+        if (!run || run.subagentTurnId !== null || run.scheduledTaskId !== null || !run.assistantMessageId || !run.followupMode ||
+          run.followupClosedAt || run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status)) return "closed";
         const chat = await tx.chat.findFirst({ select: { activeLeafMessageId: true },
           where: { id: chatId, permanentDeletionAt: null, userId } });
         if (!chat || chat.activeLeafMessageId !== run.assistantMessageId) return "closed";

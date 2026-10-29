@@ -123,27 +123,30 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     }
   }
 
-  async function settleAndCall(execution: Execution, turnId: string, input: Pick<SubagentBackgroundStartInput, "parentRunId">,
-    threadId: string, result: EndedSubagentCallResult): Promise<void> {
-    let settlement: Awaited<ReturnType<SubagentBackgroundStore["settle"]>> | null = null;
-    for (let attempt = 0; attempt < 3 && !settlement; attempt += 1) {
+  /** Settles the turn and its run; null when no settlement confirmed (recovery then ends the run as interrupted). */
+  async function settle(execution: Execution, turnId: string, result: EndedSubagentCallResult): Promise<EndedSubagentCallResult | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        settlement = await deps.store.settle({ ...execution.scope, result, turnId });
+        const settlement = await deps.store.settle({ ...execution.scope, result, turnId });
+        return settlement.settled ? settlement.result : null;
       } catch (error) {
         logEvent("job_persistence", { action: "retry", error, outcome: "unconfirmed", run_id: execution.runId, stage: "settle",
           subsystem: "run_recovery" });
       }
     }
-    // A settlement that never confirmed is left to recovery, which ends the run as interrupted.
-    if (!settlement?.settled || !settlement.result) return;
-    try {
-      await deps.callbacks.deliver({ ...execution.scope, name: execution.name, parentRunId: input.parentRunId,
-        result: settlement.result, threadId, turnId });
-    } catch (error) {
-      // It stays owed: the next main-agent run's terminal flush or recovery delivers it.
-      logEvent("run_recovery", { action: "retry", code: "subagent_callback_failed", error, outcome: "failed", run_id: execution.runId,
-        stage: "dispatch", subsystem: "run_recovery" });
-    }
+    return null;
+  }
+
+  /**
+   * Sends a settled turn's callback without holding its caller: the wake-up
+   * turn it may admit runs the whole send pipeline, and Stop answers once the
+   * turn has settled. A failure leaves it owed for the next terminal flush.
+   */
+  function callBack(callback: Parameters<SubagentCallbackSink["deliver"]>[0], runId: string | null): void {
+    void deps.callbacks.deliver(callback).catch((error: unknown) => {
+      logEvent("run_recovery", { action: "retry", code: "subagent_callback_failed", error, outcome: "failed",
+        ...(runId ? { run_id: runId } : {}), stage: "dispatch", subsystem: "run_recovery" });
+    });
   }
 
   function launch(input: SubagentBackgroundStartInput, admitted: Readonly<{ runId: string; turnId: string; workspace: boolean }>,
@@ -191,14 +194,17 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         const { outcome: _outcome, ...rest } = result;
         result = { ...rest, reason: execution.stopReason, state: "stopped" };
       }
-      await settleAndCall(execution, admitted.turnId, input, input.threadId, result);
+      // Guest authority is retired before the turn settles: its processes are proven stopped, or the VM stops.
       if (attached && deps.workspace) {
         await deps.workspace.detach({ ...scope, execution: executionUnknown ? "unknown" : "settled", modelRunId: admitted.runId })
           .catch((error: unknown) => logEvent("run_execution", { code: "subagent_workspace_detach_failed", error, outcome: "failed",
             run_id: admitted.runId, stage: "completion" }));
       }
+      const ended = await settle(execution, admitted.turnId, result);
       lease?.release();
       if (executions.get(admitted.turnId) === execution) executions.delete(admitted.turnId);
+      if (ended) callBack({ ...scope, name: input.name, parentRunId: input.parentRunId, result: ended, threadId: input.threadId,
+        turnId: admitted.turnId }, admitted.runId);
     })();
     void execution.done.catch(() => undefined);
   }
@@ -226,10 +232,14 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       // No execution of this process owns it (a restart cut it): it ends here, with its callback.
       const result = impliedResult({ modelId: turn.model.id, name: turn.name, reason, reasoningEffort: turn.model.effort,
         state: "stopped" });
+      if (turn.runId) {
+        await deps.workspace?.detach({ chatId: turn.chatId, execution: "unknown", modelRunId: turn.runId, userId: turn.userId })
+          .catch(() => undefined);
+      }
       const settlement = await deps.store.settle({ chatId: turn.chatId, result, turnId: turn.turnId, userId: turn.userId });
       if (settlement.settled && settlement.result) {
-        await deps.callbacks.deliver({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
-          threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }).catch(() => "pending");
+        callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
+          threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
       }
     }
     const current = await deps.store.findTurn({ chatId: turn.chatId, turnId: turn.turnId, userId: turn.userId });
