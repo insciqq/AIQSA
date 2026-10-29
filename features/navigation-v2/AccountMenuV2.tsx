@@ -9,8 +9,7 @@ import {
   UiV2MenuSurface
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import { useId, useState } from "react";
-import { AdminAttentionDot } from "./AdminAttentionDot";
+import { useState } from "react";
 import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 
 /** Two-letter initials for the rail avatar: "operator@aiqsa.local" → "OP". */
@@ -46,9 +45,6 @@ export function AccountMenuV2({
   const [open, setOpen] = useState(false);
   const controlCenterHref = useControlCenterHref();
   const attention = adminAttentionIndicator(useAdminAttentionSummary(adminEntryVisible));
-  // The rail's own Control Center entry carries the dot; the drawer row is the only entry on phones.
-  const triggerAttention = variant === "row" ? attention : null;
-  const attentionHintId = useId();
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const { menuRef, triggerRef } = useMenuDismissalV2({
@@ -74,17 +70,14 @@ export function AccountMenuV2({
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label="Account menu"
-        aria-describedby={triggerAttention ? attentionHintId : undefined}
         data-tooltip={variant === "avatar" ? accountLabel || "Account" : undefined}
         data-tooltip-side={variant === "avatar" ? "right" : undefined}
         ref={triggerRef}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className={`v2-navigation-account-avatar${triggerAttention ? " relative" : ""}`} aria-hidden="true">
+        <span className="v2-navigation-account-avatar" aria-hidden="true">
           {accountInitialsV2(accountLabel)}
-          {triggerAttention ? <AdminAttentionDot className="-right-0.5 -top-0.5 ring-workspace-rail" indicator={triggerAttention} /> : null}
         </span>
-        {triggerAttention ? <span className="sr-only" id={attentionHintId}>Control Center: {triggerAttention.label}</span> : null}
         {variant === "row" ? (
           <>
             <span className="v2-chat-title">{accountLabel || "Account"}</span>
