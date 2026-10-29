@@ -15,7 +15,8 @@ import { BROWSER_LIVE_RELAY_LIMITS, type BrowserLiveRelay, type BrowserLiveView,
  * The live Workspace browser's routes under `/api/chats/<chatId>/browser/` (`lib/contracts/browserLive.ts`),
  * modelled on AIQSA Connect's view routes (`lib/server/connect/browserHandlers.ts`): every request authenticates
  * the signed-in browser session and finds the chat's live browser only for the run's owner, so another user, an
- * administrator, a finished run and an unknown chat all get the same `browser_live_not_found`. Mutations get the
+ * administrator, a finished run and an unknown chat all get the same `browser_live_not_found`, whichever agent's tab a
+ * request names (every agent of a chat browses for its one owner, in the chat's one live browser). Mutations get the
  * proxy's same-origin check; bodies are bounded here. Nothing a request carries is logged or stored.
  */
 export type BrowserLiveHandlerDeps = Readonly<{
@@ -102,13 +103,13 @@ export function createBrowserLiveHandlers(deps: BrowserLiveHandlerDeps) {
       return refusal ? refuse(refusal) : noContent();
     },
 
-    /** `POST …/browser/control`: Take control or Return control. */
+    /** `POST …/browser/control`: Take control or Return control of one agent's tab, or the agent to watch. */
     async control(request: Request, context: Params): Promise<Response> {
       const found = await find(request, context);
       if (found instanceof Response) return found;
       const parsed = browserLiveControlRequestSchema.safeParse(await body(request));
       if (!parsed.success) return refuse("browser_live_request_invalid");
-      const refusal = await found.view.control(found.viewer, parsed.data.action);
+      const refusal = await found.view.control(found.viewer, parsed.data);
       return refusal ? refuse(refusal) : noContent();
     },
 

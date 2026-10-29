@@ -390,14 +390,16 @@ describe("remote Workspace runner protocol", () => {
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
     const identity = { modelRunId: "run_fixture", operation, runtimeSandboxId: "runtime_fixture", sessionId: "session_fixture" };
     const runEnvironment = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
-    await remote.syncPersonalSecrets({ ...identity, runEnvironment, secrets: [] });
-    expect(syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment }));
+    const agent = { kind: "subagent" as const, name: "shop-amazon", threadId: "thread-7" };
+    await remote.syncPersonalSecrets({ ...identity, agent, runEnvironment, secrets: [] });
+    expect(syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ agent,
+      runEnvironment: { ...runEnvironment, AIQSA_AGENT_ID: "thread-7", AIQSA_AGENT_NAME: "shop-amazon" } }));
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.not.objectContaining({ boundUvCache: expect.anything() }));
     await remote.syncPersonalSecrets({ ...identity, boundUvCache: true, secrets: [] });
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ boundUvCache: true }));
     await remote.callBoundTool({ ...identity, arguments: { command: "python3 report.py" }, invocationId: "a".repeat(32),
-      modelRunToolCallId: "call_fixture", originalName: "sandbox_shell" });
-    expect(callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ invocationId: "a".repeat(32) }));
+      agent, modelRunToolCallId: "call_fixture", originalName: "sandbox_shell" });
+    expect(callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ agent, invocationId: "a".repeat(32) }));
   });
 
   it("carries a worst-case escaped tool result at any accepted bound and names a larger one exactly", async () => {
