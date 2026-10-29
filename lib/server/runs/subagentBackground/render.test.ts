@@ -28,6 +28,8 @@ describe("sub-agent callback rendering", () => {
     expect(text).toContain("(failed, bot_wall)");
     expect(decodeSubagentCallResult(jsonOf(text))).toMatchObject({ reason: "bot_wall", reportTruncated: true, state: "failed", steps: [],
       stepsTruncated: true });
+    // Whatever the reserve, a callback fits one follow-up row (`RunFollowup_bounds`).
+    expect(renderCallbackFollowup(big("wide"), { tokens: 1_000_000 }).length).toBeLessThanOrEqual(16_000);
     // Even a spent reserve takes the callback, at its least.
     expect(decodeSubagentCallResult(jsonOf(renderCallbackFollowup(callback, { tokens: 1 })))).toMatchObject({ state: "failed" });
   });
