@@ -13,7 +13,7 @@ import { consumeMcpCallApproval, requestMcpApproval, type McpApprovalScope } fro
 
 /** Approval state the guest-code gateway consults; injectable for tests. */
 export type McpGatewayApprovalStore = Readonly<{
-  consume(scope: McpApprovalScope, key: McpApprovalCallKey, approvedBy?: string): Promise<boolean>;
+  consume(scope: McpApprovalScope, key: McpApprovalCallKey, approvedBy?: string, after?: Date): Promise<boolean>;
   request(scope: McpApprovalScope, request: McpApprovalRequest & Readonly<{
     source: "code";
     toolCallId: string | null;
@@ -22,7 +22,7 @@ export type McpGatewayApprovalStore = Readonly<{
 
 export function createPrismaMcpGatewayApprovalStore(prisma: PrismaClient): McpGatewayApprovalStore {
   return {
-    consume: (scope, key, approvedBy) => consumeMcpCallApproval(prisma, scope, key, approvedBy),
+    consume: (scope, key, approvedBy, after) => consumeMcpCallApproval(prisma, scope, key, approvedBy, after),
     request: (scope, request) => requestMcpApproval(prisma, scope, request)
   };
 }
@@ -49,6 +49,7 @@ export async function gateMcpGatewayCall(input: Readonly<{
   admission: McpApprovalAdmission | undefined;
   guard?: McpGuardCheck;
   signal?: AbortSignal;
+  unknownAfter?: Date | null;
   prepared: McpHubPreparedToolCall;
   scope: McpApprovalScope;
   source: "code";
@@ -59,14 +60,19 @@ export async function gateMcpGatewayCall(input: Readonly<{
   // A run admitted without the marker (a scheduled task's run, an older run) never asks.
   if (!input.admission) return "allowed";
   const { descriptor } = input.prepared;
-  if (!mcpCallNeedsApproval({ admission: input.admission, annotations: descriptor.annotations, serverId: input.prepared.serverId })) {
+  if (!input.unknownAfter && !mcpCallNeedsApproval({ admission: input.admission, annotations: descriptor.annotations, serverId: input.prepared.serverId })) {
     return "allowed";
   }
   if (!input.store) return "refused";
   let request = mcpApprovalRequest({ arguments: input.prepared.arguments, definitionHash: input.prepared.definitionHash,
     originalName: descriptor.name, serverId: input.prepared.serverId, serverName: descriptor.server_name,
     title: descriptor.title ?? descriptor.annotations?.title, toolName: input.toolName });
-  if (await input.store.consume(input.scope, request, input.admission.guard?.approvedBy)) return "allowed";
+  if (await input.store.consume(input.scope, request, input.admission.guard?.approvedBy, input.unknownAfter ?? undefined)) return "allowed";
+  if (input.unknownAfter) {
+    await input.store.request(input.scope, { ...request, source: input.source, toolCallId: input.toolCallId,
+      guard: { decision: "ask", reason: "An earlier attempt may already have changed data. Please review before trying again." } });
+    return "refused";
+  }
   if (input.admission.guard) {
     const guard = input.guard ? await input.guard({ admission: input.admission.guard, tool: {
       serverName: descriptor.server_name, toolName: descriptor.name, description: descriptor.description,

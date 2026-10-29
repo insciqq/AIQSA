@@ -23,11 +23,12 @@ type ConsentClient = Pick<Prisma.TransactionClient, "mcpToolConsent">;
 export type McpApprovalScope = Readonly<{ chatId: string; runId: string; userId: string }>;
 
 /** Unconsumed Allow once approvals of exactly this call, from another run of the chat. */
-function availableWhere(scope: McpApprovalScope, key: McpApprovalCallKey, now: Date): Prisma.McpToolApprovalWhereInput {
+function availableWhere(scope: McpApprovalScope, key: McpApprovalCallKey, now: Date, after?: Date): Prisma.McpToolApprovalWhereInput {
   return {
     argumentsDigest: key.argumentsDigest,
     chatId: scope.chatId,
     consumedAt: null,
+    ...(after ? { decidedAt: { gt: after } } : {}),
     decision: "allow_once",
     definitionHash: key.definitionHash,
     expiresAt: { gt: now },
@@ -55,13 +56,14 @@ export async function consumeMcpApproval(
   client: ApprovalClient,
   scope: McpApprovalScope,
   key: McpApprovalCallKey,
-  now = new Date()
+  now = new Date(),
+  after?: Date
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const candidate = await client.mcpToolApproval.findFirst({
       orderBy: [{ decidedAt: "asc" }, { id: "asc" }],
       select: { id: true },
-      where: availableWhere(scope, key, now)
+      where: availableWhere(scope, key, now, after)
     });
     if (!candidate) return false;
     const consumed = await client.mcpToolApproval.updateMany({
@@ -322,11 +324,11 @@ export async function loadRunMcpApprovalCards(
  * never consumed (`McpToolApproval_state_check`).
  */
 export async function consumeNamedMcpApproval(tx: ApprovalClient, scope: McpApprovalScope, approvalId: string,
-  key: McpApprovalCallKey, now: Date): Promise<boolean> {
+  key: McpApprovalCallKey, now: Date, after?: Date): Promise<boolean> {
   const row = await tx.mcpToolApproval.findFirst({
     select: { decision: true, id: true },
     where: { argumentsDigest: key.argumentsDigest, chatId: scope.chatId, consumedAt: null,
-      decidedAt: { gt: new Date(now.getTime() - MCP_APPROVAL_TTL_MS) }, decision: { in: ["allow_once", "allow_server"] },
+      decidedAt: { gt: new Date(Math.max(now.getTime() - MCP_APPROVAL_TTL_MS, after?.getTime() ?? 0)) }, decision: { in: ["allow_once", "allow_server"] },
       definitionHash: key.definitionHash, id: approvalId, modelRunId: { not: scope.runId }, serverId: key.serverId,
       toolName: key.toolName, userId: scope.userId }
   });
@@ -341,10 +343,10 @@ export async function consumeNamedMcpApproval(tx: ApprovalClient, scope: McpAppr
 
 /** A named decision applies only to its exact call; other approved cards remain usable. */
 export async function consumeMcpCallApproval(client: ApprovalClient, scope: McpApprovalScope,
-  key: McpApprovalCallKey, approvedBy?: string): Promise<boolean> {
+  key: McpApprovalCallKey, approvedBy?: string, after?: Date): Promise<boolean> {
   const now = new Date();
-  return Boolean(approvedBy && await consumeNamedMcpApproval(client, scope, approvedBy, key, now)) ||
-    consumeMcpApproval(client, scope, key, now);
+  return Boolean(approvedBy && await consumeNamedMcpApproval(client, scope, approvedBy, key, now, after)) ||
+    consumeMcpApproval(client, scope, key, now, after);
 }
 
 /** Read-only preview. The dispatch claim consumes again atomically; a lost race asks, never dispatches. */

@@ -12,7 +12,7 @@ import { resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor"
 import { filterMcpCatalog } from "../mcp/toolAccessProjection";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
 import { mcpCatalogFromSnapshot, type McpCapabilityCatalog, type McpCapabilityCatalogTool, type McpRunPlanResult } from "../mcp/runPlan";
-import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE } from "../mcp/writeApproval";
+import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE, mcpApprovalRequest, mcpToolMayChangeData } from "../mcp/writeApproval";
 import { createPrismaMcpGatewayApprovalStore, gateMcpGatewayCall, type McpGatewayApprovalStore } from "../mcp/writeApprovalGateway";
 import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from "./codeMcp";
 import {
@@ -252,7 +252,14 @@ async function serve(
         const prepared = await service.prepareToolCall({ arguments: args, authority, signal, toolId: tool.namespacedName, toolVersion });
         // Guard and approval use the same frozen authority as model calls.
         // A refusal creates the existing card before anything is dispatched.
-        const gate = await gateMcpGatewayCall({ admission: grant.approval, guard: dependencies.guard, signal, prepared, source: "code", store: dependencies.approvals,
+        const unknownAfter = grant.approval && mcpToolMayChangeData(prepared.descriptor.annotations)
+          ? dependencies.store.unknownEffect ? await dependencies.store.unknownEffect({ callId: claim.id, grant,
+            key: mcpApprovalRequest({ arguments: args, definitionHash: prepared.definitionHash, originalName: prepared.descriptor.name,
+              serverId: prepared.serverId, serverName: prepared.descriptor.server_name, toolName: tool.namespacedName }) })
+            : new Date() // Missing durable evidence cannot authorize a write.
+          : null;
+        const gate = await gateMcpGatewayCall({ admission: grant.approval, guard: dependencies.guard, signal, prepared, unknownAfter,
+          source: "code", store: dependencies.approvals,
           scope: { chatId: grant.chatId, runId: grant.runId, userId: grant.userId }, toolCallId: null, toolName: tool.namespacedName });
         if (gate === "refused") {
           await dependencies.store.settle({ durationMs: Date.now() - started, errorCode: MCP_APPROVAL_REFUSAL, id: claim.id,

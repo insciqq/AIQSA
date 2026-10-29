@@ -64,3 +64,16 @@ it("falls back from a non-matching named card to the exact ordinary Allow once",
   expect(count).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining(key) }));
   expect(updateMany).toHaveBeenCalledTimes(1);
 });
+
+it("requires both named and one-shot approvals to be newer than the unknown effect", async () => {
+  const { consumeMcpCallApproval } = await import("./writeApprovalRepository");
+  const after = new Date();
+  const key = { argumentsDigest: "a".repeat(64), definitionHash: "b".repeat(64), serverId: "server", toolName: "tool" };
+  const findFirst = vi.fn(async () => null);
+  const client = { mcpToolApproval: { findFirst } } as unknown as PrismaClient;
+  expect(await consumeMcpCallApproval(client, { chatId: "chat", runId: "run", userId: "owner" }, key, "old-card", after)).toBe(false);
+  expect(findFirst).toHaveBeenCalledTimes(2);
+  for (const [query] of findFirst.mock.calls as unknown as Array<[{ where: Record<string, unknown> }]>) {
+    expect(query.where).toMatchObject({ ...key, decidedAt: { gt: after } });
+  }
+});
