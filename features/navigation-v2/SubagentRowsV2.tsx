@@ -101,6 +101,8 @@ function SubagentRowV2({
     <div className="v2-subagent-row-wrap" data-navigation-subagent-id={thread.id} data-v2-tree-row="true">
       <button
         aria-current={selected ? "page" : undefined}
+        // One name, "<name>, <state>": the icon alone never carries the state.
+        aria-label={`${thread.name}, ${state.label}`}
         aria-level={level}
         aria-selected={selected}
         className="v2-subagent-row v2-focusable"
@@ -119,7 +121,6 @@ function SubagentRowV2({
           {state.icon ? <UiV2Icon name={state.icon} /> : <span className="v2-subagent-dot" />}
         </span>
         <span className="v2-chat-title">{thread.name}</span>
-        <span className="sr-only">, {state.label}</span>
       </button>
     </div>
   );

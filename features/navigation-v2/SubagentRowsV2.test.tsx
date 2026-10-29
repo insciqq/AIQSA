@@ -73,9 +73,12 @@ describe("sub-agents in the chat list", () => {
     expect(screen.getByRole("treeitem", { name: "Chat b" })).not.toHaveAttribute("aria-expanded");
     const group = screen.getByRole("group", { name: "Sub-agents of Chat a" });
     const rows = within(group).getAllByRole("treeitem");
-    expect(rows.map((row) => row.textContent)).toEqual([
+    // The exact accessible name, as browsers compute it: "<name>, <state>".
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
       "researcher, Running", "browser, Waiting for you", "writer, Done", "checker, Failed"
     ]);
+    expect(rows[0]).toHaveAccessibleName("researcher, Running");
+    expect(rows.map((row) => row.textContent)).toEqual(["researcher", "browser", "writer", "checker"]);
     expect(rows[0]).toHaveAttribute("aria-level", "2");
     expect(rows[2]).toHaveAttribute("data-tone", "ok");
     expect(rows[3]).toHaveAttribute("data-tone", "danger");
@@ -169,7 +172,7 @@ describe("sub-agents in the chat list", () => {
       subagents: subagentsProp({ a: subagentChat("a", [subagentThread("thread-alpha")]) })
     });
     const favorites = screen.getByRole("group", { name: "Favorites" });
-    expect(within(favorites).getAllByRole("treeitem").map((row) => row.textContent)).toEqual(["Chat a", "alpha, Running"]);
+    expect(within(favorites).getAllByRole("treeitem").map((row) => row.getAttribute("aria-label"))).toEqual(["Chat a", "alpha, Running"]);
     expect(screen.getAllByRole("treeitem", { name: "alpha, Running" })).toHaveLength(1);
   });
 
