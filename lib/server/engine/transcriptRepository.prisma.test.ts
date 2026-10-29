@@ -65,7 +65,9 @@ describe("native transcript repository", () => {
     await expect(transcripts.nextSequence(scope)).resolves.toBe(2);
     await transcripts.append(scope, 2, [answer!]);
     const loaded = await transcripts.loadRuns({ chatId: run.chatId, runIds: [run.runId], userId });
-    expect(loaded.get(run.runId)).toEqual([call, result, answer]);
+    expect(loaded.get(run.runId)).toEqual([
+      { ...call, recordedAt: expect.any(Date) }, { ...result, recordedAt: expect.any(Date) }, answer
+    ]);
     // A taken sequence refuses the whole batch.
     await expect(transcripts.append(scope, 2, turn())).rejects.toThrow();
     await expect(transcripts.nextSequence(scope)).resolves.toBe(3);
@@ -145,13 +147,13 @@ describe("native transcript repository", () => {
 
     const expected = [{ assistantMessageId: answer.id, userMessageId: question.id, items: [
       { arguments: "{\"summary\":\"earlier\"}", callId: `retired-${done.id}`, id: `retired-${done.id}-call`, kind: "tool_call",
-        name: "mcp_jira_create_issue" },
+        name: "mcp_jira_create_issue", recordedAt: done.startedAt ?? done.createdAt },
       { callId: `retired-${done.id}`, id: `retired-${done.id}-result`, kind: "tool_result", name: "mcp_jira_create_issue",
-        outcome: "complete", output: "" },
+        outcome: "complete", output: "", recordedAt: done.completedAt ?? done.startedAt ?? done.createdAt },
       { arguments: "{\"summary\":\"x\"}", callId: `retired-${sent.id}`, id: `retired-${sent.id}-call`, kind: "tool_call",
-        name: "mcp_jira_create_issue" },
+        name: "mcp_jira_create_issue", recordedAt: sent.startedAt ?? sent.createdAt },
       { callId: `retired-${sent.id}`, id: `retired-${sent.id}-result`, kind: "tool_result", name: "mcp_jira_create_issue",
-        outcome: "unknown", output: "" }
+        outcome: "unknown", output: "", recordedAt: sent.completedAt ?? sent.startedAt ?? sent.createdAt }
     ] }];
     await expect(transcripts.retiredRunEffects({ assistantMessageIds: [], chatId: chat.id, userId,
       userMessageIds: [question.id, next.id] })).resolves.toEqual(expected);

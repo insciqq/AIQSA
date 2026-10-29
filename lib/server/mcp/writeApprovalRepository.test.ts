@@ -66,13 +66,17 @@ it("falls back from a non-matching named card to the exact ordinary Allow once",
 });
 
 it("requires both named and one-shot approvals to be newer than the unknown effect", async () => {
-  const { consumeMcpCallApproval } = await import("./writeApprovalRepository");
+  const { consumeMcpCallApproval, hasMcpCallApproval } = await import("./writeApprovalRepository");
   const after = new Date();
   const key = { argumentsDigest: "a".repeat(64), definitionHash: "b".repeat(64), serverId: "server", toolName: "tool" };
   const findFirst = vi.fn(async () => null);
-  const client = { mcpToolApproval: { findFirst } } as unknown as PrismaClient;
+  const count = vi.fn(async () => 0);
+  const client = { mcpToolApproval: { findFirst, count } } as unknown as PrismaClient;
   expect(await consumeMcpCallApproval(client, { chatId: "chat", runId: "run", userId: "owner" }, key, "old-card", after)).toBe(false);
   expect(findFirst).toHaveBeenCalledTimes(2);
+  expect(await hasMcpCallApproval(client, { chatId: "chat", runId: "run", userId: "owner" }, key, "old-card", after)).toBe(false);
+  expect(findFirst).toHaveBeenCalledTimes(3);
+  expect(count).toHaveBeenCalledWith({ where: expect.objectContaining({ ...key, decidedAt: { gt: after } }) });
   for (const [query] of findFirst.mock.calls as unknown as Array<[{ where: Record<string, unknown> }]>) {
     expect(query.where).toMatchObject({ ...key, decidedAt: { gt: after } });
   }

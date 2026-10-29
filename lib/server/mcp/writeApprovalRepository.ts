@@ -43,9 +43,10 @@ export async function countAvailableMcpApprovals(
   client: ApprovalClient,
   scope: McpApprovalScope,
   key: McpApprovalCallKey,
-  now = new Date()
+  now = new Date(),
+  after?: Date
 ): Promise<number> {
-  return client.mcpToolApproval.count({ where: availableWhere(scope, key, now) });
+  return client.mcpToolApproval.count({ where: availableWhere(scope, key, now, after) });
 }
 
 /**
@@ -351,14 +352,14 @@ export async function consumeMcpCallApproval(client: ApprovalClient, scope: McpA
 
 /** Read-only preview. The dispatch claim consumes again atomically; a lost race asks, never dispatches. */
 export async function hasMcpCallApproval(client: ApprovalClient, scope: McpApprovalScope,
-  key: McpApprovalCallKey, approvedBy?: string): Promise<boolean> {
+  key: McpApprovalCallKey, approvedBy?: string, after?: Date): Promise<boolean> {
   const now = new Date();
   if (approvedBy && await client.mcpToolApproval.findFirst({ select: { id: true }, where: {
     argumentsDigest: key.argumentsDigest, chatId: scope.chatId, consumedAt: null,
-    decidedAt: { gt: new Date(now.getTime() - MCP_APPROVAL_TTL_MS) },
+    decidedAt: { gt: new Date(Math.max(now.getTime() - MCP_APPROVAL_TTL_MS, after?.getTime() ?? 0)) },
     OR: [{ decision: "allow_server" }, { decision: "allow_once", expiresAt: { gt: now } }],
     definitionHash: key.definitionHash, id: approvedBy, modelRunId: { not: scope.runId },
     serverId: key.serverId, toolName: key.toolName, userId: scope.userId
   } })) return true;
-  return await countAvailableMcpApprovals(client, scope, key, now) > 0;
+  return await countAvailableMcpApprovals(client, scope, key, now, after) > 0;
 }
