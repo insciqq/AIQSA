@@ -24,6 +24,13 @@
  * when a chat or a saved browser session cannot be removed and proven gone,
  * the measurement stops before the next run and exits 1.
  *
+ * Per run the line also carries the input tokens of every model request in
+ * call order (`inputSeries`: numbers only, ordered by the engine's usage row
+ * ids, `requestSeries`), their min, median, max and least-squares slope per
+ * request, the compactions in the run's transcript, and cost estimates from
+ * the token totals at fixed list prices (`costEstimates`); the summary
+ * repeats them per run beside the scenario's totals.
+ *
  * After each run the chat is deleted permanently (unless
  * AIQSA_BROWSER_SCENARIOS_KEEP_CHATS=1) and browser sessions the run saved are
  * removed, so every run starts from the same state.
@@ -39,7 +46,11 @@
  * - AIQSA_BROWSER_SCENARIOS_COMPOSE_FILE: the stand's `docker compose config --format json`
  *   (published app and Postgres ports on 127.0.0.1, reachable from this host)
  * - CODEX_LB_API_KEY
- * - AIQSA_BROWSER_SCENARIOS_SELECT (default S1,S2,S3,S4,S5), AIQSA_BROWSER_SCENARIOS_RUNS (1..5, default 2)
+ * - AIQSA_BROWSER_SCENARIOS_SELECT (default S1,S2,S3,S4,S5; the long S6 runs only when named),
+ *   AIQSA_BROWSER_SCENARIOS_RUNS (1..5, default 2)
+ * - AIQSA_BROWSER_SCENARIOS_EXPECT_BOUNDS (`any`, default, only records the admitted bounds; `unlimited`
+ *   demands no tool call or round limit and a 3600 s turn: a run admitted otherwise is cancelled at once,
+ *   cleaned up, and the measurement stops with `bounds_unexpected`)
  * - AIQSA_BROWSER_SCENARIOS_LABEL: tree or branch label echoed in the output
  * - AIQSA_BROWSER_SCENARIOS_MARGIN_SECONDS (60..3600, default 600)
  * - AIQSA_BROWSER_SCENARIOS_BROWSER_CHANNEL: optional installed browser for S5 (for example `chrome`)
@@ -64,9 +75,10 @@ import {
 import {
   BROWSER_RESULT_FILE, BROWSER_RESULT_MAX_BYTES, BROWSER_SCENARIOS, BrowserScenarioError, SAUCEDEMO_LOGIN_VALUES, SAUCEDEMO_SECRET,
   checkBrowserResult, cleanUpRun, parseBrowserResult, requireBrowserScenarioStand, runBounds, scenarioSummary, selectedScenarios,
-  OPENROUTER_API_ROOT, chatRoute, openRouterTextModel, textChatCapabilities,
-  toolCallStats, usageEvidence, type BrowserBlockedCode, type BrowserScenario, type BrowserScenarioId, type BrowserScenarioStand,
-  type HandoffCallRow, type RunBounds, type RunRecord, type StandTarget, type ToolCallRow, type TypedValueLeaks, type UsageRow
+  OPENROUTER_API_ROOT, boundsExpectation, chatRoute, costEstimates, openRouterTextModel, requestSeries, seriesStats, textChatCapabilities,
+  toolCallStats, unexpectedBounds, usageEvidence, type BoundsExpectation, type BrowserBlockedCode, type BrowserScenario,
+  type BrowserScenarioId, type BrowserScenarioStand, type HandoffCallRow, type RunBounds, type RunRecord, type SeriesStats, type StandTarget, type ToolCallRow, type TypedValueLeaks,
+  type UsageRow, type UsageSeriesRow
 } from "./browser-scenarios-support";
 import {
   JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
@@ -400,6 +412,7 @@ async function discard(response: Response): Promise<void> {
 type RunContext = Readonly<{
   api: Api;
   db: PostgresClient;
+  expectBounds: BoundsExpectation;
   keepChats: boolean;
   marginSeconds: number;
   model: CatalogModel;
@@ -418,8 +431,13 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
   let chatId: string | null = null;
+  let compactions: number | null = null;
+  let requestStats: SeriesStats | undefined;
+  let boundsRejected = false;
   // Typed only into the live view (S5); the run's leak check looks for it. Never printed.
   const marker = `zq${randomUUID().replaceAll("-", "")}`;
+  const measuredRecord = (): RunRecord => ({ blocked, compactions, costUsd, inputTokens, outputTokens, rounds,
+    ...(requestStats ? { requestStats } : {}), run, scenario: scenario.id, success, toolCalls, wallSeconds });
   const measured = await (async (): Promise<RunRecord> => { try {
     // A session saved late by the previous run's settlement must not sign this run in.
     stage = "pre_run_cleanup";
@@ -449,13 +467,23 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     }, method: "POST", signal: stream.signal });
     if (!response.ok) {
       Object.assign(line, { terminal: "admission_failed", failureCode: await errorCode(response) });
-      return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
+      return measuredRecord();
     }
     const drained = discard(response);
     stage = "wait";
     const admitted = await poll(120_000, () => latestRun(db, chat.id), "run_not_admitted");
     const bounds: RunBounds = runBounds({ toolBudgets: admitted.toolBudgets, workspace: { turnTimeoutSeconds: admitted.turnTimeoutSeconds } });
     line.bounds = bounds;
+    const unexpected = unexpectedBounds(bounds, context.expectBounds);
+    if (unexpected.length > 0) {
+      // Not the bounds the measurement asked for: stop before it spends more.
+      await request(api, `/api/model-runs/${encodeURIComponent(admitted.id)}/cancel`, { body: {}, method: "POST" });
+      stream.abort();
+      await drained;
+      boundsRejected = true;
+      Object.assign(line, { boundsUnexpected: unexpected, terminal: "bounds_unexpected" });
+      return measuredRecord();
+    }
     const limitSeconds = typeof bounds.turnTimeoutSeconds === "number" ? bounds.turnTimeoutSeconds
       : typeof context.standBounds.turnTimeoutSeconds === "number" ? context.standBounds.turnTimeoutSeconds : 3_600;
     const interaction = new AbortController();
@@ -498,13 +526,21 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     Object.assign(line, stats);
     // Usage is recorded after the answer: wait briefly for the answer's own receipt.
     const usageRows = await poll(120_000, async () => {
-      const { rows } = await db.query<UsageRow & { purpose: string }>(`SELECT "purpose"::text AS "purpose", "costReported",
-          "estimatedCostMicros", "inputTokens", "outputTokens" FROM "UsageEvent" WHERE "modelRunId" = $1`, [admitted.id]);
+      const { rows } = await db.query<UsageRow & UsageSeriesRow>(`SELECT "id", "purpose"::text AS "purpose", "costReported",
+          "estimatedCostMicros", "inputTokens", "cachedInputTokens", "outputTokens" FROM "UsageEvent" WHERE "modelRunId" = $1`,
+      [admitted.id]);
       return rows.some((row) => row.purpose === "chat_answer") ? rows : null;
     }, "usage_timeout", 3_000).catch(() => null);
     const usage = usageEvidence(usageRows ?? []);
     ({ costUsd, inputTokens, outputTokens } = usage);
-    Object.assign(line, usage, { usageSettled: usageRows !== null });
+    const series = requestSeries(admitted.id, usageRows ?? []);
+    requestStats = seriesStats(series.inputSeries);
+    const { rows: compactionRows } = await db.query<{ count: number }>(`SELECT count(*)::int AS "count"
+      FROM "RunTranscriptItem" WHERE "modelRunId" = $1 AND "kind" = 'compaction'`, [admitted.id]);
+    compactions = compactionRows[0]?.count ?? null;
+    Object.assign(line, usage, { usageSettled: usageRows !== null, cachedInputTokens: series.cachedInputTokens, compactions,
+      costEstimates: costEstimates(inputTokens, outputTokens), inputSeries: series.inputSeries, otherUsageRows: series.otherRows,
+      requestStats });
     stage = "result";
     const { rows: outputs } = await db.query<{ attachmentId: string; byteSize: number; relativePath: string }>(
       `SELECT "attachmentId", "byteSize", "relativePath" FROM "WorkspaceRunOutput" WHERE "workspaceRunBindingId" = $1`, [admitted.id]);
@@ -539,11 +575,12 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
     line.checksFailed = checks;
     line.blocked = blocked;
     success = terminal?.status === "complete" && checks.length === 0;
-    return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success, toolCalls, wallSeconds };
+    return measuredRecord();
   } catch (error) {
     line.harnessError = error instanceof BrowserScenarioError ? error.message : "browser_scenarios_run_failed";
     line.harnessStage = stage;
-    return { blocked, costUsd, inputTokens, outputTokens, rounds, scenario: scenario.id, success: false, toolCalls, wallSeconds };
+    success = false;
+    return measuredRecord();
   } })();
   line.success = measured.success;
   const { cleaned, ...cleanup } = await cleanUpRun({
@@ -553,6 +590,7 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
   Object.assign(line, cleanup);
   emit(line);
   if (!cleaned) fail("cleanup_failed");
+  if (boundsRejected) fail("bounds_unexpected");
   return measured;
 }
 
@@ -571,6 +609,7 @@ async function main() {
   const scenarios = selectedScenarios(process.env.AIQSA_BROWSER_SCENARIOS_SELECT);
   const runs = boundedInteger(process.env.AIQSA_BROWSER_SCENARIOS_RUNS, 2, 1, 5, "runs_invalid");
   const marginSeconds = boundedInteger(process.env.AIQSA_BROWSER_SCENARIOS_MARGIN_SECONDS, 600, 60, 3_600, "margin_invalid");
+  const expectBounds = boundsExpectation(process.env.AIQSA_BROWSER_SCENARIOS_EXPECT_BOUNDS);
   const label = process.env.AIQSA_BROWSER_SCENARIOS_LABEL?.trim() || "unlabelled";
   if (!/^[A-Za-z0-9._/-]{1,80}$/u.test(label)) fail("label_invalid");
   const route = codexLbRoute(readFileSync(join(homedir(), ".codex", "config.toml"), "utf8"));
@@ -608,8 +647,8 @@ async function main() {
     emit({ stage: "ready", label, project: target.project, provider: "codex-lb", model: route.model,
       chatRoute: chat.route, chatModel: chat.route === "openrouter" ? chat.model : route.model, chatImageInput: model.capabilities.imageInput,
       contextWindow: chatProvider.contextWindow, reused: chatProvider.reused, systemVision: true, workspaceInternet: true,
-      configuredBounds: target.configuredBounds, scenarios, runs });
-    const context: RunContext = { api, db, keepChats: process.env.AIQSA_BROWSER_SCENARIOS_KEEP_CHATS === "1",
+      configuredBounds: target.configuredBounds, expectBounds, scenarios, runs });
+    const context: RunContext = { api, db, expectBounds, keepChats: process.env.AIQSA_BROWSER_SCENARIOS_KEEP_CHATS === "1",
       marginSeconds, model, standBounds: target.configuredBounds };
     // Runs interleave scenarios, so one site is not hit back to back.
     for (let run = 1; run <= runs; run += 1) {
