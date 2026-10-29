@@ -1,5 +1,9 @@
 import { WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
 
+/** Environments of the runs one shared Workspace serves: the newest of them, within the file bound. */
+const WORKSPACE_RUN_ENVIRONMENTS_KEPT = 24;
+const WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES = 4 * 262_144;
+
 /** Static code; secret bytes travel on stdin, never in executable source. */
 export const INSTALL_WORKSPACE_SECRETS = String.raw`
 import base64, json, os, pathlib, shutil, stat, subprocess, sys, tempfile
@@ -28,13 +32,28 @@ try:
     directory(managed)
     directory(managed / 'browser')
     same_run = False
+    # The runs of one shared Workspace each keep their own environment: a later run's install never replaces an
+    # attached run's values. The newest ${WORKSPACE_RUN_ENVIRONMENTS_KEPT} runs are kept, oldest dropped first.
+    runs = []
     marker = managed / '.environment.json'
     if marker.exists() or marker.is_symlink():
         fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 262144: raise ValueError('run_marker_invalid')
-            same_run = json.loads(stream.read(262145)).get('runId') == data['runId']
+            if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES}: raise ValueError('run_marker_invalid')
+            previous = json.loads(stream.read(${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES + 1}))
+        if isinstance(previous.get('runs'), list):
+            runs = [entry for entry in previous['runs'] if isinstance(entry, dict) and isinstance(entry.get('runId'), str)]
+        elif isinstance(previous.get('runId'), str):
+            runs = [{'runId': previous['runId'], 'values': previous.get('values', {})}]
+        same_run = any(entry['runId'] == data['runId'] for entry in runs)
+    runs = [entry for entry in runs if entry['runId'] != data['runId']]
+    runs.append({'runId': data['runId'], 'values': data['environment']})
+    runs = runs[-${WORKSPACE_RUN_ENVIRONMENTS_KEPT}:]
+    environments = json.dumps({'runs': runs}, ensure_ascii=False).encode('utf-8')
+    while len(environments) > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES} and len(runs) > 1:
+        runs = runs[1:]
+        environments = json.dumps({'runs': runs}, ensure_ascii=False).encode('utf-8')
     directory(pathlib.Path('/root'))
     ssh_home = pathlib.Path('/root/.ssh')
     directory(ssh_home)
@@ -76,7 +95,7 @@ try:
         ssh_config += '  IdentitiesOnly yes\n' + ''.join('  IdentityFile ' + path + '\n' for path in identities)
     write(temporary / 'ssh_config', ssh_config.encode())
     write(temporary / 'user_config', include + b'\n' + existing_config + b'\n')
-    write(temporary / '.environment.json', json.dumps({'runId': data['runId'], 'values': data['environment']}, ensure_ascii=False).encode('utf-8'))
+    write(temporary / '.environment.json', environments)
     write(temporary / 'guide', data['guide'].encode('utf-8'))
     for name in ['ssh', 'files']:
         remove(managed / name)
@@ -105,10 +124,12 @@ try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 262144: raise ValueError('invalid')
-            data = json.loads(stream.read(262145))
-        if data['runId'] != sys.argv[1]: raise ValueError('stale')
-        print(json.dumps(data['values'], ensure_ascii=False))
+            if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES}: raise ValueError('invalid')
+            data = json.loads(stream.read(${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES + 1}))
+        runs = data['runs'] if isinstance(data.get('runs'), list) else [data]
+        values = next((entry['values'] for entry in runs if isinstance(entry, dict) and entry.get('runId') == sys.argv[1]), None)
+        if values is None: raise ValueError('stale')
+        print(json.dumps(values, ensure_ascii=False))
 except BaseException:
     sys.exit(1)
 `;
