@@ -275,6 +275,8 @@ class AgentLive:
     async def control(self, action: Any) -> None:
         self.hub.touched(self.agent)
         if action == "take":
+            if getattr(self.hub.host, "_closing", False):
+                raise _live.LiveError("browser_unavailable")
             if self.hub.target(self.agent) is None:
                 raise _live.LiveError("no_page")
             if not self.handoff and self.controller != "user":
@@ -327,6 +329,8 @@ class AgentLive:
         self.hub.touched(self.agent)
         action = message.get("action")
         if action == "begin":
+            if getattr(self.hub.host, "_closing", False):
+                raise _live.LiveError("browser_unavailable")
             if self.page() is None:
                 raise _live.LiveError("no_page")
             self.handoff = True
@@ -597,10 +601,10 @@ class LiveHub:
             pass
 
     def agent_held_by_user(self, agent: str) -> bool:
-        """Whether the user holds the agent's tab (Take control) or a handoff of that agent is pending: the host must not
+        """Whether the user holds or is taking the agent's tab, or its handoff is pending: the host must not
         expire that agent's slot or close its tabs meanwhile."""
         live = self.agents.get(agent)
-        return live is not None and (live.controller == "user" or live.handoff)
+        return live is not None and (live.controller == "user" or live.handoff or not live.agent_turn.is_set())
 
     def selected_by_user(self, agent: str) -> None:
         """Tabs the user's own input opens belong to the agent whose tab the view shows (the host's choice)."""

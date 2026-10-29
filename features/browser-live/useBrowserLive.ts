@@ -78,9 +78,9 @@ export function useBrowserLive(
   /**
    * Set the moment the user ends control (Done, Cancel, Return control): new input is refused at once, and a
    * late `browser_live_not_in_control` is the user's own doing, not news. Cleared when a new control period
-   * starts (the agent held the browser, then the user has it again), on Take control, or when ending failed.
+   * starts (the agent held the browser, then the user has it again), another agent is selected, or ending failed.
    */
-  const endingRef = useRef<{ sawAgent: boolean } | null>(null);
+  const endingRef = useRef<{ agent: string | null; sawAgent: boolean } | null>(null);
 
   // One stream per open panel of a chat, and one input queue beside it.
   const stream = useMemo(() => open ? new BrowserLiveStream(chatId, openEventSource) : null, [chatId, open, openEventSource]);
@@ -113,7 +113,8 @@ export function useBrowserLive(
     stateRef.current = snapshot.state;
     streamRef.current = stream;
     const ending = endingRef.current;
-    if (ending && snapshot.state?.controller === "agent") ending.sawAgent = true;
+    if (ending && ending.agent !== snapshot.state?.selected) endingRef.current = null;
+    else if (ending && snapshot.state?.controller === "agent") ending.sawAgent = true;
     else if (ending?.sawAgent && snapshot.state?.controller === "user") endingRef.current = null;
   }, [snapshot.state, stream]);
 
@@ -147,7 +148,7 @@ export function useBrowserLive(
     setFailureEntry(null);
     const queue = queueRef.current;
     // This operation's own ending latch: a later result may clear only the latch its operation set.
-    const ending = endsShownControl ? { sawAgent: false } : null;
+    const ending = endsShownControl ? { agent: stateRef.current?.selected ?? null, sawAgent: false } : null;
     if (ending) endingRef.current = ending;
     try {
       if (ending && action === "cancel") queue?.clearExceptReleases();
