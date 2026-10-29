@@ -4,6 +4,7 @@ import {
   isActiveSubagentState,
   type EndedSubagentCallResult
 } from "../../../contracts/subagents";
+import { randomUUID } from "node:crypto";
 import { decideUsageAdmission } from "../../../domain/usageLimits";
 import { logEvent } from "../../observability";
 import type {
@@ -41,7 +42,12 @@ export const SUBAGENT_BACKGROUND_TURN_MS = 60 * 60_000;
 /** How long a stop waits for the turn to settle before answering with what is on record. */
 const STOP_WAIT_MS = 20_000;
 
-/** The thread's mailbox holds `SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun` messages; the port has no refusal for more. */
+/**
+ * The thread's mailbox holds `SUBAGENT_FOLLOWUP_LIMITS.messagesPerRun`
+ * messages and the port has no refusal for more: `deliver` throws this, and
+ * the engine's `call_subagent` handler returns it as the visible refusal
+ * `code` (`subagent_message_invalid`), never a failed call.
+ */
 export class SubagentMailboxFullError extends Error {
   readonly code = SUBAGENT_ERROR_CODES.messageInvalid;
 
@@ -51,16 +57,10 @@ export class SubagentMailboxFullError extends Error {
   }
 }
 
-/** A turn that could not start (its Workspace refused it): it fails with this code. */
-class SubagentTurnStartError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-    this.name = "SubagentTurnStartError";
-  }
-}
-
 type Execution = {
+  /** Resolves once the turn settled here, or its admission was refused. */
   done: Promise<void>;
+  finish: () => void;
   handle: SubagentTurnHandle | null;
   name: string;
   runId: string;
@@ -74,7 +74,7 @@ const globalExecutions = globalThis as typeof globalThis & { [EXECUTIONS]?: Map<
 const executions = globalExecutions[EXECUTIONS] ??= new Map<string, Execution>();
 
 export type SubagentBackgroundOperations = SubagentBackgroundControl & Readonly<{
-  /** The user's Stop on a thread (`user_stop`): its active turn, wherever it runs. Returns the turns stopped. */
+  /** The user's Stop on a thread (`user_stop`): its active turn, wherever it runs. Returns the turns that ended. */
   stopThread(input: SubagentChatScope & Readonly<{ threadId: string }>): Promise<number>;
   /** "Stop all": every active turn of the chat, every branch (`stop_all`). */
   stopAll(input: SubagentChatScope): Promise<number>;
@@ -86,6 +86,7 @@ export type SubagentBackgroundOperations = SubagentBackgroundControl & Readonly<
 
 export type SubagentBackgroundDeps = Readonly<{
   callbacks: SubagentCallbackSink;
+  newId?: () => string;
   now?: () => number;
   registry?: ActiveRunControllerRegistry;
   /** The engine's runner; without it background mode is unavailable and only stops, recovery and views work. */
@@ -94,7 +95,11 @@ export type SubagentBackgroundDeps = Readonly<{
   store: SubagentBackgroundStore;
   turnTimeMs?: number;
   usageLimits: Pick<UsageLimitsRepository, "loadUsageLimitStatus">;
-  /** The chat's shared Workspace; a run whose parent has none never attaches. */
+  /**
+   * The chat's shared Workspace. Every background run asks to attach; one it
+   * refuses (no Workspace in the run, or not now) runs unattached, and its
+   * Workspace calls are refused visibly where they are made.
+   */
   workspace?: WorkspaceAttachments;
 }>;
 
@@ -107,6 +112,7 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
 
 export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): SubagentBackgroundOperations {
   const now = deps.now ?? Date.now;
+  const newId = deps.newId ?? randomUUID;
   const registry = deps.registry ?? activeRunControllerRegistry;
   const turnTimeMs = deps.turnTimeMs ?? SUBAGENT_BACKGROUND_TURN_MS;
   const stopWaitMs = deps.stopWaitMs ?? STOP_WAIT_MS;
@@ -140,7 +146,7 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
   /**
    * Sends a settled turn's callback without holding its caller: the wake-up
    * turn it may admit runs the whole send pipeline, and Stop answers once the
-   * turn has settled. A failure leaves it owed for the next terminal flush.
+   * turn has settled. A failure leaves it owed for recovery's flush.
    */
   function callBack(callback: Parameters<SubagentCallbackSink["deliver"]>[0], runId: string | null): void {
     void deps.callbacks.deliver(callback).catch((error: unknown) => {
@@ -149,43 +155,62 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     });
   }
 
-  function launch(input: SubagentBackgroundStartInput, admitted: Readonly<{ runId: string; turnId: string; workspace: boolean }>,
-    runner: SubagentRunner): void {
-    const lease = registry.register(admitted.runId);
+  /**
+   * The execution of a turn about to be admitted, registered before its
+   * admission is visible, so a Stop that finds the admitted turn finds its
+   * execution too: it marks it stopped and waits for `done`, and the launch
+   * then settles it as stopped without ever running it.
+   */
+  function pendingExecution(input: SubagentBackgroundStartInput, ids: Readonly<{ runId: string; turnId: string }>) {
+    const lease = registry.register(ids.runId);
+    let finish: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => { finish = resolve; });
+    const execution: Execution = { done, finish, handle: null, name: input.name, runId: ids.runId,
+      scope: { chatId: input.chatId, userId: input.userId }, stopReason: null };
+    executions.set(ids.turnId, execution);
+    return { abandon() {
+      lease?.release();
+      if (executions.get(ids.turnId) === execution) executions.delete(ids.turnId);
+      execution.finish();
+    }, execution, lease };
+  }
+
+  function launch(input: SubagentBackgroundStartInput, ids: Readonly<{ runId: string; turnId: string }>, runner: SubagentRunner,
+    pending: ReturnType<typeof pendingExecution>): void {
+    const { execution, lease } = pending;
     const signal = lease?.signal ?? new AbortController().signal;
-    const scope = { chatId: input.chatId, userId: input.userId };
-    const execution: Execution = { done: Promise.resolve(), handle: null, name: input.name, runId: admitted.runId, scope,
-      stopReason: null };
-    executions.set(admitted.turnId, execution);
+    const scope = execution.scope;
     const deadlineAt = new Date(now() + turnTimeMs);
-    execution.done = (async () => {
-      const deadline = setTimeout(() => void stopLocal(admitted.turnId, "deadline"), turnTimeMs);
+    void (async () => {
+      const deadline = setTimeout(() => void stopLocal(ids.turnId, "deadline"), turnTimeMs);
       (deadline as { unref?: () => void }).unref?.();
       let attached = false;
       let executionUnknown = false;
       let result: EndedSubagentCallResult;
       try {
-        if (deps.workspace && admitted.workspace) {
+        // A Stop that came between admission and launch: the turn never runs.
+        if (!execution.stopReason && deps.workspace) {
           const attach = await deps.workspace.attach({ ...scope, agent: { kind: "subagent", name: input.name, threadId: input.threadId },
-            modelRunId: admitted.runId }, signal);
-          if (attach.kind === "refused") throw new SubagentTurnStartError(attach.code);
-          attached = true;
+            modelRunId: ids.runId }, signal);
+          attached = attach.kind === "attached";
+          if (attach.kind === "refused") {
+            logEvent("run_execution", { code: "subagent_workspace_unattached", outcome: "failed", run_id: ids.runId, stage: "dispatch" });
+          }
         }
-        const turn = { ...scope, binding: input.binding, brief: input.brief, deadlineAt, hostRunId: admitted.runId,
+        if (execution.stopReason) throw new Error("subagent_stopped_before_start");
+        const turn = { ...scope, binding: input.binding, brief: input.brief, deadlineAt, hostRunId: ids.runId,
           mode: "background" as const, name: input.name, parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
-          signal, threadId: input.threadId, turnId: admitted.turnId, type: input.type, userMessage: input.userMessage };
+          signal, threadId: input.threadId, turnId: ids.turnId, type: input.type, userMessage: input.userMessage };
         const handle = input.kind === "start" ? await runner.start(turn) : await runner.continue(turn);
         execution.handle = handle;
         if (execution.stopReason) await runner.stop(handle, execution.stopReason);
         result = await runner.wait(handle);
       } catch (error) {
-        const startCode = error instanceof SubagentTurnStartError ? error.code : null;
-        executionUnknown = startCode === null && execution.stopReason === null;
-        result = impliedResult({ modelId: input.binding.modelId, name: input.name,
-          reason: execution.stopReason ?? (startCode && /^[a-z][a-z0-9_]{0,63}$/u.test(startCode) ? startCode : "subagent_run_failed"),
+        executionUnknown = execution.stopReason === null;
+        result = impliedResult({ modelId: input.binding.modelId, name: input.name, reason: execution.stopReason ?? "subagent_run_failed",
           reasoningEffort: input.binding.reasoningEffort, state: execution.stopReason ? "stopped" : "failed" });
         if (executionUnknown) {
-          logEvent("run_execution", { code: "subagent_run_failed", error, outcome: "failed", run_id: admitted.runId, stage: "dispatch" });
+          logEvent("run_execution", { code: "subagent_run_failed", error, outcome: "failed", run_id: ids.runId, stage: "dispatch" });
         }
       } finally {
         clearTimeout(deadline);
@@ -196,20 +221,18 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
       }
       // Guest authority is retired before the turn settles: its processes are proven stopped, or the VM stops.
       if (attached && deps.workspace) {
-        await deps.workspace.detach({ ...scope, execution: executionUnknown ? "unknown" : "settled", modelRunId: admitted.runId })
+        await deps.workspace.detach({ ...scope, execution: executionUnknown ? "unknown" : "settled", modelRunId: ids.runId })
           .catch((error: unknown) => logEvent("run_execution", { code: "subagent_workspace_detach_failed", error, outcome: "failed",
-            run_id: admitted.runId, stage: "completion" }));
+            run_id: ids.runId, stage: "completion" }));
       }
-      const ended = await settle(execution, admitted.turnId, result);
-      lease?.release();
-      if (executions.get(admitted.turnId) === execution) executions.delete(admitted.turnId);
+      const ended = await settle(execution, ids.turnId, result);
+      pending.abandon();
       if (ended) callBack({ ...scope, name: input.name, parentRunId: input.parentRunId, result: ended, threadId: input.threadId,
-        turnId: admitted.turnId }, admitted.runId);
-    })();
-    void execution.done.catch(() => undefined);
+        turnId: ids.turnId }, ids.runId);
+    })().catch(() => pending.abandon());
   }
 
-  /** Stops a turn executing here; false when none is. */
+  /** Stops a turn executing here and waits a bounded time for it to settle; false when none executes here. */
   async function stopLocal(turnId: string, reason: SubagentStopReason): Promise<boolean> {
     const execution = executions.get(turnId);
     if (!execution) return false;
@@ -223,32 +246,42 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
     return true;
   }
 
+  /**
+   * Ends a turn and returns how it ended. A background turn executing here is
+   * stopped and awaited; one that does not settle within the bound, or that
+   * no execution here owns (a restart cut it), is settled as stopped on
+   * record, like a run's durable cancellation, and its execution's later
+   * settlement changes nothing. Null only for a foreground turn the engine
+   * could not stop.
+   */
   async function stopTurn(turn: SubagentTurnRecord, reason: SubagentStopReason): Promise<EndedSubagentCallResult | null> {
     if (!isActiveSubagentState(turn.state)) return turn.result;
     if (turn.mode === "foreground") {
       return await deps.runner?.stop({ turnId: turn.turnId }, reason).catch(() => null) ?? null;
     }
-    if (!(await stopLocal(turn.turnId, reason))) {
-      // No execution of this process owns it (a restart cut it): it ends here, with its callback.
-      const result = impliedResult({ modelId: turn.model.id, name: turn.name, reason, reasoningEffort: turn.model.effort,
-        state: "stopped" });
-      if (turn.runId) {
-        await deps.workspace?.detach({ chatId: turn.chatId, execution: "unknown", modelRunId: turn.runId, userId: turn.userId })
-          .catch(() => undefined);
-      }
-      const settlement = await deps.store.settle({ chatId: turn.chatId, result, turnId: turn.turnId, userId: turn.userId });
-      if (settlement.settled && settlement.result) {
-        callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
-          threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
-      }
-    }
+    const local = await stopLocal(turn.turnId, reason);
     const current = await deps.store.findTurn({ chatId: turn.chatId, turnId: turn.turnId, userId: turn.userId });
-    return current?.result ?? null;
+    if (current && !isActiveSubagentState(current.state)) return current.result;
+    if (!local && turn.runId) {
+      await deps.workspace?.detach({ chatId: turn.chatId, execution: "unknown", modelRunId: turn.runId, userId: turn.userId })
+        .catch(() => undefined);
+    }
+    const result = impliedResult({ modelId: turn.model.id, name: turn.name, reason, reasoningEffort: turn.model.effort, state: "stopped" });
+    const settlement = await deps.store.settle({ chatId: turn.chatId, result, turnId: turn.turnId, userId: turn.userId });
+    if (settlement.settled && settlement.result) {
+      callBack({ chatId: turn.chatId, name: turn.name, parentRunId: turn.parentRunId, result: settlement.result,
+        threadId: turn.threadId, turnId: turn.turnId, userId: turn.userId }, turn.runId);
+    }
+    return settlement.result;
   }
 
+  /** Stops each turn; counts the turns that ended, so a turn still running is never reported stopped. */
   async function stopMany(turns: readonly SubagentTurnRecord[], reason: SubagentStopReason): Promise<number> {
-    const stopped = await Promise.all(turns.map(async (turn) => (await stopTurn(turn, reason).catch(() => null)) !== null));
-    return stopped.filter(Boolean).length;
+    const ended = await Promise.all(turns.map(async (turn) => {
+      const result = await stopTurn(turn, reason).catch(() => null);
+      return result !== null && !isActiveSubagentState(result.state);
+    }));
+    return ended.filter(Boolean).length;
   }
 
   return Object.freeze({
@@ -265,12 +298,23 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         return { code: SUBAGENT_ERROR_CODES.backgroundUnavailable, kind: "refused" };
       }
       if (!(await usageAllows(input.userId))) return { code: SUBAGENT_ERROR_CODES.usageLimited, kind: "refused" };
-      const admission = await deps.store.admit({ binding: input.binding, chatId: input.chatId,
-        definitionRevisionId: input.type?.revisionId ?? null, parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
-        threadId: input.threadId, userId: input.userId });
-      if (admission.kind === "refused") return admission;
-      launch(input, admission, runner);
-      return { kind: "started", name: input.name, state: "running", turnId: admission.turnId };
+      const ids = { runId: newId(), turnId: newId() };
+      const pending = pendingExecution(input, ids);
+      let admission: Awaited<ReturnType<SubagentBackgroundStore["admit"]>>;
+      try {
+        admission = await deps.store.admit({ binding: input.binding, chatId: input.chatId,
+          definitionRevisionId: input.type?.revisionId ?? null, parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId,
+          runId: ids.runId, threadId: input.threadId, turnId: ids.turnId, userId: input.userId });
+      } catch (error) {
+        pending.abandon();
+        throw error;
+      }
+      if (admission.kind === "refused") {
+        pending.abandon();
+        return admission;
+      }
+      launch(input, ids, runner, pending);
+      return { kind: "started", name: input.name, state: "running", turnId: ids.turnId };
     },
 
     async deliver(input: SubagentBackgroundMessageInput): Promise<SubagentDeliveryOutcome> {
@@ -286,10 +330,10 @@ export function createSubagentBackgroundControl(deps: SubagentBackgroundDeps): S
         const current = await deps.store.findTurn({ chatId: input.chatId, turnId: turn.turnId, userId: input.userId });
         return current?.result ? { kind: "ended", result: current.result } : { kind: "not_found" };
       }
-      const outcome = deps.runner && executions.has(turn.turnId)
-        ? await deps.runner.deliver({ turnId: turn.turnId }, input.message)
-        // On record in its mailbox, but no execution of this process runs it: recovery ends it, with its callback.
-        : { kind: "delivered" as const, state: turn.state };
+      // On record in its mailbox but no execution of this process reads it (a restart cut it): accepted, never stamped
+      // delivered, so it stays undelivered once recovery ends the turn interrupted.
+      if (!deps.runner || !executions.has(turn.turnId)) return { kind: "delivered", state: turn.state };
+      const outcome = await deps.runner.deliver({ turnId: turn.turnId }, input.message);
       if (outcome.kind === "delivered") {
         await deps.store.markMailboxDelivered({ chatId: input.chatId, nonce: input.message.nonce, runId: turn.runId, userId: input.userId });
       }

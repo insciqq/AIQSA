@@ -151,14 +151,62 @@ describe("background sub-agent runs", () => {
     expect(sink.callbacks).toHaveLength(1);
   });
 
-  it("fails a turn whose Workspace refuses it, visibly, and never runs it", async () => {
+  it("runs a turn its Workspace refuses unattached, so its Workspace calls are refused where they are made", async () => {
     const store = new MemorySubagentStore();
     store.callers.add("parent-run");
     const runner = new FakeSubagentRunner();
     const control = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink(), runner, store,
       usageLimits: unlimited, workspace: new FakeWorkspaceAttachments({ refuseAttach: "workspace_unavailable" }) });
-    await control.start(startInput("nows"));
-    await vi.waitFor(() => expect(store.turns[0]).toMatchObject({ result: { reason: "workspace_unavailable" }, state: "failed" }));
+    const started = await control.start(startInput("nows"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(runner.turns.get(turnId)).toBeDefined());
+    await control.stopAll({ chatId: "chat-1", userId: "user-1" });
+  });
+
+  it("never runs a turn stopped between its admission becoming visible and its launch", async () => {
+    const { control, runner, sink, store } = setup();
+    let release: () => void = () => undefined;
+    store.admitGate = () => new Promise<void>((resolve) => { release = resolve; });
+    const starting = control.start(startInput("raced"));
+    await vi.waitFor(() => expect(store.turns).toHaveLength(1));
+    const stopping = control.stopAll({ chatId: "chat-1", userId: "user-1" });
+    await vi.waitFor(() => expect(activeRunControllerRegistry.has(store.turns[0]!.runId!)).toBe(false));
+    release();
+    expect(await starting).toMatchObject({ kind: "started" });
+    expect(await stopping).toBe(1);
+    expect(store.turns[0]).toMatchObject({ result: { reason: "stop_all" }, state: "stopped" });
     expect(runner.turns.size).toBe(0);
+    expect(sink.callbacks).toHaveLength(1);
+  });
+
+  it("never stamps a message delivered that no execution here will read", async () => {
+    const { control, store } = setup();
+    store.turns.push({ callbackRunId: null, chatId: "chat-1", endedAt: null, mailbox: [], mode: "background", modelId: "m", name: "cut",
+      parentAnswerId: "answer-1", parentRunId: "parent-run", result: null, runActive: true, runId: "cut-run", state: "running",
+      threadId: "thread-cut", turnId: "cut-turn", userId: "user-1" });
+    expect(await control.deliver({ chatId: "chat-1", message: { nonce: "m1", origin: "main_agent", text: "Hello" }, name: "cut",
+      parentRunId: "parent-run", parentToolCallId: "c", threadId: "thread-cut", userId: "user-1" })).toEqual({ kind: "delivered", state: "running" });
+    expect(store.turns[0]!.mailbox).toEqual([{ delivered: false, nonce: "m1", text: "Hello" }]);
+  });
+
+  it("settles a turn its runner does not stop in time as stopped on record, and counts only turns that ended", async () => {
+    const store = new MemorySubagentStore();
+    store.callers.add("parent-run");
+    const stuck = new FakeSubagentRunner();
+    // A wedged runner: it neither honours Stop nor the signal.
+    stuck.stop = async () => null;
+    const sink = new FakeSubagentCallbackSink();
+    const control = createSubagentBackgroundControl({ callbacks: sink, runner: stuck, stopWaitMs: 20, store, usageLimits: unlimited });
+    const started = await control.start(startInput("wedged"));
+    const turnId = started.kind === "started" ? started.turnId : "";
+    await vi.waitFor(() => expect(stuck.turns.get(turnId)).toBeDefined());
+    expect(await control.stop({ chatId: "chat-1", name: "wedged", parentRunId: "parent-run", parentToolCallId: "s", userId: "user-1" }))
+      .toMatchObject({ kind: "stopped", result: { reason: "stop_subagent", state: "stopped" } });
+    expect(store.turns[0]).toMatchObject({ state: "stopped" });
+    // Its execution ends later; the record and the single callback stand.
+    stuck.finish(turnId, endedSubagentResult("wedged", { report: "late" }));
+    await vi.waitFor(() => expect(localSubagentTurnIds()).not.toContain(turnId));
+    expect(store.turns[0]).toMatchObject({ result: { report: "" }, state: "stopped" });
+    expect(sink.callbacks).toHaveLength(1);
   });
 });

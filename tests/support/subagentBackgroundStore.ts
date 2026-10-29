@@ -13,6 +13,7 @@ import {
   type BackgroundOrphan,
   type CallbackIntoRunOutcome,
   type MailboxInsertOutcome,
+  type OwedCallbackChat,
   type OwedCallbacks,
   type SubagentAdmission,
   type SubagentAdmissionInput,
@@ -20,6 +21,7 @@ import {
   type SubagentSettlement,
   type SubagentTurnRecord
 } from "@/lib/server/runs/subagentBackground/store";
+import { renderCallbackFollowup } from "@/lib/server/runs/subagentBackground/render";
 
 /**
  * An in-memory `SubagentBackgroundStore` for the focused tests of the
@@ -63,6 +65,7 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
   threads = new Map<string, string>();
   orphans: BackgroundOrphan[] = [];
   strandedInterrupts = 0;
+  admitGate: (() => Promise<void>) | null = null;
   private sequence = 0;
 
   private record(turn: MemoryTurn): SubagentTurnRecord {
@@ -89,13 +92,14 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     const active = this.turns.filter((turn) => turn.chatId === input.chatId && isActiveSubagentState(turn.state));
     if (active.some((turn) => turn.threadId === input.threadId)) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
     if (active.length >= SUBAGENT_LIMITS.runningPerChat) return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" };
-    const id = ++this.sequence;
     const turn: MemoryTurn = { callbackRunId: null, chatId: input.chatId, endedAt: null, mailbox: [], mode: "background",
       modelId: input.binding.modelId, name: this.threads.get(input.threadId) ?? input.threadId.replace(/^thread-/u, ""), parentAnswerId: "answer-1",
-      parentRunId: input.parentRunId, result: null, runActive: true, runId: `bg-run-${id}`, state: "running",
-      threadId: input.threadId, turnId: `bg-turn-${id}`, userId: input.userId };
+      parentRunId: input.parentRunId, result: null, runActive: true, runId: input.runId, state: "running",
+      threadId: input.threadId, turnId: input.turnId, userId: input.userId };
     this.turns.push(turn);
-    return { kind: "admitted", runId: turn.runId!, turnId: turn.turnId, workspace: true };
+    // A test may hold the admission after it is visible, as a committed transaction would be (`admitGate`).
+    await this.admitGate?.();
+    return { kind: "admitted", runId: input.runId, turnId: input.turnId };
   }
 
   async settle(input: SubagentChatScope & Readonly<{ result: EndedSubagentCallResult; turnId: string }>): Promise<SubagentSettlement> {
@@ -151,13 +155,14 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
     };
   }
 
-  async deliverIntoRun(input: SubagentChatScope & Readonly<{ runId: string; text: string; turnId: string }>): Promise<CallbackIntoRunOutcome> {
+  async deliverIntoRun(input: SubagentChatScope & Readonly<{ runId: string; turnId: string }>): Promise<CallbackIntoRunOutcome> {
     const run = this.mainRuns.find((candidate) => candidate.runId === input.runId);
     if (!run?.open) return "closed";
     const turn = this.turns.find((candidate) => candidate.turnId === input.turnId);
-    if (!turn || turn.callbackRunId !== null) return "claimed";
+    if (!turn?.result || turn.callbackRunId !== null) return "claimed";
     turn.callbackRunId = run.runId;
-    run.callbacks.push({ text: input.text, turnId: input.turnId });
+    run.callbacks.push({ text: renderCallbackFollowup({ name: turn.name, result: turn.result, turnId: turn.turnId }, { tokens: 2_048 }),
+      turnId: input.turnId });
     return "delivered";
   }
 
@@ -176,6 +181,18 @@ export class MemorySubagentStore implements SubagentBackgroundStore {
 
   async findOrphans(): Promise<readonly BackgroundOrphan[]> {
     return this.orphans;
+  }
+
+  async findOwedCallbackChats(): Promise<readonly OwedCallbackChat[]> {
+    const chats = new Map<string, { chatId: string; turnIds: string[]; userId: string }>();
+    for (const turn of this.turns) {
+      if (turn.mode !== "background" || turn.endedAt === null || turn.callbackRunId !== null || this.goneChats.has(turn.chatId)) continue;
+      if (this.mainRuns.some((run) => run.chatId === turn.chatId && run.status === "streaming")) continue;
+      const chat = chats.get(turn.chatId) ?? { chatId: turn.chatId, turnIds: [], userId: turn.userId };
+      chat.turnIds.push(turn.turnId);
+      chats.set(turn.chatId, chat);
+    }
+    return [...chats.values()];
   }
 
   async interruptStrandedForegroundTurns(): Promise<number> {

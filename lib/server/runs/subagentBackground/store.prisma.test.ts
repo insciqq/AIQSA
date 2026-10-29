@@ -13,11 +13,17 @@ import type { UsageLimitStatus } from "../../usageLimits/repository";
 import { FakeSubagentCallbackSink, FakeSubagentRunner, endedSubagentResult } from "../../../../tests/support/subagentPorts";
 import { createPrismaRunRepository } from "../prismaRepository";
 import { createPrismaRunFollowupOperations } from "../prismaRepositoryFollowups";
+import { followupTokenCost } from "../runFollowups";
 import type { CreateRunInput, CreatedRun } from "../runRepositoryContract";
 import { createSubagentCallbacks } from "./callbacks";
 import { createSubagentBackgroundControl } from "./control";
 import { reconcileSubagentRuns } from "./recovery";
-import { SubagentCallbackClaimConflictError, claimSubagentCallbacksForRun, createPrismaSubagentBackgroundStore } from "./store";
+import {
+  SubagentCallbackClaimConflictError,
+  claimSubagentCallbacksForRun,
+  createPrismaSubagentBackgroundStore,
+  lockChatSubagentAdmission
+} from "./store";
 import { createSubagentViews } from "./views";
 
 /**
@@ -92,7 +98,7 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
 
 function admission(f: Fixture, thread: Readonly<{ callId: string; threadId: string }>) {
   return { binding, chatId: f.chatId, definitionRevisionId: null, parentRunId: f.main.runId, parentToolCallId: thread.callId,
-    threadId: thread.threadId, userId: f.userId };
+    runId: randomUUID(), threadId: thread.threadId, turnId: randomUUID(), userId: f.userId };
 }
 
 function control(runner = new FakeSubagentRunner(), sink = new FakeSubagentCallbackSink("pending")) {
@@ -139,7 +145,7 @@ describe("background sub-agent runs on PostgreSQL", () => {
     await store.settle({ chatId: f.chatId, result: endedSubagentResult("researcher", { report: "Five products" }), turnId: admitted.turnId,
       userId: f.userId });
     const [delivered, closed] = await Promise.all([
-      store.deliverIntoRun({ chatId: f.chatId, runId: f.main.runId, text: "callback", turnId: admitted.turnId, userId: f.userId }),
+      store.deliverIntoRun({ chatId: f.chatId, runId: f.main.runId, turnId: admitted.turnId, userId: f.userId }),
       followups.close({ revision: 0, runId: f.main.runId, userId: f.userId })
     ]);
     expect(Number(delivered === "delivered") + Number(closed)).toBe(1);
@@ -155,7 +161,7 @@ describe("background sub-agent runs on PostgreSQL", () => {
         .toEqual(["Prefer cheaper ones"]);
       // The claim is once: a wake-up admission for the same callback is refused.
       await expect(prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId,
-        turnIds: [admitted.turnId] }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+        turnIds: [admitted.turnId], userMessageId: f.main.assistantMessageId }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
     } else {
       // The answer closed first: the callback stays owed for its terminal flush.
       expect(turn.callbackRunId).toBeNull();
@@ -231,13 +237,14 @@ describe("background sub-agent runs on PostgreSQL", () => {
       staleBefore: new Date(0) })).toEqual([]);
     const wakeUps: string[][] = [];
     const callbacks = createSubagentCallbacks({ coalesceMs: 20, store, admitWakeUp: async (input) => {
+      // The wake-up's own message hangs from the main answer, so its path holds the callbacks' parent answer.
       await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: f.main.runId,
-        turnIds: input.turnIds }));
+        turnIds: input.turnIds, userMessageId: f.main.assistantMessageId }));
       wakeUps.push([...input.turnIds]);
       return "admitted";
     } });
-    const settled = await reconcileSubagentRuns({ bootedAt: future, flush: callbacks.flush, liveRunIds: () => [], staleMs: 600_000, store },
-      { chatId: f.chatId });
+    const recovery = { bootedAt: future, deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [], staleMs: 600_000, store };
+    const settled = await reconcileSubagentRuns(recovery, { chatId: f.chatId });
     expect(settled).toBe(2);
     expect(await prisma.subagentTurn.findMany({ select: { reasonCode: true, state: true }, where: { id: { in: turnIds } } }))
       .toEqual([{ reasonCode: "restart", state: "interrupted" }, { reasonCode: "restart", state: "interrupted" }]);
@@ -245,7 +252,102 @@ describe("background sub-agent runs on PostgreSQL", () => {
     await expect.poll(() => wakeUps.length).toBe(1);
     expect(wakeUps[0]!.sort()).toEqual([...turnIds].sort());
     // A second pass finds nothing more to do.
-    expect(await reconcileSubagentRuns({ bootedAt: future, flush: callbacks.flush, liveRunIds: () => [], staleMs: 600_000, store },
-      { chatId: f.chatId })).toBe(0);
+    expect(await reconcileSubagentRuns(recovery, { chatId: f.chatId })).toBe(0);
+  }));
+
+  it("copies the parent's request onto the background run and keeps the 20 cap across foreground and background admissions", async () => fixture(async (f) => {
+    const first = await store.admit(admission(f, await f.thread("copy")));
+    if (first.kind !== "admitted") throw new Error("not admitted");
+    const [parent, own] = await Promise.all([f.main.runId, first.runId].map((id) =>
+      prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id } })));
+    expect(own!.normalizedRequest).toEqual(parent!.normalizedRequest);
+    expect(await prisma.mcpRunBinding.count({ where: { modelRunId: first.runId } })).toBe(0);
+    for (let index = 1; index < 19; index += 1) expect((await store.admit(admission(f, await f.thread(`bg-${index}`)))).kind).toBe("admitted");
+    // The engine's foreground admission under the same chat lock, as `admitForeground` takes it.
+    const foreground = async (thread: Readonly<{ callId: string; threadId: string }>) => prisma.$transaction(async (tx) => {
+      await lockChatSubagentAdmission(tx, f.chatId);
+      const running = await tx.subagentTurn.count({ where: { chatId: f.chatId, state: { in: ["running", "waiting"] } } });
+      if (running >= 20) return false;
+      await tx.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: f.main.runId,
+        parentToolCallId: thread.callId, provider: "fake", threadId: thread.threadId, userId: f.userId } });
+      return true;
+    });
+    const [background, foregroundAdmitted] = await Promise.all([store.admit(admission(f, await f.thread("last-bg"))),
+      foreground(await f.thread("last-fg"))]);
+    expect(Number(background.kind === "admitted") + Number(foregroundAdmitted)).toBe(1);
+    expect(await prisma.subagentTurn.count({ where: { chatId: f.chatId, state: "running" } })).toBe(20);
+    await prisma.subagentTurn.updateMany({ data: { endedAt: new Date(), reasonCode: "restart", state: "interrupted" },
+      where: { chatId: f.chatId, mode: "foreground" } });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("never runs a turn stopped after its admission committed and before it launched", async () => fixture(async (f) => {
+    const thread = await f.thread("raced");
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gated = { ...store, admit: async (input: Parameters<typeof store.admit>[0]) => {
+      const result = await store.admit(input);
+      await gate;
+      return result;
+    } };
+    const runner = new FakeSubagentRunner();
+    const background = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink("pending"), runner, stopWaitMs: 5_000,
+      store: gated, usageLimits: { loadUsageLimitStatus: async () => NO_LIMITS } });
+    const starting = background.start(startInput(f, "raced", thread));
+    await expect.poll(() => prisma.subagentTurn.count({ where: { threadId: thread.threadId } })).toBe(1);
+    const stopping = background.stopAll({ chatId: f.chatId, userId: f.userId });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    expect(await starting).toMatchObject({ kind: "started" });
+    expect(await stopping).toBe(1);
+    expect(runner.turns.size).toBe(0);
+    const turn = await prisma.subagentTurn.findFirstOrThrow({ select: { reasonCode: true, state: true }, where: { threadId: thread.threadId } });
+    expect(turn).toEqual({ reasonCode: "stop_all", state: "stopped" });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+  }));
+
+  it("re-owes a callback the stopped answer never read, wakes nothing on the Stop, and recovery wakes the idle chat once", async () => fixture(async (f) => {
+    const admitted = await store.admit(admission(f, await f.thread("reader")));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    await store.settle({ chatId: f.chatId, result: endedSubagentResult("reader", { report: "r".repeat(12_000) }),
+      turnId: admitted.turnId, userId: f.userId });
+    expect(await store.deliverIntoRun({ chatId: f.chatId, runId: f.main.runId, turnId: admitted.turnId, userId: f.userId })).toBe("delivered");
+    const followup = await prisma.runFollowup.findFirstOrThrow({ where: { subagentTurnId: admitted.turnId } });
+    // Bounded to the run's follow-up reserve (4,096 tokens in the fixture), with the cut mark.
+    expect(followupTokenCost(followup.text)).toBeLessThanOrEqual(4_096);
+    // The user stops the answer before it read the callback.
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    const owed = await store.owedCallbacks({ chatId: f.chatId, userId: f.userId });
+    expect(owed?.activeBranch.map((callback) => callback.turnId)).toEqual([admitted.turnId]);
+    expect(await prisma.runFollowup.count({ where: { subagentTurnId: admitted.turnId } })).toBe(0);
+    // After a restart it is still owed: recovery finds it from the rows alone and wakes the chat once.
+    const earlier = new Date(Date.now() - 60_000);
+    await prisma.subagentTurn.update({ data: { endedAt: earlier, startedAt: earlier }, where: { id: admitted.turnId } });
+    expect(await store.findOwedCallbackChats({ chatId: f.chatId, endedBefore: new Date(), limit: 10 }))
+      .toEqual([{ chatId: f.chatId, turnIds: [admitted.turnId], userId: f.userId }]);
+    const wakeUps: string[][] = [];
+    const callbacks = createSubagentCallbacks({ coalesceMs: 10, store, admitWakeUp: async (input) => {
+      await prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: input.chatId, runId: f.main.runId,
+        turnIds: input.turnIds, userMessageId: f.main.assistantMessageId }));
+      wakeUps.push([...input.turnIds]);
+      return "admitted";
+    } });
+    await reconcileSubagentRuns({ bootedAt: new Date(0), deferred: new Map(), flush: callbacks.flush, liveRunIds: () => [],
+      staleMs: 600_000, store }, { chatId: f.chatId });
+    await expect.poll(() => wakeUps.length).toBe(1);
+    expect(wakeUps[0]).toEqual([admitted.turnId]);
+  }));
+
+  it("refuses to claim a callback into a branch its sub-agent's parent answer is not on", async () => fixture(async (f) => {
+    const admitted = await store.admit(admission(f, await f.thread("old-branch")));
+    if (admitted.kind !== "admitted") throw new Error("not admitted");
+    await store.settle({ chatId: f.chatId, result: endedSubagentResult("old-branch"), turnId: admitted.turnId, userId: f.userId });
+    await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    // The user switched to an edited branch between reading the owed callbacks and the wake-up's admission.
+    const sibling = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent("Edited question"),
+      parentMessageId: null, role: "user", status: "complete" } });
+    await expect(prisma.$transaction((tx) => claimSubagentCallbacksForRun(tx, { chatId: f.chatId, runId: f.main.runId,
+      turnIds: [admitted.turnId], userMessageId: sibling.id }))).rejects.toBeInstanceOf(SubagentCallbackClaimConflictError);
+    expect((await prisma.subagentTurn.findUniqueOrThrow({ where: { id: admitted.turnId } })).callbackRunId).toBeNull();
   }));
 });

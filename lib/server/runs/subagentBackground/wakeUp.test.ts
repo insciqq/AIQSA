@@ -3,9 +3,11 @@ import type { PrismaClient } from "@prisma/client";
 import { createSubagentWakeUpAdmitter, wakeUpOutcomeOf, wakeUpSendBody, type SubagentWakeUpSend } from "./wakeUp";
 
 const request = {
-  mcp: { servers: [], tools: [], version: 1 }, params: { reasoningEffort: "high" },
+  mcp: { servers: [], tools: [], version: 1 }, mcpDiscovery: { catalog: { servers: [] } }, params: { reasoningEffort: "high" },
   prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } },
-  searchPlan: { mode: "all_selected", options: [{ optionId: "web" }] }, skills: { mode: "off" }, workspace: { enabled: true }
+  searchPlan: { mode: "all_selected", options: [{ optionId: "web" }] },
+  skills: { available: [], mode: "off", pinned: [{ alias: "a", name: "Report", revisionId: "r1", skillId: "skill-1" }], version: 2 },
+  workspace: { enabled: true }
 };
 
 describe("sub-agent wake-up turn", () => {
@@ -16,6 +18,14 @@ describe("sub-agent wake-up turn", () => {
       provider: "conn", searchPlan: { mode: "all_selected", optionIds: ["web"] }, skills: { mode: "off" }, timeZone: "Europe/Moscow",
       workspace: { enabled: true } });
     expect(body).not.toHaveProperty("systemTurn");
+    expect(body).toMatchObject({ skillIds: ["skill-1"] });
+    // Load all and Off travel as chosen, never as Auto.
+    const { mcpDiscovery: _discovery, ...loadAll } = request;
+    expect(wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: null, assistantChat: false, normalizedRequest: loadAll }))
+      .toMatchObject({ mcp: { mode: "load_all" } });
+    const { mcp: _mcp, ...off } = loadAll;
+    expect(wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: null, assistantChat: false, normalizedRequest: off }))
+      .toMatchObject({ mcp: { mode: "off" } });
     // An Assistant governs its own model, tools and Search: only the chat's own choices travel.
     expect(Object.keys(wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: null, assistantChat: true,
       normalizedRequest: request })).sort()).toEqual(["admissionId", "content", "expectedActiveLeafId", "timeZone", "workspace"]);
