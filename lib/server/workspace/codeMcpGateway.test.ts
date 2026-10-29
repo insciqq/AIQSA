@@ -346,7 +346,19 @@ describe("Workspace MCP automatic guard", () => {
     const deps = dependencies(memory.store, plan, { approvals });
     await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
     expect(approvals.consume).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1", chatId: "chat-1" }),
-      expect.objectContaining({ serverId: "server-gitlab", definitionHash, guard: expect.objectContaining({ decision: "ask" }) }), "explicit-approval");
+      expect.objectContaining({ serverId: "server-gitlab", definitionHash }), "explicit-approval");
     expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("dispatches a human-approved guest call without calling the paid guard", async () => {
+  const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: [], guard: {
+    plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: []
+  } } }));
+  const guard = vi.fn();
+  const deps = dependencies(memory.store, plan, { guard, approvals: { consume: async () => true, request: vi.fn() } });
+  await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+  expect(guard).not.toHaveBeenCalled();
+  expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
 });

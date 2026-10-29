@@ -727,3 +727,28 @@ it("never lets an automatic allow authorize a repeat whose earlier effect is unk
   expect(execute).not.toHaveBeenCalled();
   expect(result.approvals).toEqual(["approval-1"]);
 });
+
+it.each([undefined, "named-card"])("skips the paid guard when exact human approval is available (%s)", async approvedBy => {
+  const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+  const guardedApproval = vi.fn(async () => ({ ...approval, guard: { decision: "ask" as const, reason: "Review." } }));
+  const { store } = fakeStore();
+  const hasApproval = vi.fn(async () => true);
+  const batch = deps({ create: tool("create", "external", execute, { approvedBy, approval: () => approval, guardedApproval }) }, { ...store, hasApproval });
+  await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "create" }], round: 1 });
+  expect(hasApproval).toHaveBeenCalledWith(expect.objectContaining({ approval, approvedBy }));
+  expect(guardedApproval).not.toHaveBeenCalled();
+  expect(store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval }));
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it("asks if another claim consumed the human approval after the read-only preview", async () => {
+  const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+  const guardedApproval = vi.fn();
+  const { store } = fakeStore({ gated: true });
+  const batch = deps({ create: tool("create", "external", execute, { approval: () => approval, guardedApproval }) },
+    { ...store, hasApproval: async () => true });
+  const result = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "create" }], round: 1 });
+  expect(result.approvals).toEqual(["approval-1"]);
+  expect(guardedApproval).not.toHaveBeenCalled();
+  expect(execute).not.toHaveBeenCalled();
+});
