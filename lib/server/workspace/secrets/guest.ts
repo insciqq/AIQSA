@@ -48,7 +48,10 @@ try:
             runs = [{'runId': previous['runId'], 'values': previous.get('values', {})}]
         same_run = any(entry['runId'] == data['runId'] for entry in runs)
     runs = [entry for entry in runs if entry['runId'] != data['runId']]
-    runs.append({'runId': data['runId'], 'values': data['environment']})
+    # The agent identity is supplied per command by the server. Never persist
+    # a legacy or forged AIQSA_AGENT_* value in the VM's shared environment.
+    values = {name: value for name, value in data['environment'].items() if not name.startswith('AIQSA_AGENT_')}
+    runs.append({'runId': data['runId'], 'values': values})
     runs = runs[-${WORKSPACE_RUN_ENVIRONMENTS_KEPT}:]
     environments = json.dumps({'runs': runs}, ensure_ascii=False).encode('utf-8')
     while len(environments) > ${WORKSPACE_RUN_ENVIRONMENTS_FILE_MAX_BYTES} and len(runs) > 1:

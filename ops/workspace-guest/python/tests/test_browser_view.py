@@ -204,6 +204,11 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.views: List[Tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
         self.seen: List[Dict[str, Any]] = []
 
+    @property
+    def main(self) -> _livehub.AgentLive:
+        """The main agent's control: a host without per-agent tabs serves only it."""
+        return self.hub.control_of(_livehub.MAIN)
+
     async def asyncTearDown(self) -> None:
         for _reader, writer in self.views:
             writer.close()
@@ -269,7 +274,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_input_only_while_the_user_holds_control_and_the_agent_waits(self) -> None:
         reader, writer = await self.open_view()
-        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        self.hub.geometry[self.host.current] = ((1280, 800), (1440.0, 900.0))
         click = {"kind": "mouse", "type": "down", "x": 640, "y": 400, "button": "left", "clickCount": 1}
         refused = await self.ask(reader, writer, {"t": "input", "id": "i1", "input": click})
         self.assertEqual((refused["ok"], refused["code"]), (False, "not_in_control"))
@@ -304,20 +309,20 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.hidden.text("Welcome, standard_user!"), "Welcome, [hidden]!")
         self.assertEqual(self.host.env_hidden.text("standard_user"), "standard_user")
         self.assertEqual([element for _url, element in self.host.masked[self.host.current.main_frame]], [field])
-        self.assertEqual(self.hub.typed, "")
+        self.assertEqual(self.main.typed, "")
 
     async def test_a_handoff_holds_control_until_its_end_and_done_saves_the_site(self) -> None:
         reader, writer = await self.open_view(frames=False)
         self.assertEqual(self.host.session.calls("Page.startScreencast"), [])
         self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
-        self.assertEqual((self.hub.controller, self.hub.handoff), ("user", True))
+        self.assertEqual((self.main.controller, self.main.handoff), ("user", True))
         refused = await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "return"})
         self.assertEqual(refused["code"], "handoff_pending")
         self.host.hidden.add("standard_user")
         self.host.current.url = "https://shop.example/inventory?u=standard_user"
         ended = await self.ask(reader, writer, {"t": "handoff", "id": "h2", "action": "end", "outcome": "completed", "reason": "sign_in"})
         self.assertEqual(ended["page"], {"url": "https://shop.example/inventory?u=[hidden]", "title": "Sign in"})
-        self.assertEqual((ended["saved"], self.host.saved, self.hub.controller), ("shop.example", 1, "agent"))
+        self.assertEqual((ended["saved"], self.host.saved, self.main.controller), ("shop.example", 1, "agent"))
         cancelled = await self.ask(reader, writer, {"t": "handoff", "id": "h3", "action": "end", "outcome": "cancelled"})
         self.assertEqual((cancelled["saved"], self.host.saved), (None, 1))
         self.assertIsNone(self.hub.take_note())
@@ -341,7 +346,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_control_leaving_the_user_lets_go_of_what_their_input_left_pressed(self) -> None:
         reader, writer = await self.open_view()
-        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        self.hub.geometry[self.host.current] = ((1280, 800), (1440.0, 900.0))
         session = self.host.session
         # Take control, then a drag whose button never comes up, an arrow key held and Shift pressed and let go.
         await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
@@ -357,7 +362,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
                                                                      "buttons": 0, "clickCount": 1, "modifiers": 0}])
         self.assertEqual(session.calls("Input.dispatchKeyEvent"), [{"type": "keyUp", "key": "ArrowDown", "code": "ArrowDown", "modifiers": 0,
                                                                    "windowsVirtualKeyCode": 40, "nativeVirtualKeyCode": 40}])
-        self.assertEqual((self.hub.pressed, self.hub.keys), (0, {}))
+        self.assertEqual((self.main.pressed, self.main.keys), (0, {}))
         # A handoff's end lets go the same way whatever its outcome; nothing is let go twice.
         self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
         await self.press(reader, writer, {"kind": "mouse", "type": "down", "x": 10, "y": 10, "button": "right", "clickCount": 1})
@@ -375,7 +380,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.released(), [])
 
     async def test_the_grace_end_and_the_host_stop_let_go_of_what_the_user_held(self) -> None:
-        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        self.hub.geometry[self.host.current] = ((1280, 800), (1440.0, 900.0))
         with mock.patch.object(_live, "CONTROL_GRACE_SECONDS", 0.1):
             reader, writer = await self.open_view()
             await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
@@ -391,14 +396,14 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.host.session.sent.clear()
         await self.hub.close()
         self.assertEqual(self.released(), [("key", "keyUp", "ControlLeft")])
-        self.assertEqual((self.hub.controller, self.hub.pressed, self.hub.keys), ("agent", 0, {}))
+        self.assertEqual((self.main.controller, self.main.pressed, self.main.keys), ("agent", 0, {}))
 
     async def test_held_keys_stay_bounded_by_letting_the_oldest_go(self) -> None:
         reader, writer = await self.open_view()
         await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
         for index in range(_livehub.HELD_KEYS_MAX + 1):
             await self.press(reader, writer, {"kind": "key", "type": "down", "key": "F1", "code": f"Code{index}"})
-        self.assertEqual(len(self.hub.keys), _livehub.HELD_KEYS_MAX)
+        self.assertEqual(len(self.main.keys), _livehub.HELD_KEYS_MAX)
         self.assertEqual([params["code"] for params in self.host.session.calls("Input.dispatchKeyEvent") if params["type"] == "keyUp"],
                          ["Code0"])
 
@@ -410,7 +415,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         async def action(name: str, until: Optional[asyncio.Event] = None) -> None:
             # The host's dispatch, mocked: what runs under the lock, and who held the browser then.
             async with self.hub.agent_action(lock):
-                ran.append((name, self.hub.controller))
+                ran.append((name, self.main.controller))
                 if until is not None:
                     await until.wait()
 
@@ -427,7 +432,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await take)["ok"])
         await first
         await asyncio.sleep(0.05)
-        self.assertEqual((ran, self.hub.controller, queued.done()), ([("first", "agent")], "user", False))
+        self.assertEqual((ran, self.main.controller, queued.done()), ([("first", "agent")], "user", False))
         self.assertTrue((await self.ask(reader, writer, {"t": "control", "id": "c2", "action": "return"}))["ok"])
         await asyncio.wait_for(queued, 2)
         self.assertEqual(ran, [("first", "agent"), ("queued", "agent")])
@@ -444,7 +449,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.02)
         with mock.patch.object(_livehub, "TAKE_WAIT_SECONDS", 0.1):
             self.assertTrue((await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"}))["ok"])
-        self.assertEqual(self.hub.controller, "user")
+        self.assertEqual(self.main.controller, "user")
         long_action.cancel()
         await asyncio.gather(long_action, return_exceptions=True)
 
@@ -455,7 +460,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
 
         async def action() -> None:
             async with self.hub.agent_action(self.host.lock):
-                ran.append(self.hub.controller)
+                ran.append(self.main.controller)
 
         waiting = asyncio.ensure_future(action())
         await asyncio.sleep(0.05)
@@ -514,7 +519,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.ask(reader, writer, {"t": "handoff", "id": "h1", "action": "begin"}))["ok"])
         self.host.current.main_frame.focused = FakeElement("123456")
         await self.ask(reader, writer, {"t": "input", "id": "t1", "input": {"kind": "text", "text": "123456"}})
-        await self.hub.capture_now()
+        await self.main.capture_now()
         # Select all, then the replacement: the page submits on its last digit and the field goes away.
         await self.ask(reader, writer, {"t": "input", "id": "a", "input": {"kind": "key", "type": "down", "key": "a", "code": "KeyA",
                                                                           "modifiers": 2}})
@@ -577,7 +582,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_enter_tab_and_a_click_go_out_after_what_was_typed_is_hidden(self) -> None:
         reader, writer = await self.open_view()
-        self.hub.frame_size, self.hub.device = (1280, 800), (1440.0, 900.0)
+        self.hub.geometry[self.host.current] = ((1280, 800), (1440.0, 900.0))
         await self.ask(reader, writer, {"t": "control", "id": "c1", "action": "take"})
         session = self.host.session
         seen: List[Tuple[str, str]] = []
@@ -608,7 +613,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
             writer.close()
             self.views.clear()
             await asyncio.sleep(0.2)
-        self.assertEqual((self.hub.controller, self.hub.handoff), ("user", True))
+        self.assertEqual((self.main.controller, self.main.handoff), ("user", True))
 
 
 class StreamerTests(unittest.TestCase):
@@ -736,11 +741,41 @@ class StreamerTests(unittest.TestCase):
 
         messages = self.run_streamer(["#sleep 0.3", json.dumps({"t": "control", "id": "c1", "action": "take"}), "#sleep 0.3",
                                       json.dumps({"t": "bye"})], host=host)
-        self.assertEqual(received[0], {"v": 1, "op": "live", "args": {"frames": False}})
+        self.assertEqual(received[0], {"v": 1, "op": "live", "args": {"frames": False, "agent": "main"}})
         self.assertEqual(received[1], {"t": "control", "id": "c1", "action": "take"})
         self.assertEqual([message["t"] for message in messages], ["state", "frame", "ack"])
         self.assertEqual(messages[1]["data"], jpeg(1280, 800))
         self.assertFalse((self.root / "tmp" / "aiqsa-browser" / "host.log").exists())
+
+    def test_the_selected_agent_is_kept_and_sent_to_each_host_it_reaches(self) -> None:
+        received: List[Dict[str, Any]] = []
+        path = str(self.root / "tmp" / "aiqsa-browser" / "control.sock")
+
+        async def host() -> asyncio.AbstractServer:
+            async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                received.append(json.loads(await reader.readline()))
+                writer.write(b'{"t":"state","browser":"running"}\n')
+                await writer.drain()
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    received.append(json.loads(line))
+                writer.close()
+            return await asyncio.start_unix_server(serve, path=path)
+
+        # The choice reaches the host, forwarded or in the arguments of a connection made after it; a malformed one never.
+        self.run_streamer([json.dumps({"t": "select", "agent": "thread_7"}), json.dumps({"t": "select", "agent": "bad id"}),
+                           "#sleep 0.4", json.dumps({"t": "bye"})], host=host)
+        args = received[0]["args"]
+        self.assertTrue(args["agent"] == "thread_7" or {"t": "select", "agent": "thread_7"} in received[1:], received)
+        self.assertNotIn("bad id", json.dumps(received))
+
+        # Chosen while connected, it is forwarded as it came.
+        received.clear()
+        self.run_streamer(["#sleep 0.3", json.dumps({"t": "select", "agent": "thread_8"}), "#sleep 0.3", json.dumps({"t": "bye"})],
+                          host=host)
+        self.assertEqual((received[0]["args"]["agent"], received[1]), ("main", {"t": "select", "agent": "thread_8"}))
 
 
 if __name__ == "__main__":

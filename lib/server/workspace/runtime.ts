@@ -9,6 +9,7 @@ import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
+import type { WorkspaceAgent } from "../subagents/guestProtocol";
 
 export type WorkspaceRuntimeHealth = Readonly<{
   /** The runner gateway guest code reaches MCP through is configured and the image is loaded. */
@@ -263,6 +264,8 @@ export interface WorkspaceRuntime {
   syncPersonalSecrets(input: Readonly<{
     secrets: readonly AcceptedWorkspaceSecret[];
     modelRunId: string;
+    /** Server-set browser identity for this run; it overrides any guest-provided value. */
+    agent?: WorkspaceAgent;
     /** Server-owned values of this run (guest-code MCP bearer and relay, or why there is none), over the saved environment. */
     runEnvironment?: Readonly<Record<string, string>>;
     /**
@@ -284,6 +287,8 @@ export interface WorkspaceRuntime {
   }>): Promise<WorkspaceToolCatalog>;
   callBoundTool(input: Readonly<{
     arguments: Record<string, unknown>;
+    /** Server-set identity for this exec; guest command env cannot override it. */
+    agent?: WorkspaceAgent;
     /** Code invocation of this dispatched command; only its own environment carries it. */
     invocationId?: string;
     modelRunId: string;
