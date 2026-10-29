@@ -1111,7 +1111,8 @@ export async function admitPreparingRunWithClient(
             content: json(input.content),
             ...(input.workspaceAdmissionPlan
               ? { id: input.workspaceAdmissionPlan.userMessageId }
-              : {}),
+              : input.normalizedRequest.mcpApproval?.guard?.version === 2 && input.normalizedRequest.mcpApproval.guard.currentMessageId
+                ? { id: input.normalizedRequest.mcpApproval.guard.currentMessageId } : {}),
             modelId: input.modelId,
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
@@ -1393,6 +1394,7 @@ export async function admitPreparingRunWithClient(
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
         visionAnalysis: input.normalizedRequest.visionAnalysis,
+        mcpGuard: input.normalizedRequest.mcpApproval?.guard?.plan,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,

@@ -580,7 +580,7 @@ export function getAdminProviderCheckRun(
 }
 
 const assignedRoleLabels: Record<AdminProviderAssignedRole, string> = {
-  memory: "Memory", system_model: "System model", chat_titles: "Chat titles", vision: "Vision Model",
+  mcp_guard: "MCP guard", memory: "Memory", system_model: "System model", chat_titles: "Chat titles", vision: "Vision Model",
   chat_pdf: "PDF processing in chats", chat_pdf_native: "PDF reader"
 };
 const routingParameterLabels: Record<string, string> = {

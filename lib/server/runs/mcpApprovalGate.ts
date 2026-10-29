@@ -1,3 +1,4 @@
+import { mcpGuardAsk, type McpGuardCheck } from "../mcp/guard";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import {
@@ -66,4 +67,19 @@ export function mcpApprovalGated(row: GateRow): boolean {
   return isRecord(part) && Object.keys(part).sort().join(",") === "type,value" && part.type === "json" &&
     isRecord(part.value) && Object.keys(part.value).sort().join(",") === "error,message" &&
     part.value.error === MCP_APPROVAL_REQUIRED && part.value.message === MCP_APPROVAL_REQUIRED_MESSAGE;
+}
+
+/** The optional guard precedes dispatch; unknown-outcome retries bypass this and still ask a human. */
+export async function guardedMcpApprovalRequestForCall(input: Parameters<typeof mcpApprovalRequestForCall>[0] & Readonly<{
+  check?: McpGuardCheck; runId: string; userId: string; signal?: AbortSignal;
+}>): Promise<McpApprovalRequest | undefined> {
+  const request = mcpApprovalRequestForCall(input);
+  const admission = input.admission?.guard;
+  if (!request || !admission) return request;
+  const route = resolveMcpRunTool(input.snapshot ?? undefined, input.call.name);
+  if (!route || !input.check) return { ...request, guard: mcpGuardAsk() };
+  const guard = await input.check({ admission, runId: input.runId, userId: input.userId, signal: input.signal,
+    tool: { serverName: route.tool.serverName, toolName: route.originalName, description: route.tool.description,
+      annotations: route.tool.annotations, arguments: input.call.arguments } }).catch(mcpGuardAsk);
+  return { ...request, guard };
 }

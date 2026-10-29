@@ -128,3 +128,21 @@ describe("native tool call records", () => {
     expect(row).toMatchObject({ startedAt: null, state: "error" });
   });
 });
+
+it("stores automatic decisions without creating a human grant and retains guard refusals", async () => {
+  const f = await fixture();
+  const allowed = await f.begin({ approval: { ...f.approval, guard: { decision: "allow", reason: "You requested this change." } } });
+  expect(allowed.kind).toBe("running");
+  const automatic = await prisma.mcpToolApproval.findFirstOrThrow({ where: { modelRunId: f.runId, guardDecision: "allow" } });
+  expect(automatic).toMatchObject({ decision: null, decidedAt: null, guardReason: "You requested this change." });
+  await expect(prisma.mcpToolApproval.update({ where: { id: automatic.id }, data: { decision: "allow_server", decidedAt: new Date() } })).rejects.toThrow();
+  const refused = await f.begin({ ordinal: 1, approval: { ...f.approval, guard: { decision: "ask", reason: "Please review this change." } } });
+  expect(refused.kind).toBe("gated");
+  if (refused.kind !== "gated") return;
+  await expect(prisma.mcpToolApproval.findUniqueOrThrow({ where: { id: refused.approvalId } })).resolves
+    .toMatchObject({ guardDecision: "ask", guardReason: "Please review this change.", decision: null });
+  // The migration permits a guard's provider-reported cost without inventing any tokens.
+  await expect(prisma.usageEvent.create({ data: { chatId: f.chatId, modelRunId: f.runId, userId: f.userId,
+    modelId: "synthetic-guard", provider: "fake", purpose: "mcp_guard", costReported: true, estimatedCostMicros: 20 } })).resolves
+    .toMatchObject({ purpose: "mcp_guard", costReported: true, inputTokens: null, outputTokens: null });
+});

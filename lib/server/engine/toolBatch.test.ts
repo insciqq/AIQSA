@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { ToolCallRepeatHistory, TOOL_CALL_REPEAT_BLOCKED } from "../runs/toolCallRepeatGuard";
@@ -18,10 +19,11 @@ import {
   UNKNOWN_OUTCOME_REPEAT_OUTPUT,
   type ToolBatchDeps
 } from "./toolBatch";
-import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
+import { createToolCallStore, type ToolCallBeginResult, type ToolCallRow, type ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
 import { TOOL_RESULT_LIMITS } from "./toolResults";
-import { createUnknownEffects } from "./unknownEffects";
+import { createUnknownEffects, unknownEffectsOf } from "./unknownEffects";
+import { createTranscriptRepository } from "./transcriptRepository";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
@@ -712,5 +714,117 @@ describe("native tool batch", () => {
     }, { settled: vi.fn(async () => { throw new Error("database_unavailable"); }) });
     await expect(runToolBatch(deps({ search }, store, { signal: controller.signal }), { calls: 0 },
       { calls: [{ arguments: {}, id: "c1", name: "search" }], round: 1 })).rejects.toBeInstanceOf(SearchToolCancelledError);
+  });
+});
+
+it("never lets an automatic allow authorize a repeat whose earlier effect is unknown", async () => {
+  const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+  const guardedApproval = vi.fn(async () => ({ ...approval, guard: { decision: "allow" as const, reason: "Requested." } }));
+  const { store } = fakeStore({ gated: true });
+  const batch = deps({ create: tool("create", "external", execute, { approvedBy: "earlier-human-decision", guardedApproval, retryApproval: () => approval }) }, store);
+  batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown");
+  const result = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: { title: "x" }, id: "c1", name: "create" }], round: 1 });
+  expect(guardedApproval).not.toHaveBeenCalled();
+  expect(store.begin.mock.calls[0]?.[0].approvedBy).toBeUndefined();
+  expect(execute).not.toHaveBeenCalled();
+  expect(result.approvals).toEqual(["approval-1"]);
+});
+
+it.each([undefined, "named-card"])("skips the paid guard when exact human approval is available (%s)", async approvedBy => {
+  const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+  const guardedApproval = vi.fn(async () => ({ ...approval, guard: { decision: "ask" as const, reason: "Review." } }));
+  const { store } = fakeStore();
+  const hasApproval = vi.fn(async () => true);
+  const batch = deps({ create: tool("create", "external", execute, { approvedBy, approval: () => approval, guardedApproval }) }, { ...store, hasApproval });
+  await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "create" }], round: 1 });
+  expect(hasApproval).toHaveBeenCalledWith(expect.objectContaining({ approval, approvedBy }));
+  expect(guardedApproval).not.toHaveBeenCalled();
+  expect(store.begin).toHaveBeenCalledWith(expect.objectContaining({ approval }));
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it("asks if another claim consumed the human approval after the read-only preview", async () => {
+  const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+  const guardedApproval = vi.fn();
+  const { store } = fakeStore({ gated: true });
+  const batch = deps({ create: tool("create", "external", execute, { approval: () => approval, guardedApproval }) },
+    { ...store, hasApproval: async () => true });
+  const result = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "create" }], round: 1 });
+  expect(result.approvals).toEqual(["approval-1"]);
+  expect(guardedApproval).not.toHaveBeenCalled();
+  expect(execute).not.toHaveBeenCalled();
+});
+
+describe("native unknown-outcome approval freshness", () => {
+  it.each([
+    { continuation: false, decision: "allow_once", offset: -1_000 },
+    { continuation: false, decision: "allow_once", offset: 0 },
+    { continuation: false, decision: "allow_once", offset: 1_000 },
+    { continuation: true, decision: "allow_once", offset: -1_000 },
+    { continuation: true, decision: "allow_once", offset: 1_000 },
+    { continuation: true, decision: "allow_server", offset: -1_000 },
+    { continuation: true, decision: "allow_server", offset: 1_000 }
+  ] as const)("requires a newer exact decision: $decision, continuation=$continuation, offset=$offset", async scenario => {
+    const after = new Date(Date.now() - 5_000);
+    const decidedAt = new Date(after.getTime() + scenario.offset);
+    let consumed = false;
+    // One exact, unexpired, unconsumed decision from an earlier run. Only its freshness varies.
+    const matches = (where: Prisma.McpToolApprovalWhereInput) => {
+      if (consumed || where.decision === null) return false;
+      if (where.id && where.id !== "human-card") return false;
+      if (typeof where.decision === "string" && where.decision !== scenario.decision) return false;
+      const cutoff = typeof where.decidedAt === "object" && where.decidedAt !== null && "gt" in where.decidedAt
+        ? where.decidedAt.gt : undefined;
+      return !(cutoff instanceof Date) || decidedAt > cutoff;
+    };
+    const approvals = {
+      count: vi.fn(async ({ where }: { where: Prisma.McpToolApprovalWhereInput }) => matches(where) ? 1 : 0),
+      create: vi.fn(async () => ({ id: "pending-card" })),
+      findFirst: vi.fn(async ({ where }: { where: Prisma.McpToolApprovalWhereInput }) =>
+        matches(where) ? { decision: scenario.decision, id: "human-card" } : null),
+      updateMany: vi.fn(async () => { consumed = true; return { count: 1 }; })
+    };
+    const calls = { create: vi.fn(async ({ data }: { data: Prisma.ModelRunToolCallUncheckedCreateInput }) =>
+      ({ startedAt: null, result: null, ...data, id: "retry-row" })), updateMany: vi.fn(async () => ({ count: 0 })) };
+    const tx = { $queryRaw: vi.fn(async () => [{ status: "streaming" }]), mcpToolApproval: approvals, modelRunToolCall: calls };
+    const client = { ...tx, $transaction: async (fn: (value: typeof tx) => unknown) => fn(tx), runTranscriptItem: {
+      findMany: vi.fn(async () => [
+        { body: { arguments: '{"title":"x"}', name: "create" }, callId: "uncertain", createdAt: new Date(after.getTime() - 500),
+          id: "prior-call", kind: "tool_call", modelRunId: "prior-run" },
+        { body: { name: "create", outcome: "unknown", output: "Response lost.", recordedAt: "2020-01-01T00:00:00Z" },
+          callId: "uncertain", createdAt: after,
+          id: "prior-result", kind: "tool_result", modelRunId: "prior-run" }
+      ])
+    } } as unknown as PrismaClient;
+    // Exercise hydration and unknown detection as a later run does, including the user's next message.
+    const history = await createTranscriptRepository(client).loadRuns({ chatId: "chat", runIds: ["prior-run"], userId: "user" });
+    expect(client.runTranscriptItem.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({ createdAt: true }), where: { chatId: "chat", modelRunId: { in: ["prior-run"] }, userId: "user" }
+    }));
+    const unknownEffects = unknownEffectsOf([...history.get("prior-run")!, { id: "new-message", kind: "user", text: "Continue" }], () => true);
+    const store = createToolCallStore(client);
+    const hasApproval = vi.spyOn(store, "hasApproval");
+    const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const guardedApproval = vi.fn(async () => ({ ...approval, guard: { decision: "allow" as const, reason: "Requested." } }));
+    const batch = deps({ create: tool("create", "external", execute, { guardedApproval, retryApproval: () => approval }) }, store,
+      { unknownEffects });
+    const outcome = await runToolBatch(batch, { calls: 0 }, { round: 1,
+      ...(scenario.continuation ? { approved: { approvalId: "human-card", callId: "retry" } } : {}),
+      calls: [{ arguments: { title: "x" }, id: "retry", name: "create" }] });
+    const fresh = scenario.offset > 0;
+    expect(hasApproval).toHaveBeenCalledWith(expect.objectContaining({ approvalAfter: after }));
+    expect(await hasApproval.mock.results[0]!.value).toBe(fresh);
+    expect(guardedApproval).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(fresh ? 1 : 0);
+    expect(outcome.executed).toBe(fresh ? 1 : 0);
+    expect(outcome.approvals).toEqual(fresh ? [] : ["pending-card"]);
+    expect(consumed).toBe(fresh && scenario.decision === "allow_once");
+    if (!fresh) {
+      expect(calls.create).toHaveBeenCalledWith({ data: expect.objectContaining({ state: "error" }) });
+      expect(approvals.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        argumentsDigest: approval.argumentsDigest, definitionHash: approval.definitionHash, toolCallId: "retry-row"
+      }) }));
+      expect(outcome.results[0]?.output).toBe(UNKNOWN_OUTCOME_APPROVAL_OUTPUT);
+    }
   });
 });

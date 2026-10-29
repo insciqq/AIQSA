@@ -1,3 +1,4 @@
+import { createMcpGuardModelRoleResolver } from "../../providerRuntime/mcpGuardModelRole";
 import { loadInstallationImageProviderRole } from "../../providerRuntime/admission";
 import { loadInstallationDecisionProviderRole } from "../../providerRuntime/admission";
 import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionModelRole";
@@ -318,6 +319,7 @@ export function createAdminSystemModelPolicyService(
     refreshActive?: ActiveRefresh;
     resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
     resolveChatTitleRole?: ReturnType<typeof createChatTitleModelRoleResolver>["resolve"];
+    resolveMcpGuardRole?: ReturnType<typeof createMcpGuardModelRoleResolver>["resolve"];
     resolveVisionRole?: ReturnType<typeof createVisionModelRoleResolver>["resolve"];
     resolveChatPdfRole?: ReturnType<typeof createChatPdfModelRoleResolver>["resolve"];
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
@@ -331,6 +333,7 @@ export function createAdminSystemModelPolicyService(
     createMemoryUtilityModelRoleResolver(prisma, { loadRole }).resolve;
   const resolveChatTitleRole = dependencies.resolveChatTitleRole ??
     createChatTitleModelRoleResolver(prisma, loadRole).resolve;
+  const resolveMcpGuardRole = dependencies.resolveMcpGuardRole ?? createMcpGuardModelRoleResolver(prisma, loadRole).resolve;
   const resolveVisionRole = dependencies.resolveVisionRole ?? createVisionModelRoleResolver(prisma, loadRole).resolve;
   const resolveChatPdfRole = dependencies.resolveChatPdfRole ??
     createChatPdfModelRoleResolver(prisma, loadRole).resolve;
@@ -348,7 +351,7 @@ export function createAdminSystemModelPolicyService(
   const service = {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
       const rerankerResolution = await resolveRerankerRole();
-      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution, visionResolution] =
+      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution, visionResolution, mcpGuardResolution] =
         await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
@@ -374,6 +377,27 @@ export function createAdminSystemModelPolicyService(
               }
             },
             chatTitleProviderModel: {
+              include: {
+                activeCredentialChecks: {
+                  select: {
+                    connectionVersion: true,
+                    credentialId: true,
+                    credentialVersionId: true,
+                    evidence: true,
+                    modelVersion: true,
+                    status: true
+                  }
+                },
+                connection: {
+                  include: {
+                    defaultCredential: {
+                      include: { activeVersion: { select: { id: true, revokedAt: true } } }
+                    }
+                  }
+                }
+              }
+            },
+            mcpGuardProviderModel: {
               include: {
                 activeCredentialChecks: {
                   select: {
@@ -504,7 +528,8 @@ export function createAdminSystemModelPolicyService(
         resolveChatPdfRole(),
         resolveChatTitleRole(),
         resolveChatPdfRole("pdf_reader"),
-        resolveVisionRole()
+        resolveVisionRole(),
+        resolveMcpGuardRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const decisionRows = await prisma.providerModel.findMany({ where: { modelClass: "decision" },
@@ -634,6 +659,12 @@ export function createAdminSystemModelPolicyService(
             ...serializeSystemModel(policy.chatTitleProviderModel as SystemModelRow),
             available: chatTitleResolution.ok && chatTitleResolution.providerModelId === policy.chatTitleProviderModelId &&
               chatTitleResolution.policyVersion === policy.version
+          } : null,
+          mcpGuardReasoningEffort: policy.mcpGuardReasoningEffort ?? null,
+          mcpGuardModel: policy.mcpGuardProviderModel ? {
+            ...serializeSystemModel(policy.mcpGuardProviderModel as SystemModelRow),
+            available: mcpGuardResolution.ok && mcpGuardResolution.providerModelId === policy.mcpGuardProviderModelId &&
+              mcpGuardResolution.policyVersion === policy.version
           } : null,
           visionReasoningEffort: policy.visionReasoningEffort ?? null,
           visionModel: policy.visionProviderModel ? {
@@ -843,6 +874,8 @@ export function createAdminSystemModelPolicyService(
       chatTitleBootstrap?: true;
       chatPdfNativeProviderModelId?: string | null;
       chatPdfNativeReasoningEffort?: string | null;
+      mcpGuardProviderModelId?: string | null;
+      mcpGuardReasoningEffort?: string | null;
       visionProviderModelId?: string | null;
       visionReasoningEffort?: string | null;
       chatPdfProviderModelId?: string | null;
@@ -884,6 +917,10 @@ export function createAdminSystemModelPolicyService(
       if (hasTitleUpdate !== (input.chatTitleReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
       }
+      const hasMcpGuardUpdate = input.mcpGuardProviderModelId !== undefined;
+      if (hasMcpGuardUpdate !== (input.mcpGuardReasoningEffort !== undefined)) {
+        throw new Error("system_model_policy_update_invalid");
+      }
       const hasVisionUpdate = input.visionProviderModelId !== undefined;
       if (hasVisionUpdate !== (input.visionReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
@@ -904,7 +941,7 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasTitleUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasTitleUpdate && !hasMcpGuardUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -981,6 +1018,21 @@ export function createAdminSystemModelPolicyService(
               if (input.chatTitleReasoningEffort !== null && input.chatTitleReasoningEffort !== undefined &&
                 !supportsReasoningEffort(role, input.chatTitleReasoningEffort)) {
                 throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+              }
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw error;
+            }
+          }
+          if (input.mcpGuardProviderModelId === null && input.mcpGuardReasoningEffort !== null) {
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+          }
+          if (input.mcpGuardProviderModelId) {
+            try {
+              const role = await loadRole(tx, { providerModelId: input.mcpGuardProviderModelId });
+              if (!systemModelRoleEligible(role, "mcp_guard") || input.mcpGuardReasoningEffort &&
+                !supportsReasoningEffort(role, input.mcpGuardReasoningEffort)) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
               }
             } catch (error) {
               if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
@@ -1113,6 +1165,10 @@ export function createAdminSystemModelPolicyService(
                 chatTitleProviderModelId: input.chatTitleProviderModelId,
                 chatTitleReasoningEffort: input.chatTitleReasoningEffort,
                 chatTitleConfiguredAt: new Date()
+              } : {}),
+              ...(hasMcpGuardUpdate ? {
+                mcpGuardProviderModelId: input.mcpGuardProviderModelId,
+                mcpGuardReasoningEffort: input.mcpGuardReasoningEffort
               } : {}),
               ...(hasVisionUpdate ? {
                 visionProviderModelId: input.visionProviderModelId,

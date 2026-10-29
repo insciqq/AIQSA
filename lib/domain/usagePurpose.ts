@@ -11,7 +11,7 @@ export const PERSONAL_USAGE_PURPOSES = ["chat_answer", "web_search", "image_gene
 export type PersonalUsagePurpose = (typeof PERSONAL_USAGE_PURPOSES)[number];
 
 export const SYSTEM_USAGE_PURPOSES = [
-  "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
+  "mcp_guard", "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
   "memory_processing", "memory_indexing", "memory_retrieval",
   "knowledge_indexing", "knowledge_retrieval", "model_check", "other"
 ] as const;
@@ -46,7 +46,7 @@ export function isRunUsageAttributionPurpose(value: unknown): value is RunUsageA
  * Attribution purposes of a chat model's own calls, the answer's and its
  * sub-agents': priced from the model's answer prices, and settled when the
  * provider reported the charge (`costReported`, which the database allows
- * only on these purposes).
+ * only on these purposes and on the MCP guard's calls).
  */
 export const CHAT_MODEL_USAGE_PURPOSES = ["chat_answer", "subagent"] as const satisfies readonly RunUsageAttributionPurpose[];
 

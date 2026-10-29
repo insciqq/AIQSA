@@ -94,6 +94,7 @@ export type RunHandlerDeps = {
     findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
     kick(): void;
   }>;
+  mcpGuard?: import("../mcp/guard").McpGuardService;
   vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
   artifacts?: import("../artifacts/service").ArtifactService;
@@ -618,6 +619,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body: sendBody,
+      serverAuthoredInput: Boolean(continuationBody),
+      ...(continuationBody && body?.systemTurn && typeof body.systemTurn === "object" &&
+        typeof (body.systemTurn as Record<string, unknown>).approvalId === "string"
+        ? { mcpApprovalId: (body.systemTurn as { approvalId: string }).approvalId } : {}),
       skillCatalogDecision: {
         operationKey: admissionKey,
         authorizeScope: async () => {

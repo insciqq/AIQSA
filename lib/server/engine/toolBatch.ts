@@ -182,7 +182,7 @@ type BeforeToolCall =
     /** The run's reserved report, asked for the first time: it does not count against the call budget. */
     exempt?: true;
     /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it. */
-    retry?: Readonly<{ approval: McpApprovalRequest; approvedBy?: string }>;
+    retry?: Readonly<{ approval: McpApprovalRequest; approvalAfter: Date; approvedBy?: string }>;
     kind: "run";
     tool: EngineTool;
   }>;
@@ -257,7 +257,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       const approval = tool.retryApproval?.(call);
       if (approval) {
         const approvedBy = approved && approved.callId === call.id ? approved.approvalId : undefined;
-        return { kind: "run", retry: { approval, ...(approvedBy ? { approvedBy } : {}) }, tool };
+        return { kind: "run", retry: { approval, approvalAfter: unknown.after, ...(approvedBy ? { approvedBy } : {}) }, tool };
       }
       if (!unknown.userSpokeSince) {
         // The model can do what this asks (check the state with a read-only call), so tools stay open for it.
@@ -410,9 +410,16 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: message };
     }
-    const approval = before.retry?.approval ?? tool.approval?.(call);
+    let approval = before.retry?.approval ?? tool.approval?.(call);
+    const approvalAfter = before.retry?.approvalAfter;
+    const approvedBy = before.retry?.approvedBy ?? (input.approved?.callId === call.id ? input.approved.approvalId : undefined) ?? (!before.retry && approval ? tool.approvedBy : undefined);
+    const humanApproved = approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
+      userId: deps.userId, approval, approvalAfter, approvedBy });
+    if (!before.retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
+    deps.signal.throwIfAborted();
     const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}),
-      ...(before.retry?.approvedBy ? { approvedBy: before.retry.approvedBy } : {}), toolName: call.name });
+      ...(approvalAfter ? { approvalAfter } : {}),
+      ...(approvedBy ? { approvedBy } : {}), toolName: call.name });
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {

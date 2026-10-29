@@ -1,21 +1,55 @@
-import { describe, expect, it } from "vitest";
-import type { TranscriptItem, TranscriptUserItem } from "./transcript";
-import { unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
+import { describe, expect, it, vi } from "vitest";
+import type { TranscriptItem, TranscriptToolCallItem, TranscriptToolResultItem, TranscriptUserItem } from "./transcript";
+import { createUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects } from "./unknownEffects";
 
-const create = (callId: string, title = "one issue"): TranscriptItem =>
-  ({ arguments: JSON.stringify({ title }), callId, id: `call-${callId}`, kind: "tool_call", name: "mcp_jira_create" });
-const result = (callId: string, outcome: "complete" | "error" | "unknown"): TranscriptItem =>
-  ({ callId, id: `result-${callId}-${outcome}`, kind: "tool_result", name: "mcp_jira_create", outcome, output: "x" });
+const recordedAt = new Date("2026-10-29T12:00:00Z");
+const create = (callId: string, title = "one issue"): TranscriptToolCallItem =>
+  ({ arguments: JSON.stringify({ title }), callId, id: `call-${callId}`, kind: "tool_call", recordedAt, name: "mcp_jira_create" });
+const result = (callId: string, outcome: "complete" | "error" | "unknown"): TranscriptToolResultItem =>
+  ({ callId, id: `result-${callId}-${outcome}`, kind: "tool_result", recordedAt, name: "mcp_jira_create", outcome, output: "x" });
 const user = (id: string): TranscriptUserItem => ({ id, kind: "user", text: "Go on" });
 const userAuthored = (item: TranscriptUserItem) => !item.id.startsWith("server-");
 const call = (title = "one issue") => ({ arguments: { title }, name: "mcp_jira_create" });
 
 describe("unknown effects on a branch", () => {
+  it("fences a lost result at its call record and a continuation at its newer in-flight record", () => {
+    const continuedAt = new Date(recordedAt.getTime() + 1_000);
+    const lostAt = new Date(continuedAt.getTime() + 1_000);
+    const inFlight: TranscriptToolResultItem = { ...result("c1", "unknown"), inFlight: true, recordedAt: continuedAt };
+    expect(unknownEffectsOf([create("c1"), user("u2")], userAuthored).find(call())?.after).toEqual(recordedAt);
+    const continued = [create("c1"), result("c1", "error"), inFlight];
+    expect(unknownEffectsOf([...continued, user("u2")], userAuthored).find(call()))
+      .toEqual({ after: continuedAt, userSpokeSince: true });
+    expect(unknownEffectsOf([...continued, { ...result("c1", "unknown"), recordedAt: lostAt }], userAuthored)
+      .find(call())?.after).toEqual(lostAt);
+  });
+
+  it("keeps the newest fence across uncertain attempts and later definite failures", () => {
+    const effects = createUnknownEffects();
+    const latest = new Date(recordedAt.getTime() + 1_000);
+    effects.record(call(), "unknown", latest);
+    effects.record(call(), "unknown", recordedAt);
+    effects.record(call(), "error");
+    effects.userSpoke();
+    expect(effects.find(call())).toEqual({ after: latest, userSpokeSince: true });
+  });
+
+  it("fails toward a new decision when the uncertain attempt has no trusted timestamp", () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date(recordedAt.getTime() + 60_000);
+      vi.setSystemTime(now);
+      const withoutTime = { ...create("c1"), recordedAt: undefined };
+      expect(unknownEffectsOf([withoutTime, user("u2")], userAuthored).find(call()))
+        .toEqual({ after: now, userSpokeSince: true });
+    } finally { vi.useRealTimers(); }
+  });
+
   it("keeps an unknown outcome across turns until an equivalent call completes", () => {
     expect(unknownEffectsOf([user("u1"), create("c1"), result("c1", "unknown")], userAuthored).find(call()))
-      .toEqual({ userSpokeSince: false });
+      .toEqual({ after: recordedAt, userSpokeSince: false });
     expect(unknownEffectsOf([create("c1"), result("c1", "unknown"), user("u2")], userAuthored).find(call()))
-      .toEqual({ userSpokeSince: true });
+      .toEqual({ after: recordedAt, userSpokeSince: true });
     // A definite error of a later call does not say whether the first one took effect.
     expect(unknownEffectsOf([create("c1"), result("c1", "unknown"), create("c2"), result("c2", "error")], userAuthored)
       .find(call())).not.toBeNull();
@@ -25,32 +59,32 @@ describe("unknown effects on a branch", () => {
   });
 
   it("counts a call a stopped run left without a result, and an approved call's later result", () => {
-    expect(unknownEffectsOf([create("c1"), user("u2")], userAuthored).find(call())).toEqual({ userSpokeSince: true });
-    expect(unknownEffectsOf([user("u1"), create("c1")], userAuthored).find(call())).toEqual({ userSpokeSince: false });
+    expect(unknownEffectsOf([create("c1"), user("u2")], userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
+    expect(unknownEffectsOf([user("u1"), create("c1")], userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: false });
     // Waiting for approval, then sent by the continuation with an unknown outcome.
     expect(unknownEffectsOf([create("c1"), result("c1", "error"), result("c1", "unknown")], userAuthored).find(call()))
-      .toEqual({ userSpokeSince: false });
+      .toEqual({ after: recordedAt, userSpokeSince: false });
   });
 
   it("lets an approved call's own result settle its in-flight record, and keeps it unknown without one", () => {
-    const inFlight: TranscriptItem = { callId: "c1", id: "in-flight-c1", inFlight: true, kind: "tool_result", name: "mcp_jira_create",
+    const inFlight: TranscriptItem = { callId: "c1", id: "in-flight-c1", inFlight: true, kind: "tool_result", recordedAt, name: "mcp_jira_create",
       outcome: "unknown", output: "x" };
     const approved = [create("c1"), result("c1", "error"), inFlight];
     // Its own definite result settles it, a "not sent" included; an unknown one stays unknown.
     expect(unknownEffectsOf([...approved, result("c1", "error")], userAuthored).find(call())).toBeNull();
     expect(unknownEffectsOf([...approved, result("c1", "complete")], userAuthored).find(call())).toBeNull();
-    expect(unknownEffectsOf([...approved, result("c1", "unknown")], userAuthored).find(call())).toEqual({ userSpokeSince: false });
+    expect(unknownEffectsOf([...approved, result("c1", "unknown")], userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: false });
     // Interrupted before its result was recorded: unknown, like any call left without one.
-    expect(unknownEffectsOf(approved, userAuthored).find(call())).toEqual({ userSpokeSince: false });
-    expect(unknownEffectsOf([...approved, user("u2")], userAuthored).find(call())).toEqual({ userSpokeSince: true });
+    expect(unknownEffectsOf(approved, userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: false });
+    expect(unknownEffectsOf([...approved, user("u2")], userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
   });
 
   it("counts only the user's own words as the user speaking", () => {
     const items = [create("c1"), result("c1", "unknown"), user("server-continuation")];
-    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ userSpokeSince: false });
+    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: false });
     const effects = unknownEffectsOf(items, userAuthored);
     effects.userSpoke();
-    expect(effects.find(call())).toEqual({ userSpokeSince: true });
+    expect(effects.find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
   });
 });
 
@@ -70,11 +104,11 @@ describe("unknown effects the old core left on a branch", () => {
     // Its records follow the old turn and come before the branch's next question.
     expect(items.map((item) => item.id)).toEqual(["msg-q1", "msg-a1", "call-r1", "result-r1-unknown", "msg-q2", "msg-a2",
       "msg-current"]);
-    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ userSpokeSince: true });
+    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
     // Only the user's later words count: a turn the server wrote right after the old one leaves it unspoken.
     const last = withRetiredEffects(branch, messages, retired("q2"));
     expect(last.map((item) => item.id).slice(-3)).toEqual(["call-r1", "result-r1-unknown", "msg-current"]);
-    expect(unknownEffectsOf(last, (item) => item.id !== "msg-current").find(call())).toEqual({ userSpokeSince: false });
+    expect(unknownEffectsOf(last, (item) => item.id !== "msg-current").find(call())).toEqual({ after: recordedAt, userSpokeSince: false });
   });
 
   it("lets a later equivalent call that completed settle it, and keeps it when the old answer stopped without text", () => {
@@ -85,7 +119,7 @@ describe("unknown effects the old core left on a branch", () => {
     const kept = withRetiredEffects(branch.filter((item) => item.id !== "msg-a1"),
       messages.filter((message) => message.id !== "a1"), retired("q1"));
     expect(kept.map((item) => item.id).slice(0, 3)).toEqual(["msg-q1", "call-r1", "result-r1-unknown"]);
-    expect(unknownEffectsOf(kept, userAuthored).find(call())).toEqual({ userSpokeSince: true });
+    expect(unknownEffectsOf(kept, userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
   });
 
   it("puts a run whose question left the branch first, passes follow-ups, and adds nothing without old runs", () => {
@@ -103,7 +137,7 @@ describe("unknown effects the old core left on a branch", () => {
     const items = withHiddenRunEffects(branch, [{ beforeItemId: "msg-current", items: step }]);
     expect(items.map((item) => item.id).slice(-2)).toEqual(["call-s1", "msg-current"]);
     // Cut off before the user's words: unknown, and spoken since.
-    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ userSpokeSince: true });
+    expect(unknownEffectsOf(items, userAuthored).find(call())).toEqual({ after: recordedAt, userSpokeSince: true });
     // A turn the conversation does not hold puts them last, unspoken.
     expect(withHiddenRunEffects(branch, [{ beforeItemId: "msg-gone", items: step }]).map((item) => item.id).at(-1)).toBe("call-s1");
     expect(withHiddenRunEffects(branch, [])).toEqual(branch);

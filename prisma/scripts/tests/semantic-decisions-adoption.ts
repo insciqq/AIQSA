@@ -2,7 +2,7 @@ export const SEMANTIC_DECISIONS_MIGRATION = "20260919021500_optional_semantic_de
 
 export const semanticDecisionsFixtureSql = `
 CREATE TABLE "SemanticDecisionsPolicyFixture" AS
-  SELECT to_jsonb(policy) AS snapshot FROM "SystemModelPolicy" AS policy WHERE id = 'installation';
+  SELECT to_jsonb(policy) - 'mcpGuardProviderModelId' - 'mcpGuardReasoningEffort' AS snapshot FROM "SystemModelPolicy" AS policy WHERE id = 'installation';
 CREATE TABLE "SemanticDecisionsModelsFixture" AS
   SELECT id, to_jsonb(model) AS snapshot FROM "ProviderModel" AS model;
 `;
@@ -11,7 +11,7 @@ export const semanticDecisionsProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" AS policy
     JOIN "SemanticDecisionsPolicyFixture" AS original ON original.snapshot =
-      (to_jsonb(policy) - 'decisionProviderModelId' - 'decisionConfiguredAt' - 'decisionFeaturesJson'
+      (to_jsonb(policy) - 'mcpGuardProviderModelId' - 'mcpGuardReasoningEffort' - 'decisionProviderModelId' - 'decisionConfiguredAt' - 'decisionFeaturesJson'
         - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
         - 'visionProviderModelId' - 'visionReasoningEffort'
         - 'speechToTextConnectionId' - 'speechToTextModelId' - 'speechToTextCredentialVersionId'
