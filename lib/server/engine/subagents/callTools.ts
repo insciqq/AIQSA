@@ -41,6 +41,11 @@ export type SubagentCallDeps = Readonly<{
   /** Assistant chats run only the default sub-agent (operator decision 2026-10-29). */
   assistantRun: boolean;
   background?: SubagentBackgroundControl;
+  /**
+   * Whether this run may start background turns: web chats only. A Telegram turn or a scheduled occurrence is refused
+   * here, before the port's own check, which only backs it up (a Telegram turn's link is written after its send).
+   */
+  backgroundAllowed: boolean;
   /** The native runs of the branch's answers and this run: where a name's thread is visible. */
   branchRunIds: readonly string[];
   catalog: FrozenSubagentModels | null;
@@ -50,12 +55,18 @@ export type SubagentCallDeps = Readonly<{
   parent: SubagentParentModel;
   runId: string;
   runner: HostedSubagentRunner;
-  store: Pick<SubagentThreadStore, "admitForeground" | "ensureThread" | "find" | "result">;
+  store: Pick<SubagentThreadStore, "admitForeground" | "endOrphanedTurns" | "ensureThread" | "find" | "result">;
   types?: SubagentTypeResolver;
   /** The user's current message, verbatim: the authority a sub-agent's irreversible website actions need. */
   userMessage: string;
   userId: string;
 }>;
+
+/** A thrown error's own stable code, if it carries one. */
+function errorCode(error: unknown): string | undefined {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : undefined;
+}
 
 const refusal = (call: ModelToolCall, code: string, message: string): ToolExecutionResult =>
   ({ callId: call.id, content: [{ type: "json", value: { error: code, message } }], name: call.name, status: "error" });
@@ -124,8 +135,16 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
       if (args.type !== undefined || args.model !== undefined || args.effort !== undefined) {
         return refusal(call, SUBAGENT_ERROR_CODES.busy, "This sub-agent is running with its own model and type; send only message, or start another name.");
       }
-      const delivered = await deps.background.deliver({ ...scope, message: { nonce: call.id, origin: "main_agent", text: args.message },
-        name: args.name, threadId: lookup.thread.id });
+      let delivered: Awaited<ReturnType<SubagentBackgroundControl["deliver"]>>;
+      try {
+        delivered = await deps.background.deliver({ ...scope, message: { nonce: call.id, origin: "main_agent", text: args.message },
+          name: args.name, threadId: lookup.thread.id });
+      } catch (error) {
+        // A mailbox at its bound (`SubagentMailboxFullError`) refuses the message visibly; nothing was delivered.
+        if (errorCode(error) !== SUBAGENT_ERROR_CODES.messageInvalid) throw error;
+        return refusal(call, SUBAGENT_ERROR_CODES.messageInvalid,
+          "This sub-agent has too many unread messages; wait for its result before writing again.");
+      }
       if (delivered.kind === "delivered") return resultOf(call, { kind: "delivered", name: args.name, state: delivered.state });
       if (delivered.kind === "ended") return resultOf(call, delivered.result);
       return refusal(call, SUBAGENT_ERROR_CODES.notFound, "No sub-agent of that name is running in this conversation.");
@@ -135,7 +154,7 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
       : "This sub-agent is running elsewhere in this chat; start another name.");
   }
   if (args.background) {
-    const availability = deps.background ? await deps.background.availability(scope) : null;
+    const availability = deps.background && deps.backgroundAllowed ? await deps.background.availability(scope) : null;
     if (!availability?.available) {
       return refusal(call, SUBAGENT_ERROR_CODES.backgroundUnavailable,
         "Background sub-agents are not available in this chat; call it again without background to wait for its result.");
@@ -208,8 +227,12 @@ export async function executeStopSubagent(deps: SubagentCallDeps, execution: Eng
     }
     return refusal(call, SUBAGENT_ERROR_CODES.busy, "This sub-agent is running elsewhere in this chat and cannot be stopped from here.");
   }
-  const stored = lookup.latest ? decodeSubagentCallResult(await deps.store.result({ chatId: deps.chatId, turnId: lookup.latest.id,
-    userId: deps.userId })) : null;
+  const latest = lookup.latest;
+  if (!latest) return notFound();
+  const read = async () => decodeSubagentCallResult(await deps.store.result({ chatId: deps.chatId, turnId: latest.id, userId: deps.userId }));
+  let stored = await read();
+  // A turn a restart left behind (its parent ended) ends as interrupted now, and that is how it ended.
+  if (!stored && await deps.store.endOrphanedTurns({ chatId: deps.chatId, userId: deps.userId }) > 0) stored = await read();
   return stored ? resultOf(call, stored) : notFound();
 }
 

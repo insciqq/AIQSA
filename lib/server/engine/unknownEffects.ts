@@ -135,8 +135,10 @@ export function createUnknownEffects(): UnknownEffects {
  * count as the user speaking.
  */
 export function unknownEffectsOf(items: readonly TranscriptItem[],
-  userAuthored: (item: TranscriptUserItem) => boolean): UnknownEffects {
-  const effects = createUnknownEffects();
+  userAuthored: (item: TranscriptUserItem) => boolean,
+  /** Records into this fence instead of a new one: a run's one fence for its main agent and sub-agents. */
+  into: UnknownEffects = createUnknownEffects()): UnknownEffects {
+  const effects = into;
   const calls = new Map<string, { after?: Date; arguments: Record<string, unknown>; name: string }>();
   // Calls without any result yet; a result recorded later (an approved call that then ran) still counts.
   const open = new Set<string>();

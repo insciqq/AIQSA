@@ -6,7 +6,7 @@ import {
   endedSubagentResult
 } from "@/tests/support/subagentPorts";
 import { SUBAGENT_ERROR_CODES, type SubagentCallResult } from "../../../contracts/subagents";
-import type { SubagentTypeSnapshot } from "../../subagents/ports";
+import type { SubagentBackgroundControl, SubagentTypeSnapshot } from "../../subagents/ports";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import type { EngineToolExecution } from "../toolRegistry";
 import { executeCallSubagent, executeStopSubagent, type SubagentCallDeps } from "./callTools";
@@ -30,8 +30,9 @@ function turn(extra: Partial<SubagentTurnRecord> = {}): SubagentTurnRecord {
     state: "done", threadId: "thread-1", ...extra };
 }
 
-function setup(options: Readonly<{ assistantRun?: boolean; background?: FakeSubagentBackgroundControl; found?: SubagentThreadLookup | null;
-  refuse?: "subagent_busy" | "subagent_limit_reached"; types?: FakeSubagentTypeResolver }> = {}) {
+function setup(options: Readonly<{ assistantRun?: boolean; background?: SubagentBackgroundControl; backgroundAllowed?: boolean;
+  found?: SubagentThreadLookup | null; orphans?: number; refuse?: "subagent_busy" | "subagent_limit_reached";
+  result?: unknown; types?: FakeSubagentTypeResolver }> = {}) {
   const fake = new FakeSubagentRunner((input) => endedSubagentResult(input.name, { model: { effort: input.binding.reasoningEffort,
     id: input.binding.modelId }, report: `Outcome: done\n${input.brief}` }));
   const runner: HostedSubagentRunner = {
@@ -46,13 +47,15 @@ function setup(options: Readonly<{ assistantRun?: boolean; background?: FakeSuba
         thread: options.found?.thread ?? { anchorRunId: "run", definitionId: input.definitionId, id: "thread-new", name: input.name,
           typeName: input.typeName },
         turn: turn({ id: `turn-${input.parentToolCallId}`, parentRunId: "run", state: "running" }) }),
+    endOrphanedTurns: vi.fn(async () => options.orphans ?? 0),
     ensureThread: vi.fn(async (input: Parameters<SubagentCallDeps["store"]["ensureThread"]>[0]) => ({ anchorRunId: "run",
       definitionId: null, id: "thread-new", name: input.name, typeName: null })),
     find: vi.fn(async () => options.found ?? null),
-    result: vi.fn(async () => endedSubagentResult("shop", { report: "Earlier report" }))
+    result: vi.fn(async () => "result" in options ? options.result : endedSubagentResult("shop", { report: "Earlier report" }))
   };
   const deps: SubagentCallDeps = {
     assistantRun: options.assistantRun ?? false, ...(options.background ? { background: options.background } : {}),
+    backgroundAllowed: options.backgroundAllowed ?? true,
     branchRunIds: ["run-earlier", "run"], catalog, chatId: "chat", deadlineAt: () => new Date(Date.now() + 60_000), parent, runId: "run",
     runner, store, ...(options.types ? { types: options.types } : {}), userMessage: "Find me a laptop.", userId: "user"
   };
@@ -146,12 +149,40 @@ describe("call_subagent", () => {
   });
 });
 
+describe("call_subagent with the background port", () => {
+  it("withholds background mode where the run may not start one (a Telegram turn), whatever the port says", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const availability = vi.spyOn(background, "availability");
+    const ctx = setup({ background, backgroundAllowed: false });
+    expect(value(await executeCallSubagent(ctx.deps, execution({ background: true, message: "Go", name: "shop" }))).error)
+      .toBe(SUBAGENT_ERROR_CODES.backgroundUnavailable);
+    expect(availability).not.toHaveBeenCalled();
+    expect(background.turns).toHaveLength(0);
+  });
+
+  it("refuses a message to a full mailbox visibly", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    vi.spyOn(background, "deliver").mockRejectedValue(Object.assign(new Error("mailbox_full"), { code: "subagent_message_invalid" }));
+    const ctx = setup({ background, found: visible({ active: turn({ mode: "background", parentRunId: "run", state: "running" }) }) });
+    const result = await executeCallSubagent(ctx.deps, execution({ message: "One more thing", name: "shop" }));
+    expect(result.status).toBe("error");
+    expect(value(result).error).toBe(SUBAGENT_ERROR_CODES.messageInvalid);
+  });
+});
+
 describe("stop_subagent", () => {
   it("returns how an ended sub-agent ended, and refuses an unknown name", async () => {
     const ctx = setup({ found: visible() });
     const stopped = await executeStopSubagent(ctx.deps, { ...execution({ name: "shop" }), call: { arguments: { name: "shop" }, id: "c1",
       name: "stop_subagent" } });
     expect(value(stopped)).toMatchObject({ kind: "ended", report: "Earlier report" });
+    // A foreground turn a restart left behind ends as interrupted when it is stopped, and that is how it ended.
+    const orphan = setup({ found: visible({ latest: turn({ state: "running" }) }), orphans: 1 });
+    vi.mocked(orphan.store.result).mockResolvedValueOnce(null).mockResolvedValueOnce(endedSubagentResult("shop", { outcome: undefined,
+      reason: "restart", state: "interrupted" }));
+    expect(value(await executeStopSubagent(orphan.deps, { ...execution({ name: "shop" }), call: { arguments: { name: "shop" }, id: "c1",
+      name: "stop_subagent" } }))).toMatchObject({ reason: "restart", state: "interrupted" });
+    expect(orphan.store.endOrphanedTurns).toHaveBeenCalledWith({ chatId: "chat", userId: "user" });
     const none = setup();
     expect(value(await executeStopSubagent(none.deps, { ...execution({ name: "nobody" }), call: { arguments: { name: "nobody" }, id: "c1",
       name: "stop_subagent" } })).error).toBe(SUBAGENT_ERROR_CODES.notFound);

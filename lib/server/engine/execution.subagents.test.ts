@@ -29,7 +29,7 @@ function scriptedAdapter(steps: readonly Step[]) {
   return { adapter, requests };
 }
 
-function engine() {
+function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: TranscriptItem[][] }> = {}) {
   const appended: Array<{ items: readonly TranscriptItem[]; scope: TranscriptRunScope }> = [];
   const rows = new Map<string, ToolCallRow>();
   const usage: RunUsageAttribution[] = [];
@@ -45,7 +45,7 @@ function engine() {
     append: vi.fn(async (scope: TranscriptRunScope, _from: number, items: readonly TranscriptItem[]) => { appended.push({ items, scope }); }),
     approvalContinuationTurns: vi.fn(async () => new Set<string>()),
     loadRuns: vi.fn(async (input: { runIds: readonly string[] }) => new Map(input.runIds.map((id) => [id, [] as TranscriptItem[]]))),
-    nativeRunsForAnswers: vi.fn(async () => new Map()),
+    nativeRunsForAnswers: vi.fn(async () => new Map(options.earlierRun ? [["answer-0", "run-0"]] : [])),
     nativeRunsBeforeTurns: vi.fn(async () => []),
     retiredRunEffects: vi.fn(async () => []),
     nextSequence: vi.fn(async () => 0),
@@ -78,7 +78,9 @@ function engine() {
     ensureThread: vi.fn(),
     find: vi.fn(async () => null),
     result: vi.fn(async () => null),
+    endOrphanedTurns: vi.fn(async () => 0),
     setActiveState: vi.fn(async () => true),
+    threadEffectItems: vi.fn(async () => options.threadEffects ?? []),
     settle: vi.fn(async (input) => { settled.push(input); return true; })
   } as unknown as SubagentThreadStore;
   const deps: NativeEngineDeps = {
@@ -99,10 +101,14 @@ function repository() {
   };
 }
 
-function prepared(): MaterializedPreparedRunData {
+function prepared(extra: Readonly<{ earlier?: boolean }> = {}): MaterializedPreparedRunData {
+  const earlier = extra.earlier ? [
+    { content: { blocks: [{ text: "Order a laptop.", type: "text" }] }, id: "question-0", role: "user" as const },
+    { content: { blocks: [{ text: "Done.", type: "text" }] }, id: "answer-0", role: "assistant" as const }
+  ] : [];
   const request = {
     attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ text: "Find the cheapest laptop.", type: "text" }] },
-    context: { messages: [{ content: { blocks: [{ text: "Find the cheapest laptop.", type: "text" }] }, id: "current-user-message",
+    context: { messages: [...earlier, { content: { blocks: [{ text: "Find the cheapest laptop.", type: "text" }] }, id: "current-user-message",
       role: "user" as const }], mode: "branch_path" as const },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
     modelId: "fake-qsa", params: { temperature: 0.3 }, prompt: { developer: null, system: "Be brief." }, provider: "fake",
@@ -156,5 +162,28 @@ describe("native run with sub-agents", () => {
     // Usage of both, recorded after the answer: the sub-agent's under its own purpose.
     expect(memory.usage.map((entry) => entry.purpose)).toEqual(["chat_answer", "subagent", "chat_answer"]);
     expect(memory.settled).toEqual([expect.objectContaining({ turnId: "turn-1" })]);
+  });
+
+  it("fences the main agent with the effects its branch's sub-agents left unknown, until the user speaks", async () => {
+    const order = { message: "Order the X1.", name: "buyer" };
+    // An earlier turn's sub-agent call whose outcome stayed unknown: a call with no result in its thread's records.
+    const threadEffects: TranscriptItem[][] = [[{ arguments: JSON.stringify(order), callId: "t1", id: "i1", kind: "tool_call",
+      name: CALL_SUBAGENT_TOOL_NAME, recordedAt: new Date("2026-10-29T10:00:00Z") }]];
+    const steps = [{ calls: [{ arguments: order, id: "call-1", name: CALL_SUBAGENT_TOOL_NAME }] }, { text: "Outcome: done\nOk." },
+      { text: "Done." }];
+    // A scheduled occurrence's prompt is no user speech: the equivalent call is not sent again.
+    const scheduled = engine({ earlierRun: true, threadEffects });
+    const first = scriptedAdapter(steps);
+    await createNativeRunExecutionResponse({ adapter: first.adapter, created, engine: scheduled.deps, prepared: prepared({ earlier: true }),
+      repository: repository() as unknown as RunRepository, scheduled: true, services: {}, userId: "user" }).text();
+    expect(scheduled.deps.subagentThreads?.threadEffectItems).toHaveBeenCalledWith({ chatId: "chat", runIds: ["run-0"], userId: "user" });
+    expect(scheduled.threads.admitForeground).not.toHaveBeenCalled();
+    expect(JSON.stringify(first.requests[1]!.history)).toContain("its effect is unknown");
+    // The user's own new message is them speaking since: the sub-agent may run again.
+    const spoken = engine({ earlierRun: true, threadEffects });
+    const second = scriptedAdapter(steps);
+    await createNativeRunExecutionResponse({ adapter: second.adapter, created, engine: spoken.deps, prepared: prepared({ earlier: true }),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }).text();
+    expect(spoken.threads.admitForeground).toHaveBeenCalledTimes(1);
   });
 });

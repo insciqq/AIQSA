@@ -20,10 +20,11 @@ import type { ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem, TranscriptTarget } from "../transcript";
 import type { TranscriptRepository } from "../transcriptRepository";
+import type { UnknownEffects } from "../unknownEffects";
 import type { UsageLedger } from "../usage";
 import { subagentEngineTools, type SubagentCallDeps } from "./callTools";
 import { decodeSubagentModels, type FrozenSubagentModels, type SubagentParentModel } from "./modelCatalog";
-import { parentSubagentRoute, type SubagentModelCatalog, type SubagentModelRoute, type SubagentRouteResult } from "./modelRoutes";
+import { modelEffortOptions, parentSubagentRoute, type SubagentModelCatalog, type SubagentModelRoute, type SubagentRouteResult } from "./modelRoutes";
 import { createSubagentRunner, type HostedSubagentRunner } from "./runner";
 import type { SubagentThreadStore } from "./threadStore";
 
@@ -114,7 +115,8 @@ export type PrepareRunSubagentsInput = Readonly<{
   modelConfiguration: RunModelConfiguration;
   now(): number;
   onWorkspaceLifecycle(entry: ThreadWorkspaceActivityEntry): Promise<void>;
-  pendingUserFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
+  /** Background turns are offered (web chats); never in a Telegram turn or a scheduled occurrence. */
+  backgroundAllowed: boolean;
   ports?: SubagentRunPorts;
   runContextItems: readonly TranscriptItem[];
   runId: string;
@@ -125,7 +127,11 @@ export type PrepareRunSubagentsInput = Readonly<{
   snapshot: ProviderExecutionSnapshot;
   toolState: ToolBatchState;
   toolTimeLeft(): boolean;
+  /** The run's one unknown-effect fence, shared by the main agent and its sub-agents. */
+  unknownEffects: UnknownEffects;
   usage: Pick<UsageLedger, "add" | "settle">;
+  /** Every follow-up the user wrote into this answer (delivered to the main agent or not yet), oldest first. */
+  userFollowups(): Promise<readonly Readonly<{ id: string; text: string }>[]>;
   userMessage: string;
 }>;
 
@@ -141,7 +147,11 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   const parent: SubagentParentModel = {
     connectionId: snapshot.connectionId,
     effort: request.reasoningEffort ?? null,
-    efforts: parentEntry?.reasoningEfforts ?? request.modelCapabilities.reasoningEfforts ?? [],
+    // The parent's own model's options, as its route checks them; its admitted effort itself is never checked again.
+    efforts: parentEntry?.reasoningEfforts ?? modelEffortOptions({ adapterKind: input.modelConfiguration.adapterKind,
+      capabilities: input.modelConfiguration.capabilities, defaultParams: input.modelConfiguration.defaultParams,
+      providerFamily: snapshot.providerFamily, reasoningModePath: Boolean(input.modelConfiguration.reasoningRequestMapping?.modePath),
+      upstreamModelId: snapshot.model.upstreamModelId }),
     providerModelId: snapshot.providerModelId,
     upstreamModelId: snapshot.model.upstreamModelId
   };
@@ -170,7 +180,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     maxToolRounds: input.budgets.maxToolRounds,
     now: input.now,
     onWorkspaceLifecycle: input.onWorkspaceLifecycle,
-    pendingUserFollowups: input.pendingUserFollowups,
+    userFollowups: input.userFollowups,
     recordDetachedCompaction: ({ item, sequence, thread }) =>
       input.engine.runs.recordDetachedCompaction(input.scope, { item, sequence, status: null, thread }),
     request,
@@ -186,12 +196,14 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     toolCalls: input.engine.toolCalls,
     toolState: input.toolState,
     toolTimeLeft: input.toolTimeLeft,
+    unknownEffects: input.unknownEffects,
     transcripts: input.engine.transcripts,
     usage: (attribution) => input.usage.add(attribution),
     userId: input.scope.userId
   });
   const deps: SubagentCallDeps = {
     assistantRun: input.assistantRun,
+    backgroundAllowed: input.backgroundAllowed,
     ...(input.ports?.background ? { background: input.ports.background } : {}),
     branchRunIds: [...input.branchRunIds, input.runId],
     catalog,

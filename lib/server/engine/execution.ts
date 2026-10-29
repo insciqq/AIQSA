@@ -455,6 +455,17 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
         const unknownEffects = unknownEffectsOf(effectItems, (item) => item.followup === true ||
           (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
+        // The run's agents share this one fence (`subagents/runner.ts`): an effect a sub-agent of this branch left unknown is
+        // respected by the main agent and every other sub-agent, read from the threads' records and never put in any context.
+        const branchRunIds = conversationMessages.flatMap((message) => message.role === "assistant" && nativeRuns.has(message.id)
+          ? [nativeRuns.get(message.id)!] : []);
+        if (engine.subagentThreads) {
+          const threadEffects = await engine.subagentThreads.threadEffectItems({ chatId: scope.chatId, runIds: branchRunIds,
+            userId: input.userId });
+          for (const threadItems of threadEffects) unknownEffectsOf(threadItems, () => false, unknownEffects);
+          // Every earlier thread effect precedes the user's current message, which is them speaking since.
+          if (threadEffects.length > 0 && conversation.currentInputId && !serverInput) unknownEffects.userSpoke();
+        }
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
@@ -500,9 +511,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const subagents = await prepareRunSubagents({
           admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
           assistantRun: Boolean(input.prepared.assistant || input.prepared.chatAssistant),
-          branchRunIds: conversationMessages.flatMap((message) => message.role === "assistant" && nativeRuns.has(message.id)
-            ? [nativeRuns.get(message.id)!] : []),
-          buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput, followupTexts: agentInput.followupTexts,
+          branchRunIds,
+          // One page-reader session for the answer: its cap and cache count every agent's reads (integrator decision).
+          buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput,
+            ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
+            followupTexts: agentInput.followupTexts,
             // A sub-agent's outputs stay its own; the answer shows its steps under its call.
             onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
             services: { ...registryInput.services, ...(input.services.selfService
@@ -511,13 +524,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           followupTexts: () => delivered,
           modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration, now,
           onWorkspaceLifecycle: onWorkspaceActivity,
-          pendingUserFollowups: async () => {
+          // Every follow-up the user wrote into this answer, delivered to the main agent or not yet: a sub-agent gets each once.
+          userFollowups: async () => {
             const batch = followupOps ? await followupOps.load({ runId, userId: input.userId }) : null;
-            return (batch?.entries ?? []).filter((entry) => entry.delivery === "accepted" && userAuthoredFollowup(entry))
+            return (batch?.entries ?? []).filter((entry) => entry.delivery !== "undelivered" && userAuthoredFollowup(entry))
               .map((entry) => ({ id: entry.id, text: entry.text }));
           },
+          // Background turns are web chats' only: a Telegram turn or a scheduled occurrence waits for its sub-agents.
+          backgroundAllowed: !input.telegram && !input.scheduled,
           ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
-          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft, usage,
+          runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft, unknownEffects, usage,
           userMessage: currentUserMessageText(contextMessages, continuationTurns)
         });
         runSubagents = subagents;
