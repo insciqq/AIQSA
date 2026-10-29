@@ -85,6 +85,11 @@ export type BrowserLiveRegistration = Readonly<{
   channel(request: BrowserLiveChannelRequest): Promise<WorkspaceBrowserLiveReply>;
   chatId: string;
   runId: string;
+  /**
+   * Whether the run still holds the chat's Workspace (`workspaceRunHoldsOperation`): a run gone without `end` is
+   * dropped from the channel. Absent: the run stays a member until its `end`.
+   */
+  attached?(): Promise<boolean>;
   /** Whether a sign-in made in this browser is saved to the owner's Secrets after the turn (asked once, lazily). */
   signInRemembered(): Promise<boolean>;
   userId: string;
@@ -234,7 +239,18 @@ class LiveRun implements BrowserLiveRunHandle {
   /** Another run of the chat joins the channel (its own handle ends only its membership). */
   join(registration: BrowserLiveRegistration): BrowserLiveRunHandle {
     if (!this.members.some((member) => member.runId === registration.runId)) this.members.push(registration);
+    void this.pruneMembers(registration.runId);
     return this.handle(registration.runId);
+  }
+
+  /** Drops members whose runs no longer hold the Workspace (one that crashed without `end`), so none keeps the channel. */
+  private async pruneMembers(keep: string): Promise<void> {
+    const alive = await Promise.all(this.members.map((member) => member.runId === keep || !member.attached
+      ? Promise.resolve(true) : member.attached().catch(() => true)));
+    const gone = new Set(this.members.filter((_member, index) => !alive[index]));
+    for (let index = this.members.length - 1; index >= 0; index -= 1) {
+      if (gone.has(this.members[index]!)) this.members.splice(index, 1);
+    }
   }
 
   handle(runId: string): BrowserLiveRunHandle {
@@ -246,12 +262,15 @@ class LiveRun implements BrowserLiveRunHandle {
    * streamer the leaving run started is replaced through a remaining run before the leaving run's authority goes.
    */
   async leave(runId: string, reason: Extract<BrowserLiveEndReason, "browser_stopped" | "run_finished"> = "run_finished"): Promise<void> {
+    if (!this.members.some((member) => member.runId === runId)) return;
+    if (reason !== "browser_stopped") await this.pruneMembers(runId);
     const index = this.members.findIndex((member) => member.runId === runId);
     if (index < 0) return;
     if (this.members.length === 1 || reason === "browser_stopped") return this.end(reason);
     this.members.splice(index, 1);
     const streamer = this.streamer;
-    if (streamer?.owner.runId === runId) {
+    // A streamer whose run left (now, or a pruned one) is replaced through a remaining run.
+    if (streamer && !this.members.includes(streamer.owner)) {
       await Promise.race([this.rotate(streamer), delay(BROWSER_LIVE_RELAY_LIMITS.endMs)]);
     }
     this.broadcastState();

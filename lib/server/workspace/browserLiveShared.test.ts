@@ -50,6 +50,23 @@ describe("browser live channel of a shared Workspace", () => {
     expect(guest.open()).toBe(0);
   });
 
+  it("drops a member whose run is gone without ending, so the last live run still closes the channel", async () => {
+    const { channel } = sharedGuest();
+    const relay = new BrowserLiveRelay();
+    let crashedHolds = true;
+    relay.register({ attached: async () => crashedHolds, channel: channel("run-crashed"), chatId: "chat-1", runId: "run-crashed",
+      signInRemembered: async () => false, userId: "user-1" });
+    const live = relay.register({ attached: async () => true, channel: channel("run-live"), chatId: "chat-1", runId: "run-live",
+      signInRemembered: async () => false, userId: "user-1" });
+    const tab = recordingWriter();
+    await relay.find("chat-1", "user-1")!.watch(owner, tab.writer);
+    // The crashed run never calls `end`; it no longer holds the Workspace.
+    crashedHolds = false;
+    await live.end("run_finished");
+    expect(tab.closed()).toEqual({ data: { reason: "run_finished" }, event: "end" });
+    expect(relay.find("chat-1", "user-1")).toBeNull();
+  });
+
   it("ends every run's view at once when the browser itself stopped", async () => {
     const { channel } = sharedGuest();
     const relay = new BrowserLiveRelay();
