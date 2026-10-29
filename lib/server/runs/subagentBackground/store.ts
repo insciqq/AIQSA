@@ -269,7 +269,9 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
           return { kind: "admitted", runId: run.id, turnId: turn.id, workspace };
         }));
       } catch (error) {
-        if (error instanceof ActiveRunConflictError) return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
+        // The thread got an active run meanwhile, or this call already started a turn (one turn per call): nothing runs twice.
+        if (error instanceof ActiveRunConflictError ||
+          error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return { code: SUBAGENT_ERROR_CODES.busy, kind: "refused" };
         throw error;
       }
     },
