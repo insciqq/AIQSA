@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page, type TestInfo } from "@playwright/test";
 import type { ChatDetailResponseWire } from "../../lib/contracts/chats";
 import { formatAssistantEntryPath } from "../../lib/domain/chatRoute";
+import { engageComposer } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { assistantContentWithText } from "./shell/thread";
 import { createAssistantFixture, e2eAssistantAvatar, fakeModelId, type AssistantFixture, type E2EAssistant } from "./support/assistants";
@@ -1291,6 +1292,8 @@ test("at 390×844 the strip takes one row without page scroll, the picker is a b
       composer: (await composer.boundingBox())!,
       strip: await strip.evaluate((element) => ({ height: element.getBoundingClientRect().height }))
     });
+    // A phone's composer rests as one line until engaged (operator decision 2026-10-29); typing follows that.
+    await engageComposer(page);
     const idle = await measure();
     await messageBox(page).fill("Short draft");
     await expect(strip).toHaveAttribute("aria-hidden", "true");

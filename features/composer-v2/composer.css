@@ -341,6 +341,13 @@
   stroke-width: 2.2;
 }
 
+/* Hover keeps the ink fill: a touch screen leaves hover on the spot it tapped,
+   where the next run button appears. */
+.v2-composer-run-action .v2-icon-button:hover:not(:disabled) {
+  color: var(--v2-color-accent-ink);
+  background: color-mix(in srgb, var(--v2-color-accent) 86%, var(--v2-color-canvas));
+}
+
 .v2-composer-run-action .v2-icon-button:disabled {
   color: var(--v2-color-text3);
   background: var(--v2-color-surface2);
@@ -1197,21 +1204,24 @@
   }
 }
 
+/* A narrow composer (a phone) reads like chatgpt.com: the text takes the full
+   width, and "+", the tools and the run buttons share the row under it. Tools
+   that do not fit beside the buttons wrap under the first ones; nothing
+   scrolls or hides (operator decision 2026-10-29). */
 @container composer (max-width: 26rem) {
   .v2-composer-entry {
     display: grid;
     grid-template-columns: 2.75rem minmax(0, 1fr) auto;
-    grid-template-areas: "add input send" "chips chips chips";
-    align-items: end;
-    column-gap: 0.25rem;
-    row-gap: 0.375rem;
+    grid-template-areas: "input input input" "add chips send";
+    align-items: start;
+    row-gap: 0.125rem;
   }
   .v2-composer-controls { display: contents; }
-  .v2-composer-input { grid-area: input; min-height: 2.75rem; padding: 0.6875rem 0.25rem; }
+  .v2-composer-input { grid-area: input; min-height: 2.75rem; padding: 0.5rem 0.625rem 0.25rem; }
   .v2-composer-controls > .v2-icon-button { grid-area: add; width: 2.75rem; height: 2.75rem; }
-  .v2-composer-run-action { grid-area: send; align-self: end; }
+  .v2-composer-run-action { grid-area: send; }
   .v2-composer-run-action .v2-icon-button { width: 2.75rem; height: 2.75rem; }
-  .v2-composer-indicators { grid-area: chips; gap: 0.125rem; }
+  .v2-composer-indicators { grid-area: chips; flex-wrap: wrap; gap: 0; }
   .v2-composer-indicator { width: 2.75rem; min-height: 2.75rem; }
   .v2-composer-indicator-face { width: 2.25rem; height: 2.25rem; }
 }
@@ -1224,8 +1234,10 @@
     padding-left: env(safe-area-inset-left);
   }
 
+  /* 40% of the height left above a software keyboard: iOS overlays it
+     without changing dvh (`LiveWorkspaceSectionV2` sets the inset). */
   .v2-composer-input {
-    max-height: 40dvh;
+    max-height: calc((100dvh - var(--v2-keyboard-inset, 0px)) * 0.4);
   }
 
   /*
@@ -1346,19 +1358,62 @@
 
 }
 
-@media (max-width: 26rem) {
-  .v2-composer { padding-right: 0.625rem; padding-left: 0.625rem; }
-}
-
-@media (max-width: 767px) and (pointer: coarse) {
+/* Phone composer (operator decision 2026-10-29): an island that rests as one
+   line ("+", the field, and Stop or dictation) until the user engages it, and
+   larger, bolder glyphs on "+", Send and Stop. */
+@media (max-width: 767px) {
   .v2-composer {
-    padding-top: 0;
-    padding-bottom: 0.25rem;
+    padding: 0.375rem;
+    border-radius: 1.625rem;
   }
 
-  .v2-composer-input {
-    padding-top: 0.6875rem;
+  .v2-composer[data-resting] {
+    padding: 0.25rem;
+    border-radius: 999px;
   }
+
+  .v2-composer[data-resting] .v2-composer-entry {
+    display: grid;
+    grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+    grid-template-areas: "add input send";
+    align-items: center;
+    row-gap: 0;
+  }
+
+  .v2-composer[data-resting] .v2-composer-controls { display: contents; }
+  .v2-composer[data-resting] .v2-composer-controls > .v2-icon-button { grid-area: add; width: 2.75rem; height: 2.75rem; }
+  .v2-composer[data-resting] .v2-composer-run-action { grid-area: send; }
+  .v2-composer[data-resting] .v2-composer-indicators { display: none; }
+
+  .v2-composer[data-resting] .v2-composer-input {
+    grid-area: input;
+    height: 2.75rem;
+    min-height: 2.75rem;
+    padding: 0.6875rem 0.25rem;
+    overflow: hidden;
+  }
+
+  .v2-composer-controls > .v2-icon-button:not(:disabled) { color: var(--v2-color-text); }
+  .v2-composer-controls > .v2-icon-button .v2-icon { width: 1.375rem; height: 1.375rem; stroke-width: 2; }
+
+  /* The far-right button is the main action: Stop while there is nothing to
+     send, Send once there is. Beside an enabled Send, Stop steps left as a
+     quiet circle, so a habitual tap on the right never stops the answer; an
+     empty field shows no disabled Send beside it. */
+  .v2-composer-run-action { gap: 0.375rem; }
+  .v2-composer-run-action > [data-action="stop"] { order: -1; }
+  .v2-composer[data-empty] .v2-composer-run-action > [data-action="send"] { display: none; }
+  .v2-composer-run-action .v2-icon-button .v2-icon { width: 1.375rem; height: 1.375rem; stroke-width: 2.5; }
+  .v2-composer-run-action .v2-icon-button:has(.v2-icon use[href="#v2-icon-stop"]) .v2-icon { width: 1.625rem; height: 1.625rem; }
+
+  .v2-composer-run-action:has(> [data-action="send"]:not(:disabled)) > .v2-icon-button[data-action="stop"]:not(:disabled) {
+    border-color: var(--v2-color-border2);
+    color: var(--v2-color-text);
+    background: var(--v2-color-surface2);
+  }
+
+  /* Off tools drop their outline; an active tool keeps its fill. */
+  .v2-composer-indicator[data-quiet] { --v2-chip-border: transparent; }
 }
 
 /* Touch: the star alone marks "Set as default" (the label stays its

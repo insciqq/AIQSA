@@ -33,8 +33,7 @@ const viewports = [
 
 /**
  * The control against the answer's text lines (Range client rects) clipped to
- * the readable band of the thread: above the dock's fade, whose top includes
- * the phone's upward extension while the control is shown.
+ * the readable band of the thread above the dock, and the composer's top.
  */
 function jumpGeometry(page: Page) {
   return page.evaluate(() => {
@@ -69,7 +68,9 @@ function jumpGeometry(page: Page) {
     const covered = lines.filter((line) =>
       overlapsLane(line) && Math.min(line.bottom, jump.bottom) - Math.max(line.top, jump.top) > 0.5);
     const above = lines.filter((line) => line.bottom >= readingBottom - 80);
+    const composer = document.querySelector<HTMLElement>('[data-testid="composer-v2-surface"]')!.getBoundingClientRect();
     return {
+      composerTop: composer.top,
       covered: covered.length,
       dockContentTop,
       fadeTop,
@@ -85,7 +86,7 @@ for (const theme of ["light", "dark"] as const) {
     test.describe(`jump to latest · ${viewport.name} · ${theme}`, () => {
       test.use({ hasTouch: viewport.touch, isMobile: viewport.mobile });
 
-      test(`covers no answer line while scrolled up and still reaches the end (${viewport.name}, ${theme})`,
+      test(`places the control for its width while scrolled up and still reaches the end (${viewport.name}, ${theme})`,
         async ({ page }, testInfo) => {
           await page.emulateMedia({ colorScheme: theme });
           await page.setViewportSize({ height: viewport.height, width: viewport.width });
@@ -105,11 +106,28 @@ for (const theme of ["light", "dark"] as const) {
           const geometry = await jumpGeometry(page);
           // The thread really is over the answer next to the control.
           expect(geometry.linesAbove).toBeGreaterThan(0);
-          if (viewport.width < 768) expect(geometry.linesAboveInLane).toBeGreaterThan(0);
-          expect(geometry.covered).toBe(0);
-          // It rests in the dock's band: below the readable thread, above the composer.
-          expect(geometry.jump.top).toBeGreaterThanOrEqual(geometry.fadeTop - 0.5);
-          expect(geometry.jump.bottom).toBeLessThanOrEqual(geometry.dockContentTop + 0.5);
+          if (viewport.width < 768) {
+            // A phone floats a round control centred 12px above the composer, over the thread, and hides
+            // it while the thread scrolls (operator decision 2026-10-29).
+            expect(Math.abs((geometry.jump.left + geometry.jump.right) / 2 - viewport.width / 2)).toBeLessThanOrEqual(1);
+            expect(geometry.composerTop - geometry.jump.bottom).toBeGreaterThanOrEqual(11);
+            expect(geometry.composerTop - geometry.jump.bottom).toBeLessThanOrEqual(13);
+            expect(await jump.evaluate((element) => parseFloat(getComputedStyle(element).borderTopLeftRadius)))
+              .toBeGreaterThanOrEqual(geometry.jump.height / 2 - 0.5);
+            await thread.evaluate((element) => {
+              element.scrollTop -= 40;
+              element.dispatchEvent(new Event("scroll"));
+            });
+            await expect(jump).toHaveAttribute("data-scrolling", "true");
+            await expect.poll(() => jump.evaluate((element) => getComputedStyle(element).opacity)).toBe("0");
+            await expect(jump).not.toHaveAttribute("data-scrolling", { timeout: 2_000 });
+            await expect.poll(() => jump.evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
+          } else {
+            expect(geometry.covered).toBe(0);
+            // It rests in the dock's band: below the readable thread, above the composer.
+            expect(geometry.jump.top).toBeGreaterThanOrEqual(geometry.fadeTop - 0.5);
+            expect(geometry.jump.bottom).toBeLessThanOrEqual(geometry.dockContentTop + 0.5);
+          }
           expect(geometry.jump.left).toBeGreaterThanOrEqual(0);
           expect(geometry.jump.right).toBeLessThanOrEqual(viewport.width);
           if (viewport.touch) {

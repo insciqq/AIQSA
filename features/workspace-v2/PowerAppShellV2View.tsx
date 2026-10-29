@@ -509,13 +509,16 @@ export function SkillLibraryOverlayV2({
 /**
  * The live workspace, padded by a software keyboard the browser overlays
  * (iOS Safari ignores `interactive-widget`), so the composer stays above it
- * even when focus did not scroll it into view. Only this element re-renders
- * as the keyboard moves.
+ * even when focus did not scroll it into view. `--v2-keyboard-inset` lets the
+ * composer size itself to the height left above that keyboard. Only this
+ * element re-renders as the keyboard moves.
  */
 export function LiveWorkspaceSectionV2({ style, ...props }: ComponentProps<"section">) {
   const keyboardInset = useVisualViewportInset();
   return <section {...props} data-keyboard={keyboardInset > 0 ? "open" : undefined}
-    style={keyboardInset > 0 ? { ...style, paddingBottom: keyboardInset } : style} />;
+    style={keyboardInset > 0
+      ? { ...style, paddingBottom: keyboardInset, "--v2-keyboard-inset": `${keyboardInset}px` } as CSSProperties
+      : style} />;
 }
 
 /** Defaults & roles > PDF processing in chats, where the PDF reader is assigned. */

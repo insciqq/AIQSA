@@ -642,6 +642,48 @@ export function ConversationOrientationCopyV2({ detail, icon = "brand", testId, 
   );
 }
 
+/** How long the thread must rest before the jump control shows again. */
+const JUMP_SCROLL_SETTLE_MS = 300;
+
+/**
+ * Jump to latest. While the thread is scrolling the control is marked
+ * `data-scrolling`, which a phone hides (operator decision 2026-10-29): it
+ * shows once the reader stops away from the end. It starts marked, because it
+ * mostly appears mid-scroll, and owns its own state so a scroll re-renders
+ * only this button, not the thread.
+ */
+function JumpToLatestV2({ bottomOffset, onJump, scrollRef }: Readonly<{
+  bottomOffset: number;
+  onJump(): void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+}>) {
+  const [scrolling, setScrolling] = useState(true);
+  useEffect(() => {
+    const container = scrollRef.current;
+    let timer = window.setTimeout(() => setScrolling(false), JUMP_SCROLL_SETTLE_MS);
+    function markScrolling() {
+      setScrolling(true);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setScrolling(false), JUMP_SCROLL_SETTLE_MS);
+    }
+    container?.addEventListener("scroll", markScrolling, { passive: true });
+    return () => {
+      container?.removeEventListener("scroll", markScrolling);
+      window.clearTimeout(timer);
+    };
+  }, [scrollRef]);
+  return (
+    <UiV2IconButton
+      className="v2-conversation-jump-latest"
+      data-scrolling={scrolling || undefined}
+      icon="arrow-down"
+      label="Jump to latest message"
+      style={bottomOffset > 0 ? { "--v2-jump-latest-offset": `${bottomOffset}px` } as CSSProperties : undefined}
+      onClick={onJump}
+    />
+  );
+}
+
 export function ConversationV2({
   composerSlot,
   error = null,
@@ -822,15 +864,7 @@ export function ConversationV2({
       </div>
       {quote ? <ConversationSelectionV2 quote={quote} scrollRef={scrollRef} /> : null}
       {showJumpToLatest && onJumpToLatest ? (
-        <UiV2IconButton
-          className="v2-conversation-jump-latest"
-          icon="chevron-down"
-          label="Jump to latest message"
-          style={jumpToLatestBottomOffset > 0
-            ? { "--v2-jump-latest-offset": `${jumpToLatestBottomOffset}px` } as CSSProperties
-            : undefined}
-          onClick={onJumpToLatest}
-        />
+        <JumpToLatestV2 bottomOffset={jumpToLatestBottomOffset} scrollRef={scrollRef} onJump={onJumpToLatest} />
       ) : null}
     </section>
   );

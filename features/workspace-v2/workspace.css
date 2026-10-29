@@ -1067,11 +1067,8 @@
  * the reading area and above the composer, so it never covers readable thread
  * content where the column leaves no side gutter for it (a phone on its side,
  * a tablet upright, a narrow window beside the sidebar). It paints over the
- * band; an open composer layer still lifts the dock above it. A phone's band
- * is shorter (1.5rem, see the max-width: 767px block), so there the band grows
- * upward to the same 2.75rem only while the control is shown: a paint-only
- * fade above the dock that changes neither its measured height nor the
- * thread's layout, and the control rests on the composer's top edge.
+ * band; an open composer layer still lifts the dock above it. A phone floats
+ * it instead (the max-width: 767px block below).
  */
 @media (min-width: 768px) {
   .v2-live-conversation .v2-conversation-jump-latest {
@@ -1087,30 +1084,13 @@
   }
 }
 
+/* On a phone the control floats 12px above the composer, over the thread, as
+   on chatgpt.com: it may cover a strip of text while the reader is scrolled
+   up (operator decision 2026-10-29; its look is in conversation.css). */
 @media (max-width: 767px) {
   .v2-live-conversation .v2-conversation-jump-latest {
     z-index: 16;
-    bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band) + (2.75rem - 2rem) / 2));
-  }
-
-  /* The phone's fade, shifted up to span 2.75rem above the composer. It sits
-     under the dock's own children (z-index -1 in the dock's context). */
-  .v2-live-conversation:has(.v2-conversation-jump-latest) .v2-live-composer-dock::before {
-    position: absolute;
-    z-index: -1;
-    top: calc(var(--v2-live-dock-band) - 2.75rem);
-    right: 0;
-    left: 0;
-    height: 2.75rem;
-    background: linear-gradient(to bottom, transparent, var(--v2-color-canvas) 1.25rem);
-    content: "";
-    pointer-events: none;
-  }
-}
-
-@media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
-  .v2-live-conversation .v2-conversation-jump-latest {
-    bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band)));
+    bottom: calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band) + 0.75rem);
   }
 }
 
@@ -1440,8 +1420,9 @@
     pointer-events: none;
   }
 
+  /* The "+ ⋯" island (2 × 2.5rem + 0.125rem) and the 0.5rem gap the menu island keeps. */
   .v2-workspace-shell[data-chat-active="true"] .v2-live-header {
-    padding-right: 6rem;
+    padding-right: 5.625rem;
   }
 
   .v2-live-header:not(:has(.v2-live-model, .v2-live-title > *, .v2-live-header-actions > *)) {
@@ -1468,7 +1449,8 @@
 
   /* The Assistant selector joins the model pill as its right segment: icon
      or avatar only, no name (PRD 11). The island's edge is an inset ring,
-     not a layout border, so both segments fill its full (44px touch) height. */
+     not a layout border, so both segments fill its full (44px touch) height.
+     The thread scrolls beneath the islands, so they blur what passes under. */
   .v2-live-header-island {
     max-width: 100%;
     height: 2.5rem;
@@ -1479,6 +1461,8 @@
     background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
     box-shadow: inset 0 0 0 1px var(--v2-color-border2), var(--v2-shadow-float);
     pointer-events: auto;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
   }
 
   .v2-live-header-island > .v2-live-model {
@@ -1489,25 +1473,35 @@
     box-shadow: none;
   }
 
-  .v2-live-header-island > .v2-live-model:has(+ .v2-live-assistant) {
-    gap: 0.375rem;
-    padding: 0 0.625rem;
-    border: 0;
-    border-radius: 999px 0 0 999px;
-    font-size: 0.8125rem;
+  /* The model reads as the island's title with its chevron (a fixed model
+     keeps its lock), without the provider mark (operator decision
+     2026-10-29); the provenance dot takes the mark's place before the name. */
+  .v2-live-header-island > .v2-live-model {
+    gap: 0.25rem;
+    font-size: 0.9375rem;
+    font-weight: 500;
   }
 
-  /* Beside the Assistant segment the model name gets the room: the island
-     reads as the control without a chevron (a fixed model keeps its lock),
-     and the provenance dot sits on the provider mark, away from the seam. */
-  .v2-live-header-island > .v2-live-model:not([data-locked]):has(+ .v2-live-assistant) > .v2-icon:last-child {
+  .v2-live-header-island > .v2-live-model:has(+ .v2-live-assistant) {
+    padding: 0 0.25rem 0 0.875rem;
+    border: 0;
+    border-radius: 999px 0 0 999px;
+  }
+
+  .v2-live-header-island > .v2-live-model > .v2-provider-mark {
     display: none;
   }
 
-  .v2-live-header-island > .v2-live-model:has(+ .v2-live-assistant) > .v2-live-model-dot {
-    top: calc(50% - 0.6875rem);
+  .v2-live-header-island > .v2-live-model > .v2-icon:last-child {
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--v2-color-text2);
+  }
+
+  .v2-live-header-island > .v2-live-model > .v2-live-model-dot {
+    top: calc(50% - 0.25rem);
     right: auto;
-    left: 1.3125rem;
+    left: 0.3125rem;
     box-shadow: 0 0 0 2px var(--v2-color-surface);
   }
 
@@ -1525,9 +1519,8 @@
     height: 100%;
     flex: none;
     justify-content: center;
-    padding: 0 0.125rem 0 0;
+    padding: 0 0.25rem 0 0;
     border: 0;
-    border-left: 1px solid var(--v2-color-border);
     border-radius: 0 999px 999px 0;
     background: transparent;
   }
@@ -1548,25 +1541,6 @@
   .v2-live-title,
   .v2-live-header-actions {
     pointer-events: auto;
-  }
-
-  /* A canvas band under the islands so the thread fades beneath them instead
-     of showing through between them (UX audit 2026-09-02 #2). */
-  .v2-live-workspace::before {
-    position: absolute;
-    z-index: 19;
-    top: 0;
-    right: 0;
-    left: 0;
-    height: max(5rem, calc(env(safe-area-inset-top) + 4.5rem));
-    background: linear-gradient(
-      to bottom,
-      var(--v2-color-canvas) 0%,
-      color-mix(in srgb, var(--v2-color-canvas) 90%, transparent) 55%,
-      transparent 100%
-    );
-    content: "";
-    pointer-events: none;
   }
 
   /* No title pill on phones (operator, 2026-09-02): the drawer and the
@@ -1638,6 +1612,47 @@
     color: var(--v2-color-text);
     background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
     box-shadow: var(--v2-shadow-float);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+
+  /* In an open chat "+" and "⋯" share one island, split by a faint hairline
+     so they still read as two buttons (operator decision 2026-10-29). "+"
+     lives in the navigation floats (z 25), so "⋯" paints the island behind
+     both; navigation.css moves "+" into it. */
+  .v2-workspace-shell[data-chat-active="true"]:not(:has(.v2-live-temporary)) .v2-live-more > .v2-icon-button {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .v2-workspace-shell[data-chat-active="true"]:not(:has(.v2-live-temporary)) .v2-live-more::before {
+    position: absolute;
+    z-index: -1;
+    top: 0;
+    right: 0;
+    width: calc(200% + 0.125rem);
+    height: 100%;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
+    box-shadow: inset 0 0 0 1px var(--v2-color-border2), var(--v2-shadow-float);
+    content: "";
+    pointer-events: none;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+
+  .v2-workspace-shell[data-chat-active="true"]:not(:has(.v2-live-temporary)) .v2-live-more::after {
+    position: absolute;
+    top: 30%;
+    right: calc(100% + 0.0625rem);
+    width: 1px;
+    height: 40%;
+    background: var(--v2-color-border2);
+    content: "";
+    pointer-events: none;
   }
 
   .v2-live-workspace .v2-conversation-document {
@@ -1679,9 +1694,22 @@
   }
 
   .v2-live-composer-dock {
-    padding-right: 0.625rem;
-    padding-left: 0.625rem;
+    padding-right: 0.75rem;
+    padding-left: 0.75rem;
     background: linear-gradient(to bottom, transparent, var(--v2-color-canvas) 1.25rem);
+  }
+
+  /* The resting one-line composer is an island set further in; engaged, it
+     widens for the text (operator decision 2026-10-29). */
+  .v2-live-composer-dock:has(.v2-composer[data-resting]) {
+    padding-right: 1.75rem;
+    padding-left: 1.75rem;
+  }
+
+  /* The blank chat's stack sits 0.75rem in already: the same 1.75rem edge. */
+  .v2-live-empty-composer-stack:has(.v2-composer[data-resting]) {
+    padding-right: 1rem;
+    padding-left: 1rem;
   }
 
   .v2-live-composer-dock .v2-composer-wrap {
@@ -1883,8 +1911,9 @@
     padding-left: 3.25rem;
   }
 
-  /* A Temporary chat hands the right edge to its in-flow indicator. */
+  /* The 44px "+ ⋯" island plus the 0.5rem gap; a Temporary chat hands the
+     right edge to its in-flow indicator. */
   .v2-workspace-shell[data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
-    padding-right: 6.5rem;
+    padding-right: 6.125rem;
   }
 }
