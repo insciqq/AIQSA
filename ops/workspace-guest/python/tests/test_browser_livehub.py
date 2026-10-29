@@ -2,7 +2,7 @@
 
 Run: python3 -m unittest discover -s ops/workspace-guest/python/tests -t ops/workspace-guest/python -p test_browser_livehub.py
 
-The fake host is what the per-agent browser host provides (`Host.live_targets`, `Host.agent_steps`,
+The fake host is what the per-agent browser host provides (`Host.live_targets` with each agent's own tab state,
 `Host.save_site_session(agent)`); `LegacyHost` is today's host with one current tab and one lock.
 """
 
