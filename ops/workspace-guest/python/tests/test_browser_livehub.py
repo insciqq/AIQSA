@@ -81,37 +81,44 @@ class FakePage:
 
 
 class AgentHost:
-    """The per-agent host: each agent's current tab, lock and steps."""
+    """The per-agent host, as the browser lease keeps it: each agent's own tab, lock, CDP sessions, hidden values,
+    masked fields and steps, and nothing of them shared on the host."""
 
     def __init__(self) -> None:
-        self.cdp: Dict[Any, FakeSession] = {}
+        #: Every tab's session, for the test to look up; the hub sees each agent's own.
+        self.sessions: Dict[Any, FakeSession] = {}
         self.order: List[str] = []
         self.tabs: Dict[str, FakePage] = {}
         self.names: Dict[str, Optional[str]] = {}
         self.locks: Dict[str, asyncio.Lock] = {}
         self.acted: Dict[str, int] = {}
         self.steps_by: Dict[str, List[Dict[str, Any]]] = {}
-        self.hidden = _format.HiddenValues()
-        self.env_hidden = _format.HiddenValues()
-        self.masked: Dict[Any, Any] = {}
+        self.hidden_by: Dict[str, _format.HiddenValues] = {}
+        self.masked_by: Dict[str, Dict[Any, Any]] = {}
         self.last_used = 0.0
         self.crashed = False
         self.saved: List[str] = []
+        self.selected: List[str] = []
 
     def add(self, agent: str, name: Optional[str], url: str, title: str, acted: int = 0) -> FakePage:
         page = FakePage(url, title)
-        self.cdp[page] = FakeSession()
+        self.sessions[page] = FakeSession()
         self.order.append(agent)
         self.tabs[agent], self.names[agent], self.acted[agent] = page, name, acted
         self.locks[agent] = asyncio.Lock()
         self.steps_by[agent] = [{"n": 1, "action": "open", "target": "", "url": url}]
+        self.hidden_by[agent] = _format.HiddenValues()
+        self.masked_by[agent] = {}
         return page
 
     def live_targets(self) -> List[_livehub.Target]:
-        return [_livehub.Target(agent, self.names[agent], self.tabs[agent], self.locks[agent], self.acted[agent]) for agent in self.order]
+        return [_livehub.Target(agent, self.names[agent], self.tabs[agent], self.locks[agent], self.acted[agent],
+                                cdp={self.tabs[agent]: self.sessions[self.tabs[agent]]}, hidden=self.hidden_by[agent],
+                                env_hidden=_format.HiddenValues(), masked=self.masked_by[agent], steps=self.steps_by[agent])
+                for agent in self.order]
 
-    def agent_steps(self, agent: str) -> List[Dict[str, Any]]:
-        return self.steps_by.get(agent, [])
+    def select_live_agent(self, agent: str) -> None:
+        self.selected.append(agent)
 
     async def save_site_session(self, agent: str) -> Optional[str]:
         self.saved.append(agent)
@@ -253,17 +260,19 @@ class PerAgentTests(unittest.TestCase):
         async def scenario() -> None:
             host, hub = self.three()
             view = await View(hub).open(frames=True)
-            main_session = host.cdp[host.tabs["main"]]
+            main_session = host.sessions[host.tabs["main"]]
             self.assertIn("Page.startScreencast", main_session.methods())
             view.send({"t": "select", "agent": "t_shop"})
             await asyncio.sleep(0.05)
+            # Tabs the user's own input opens now belong to the agent shown.
+            self.assertEqual(host.selected, ["main", "t_shop"])
             state = view.last("state")
             self.assertEqual((state["agent"], state["page"]["title"]), ("t_shop", "Swag Labs"))
             self.assertEqual(view.last("steps")["agent"], "t_shop")
             self.assertEqual(view.last("steps")["steps"][0]["host"], "saucedemo.com")
             # The cast moved: the main tab stopped, the shop tab streams, and its frames carry their agent.
             self.assertIn("Page.stopScreencast", main_session.methods())
-            shop_session = host.cdp[host.tabs["t_shop"]]
+            shop_session = host.sessions[host.tabs["t_shop"]]
             self.assertIn("Page.startScreencast", shop_session.methods())
             shop_session.frame(jpeg(640, 400))
             await asyncio.sleep(0.2)
@@ -308,8 +317,11 @@ class PerAgentTests(unittest.TestCase):
             self.assertEqual((await view.ask({"t": "input", "agent": "t_shop", "input": {"kind": "text", "text": "x"}}))["code"],
                              "not_in_control")
             self.assertTrue((await view.ask({"t": "input", "agent": "t_amazon", "input": {"kind": "text", "text": "kettle"}}))["ok"])
-            self.assertIn(("Input.insertText", {"text": "kettle"}), host.cdp[host.tabs["t_amazon"]].sent)
-            self.assertNotIn("Input.insertText", host.cdp[host.tabs["t_shop"]].methods())
+            self.assertIn(("Input.insertText", {"text": "kettle"}), host.sessions[host.tabs["t_amazon"]].sent)
+            self.assertNotIn("Input.insertText", host.sessions[host.tabs["t_shop"]].methods())
+            # What the user typed is hidden among that agent's own values.
+            self.assertEqual(host.hidden_by["t_amazon"].text("kettle"), "[hidden]")
+            self.assertEqual(host.hidden_by["t_shop"].text("kettle"), "kettle")
             # Return control: the agent's next action is told the page the user left, without what the user typed.
             self.assertTrue((await view.ask({"t": "control", "action": "return", "agent": "t_amazon"}))["ok"])
             note = hub.take_note("t_amazon") or ""
@@ -396,6 +408,40 @@ class PerAgentTests(unittest.TestCase):
             self.assertNotIn("t_shop", hub.agents)
             self.assertEqual([entry["agent"] for entry in view.last("agents")["agents"]], ["main", "t_amazon"])
             await view.close()
+            await hub.close()
+        run(scenario())
+
+
+class ReturnNoticeTests(unittest.TestCase):
+    """Taking control of one agent's tab never holds another agent, and only that agent learns the user gave it back."""
+
+    def test_the_main_agent_control_and_notice_stay_the_main_agent(self) -> None:
+        async def scenario() -> None:
+            host, hub = PerAgentTests.three()
+            main = hub.control_of("main")
+            await main.hand_to_user()
+            self.assertTrue(await hub.wait_for_agent(0, agent="t_shop"))
+            self.assertFalse(await hub.wait_for_agent(0, agent="main"))
+            self.assertFalse(await hub.wait_for_agent(0))
+            await main.return_control()
+            self.assertIsNone(hub.take_note("t_shop"))
+            self.assertIn("The user gave the browser back to you", hub.take_note("main") or "")
+            self.assertIsNone(hub.take_note())
+            await hub.close()
+        run(scenario())
+
+    def test_a_sub_agent_control_and_notice_stay_that_sub_agent(self) -> None:
+        async def scenario() -> None:
+            host, hub = PerAgentTests.three()
+            shop = hub.control_of("t_shop")
+            await shop.hand_to_user()
+            self.assertTrue(await hub.wait_for_agent(0))
+            self.assertFalse(await hub.wait_for_agent(0, agent="t_shop"))
+            await shop.return_control()
+            # A missing agent is the main agent's: it neither waits for nor takes the sub-agent's notice.
+            self.assertIsNone(hub.take_note())
+            self.assertIsNone(hub.take_note("t_amazon"))
+            self.assertIn("saucedemo.com", hub.take_note("t_shop") or "")
             await hub.close()
         run(scenario())
 

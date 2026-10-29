@@ -7,10 +7,12 @@ wants them, frames of that agent's current tab from CDP `Page.startScreencast`, 
 control, through the tab's own CDP session, never through Playwright's agent actions. Every message names its
 agent in `agents.LIVE_AGENT_FIELD`; a message without one is the main agent's, as protocol 1 had it.
 
-Which agents browse, their current tabs, their action locks and their steps are the host's (`Host.live_targets`,
-`Host.agent_steps`, `Host.save_site_session(agent)`); a host without per-agent tabs serves the main agent alone on
-`Host.current` under `Host.lock`. Control is kept here per agent, so it survives a streamer's rotation; AIQSA keeps
-its own record and never takes the guest's word that the user holds it.
+Which agents browse, and each one's current tab, action lock, CDP sessions, hidden values, masked fields and steps,
+are the host's (`Host.live_targets`, `Target`; `Host.save_site_session(agent)` saves the site of that agent's tab); a
+host without per-agent tabs serves the main agent alone on `Host.current` under `Host.lock`. Control, the pending
+handoff, the admission of actions and the return notice are kept here per agent, so they survive a streamer's
+rotation and one agent never waits for, or consumes, another's; AIQSA keeps its own record and never takes the
+guest's word that the user holds it.
 
 While the user holds an agent's control (Take control, or a handoff that agent asked for), that agent's browser
 actions wait `_live.CONTROL_WAIT_SECONDS` without its lock and then fail with `user_in_control`; the other agents go
@@ -89,17 +91,25 @@ class UserInControl(Exception):
 
 class Target:
     """One browsing agent as the host reports it: its id, its name (a sub-agent's), its current tab (None before it
-    opened one), the lock its actions run under, and `acted`, a number that grows with each of its actions, so the
-    panel can pick the agent that acted last."""
+    opened one), the lock its actions run under, `acted`, a number that grows with each of its actions, so the panel
+    can pick the agent that acted last, and the agent's own tab state: CDP sessions by tab, hidden values (all, and
+    those typed from the environment), masked fields and steps. State the host leaves out is the host's one set."""
 
-    __slots__ = ("agent", "name", "page", "lock", "acted")
+    __slots__ = ("agent", "name", "page", "lock", "acted", "cdp", "hidden", "env_hidden", "masked", "steps")
 
-    def __init__(self, agent: str, name: Optional[str], page: Any, lock: Optional[asyncio.Lock], acted: int = 0):
+    def __init__(self, agent: str, name: Optional[str], page: Any, lock: Optional[asyncio.Lock], acted: int = 0, *,
+                 cdp: Optional[Dict[Any, Any]] = None, hidden: Any = None, env_hidden: Any = None,
+                 masked: Optional[Dict[Any, Any]] = None, steps: Optional[List[Dict[str, Any]]] = None):
         self.agent = agent
         self.name = name
         self.page = page
         self.lock = lock
         self.acted = acted
+        self.cdp = cdp
+        self.hidden = hidden
+        self.env_hidden = env_hidden
+        self.masked = masked
+        self.steps = steps
 
 
 def valid_agent(value: Any) -> bool:
@@ -196,9 +206,19 @@ class AgentLive:
         self.typed_new = False
         self.capture: Optional[asyncio.TimerHandle] = None
 
+        #: Where what the user typed is hidden once the agent has no tab any more (its slot went meanwhile).
+        self.spare_hidden = _format.HiddenValues()
+        self.spare_masked: Dict[Any, Any] = {}
+
     @property
-    def host(self) -> "Host":
-        return self.hub.host
+    def hidden(self) -> Any:
+        target = self.hub.target(self.agent)
+        return target.hidden if target is not None else self.spare_hidden
+
+    @property
+    def masked(self) -> Dict[Any, Any]:
+        target = self.hub.target(self.agent)
+        return target.masked if target is not None else self.spare_masked
 
     def idle(self) -> bool:
         """Holds nothing the view must keep: an entry for an agent that stopped browsing may go."""
@@ -295,8 +315,8 @@ class AgentLive:
         page = self.page()
         if page is None:
             return "The user gave the browser back to you; no tab is open now."
-        url = _format.clean(self.host.hidden.text(_format.without_userinfo(page.url or "")), 300)
-        title = _format.clean(self.host.hidden.text(await self.hub.title(self.agent, page)), 120)
+        url = _format.clean(self.hidden.text(_format.without_userinfo(page.url or "")), 300)
+        title = _format.clean(self.hidden.text(await self.hub.title(self.agent, page)), 120)
         return f"The user gave the browser back to you after using it. The page is now {url}" + (f" ({_format.quoted(title, 120)})." if title else ".")
 
     async def handoff_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
@@ -327,8 +347,8 @@ class AgentLive:
         view = None
         if page is not None:
             # What the agent reads: values typed from the environment and by the user are masked.
-            view = {"url": _format.clean(self.host.hidden.text(_format.without_userinfo(page.url or "")), _live.URL_CHARS),
-                    "title": _format.clean(self.host.hidden.text(await self.hub.title(self.agent, page)), _live.TITLE_CHARS)}
+            view = {"url": _format.clean(self.hidden.text(_format.without_userinfo(page.url or "")), _live.URL_CHARS),
+                    "title": _format.clean(self.hidden.text(await self.hub.title(self.agent, page)), _live.TITLE_CHARS)}
         return {"page": view, "saved": saved}
 
     # Input -------------------------------------------------------------------------------------------------------
@@ -339,10 +359,10 @@ class AgentLive:
         if self.controller != "user":
             raise _live.LiveError("not_in_control")
         page = self.page()
-        session = self.host.cdp.get(page) if page is not None else None
+        session = self.hub.session(self.agent, page) if page is not None else None
         if session is None:
             raise _live.LiveError("no_page")
-        self.host.last_used = time.monotonic()
+        self.hub.touched()
         kind = event.get("kind")
         if kind == "mouse":
             geometry = self.hub.geometry.get(page)
@@ -405,7 +425,7 @@ class AgentLive:
         elif key == "Backspace" and self.typed:
             if not self.deleting:
                 # The value as it stood before this run of deletions stays hidden; the shorter one is the new value.
-                self.host.hidden.commit()
+                self.hidden.commit()
                 self.deleting = True
             self.typed = self.typed[:-1]
         else:
@@ -414,19 +434,19 @@ class AgentLive:
         self.updated()
 
     def select_all(self) -> None:
-        self.host.hidden.commit()
+        self.hidden.commit()
         self.replace_next, self.deleting = True, False
 
     def close_value(self) -> None:
         """Keeps the value so far hidden for good and starts a new one; the page is read at the next capture."""
-        self.host.hidden.commit()
+        self.hidden.commit()
         self.typed, self.replace_next, self.deleting = "", False, False
         self.typed_new = True
         self.schedule_capture()
 
     def updated(self) -> None:
         # One replaceable pattern while the value grows or shrinks, not one per keystroke.
-        self.host.hidden.provisional(self.typed)
+        self.hidden.provisional(self.typed)
         self.typed_new = True
         self.schedule_capture()
 
@@ -459,7 +479,7 @@ class AgentLive:
         fresh = self.typed_new
         self.typed_new = False
         if focus_moves:
-            self.host.hidden.commit()
+            self.hidden.commit()
             self.typed, self.replace_next, self.deleting = "", False, False
         if not fresh:
             return
@@ -473,8 +493,8 @@ class AgentLive:
         except Exception:  # noqa: BLE001 - the field went away; what was typed is masked already
             value = ""
         if isinstance(value, str) and value:
-            self.host.hidden.add(value)
-        fields = self.host.masked.setdefault(frame, [])
+            self.hidden.add(value)
+        fields = self.masked.setdefault(frame, [])
         fields.append((frame.url, element))
         del fields[:-MASKED_PER_FRAME]
 
@@ -523,14 +543,15 @@ class LiveHub:
     def targets(self) -> List[Target]:
         """The browsing agents, as the host reports them; a host without per-agent tabs has the main agent alone."""
         provider = getattr(self.host, "live_targets", None)
-        if provider is None:
-            return [Target(MAIN, None, self.host.current, self.host.lock, 0)]
         found: List[Target] = []
         seen = set()
-        for target in provider():
+        for target in provider() if provider is not None else [Target(MAIN, None, self.host.current, self.host.lock, 0)]:
             agent = getattr(target, "agent", None)
             if valid_agent(agent) and agent not in seen:
                 seen.add(agent)
+                for name in ("cdp", "hidden", "env_hidden", "masked", "steps"):
+                    if getattr(target, name, None) is None:
+                        setattr(target, name, getattr(self.host, name))
                 found.append(target)
         return found
 
@@ -549,10 +570,26 @@ class LiveHub:
         return live
 
     def steps_of(self, agent: str) -> List[Dict[str, Any]]:
-        provider = getattr(self.host, "agent_steps", None)
-        if provider is not None:
-            return list(provider(agent) or [])
-        return self.host.steps if agent == MAIN else []
+        target = self.target(agent)
+        return list(target.steps or []) if target is not None else []
+
+    def session(self, agent: str, page: Any) -> Any:
+        """The CDP session of one of the agent's tabs."""
+        target = self.target(agent)
+        return target.cdp.get(page) if target is not None and target.cdp is not None else None
+
+    def touched(self) -> None:
+        """The user used the browser: a host that idles out counts it as use."""
+        try:
+            self.host.last_used = time.monotonic()
+        except AttributeError:
+            pass
+
+    def selected_by_user(self, agent: str) -> None:
+        """Tabs the user's own input opens belong to the agent whose tab the view shows (the host's choice)."""
+        select = getattr(self.host, "select_live_agent", None)
+        if select is not None:
+            select(agent)
 
     async def save_site_session(self, agent: str) -> Optional[str]:
         if getattr(self.host, "live_targets", None) is None:
@@ -613,6 +650,7 @@ class LiveHub:
         selected = args.get(_agents.LIVE_AGENT_FIELD)
         connection = Connection(writer, args.get("frames") is True, selected if valid_agent(selected) else MAIN)
         self.connections[connection] = None
+        self.selected_by_user(connection.agent)
         for live in self.agents.values():
             if live.grace is not None:
                 live.grace.cancel()
@@ -659,6 +697,7 @@ class LiveHub:
                 await self.update_casts()
             elif kind == _agents.LIVE_SELECT_MESSAGE:
                 connection.agent = agent_of(message)
+                self.selected_by_user(connection.agent)
                 connection.state = connection.steps = None
                 await self.send_view(connection)
                 await self.update_casts()
@@ -742,13 +781,17 @@ class LiveHub:
         page = self.page(agent)
         if page is None:
             return None
-        return _live.page_view(self.host.env_hidden.text(page.url or ""), self.host.env_hidden.text(await self.title(agent, page)))
+        target = self.target(agent)
+        env_hidden = target.env_hidden if target is not None else self.host.env_hidden
+        return _live.page_view(env_hidden.text(page.url or ""), env_hidden.text(await self.title(agent, page)))
 
     async def current_state(self, agent: str = MAIN) -> Dict[str, Any]:
+        # Control is read after the page: a Take answered meanwhile is not reported as the agent's by a stale look.
+        view = await self.page_view(agent)
         live = self.agents.get(agent)
         return {"t": "state", "browser": "running", _agents.LIVE_AGENT_FIELD: agent,
                 "controller": live.controller if live is not None else "agent",
-                "handoff": live.handoff if live is not None else False, "page": await self.page_view(agent)}
+                "handoff": live.handoff if live is not None else False, "page": view}
 
     async def agents_message(self) -> Dict[str, Any]:
         """The browsing agents, then agents whose control or handoff outlived their slot, at most `AGENTS_LISTED_MAX`."""
@@ -818,13 +861,16 @@ class LiveHub:
                 await cast.session.send("Page.stopScreencast")
             except Exception:  # noqa: BLE001 - the tab closed
                 pass
+        sessions: Dict[Any, Any] = {}
+        for target in self.targets():
+            sessions.update(target.cdp or {})
         for page in wanted:
             if page in self.casts:
                 continue
-            session = self.host.cdp.get(page)
+            session = sessions.get(page)
             if session is None:
                 continue
-            live_sessions = {id(value) for value in self.host.cdp.values()}
+            live_sessions = {id(value) for value in sessions.values()}
             for key in [key for key in self.hooked if key not in live_sessions]:
                 del self.hooked[key]
             if self.hooked.get(id(session)) is not session:
