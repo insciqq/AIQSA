@@ -301,6 +301,21 @@ function currentWorkspaceFolder(folderId: string) {
   return useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId) ?? null;
 }
 
+/** A composer whose bottom edge is this close to the viewport's rests at the bottom of the screen. */
+const COMPOSER_BOTTOM_ANCHOR_PX = 96;
+
+/**
+ * How far up from the viewport's bottom edge a composer resting there reaches,
+ * so bottom notices sit above it instead of over its input (issue #68). A
+ * composer centred higher up (a blank chat on a wide screen) leaves the bottom
+ * free: 0.
+ */
+function bottomAnchoredInset(rect: DOMRect, viewportHeight: number): number {
+  return viewportHeight - rect.bottom <= COMPOSER_BOTTOM_ANCHOR_PX
+    ? Math.max(0, Math.ceil(viewportHeight - rect.top))
+    : 0;
+}
+
 /**
  * Live run events, the live artifact summary and the live work clock belong
  * only to the answer whose accepted run id is the current run. An answer
@@ -602,6 +617,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryScope, setSkillLibraryScope] = useState<string | null>(null);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
+  const [composerBottomInset, setComposerBottomInset] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
   const [exportHistoryChatId, setExportHistoryChatId] = useState<string | null>(null);
@@ -633,11 +649,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     composerDockRef.current = dock;
     if (!dock) {
       setComposerDockHeight(0);
+      setComposerBottomInset(0);
       return;
     }
     const updateHeight = () => {
       if (composerDockRef.current === dock) {
-        setComposerDockHeight(Math.ceil(dock.getBoundingClientRect().height));
+        const rect = dock.getBoundingClientRect();
+        setComposerDockHeight(Math.ceil(rect.height));
+        setComposerBottomInset(bottomAnchoredInset(rect, document.documentElement.clientHeight));
       }
     };
     updateHeight();
@@ -653,6 +672,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       if (composerDockRef.current === dock) {
         composerDockRef.current = null;
         setComposerDockHeight(0);
+        setComposerBottomInset(0);
       }
     };
   }, []);
@@ -2043,7 +2063,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ? " Project files waiting to be restored from the previous chat will not be restored." : ""} Messages, original attachments, and already exported files stay available.`}
         </ConfirmationDialog>
       ) : null}
-      <PermanentChatDeletionSurface />
+      <PermanentChatDeletionSurface composerInset={composerBottomInset} />
     </main>
     </AnnouncementsProvider>
   );

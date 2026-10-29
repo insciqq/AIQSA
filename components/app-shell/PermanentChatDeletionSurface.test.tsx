@@ -92,6 +92,20 @@ describe("PermanentChatDeletionSurface", () => {
     ).toHaveFocus());
   });
 
+  it("sits above a composer resting at the bottom instead of over its input", () => {
+    usePermanentChatDeletionStore.setState({
+      reference: { chatId: "chat-1" },
+      status: { status: "NEEDS_ATTENTION" },
+      statusLoadState: "ready",
+      statusOpen: false
+    });
+    const { rerender } = render(<PermanentChatDeletionSurface composerInset={120} />);
+
+    expect(screen.getByTestId("permanent-chat-deletion-notice").style.bottom).toBe("calc(120px + 0.5rem)");
+    rerender(<PermanentChatDeletionSurface />);
+    expect(screen.getByTestId("permanent-chat-deletion-notice").style.bottom).toBe("");
+  });
+
   it("lets a completed notice go on its own, but not while it holds focus", () => {
     vi.useFakeTimers();
     usePermanentChatDeletionStore.setState({
