@@ -120,8 +120,11 @@ function isPrismaActiveRunUniqueViolation(error: unknown): boolean {
     if (meta?.modelName !== undefined && meta.modelName !== "ModelRun") return false;
     const target = meta?.target;
     if (namesActiveRunIndex(target)) return true;
-    return Array.isArray(target) && target.length === 1 &&
-      (namesActiveRunIndex(target[0]) || meta?.modelName === "ModelRun" && target[0] === "chatId");
+    if (!Array.isArray(target)) return false;
+    if (target.length === 1) return namesActiveRunIndex(target[0]) || meta?.modelName === "ModelRun" && target[0] === "chatId";
+    // One active run per thread of a chat (`20261029230900_model_run_one_active_per_thread_index`): the main
+    // agent's runs have no thread, so they keep one per chat.
+    return meta?.modelName === "ModelRun" && target.length === 2 && target[0] === "chatId" && target[1] === "subagentThreadId";
   }
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {

@@ -72,6 +72,8 @@ enum MessageSystemTurnKind {
   mcp_approval_continuation
   answer_review_request
   answer_revision_request
+  /// A wake-up turn: the callbacks of background sub-agents for an idle main agent (`SubagentTurn.callbackRunId`).
+  subagent_callback
 }
 
 /// How a retired answer review session advanced (see `AnswerReviewSession`).
@@ -133,6 +135,45 @@ enum RunTranscriptItemKind {
   tool_call
   tool_result
   compaction
+}
+
+/// Who wrote a follow-up (`RunFollowup`): the user, the main agent writing to a running background sub-agent, or the
+/// callback of a background sub-agent turn delivered into a running main-agent answer (`subagentTurnId`).
+enum RunFollowupOrigin {
+  user
+  main_agent
+  subagent_callback
+}
+
+/// How a sub-agent turn runs: `foreground` inside its parent run, which waits for it; `background` as its own run.
+enum SubagentTurnMode {
+  foreground
+  background
+}
+
+/// The state of a sub-agent turn, and so of its thread on a branch (`lib/contracts/subagents.ts`): `running` and
+/// `waiting` (for the user, such as a browser handoff) are active; every other state is final.
+enum SubagentTurnState {
+  running
+  waiting
+  done
+  stopped
+  failed
+  interrupted
+}
+
+/// How a `done` sub-agent turn ended; `blocked` carries a stable reason (`SubagentTurn.reasonCode`).
+enum SubagentOutcome {
+  done
+  partial
+  blocked
+}
+
+/// Where a sub-agent turn's model or effort came from: the parent run's binding, the custom sub-agent, or the call.
+enum SubagentBindingSource {
+  parent
+  type
+  call
 }
 
 enum WorkspaceFollowupState {
@@ -308,6 +349,8 @@ enum UsagePurpose {
   web_search
   image_generation
   speech_to_text
+  /// A sub-agent's model calls (`SubagentTurn`): personal, counted toward the user's allowance.
+  subagent
   chat_title
   chat_summary
   chat_vision
@@ -934,6 +977,7 @@ model User {
   settings                            UserSettings?
   sharedSnapshots                     SharedChatSnapshot[]
   skillDefinitions                    SkillDefinition[]                  @relation("SkillDefinitionOwner")
+  subagentDefinitions                 SubagentDefinition[]               @relation("SubagentDefinitionOwner")
   skillPublications                   SkillPublication[]                 @relation("SkillPublicationPublisher")
   skillRevisionsAuthored              SkillRevision[]                    @relation("SkillRevisionAuthor")
   skillShareRequests                  SkillShareRequest[]                @relation("SkillShareRequester")
@@ -2445,6 +2489,7 @@ model Chat {
   answerReviewSessions            AnswerReviewSession[]
   telegramLinks                   TelegramLink[]            @relation("TelegramLinkCurrentChat")
   telegramMessageRefs             TelegramMessageRef[]
+  subagentThreads                 SubagentThread[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -2901,8 +2946,19 @@ model ModelRun {
   /// A settled monitoring check's outcome (`ScheduledTaskCheckOutcome`): what the
   /// transcript collapses (`no_update`) after the occurrence history is pruned.
   scheduledOutcome             String?                             @db.VarChar(64)
+  /// A background sub-agent run: the thread it executes and its turn (`SubagentTurn`), both or neither (SQL check).
+  /// Null on every main-agent run, so `subagentTurnId: null` selects the chat's own turns. Such a run shares its
+  /// parent run's user message and never answers one (`assistantMessageId` stays null). The SQL-only
+  /// `ModelRun_one_active_per_chat_idx` holds one active run per (chat, thread), NULLS NOT DISTINCT, so the main
+  /// agent keeps one per chat and a background sub-agent runs beside it.
+  subagentThreadId             String?
+  subagentTurnId               String?
   createdAt                    DateTime                            @default(now())
   updatedAt                    DateTime                            @updatedAt
+  subagentTurn                 SubagentTurn?                       @relation("SubagentTurnExecution", fields: [userId, chatId, subagentThreadId, subagentTurnId], references: [userId, chatId, threadId, id], onDelete: Cascade, onUpdate: Restrict, map: "ModelRun_subagentTurn_fkey")
+  subagentThreadsAnchored      SubagentThread[]                    @relation("SubagentThreadAnchor")
+  subagentTurnsStarted         SubagentTurn[]                      @relation("SubagentTurnParent")
+  subagentCallbacks            SubagentTurn[]                      @relation("SubagentTurnCallback")
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   branchSourceMessages         Message[]                           @relation("BranchSourceModelRun")
   /// Accepted identity is immutable; deleting the definition only detaches assistantId. Execution lives in the normalized request and exact bindings.
@@ -2934,6 +2990,8 @@ model ModelRun {
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
   @@unique([userId, chatId, id])
+  /// Built concurrently in its own migration (`20261029230500_model_run_subagent_turn_index`).
+  @@unique([userId, chatId, subagentThreadId, subagentTurnId], map: "ModelRun_subagentTurn_key")
   @@index([assistantId, createdAt])
   @@index([assistantMessageId])
   @@index([chatId, createdAt])
@@ -2956,13 +3014,145 @@ model RunFollowup {
   createdAt       DateTime @default(now())
   deliveredAt     DateTime?
   precedingText   String?
+  /// Only `user` follow-ups are the user's clarifications; the others are never user speech.
+  origin          RunFollowupOrigin @default(user)
+  /// The background sub-agent turn a `subagent_callback` reports, and only then (SQL check): the engine renders the
+  /// callback from that turn's result.
+  subagentTurnId  String?
   modelRun        ModelRun @relation(fields: [chatId, modelRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
   author          User?    @relation(fields: [authorUserId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  subagentTurn    SubagentTurn? @relation(fields: [chatId, subagentTurnId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "RunFollowup_subagentTurn_fkey")
 
   @@unique([modelRunId, ordinal])
   @@unique([modelRunId, nonce])
   @@index([chatId, modelRunId])
   @@index([authorUserId])
+  @@index([chatId, subagentTurnId])
+}
+
+/// A named sub-agent of a chat (`lib/contracts/subagents.ts`): the identity its turns, transcript items and tool
+/// calls share. It belongs to the branch of its anchor, the main-agent run whose `call_subagent` started it: it is
+/// visible where that run's answer is on the branch, and a name resolves to the visible thread of that name, so
+/// `(chatId, anchorRunId, name)` is unique and two calls of one round that start one name meet one row. Its state
+/// on a branch is that of its latest turn whose parent run's answer is on the branch, so editing an earlier message
+/// branches its threads too. Deleted with its anchor run, and so with the branch or the chat.
+model SubagentThread {
+  id              String              @id @default(uuid())
+  userId          String
+  chatId          String
+  anchorRunId     String
+  name            String              @db.VarChar(48)
+  /// The custom sub-agent it was started as: null for the default sub-agent, and once the definition is deleted,
+  /// which `typeName` (kept) tells apart. The migration uses column-scoped SET NULL to clear only this column.
+  definitionId    String?
+  typeName        String?             @db.VarChar(48)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  chat            Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  anchorRun       ModelRun            @relation("SubagentThreadAnchor", fields: [userId, chatId, anchorRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "SubagentThread_anchorRun_fkey")
+  definition      SubagentDefinition? @relation(fields: [userId, definitionId], references: [ownerUserId, id], onDelete: SetNull, onUpdate: Restrict, map: "SubagentThread_definition_fkey")
+  turns           SubagentTurn[]
+
+  @@unique([chatId, anchorRunId, name])
+  @@unique([userId, chatId, id])
+  @@index([chatId, createdAt])
+  @@index([userId, definitionId])
+}
+
+/// One turn of a sub-agent thread: what one `call_subagent` call of a main-agent run (`parentRunId`,
+/// `parentToolCallId`) started or continued. A foreground turn runs inside its parent run, whose transcript items and
+/// tool calls carry the thread key; a background turn runs as its own `ModelRun` (`ModelRun.subagentTurnId`), whose
+/// `main_agent` follow-ups are its mailbox. The binding columns snapshot the resolved model and effort and where
+/// each came from, so a continuation keeps a model the call or the type chose. A background turn that ended owes
+/// its callback until `callbackRunId` names the main-agent run that received it (a running answer, or the wake-up
+/// turn); deleting that run makes it owed again.
+model SubagentTurn {
+  id                   String                @id @default(uuid())
+  userId               String
+  chatId               String
+  threadId             String
+  parentRunId          String
+  parentToolCallId     String
+  mode                 SubagentTurnMode
+  state                SubagentTurnState     @default(running)
+  outcome              SubagentOutcome?
+  /// A stable code: the reason of a `blocked` outcome, or why the turn failed, stopped or was interrupted.
+  reasonCode           String?               @db.VarChar(64)
+  /// The bounded `call_subagent` result once the turn ended (`decodeSubagentCallResult`); private to the chat.
+  result               Json?
+  provider             String
+  modelId              String
+  providerModelId      String?
+  reasoningEffort      String?               @db.VarChar(32)
+  modelSource          SubagentBindingSource @default(parent)
+  effortSource         SubagentBindingSource @default(parent)
+  /// The custom sub-agent revision the turn ran, as a plain value that outlives the definition.
+  definitionRevisionId String?
+  callbackRunId        String?
+  startedAt            DateTime              @default(now())
+  endedAt              DateTime?
+  updatedAt            DateTime              @updatedAt
+  thread               SubagentThread        @relation(fields: [userId, chatId, threadId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "SubagentTurn_thread_fkey")
+  parentRun            ModelRun              @relation("SubagentTurnParent", fields: [userId, chatId, parentRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "SubagentTurn_parentRun_fkey")
+  parentToolCall       ModelRunToolCall      @relation(fields: [parentRunId, parentToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "SubagentTurn_parentToolCall_fkey")
+  /// The migration uses column-scoped SET NULL so deleting the receiving run clears only callbackRunId.
+  callbackRun          ModelRun?             @relation("SubagentTurnCallback", fields: [chatId, callbackRunId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "SubagentTurn_callbackRun_fkey")
+  executionRun         ModelRun?             @relation("SubagentTurnExecution")
+  followups            RunFollowup[]
+
+  @@unique([parentRunId, parentToolCallId])
+  @@unique([userId, chatId, threadId, id])
+  @@unique([chatId, id])
+  @@index([threadId, startedAt])
+  @@index([chatId, state])
+  @@index([chatId, callbackRunId])
+}
+
+/// A custom sub-agent, one of its owner's resources (like Claude Code's custom agents); its current revision holds
+/// what it is. Revisions are append-only, so Undo restores an earlier one as a new revision. Deleting the
+/// definition deletes them and clears it from its threads, which keep the type name and their turns' revision ids.
+model SubagentDefinition {
+  id                String                       @id @default(uuid())
+  ownerUserId       String
+  /// The current revision's name, unique among the owner's definitions.
+  name              String                       @db.VarChar(48)
+  currentRevisionId String?                      @unique
+  /// Optimistic concurrency token for Studio and agent edits.
+  version           Int                          @default(1)
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+  owner             User                         @relation("SubagentDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  /// The composite relation proves the current pointer targets a revision of this definition.
+  currentRevision   SubagentDefinitionRevision?  @relation("SubagentDefinitionCurrentRevision", fields: [id, currentRevisionId], references: [definitionId, id], onDelete: NoAction, onUpdate: Restrict, map: "SubagentDefinition_currentRevision_fkey")
+  revisions         SubagentDefinitionRevision[] @relation("SubagentDefinitionRevisions")
+  threads           SubagentThread[]
+
+  @@unique([ownerUserId, name])
+  @@unique([ownerUserId, id])
+  @@unique([id, currentRevisionId])
+}
+
+/// One immutable revision of a custom sub-agent (`SUBAGENT_DEFINITION_LIMITS` bounds its fields).
+model SubagentDefinitionRevision {
+  id              String              @id @default(uuid())
+  definitionId    String
+  revisionNumber  Int
+  name            String              @db.VarChar(48)
+  description     String
+  instructions    String
+  /// The catalog model it runs on, as a plain value so removing the model never touches history; null runs on the
+  /// parent run's model. Admission resolves it against the user's catalog and refuses it when unavailable.
+  providerModelId String?
+  /// Null is the model's default effort.
+  reasoningEffort String?             @db.VarChar(32)
+  /// The tool groups it may use (`SUBAGENT_TOOL_GROUPS`); null is every default sub-agent tool.
+  toolGroups      Json?
+  createdAt       DateTime            @default(now())
+  definition      SubagentDefinition  @relation("SubagentDefinitionRevisions", fields: [definitionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  currentFor      SubagentDefinition? @relation("SubagentDefinitionCurrentRevision")
+
+  @@unique([definitionId, revisionNumber])
+  @@unique([definitionId, id])
 }
 
 /// One accepted next message waiting for its predecessor to retire Workspace authority.
@@ -3023,10 +3213,19 @@ model RunTranscriptItem {
   callId     String?               @db.VarChar(256)
   /// The item's fields as `lib/server/engine/transcriptCodec.ts` writes them.
   body       Json
+  /// The sub-agent thread the item belongs to (`SubagentThread.id`); null for the main agent. Each thread of a run
+  /// has its own sequence. A plain value: the item goes with its run, and a thread's items live only in runs of its
+  /// own branch, which are deleted with it.
+  subagentThreadId String?
+  /// The thread's turn (`SubagentTurn.id`) that wrote the item, a plain value like the thread key: a thread may run
+  /// two turns in one answer, and its sequence continues across them.
+  subagentTurnId   String?
   createdAt  DateTime              @default(now())
   modelRun   ModelRun              @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "RunTranscriptItem_modelRun_fkey")
 
-  @@unique([modelRunId, sequence])
+  /// NULLS NOT DISTINCT, so the main agent keeps one sequence per run
+  /// (`20261029230200_run_transcript_item_thread_sequence_index`).
+  @@unique([modelRunId, subagentThreadId, sequence], map: "RunTranscriptItem_thread_sequence_key")
 }
 
 model ModelRunEvent {
@@ -3539,9 +3738,18 @@ model ModelRunToolCall {
   skillBindings              ModelRunSkillBinding[]
   codeInvocations            WorkspaceCodeInvocation[]
   mcpToolApprovals           McpToolApproval[]
+  subagentTurns              SubagentTurn[]
+  /// The sub-agent thread that made the call (`SubagentThread.id`), with rounds of its own; null for the main agent.
+  /// A plain value, as on `RunTranscriptItem`.
+  subagentThreadId           String?
+  /// The thread's turn (`SubagentTurn.id`) that made the call, a plain value: a thread may run two turns in one
+  /// answer, and its rounds continue across them.
+  subagentTurnId             String?
 
-  @@unique([modelRunId, roundIndex, providerCallId])
-  @@unique([modelRunId, roundIndex, ordinal])
+  /// Both NULLS NOT DISTINCT, so the main agent's keys stay unique per run
+  /// (`20261029230300_model_run_tool_call_thread_ordinal_index`, `20261029230400_..._provider_call_index`).
+  @@unique([modelRunId, subagentThreadId, roundIndex, providerCallId], map: "ModelRunToolCall_thread_round_provider_call_key")
+  @@unique([modelRunId, subagentThreadId, roundIndex, ordinal], map: "ModelRunToolCall_thread_round_ordinal_key")
   @@unique([modelRunId, id])
   @@index([mcpRunBindingId])
   @@index([workspaceRunBindingId])

@@ -19,6 +19,17 @@ describe("active run conflict mapping", () => {
     })).rejects.toBeInstanceOf(ActiveRunConflictError);
   });
 
+  it("maps the per-thread active run target, which keeps the main agent's runs one per chat", async () => {
+    await expect(mapActiveRunConflict(async () => {
+      throw uniqueError({ modelName: "ModelRun", target: ["chatId", "subagentThreadId"] });
+    })).rejects.toBeInstanceOf(ActiveRunConflictError);
+    for (const meta of [{ modelName: "ModelRun", target: ["subagentThreadId", "chatId"] },
+      { modelName: "SubagentTurn", target: ["chatId", "subagentThreadId"] }]) {
+      const error = uniqueError(meta);
+      await expect(mapActiveRunConflict(async () => { throw error; })).rejects.toBe(error);
+    }
+  });
+
   it.each(["ModelRun_one_active_per_chat_idx", "ModelRun_one_workspace_wait_per_chat_idx"])(
     "maps exact named %s uniqueness diagnostics", async (index) => {
       const errors = [

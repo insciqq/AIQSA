@@ -100,6 +100,7 @@ import {
   type McpApprovalCard,
   type MessageSystemTurnKind
 } from "./mcpApprovals";
+import { decodeSubagentActivityRef, isSubagentIdentifier, type SubagentActivityRef } from "./subagents";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -344,6 +345,12 @@ export type ThreadToolActivityCall = {
   round: number;
   serverName?: string;
   status: "cancelled" | "complete" | "error" | "running";
+  /** A `call_subagent` or `stop_subagent` call: the sub-agent it addressed, for its card and thread link. */
+  subagent?: SubagentActivityRef;
+  /** A call a sub-agent made inside this answer (a foreground turn): shown nested under its `call_subagent` step. */
+  subagentThreadId?: string;
+  /** With `subagentThreadId`: the turn that made the call, matching that step's `subagent.turnId`. */
+  subagentTurnId?: string;
   toolName: string;
 };
 
@@ -1163,7 +1170,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
 
 const decodeThreadAssistantIdentity = decodeAssistantIdentity;
 
-function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
+export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
   if (!isRecord(value) || !Array.isArray(value.calls)) return null;
   const calls: ThreadToolActivityCall[] = [];
   for (const candidate of value.calls) {
@@ -1198,6 +1205,11 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
     }
     if (candidate.approvalRequired !== undefined && (candidate.approvalRequired !== true || candidate.origin !== "mcp" ||
       status !== "error")) return null;
+    const subagent = candidate.subagent === undefined ? undefined : decodeSubagentActivityRef(candidate.subagent);
+    if (subagent === null || (candidate.subagentThreadId !== undefined && !isSubagentIdentifier(candidate.subagentThreadId)) ||
+      (candidate.subagentTurnId !== undefined && (candidate.subagentThreadId === undefined || !isSubagentIdentifier(candidate.subagentTurnId)))) {
+      return null;
+    }
     let mcpUnavailable: ThreadMcpUnavailableServer[] | undefined;
     if (candidate.mcpUnavailable !== undefined) {
       if (candidate.origin !== "discovery" || !Array.isArray(candidate.mcpUnavailable) ||
@@ -1236,6 +1248,9 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       round,
       ...(serverName ? { serverName } : {}),
       status,
+      ...(subagent ? { subagent } : {}),
+      ...(typeof candidate.subagentThreadId === "string" ? { subagentThreadId: candidate.subagentThreadId } : {}),
+      ...(typeof candidate.subagentTurnId === "string" ? { subagentTurnId: candidate.subagentTurnId } : {}),
       toolName
     });
   }

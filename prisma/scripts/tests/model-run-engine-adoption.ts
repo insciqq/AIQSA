@@ -19,7 +19,7 @@ CREATE TABLE "_ModelRunEngineFixture" AS SELECT to_jsonb(run) AS run FROM "Model
 export const modelRunEngineProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "ModelRun" run CROSS JOIN "_ModelRunEngineFixture" f
-      WHERE run.id = 'engine-in-flight' AND run.engine = 'v1' AND to_jsonb(run) - 'engine' = f.run)
+      WHERE run.id = 'engine-in-flight' AND run.engine = 'v1' AND to_jsonb(run) - ARRAY['engine', 'subagentThreadId', 'subagentTurnId'] = f.run)
     THEN RAISE EXCEPTION 'model_run_engine_changed_in_flight_run'; END IF;
 END $$;
 BEGIN;

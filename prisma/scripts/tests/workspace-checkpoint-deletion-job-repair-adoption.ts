@@ -19,8 +19,9 @@ UNION ALL SELECT 'checkpoint-file', to_jsonb(f) FROM "WorkspaceCheckpointFile" f
 UNION ALL SELECT 'capture', to_jsonb(s) FROM "WorkspaceSelectedCapture" s WHERE s."modelRunId" = '${RUN}'
 UNION ALL SELECT 'captured-file', to_jsonb(f) FROM "WorkspaceCapturedFile" f WHERE f."captureId" IN ('${CHECKPOINT_CAPTURE}', '${CAPTURE_ONLY}')
 UNION ALL SELECT 'reference', to_jsonb(r) FROM "WorkspaceCaptureReference" r WHERE r."consumerRunId" = '${RUN}'
-UNION ALL SELECT 'tool-call', to_jsonb(t) FROM "ModelRunToolCall" t WHERE t."modelRunId" = '${RUN}'
-UNION ALL SELECT 'run', to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome', 'engine']
+UNION ALL SELECT 'tool-call', to_jsonb(t) - ARRAY['subagentThreadId', 'subagentTurnId'] FROM "ModelRunToolCall" t WHERE t."modelRunId" = '${RUN}'
+UNION ALL SELECT 'run', to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome', 'engine',
+    'subagentThreadId', 'subagentTurnId']
   FROM "ModelRun" r WHERE r."id" = '${RUN}'`;
 
 /** One published two-file checkpoint (K1 unclaimed, K2 claimed job), one
