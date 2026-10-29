@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { decisionUpgradeFixtureSql, decisionUpgradeProofSql } from "./decision-upgrade-adoption";
 import { semanticDecisionsFixtureSql, semanticDecisionsProofSql } from "./semantic-decisions-adoption";
@@ -31,4 +32,15 @@ describe("MCP guard forward-adoption compatibility", () => {
     expect(projectedPolicy(proof, { ...upgraded, providerModelId: "changed-model" })).not.toEqual(original);
     expect(projectedPolicy(proof, { ...upgraded, version: 14 })).not.toEqual(original);
   });
+});
+
+it("preserves reported sub-agent and answer cost when the later guard migration replaces the constraint", () => {
+  const migration = readFileSync(new URL("../../migrations/20261029231000_mcp_guard_role/migration.sql", import.meta.url), "utf8");
+  const definition = /ADD CONSTRAINT "UsageEvent_cost_reported_answer_check"\s+(CHECK[\s\S]*?);/u.exec(migration)?.[1];
+  expect(definition).toBeDefined();
+  // Text comparison also works when this branch is tested without the subagent enum migration.
+  expect(definition).toMatch(/NOT "costReported" OR "purpose"::text IN/u);
+  const allowed = [...definition!.matchAll(/'([^']+)'/gu)].map(match => match[1]);
+  expect(allowed).toEqual(["chat_answer", "subagent", "mcp_guard"]);
+  expect(migration).not.toMatch(/ALTER TYPE "UsagePurpose" ADD VALUE 'subagent'/u);
 });
