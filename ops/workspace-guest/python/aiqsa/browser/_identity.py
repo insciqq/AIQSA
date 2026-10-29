@@ -24,8 +24,11 @@ WINDOW = (1440, 900)
 SCREEN = (1920, 1080)
 #: Playwright's own default flag that turns `navigator.webdriver` on.
 IGNORED_DEFAULT_ARGS = ["--enable-automation"]
-#: Command values the browser process must not inherit.
-DROPPED_ENV = frozenset({"AIQSA_INVOCATION_ID", "AIQSA_RUN_TOKEN", "AIQSA_GATEWAY_URL"})
+#: Command values the browser process must not inherit. Agent identity travels in the browser protocol instead.
+DROPPED_ENV = frozenset({
+    "AIQSA_INVOCATION_ID", "AIQSA_RUN_TOKEN", "AIQSA_GATEWAY_URL", "AIQSA_AGENT_ID", "AIQSA_AGENT_NAME"
+})
+AGENT_ENV_PREFIX = "AIQSA_AGENT_"
 
 _LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$")
 #: An IANA name: one segment (`CET`, `EST5EDT`) or more (`America/Argentina/Buenos_Aires`); AIQSA checked it exists.
@@ -59,7 +62,7 @@ def launch_args(locale: str, user_agent: Optional[str] = None) -> List[str]:
 
 def launch_env(environ: Mapping[str, str], locale: str, timezone: str) -> Dict[str, str]:
     """The browser's own process environment: the user's zone and language, no command secrets of AIQSA."""
-    env = {key: value for key, value in environ.items() if key not in DROPPED_ENV}
+    env = {key: value for key, value in environ.items() if key not in DROPPED_ENV and not key.startswith(AGENT_ENV_PREFIX)}
     posix = locale.replace("-", "_")
     env.update({"TZ": timezone, "LANG": f"{posix}.UTF-8", "LANGUAGE": posix})
     return env

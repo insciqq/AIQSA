@@ -249,7 +249,9 @@ def page_text(raw: str, hidden: HiddenValues, start: int, limit: int) -> Tuple[s
 
 
 def step_line(step: Mapping[str, Any]) -> str:
-    line = f"{STEP_PREFIX}{int(step['n'])}] {step['action']}"
+    agent = step.get("agent")
+    suffix = f" · {clean(agent, 48)}" if isinstance(agent, str) and agent else ""
+    line = f"{STEP_PREFIX}{int(step['n'])}{suffix}] {step['action']}"
     if step.get("target"):
         line += ": " + clean(step["target"], 160)
     place = where(step.get("url"))

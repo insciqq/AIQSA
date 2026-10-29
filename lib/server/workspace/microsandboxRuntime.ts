@@ -47,7 +47,7 @@ import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { RUNNER_GATEWAY_PORT, RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
-import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isReservedWorkspaceEnvName, isWorkspaceEnvName, WORKSPACE_AGENT_ENV_PREFIX, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
@@ -58,6 +58,7 @@ import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
+import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
@@ -1238,7 +1239,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (!values || typeof values !== "object" || Array.isArray(values) ||
         Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0")) ||
         Buffer.byteLength(JSON.stringify(values), "utf8") > maximum) throw new Error("invalid");
-      session.secretEnvironment = { modelRunId, values: values as Record<string, string> };
+      const safeValues = Object.fromEntries(Object.entries(values).filter(([name]) => !name.startsWith(WORKSPACE_AGENT_ENV_PREFIX))) as Record<string, string>;
+      session.secretEnvironment = { modelRunId, values: safeValues };
       return session.secretEnvironment.values;
     } catch { throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed"); }
   }
@@ -1316,7 +1318,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         // The invocation id reaches this command alone, never the saved environment file.
         const invocation = input.invocationId ? { [WORKSPACE_CODE_INVOCATION_ENV]: input.invocationId } : {};
         argumentsWithIdentity.env = { ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment,
-          ...(requested as Record<string, unknown> | undefined), ...invocation };
+          ...(requested as Record<string, unknown> | undefined), ...invocation,
+          ...(input.agent ? workspaceAgentEnvironment(input.agent) : {}) };
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {

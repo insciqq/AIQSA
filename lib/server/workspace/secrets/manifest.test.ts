@@ -24,11 +24,12 @@ describe("Workspace variables of saved secrets", () => {
       saved("Notes", { kind: "text", text: "synthetic note" }),
       saved("github_token", { kind: "text", text: "synthetic lowercase" }),
       saved("SSH_AUTH_SOCK", { kind: "text", text: "synthetic reserved" }),
-      saved("AIQSA_BROWSER_SESSIONS_DIR", { kind: "text", text: "/workspace/project" })
+      saved("AIQSA_BROWSER_SESSIONS_DIR", { kind: "text", text: "/workspace/project" }),
+      saved("AIQSA_AGENT_ID", { kind: "text", text: "thread-1" })
     ];
     expect(parseAcceptedWorkspaceSecrets(secrets)).toEqual(secrets);
     expect(workspaceSecretEnvironment(secrets)).toEqual({ DEMO_API_TOKEN: "synthetic-demo-token", SERVICE_TOKEN: "synthetic-service" });
-    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SERVICE_TOKEN"], ["DEMO_API_TOKEN"], [], [], [], []]);
+    expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SERVICE_TOKEN"], ["DEMO_API_TOKEN"], [], [], [], [], []]);
     const guide = workspaceSecretsGuide(secrets);
     expect(guide).toContain("## DEMO\\_API\\_TOKEN\n\nText secret in an environment variable (the value is already in command environments): `DEMO_API_TOKEN`\n");
     const unset = "Text secret, not in command environments: read its value with `read_secret` when the task needs it.\n";
