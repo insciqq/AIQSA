@@ -3217,6 +3217,9 @@ model RunTranscriptItem {
   /// has its own sequence. A plain value: the item goes with its run, and a thread's items live only in runs of its
   /// own branch, which are deleted with it.
   subagentThreadId String?
+  /// The thread's turn (`SubagentTurn.id`) that wrote the item, a plain value like the thread key: a thread may run
+  /// two turns in one answer, and its sequence continues across them.
+  subagentTurnId   String?
   createdAt  DateTime              @default(now())
   modelRun   ModelRun              @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "RunTranscriptItem_modelRun_fkey")
 
@@ -3739,6 +3742,9 @@ model ModelRunToolCall {
   /// The sub-agent thread that made the call (`SubagentThread.id`), with rounds of its own; null for the main agent.
   /// A plain value, as on `RunTranscriptItem`.
   subagentThreadId           String?
+  /// The thread's turn (`SubagentTurn.id`) that made the call, a plain value: a thread may run two turns in one
+  /// answer, and its rounds continue across them.
+  subagentTurnId             String?
 
   /// Both NULLS NOT DISTINCT, so the main agent's keys stay unique per run
   /// (`20261029230300_model_run_tool_call_thread_ordinal_index`, `20261029230400_..._provider_call_index`).

@@ -88,14 +88,14 @@ describe("sub-agent thread view", () => {
 
 describe("an answer's sub-agent steps", () => {
   it("keeps the addressed sub-agent of a call row and the thread of a nested call", () => {
-    const subagent = { mode: "foreground", name: "shop-amazon", threadId: "thread-1" };
-    expect(decodeThreadToolActivity({ calls: [
+    const subagent = { mode: "foreground", name: "shop-amazon", threadId: "thread-1", turnId: "turn-2" };
+    const calls = [
       { origin: "session", round: 1, status: "complete", subagent, toolName: "call_subagent" },
-      { origin: "workspace", round: 1, status: "complete", subagentThreadId: "thread-1", toolName: "workspace__exec" }
-    ] })?.calls).toEqual([
-      { origin: "session", round: 1, status: "complete", subagent, toolName: "call_subagent" },
-      { origin: "workspace", round: 1, status: "complete", subagentThreadId: "thread-1", toolName: "workspace__exec" }
-    ]);
+      { origin: "workspace", round: 1, status: "complete", subagentThreadId: "thread-1", subagentTurnId: "turn-2", toolName: "workspace__exec" }
+    ];
+    expect(decodeThreadToolActivity({ calls })?.calls).toEqual(calls);
+    // A turn without its thread is not a nested call.
+    expect(decodeThreadToolActivity({ calls: [{ round: 1, status: "complete", subagentTurnId: "turn-2", toolName: "x" }] })).toBeNull();
     expect(decodeThreadToolActivity({ calls: [{ round: 1, status: "complete", subagent: { ...subagent, mode: "x" }, toolName: "call_subagent" }] }))
       .toBeNull();
     expect(decodeThreadToolActivity({ calls: [{ round: 1, status: "complete", subagentThreadId: "a b", toolName: "x" }] })).toBeNull();

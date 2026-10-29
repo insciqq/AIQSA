@@ -15,6 +15,13 @@ import type { WorkspaceAgent } from "./guestProtocol";
  * real ones. Persistence is `prisma/schema.prisma` (`SubagentThread`,
  * `SubagentTurn`, `SubagentDefinition`); the wire is `lib/contracts/subagents.ts`
  * and `lib/contracts/subagentViews.ts`.
+ *
+ * Deletion: an active background sub-agent run blocks deleting its branch or
+ * message like any active run. The deleting path stops it first (abort, then
+ * settle its turn) and deletes after; the cascades from the anchor run are an
+ * integrity guarantee, never the way a running sub-agent is stopped. Chat and
+ * account deletion stop every run of the chat the same way under the
+ * existing deletion lock.
  */
 
 /** One chat of one owner: every port call names both, and an implementation rechecks them. */
@@ -134,6 +141,12 @@ export type SubagentCallbackDisposition =
   | "delivered"
   /** A wake-up turn (`subagent_callback`) was admitted, coalescing callbacks close together. */
   | "wake_up"
+  /**
+   * The branch's main-agent answer is running but already closed to follow-ups
+   * (it lost the close-to-publish race): the callback stays owed, and that
+   * run's terminal flush delivers it (a wake-up turn) when it ends.
+   */
+  | "after_run"
   /** Usage limits refused the wake-up; it stays owed and goes with the next main-agent turn. */
   | "pending"
   /** Its branch is not the active one: recorded there, owed, and it wakes nothing. */
@@ -142,7 +155,23 @@ export type SubagentCallbackDisposition =
 /**
  * Takes the callbacks of background turns that ended (done, partial, blocked,
  * needs_approval, failed, stopped, interrupted). A callback stays owed until
- * `SubagentTurn.callbackRunId` names the run that received it.
+ * `SubagentTurn.callbackRunId` names the run that received it
+ * (`subagentCallbackOwed`). Rules every implementation keeps:
+ * - The claim: a callback is delivered only by
+ *   `UPDATE "SubagentTurn" SET "callbackRunId" = $run WHERE "id" = $turn AND "callbackRunId" IS NULL`
+ *   in the same transaction as the `subagent_callback` follow-up insert
+ *   (nonce `subagentCallbackNonce(turnId)`) or the wake-up turn's admission.
+ *   The turn's end and a main run's terminal flush may both try; the one whose
+ *   update finds the row unclaimed delivers, the other does nothing, so no
+ *   callback is delivered twice.
+ * - The flush: every main-agent run's terminal path delivers the owed
+ *   callbacks of its active branch (a wake-up turn), so one that lost the
+ *   close-to-publish race (`after_run`) is never left waiting for a user turn.
+ * - The budget: `subagent_callback` and `main_agent` follow-ups never count
+ *   toward the user's follow-ups (`RUN_FOLLOWUP_MAX_COUNT`) or the run's
+ *   `followupBudgetTokens`; they have their own bounds
+ *   (`SUBAGENT_FOLLOWUP_LIMITS`). A callback too large for its run's room is
+ *   delivered by reference to the turn's stored result, never refused.
  * Owner: `20261029221046686-sub-agent-background-runs`.
  */
 export interface SubagentCallbackSink {
@@ -188,7 +217,10 @@ export type WorkspaceExclusiveResult<T> =
 /**
  * One Workspace per chat serves every attached run of its main agent and
  * sub-agents at once; exec calls of attached runs run concurrently, and
- * lifecycle operations take a short exclusive lease.
+ * lifecycle operations take a short exclusive lease. A background sub-agent
+ * run never takes the chat's Workspace wait slot (`workspaceWaitPending`,
+ * `ModelRun_one_workspace_wait_per_chat_idx`, which a waiting main-agent
+ * message holds): it attaches here instead.
  * Owner: `20261029221042976-shared-workspace-sessions` (which also designs and
  * migrates the attachment table).
  */
@@ -240,5 +272,15 @@ export type SubagentTypeResolution =
 export interface SubagentTypeResolver {
   /** Name and description of each of the user's custom sub-agents, in a stable order. */
   catalog(input: Readonly<{ userId: string }>): Promise<readonly SubagentTypeEntry[]>;
-  resolve(input: Readonly<{ name: string; userId: string }>): Promise<SubagentTypeResolution>;
+  /**
+   * The current revision of one of the user's custom sub-agents: by `name` for
+   * a call that starts a thread with `type`, by `definitionId`
+   * (`SubagentThread.definitionId`) to continue a thread, so renaming the
+   * definition never strands a live thread. A deleted definition, a thread
+   * whose `definitionId` was cleared, or another user's definition is
+   * `unavailable` either way.
+   */
+  resolve(input: SubagentTypeLookup): Promise<SubagentTypeResolution>;
 }
+
+export type SubagentTypeLookup = Readonly<{ userId: string }> & (Readonly<{ name: string }> | Readonly<{ definitionId: string }>);

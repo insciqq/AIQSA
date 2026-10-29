@@ -19,8 +19,15 @@ import { RUN_FOLLOWUP_MAX_CHARS } from "./runFollowups";
  *   (`projectSubagentThreadState`) and editing an earlier message branches
  *   threads like the conversation.
  * - Transcript items and tool calls of a thread are rows of the run that
- *   executed them, keyed by the thread; the main agent's have no thread key
- *   and never include a thread's.
+ *   executed them, keyed by the thread and the turn; the main agent's have no
+ *   thread key and never include a thread's. A thread's sequence and rounds
+ *   continue across its turns in one run.
+ * - A chat has one active run per thread: the main agent keeps one, and each
+ *   background sub-agent run is its own. A background run never takes the
+ *   chat's Workspace wait slot; it attaches to the shared Workspace.
+ * - An active background run blocks deleting its branch or message like any
+ *   active run: stop it, then delete. Cascades from the anchor run keep the
+ *   store consistent; they never stop a running sub-agent.
  *
  * Everything here is content-free apart from what the owner's own chat holds
  * (names, briefs, reports), and only owner-only routes carry it.
@@ -110,6 +117,31 @@ export function isSubagentBindingSource(value: unknown): value is SubagentBindin
 /** Who wrote a follow-up (`RunFollowupOrigin`); only `user` follow-ups are the user's clarifications. */
 export const RUN_FOLLOWUP_ORIGINS = ["user", "main_agent", "subagent_callback"] as const;
 export type RunFollowupOrigin = (typeof RUN_FOLLOWUP_ORIGINS)[number];
+
+/**
+ * Bounds of the follow-ups that are not the user's. They never count toward
+ * the user's follow-ups (`RUN_FOLLOWUP_MAX_COUNT`) or a run's
+ * `followupBudgetTokens`, so a sub-agent cannot use up the user's
+ * clarifications. A callback whose rendering does not fit its run's room
+ * goes in by reference to its turn's stored result (`SubagentTurn.result`,
+ * read like a saved tool result), never refused.
+ */
+export const SUBAGENT_FOLLOWUP_LIMITS = Object.freeze({
+  /** `main_agent` messages one background sub-agent run takes. */
+  messagesPerRun: 32,
+  /** `subagent_callback` follow-ups one main-agent run takes; later callbacks stay owed for its terminal flush. */
+  callbacksPerRun: 64
+});
+
+/**
+ * The nonce of a turn's `subagent_callback` follow-up (`RunFollowup.nonce`):
+ * one per turn, so a repeated delivery attempt finds its own row. Delivery
+ * claims the turn first (`SubagentTurn.callbackRunId`, see
+ * `lib/server/subagents/ports.ts`).
+ */
+export function subagentCallbackNonce(turnId: string): string {
+  return `subagent-callback:${turnId}`;
+}
 
 /** The server-written user turn that wakes an idle main agent with sub-agent callbacks (`MessageSystemTurnKind`). */
 export const SUBAGENT_CALLBACK_TURN_KIND = "subagent_callback";
@@ -439,6 +471,10 @@ export function isSubagentTurnOnBranch(parentAnswerMessageId: string | null, bra
 /**
  * Whether an ended background turn still owes its callback: no main-agent run
  * received it yet. A foreground turn's result is its parent's tool result.
+ * Delivery claims it with a conditional update of `callbackRunId` (only while
+ * it is null) in the transaction that inserts the callback follow-up or
+ * admits the wake-up turn, and every main-agent run's terminal path flushes
+ * its branch's owed callbacks, so each is delivered exactly once.
  */
 export function subagentCallbackOwed(turn: Readonly<{ callbackRunId: string | null; mode: SubagentTurnMode; state: SubagentThreadState }>): boolean {
   return turn.mode === "background" && !isActiveSubagentState(turn.state) && turn.callbackRunId === null;
@@ -447,9 +483,14 @@ export function subagentCallbackOwed(turn: Readonly<{ callbackRunId: string | nu
 /**
  * The sub-agent a call row of an answer's tool activity belongs to
  * (`ThreadToolActivityCall.subagent`): the thread a `call_subagent` or
- * `stop_subagent` call addressed, for the chat's card and its thread link.
+ * `stop_subagent` call addressed, for the chat's card and its thread link,
+ * and the turn the call started or continued (`SubagentTurn.id`; absent for a
+ * message to a running sub-agent and for `stop_subagent`). The calls a
+ * foreground turn made carry that turn as `ThreadToolActivityCall.subagentTurnId`,
+ * so they nest under exactly this step even when one answer continues a
+ * thread twice.
  */
-export type SubagentActivityRef = Readonly<{ mode: SubagentTurnMode; name: string; threadId: string }>;
+export type SubagentActivityRef = Readonly<{ mode: SubagentTurnMode; name: string; threadId: string; turnId?: string }>;
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
@@ -458,9 +499,11 @@ export function isSubagentIdentifier(value: unknown): value is string {
 }
 
 export function decodeSubagentActivityRef(value: unknown): SubagentActivityRef | null {
-  if (!record(value) || !only(value, ["mode", "name", "threadId"])) return null;
+  if (!record(value) || !only(value, ["mode", "name", "threadId", "turnId"])) return null;
   if (!isSubagentTurnMode(value.mode) || normalizeSubagentName(value.name) !== value.name || !isSubagentIdentifier(value.threadId)) return null;
-  return { mode: value.mode, name: value.name as string, threadId: value.threadId };
+  if (value.turnId !== undefined && !isSubagentIdentifier(value.turnId)) return null;
+  return { mode: value.mode, name: value.name as string, threadId: value.threadId,
+    ...(typeof value.turnId === "string" ? { turnId: value.turnId } : {}) };
 }
 
 /**

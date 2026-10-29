@@ -932,6 +932,22 @@ async function assertSubagentRelations(): Promise<void> {
     await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id });
   });
 
+  await expectDatabaseRejection("sub-agent turn key without its thread", "ModelRunToolCall_subagent_turn_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.modelRunToolCall.create({ data: {
+      arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 0, providerCallId: "call-9", roundIndex: 9,
+      subagentTurnId: fixture.turn.id, toolName: "x"
+    } });
+  });
+
+  await expectDatabaseRejection("sub-agent transcript turn key without its thread", "RunTranscriptItem_subagent_turn_check", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await tx.runTranscriptItem.create({ data: {
+      body: json({}), chatId: fixture.chat.id, id: randomUUID(), kind: "user", modelRunId: fixture.run.id, sequence: 9,
+      subagentTurnId: fixture.turn.id, userId: fixture.user.id
+    } });
+  });
+
   await expectDatabaseRejection("ended sub-agent turn without an end", "SubagentTurn_state_check", async (tx) => {
     const fixture = await createSubagentFixture(tx);
     await tx.subagentTurn.update({ data: { outcome: "done", state: "done" }, where: { id: fixture.turn.id } });
@@ -987,16 +1003,17 @@ async function assertSubagentRelations(): Promise<void> {
 
   await expectRolledBackSuccess("sub-agent rows, keys and cascades", async (tx) => {
     const fixture = await createSubagentFixture(tx);
-    // A thread numbers its own items and rounds beside the main agent's.
-    for (const subagentThreadId of [null, fixture.thread.id]) {
+    // A thread numbers its own items and rounds beside the main agent's, each row naming its turn.
+    for (const key of [{ subagentThreadId: null, subagentTurnId: null },
+      { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id }]) {
       await tx.runTranscriptItem.create({ data: {
         body: json({}), chatId: fixture.chat.id, id: randomUUID(), kind: "user", modelRunId: fixture.run.id, sequence: 0,
-        subagentThreadId, userId: fixture.user.id
+        userId: fixture.user.id, ...key
       } });
     }
     await tx.modelRunToolCall.create({ data: {
       arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 0, providerCallId: "call-1", roundIndex: 0,
-      subagentThreadId: fixture.thread.id, toolName: "x"
+      subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id, toolName: "x"
     } });
     // A background sub-agent run is active beside the chat's active main-agent run.
     const background = await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id },

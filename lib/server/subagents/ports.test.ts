@@ -90,5 +90,10 @@ describe("sub-agent port fakes", () => {
     await expect(resolver.catalog({ userId: "user-1" })).resolves.toEqual([{ description: "Long browsing", name: "browser" }]);
     await expect(resolver.resolve({ name: "browser", userId: "user-1" })).resolves.toEqual({ kind: "found", type: browser });
     await expect(resolver.resolve({ name: "browser", userId: "user-2" })).resolves.toEqual({ kind: "unavailable" });
+    // A thread continues by its definition, whatever the definition is called now.
+    const renamed = new FakeSubagentTypeResolver({ "user-1": [{ ...browser, name: "shopper" }] });
+    await expect(renamed.resolve({ definitionId: "d1", userId: "user-1" })).resolves.toEqual({ kind: "found", type: { ...browser, name: "shopper" } });
+    await expect(renamed.resolve({ name: "browser", userId: "user-1" })).resolves.toEqual({ kind: "unavailable" });
+    await expect(renamed.resolve({ definitionId: "d1", userId: "user-2" })).resolves.toEqual({ kind: "unavailable" });
   });
 });

@@ -26,7 +26,7 @@ DO $$ BEGIN
     JOIN "ModelRunToolCall" c ON c.id = 'observation-adoption-call'
     WHERE f.run = to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome', 'engine',
     'subagentThreadId', 'subagentTurnId']
-      AND f.call = to_jsonb(c) - 'subagentThreadId')
+      AND f.call = to_jsonb(c) - ARRAY['subagentThreadId', 'subagentTurnId'])
     THEN RAISE EXCEPTION 'observation_upgrade_changed_accepted_inline_result'; END IF;
   IF EXISTS (SELECT 1 FROM "ToolObservation")
     THEN RAISE EXCEPTION 'observation_upgrade_invented_receipt'; END IF;
