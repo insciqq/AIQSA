@@ -348,10 +348,8 @@ export async function refreshPermanentChatDeletionStatus(
   }
 }
 
-export function dismissCompletedPermanentChatDeletion(): void {
-  const current = usePermanentChatDeletionStore.getState();
-  if (!current.accountId || current.status?.status !== "COMPLETE") return;
-  writeReference(current.accountId, null);
+function clearReference(accountId: string): void {
+  writeReference(accountId, null);
   usePermanentChatDeletionStore.setState({
     reference: null,
     status: null,
@@ -359,6 +357,24 @@ export function dismissCompletedPermanentChatDeletion(): void {
     statusLoadState: "idle",
     statusOpen: false
   });
+}
+
+export function dismissCompletedPermanentChatDeletion(): void {
+  const current = usePermanentChatDeletionStore.getState();
+  if (!current.accountId || current.status?.status !== "COMPLETE") return;
+  clearReference(current.accountId);
+}
+
+/**
+ * The notice's own Dismiss: a completed deletion, or one only an administrator
+ * can move on, which the user acknowledges instead of keeping it over the thread.
+ */
+export function dismissPermanentChatDeletionNotice(): void {
+  const current = usePermanentChatDeletionStore.getState();
+  const state = current.status?.status;
+  if (!current.accountId || (state !== "COMPLETE" && state !== "NEEDS_ATTENTION")) return;
+  abortActiveRequest();
+  clearReference(current.accountId);
 }
 
 export function resetPermanentChatDeletionStore(): void {
