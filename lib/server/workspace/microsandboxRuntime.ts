@@ -58,6 +58,7 @@ import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
+import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { outputIdentities, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
 import { SELECTED_FILE_CAPTURE_GUEST } from "./selectedFileGuest";
@@ -1148,7 +1149,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
       // Server-owned run values win over a saved variable of the same name.
       const environment = { ...workspaceSecretEnvironment(secrets),
-        ...parseWorkspaceRunEnvironment(input.runEnvironment, RUNNER_GATEWAY_ORIGIN) };
+        ...parseWorkspaceRunEnvironment(input.runEnvironment, RUNNER_GATEWAY_ORIGIN),
+        ...(input.agent ? workspaceAgentEnvironment(input.agent) : {}) };
       const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
       const deadline = AbortSignal.timeout(90_000);
@@ -1316,7 +1318,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         // The invocation id reaches this command alone, never the saved environment file.
         const invocation = input.invocationId ? { [WORKSPACE_CODE_INVOCATION_ENV]: input.invocationId } : {};
         argumentsWithIdentity.env = { ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment,
-          ...(requested as Record<string, unknown> | undefined), ...invocation };
+          ...(requested as Record<string, unknown> | undefined), ...invocation,
+          ...(input.agent ? workspaceAgentEnvironment(input.agent) : {}) };
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {

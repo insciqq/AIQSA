@@ -25,7 +25,7 @@ from ._format import step_line
 
 __all__ = ["BrowserError", "Page", "back", "click", "close", "close_tab", "find", "forward", "js", "new_tab", "open",
            "page_info", "press", "reload", "save_session", "screenshot", "scroll", "select", "status", "steps",
-           "switch_tab", "tabs", "text", "type", "upload", "wait_for"]
+           "switch_tab", "tabs", "text", "type", "upload", "wait_for", "release"]
 
 
 class Page(str):
@@ -182,3 +182,8 @@ def status(markers: bool = False) -> Dict[str, Any]:
 def close() -> str:
     """Close the browser now; the next call starts a new one from the saved sessions."""
     return builtins.str(call("close").get("text") or "")
+
+
+def release() -> str:
+    """Release this agent's browser slot and close its tabs (the main agent keeps its tabs)."""
+    return builtins.str(call("release").get("text") or "")

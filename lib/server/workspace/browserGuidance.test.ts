@@ -4,7 +4,8 @@ import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
-import { BROWSER_GUIDE_IMAGE_TOOLS, BROWSER_HANDOFF_TOOL, WORKSPACE_BROWSER_GUIDANCE, WORKSPACE_WEBSITE_ACTION_SAFETY } from "./browserGuidance";
+import { BROWSER_GUIDE_IMAGE_TOOLS, BROWSER_HANDOFF_TOOL, WORKSPACE_BROWSER_AGENT_IMAGE, WORKSPACE_BROWSER_GUIDANCE,
+  WORKSPACE_BROWSER_OLD_IMAGE_NOTICE, WORKSPACE_WEBSITE_ACTION_SAFETY, workspaceBrowserAgentAvailable } from "./browserGuidance";
 import { WORKSPACE_GUIDE_FILES, workspaceGuideInput } from "./guides";
 import { WORKSPACE_BROWSER_SESSION_USER_PATH, workspaceSecretsGuide } from "./secrets/manifest";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
@@ -70,6 +71,18 @@ describe("Workspace browser guide", () => {
     expect(guide).toContain("refused while a CAPTCHA shows");
     expect(guide).toContain("still runs an older image, which it keeps until the Workspace is recreated");
     expect(guide).toContain("Its browser announces automation, so some sites block it");
+    expect(guide).toContain("browser_busy");
+    expect(guide).toContain("browser_memory_low");
+    expect(guide).toContain("`release`");
+    expect(guide).toContain(WORKSPACE_BROWSER_OLD_IMAGE_NOTICE);
+  });
+
+  it("gates only sub-agents on the per-agent guest image", () => {
+    expect(WORKSPACE_BROWSER_AGENT_IMAGE).toBe("aiqsa-workspace:0.1.40");
+    expect(workspaceBrowserAgentAvailable("aiqsa-workspace:0.1.39", "main")).toBe(true);
+    expect(workspaceBrowserAgentAvailable("aiqsa-workspace:0.1.39", "subagent")).toBe(false);
+    expect(workspaceBrowserAgentAvailable(WORKSPACE_BROWSER_AGENT_IMAGE, "subagent")).toBe(true);
+    expect(workspaceBrowserAgentAvailable("custom:latest", "subagent")).toBe(false);
   });
 
   it("fits the guest guide limits", () => {

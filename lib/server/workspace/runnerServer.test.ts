@@ -110,26 +110,34 @@ describe("Workspace runner lifecycle diagnostics", () => {
     const request = fixture({ callBoundTool, syncPersonalSecrets, stopSession: vi.fn(async () => undefined),
       ensureSession: vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const })) });
     await request("/v1/sessions/ensure", body);
-    const tool = (invocationId: unknown) => request(`/v1/sessions/${sessionId}/tools/sandbox_shell/call`,
+    const tool = (invocationId: unknown, agent?: unknown) => request(`/v1/sessions/${sessionId}/tools/sandbox_shell/call`,
       { operation: body.operation, arguments: { command: "python3 report.py" }, runtimeSandboxId: "sandbox_fixture",
-        modelRunId: "server_run", modelRunToolCallId: "server_call", ...(invocationId === undefined ? {} : { invocationId }) });
-    expect((await tool("e".repeat(32))).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+        modelRunId: "server_run", modelRunToolCallId: "server_call", ...(invocationId === undefined ? {} : { invocationId }),
+        ...(agent === undefined ? {} : { agent }) });
+    const browserAgent = { kind: "subagent", name: "shop-amazon", threadId: "thread-7" };
+    expect((await tool("e".repeat(32), browserAgent)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     expect(callBoundTool).toHaveBeenLastCalledWith(expect.objectContaining({ invocationId: "e".repeat(32) }));
+    expect(callBoundTool).toHaveBeenLastCalledWith(expect.objectContaining({ agent: browserAgent }));
     expect((await tool(undefined)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     expect(callBoundTool).toHaveBeenLastCalledWith(expect.not.objectContaining({ invocationId: expect.anything() }));
     for (const invalid of ["E".repeat(32), "e".repeat(31), 1, null]) {
       expect((await tool(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
     }
     expect(callBoundTool).toHaveBeenCalledTimes(2);
-    const secrets = (runEnvironment: unknown) => request(`/v1/sessions/${sessionId}/secrets`, { operation: body.operation,
-      secrets: [], modelRunId: "server_run", runtimeSandboxId: "sandbox_fixture", ...(runEnvironment === undefined ? {} : { runEnvironment }) });
+    const secrets = (runEnvironment: unknown, agent?: unknown) => request(`/v1/sessions/${sessionId}/secrets`, { operation: body.operation,
+      secrets: [], modelRunId: "server_run", runtimeSandboxId: "sandbox_fixture", ...(runEnvironment === undefined ? {} : { runEnvironment }),
+      ...(agent === undefined ? {} : { agent }) });
     const bearer = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
     expect((await secrets(bearer)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ runEnvironment: bearer }));
+    const agent = { kind: "subagent", name: "shop-amazon", threadId: "thread-7" };
+    expect((await secrets(bearer, agent)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ agent,
+      runEnvironment: { ...bearer, AIQSA_AGENT_ID: "thread-7", AIQSA_AGENT_NAME: "shop-amazon" } }));
     for (const invalid of [{ ...bearer, AIQSA_GATEWAY_URL: "https://attacker.example" }, { PATH: "/tmp" }, "AIQSA_RUN_TOKEN=x"]) {
       expect((await secrets(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
     }
-    expect(syncPersonalSecrets).toHaveBeenCalledOnce();
+    expect(syncPersonalSecrets).toHaveBeenCalledTimes(2);
     const bounded = (boundUvCache: unknown) => request(`/v1/sessions/${sessionId}/secrets`, { operation: body.operation,
       secrets: [], modelRunId: "server_run", runtimeSandboxId: "sandbox_fixture", boundUvCache });
     expect((await bounded(true)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
@@ -137,7 +145,7 @@ describe("Workspace runner lifecycle diagnostics", () => {
     expect((await bounded(false)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.not.objectContaining({ boundUvCache: expect.anything() }));
     expect((await bounded("yes")).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
-    expect(syncPersonalSecrets).toHaveBeenCalledTimes(3);
+    expect(syncPersonalSecrets).toHaveBeenCalledTimes(4);
   });
 
   it.each([
