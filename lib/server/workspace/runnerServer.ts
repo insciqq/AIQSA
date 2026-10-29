@@ -364,8 +364,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         if (body.boundUvCache !== undefined && typeof body.boundUvCache !== "boolean") throw new Error("field_invalid");
         await execute(body.operation, (signal) => input.runtime.syncPersonalSecrets({
           secrets, modelRunId, ...(agent ? { agent } : {}),
-          ...(Object.keys({ ...runEnvironment, ...(agent ? workspaceAgentEnvironment(agent) : {}) }).length > 0
-            ? { runEnvironment: { ...runEnvironment, ...(agent ? workspaceAgentEnvironment(agent) : {}) } } : {}),
+          ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
           ...(body.boundUvCache === true ? { boundUvCache: true } : {}),
           runtimeSandboxId, sessionId, signal
         }));
