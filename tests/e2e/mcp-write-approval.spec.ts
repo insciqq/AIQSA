@@ -105,6 +105,9 @@ async function newChat(page: Page) {
   await chooseTools(page);
 }
 
+/** A call waiting for approval ends the turn with its card, without another model response. */
+const APPROVAL_PENDING = "Approval needed";
+
 /** Sends one turn and waits until its answer settled with `answer`. */
 async function send(page: Page, stand: Stand, text: string, answer: string, timeout = 60_000) {
   const message = page.getByRole("textbox", { exact: true, name: "Message" });
@@ -141,8 +144,8 @@ test("a write tool asks first: Deny sends nothing, a reload keeps the card, Allo
     });
 
     const chatId = await activeChatId(page);
-    await test.step("a destructive tool sends nothing and asks in the answer, which explains briefly", async () => {
-      await send(page, stand, "Delete record r-1 [AIQSA_MCP_E2E:delete_record:r-1]", "MCP call finished: mcp_approval_required.");
+    await test.step("a destructive tool sends nothing and asks in the answer", async () => {
+      await send(page, stand, "Delete record r-1 [AIQSA_MCP_E2E:delete_record:r-1]", APPROVAL_PENDING);
       const card = deleteCard(page, stand);
       await expect(card).toContainText("Approval needed");
       await expect(card).toContainText("This tool may change data, so nothing was sent.");
@@ -195,7 +198,7 @@ test("a write tool asks first: Deny sends nothing, a reload keeps the card, Allo
 
     await test.step("Allow once continues with exactly the approved call, once, also after a refused attempt", async () => {
       await chooseTools(page);
-      await send(page, stand, "Delete record r-1 [AIQSA_MCP_E2E:delete_record:r-1]", "MCP call finished: mcp_approval_required.");
+      await send(page, stand, "Delete record r-1 [AIQSA_MCP_E2E:delete_record:r-1]", APPROVAL_PENDING);
       // The continuation the decision starts is refused before any run exists,
       // as another running answer or a usage limit would: Continue retries it.
       let refusedContinuations = 0;
@@ -228,8 +231,7 @@ test("a write tool asks first: Deny sends nothing, a reload keeps the card, Allo
     });
 
     await test.step("the same call in a later turn asks again", async () => {
-      await send(page, stand, "Delete record r-1 again [AIQSA_MCP_E2E:delete_record:r-1]",
-        "MCP call finished: mcp_approval_required.");
+      await send(page, stand, "Delete record r-1 again [AIQSA_MCP_E2E:delete_record:r-1]", APPROVAL_PENDING);
       await expect(deleteCard(page, stand)).toContainText("Approval needed");
       expect(stand.endpoint.dispatches("delete_record")).toBe(1);
     });
@@ -241,7 +243,7 @@ test("Always allow skips the card in a new chat until it is revoked", async ({ p
   await withApprovalServer(page, "Trusted records", async (stand) => {
     await test.step("Always allow continues and records the consent", async () => {
       await newChat(page);
-      await send(page, stand, "Delete record r-2 [AIQSA_MCP_E2E:delete_record:r-2]", "MCP call finished: mcp_approval_required.");
+      await send(page, stand, "Delete record r-2 [AIQSA_MCP_E2E:delete_record:r-2]", APPROVAL_PENDING);
       await deleteCard(page, stand).getByRole("button", { name: "Always allow for this server" }).click();
       await expect(lastAnswer(page)).toContainText("MCP call finished: done.", { timeout: 60_000 });
       await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
@@ -262,7 +264,7 @@ test("Always allow skips the card in a new chat until it is revoked", async ({ p
       await consents.getByRole("button", { name: `Revoke always allow for ${stand.serverName}` }).click();
       await expect(consents.getByRole("status")).toHaveText(`${stand.serverName} will ask for approval again.`);
       await newChat(page);
-      await send(page, stand, "Delete record r-4 [AIQSA_MCP_E2E:delete_record:r-4]", "MCP call finished: mcp_approval_required.");
+      await send(page, stand, "Delete record r-4 [AIQSA_MCP_E2E:delete_record:r-4]", APPROVAL_PENDING);
       await expect(deleteCard(page, stand)).toContainText("Approval needed");
       expect(stand.endpoint.dispatches("delete_record", { id: "r-4" })).toBe(0);
     });

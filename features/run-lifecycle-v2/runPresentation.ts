@@ -365,7 +365,8 @@ export function toolActivityOriginV2(call: ToolActivityIdentity): ThreadToolActi
  */
 export function describeToolCallV2(
   call: ToolActivityIdentity,
-  phase: "cancelled" | "failed" | "running" | "settled"
+  /** `held`: never sent, waiting for the user's approval (only MCP calls are gated). */
+  phase: "cancelled" | "failed" | "held" | "running" | "settled"
 ): string {
   const running = phase === "running";
   const origin = toolActivityOriginV2(call);
@@ -426,7 +427,7 @@ export function describeToolCallV2(
     if (call.memorySearchOutcome === "no_results") return "No matching memories found";
     return "Searched memory";
   }
-  if (origin === "web_fetch") return describeFetchCallV2(call, phase);
+  if (origin === "web_fetch") return describeFetchCallV2(call, phase === "held" ? "settled" : phase);
   if (origin === "web_search") {
     if (phase === "failed") return "Web search failed";
     if (phase === "cancelled") return "Web search stopped";
@@ -442,6 +443,7 @@ export function describeToolCallV2(
   const human = humanizeToolName(safeToolName(call.toolName) ?? "");
   const serverName = safeServerName(call.serverName) ?? (origin === "mcp" ? "MCP server" : null);
   const operation = serverName ? `${serverName}${human ? `: ${human}` : ""}` : human;
+  if (phase === "held") return operation || "Tool call";
   if (phase === "failed") return operation ? `${operation} failed` : "Tool failed";
   if (phase === "cancelled") return operation ? `${operation} stopped` : "Tool stopped";
   if (serverName) {
