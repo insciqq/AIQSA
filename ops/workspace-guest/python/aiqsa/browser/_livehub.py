@@ -38,7 +38,7 @@ import hashlib
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 from .. import agents as _agents
 from . import _format, _live
@@ -93,13 +93,15 @@ class Target:
     """One browsing agent as the host reports it: its id, its name (a sub-agent's), its current tab (None before it
     opened one), the lock its actions run under, `acted`, a number that grows with each of its actions, so the panel
     can pick the agent that acted last, and the agent's own tab state: CDP sessions by tab, hidden values (all, and
-    those typed from the environment), masked fields and steps. State the host leaves out is the host's one set."""
+    those typed from the environment), masked fields and steps. State the host leaves out is the host's one set.
+    `touch`, when given, marks the agent's tab as used now: the user working it keeps its slot from idling out."""
 
-    __slots__ = ("agent", "name", "page", "lock", "acted", "cdp", "hidden", "env_hidden", "masked", "steps")
+    __slots__ = ("agent", "name", "page", "lock", "acted", "cdp", "hidden", "env_hidden", "masked", "steps", "touch")
 
     def __init__(self, agent: str, name: Optional[str], page: Any, lock: Optional[asyncio.Lock], acted: int = 0, *,
                  cdp: Optional[Dict[Any, Any]] = None, hidden: Any = None, env_hidden: Any = None,
-                 masked: Optional[Dict[Any, Any]] = None, steps: Optional[List[Dict[str, Any]]] = None):
+                 masked: Optional[Dict[Any, Any]] = None, steps: Optional[List[Dict[str, Any]]] = None,
+                 touch: Optional[Callable[[], None]] = None):
         self.agent = agent
         self.name = name
         self.page = page
@@ -110,6 +112,7 @@ class Target:
         self.env_hidden = env_hidden
         self.masked = masked
         self.steps = steps
+        self.touch = touch
 
 
 def valid_agent(value: Any) -> bool:
@@ -270,6 +273,7 @@ class AgentLive:
                 self.agent_turn.set()
 
     async def control(self, action: Any) -> None:
+        self.hub.touched(self.agent)
         if action == "take":
             if self.hub.target(self.agent) is None:
                 raise _live.LiveError("no_page")
@@ -320,6 +324,7 @@ class AgentLive:
         return f"The user gave the browser back to you after using it. The page is now {url}" + (f" ({_format.quoted(title, 120)})." if title else ".")
 
     async def handoff_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        self.hub.touched(self.agent)
         action = message.get("action")
         if action == "begin":
             if self.page() is None:
@@ -362,7 +367,7 @@ class AgentLive:
         session = self.hub.session(self.agent, page) if page is not None else None
         if session is None:
             raise _live.LiveError("no_page")
-        self.hub.touched()
+        self.hub.touched(self.agent)
         kind = event.get("kind")
         if kind == "mouse":
             geometry = self.hub.geometry.get(page)
@@ -578,12 +583,24 @@ class LiveHub:
         target = self.target(agent)
         return target.cdp.get(page) if target is not None and target.cdp is not None else None
 
-    def touched(self) -> None:
-        """The user used the browser: a host that idles out counts it as use."""
+    def touched(self, agent: str) -> None:
+        """The user works the agent's tab (input, control, a handoff): the host counts it as that agent's use, so
+        neither the agent's slot nor the browser idles out under the user."""
+        target = self.target(agent)
+        touch = getattr(target, "touch", None) if target is not None else None
+        if touch is not None:
+            touch()
+            return
         try:
             self.host.last_used = time.monotonic()
         except AttributeError:
             pass
+
+    def agent_held_by_user(self, agent: str) -> bool:
+        """Whether the user holds the agent's tab (Take control) or a handoff of that agent is pending: the host must not
+        expire that agent's slot or close its tabs meanwhile."""
+        live = self.agents.get(agent)
+        return live is not None and (live.controller == "user" or live.handoff)
 
     def selected_by_user(self, agent: str) -> None:
         """Tabs the user's own input opens belong to the agent whose tab the view shows (the host's choice)."""
