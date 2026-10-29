@@ -48,3 +48,19 @@ describe("MCP approval card projection", () => {
       id: "approval-1", userId: "user-1" } }));
   });
 });
+
+it("falls back from a non-matching named card to the exact ordinary Allow once", async () => {
+  const { consumeMcpCallApproval, hasMcpCallApproval } = await import("./writeApprovalRepository");
+  const key = { argumentsDigest: "a".repeat(64), definitionHash: "b".repeat(64), serverId: "server", toolName: "write" };
+  const scope = { chatId: "chat", runId: "run", userId: "user" };
+  const findFirst = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "second-card" });
+  const updateMany = vi.fn(async () => ({ count: 1 }));
+  const count = vi.fn(async () => 1);
+  const client = { mcpToolApproval: { findFirst, updateMany, count } } as unknown as PrismaClient;
+  expect(await consumeMcpCallApproval(client, scope, key, "other-card")).toBe(true);
+  expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: "second-card", decision: "allow_once" }) }));
+  findFirst.mockResolvedValue(null);
+  expect(await hasMcpCallApproval(client, scope, key, "other-card")).toBe(true);
+  expect(count).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining(key) }));
+  expect(updateMany).toHaveBeenCalledTimes(1);
+});

@@ -321,7 +321,7 @@ export async function loadRunMcpApprovalCards(
  * is consumed by this run; an Always allow is a standing consent that is
  * never consumed (`McpToolApproval_state_check`).
  */
-export async function consumeNamedMcpApproval(tx: Prisma.TransactionClient, scope: McpApprovalScope, approvalId: string,
+export async function consumeNamedMcpApproval(tx: ApprovalClient, scope: McpApprovalScope, approvalId: string,
   key: McpApprovalCallKey, now: Date): Promise<boolean> {
   const row = await tx.mcpToolApproval.findFirst({
     select: { decision: true, id: true },
@@ -337,4 +337,26 @@ export async function consumeNamedMcpApproval(tx: Prisma.TransactionClient, scop
     where: { consumedAt: null, decision: "allow_once", expiresAt: { gt: now }, id: row.id }
   });
   return consumed.count === 1;
+}
+
+/** A named decision applies only to its exact call; other approved cards remain usable. */
+export async function consumeMcpCallApproval(client: ApprovalClient, scope: McpApprovalScope,
+  key: McpApprovalCallKey, approvedBy?: string): Promise<boolean> {
+  const now = new Date();
+  return Boolean(approvedBy && await consumeNamedMcpApproval(client, scope, approvedBy, key, now)) ||
+    consumeMcpApproval(client, scope, key, now);
+}
+
+/** Read-only preview. The dispatch claim consumes again atomically; a lost race asks, never dispatches. */
+export async function hasMcpCallApproval(client: ApprovalClient, scope: McpApprovalScope,
+  key: McpApprovalCallKey, approvedBy?: string): Promise<boolean> {
+  const now = new Date();
+  if (approvedBy && await client.mcpToolApproval.findFirst({ select: { id: true }, where: {
+    argumentsDigest: key.argumentsDigest, chatId: scope.chatId, consumedAt: null,
+    decidedAt: { gt: new Date(now.getTime() - MCP_APPROVAL_TTL_MS) },
+    OR: [{ decision: "allow_server" }, { decision: "allow_once", expiresAt: { gt: now } }],
+    definitionHash: key.definitionHash, id: approvedBy, modelRunId: { not: scope.runId },
+    serverId: key.serverId, toolName: key.toolName, userId: scope.userId
+  } })) return true;
+  return await countAvailableMcpApprovals(client, scope, key, now) > 0;
 }

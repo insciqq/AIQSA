@@ -410,10 +410,12 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       deps.history.record(row);
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: message };
     }
-    const approval = before.retry?.approval ?? (tool.guardedApproval
-      ? await tool.guardedApproval(call, deps.signal) : tool.approval?.(call));
-    deps.signal.throwIfAborted();
+    let approval = before.retry?.approval ?? tool.approval?.(call);
     const approvedBy = before.retry?.approvedBy ?? (input.approved?.callId === call.id ? input.approved.approvalId : undefined) ?? (!before.retry && approval ? tool.approvedBy : undefined);
+    const humanApproved = approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
+      userId: deps.userId, approval, approvedBy });
+    if (!before.retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
+    deps.signal.throwIfAborted();
     const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}),
       ...(approvedBy ? { approvedBy } : {}), toolName: call.name });
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();

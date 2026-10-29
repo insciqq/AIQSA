@@ -9,7 +9,7 @@ import {
   type McpApprovalCallKey,
   type McpApprovalRequest
 } from "./writeApproval";
-import { consumeMcpApproval, consumeNamedMcpApproval, requestMcpApproval, type McpApprovalScope } from "./writeApprovalRepository";
+import { consumeMcpCallApproval, requestMcpApproval, type McpApprovalScope } from "./writeApprovalRepository";
 
 /** Approval state the guest-code gateway consults; injectable for tests. */
 export type McpGatewayApprovalStore = Readonly<{
@@ -22,8 +22,7 @@ export type McpGatewayApprovalStore = Readonly<{
 
 export function createPrismaMcpGatewayApprovalStore(prisma: PrismaClient): McpGatewayApprovalStore {
   return {
-    consume: (scope, key, approvedBy) => approvedBy
-      ? consumeNamedMcpApproval(prisma, scope, approvedBy, key, new Date()) : consumeMcpApproval(prisma, scope, key),
+    consume: (scope, key, approvedBy) => consumeMcpCallApproval(prisma, scope, key, approvedBy),
     request: (scope, request) => requestMcpApproval(prisma, scope, request)
   };
 }
@@ -67,6 +66,7 @@ export async function gateMcpGatewayCall(input: Readonly<{
   let request = mcpApprovalRequest({ arguments: input.prepared.arguments, definitionHash: input.prepared.definitionHash,
     originalName: descriptor.name, serverId: input.prepared.serverId, serverName: descriptor.server_name,
     title: descriptor.title ?? descriptor.annotations?.title, toolName: input.toolName });
+  if (await input.store.consume(input.scope, request, input.admission.guard?.approvedBy)) return "allowed";
   if (input.admission.guard) {
     const guard = input.guard ? await input.guard({ admission: input.admission.guard, tool: {
       serverName: descriptor.server_name, toolName: descriptor.name, description: descriptor.description,
@@ -75,7 +75,6 @@ export async function gateMcpGatewayCall(input: Readonly<{
     request = { ...request, guard };
     input.signal?.throwIfAborted();
   }
-  if (await input.store.consume(input.scope, request, input.admission.guard?.approvedBy)) return "allowed";
   if (request.guard?.decision === "allow") {
     await input.store.request(input.scope, { ...request, source: input.source, toolCallId: input.toolCallId });
     return "allowed";

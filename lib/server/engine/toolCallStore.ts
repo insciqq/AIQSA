@@ -1,5 +1,5 @@
 import { Prisma, type ModelRunStatus, type ModelRunToolCall, type PrismaClient } from "@prisma/client";
-import { consumeMcpApproval, consumeNamedMcpApproval, requestMcpApproval } from "../mcp/writeApprovalRepository";
+import { consumeMcpCallApproval, hasMcpCallApproval, requestMcpApproval } from "../mcp/writeApprovalRepository";
 import type { McpApprovalRequest } from "../mcp/writeApproval";
 import { mcpApprovalRequiredToolCallResult } from "../runs/mcpApprovalGate";
 import { dispatchableModelRunStatuses, isRecord, json } from "../runs/prismaRepositoryShared";
@@ -58,7 +58,7 @@ export type ToolCallBeginResult =
   /** The run is no longer active (Stop won): nothing is recorded or sent. */
   | Readonly<{ kind: "inactive" }>;
 
-type ToolCallClient = Pick<PrismaClient, "$transaction" | "modelRunToolCall">;
+type ToolCallClient = Pick<PrismaClient, "$transaction" | "modelRunToolCall" | "mcpToolApproval">;
 
 function rowOf(row: ModelRunToolCall): ToolCallRow {
   return {
@@ -114,6 +114,9 @@ async function lockActiveRun(tx: Prisma.TransactionClient, runId: string, userId
 
 export function createToolCallStore(client: ToolCallClient) {
   return {
+    hasApproval(input: Pick<ToolCallBegin, "chatId" | "runId" | "userId" | "approvedBy"> & { approval: McpApprovalRequest }) {
+      return hasMcpCallApproval(client, input, input.approval, input.approvedBy);
+    },
     /** Records one call before it is sent, under the run's lock. */
     async begin(input: ToolCallBegin): Promise<ToolCallBeginResult> {
       if (input.providerCallId.length > toolLoopPersistenceLimits.providerCallIdLength ||
@@ -122,9 +125,7 @@ export function createToolCallStore(client: ToolCallClient) {
         if (!await lockActiveRun(tx, input.runId, input.userId)) return { kind: "inactive" as const };
         const scope = { chatId: input.chatId, runId: input.runId, userId: input.userId };
         const now = new Date();
-        const humanApproved = input.approval && input.approvedBy
-          ? await consumeNamedMcpApproval(tx, scope, input.approvedBy, input.approval, now)
-          : input.approval ? await consumeMcpApproval(tx, scope, input.approval) : true;
+        const humanApproved = input.approval ? await consumeMcpCallApproval(tx, scope, input.approval, input.approvedBy) : true;
         const approved = humanApproved || input.approval?.guard?.decision === "allow";
         const base = {
           arguments: json(boundedArguments(input.arguments)),
@@ -191,4 +192,5 @@ export function createToolCallStore(client: ToolCallClient) {
   };
 }
 
-export type ToolCallStore = ReturnType<typeof createToolCallStore>;
+type CreatedToolCallStore = ReturnType<typeof createToolCallStore>;
+export type ToolCallStore = Omit<CreatedToolCallStore, "hasApproval"> & Partial<Pick<CreatedToolCallStore, "hasApproval">>;
