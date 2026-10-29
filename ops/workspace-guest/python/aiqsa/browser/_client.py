@@ -69,7 +69,9 @@ def _connect(path: Path, timeout: float) -> Optional[socket.socket]:
 
 
 def _host_environment(environ: Mapping[str, str]) -> Dict[str, str]:
-    env = {key: value for key, value in environ.items() if key not in _identity.DROPPED_ENV}
+    # Agent identity is carried by each request, never by the shared host process.
+    env = {key: value for key, value in environ.items()
+           if key not in _identity.DROPPED_ENV and not key.startswith(_identity.AGENT_ENV_PREFIX)}
     package_root = str(Path(__file__).resolve().parents[2])
     paths = [entry for entry in env.get("PYTHONPATH", "").split(os.pathsep) if entry]
     if package_root not in paths:
