@@ -319,3 +319,34 @@ describe("Workspace code MCP gateway", () => {
     });
   });
 });
+
+describe("Workspace MCP automatic guard", () => {
+  const guardPlan = { plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: ["Create an issue"] } as const;
+  it.each(["allow", "ask"] as const)("guards Always allow before dispatch: %s", async decision => {
+    const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: ["server-gitlab"], guard: guardPlan } }));
+    const guard = vi.fn(async () => ({ decision, reason: "The request needs review." }));
+    const approvals = { consume: vi.fn(async () => false), request: vi.fn(async () => "approval") };
+    const deps = dependencies(memory.store, plan, { guard, approvals });
+    const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
+    expect(guard).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ admission: guardPlan, runId: "run-1", userId: "user-1",
+      tool: expect.objectContaining({ arguments: { project: "a" }, toolName: "list_commits" }) }));
+    expect(approvals.request).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ guard: { decision, reason: "The request needs review." } }));
+    if (decision === "allow") {
+      expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+      expect(body.result.isError).not.toBe(true);
+    } else {
+      expect(deps.callRuntimeTool).not.toHaveBeenCalled();
+      expect(body.result.structuredContent).toMatchObject({ code: "approval_required", dispatched: false });
+    }
+  });
+  it("refuses a configured guard without an executor and honors only an exact named approval", async () => {
+    const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: ["server-gitlab"],
+      guard: { ...guardPlan, approvedBy: "explicit-approval" } } }));
+    const approvals = { consume: vi.fn(async () => true), request: vi.fn(async () => "approval") };
+    const deps = dependencies(memory.store, plan, { approvals });
+    await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+    expect(approvals.consume).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1", chatId: "chat-1" }),
+      expect.objectContaining({ serverId: "server-gitlab", definitionHash, guard: expect.objectContaining({ decision: "ask" }) }), "explicit-approval");
+    expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+  });
+});

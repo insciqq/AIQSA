@@ -224,6 +224,7 @@ export function scheduledRunContext(
 export type RunPreparationDeps = Readonly<{
   memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
   artifacts?: import("../artifacts/service").ArtifactService;
+  mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "admit">;
   vision?: Pick<import("../vision/service").VisionAnalysisService, "resolve">;
   images?: Pick<import("../images/service").ImageGenerationService, "resolveFor">;
   allowFakeProvider?: boolean;
@@ -326,6 +327,8 @@ export type RegenerateRunPreparationSource = Readonly<{
 }>;
 
 export type RunPreparationInput = Readonly<{
+  serverAuthoredInput?: boolean;
+  mcpApprovalId?: string;
   body: Readonly<Record<string, unknown>> | null;
   skillCatalogDecision?: Readonly<{ operationKey: string; authorizeScope(): Promise<void> }>;
   signal?: AbortSignal;
@@ -1873,9 +1876,14 @@ export async function prepareRun(
     ...(mcpPlan?.ok ? mcpPlan.snapshot.servers.map((server) => server.serverId) : []),
     ...(mcpDiscoveryEnabled && mcpCatalog ? mcpCatalog.servers.map((server) => server.serverId) : [])
   ])];
+  const guard = !scheduledOccurrence && approvalServerIds.length > 0 ? await deps.mcpGuard?.admit({
+    chatId: chat.id, userId: input.userId, messages: conversationMessages,
+    ...(input.source.kind === "send" && !input.serverAuthoredInput ? { currentMessage: textFromContentBlocks(content) } : {})
+  }) : undefined;
   const mcpApproval = !scheduledOccurrence && approvalServerIds.length > 0
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
-        serverIds: approvalServerIds, userId: input.userId }) ?? [])
+        serverIds: approvalServerIds, userId: input.userId }) ?? [], guard
+          ? { ...guard, ...(input.mcpApprovalId ? { approvedBy: input.mcpApprovalId } : {}) } : undefined)
     : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),

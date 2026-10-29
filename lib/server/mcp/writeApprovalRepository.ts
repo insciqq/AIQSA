@@ -88,6 +88,7 @@ export async function requestMcpApproval(
     where: {
       argumentsDigest: request.argumentsDigest,
       decision: null,
+      guardDecision: request.guard?.decision ?? null,
       definitionHash: request.definitionHash,
       modelRunId: scope.runId,
       serverId: request.serverId,
@@ -98,6 +99,7 @@ export async function requestMcpApproval(
   const created = await client.mcpToolApproval.create({
     data: {
       argumentsDigest: request.argumentsDigest,
+      ...(request.guard ? { guardDecision: request.guard.decision, guardReason: request.guard.reason } : {}),
       chatId: scope.chatId,
       definitionHash: request.definitionHash,
       modelRunId: scope.runId,
@@ -156,6 +158,8 @@ export const mcpApprovalCardSelect = {
   decidedAt: true,
   decision: true,
   id: true,
+  guardDecision: true,
+  guardReason: true,
   // A continuation turn already answering the run's answer spends Continue.
   modelRun: { select: { assistantMessage: { select: { children: {
     select: { id: true }, take: 1, where: { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }
@@ -166,7 +170,9 @@ export const mcpApprovalCardSelect = {
   toolTitle: true
 } satisfies Prisma.McpToolApprovalSelect;
 
-export type McpApprovalCardRow = Prisma.McpToolApprovalGetPayload<{ select: typeof mcpApprovalCardSelect }>;
+type SelectedMcpApprovalCardRow = Prisma.McpToolApprovalGetPayload<{ select: typeof mcpApprovalCardSelect }>;
+export type McpApprovalCardRow = Omit<SelectedMcpApprovalCardRow, "guardDecision" | "guardReason"> &
+  Partial<Pick<SelectedMcpApprovalCardRow, "guardDecision" | "guardReason">>;
 
 function cardState(decision: McpApprovalCardRow["decision"]): McpApprovalState {
   return decision === "allow_once" ? "allowed_once" : decision === "allow_server" ? "allowed_server"
@@ -198,12 +204,13 @@ export function projectMcpApprovalCards(
   return rows.slice(0, 16).map((row) => ({
     approvalId: row.id,
     ...(input.initiator && continuable(row, now) ? { canContinue: true as const } : {}),
-    ...(input.initiator && row.decision === null ? { canDecide: true as const } : {}),
+    ...(input.initiator && row.decision === null && row.guardDecision !== "allow" ? { canDecide: true as const } : {}),
     ...(input.initiator && row.source === "model" && row.toolCall && row.toolCall.roundIndex > 0
       ? { details: { ordinal: row.toolCall.ordinal, roundIndex: row.toolCall.roundIndex } } : {}),
     serverName: row.serverName,
     source: row.source,
-    state: cardState(row.decision),
+    state: row.guardDecision === "allow" ? "allowed_automatically" : cardState(row.decision),
+    ...(row.guardDecision === "ask" && row.guardReason ? { guardReason: row.guardReason } : {}),
     toolName: row.toolTitle
   }));
 }
@@ -244,7 +251,7 @@ export async function decideMcpApproval(
       where: { id: input.approvalId }
     });
     const access = await resolveChatAccess(tx, { chatId: row.chatId, userId: input.userId });
-    if (!access) return { kind: "not_found" as const };
+    if (!access || row.guardDecision === "allow") return { kind: "not_found" as const };
     const card = (current: McpApprovalCardRow) => projectMcpApprovalCards([current], { initiator: true, now })[0]!;
     if (row.decision !== null) {
       return row.decision === input.decision && row.decisionNonce === input.nonce
@@ -300,10 +307,34 @@ export async function loadRunMcpApprovalCards(
   input: Readonly<{ runId: string; userId: string }>
 ): Promise<McpApprovalCard[]> {
   const rows = await client.mcpToolApproval.findMany({
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    orderBy: [{ guardDecision: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }, { id: "asc" }],
     select: mcpApprovalCardSelect,
     take: 16,
     where: { modelRunId: input.runId, userId: input.userId }
   });
   return projectMcpApprovalCards(rows, { initiator: true });
+}
+
+/**
+ * The user's Allow a continuation names, for exactly this call and still
+ * usable: decided within the approval window and not consumed. An Allow once
+ * is consumed by this run; an Always allow is a standing consent that is
+ * never consumed (`McpToolApproval_state_check`).
+ */
+export async function consumeNamedMcpApproval(tx: Prisma.TransactionClient, scope: McpApprovalScope, approvalId: string,
+  key: McpApprovalCallKey, now: Date): Promise<boolean> {
+  const row = await tx.mcpToolApproval.findFirst({
+    select: { decision: true, id: true },
+    where: { argumentsDigest: key.argumentsDigest, chatId: scope.chatId, consumedAt: null,
+      decidedAt: { gt: new Date(now.getTime() - MCP_APPROVAL_TTL_MS) }, decision: { in: ["allow_once", "allow_server"] },
+      definitionHash: key.definitionHash, id: approvalId, modelRunId: { not: scope.runId }, serverId: key.serverId,
+      toolName: key.toolName, userId: scope.userId }
+  });
+  if (!row) return false;
+  if (row.decision === "allow_server") return true;
+  const consumed = await tx.mcpToolApproval.updateMany({
+    data: { consumedAt: now, consumedByRunId: scope.runId },
+    where: { consumedAt: null, decision: "allow_once", expiresAt: { gt: now }, id: row.id }
+  });
+  return consumed.count === 1;
 }

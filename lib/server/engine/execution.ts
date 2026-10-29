@@ -1,3 +1,4 @@
+import { registerMcpGuardUsage } from "../mcp/guardUsage";
 import { randomUUID } from "node:crypto";
 import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTasks";
@@ -307,6 +308,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
       const usage = createUsageLedger({
         faults, price: (attributions) => usageAttributionsWithEstimatedCost(input.repository, attributions), scope, store: engine.runs
       });
+      const releaseGuardUsage = registerMcpGuardUsage(runId, usage.add);
       let answerPublished = false;
       let firstOutput = true;
       const answer = createAnswerStream({
@@ -540,7 +542,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             calls: [approvedCall], firstOrdinal: load ? 1 : 0, round: 0
           });
           await append(batch.results);
-          if (batch.approvals.length > 0) await emitApprovalCards();
+          if (batch.approvals.length > 0 || normalizedRequest.mcpApproval?.guard) await emitApprovalCards();
         }
 
         const reasoningScope = reasoningReplayScope(snapshot);
@@ -709,7 +711,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await runToolBatch(batchDeps, toolState, { calls, round });
             // A value the user had saved as a secret is not repeated in the answer, whatever the model writes (issue #52).
             answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments) : []));
-            if (batch.approvals.length > 0) await emitApprovalCards();
+            if (batch.approvals.length > 0 || normalizedRequest.mcpApproval?.guard) await emitApprovalCards();
             return batch;
           },
           signal,
@@ -808,6 +810,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         else await chatUpdate();
       } finally {
         void live?.end("run_finished");
+        releaseGuardUsage();
         stopKeepalive();
         clearTimeout(deadlineTimer);
         if (activeRunControllers.get(runId) === stop) activeRunControllers.delete(runId);

@@ -222,3 +222,18 @@ describe("native tool registry", () => {
       usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 }) }));
   });
 });
+
+it("wires the frozen guard into MCP writes even with standing consent, with no effect on reads", async () => {
+  const guard = { plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: ["Create an issue"] } as const;
+  const base = input({ request: request({ mcp: snapshot, mcpApproval: mcpApprovalAdmission(["jira"], guard) }) });
+  const check = vi.fn(async () => ({ decision: "allow" as const, reason: "You requested this change." }));
+  const registry = await buildToolRegistry({ ...base, services: { ...base.services, mcpGuard: { check } } });
+  const signal = new AbortController().signal;
+  const write = { id: "write", name: "mcp_jira_create_issue", arguments: { summary: "Test" } };
+  expect(await registry.resolve(write.name)?.guardedApproval?.(write, signal)).toMatchObject({ guard: { decision: "allow" } });
+  expect(check).toHaveBeenCalledExactlyOnceWith({ admission: guard, runId: "run", userId: "user", signal,
+    tool: { serverName: "Jira", toolName: "create_issue", description: "Create an issue", annotations: undefined, arguments: { summary: "Test" } } });
+  const read = { id: "read", name: "mcp_jira_get_issue", arguments: {} };
+  expect(await registry.resolve(read.name)?.guardedApproval?.(read, signal)).toBeUndefined();
+  expect(check).toHaveBeenCalledTimes(1);
+});

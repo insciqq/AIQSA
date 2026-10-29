@@ -447,3 +447,9 @@ describe("Telegram MCP approvals: decisions", () => {
     }
   });
 });
+
+it("shows the automatic guard's refusal reason in the ordinary Telegram approval message", () => {
+  const card: McpApprovalCard = { approvalId: "guard-card", canDecide: true, serverName: "Issues", toolName: "Create issue",
+    source: "model", state: "pending", guardReason: "You did not request this change." };
+  expect(JSON.stringify(telegramApprovalMessage({ card, details: null }))).toContain("You did not request this change.");
+});

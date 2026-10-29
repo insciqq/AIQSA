@@ -22,7 +22,7 @@ export type AdminUsageCategory = (typeof ADMIN_USAGE_CATEGORIES)[number];
  * leaves, so the list is repeated here; a server test keeps the two equal.
  */
 export const ADMIN_USAGE_SYSTEM_PURPOSES = [
-  "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
+  "mcp_guard", "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
   "memory_processing", "memory_indexing", "memory_retrieval",
   "knowledge_indexing", "knowledge_retrieval", "model_check", "other"
 ] as const;

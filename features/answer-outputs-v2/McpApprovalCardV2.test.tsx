@@ -138,3 +138,20 @@ describe("McpApprovalCardsV2", () => {
     expect(screen.getByRole("article", { name: "Approval" })).toHaveTextContent("Allowed: delete_record");
   });
 });
+
+describe("MCP guard cards", () => {
+  it("marks automatic decisions without controls and keeps the initiator's argument details", () => {
+    render(<McpApprovalCardsV2 cards={[{ ...pending, canDecide: undefined, state: "allowed_automatically" }]} runId="run-1" />);
+    expect(screen.getByTestId("mcp-approval-card")).toHaveTextContent("Allowed automatically");
+    expect(screen.queryByRole("button", { name: "Allow once" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Review arguments/u })).toBeVisible();
+  });
+  it("renders the guard's reason as plain text beside the existing approval controls", () => {
+    render(<McpApprovalCardsV2 cards={[{ ...pending, guardReason: "You did not request this message. <script>example</script>" }]} runId="run-1" />);
+    expect(screen.getByText("You did not request this message. <script>example</script>")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeEnabled();
+    expect(document.querySelector("script")).toBeNull();
+  });
+});

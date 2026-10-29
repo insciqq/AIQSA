@@ -1063,7 +1063,7 @@ export function createPrismaRunRepository(
                   normalizedRequest: true,
                   userId: true,
                   status: true,
-                  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
+                  mcpToolApprovals: { orderBy: [{ guardDecision: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
                   workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
                     select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
                   workspaceRunBinding: {

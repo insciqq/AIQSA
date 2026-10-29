@@ -457,7 +457,7 @@ export type RunUsageAttribution = {
   modelId: string;
   provider: string;
   /** What the attributed call paid for; set where the attribution is produced. */
-  purpose: RunUsageAttributionPurpose;
+  purpose: RunUsageAttributionPurpose | "mcp_guard";
   usage: ModelRunUsage;
 };
 

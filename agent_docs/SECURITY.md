@@ -43,7 +43,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 ## Artifacts
 
 - Artifact code comes from a model that has seen private context and read untrusted text, so an injection could encode private data into requests. No network access at runtime is the main defense (operator decision 2026-10-08). Never weaken the viewer's CSP or sandbox to make a feature work.
-- Viewers use exact iframe sources, opaque origins and a CSP without same-origin, popups, top navigation or nested frames. CSP misses WebRTC and WebKit preconnect, so the runtime bridge removes them before artifact code runs (`lib/server/artifacts/runtimeBridge.ts`, `lib/server/artifacts/contentSecurity.ts`).
+- CSP misses WebRTC and WebKit preconnect, so the runtime bridge removes them before artifact code runs (`lib/server/artifacts/runtimeBridge.ts`, `lib/server/artifacts/contentSecurity.ts`).
 - Vendored library and image URLs pass host and path policy with DNS pinned per redirect (`lib/server/artifacts/resourcePolicy.ts`); hashes preserve bytes, not trust. External links open only after the user confirms the full address.
 - A publication grants specific immutable versions; later edits stay private, and reissuing a link never extends expiry or restores access.
 
@@ -63,8 +63,8 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 - AIQSA runs remote MCP servers only: it never launches MCP processes or containers, and no service mounts the Docker socket.
 - Installing a server is a trust decision, not proof its tools are safe. Users may add count- and rate-limited personal remote servers, but there are no first-party connectors. Personal servers are owner-only and excluded from tool policies, admin catalogs and the Hub. They follow the live upstream inventory, so new tools can appear.
-- Installation servers are internal and trusted (operator decision 2026-10-24): when a server's tools change, AIQSA runs Test & Save itself and publishes the result, never over a draft with unsaved edits (`enqueueAutomaticToolChecks` in `lib/server/mcp/prismaRepository.ts`). Every server is trusted by default; the switch stays per server. Accepted risk: a new or changed tool, its read-only annotation and description included, takes effect without review; interactive write calls still need approval, scheduled tasks do not.
-- Write approval (operator decision 2026-10-08): in interactive runs, including guest code, a tool not annotated read-only is sent only after its initiator allows that call once or always allows the server. Annotations are trusted as declared. An Allow once is consumed by the claim of exactly that call, and an approval is never user speech or Memory evidence. Scheduled tasks and Hub clients are exempt (`lib/server/mcp/writeApproval.ts`).
+- Installation servers are internal and trusted (operator decision 2026-10-24): when a server's tools change, AIQSA runs Test & Save itself and publishes the result, never over a draft with unsaved edits (`enqueueAutomaticToolChecks` in `lib/server/mcp/prismaRepository.ts`). Every server is trusted by default; the switch stays per server. Accepted risk: a new or changed tool, its read-only annotation and description included, takes effect without review; interactive write calls follow the guard and approval policy below; scheduled tasks do not.
+- Write approval (operator decision 2026-10-29): the admitted MCP guard checks interactive writes, including Assistant chats, Telegram, guest code and Always allow servers. It asks for clearly harmful or unrequested external effects, except exactly requested harmful effects. Only the user's own branch messages authorize; tool metadata and arguments are bounded untrusted data (`lib/server/mcp/guardPrompt.ts`). Unset preserves existing behavior; unusable, oversized or failed checks ask. Annotations remain trusted. Allow once covers one matching claim; approval is never speech or Memory evidence. Schedules, webhooks and Hub clients remain exempt.
 - Models and Hub clients see only a bounded, untrusted index of authorized server names, descriptions and tool names, never credentials, endpoints or server instructions. A call must name a tool of the run's admitted catalog. Once dispatched, a call to a tool not annotated read-only is never replayed by a transport or auth retry or by recovery; read-only calls may retry (`agent_docs/RUN_CONTRACTS.md`).
 - Accepted risk: an administrator switch (default on) lets personal servers reach private, CGNAT and host-gateway addresses, never AIQSA services, the app container or cloud metadata. This accepts blind LAN SSRF, so operators should expose no unauthenticated host services. Installation servers instead have a reviewed per-server internal-network permission.
 - Personal OAuth trusts the same origin and https servers in the same registrable domain; other authorization origins need the owner's confirmation of those exact origins, and discovery never widens them. OAuth tokens stay encrypted, bound to resource, client and scope, and are drained on disconnect or loss of authority.
@@ -82,7 +82,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 - Scheduled tasks with tools or Workspace on are their owner's standing authority for MCP write tools, untrusted web content and saved secrets in unattended runs, without per-run approval (operator decision 2026-10-04).
 - Accepted risk (operator decision 2026-10-07): chat Skill saves may persist prompt-injected content into a script that later runs unattended. Mitigations: text-only files, a guard against delivered secret values, an hourly limit, a visible card with diff and Undo, and a warning naming scheduled tasks that use the Skill.
 - Runner gateway: Internet-On sessions may reach a loopback runner gateway only for admitted run calls: guest code calls MCP under a run-scoped code bearer that never reaches model or Search endpoints and dies with the run. The relay forwards nothing but MCP. Code calls get exactly the run's frozen MCP authority and approval. The app accepts gateway requests only through the runner relay. The exception relies on single-tenant networking: keep KVM, default-deny egress, DNS rebinding protection, no host CAs, ingress or published ports, and no control API or arbitrary proxy (`lib/server/workspace/runnerGateway.ts`, `lib/server/workspace/codeMcpGateway.ts`).
-- Accepted risk: autonomous shell use, allowed MCP calls and personal secrets raise prompt-injection exposure without human approval or an evaluator.
+- Accepted risk (operator decision 2026-10-29): the MCP guard can misclassify calls and trusts read-only annotations. Shell use, secrets and unattended calls remain outside it; an unset guard leaves standing consents unevaluated.
 
 ## AIQSA Connect
 
@@ -97,7 +97,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 ## Dependencies
 
-- Review covers the npm tree and the Go module in `connect/`, with the checks in `agent_docs/TESTING.md`. Audit suggestions never authorize destructive or breaking fixes.
+- Audit suggestions never authorize destructive or breaking fixes.
 - Keep an override only while hostile-input, build and hermetic checks pass and its reason below still holds.
 
 | Dependency | Why it is pinned or overridden |

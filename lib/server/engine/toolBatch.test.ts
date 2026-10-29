@@ -714,3 +714,16 @@ describe("native tool batch", () => {
       { calls: [{ arguments: {}, id: "c1", name: "search" }], round: 1 })).rejects.toBeInstanceOf(SearchToolCancelledError);
   });
 });
+
+it("never lets an automatic allow authorize a repeat whose earlier effect is unknown", async () => {
+  const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+  const guardedApproval = vi.fn(async () => ({ ...approval, guard: { decision: "allow" as const, reason: "Requested." } }));
+  const { store } = fakeStore({ gated: true });
+  const batch = deps({ create: tool("create", "external", execute, { approvedBy: "earlier-human-decision", guardedApproval, retryApproval: () => approval }) }, store);
+  batch.unknownEffects.record({ arguments: { title: "x" }, name: "create" }, "unknown");
+  const result = await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: { title: "x" }, id: "c1", name: "create" }], round: 1 });
+  expect(guardedApproval).not.toHaveBeenCalled();
+  expect(store.begin.mock.calls[0]?.[0].approvedBy).toBeUndefined();
+  expect(execute).not.toHaveBeenCalled();
+  expect(result.approvals).toEqual(["approval-1"]);
+});

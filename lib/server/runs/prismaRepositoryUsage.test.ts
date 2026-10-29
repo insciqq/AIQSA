@@ -55,3 +55,11 @@ describe("run attribution usage rows", () => {
   });
 
 });
+
+it("preserves guard accounting as a system purpose with the provider's own cost and unknown tokens", () => {
+  const [row] = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [{
+    modelId: "guard", provider: "openrouter", purpose: "mcp_guard", usage: normalizeTokenUsage({ outputTokens: 4 }),
+    estimatedCostMicros: 20, costReported: true
+  }]);
+  expect(row).toMatchObject({ purpose: "mcp_guard", inputTokens: null, outputTokens: 4, costReported: true, estimatedCostMicros: 20 });
+});

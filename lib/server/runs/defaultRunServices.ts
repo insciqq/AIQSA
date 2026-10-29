@@ -1,3 +1,4 @@
+import { createMcpGuardService } from "../mcp/guard";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
@@ -29,6 +30,7 @@ export function defaultRunServices(storage: StorageAdapter) {
       return admitMemorySearch({ userId, assistantId, timeoutSeconds: Number(policy.memorySearchTimeoutSeconds) });
     } },
     mcp: defaultMcpRunPlan,
+    mcpGuard: createMcpGuardService(prisma),
     providerAdmission: providerAdmissionService,
     providerRuntime: providerRuntimeResolver,
     skillTools: defaultSkillTools,

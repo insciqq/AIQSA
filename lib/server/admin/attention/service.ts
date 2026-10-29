@@ -318,6 +318,10 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
           "warn"
         )
       : null,
+    policy.mcpGuardModel
+      ? roleItem("mcp_guard", "MCP guard", policy.mcpGuardModel,
+          "data-changing MCP calls ask for approval until the guard is available", "warn")
+      : null,
     policy.chatTitleModel
       ? roleItem(
           "chat_titles",

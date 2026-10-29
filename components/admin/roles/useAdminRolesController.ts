@@ -33,6 +33,8 @@ export type AdminRolePatch = Readonly<{
   chatTitleReasoningEffort?: string | null;
   chatPdfNativeProviderModelId?: string | null;
   chatPdfNativeReasoningEffort?: string | null;
+  mcpGuardProviderModelId?: string | null;
+  mcpGuardReasoningEffort?: string | null;
   visionProviderModelId?: string | null;
   visionReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;
@@ -50,7 +52,7 @@ export type AdminRolesController = Readonly<{
   /** Immediate apply for independent roles; `undo` reverts through the same PATCH. */
   assign(patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean>;
   busy: boolean;
-  checkAndAssign(role: "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean>;
+  checkAndAssign(role: "mcp_guard" | "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean>;
   checking: Readonly<{ id: string; role: AdminSystemModelEligibilityRole }> | null;
   error: string | null;
   loading: boolean;
@@ -219,11 +221,11 @@ export function useAdminRolesController({
     return true;
   }, [invalidateReads, reportError, setPolicy]);
 
-  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean> => {
+  const checkAndAssign = useCallback(async (role: "mcp_guard" | "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
     const previousMemory = policyRef.current?.memoryPolicy;
-    if (!previous || !previousMemory || !await check(role === "system" ? "memory" : role === "pdf_images" ? "vision" : role, id)) return false;
-    if (role === "vision" && previous.version !== policyRef.current?.policy.version) {
+    if (!previous || !previousMemory || !await check(role === "mcp_guard" ? "chat_titles" : role === "system" ? "memory" : role === "pdf_images" ? "vision" : role, id)) return false;
+    if ((role === "vision" || role === "mcp_guard") && previous.version !== policyRef.current?.policy.version) {
       reportError(adminSystemModelPolicyErrorMessage("system_model_policy_stale"));
       return false;
     }
@@ -236,6 +238,10 @@ export function useAdminRolesController({
         policyRef.current?.titleCandidates.find((candidate) => candidate.id === id)
       ) },
       { chatTitleProviderModelId: previous.chatTitleModel?.id ?? null, chatTitleReasoningEffort: previous.chatTitleReasoningEffort }
+    );
+    if (role === "mcp_guard") return assign(
+      { mcpGuardProviderModelId: id, mcpGuardReasoningEffort: null },
+      { mcpGuardProviderModelId: previous.mcpGuardModel?.id ?? null, mcpGuardReasoningEffort: previous.mcpGuardReasoningEffort ?? null }
     );
     if (role === "vision") return assign(
       { visionProviderModelId: id, visionReasoningEffort: null },

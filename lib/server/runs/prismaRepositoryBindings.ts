@@ -1,3 +1,4 @@
+import { createMcpGuardPlanResolver, type AcceptedMcpGuardPlan } from "../providerRuntime/mcpGuardPlan";
 import { createVisionAnalysisPlanResolver, type AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
@@ -512,11 +513,23 @@ export async function insertAcceptedProviderRunBindings(
     nativeBackgroundRequested: boolean;
     imagePlan?: AcceptedImageGenerationPlan;
     visionAnalysis?: AcceptedVisionAnalysisPlan;
+    mcpGuard?: AcceptedMcpGuardPlan;
     plan: ProviderAdmissionPlan | undefined;
     runId: string;
     userId: string;
   }
 ): Promise<void> {
+  if (input.mcpGuard?.available) {
+    const current = await createMcpGuardPlanResolver(tx)();
+    if (hashCanonicalMcpValue(current) !== hashCanonicalMcpValue(input.mcpGuard)) throw new ProviderAdmissionConflictError();
+    const accepted = input.mcpGuard;
+    await tx.providerRunBinding.create({ data: {
+      modelRunId: input.runId, bindingKey: "mcp_guard", role: "mcp_guard", credentialSource: "default",
+      connectionId: accepted.authority.connectionId, providerModelId: accepted.authority.providerModelId,
+      credentialId: accepted.authority.credentialId, credentialVersionId: accepted.authority.credentialVersionId,
+      executionSnapshot: json(accepted.snapshot)
+    } });
+  }
   if (input.visionAnalysis) {
     const current = await createVisionAnalysisPlanResolver(tx)();
     if (hashCanonicalMcpValue(current) !== hashCanonicalMcpValue(input.visionAnalysis)) throw new ProviderAdmissionConflictError();
