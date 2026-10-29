@@ -1,5 +1,7 @@
 import type {
   BrowserHandoffReason,
+  BrowserLiveAgent,
+  BrowserLiveAgentRef,
   BrowserLiveEndReason,
   BrowserLiveErrorCode,
   BrowserLiveStep
@@ -76,6 +78,30 @@ export function browserHandoffTitleV2(reason: BrowserHandoffReason, host: string
     case "user_choice": return "Make a choice on the page";
     case "other": return "The agent needs your help";
   }
+}
+
+/** Who an agent is in the panel: the main agent, or a sub-agent by its name. */
+export function browserLiveAgentLabelV2(agent: Pick<BrowserLiveAgentRef, "name">): string {
+  return agent.name ?? "Main agent";
+}
+
+/** What a browsing agent is doing, for the switcher: waiting for the person, driven by them, or browsing. */
+export function browserLiveAgentStatusV2(agent: Pick<BrowserLiveAgent, "controller" | "waitingForUser">): string {
+  if (agent.waitingForUser) return "needs you";
+  return agent.controller === "user" ? "you have control" : "browsing";
+}
+
+/** One switcher option: the agent, what it is doing and the site it is on ("shop · needs you · saucedemo.com"). */
+export function browserLiveAgentOptionV2(agent: BrowserLiveAgent): string {
+  const host = browserLiveHostV2(agent.page?.url);
+  return [browserLiveAgentLabelV2(agent), browserLiveAgentStatusV2(agent), host].filter(Boolean).join(" · ");
+}
+
+/** The count of requests behind the one shown, or null when it is the only one. */
+export function browserHandoffQueueCopyV2(pending: number): string | null {
+  const others = pending - 1;
+  if (others <= 0) return null;
+  return others === 1 ? "1 more request is waiting after this one." : `${others} more requests are waiting after this one.`;
 }
 
 /** The host of a page address for titles; null when it does not parse. */
