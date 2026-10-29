@@ -1,4 +1,4 @@
-import type { BrowserLiveFrameEvent, BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
+import type { BrowserLiveAgent, BrowserLiveFrameEvent, BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
 import type { BrowserLiveEventSource } from "./browserLiveClient";
 
 /** A scriptable `EventSource`: tests open it, send events and fail it. */
@@ -38,20 +38,31 @@ export function fakeEventSources() {
   return { open, sources };
 }
 
+/** One agent of the switcher, browsing a shop page by default. */
+export function liveAgent(id: string, name: string | null, overrides: Partial<BrowserLiveAgent> = {}): BrowserLiveAgent {
+  return { id, name, controller: "agent", waitingForUser: false, page: { url: `https://${id}.example/`, title: id }, ...overrides };
+}
+
+/** The panel's state with the main agent browsing alone; a `handoff` override is also the only pending one. */
 export function liveState(overrides: Partial<BrowserLiveStateEvent> = {}): BrowserLiveStateEvent {
+  const page = overrides.page === undefined ? { url: "https://shop.example/cart", title: "Cart · Shop" } : overrides.page;
+  const handoff = overrides.handoff ?? null;
   return {
-    version: 1,
+    version: 2,
     runId: "run-1",
     browser: "running",
+    agents: [liveAgent("main", null, { controller: overrides.controller ?? "agent", page, waitingForUser: handoff !== null })],
+    selected: "main",
     controller: "agent",
-    handoff: null,
+    handoff,
+    handoffs: handoff ? [handoff] : [],
     signInRemembered: true,
-    page: { url: "https://shop.example/cart", title: "Cart · Shop" },
+    page,
     ...overrides
   };
 }
 
 // The smallest well-formed base64 the contract accepts; the image itself never decodes in jsdom.
-export function liveFrame(seq: number, width = 1280, height = 800): BrowserLiveFrameEvent {
-  return { seq, mime: "image/jpeg", data: "/9j/4AAQSkZJRgABAQ==", width, height };
+export function liveFrame(seq: number, width = 1280, height = 800, agent = "main"): BrowserLiveFrameEvent {
+  return { agent, seq, mime: "image/jpeg", data: "/9j/4AAQSkZJRgABAQ==", width, height };
 }
