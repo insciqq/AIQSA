@@ -596,6 +596,10 @@ describe("BrowserLivePanelV2 with several browsing agents", () => {
     const next = screen.getByTestId("browser-live-handoff");
     expect(within(next).getByRole("heading", { name: "Sign in to saucedemo.com" })).toBeVisible();
     expect(within(next).queryByTestId("browser-live-handoff-queue")).toBeNull();
+    send("frame", liveFrame(1, 1280, 800, "thread_shop"));
+    fireEvent.keyDown(screen.getByTestId("browser-live-stage"), { key: "x", code: "KeyX" });
+    await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveInputPath(CHAT),
+      { agent: "thread_shop", kind: "text", text: "x" }]));
     fireEvent.click(within(next).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveHandoffPath(CHAT), { action: "cancel", handoffId: "handoff-shop" }]));
   });
