@@ -1,11 +1,13 @@
+import { decodeAcceptedMcpGuardPlan } from "../providerRuntime/mcpGuardPlan";
+import { boundedMcpGuardMessages, type McpGuardVerdict } from "./guardPrompt";
+import type { McpGuardAdmission } from "./guard";
 import { hashCanonicalMcpValue } from "./definitions";
 
 /**
- * MCP write approval (operator decision 2026-10-08). An interactive run (a
- * chat run its user started, Assistant chats included) asks its initiator
- * before an MCP tool that may change data
- * runs. Scheduled-task runs are their owner's standing authority and Hub
- * clients prompt themselves: neither carries the admission marker.
+ * MCP write approval (operator decision 2026-10-29). Interactive writes use
+ * the admitted guard when assigned, including standing consents; only an ask
+ * needs the initiator. Without a guard the earlier consent policy is unchanged.
+ * Scheduled tasks have standing authority and Hub clients prompt themselves: neither carries the admission marker.
  *
  * The marker is frozen at admission with the initiator's "Always allow"
  * consents for the run's servers, so recovery decides exactly as the live run
@@ -13,6 +15,7 @@ import { hashCanonicalMcpValue } from "./definitions";
  */
 export type McpApprovalAdmission = Readonly<{
   consentedServerIds: readonly string[];
+  guard?: McpGuardAdmission;
   version: 1;
 }>;
 
@@ -46,8 +49,8 @@ export function mcpToolMayChangeData(annotations: McpToolAnnotations | undefined
 
 /**
  * Whether a call needs its run initiator's approval before dispatch: the run
- * was admitted interactive, the tool may change data and the initiator gave
- * its server no standing consent before admission.
+ * was admitted interactive, the tool may change data and either a guard was
+ * admitted or the initiator gave its server no standing consent.
  */
 export function mcpCallNeedsApproval(input: Readonly<{
   admission: McpApprovalAdmission | undefined;
@@ -55,21 +58,22 @@ export function mcpCallNeedsApproval(input: Readonly<{
   serverId: string;
 }>): boolean {
   return input.admission !== undefined && mcpToolMayChangeData(input.annotations) &&
-    !input.admission.consentedServerIds.includes(input.serverId);
+    (input.admission.guard !== undefined || !input.admission.consentedServerIds.includes(input.serverId));
 }
 
 /** The frozen marker in the shape admission writes it. */
 export function isMcpApprovalAdmission(value: unknown): value is McpApprovalAdmission {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).sort().join(",") === "consentedServerIds,version" && record.version === 1 &&
+  return Object.keys(record).every(key => ["consentedServerIds", "guard", "version"].includes(key)) &&
+    (record.guard === undefined || isMcpGuardAdmission(record.guard)) && record.version === 1 &&
     Array.isArray(record.consentedServerIds) && record.consentedServerIds.length <= 256 &&
     record.consentedServerIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128) &&
     new Set(record.consentedServerIds).size === record.consentedServerIds.length;
 }
 
-export function mcpApprovalAdmission(consentedServerIds: readonly string[]): McpApprovalAdmission {
-  return { consentedServerIds: [...new Set(consentedServerIds)].sort(), version: 1 };
+export function mcpApprovalAdmission(consentedServerIds: readonly string[], guard?: McpGuardAdmission): McpApprovalAdmission {
+  return { consentedServerIds: [...new Set(consentedServerIds)].sort(), ...(guard ? { guard } : {}), version: 1 };
 }
 
 /** What an approval matches: the exact server, tool, definition and arguments. */
@@ -83,6 +87,7 @@ export type McpApprovalCallKey = Readonly<{
 
 /** A gated call: its key and the card's bounded display names. */
 export type McpApprovalRequest = McpApprovalCallKey & Readonly<{
+  guard?: McpGuardVerdict;
   serverName: string;
   toolTitle: string;
 }>;
@@ -127,4 +132,12 @@ export function isMcpApprovalRequest(value: unknown): value is McpApprovalReques
     Array.from(record.serverName).length <= MCP_APPROVAL_DISPLAY_LENGTH &&
     typeof record.toolTitle === "string" && record.toolTitle.length > 0 &&
     Array.from(record.toolTitle).length <= MCP_APPROVAL_DISPLAY_LENGTH;
+}
+
+function isMcpGuardAdmission(value: unknown): value is McpGuardAdmission {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).every(key => ["plan", "userMessages", "approvedBy"].includes(key)) &&
+    (row.approvedBy === undefined || typeof row.approvedBy === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(row.approvedBy)) && decodeAcceptedMcpGuardPlan(row.plan) !== null &&
+    (row.userMessages === null || Array.isArray(row.userMessages) && boundedMcpGuardMessages(row.userMessages) !== null);
 }

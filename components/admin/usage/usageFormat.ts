@@ -51,6 +51,7 @@ export const USAGE_CATEGORY_ORDER: readonly AdminUsageCategory[] = ADMIN_USAGE_C
 export const USAGE_SYSTEM_PURPOSE_LABELS: Record<AdminUsageSystemPurpose, string> = {
   chat_title: "Chat titles",
   chat_summary: "Chat summaries",
+  mcp_guard: "MCP guard",
   chat_vision: "Image analysis",
   chat_pdf: "PDF reading",
   skill_selection: "Skill selection",

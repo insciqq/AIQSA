@@ -11,7 +11,7 @@ export const PERSONAL_USAGE_PURPOSES = ["chat_answer", "web_search", "image_gene
 export type PersonalUsagePurpose = (typeof PERSONAL_USAGE_PURPOSES)[number];
 
 export const SYSTEM_USAGE_PURPOSES = [
-  "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
+  "mcp_guard", "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
   "memory_processing", "memory_indexing", "memory_retrieval",
   "knowledge_indexing", "knowledge_retrieval", "model_check", "other"
 ] as const;

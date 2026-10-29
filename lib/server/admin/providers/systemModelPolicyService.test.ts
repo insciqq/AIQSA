@@ -100,6 +100,26 @@ function activeRerankerModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator system model policy service", () => {
+  it("assigns and clears MCP guard alone, preserving PDF and utility roles", async () => {
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin" }) } };
+    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) => operation(tx) } as unknown as PrismaClient;
+    const loadRole = vi.fn().mockResolvedValue({ verifiedStructuredOutput: true,
+      snapshot: { model: { capabilities: { reasoning: false } } } });
+    const service = createAdminSystemModelPolicyService(prisma, { loadRole });
+    for (const mcpGuardProviderModelId of ["vision", null]) {
+      await service.update({ expectedVersion: 3, userId: "admin", mcpGuardProviderModelId, mcpGuardReasoningEffort: null });
+      expect(update).toHaveBeenLastCalledWith({ where: { id: "installation" }, data: {
+        mcpGuardProviderModelId, mcpGuardReasoningEffort: null, updatedByUserId: "admin", version: { increment: 1 }
+      } });
+    }
+    expect(loadRole).toHaveBeenCalledExactlyOnceWith(tx, { providerModelId: "vision" });
+    loadRole.mockResolvedValue({ verifiedStructuredOutput: false });
+    await expect(service.update({ expectedVersion: 3, userId: "admin", mcpGuardProviderModelId: "text", mcpGuardReasoningEffort: null }))
+      .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    expect(update).toHaveBeenCalledTimes(2);
+  });
   it("assigns and clears Vision alone, preserving PDF and utility roles", async () => {
     const update = vi.fn();
     const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },

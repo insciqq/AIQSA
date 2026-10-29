@@ -495,6 +495,16 @@ describe("deriveAdminAttentionItems", () => {
       .toEqual([expect.objectContaining({ id: "system_role_unavailable:chat_pdf" })]);
   });
 
+  it("reports an unavailable assigned MCP guard model while leaving an unassigned role quiet", () => {
+    expect(items({ systemRoles: roles({ mcpGuardModel: { ...roleCandidate, available: false } }) }))
+      .toEqual([expect.objectContaining({
+        code: "system_role_unavailable", id: "system_role_unavailable:mcp_guard", severity: "bad",
+        target: { resource: "mcp_guard", section: "roles" }
+      })]);
+    expect(items({ systemRoles: roles({ mcpGuardModel: null }) })).toEqual([]);
+    expect(items({ systemRoles: roles({ mcpGuardModel: { ...roleCandidate, available: true } }) })).toEqual([]);
+  });
+
   it("reports an unavailable assigned chat-title model while leaving an unassigned role quiet", () => {
     expect(items({ systemRoles: roles({ chatTitleModel: { ...roleCandidate, available: false } }) }))
       .toEqual([expect.objectContaining({

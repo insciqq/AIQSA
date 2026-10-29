@@ -1393,6 +1393,7 @@ export async function admitPreparingRunWithClient(
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
         visionAnalysis: input.normalizedRequest.visionAnalysis,
+        mcpGuard: input.normalizedRequest.mcpApproval?.guard?.plan,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,

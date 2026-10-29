@@ -14,7 +14,7 @@ import { memorySearchTool } from "../memory/search/contract";
 import type { MemorySearchService } from "../memory/search/runtime";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
-import { mcpApprovalRequestForCall } from "../runs/mcpApprovalGate";
+import { guardedMcpApprovalRequestForCall, mcpApprovalRequestForCall } from "../runs/mcpApprovalGate";
 import { attachmentIdsFromContentBlocks } from "../runs/runAttachmentMaterialization";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
@@ -109,6 +109,9 @@ export type EngineTool = Readonly<{
   activity(call: ModelToolCall): EngineToolActivity;
   /** The initiator's approval this call needs before it is sent. */
   approval?(call: ModelToolCall): McpApprovalRequest | undefined;
+  /** A server-admitted human decision; the store still matches its exact call and owner. */
+  approvedBy?: string;
+  guardedApproval?(call: ModelToolCall, signal: AbortSignal): Promise<McpApprovalRequest | undefined>;
   definition: RunTool;
   effects: EngineToolEffects;
   execute(execution: EngineToolExecution): Promise<ToolExecutionResult>;
@@ -181,6 +184,7 @@ export type EngineMcpBinding = Readonly<{ fingerprint: string; mcpRunBindingId: 
 export type EngineMcpBindingRow = Readonly<{ id: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>;
 
 export type ToolRegistryServices = Readonly<{
+  mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "check">;
   artifacts?: Pick<ArtifactService, "execute">;
   /** Test seams of the page reader; production uses the pinned SSRF-safe transport and the parser process. */
   extractPage?: FetchUrlSessionDeps["extractPage"];
@@ -626,6 +630,10 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
         return { origin: "mcp", ...(current ? { serverName: current.tool.serverName, toolName: current.originalName } : {}) };
       },
       approval: (call) => mcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot }),
+      ...(request.mcpApproval?.guard?.approvedBy ? { approvedBy: request.mcpApproval.guard.approvedBy } : {}),
+      ...(request.mcpApproval?.guard ? { guardedApproval: (call: ModelToolCall, signal: AbortSignal) =>
+        guardedMcpApprovalRequestForCall({ admission: request.mcpApproval, call, snapshot, signal,
+          runId: input.runId, userId: input.userId, check: input.services.mcpGuard?.check }) } : {}),
       definition,
       retryApproval: (call) => {
         const current = request.mcpApproval ? route() : null;
