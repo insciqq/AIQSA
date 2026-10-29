@@ -24,7 +24,10 @@ import {
   X
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+
+/** How long "Chat deletion completed" stays before it leaves on its own. */
+export const COMPLETED_NOTICE_DISMISS_MS = 5_000;
 
 const subscribeToBrowser = () => () => undefined;
 const browserSnapshot = () => true;
@@ -270,10 +273,7 @@ function StatusDialog() {
         <button
           className={`${button} ${completed ? "bg-proof text-proof-contrast hover:bg-proof-hover" : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
           type="button"
-          onClick={() => {
-            if (completed) dismissCompletedSurface();
-            else closeSurface();
-          }}
+          onClick={closeSurface}
         >
           {t("close")}
         </button>
@@ -287,9 +287,20 @@ function ProgressNotice() {
   const status = usePermanentChatDeletionStore((state) => state.status);
   const statusOpen = usePermanentChatDeletionStore((state) => state.statusOpen);
   const target = usePermanentChatDeletionStore((state) => state.target);
-  if (!reference || statusOpen || target) return null;
-  const blocked = status?.status === "NEEDS_ATTENTION";
+  // Focus inside the notice holds it, so a keyboard user never loses focus to its removal.
+  const [held, setHeld] = useState(false);
+  const visible = Boolean(reference) && !statusOpen && !target;
   const completed = status?.status === "COMPLETE";
+  useEffect(() => {
+    if (!visible || !completed || held) return;
+    const timer = window.setTimeout(
+      dismissCompletedPermanentChatDeletion,
+      COMPLETED_NOTICE_DISMISS_MS
+    );
+    return () => window.clearTimeout(timer);
+  }, [completed, held, visible]);
+  if (!visible) return null;
+  const blocked = status?.status === "NEEDS_ATTENTION";
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-[max(.75rem,env(safe-area-inset-bottom))] z-[85] flex justify-center px-3">
       <div
@@ -297,6 +308,10 @@ function ProgressNotice() {
           blocked ? "border-critical/40" : "border-trace-subtle"
         }`}
         role={blocked ? "alert" : "status"}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHeld(false);
+        }}
+        onFocus={() => setHeld(true)}
       >
         {blocked
           ? <CircleAlert className="size-4 shrink-0 text-critical" aria-hidden="true" />
@@ -306,16 +321,27 @@ function ProgressNotice() {
         <p className="min-w-0 flex-1 text-sm font-medium text-ink-secondary">
           {t(blocked ? "noticeBlocked" : completed ? "noticeSucceeded" : "noticePending")}
         </p>
-        <button
-          data-testid="permanent-chat-deletion-notice-action"
-          className={`${button} shrink-0 bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
-          type="button"
-          onClick={() => openPermanentChatDeletionStatus(() =>
-            document.querySelector<HTMLElement>("[data-testid='permanent-chat-deletion-notice-action']")
-          )}
-        >
-          {t("noticeAction")}
-        </button>
+        {completed ? (
+          <button
+            aria-label={t("dismiss")}
+            className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
+            type="button"
+            onClick={dismissCompletedSurface}
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        ) : (
+          <button
+            data-testid="permanent-chat-deletion-notice-action"
+            className={`${button} shrink-0 bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
+            type="button"
+            onClick={() => openPermanentChatDeletionStatus(() =>
+              document.querySelector<HTMLElement>("[data-testid='permanent-chat-deletion-notice-action']")
+            )}
+          >
+            {t("noticeAction")}
+          </button>
+        )}
       </div>
     </div>
   );

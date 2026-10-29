@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { useMemorySettingsStore } from "./memorySettingsStore";
-import { PermanentChatDeletionSurface } from "./PermanentChatDeletionSurface";
+import { COMPLETED_NOTICE_DISMISS_MS, PermanentChatDeletionSurface } from "./PermanentChatDeletionSurface";
 import { activatePermanentChatDeletionAccount, openPermanentChatDeletion, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
 import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
 
@@ -19,6 +19,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   resetPermanentChatDeletionStoreForTest();
   resetMemorySettingsStoreForTest();
@@ -89,5 +90,58 @@ describe("PermanentChatDeletionSurface", () => {
     await waitFor(() => expect(
       screen.getByRole("button", { name: "View progress" })
     ).toHaveFocus());
+  });
+
+  it("lets a completed notice go on its own, but not while it holds focus", () => {
+    vi.useFakeTimers();
+    usePermanentChatDeletionStore.setState({
+      reference: { chatId: "chat-1" },
+      status: { status: "COMPLETE" },
+      statusLoadState: "ready",
+      statusOpen: false
+    });
+    render(<PermanentChatDeletionSurface />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Chat deletion completed");
+    expect(screen.queryByRole("button", { name: "View progress" })).not.toBeInTheDocument();
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    act(() => dismiss.focus());
+    act(() => vi.advanceTimersByTime(COMPLETED_NOTICE_DISMISS_MS * 2));
+    expect(screen.getByRole("status")).toHaveTextContent("Chat deletion completed");
+
+    act(() => dismiss.blur());
+    act(() => vi.advanceTimersByTime(COMPLETED_NOTICE_DISMISS_MS));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(usePermanentChatDeletionStore.getState().reference).toBeNull();
+  });
+
+  it("dismisses a completed notice from its own button", () => {
+    usePermanentChatDeletionStore.setState({
+      reference: { chatId: "chat-1" },
+      status: { status: "COMPLETE" },
+      statusLoadState: "ready",
+      statusOpen: false
+    });
+    render(<PermanentChatDeletionSurface />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(usePermanentChatDeletionStore.getState().reference).toBeNull();
+  });
+
+  it("leaves no notice behind when a completed status is closed with its X", () => {
+    usePermanentChatDeletionStore.setState({
+      reference: { chatId: "chat-1" },
+      status: { status: "COMPLETE" },
+      statusLoadState: "ready",
+      statusOpen: true
+    });
+    render(<PermanentChatDeletionSurface />);
+
+    const dialog = screen.getByRole("dialog", { name: "Permanent deletion" });
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Close" })[0]!);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(usePermanentChatDeletionStore.getState().reference).toBeNull();
   });
 });

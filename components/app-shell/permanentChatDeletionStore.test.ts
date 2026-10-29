@@ -100,6 +100,26 @@ describe("permanent chat deletion store", () => {
       .toEqual({ status: "IN_PROGRESS" });
   });
 
+  it("keeps no reference for a deletion the server completes at once", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ status: "COMPLETE" })));
+    await activatePermanentChatDeletionAccount("account-a");
+    openPermanentChatDeletion({
+      chatId: "chat-1",
+      location: "WORKSPACE",
+      title: "Private chat"
+    });
+    await confirmPermanentChatDeletion();
+
+    expect(usePermanentChatDeletionStore.getState()).toMatchObject({
+      reference: { chatId: "chat-1" },
+      status: { status: "COMPLETE" },
+      statusOpen: true
+    });
+    expect(window.sessionStorage.getItem(
+      "aiqsa:chat-permanent-deletion:v2:account-a"
+    )).toBeNull();
+  });
+
   it("leaves snapshot authority on the server and surfaces only a friendly error", async () => {
     const fetchMock = vi.fn(async () => Response.json(
       { error: "CHANGED" },
