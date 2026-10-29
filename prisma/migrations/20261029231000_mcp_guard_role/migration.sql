@@ -22,7 +22,7 @@ ALTER TABLE "McpToolApproval" ADD CONSTRAINT "McpToolApproval_guard_check" CHECK
 );
 
 -- New enum labels cannot be used as enum constants until the migration commits.
--- Both purposes preserve provider-reported cost instead of repricing it later.
+-- Preserve the preceding sub-agent migration's reported-cost allowance too.
 ALTER TABLE "UsageEvent" DROP CONSTRAINT "UsageEvent_cost_reported_answer_check";
 ALTER TABLE "UsageEvent" ADD CONSTRAINT "UsageEvent_cost_reported_answer_check"
-  CHECK (NOT "costReported" OR "purpose"::text IN ('chat_answer', 'mcp_guard'));
+  CHECK (NOT "costReported" OR "purpose"::text IN ('chat_answer', 'subagent', 'mcp_guard'));
