@@ -1,7 +1,9 @@
 import type {
   ActiveSubagentState,
   EndedSubagentCallResult,
+  SUBAGENT_ERROR_CODES,
   SubagentBindingSource,
+  SubagentErrorCode,
   SubagentToolGroup,
   SubagentTurnMode
 } from "../../contracts/subagents";
@@ -125,6 +127,93 @@ export interface SubagentRunner {
   deliver(handle: SubagentTurnHandle, message: SubagentMessage): Promise<SubagentDeliveryOutcome>;
   /** Stops the turn; its thread keeps what it recorded. Idempotent: an ended turn returns how it ended. */
   stop(handle: SubagentTurnHandle, reason: SubagentStopReason): Promise<EndedSubagentCallResult | null>;
+}
+
+/** The main-agent run whose call reaches a sub-agent, and that call (`ModelRunToolCall`). */
+export type SubagentCallerScope = SubagentChatScope & Readonly<{
+  parentRunId: string;
+  parentToolCallId: string;
+}>;
+
+export type SubagentBackgroundAvailability =
+  | Readonly<{ available: true }>
+  /** Telegram turns, scheduled-task occurrences, or no background port in this run. */
+  | Readonly<{ available: false; code: typeof SUBAGENT_ERROR_CODES.backgroundUnavailable }>;
+
+/** A background turn to admit: everything a foreground turn takes except what its own run is given at admission. */
+export type SubagentBackgroundStartInput = SubagentCallerScope & Readonly<{
+  binding: SubagentBinding;
+  brief: string;
+  /** `start` for the first turn of a thread, `continue` for a later one (`SubagentRunner`). */
+  kind: "continue" | "start";
+  name: string;
+  threadId: string;
+  type: SubagentTypeSnapshot | null;
+  userMessage: string;
+}>;
+
+export type SubagentBackgroundStartResult =
+  /** Admitted: the turn's row and its run exist and it runs; its result comes back as a callback. */
+  | Readonly<{ kind: "started"; name: string; state: ActiveSubagentState; turnId: string }>
+  /**
+   * Nothing ran. `subagent_usage_limited` (usage limits refused the run),
+   * `subagent_limit_reached` (20 running in the chat), `subagent_busy` (the
+   * thread got an active run meanwhile), `subagent_background_unavailable`.
+   */
+  | Readonly<{ code: SubagentErrorCode; kind: "refused" }>;
+
+export type SubagentBackgroundMessageInput = SubagentCallerScope & Readonly<{
+  /** The main agent's message; its nonce is the sending call's id. */
+  message: SubagentMessage & Readonly<{ origin: "main_agent" }>;
+  name: string;
+  threadId: string;
+}>;
+
+export type SubagentBackgroundStopResult =
+  | Readonly<{ kind: "stopped"; result: EndedSubagentCallResult }>
+  /** No thread of that name on the caller's branch (`subagent_not_found`). */
+  | Readonly<{ kind: "not_found" }>;
+
+/**
+ * What the engine's `call_subagent` and `stop_subagent` handlers use for
+ * background turns: admitting one as its own run with the parent run's
+ * frozen bindings (never current settings), delivering a main-agent message
+ * to a running one's mailbox (a `main_agent` follow-up on its run), and
+ * stopping one by name. Absent from a run, background mode is unavailable.
+ *
+ * How `call_subagent` decides on a name. The handler resolves the name to the
+ * visible thread of the caller's branch (`SubagentThread`, anchor run's answer
+ * on the branch), or starts a new thread when there is none; then:
+ * - The thread has no active turn anywhere: it continues. Without
+ *   `background` the engine runs a foreground turn (`SubagentRunner.continue`)
+ *   and waits; with `background: true` it calls `start` here with `kind:
+ *   "continue"`, after `availability` said yes (otherwise the call is refused
+ *   with `subagent_background_unavailable`, and the same call without
+ *   `background` still works).
+ * - Its active turn is on the caller's branch and runs in the background: the
+ *   message goes to its mailbox (`deliver`), whatever `background` says, and
+ *   the call returns `delivered` (receipt, not obedience). A `type`, `model`
+ *   or `effort` on such a call is refused with `subagent_busy`: the running
+ *   turn keeps its binding, and nothing is silently ignored.
+ * - Its active turn is a foreground turn of this answer, or runs on another
+ *   branch (a thread has one active run at a time): `subagent_busy`.
+ * The 20-running cap counts the chat's active turns: the handler checks it
+ * for a foreground turn, and `start` checks it atomically with admission.
+ * Owner: `20261029221046686-sub-agent-background-runs`; consumer: the engine's
+ * handlers (`20261029205100915-subagents-engine`).
+ */
+export interface SubagentBackgroundControl {
+  /** Whether this run may start background turns (web and Assistant chats; never Telegram or scheduled runs). */
+  availability(scope: SubagentCallerScope): Promise<SubagentBackgroundAvailability>;
+  /** Admits a background turn and returns at once; refused admissions leave no turn and no run. */
+  start(input: SubagentBackgroundStartInput): Promise<SubagentBackgroundStartResult>;
+  /** Delivers a main-agent message to the thread's running background turn on the caller's branch. Idempotent by nonce. */
+  deliver(input: SubagentBackgroundMessageInput): Promise<SubagentDeliveryOutcome>;
+  /**
+   * Stops the thread of that name on the caller's branch (`stop_subagent`) and
+   * returns its last state; one that already ended returns how it ended.
+   */
+  stop(input: SubagentCallerScope & Readonly<{ name: string }>): Promise<SubagentBackgroundStopResult>;
 }
 
 /** A background turn that ended, for the main agent of the branch it was started on. */
