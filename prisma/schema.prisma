@@ -2948,7 +2948,9 @@ model ModelRun {
   scheduledOutcome             String?                             @db.VarChar(64)
   /// A background sub-agent run: the thread it executes and its turn (`SubagentTurn`), both or neither (SQL check).
   /// Null on every main-agent run, so `subagentTurnId: null` selects the chat's own turns. Such a run shares its
-  /// parent run's user message and never answers one (`assistantMessageId` stays null).
+  /// parent run's user message and never answers one (`assistantMessageId` stays null). The SQL-only
+  /// `ModelRun_one_active_per_chat_idx` holds one active run per (chat, thread), NULLS NOT DISTINCT, so the main
+  /// agent keeps one per chat and a background sub-agent runs beside it.
   subagentThreadId             String?
   subagentTurnId               String?
   createdAt                    DateTime                            @default(now())

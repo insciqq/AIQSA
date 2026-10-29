@@ -874,13 +874,39 @@ async function createSubagentFixture(tx: Prisma.TransactionClient) {
   return { ...fixture, call, thread, turn };
 }
 
-/** A run of the fixture's chat and prompt, optionally bound to a sub-agent turn. */
+/**
+ * A run of the fixture's chat and prompt, settled unless it is a background sub-agent run, optionally bound to a
+ * sub-agent turn. The fixture's own run is active, and the chat holds one active main-agent run.
+ */
 async function createChatRun(tx: Prisma.TransactionClient, fixture: Awaited<ReturnType<typeof createSubagentFixture>>,
-  binding: Readonly<{ subagentThreadId?: string; subagentTurnId?: string }> = {}) {
+  binding: Readonly<{ subagentThreadId?: string; subagentTurnId?: string }> = {}, status: "complete" | "streaming" = "complete") {
   return tx.modelRun.create({ data: {
     chatId: fixture.chat.id, id: randomUUID(), modelId: "fake-qsa", normalizedRequest: json({}), provider: "fake",
-    status: "streaming", userId: fixture.user.id, userMessageId: fixture.userMessage.id, ...binding
+    status, userId: fixture.user.id, userMessageId: fixture.userMessage.id, ...binding
   } });
+}
+
+/**
+ * Runs `statements` in a DO block that must fail on exactly the unique index `index`: the block reraises a unique
+ * violation with the index PostgreSQL reports, because Prisma's text of a raw failure does not name it.
+ */
+async function expectUniqueIndexRejection(label: string, index: string,
+  statements: (tx: Prisma.TransactionClient) => Promise<string>): Promise<void> {
+  await expectDatabaseRejection(label, `unique_index_violated:${index};`, async (tx) => {
+    const sql = await statements(tx);
+    await tx.$executeRawUnsafe(`DO $block$ DECLARE violated TEXT; BEGIN
+      ${sql}
+    EXCEPTION WHEN unique_violation THEN
+      GET STACKED DIAGNOSTICS violated = CONSTRAINT_NAME;
+      RAISE EXCEPTION 'unique_index_violated:%;', violated;
+    END $block$`);
+  });
+}
+
+/** A literal of a generated id, the only values these blocks interpolate. */
+function idLiteral(id: string): string {
+  if (!/^[A-Za-z0-9-]{1,64}$/u.test(id)) throw new Error("Unexpected fixture id.");
+  return `'${id}'`;
 }
 
 async function assertSubagentRelations(): Promise<void> {
@@ -896,7 +922,7 @@ async function assertSubagentRelations(): Promise<void> {
     const fixture = await createSubagentFixture(tx);
     const other = await createModelRunFixture(tx);
     await tx.modelRun.create({ data: {
-      chatId: other.chat.id, id: randomUUID(), modelId: "fake-qsa", normalizedRequest: json({}), provider: "fake", status: "streaming",
+      chatId: other.chat.id, id: randomUUID(), modelId: "fake-qsa", normalizedRequest: json({}), provider: "fake", status: "complete",
       subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id, userId: other.user.id, userMessageId: other.userMessage.id
     } });
   });
@@ -919,25 +945,44 @@ async function assertSubagentRelations(): Promise<void> {
     } });
   });
 
-  await expectDatabaseRejection("duplicate main-agent transcript sequence", "RunTranscriptItem_thread_sequence_key", async (tx) => {
+  // NULLS NOT DISTINCT keeps the main agent's keys unique per run (and per chat for active runs).
+  await expectUniqueIndexRejection("duplicate main-agent transcript sequence", "RunTranscriptItem_thread_sequence_key", async (tx) => {
     const fixture = await createModelRunFixture(tx);
-    // Raw inserts, so the refusal names the index (NULLS NOT DISTINCT keeps the main agent's key unique).
-    for (const id of [randomUUID(), randomUUID()]) {
-      await tx.$executeRawUnsafe(
-        `INSERT INTO "RunTranscriptItem" ("id", "userId", "chatId", "modelRunId", "sequence", "kind", "body")
-         VALUES ($1, $2, $3, $4, 0, 'user', '{}'::jsonb)`,
-        id, fixture.user.id, fixture.chat.id, fixture.run.id
-      );
-    }
+    return [randomUUID(), randomUUID()].map((id) => `INSERT INTO "RunTranscriptItem"
+      ("id", "userId", "chatId", "modelRunId", "sequence", "kind", "body")
+      VALUES (${idLiteral(id)}, ${idLiteral(fixture.user.id)}, ${idLiteral(fixture.chat.id)}, ${idLiteral(fixture.run.id)}, 0, 'user', '{}'::jsonb);`)
+      .join("\n");
   });
 
-  await expectDatabaseRejection("duplicate main-agent tool call ordinal", "ModelRunToolCall_thread_round_ordinal_key", async (tx) => {
+  await expectUniqueIndexRejection("duplicate main-agent tool call ordinal", "ModelRunToolCall_thread_round_ordinal_key", async (tx) => {
     const fixture = await createSubagentFixture(tx);
-    await tx.$executeRawUnsafe(
-      `INSERT INTO "ModelRunToolCall" ("id", "modelRunId", "roundIndex", "ordinal", "providerCallId", "toolName", "arguments", "updatedAt")
-       VALUES ($1, $2, 0, 0, 'call-2', 'x', '{}'::jsonb, CURRENT_TIMESTAMP)`,
-      randomUUID(), fixture.run.id
-    );
+    return `INSERT INTO "ModelRunToolCall" ("id", "modelRunId", "roundIndex", "ordinal", "providerCallId", "toolName", "arguments", "updatedAt")
+      VALUES (${idLiteral(randomUUID())}, ${idLiteral(fixture.run.id)}, 0, 0, 'call-2', 'x', '{}'::jsonb, CURRENT_TIMESTAMP);`;
+  });
+
+  const activeRunInsert = (fixture: Awaited<ReturnType<typeof createSubagentFixture>>, thread: string, turn: string) =>
+    `INSERT INTO "ModelRun" ("id", "userId", "chatId", "userMessageId", "provider", "modelId", "status", "normalizedRequest",
+      "subagentThreadId", "subagentTurnId", "updatedAt")
+    VALUES (${idLiteral(randomUUID())}, ${idLiteral(fixture.user.id)}, ${idLiteral(fixture.chat.id)}, ${idLiteral(fixture.userMessage.id)},
+      'fake', 'fake-qsa', 'streaming', '{}'::jsonb, ${thread}, ${turn}, CURRENT_TIMESTAMP);`;
+
+  await expectUniqueIndexRejection("second active main-agent run", "ModelRun_one_active_per_chat_idx", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    return activeRunInsert(fixture, "NULL", "NULL");
+  });
+
+  await expectUniqueIndexRejection("second active run of one sub-agent thread", "ModelRun_one_active_per_chat_idx", async (tx) => {
+    const fixture = await createSubagentFixture(tx);
+    await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id }, "streaming");
+    const call = await tx.modelRunToolCall.create({ data: {
+      arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 1, providerCallId: "call-2", roundIndex: 0,
+      toolName: "call_subagent"
+    } });
+    const turn = await tx.subagentTurn.create({ data: {
+      chatId: fixture.chat.id, id: randomUUID(), mode: "background", modelId: "fake-qsa", parentRunId: fixture.run.id,
+      parentToolCallId: call.id, provider: "fake", threadId: fixture.thread.id, userId: fixture.user.id
+    } });
+    return activeRunInsert(fixture, idLiteral(fixture.thread.id), idLiteral(turn.id));
   });
 
   await expectRolledBackSuccess("sub-agent rows, keys and cascades", async (tx) => {
@@ -953,7 +998,9 @@ async function assertSubagentRelations(): Promise<void> {
       arguments: json({}), id: randomUUID(), modelRunId: fixture.run.id, ordinal: 0, providerCallId: "call-1", roundIndex: 0,
       subagentThreadId: fixture.thread.id, toolName: "x"
     } });
-    const background = await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id });
+    // A background sub-agent run is active beside the chat's active main-agent run.
+    const background = await createChatRun(tx, fixture, { subagentThreadId: fixture.thread.id, subagentTurnId: fixture.turn.id },
+      "streaming");
     await tx.runFollowup.create({ data: {
       authorName: "Main agent", chatId: fixture.chat.id, modelRunId: background.id, nonce: randomUUID(), ordinal: 1, origin: "main_agent",
       text: "message"

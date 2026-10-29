@@ -102,7 +102,7 @@ async function insertActiveRun(input: OutsideWriter): Promise<string> {
  * and an insert that nothing refuses lands and returns its id. */
 async function activeRunIndexRefuses(input: OutsideWriter): Promise<boolean> {
   const inserted = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`${activeRunInsert(randomUUID(), input)}
-    ON CONFLICT ("chatId") WHERE NOT "workspaceWaitPending" AND "status" IN ('preparing', 'queued', 'streaming', 'in_progress')
+    ON CONFLICT ("chatId", "subagentThreadId") WHERE NOT "workspaceWaitPending" AND "status" IN ('preparing', 'queued', 'streaming', 'in_progress')
     DO NOTHING
     RETURNING "id"`);
   return inserted.length === 0;
