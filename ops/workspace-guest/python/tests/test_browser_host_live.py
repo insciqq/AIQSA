@@ -258,6 +258,109 @@ class HostLiveTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.host._agent_context.reset(token)
 
+    async def test_release_keeps_the_subagent_tab_during_user_control_and_handoffs(self) -> None:
+        view = await self.view()
+        for kind, action in (("control", "take"), ("handoff", "begin")):
+            with self.subTest(kind=kind):
+                self.assertTrue((await view.ask({"t": kind, "action": action, "agent": self.sub.agent_id}))["ok"])
+                response = await self.command(self.sub.agent_id, "release")
+                self.assertFalse(self.sub_page.closed)
+                self.assertTrue(self.sub.slot)
+                self.assertEqual(response["error"]["code"], "user_in_control")
+                returned = {"t": kind, "agent": self.sub.agent_id, "action": "return" if kind == "control" else "end"}
+                self.assertTrue((await view.ask({**returned, "outcome": "cancelled"}))["ok"])
+        self.assertTrue((await self.command(self.sub.agent_id, "release"))["ok"])
+        self.assertTrue(self.sub_page.closed)
+        self.assertFalse(self.sub.slot)
+        self.assertFalse(self.main_page.closed)
+
+    async def test_main_close_refuses_another_agents_user_control_and_handoff(self) -> None:
+        view = await self.view()
+        with mock.patch.object(self.host, "stop", new_callable=mock.AsyncMock) as stop:
+            for kind, action in (("control", "take"), ("handoff", "begin")):
+                with self.subTest(kind=kind):
+                    self.assertTrue((await view.ask({"t": kind, "action": action, "agent": self.sub.agent_id}))["ok"])
+                    response = await self.command("main", "close")
+                    stop.assert_not_awaited()
+                    self.assertEqual(response["error"]["code"], "user_in_control")
+                    self.assertFalse(self.host._closing)
+                    returned = {"t": kind, "agent": self.sub.agent_id, "action": "return" if kind == "control" else "end"}
+                    self.assertTrue((await view.ask({**returned, "outcome": "cancelled"}))["ok"])
+            self.assertTrue((await self.command("main", "close"))["ok"])
+            stop.assert_awaited_once()
+
+    async def test_release_rechecks_control_after_waiting_for_the_browser_lock(self) -> None:
+        view = await self.view()
+        locked = asyncio.Event()
+        acquire = self.sub.lock.acquire
+
+        async def acquire_agent_lock() -> bool:
+            result = await acquire()
+            locked.set()
+            return result
+
+        await self.host.browser_lock.acquire()
+        with mock.patch.object(self.sub.lock, "acquire", side_effect=acquire_agent_lock):
+            release = asyncio.create_task(self.command(self.sub.agent_id, "release"))
+            try:
+                await asyncio.wait_for(locked.wait(), 1)
+                with mock.patch.object(_livehub, "TAKE_WAIT_SECONDS", 0.01):
+                    self.assertTrue((await view.ask({"t": "control", "action": "take", "agent": self.sub.agent_id}))["ok"])
+            finally:
+                self.host.browser_lock.release()
+                response = await release
+        self.assertEqual(response["error"]["code"], "user_in_control")
+        self.assertFalse(self.sub_page.closed)
+        self.assertTrue(self.sub.slot)
+
+    async def test_main_close_refuses_control_admitted_before_the_agent_lock_is_free(self) -> None:
+        view = await self.view()
+        waiting = asyncio.Event()
+        acquire = self.sub.lock.acquire
+
+        async def wait_for_agent_lock() -> bool:
+            waiting.set()
+            return await acquire()
+
+        await self.sub.lock.acquire()
+        with mock.patch.object(self.sub.lock, "acquire", side_effect=wait_for_agent_lock), \
+                mock.patch.object(self.host, "stop", new_callable=mock.AsyncMock) as stop:
+            take = asyncio.create_task(view.ask({"t": "control", "action": "take", "agent": self.sub.agent_id}))
+            try:
+                await asyncio.wait_for(waiting.wait(), 1)
+                self.assertEqual(self.host.live.control_of(self.sub.agent_id).controller, "agent")
+                response = await self.command("main", "close")
+                stop.assert_not_awaited()
+                self.assertEqual(response["error"]["code"], "user_in_control")
+                self.assertFalse(self.host._closing)
+            finally:
+                self.sub.lock.release()
+                self.assertTrue((await take)["ok"])
+
+    async def test_shutdown_refuses_new_control_and_handoffs_until_stop_finishes(self) -> None:
+        view = await self.view()
+        stopping, finish = asyncio.Event(), asyncio.Event()
+
+        async def stop() -> None:
+            stopping.set()
+            await finish.wait()
+
+        with mock.patch.object(self.host, "stop", side_effect=stop) as stopped:
+            close = asyncio.create_task(self.command("main", "close"))
+            try:
+                await asyncio.wait_for(stopping.wait(), 1)
+                for kind, action in (("control", "take"), ("handoff", "begin")):
+                    with self.subTest(kind=kind):
+                        response = await view.ask({"t": kind, "action": action, "agent": self.sub.agent_id})
+                        self.assertFalse(response["ok"])
+                        self.assertEqual(response["code"], "browser_unavailable")
+                        self.assertFalse(self.host.live.agent_held_by_user(self.sub.agent_id))
+            finally:
+                finish.set()
+                self.assertTrue((await close)["ok"])
+            stopped.assert_awaited_once()
+        self.assertFalse(self.host._closing)
+
     async def test_idle_expiry_keeps_user_control_and_handoffs_until_returned(self) -> None:
         view = await self.view()
         for kind in ("control", "handoff"):

@@ -392,8 +392,7 @@ describe("remote Workspace runner protocol", () => {
     const runEnvironment = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
     const agent = { kind: "subagent" as const, name: "shop-amazon", threadId: "thread-7" };
     await remote.syncPersonalSecrets({ ...identity, agent, runEnvironment, secrets: [] });
-    expect(syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ agent,
-      runEnvironment: { ...runEnvironment, AIQSA_AGENT_ID: "thread-7", AIQSA_AGENT_NAME: "shop-amazon" } }));
+    expect(syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ agent, runEnvironment }));
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.not.objectContaining({ boundUvCache: expect.anything() }));
     await remote.syncPersonalSecrets({ ...identity, boundUvCache: true, secrets: [] });
     expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ boundUvCache: true }));
