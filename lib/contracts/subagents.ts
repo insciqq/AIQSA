@@ -150,7 +150,10 @@ export const SUBAGENT_ERROR_CODES = Object.freeze({
   backgroundUnavailable: "subagent_background_unavailable",
   /** Usage limits refused a background sub-agent run; nothing ran. */
   usageLimited: "subagent_usage_limited",
-  /** The thread runs a foreground turn of this answer already; wait for its result instead. */
+  /**
+   * The thread runs a turn that cannot take this call: a foreground turn of this answer (wait for its result), or a
+   * background turn started on another branch (a thread has one active run at a time; start another name).
+   */
   busy: "subagent_busy",
   /** A custom sub-agent with this name exists already (create, rename). */
   definitionExists: "subagent_definition_exists",
@@ -242,7 +245,8 @@ export function isSubagentToolGroup(value: unknown): value is SubagentToolGroup 
 export function decodeSubagentToolGroups(value: unknown): SubagentToolGroup[] | null {
   if (!Array.isArray(value) || value.length > TOOL_GROUP_VALUES.length || !value.every(isSubagentToolGroup)) return null;
   if (new Set(value).size !== value.length) return null;
-  return TOOL_GROUP_VALUES.filter((group): group is SubagentToolGroup => value.includes(group));
+  const chosen: readonly string[] = value;
+  return TOOL_GROUP_VALUES.filter((group): group is SubagentToolGroup => chosen.includes(group));
 }
 
 /** Bounds of a custom sub-agent (`SubagentDefinitionRevision`); the database keeps outer guards. */
