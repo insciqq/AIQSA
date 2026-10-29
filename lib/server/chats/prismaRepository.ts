@@ -1215,7 +1215,8 @@ export function summarizeMessageRunToolActivity(
       ? state
       : "running";
     const fingerprint = call.mcpRunBinding?.runtimeGenerationFingerprint;
-    const details = viewerUserId && viewerUserId === run.userId && descriptor.origin === "mcp" &&
+    // A sub-agent's call has its own rounds: its round and ordinal would name a main-agent call, so it offers no details.
+    const details = viewerUserId && viewerUserId === run.userId && descriptor.origin === "mcp" && !call.subagentThreadId &&
       fingerprint && Number.isSafeInteger(call.roundIndex) && call.roundIndex > 0 &&
       Number.isSafeInteger(call.ordinal) && call.ordinal >= 0 &&
       acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, fingerprint)
