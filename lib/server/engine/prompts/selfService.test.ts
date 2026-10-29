@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { CREATE_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { ARTIFACT_TOOL_NAME } from "../../tools/artifact";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../../tools/aiqsaGuide";
 import { MANAGE_ASSISTANT_TOOL_NAME } from "../../tools/manageAssistant";
@@ -85,8 +86,10 @@ describe("self-service prompt section", () => {
       guide: READ_AIQSA_GUIDE_TOOL_NAME,
       manageScheduledTask: MANAGE_SCHEDULED_TASK_TOOL_NAME,
       secrets: MANAGE_SECRET_TOOL_NAME,
-      skills: MANAGE_SKILL_TOOL_NAME
+      skills: MANAGE_SKILL_TOOL_NAME,
+      subagents: CREATE_SUBAGENT_TOOL_NAME
     });
+    expect(selfServicePromptSection({ tools: [CREATE_SUBAGENT_TOOL_NAME] })).toContain("`create_subagent`, `edit_subagent` and `delete_subagent`");
   });
 });
 

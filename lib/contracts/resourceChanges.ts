@@ -2,14 +2,15 @@ import { WORKSPACE_SECRET_KINDS, isWorkspaceEnvName, isWorkspaceSecretId, type W
 
 /**
  * Client-safe contract of the answer cards for changes the agent made, or
- * proposed, to the user's own secrets, Skills and Assistants
- * (`manage_secret`, `manage_skill`, `manage_assistant`). A Skill save keeps
+ * proposed, to the user's own secrets, Skills, Assistants and custom
+ * sub-agents (`manage_secret`, `manage_skill`, `manage_assistant`,
+ * `create_subagent`, `edit_subagent`, `delete_subagent`). A Skill save keeps
  * its own card (`skillSaves.ts`). A change already happened when its card
  * shows. A proposal (`delete_proposed`, `publish_proposed`) changed nothing:
  * only the user's click in the card performs it, through the same owner
  * route as Studio, and the route refuses it as a conflict when the resource
- * changed since the proposal (a secret's revision, a Skill's or an
- * Assistant's definition version).
+ * changed since the proposal (a secret's revision, a Skill's, an
+ * Assistant's or a custom sub-agent's definition version).
  */
 
 /** Cards one answer shows; later ones are left out. */
@@ -21,7 +22,7 @@ export const RESOURCE_CHANGE_TASKS_LIMIT = 5;
 export const RESOURCE_CHANGE_NAMES_LIMIT = 16;
 /** UTF-16 lengths the decoder accepts; producers clip with `clipResourceChangeText`. */
 export const RESOURCE_CHANGE_TEXT_LIMITS = Object.freeze({
-  assistantName: 80, groupName: 200, secretName: 120, skillName: 256, summary: 300, taskTitle: 120
+  assistantName: 80, groupName: 200, secretName: 120, skillName: 256, subagentName: 48, summary: 300, taskTitle: 120
 });
 export const SECRETS_LIBRARY_PATH = "/?library=secrets";
 export const ASSISTANTS_LIBRARY_PATH = "/?library=assistants";
@@ -108,7 +109,38 @@ export type AssistantChangeCard = Readonly<{
   proposalId: string | null;
 }>;
 
-export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard;
+export const SUBAGENT_CHANGE_FIELDS = ["name", "description", "instructions", "model", "effort", "tools"] as const;
+export type SubagentChangeField = (typeof SUBAGENT_CHANGE_FIELDS)[number];
+
+/**
+ * A custom sub-agent the agent created or edited, or proposes deleting. Each
+ * edit is a new revision, so a creation's Undo deletes it and an edit's
+ * Undo restores `undoRevisionId` as a new revision, both guarded by
+ * `definitionVersion`; a confirmed deletion is guarded the same way.
+ */
+export type SubagentChangeCard = Readonly<{
+  version: 1;
+  resource: "subagent";
+  action: "created" | "updated" | "delete_proposed";
+  definitionId: string;
+  /** The version the change left, or the one the proposal saw. */
+  definitionVersion: number;
+  name: string;
+  /** `updated` only: the name before a rename. */
+  previousName: string | null;
+  /** `updated` only: what changed, each with a short plain summary. */
+  changes: readonly Readonly<{ field: SubagentChangeField; summary: string | null }>[];
+  /** `updated` only: the instructions' bounded line diff when they changed. */
+  instructionsDiff: ResourceChangeDiff | null;
+  /** `updated` only: the revision that was current before, which Undo restores. */
+  undoRevisionId: string | null;
+  /** `delete_proposed` only: sub-agents in the user's chats started as this one, which cannot be continued after deletion. */
+  consequences: Readonly<{ threadCount: number }> | null;
+  /** `delete_proposed` only: this proposal's own identity. */
+  proposalId: string | null;
+}>;
+
+export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -207,11 +239,35 @@ function decodeAssistantCard(value: Record<string, unknown>): AssistantChangeCar
     name: value.name, changes, instructionsDiff, audience, consequences, proposalId: value.proposalId };
 }
 
+function decodeSubagentCard(value: Record<string, unknown>): SubagentChangeCard | null {
+  if (!exact(value, ["version", "resource", "action", "definitionId", "definitionVersion", "name", "previousName", "changes", "instructionsDiff",
+    "undoRevisionId", "consequences", "proposalId"]) || !["created", "updated", "delete_proposed"].includes(value.action as string) ||
+    !id(value.definitionId) || !positive(value.definitionVersion) || !text(value.name, limits.subagentName)) return null;
+  const action = value.action as SubagentChangeCard["action"];
+  const updated = action === "updated";
+  const proposal = action === "delete_proposed";
+  const changes = list(value.changes, RESOURCE_CHANGE_FIELDS_LIMIT, (change) =>
+    record(change) && exact(change, ["field", "summary"]) && SUBAGENT_CHANGE_FIELDS.includes(change.field as SubagentChangeField) &&
+    (change.summary === null || text(change.summary, limits.summary)) ? { field: change.field as SubagentChangeField, summary: change.summary } : null);
+  const instructionsDiff = value.instructionsDiff === null ? null : decodeResourceChangeDiff(value.instructionsDiff);
+  const consequences = record(value.consequences) && exact(value.consequences, ["threadCount"]) && count(value.consequences.threadCount)
+    ? { threadCount: value.consequences.threadCount } : null;
+  if (!changes || (value.instructionsDiff !== null && !instructionsDiff) || (value.consequences !== null && !consequences) ||
+    !proposalIdentity(value.proposalId, proposal) || proposal !== (consequences !== null) ||
+    !(value.previousName === null || (updated && text(value.previousName, limits.subagentName))) ||
+    !(value.undoRevisionId === null ? !updated : updated && id(value.undoRevisionId)) ||
+    (!updated && (changes.length > 0 || instructionsDiff !== null))) return null;
+  return { version: 1, resource: "subagent", action, definitionId: value.definitionId, definitionVersion: value.definitionVersion,
+    name: value.name, previousName: value.previousName, changes, instructionsDiff, undoRevisionId: value.undoRevisionId as string | null,
+    consequences, proposalId: value.proposalId };
+}
+
 export function decodeResourceChangeCard(value: unknown): ResourceChangeCard | null {
   if (!record(value) || value.version !== 1) return null;
   if (value.resource === "secret") return decodeSecretCard(value);
   if (value.resource === "skill") return decodeSkillCard(value);
   if (value.resource === "assistant") return decodeAssistantCard(value);
+  if (value.resource === "subagent") return decodeSubagentCard(value);
   return null;
 }
 
@@ -226,6 +282,8 @@ export function resourceChangeCardKey(card: ResourceChangeCard): string {
     case "skill": return `skill:${card.skillId}:proposal:${card.proposalId}`;
     case "assistant": return card.proposalId ? `assistant:${card.assistantId}:proposal:${card.proposalId}`
       : `assistant:${card.assistantId}:${card.action}:${card.definitionVersion}`;
+    case "subagent": return card.proposalId ? `subagent:${card.definitionId}:proposal:${card.proposalId}`
+      : `subagent:${card.definitionId}:${card.action}:${card.definitionVersion}`;
   }
 }
 

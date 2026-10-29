@@ -30,7 +30,8 @@ export const SELF_SERVICE_TOOL_NAMES = Object.freeze({
   guide: "read_aiqsa_guide",
   manageScheduledTask: "manage_scheduled_task",
   secrets: "manage_secret",
-  skills: "manage_skill"
+  skills: "manage_skill",
+  subagents: "create_subagent"
 });
 
 /** "- Changing the user's secrets and Assistants is not available …" for the change tools a request lacks. */
@@ -75,6 +76,7 @@ export function selfServicePromptSection(input: SelfServicePromptInput): string 
     // Where some are absent (a Telegram turn, an automation, an Assistant chat) the agent says where the change is made instead.
     ...unavailableChanges(has),
     ...tool(names.assistants, `- Create and edit the user's own Assistants with \`${names.assistants}\`: instructions, model, tools and linked Skills.`),
+    ...tool(names.subagents, `- Create, edit and delete the user's custom sub-agents (their own model, effort, instructions and tools) with \`${names.subagents}\`, \`edit_subagent\` and \`delete_subagent\`.`),
     ...(scheduled.length ? [`- Automations: ${scheduled.map((name) => `\`${name}\``).join(" and ")}. ${WEBHOOK_LINE}`] : []),
     ...tool(names.createArtifact, `- Interactive pages, charts and slides: \`${names.createArtifact}\`.`)
   ].join("\n");
@@ -106,7 +108,7 @@ const GUIDE: Readonly<Record<AiqsaGuideTopic, string>> = {
 AIQSA is a self-hosted AI workspace that the user's organization runs for its people. Every person has a private account: chats, files and resources are theirs alone until they share something.
 In a chat the agent can answer directly or work with tools: web search and page reading, the user's MCP connections to other systems, a private Workspace computer for code, files and a browser, image generation, artifacts (interactive pages), Memory, Skills, automations and the user's saved secrets.
 The user's own resources live in Studio (see the studio topic). Settings holds appearance, account and sign-in, connections (personal MCP connections and Telegram), the Claude Code and Codex connection, and personal data. Administrators manage models, providers and installation-wide tools in the Control Center; the agent never changes administrator settings.
-What the agent may change: the user's secrets, Skills, Assistants, artifacts and automations, only when the user asks. Every change shows a card in the answer; deleting and sharing wait for the user's click in that card.
+What the agent may change: the user's secrets, Skills, Assistants, custom sub-agents, artifacts and automations, only when the user asks. Every change shows a card in the answer; deleting and sharing wait for the user's click in that card.
 ${REMOVED_FEATURES}
 Other topics: ${AIQSA_GUIDE_TOPICS.filter((topic) => topic !== "overview").join(", ")}.`,
 
@@ -122,6 +124,7 @@ Studio sections as links. Give the user these Markdown links exactly as written,
 - [Assistants](/?library=assistants) (one Assistant: [its name](/?library=assistants&assistant=<id>))
 - [Instructions](/?library=instructions): personal instruction presets for ordinary chats, never applied to Assistants
 - [Skills](/?library=skills)
+- [Sub-agents](/?library=subagents): custom sub-agents with their own model, effort, instructions and tools
 - [Memory](/?library=memory)
 - [Files](/?library=files)
 - [Artifacts](/?library=artifacts)
