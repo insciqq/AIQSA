@@ -79,9 +79,17 @@ function stop(guest: ReturnType<typeof fakeGuest>, agent: string, options: Reado
   return JSON.parse(result.stdout) as unknown;
 }
 
+/**
+ * A child's whole environment, deliberately minimal (empty for a child that replaced its environment), typed as
+ * the project's augmented `ProcessEnv`, which these commands never read.
+ */
+function commandEnvironment(values: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  return { ...values } as unknown as NodeJS.ProcessEnv;
+}
+
 /** A process started with a replaced environment (`env -i`): nothing in it names an agent. */
 function strippedChild(): ChildProcess {
-  const options: SpawnOptions = { env: {}, stdio: "ignore" };
+  const options: SpawnOptions = { env: commandEnvironment({}), stdio: "ignore" };
   const child = spawn("/bin/sleep", ["30"], options);
   children.push(child);
   return child;
@@ -106,7 +114,7 @@ describe("the agent launcher", () => {
     // The same shell runs the command after the placement (here off a guest, where the placement fails quietly).
     const shell = workspaceAgentLaunchArguments("sandbox_shell", { command: "echo \"$0\" kept; exit 4" }, "thread-1");
     const result: SpawnSyncReturns<string> = spawnSync("/bin/sh", ["-c", shell.command as string, "own-shell"],
-      { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+      { encoding: "utf8", env: commandEnvironment({ PATH: "/usr/bin:/bin" }) });
     expect(result.stdout).toBe("own-shell kept\n");
     expect(result.stderr).toBe("");
     expect(result.status).toBe(4);
@@ -118,7 +126,7 @@ describe("the agent launcher", () => {
     const argv = launched.args as string[];
     expect(argv.slice(2)).toEqual(["aiqsa-agent", "/bin/sh", "-c", "echo shown; exit 3"]);
     // Off a guest the placement fails quietly and the command still runs unchanged.
-    const result: SpawnSyncReturns<string> = spawnSync("/bin/sh", argv, { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    const result: SpawnSyncReturns<string> = spawnSync("/bin/sh", argv, { encoding: "utf8", env: commandEnvironment({ PATH: "/usr/bin:/bin" }) });
     expect(result.stdout).toBe("shown\n");
     expect(result.status).toBe(3);
     expect(workspaceAgentLaunchArguments("sandbox_exec_start", { command: "python3" }, "main").args)
