@@ -282,7 +282,8 @@ function StatusDialog() {
   );
 }
 
-function ProgressNotice() {
+/** `composerInset`: how far a composer resting at the bottom reaches up; the notice sits above it. */
+function ProgressNotice({ composerInset }: Readonly<{ composerInset: number }>) {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const status = usePermanentChatDeletionStore((state) => state.status);
   const statusOpen = usePermanentChatDeletionStore((state) => state.statusOpen);
@@ -302,7 +303,11 @@ function ProgressNotice() {
   if (!visible) return null;
   const blocked = status?.status === "NEEDS_ATTENTION";
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-[max(.75rem,env(safe-area-inset-bottom))] z-[85] flex justify-center px-3">
+    <div
+      className="pointer-events-none fixed inset-x-0 bottom-[max(.75rem,env(safe-area-inset-bottom))] z-[85] flex justify-center px-3"
+      data-testid="permanent-chat-deletion-notice"
+      style={composerInset > 0 ? { bottom: `calc(${composerInset}px + .5rem)` } : undefined}
+    >
       <div
         className={`pointer-events-auto flex w-full max-w-lg items-center gap-3 rounded-panel border bg-overlay-surface px-3 py-2 shadow-overlay ${
           blocked ? "border-critical/40" : "border-trace-subtle"
@@ -347,7 +352,9 @@ function ProgressNotice() {
   );
 }
 
-export function PermanentChatDeletionSurface() {
+export function PermanentChatDeletionSurface({
+  composerInset = 0
+}: Readonly<{ composerInset?: number }>) {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const status = usePermanentChatDeletionStore((current) => current.status?.status ?? null);
   const portalReady = useSyncExternalStore(
@@ -369,7 +376,7 @@ export function PermanentChatDeletionSurface() {
     <>
       <Confirmation />
       <StatusDialog />
-      <ProgressNotice />
+      <ProgressNotice composerInset={composerInset} />
     </>
   ), document.body);
 }
