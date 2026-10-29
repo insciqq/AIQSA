@@ -8,7 +8,7 @@ import {
 } from "../http/requestBody";
 import { logEvent } from "../observability";
 import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
-import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { ActiveRunConflictError, SubagentsRunningConflictError } from "../runs/runRepositoryContract";
 import {
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH,
@@ -363,11 +363,16 @@ function chatRouteErrorJson(data: ChatRouteErrorResponse, init?: ResponseInit): 
 }
 
 function isActiveRunConflictError(error: unknown): boolean {
-  return error instanceof ActiveRunConflictError || (error instanceof Error && error.name === "ActiveRunConflictError");
+  return error instanceof ActiveRunConflictError || (error instanceof Error && error.name === "ActiveRunConflictError") ||
+    isSubagentsRunningError(error);
 }
 
-function activeRunConflictJson(): Response {
-  return chatRouteErrorJson({ error: "active_run_in_progress" }, { status: 409 });
+function activeRunConflictJson(error?: unknown): Response {
+  return chatRouteErrorJson({ error: isSubagentsRunningError(error) ? "subagents_running" : "active_run_in_progress" }, { status: 409 });
+}
+
+function isSubagentsRunningError(error: unknown): boolean {
+  return error instanceof SubagentsRunningConflictError || (error instanceof Error && error.name === "SubagentsRunningConflictError");
 }
 
 function isChatAssistantUpdateError(error: unknown): error is ChatAssistantUpdateError {
@@ -613,7 +618,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
       });
     } catch (error) {
       if (isActiveRunConflictError(error)) {
-        return activeRunConflictJson();
+        return activeRunConflictJson(error);
       }
       if (isChatAssistantUpdateError(error)) {
         return chatAssistantErrorJson(error.code);
@@ -648,7 +653,7 @@ export function createArchiveChatHandler(deps: ChatHandlerDeps) {
       });
     } catch (error) {
       if (isActiveRunConflictError(error)) {
-        return activeRunConflictJson();
+        return activeRunConflictJson(error);
       }
       throw error;
     }

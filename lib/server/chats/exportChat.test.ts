@@ -80,6 +80,22 @@ describe("chat export source", () => {
     expect(source.messages.find((row) => row.key === "db-a2")?.followups?.entries.map((entry) => entry.text)).toEqual(["Добавь откат"]);
   });
 
+  it("leaves a sub-agent wake-up turn out and hangs its answer under the turn before it, never as the user's message", async () => {
+    const rows = [...messageRows,
+      { ...noRuns, content: text("[Sub-agent callback, written by the server, not by the user] researcher ended"), createdAt: at(6),
+        id: "db-wake", modelId: null, parentMessageId: "db-a2", provider: null, role: "user", status: "complete",
+        systemTurnKind: "subagent_callback" },
+      { ...noRuns, content: text("The researcher found three offers."), createdAt: at(7), id: "db-a3", modelId: "m",
+        parentMessageId: "db-wake", provider: "p", role: "assistant", status: "complete" }];
+    const source = await loadChatExportSource(fakeReadClient(rows) as never, { ...chatRow, activeLeafMessageId: "db-a3" });
+    expect(source.messages.map((message) => message.key)).not.toContain("db-wake");
+    expect(source.messages.find((message) => message.key === "db-a3")).toMatchObject({ parentKey: "db-a2", role: "assistant" });
+    expect(source.chat.activeLeafKey).toBe("db-a3");
+    // A leaf that is the wake-up turn itself reads as the answer before it.
+    const atWakeUp = await loadChatExportSource(fakeReadClient(rows.slice(0, -1)) as never, { ...chatRow, activeLeafMessageId: "db-wake" });
+    expect(atWakeUp.chat.activeLeafKey).toBe("db-a2");
+  });
+
   it("skips the attachment query for a chat without attachments", async () => {
     const db = fakeReadClient([{ ...messageRows[1]!, parentMessageId: null }]);
     await loadChatExportSource(db as never, { ...chatRow, activeLeafMessageId: "db-a1" });
