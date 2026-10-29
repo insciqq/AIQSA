@@ -1857,7 +1857,10 @@ export async function prepareRun(
     if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
       instructionIds.add(input.source.source.userMessage.id);
     }
-    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds)]);
+    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds),
+      // A message the server wrote for this send (an approval continuation, a sub-agent wake-up quoting a report)
+      // authorizes no link; the user's own branch messages still do.
+      ...(input.serverAuthoredInput ? [currentSendMessageId] : [])]);
     const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
     const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
     fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };

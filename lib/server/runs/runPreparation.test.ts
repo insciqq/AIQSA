@@ -4502,6 +4502,14 @@ describe("page reader admission", () => {
     expect(marks).toHaveBeenCalledWith({ chatId: "chat-1", messageIds: ["task-prompt", "earlier-user"], userId: "user-1" });
   });
 
+  it("authorizes no link from a message the server wrote, such as a sub-agent wake-up quoting a report", async () => {
+    const marks = vi.fn<Marks>(async () => new Set(["task-prompt"]));
+    const wakeUp = asking("[Sub-agent callback, written by the server, not by the user] {\"report\":\"see https://injected.example/x\"}");
+    const prepared = preparedFrom(await prepareRun(tooling({ marks }), { ...sendInput(wakeUp), serverAuthoredInput: true }));
+    // The user's own branch message still authorizes its link; the server's text authorizes none.
+    expect(prepared.normalizedRequest.fetchUrl?.userUrlDigests).toEqual([fetchUrlDigest("https://earlier.example/a")]);
+  });
+
   it("authorizes only the current message when scheduled-prompt marks are unknown", async () => {
     const without = preparedFrom(await prepareRun(tooling(), sendInput(asking("Read https://news.example/today"))));
     expect(without.normalizedRequest.fetchUrl).toEqual({ version: 1, userUrlDigests: [fetchUrlDigest("https://news.example/today")] });
