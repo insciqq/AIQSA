@@ -135,10 +135,17 @@ async function expectPhoneIslandGaps(page: Page): Promise<void> {
   expect(Math.abs(left - right), `model pill gaps ${left} / ${right}`).toBeLessThanOrEqual(1);
   expect(Math.abs(island.y - menu.y), "model island row").toBeLessThanOrEqual(1);
   expect(Math.abs(plus.y - menu.y), "New chat island row").toBeLessThanOrEqual(1);
-  const more = await expectTarget(page.getByTestId("header-more-trigger"), "Chat actions island");
+  // "+" and "⋯" share one island split by a hairline (operator decision 2026-10-29).
+  const more = await expectTarget(page.getByTestId("header-more-trigger"), "Chat actions");
   const actionsGap = more.x - (plus.x + plus.width);
-  expect(Math.abs(actionsGap - 8), `New chat → Chat actions gap ${actionsGap}`).toBeLessThanOrEqual(1);
-  expect(Math.abs(more.y - menu.y), "Chat actions island row").toBeLessThanOrEqual(1);
+  expect(Math.abs(actionsGap - 2), `New chat → Chat actions gap ${actionsGap}`).toBeLessThanOrEqual(1);
+  expect(Math.abs(more.y - menu.y), "Chat actions row").toBeLessThanOrEqual(1);
+  const shared = await page.locator(".v2-live-more").evaluate((element) => ({
+    divider: getComputedStyle(element, "::after").content,
+    island: getComputedStyle(element, "::before").width
+  }));
+  expect(shared.divider, "hairline between New chat and Chat actions").not.toBe("none");
+  expect(Math.abs(parseFloat(shared.island) - (more.x + more.width - plus.x)), "one island spans both").toBeLessThanOrEqual(1);
 }
 
 /**

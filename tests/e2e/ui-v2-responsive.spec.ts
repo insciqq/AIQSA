@@ -30,15 +30,18 @@ async function expectNoPageOverflow(page: Page) {
   )).toBe(true);
 }
 
+/** Retried: a sheet opened on load or a style injected after it settles over the next frames. */
 async function expectInsideViewport(page: Page, selector: string) {
-  const box = await page.locator(selector).boundingBox();
-  expect(box).not.toBeNull();
-  const viewport = page.viewportSize();
-  expect(viewport).not.toBeNull();
-  expect(box!.x).toBeGreaterThanOrEqual(-1);
-  expect(box!.y).toBeGreaterThanOrEqual(-1);
-  expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1);
-  expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height + 1);
+  await expect(async () => {
+    const box = await page.locator(selector).boundingBox();
+    expect(box).not.toBeNull();
+    const viewport = page.viewportSize();
+    expect(viewport).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(-1);
+    expect(box!.y).toBeGreaterThanOrEqual(-1);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height + 1);
+  }).toPass({ timeout: 5_000 });
 }
 
 for (const theme of ["dark", "light"] as const) {
@@ -309,7 +312,8 @@ for (const state of ["error", "unavailable"] as const) {
 test.describe("v2 jump-to-latest geometry", () => {
   test.use({ hasTouch: true });
 
-  test("keeps a 44px control outside a saturated user bubble", async ({ page }) => {
+  // A phone floats the control centred over the thread, as on chatgpt.com (operator decision 2026-10-29).
+  test("centres a round 44px control over the thread and keeps a saturated bubble's measure", async ({ page }) => {
     for (const width of [320, 390]) {
       await page.setViewportSize({ height: 844, width });
       await page.goto("/ui-v2-fixture?fixture=conversation&state=jump");
@@ -321,12 +325,12 @@ test.describe("v2 jump-to-latest geometry", () => {
       const [bubbleBox, jumpBox] = await Promise.all([bubble.boundingBox(), jump.boundingBox()]);
       expect(bubbleBox).not.toBeNull();
       expect(jumpBox).not.toBeNull();
-      const overlapsHorizontally = Math.max(bubbleBox!.x, jumpBox!.x) <
-        Math.min(bubbleBox!.x + bubbleBox!.width, jumpBox!.x + jumpBox!.width);
-      const overlapsVertically = Math.max(bubbleBox!.y, jumpBox!.y) <
-        Math.min(bubbleBox!.y + bubbleBox!.height, jumpBox!.y + jumpBox!.height);
-      expect(overlapsHorizontally).toBe(false);
-      expect(overlapsHorizontally && overlapsVertically).toBe(false);
+      const placement = await jump.evaluate((element) => {
+        const thread = ((element as HTMLElement).offsetParent ?? document.body).getBoundingClientRect();
+        return { center: thread.left + thread.width / 2, radius: parseFloat(getComputedStyle(element).borderTopLeftRadius) };
+      });
+      expect(Math.abs(jumpBox!.x + jumpBox!.width / 2 - placement.center)).toBeLessThanOrEqual(1);
+      expect(placement.radius).toBeGreaterThanOrEqual(jumpBox!.height / 2 - 0.5);
       expect(jumpBox!.width).toBeGreaterThanOrEqual(44);
       expect(bubbleBox!.width).toBeGreaterThanOrEqual(width - 72.5);
     }

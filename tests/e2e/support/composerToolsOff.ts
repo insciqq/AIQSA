@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { expect, type Page } from "@playwright/test";
-import { chooseSearchStrategy } from "../shell/composer";
+import { chooseSearchStrategy, engageComposer } from "../shell/composer";
 import { disableMemoryRecall } from "./workspace";
 
 /**
@@ -17,6 +17,8 @@ import { disableMemoryRecall } from "./workspace";
  */
 export async function turnComposerToolsOff(page: Page): Promise<void> {
   const mcp = page.getByRole("button", { name: "Change MCP mode" });
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
+  await engageComposer(page);
   await expect(mcp).toBeVisible({ timeout: 30_000 });
   await disableMemoryRecall(page);
   if (await mcp.getAttribute("data-mcp-mode") !== "off") {

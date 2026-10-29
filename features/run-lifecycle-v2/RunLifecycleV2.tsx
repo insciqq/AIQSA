@@ -471,6 +471,7 @@ export function RunComposerActionV2({
     return (
       <>
         <UiV2IconButton
+          data-action="send"
           icon="arrow-up"
           label="Send message"
           title={sendDisabled && sendDisabledReason ? sendDisabledReason : "Send message"}
@@ -494,10 +495,11 @@ export function RunComposerActionV2({
     : "Stopping this run is unavailable.";
   return (
     <>
-      {followup ? <UiV2IconButton icon="arrow-up" label="Send follow-up"
+      {followup ? <UiV2IconButton data-action="send" icon="arrow-up" label="Send follow-up"
         title={sendDisabled && sendDisabledReason ? sendDisabledReason : "Send follow-up"}
         disabled={sendDisabled || !onSend} onClick={onSend} round /> : null}
       <UiV2IconButton
+        data-action="stop"
         icon="stop"
         label="Stop answer"
         title={unavailable ? unavailableReason : "Stop answer"}
