@@ -22,8 +22,9 @@ import { selectedCaptureRequest } from "./outputManifest";
 import { WorkspaceSkillRunState } from "./skillRunState";
 import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
-import { WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { isReservedWorkspaceEnvName, WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide } from "./secrets/manifest";
+import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
 import { WORKSPACE_UV_CACHE_DIRECTORY, WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES } from "./guestCache";
 import {
   WorkspaceRuntimeError,
@@ -46,6 +47,7 @@ type DeterministicExec = {
   exitCode: number | null;
   fault: ExecutionFault | null;
   modelRunId: string;
+  environment: Record<string, string>;
   output: string;
   timer: ReturnType<typeof setTimeout> | null;
 };
@@ -599,14 +601,15 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     session.metrics.indexWrites += 1;
   }
 
-  private startExec(session: DeterministicSession, modelRunId: string, delayed: DelayedCommand | null): DeterministicExec {
+  private startExec(session: DeterministicSession, modelRunId: string, delayed: DelayedCommand | null,
+    environment: Record<string, string>): DeterministicExec {
     const fault = EXECUTION_FAULTS.find((candidate) => session.faults.delete(candidate)) ?? null;
     const exec: DeterministicExec = {
       alive: delayed !== null,
       closed: false,
       done: delayed === null || fault === "descendant-once" || fault === "reader-error-once",
       exitCode: fault === "reader-error-once" ? null : delayed === null || fault === "descendant-once" ? 0 : null,
-      fault, modelRunId, output: "", timer: null
+      fault, modelRunId, environment, output: "", timer: null
     };
     if (delayed) {
       // Guest work outlives a cancelled observation; only process/VM cleanup
@@ -720,6 +723,23 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     return { files, skipped };
   }
 
+  private commandEnvironment(session: DeterministicSession, input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Record<string, string> {
+    const requested = input.arguments.env;
+    if (requested !== undefined && (typeof requested !== "object" || requested === null || Array.isArray(requested))) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    const entries = requested as Record<string, unknown> | undefined;
+    if (entries && Object.entries(entries).some(([name, value]) => isReservedWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0"))) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    return {
+      ["UV_CACHE_DIR"]: WORKSPACE_UV_CACHE_DIRECTORY,
+      ...(session.secretEnvironment ?? {}),
+      ...(entries as Record<string, string> | undefined),
+      ...(input.agent ? workspaceAgentEnvironment(input.agent) : {})
+    };
+  }
+
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -828,24 +848,28 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       case "sandbox_shell":
       case "sandbox_exec": {
         const command = stringArgument(args.command);
+        const environment = this.commandEnvironment(session, input);
         const directive = TEST_DIRECTIVE.exec(command);
         if (directive) return this.directive(input.sessionId, session, directive[1]!, directive[2]);
         const delayed = parseDelayedCommand(command);
         if (delayed) {
-          const exec = this.startExec(session, input.modelRunId, delayed);
+          const exec = this.startExec(session, input.modelRunId, delayed, environment);
           await waitOrAbort(delayed.delayMs, input.signal);
           return shellResult("", exec.exitCode ?? 1);
         }
+        if (command === "env") return shellResult(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => `${name}=${value}`).join("\n") + "\n");
+        if (command.startsWith("printenv ")) return shellResult(`${environment[command.slice("printenv ".length)] ?? ""}\n`, environment[command.slice("printenv ".length)] === undefined ? 1 : 0);
         return shellResult(command === "pwd" ? `${WORKSPACE_PROJECT_DIRECTORY}\n` : "");
       }
       case "sandbox_exec_start": {
         const command = stringArgument(args.command);
+        const environment = this.commandEnvironment(session, input);
         const execSessionId = createHash("sha256")
           .update(`${input.modelRunToolCallId}\0${session.execs.size}`)
           .digest("hex")
           .slice(0, 32);
         const delayed = parseDelayedCommand(command);
-        const exec = this.startExec(session, input.modelRunId, delayed);
+        const exec = this.startExec(session, input.modelRunId, delayed, environment);
         session.execs.set(execSessionId, exec);
         return {
           ...toolResult({ execSessionId, sandbox: session.sandboxName, stopSandboxOnExit: null }),

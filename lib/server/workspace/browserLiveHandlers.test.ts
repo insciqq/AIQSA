@@ -81,6 +81,10 @@ describe("browser live routes", () => {
       (user: string | null, chat: string) => handlers.stream(request(user), context(chat)),
       (user: string | null, chat: string) => handlers.input(request(user, { kind: "text", text: MARKER }), context(chat)),
       (user: string | null, chat: string) => handlers.control(request(user, { action: "take" }), context(chat)),
+      // Every agent's tab, a sub-agent's included, answers alike: it is the same owner's live browser.
+      (user: string | null, chat: string) => handlers.input(request(user, { agent: "thread_1", kind: "text", text: MARKER }), context(chat)),
+      (user: string | null, chat: string) => handlers.control(request(user, { action: "take", agent: "thread_1" }), context(chat)),
+      (user: string | null, chat: string) => handlers.control(request(user, { action: "select", agent: "thread_1" }), context(chat)),
       (user: string | null, chat: string) => handlers.handoff(request(user, { action: "done", handoffId: "handoff_1" }), context(chat))
     ];
     for (const [user, chat] of probes) {
@@ -107,7 +111,7 @@ describe("browser live routes", () => {
     await handle.end();
     const events = await reading;
     expect(events[0]).toMatchObject({ type: "state", value: { browser: "absent", runId: "run-1", signInRemembered: false } });
-    expect(events).toContainEqual({ type: "frame", value: { data: FRAME_DATA, height: 800, mime: "image/jpeg", seq: 1, width: 1280 } });
+    expect(events).toContainEqual({ type: "frame", value: { agent: "main", data: FRAME_DATA, height: 800, mime: "image/jpeg", seq: 1, width: 1280 } });
     expect(events.at(-2)).toMatchObject({ type: "state", value: { browser: "stopped" } });
     expect(events.at(-1)).toEqual({ type: "end", value: { reason: "run_finished" } });
   });
@@ -139,7 +143,7 @@ describe("browser live routes", () => {
     expect((await handlers.control(request("owner", { action: "steal" }), context())).status).toBe(400);
     expect((await handlers.control(request("owner", { action: "take" }), context())).status).toBe(204);
     expect((await handlers.input(request("owner-phone", text), context())).status).toBe(204);
-    expect(guest.received.filter((message) => message.t === "input")).toEqual([{ input: text, t: "input" }]);
+    expect(guest.received.filter((message) => message.t === "input")).toEqual([{ agent: "main", input: text, t: "input" }]);
     const burst = await Promise.all(Array.from({ length: 70 }, () => handlers.input(request("owner", { kind: "key", type: "down", key: "a",
       code: "KeyA" }), context())));
     const limited = burst.filter((item) => item.status === 429);

@@ -76,7 +76,10 @@ try:
         ssh_config += '  IdentitiesOnly yes\n' + ''.join('  IdentityFile ' + path + '\n' for path in identities)
     write(temporary / 'ssh_config', ssh_config.encode())
     write(temporary / 'user_config', include + b'\n' + existing_config + b'\n')
-    write(temporary / '.environment.json', json.dumps({'runId': data['runId'], 'values': data['environment']}, ensure_ascii=False).encode('utf-8'))
+    # The agent identity is supplied per command by the server. Never persist
+    # a legacy or forged AIQSA_AGENT_* value in the VM's shared environment.
+    values = {name: value for name, value in data['environment'].items() if not name.startswith('AIQSA_AGENT_')}
+    write(temporary / '.environment.json', json.dumps({'runId': data['runId'], 'values': values}, ensure_ascii=False).encode('utf-8'))
     write(temporary / 'guide', data['guide'].encode('utf-8'))
     for name in ['ssh', 'files']:
         remove(managed / name)

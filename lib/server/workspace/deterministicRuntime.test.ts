@@ -45,6 +45,23 @@ async function collect(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 }
 
 describe("deterministic Workspace runtime", () => {
+  it("keeps each exec's agent identity per call instead of persisting the last one", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sessionId = "ws_" + "7".repeat(40);
+    const session = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, memoryMiB: 1024, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId });
+    await runtime.syncPersonalSecrets({ runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "run_agent",
+      runEnvironment: { AIQSA_BROWSER_LOCALE: "es-ES" }, secrets: [] });
+    const result = (await runtime.callBoundTool({ runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "run_agent",
+      modelRunToolCallId: "agent", originalName: "sandbox_shell", agent: { kind: "subagent", name: "shop-amazon", threadId: "thread-7" },
+      arguments: { command: "printenv AIQSA_AGENT_ID" } }));
+    expect(JSON.parse(result.content[0]!.text!).data.stdout).toBe("thread-7\n");
+    const main = await runtime.callBoundTool({ runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "run_agent",
+      modelRunToolCallId: "main", originalName: "sandbox_shell", arguments: { command: "printenv AIQSA_AGENT_ID" } });
+    expect(JSON.parse(main.content[0]!.text!).data.stdout).toBe("\n");
+    await runtime.removeSession({ runtimeSandboxId: session.runtimeSandboxId, sessionId });
+  });
+
   it.each(["export-list-once", "export-stream-once", "deferred-export-stream-once"])("recovers a captured %s transport fault without recapturing guest bytes", async (fault) => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "ws_" + "8".repeat(40);
