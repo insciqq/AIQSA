@@ -56,6 +56,8 @@ function toolMeta(call: ToolCallV2): string {
 type ToolCallStateV2 = Parameters<typeof describeToolCallV2>[1];
 
 function toolCallState(call: ToolCallV2): ToolCallStateV2 {
+  // A gated call is stored as an error but was never sent: its meta says why.
+  if (call.approvalRequired) return "held";
   return call.status === "running" ? "running"
     : call.status === "error" ? "failed" : call.status === "cancelled" ? "cancelled" : "settled";
 }

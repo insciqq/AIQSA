@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -18,6 +18,26 @@ const answer: ConversationMessageV2 = {
 describe("Conversation v2", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("marks jump to latest while the thread scrolls and clears it once the thread rests", () => {
+    vi.useFakeTimers();
+    try {
+      render(<ConversationV2 messages={[answer]} showJumpToLatest onJumpToLatest={vi.fn()} />);
+      const jump = screen.getByRole("button", { name: "Jump to latest message" });
+      // It mostly appears mid-scroll, so it starts marked.
+      expect(jump).toHaveAttribute("data-scrolling", "true");
+      act(() => { vi.advanceTimersByTime(300); });
+      expect(jump).not.toHaveAttribute("data-scrolling");
+      fireEvent.scroll(screen.getByTestId("conversation-scroll"));
+      expect(jump).toHaveAttribute("data-scrolling", "true");
+      act(() => { vi.advanceTimersByTime(299); });
+      expect(jump).toHaveAttribute("data-scrolling", "true");
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(jump).not.toHaveAttribute("data-scrolling");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("titles the blank chat with the greeting it is given", () => {

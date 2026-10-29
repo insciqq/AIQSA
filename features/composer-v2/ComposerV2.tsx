@@ -211,6 +211,14 @@ function modalAboveLayer(layer: HTMLElement | null): boolean {
     .some(dialog => !dialog.contains(layer) && !layer.contains(dialog));
 }
 
+/** A tap or focus here leaves the phone composer engaged: inside it, or inside a dialog over the page. */
+function staysEngagedFor(target: EventTarget | null, composer: HTMLElement | null): boolean {
+  if (!(target instanceof Node)) return false;
+  if (composer?.contains(target)) return true;
+  const element = target instanceof Element ? target : target.parentElement;
+  return Boolean(element?.closest("[role='dialog'], [role='alertdialog']"));
+}
+
 /** Where a toolbar-anchored layer opens; "over" covers the draft above its trigger. */
 type ComposerLayerSide = "above" | "below" | "over";
 
@@ -1257,6 +1265,29 @@ export function ComposerV2({
   useEffect(() => {
     if (paletteOpen) paletteLoadAssistants?.();
   }, [paletteLoadAssistants, paletteOpen]);
+
+  /* A phone shows the composer as one line at rest and its tools once the
+     user engages it (operator decision 2026-10-29). Engagement starts with
+     focus and ends with a tap outside or focus moving elsewhere, not with
+     every blur: iOS does not focus a tapped button, so a blur alone would
+     fold the row away under the finger before its tap lands. A dialog opened
+     from a tool keeps it engaged, so focus can return to that tool. A send
+     always follows engagement, so the tools are on screen before every send. */
+  const [engaged, setEngaged] = useState(false);
+  const draftEmpty = draft.trim().length === 0;
+  // A follow-up sends only its text; a message may also send files or comments alone.
+  const nothingToSend = draftEmpty && (followupMode || (attachmentItems.length === 0 && comments.length === 0));
+  const resting = !engaged && draftEmpty && attachmentItems.length === 0 && comments.length === 0 &&
+    !layer && !artifactCreate && !artifactEdit && !dragActive;
+  useEffect(() => {
+    if (!engaged || layer) return;
+    function disengageOutside(event: PointerEvent) {
+      if (staysEngagedFor(event.target, composerRef.current)) return;
+      setEngaged(false);
+    }
+    document.addEventListener("pointerdown", disengageOutside, true);
+    return () => document.removeEventListener("pointerdown", disengageOutside, true);
+  }, [engaged, layer]);
   const paletteNote = paletteOpen && paletteSkills && paletteSkills.items.length === 0
     ? paletteSkills.state === "error"
       ? "Skills could not be loaded."
@@ -1287,7 +1318,20 @@ export function ComposerV2({
         className="v2-composer"
         data-testid="composer-v2-surface"
         data-drop-active={dragActive ? "true" : undefined}
+        data-empty={nothingToSend || undefined}
         data-layer-open={layer ?? undefined}
+        data-resting={resting || undefined}
+        onBlur={(event) => {
+          const next = event.relatedTarget;
+          if (next instanceof Node && !staysEngagedFor(next, event.currentTarget)) setEngaged(false);
+        }}
+        onClick={(event) => {
+          // The resting line is one target: a tap beside the field still opens it.
+          if (resting && !(event.target instanceof Element && event.target.closest("button, a, input"))) {
+            textareaRef.current?.focus();
+          }
+        }}
+        onFocus={() => setEngaged(true)}
         onDragEnd={clearDragState}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}

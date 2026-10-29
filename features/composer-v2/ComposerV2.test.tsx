@@ -56,6 +56,74 @@ describe("composer field height", () => {
   });
 });
 
+describe("resting composer", () => {
+  it("rests while nothing engages it and stays open from focus until a tap outside", () => {
+    render(<div><button type="button">Outside</button><ComposerV2 {...props({ draft: "" })} /></div>);
+    const surface = screen.getByTestId("composer-v2-surface");
+    expect(surface).toHaveAttribute("data-resting", "true");
+    expect(surface).toHaveAttribute("data-empty", "true");
+
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.focus(field);
+    expect(surface).not.toHaveAttribute("data-resting");
+    // iOS does not focus a tapped button: a blur without a new target keeps the tools open under the finger.
+    fireEvent.blur(field, { relatedTarget: null });
+    expect(surface).not.toHaveAttribute("data-resting");
+    fireEvent.pointerDown(within(surface).getByRole("button", { name: "Add" }));
+    expect(surface).not.toHaveAttribute("data-resting");
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }));
+    expect(surface).toHaveAttribute("data-resting", "true");
+  });
+
+  it("stays open under a dialog opened from a tool, so focus can return to that tool", () => {
+    render(<div>
+      <button type="button">Outside</button>
+      <div role="dialog" aria-label="Skills library"><button type="button">Close</button></div>
+      <ComposerV2 {...props({ draft: "" })} />
+    </div>);
+    const surface = screen.getByTestId("composer-v2-surface");
+    const field = screen.getByRole("textbox", { name: "Message" });
+    const close = screen.getByRole("button", { name: "Close" });
+    fireEvent.focus(field);
+    fireEvent.blur(field, { relatedTarget: close });
+    fireEvent.pointerDown(close);
+    expect(surface).not.toHaveAttribute("data-resting");
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }));
+    expect(surface).toHaveAttribute("data-resting", "true");
+  });
+
+  it("stays open while it holds a draft, files or comments, and folds when focus moves elsewhere", () => {
+    const view = render(<div><button type="button">Outside</button><ComposerV2 {...props({ draft: "Черновик" })} /></div>);
+    const surface = screen.getByTestId("composer-v2-surface");
+    expect(surface).not.toHaveAttribute("data-resting");
+    expect(surface).not.toHaveAttribute("data-empty");
+
+    view.rerender(<div><button type="button">Outside</button><ComposerV2 {...props({
+      draft: "", comments: [{ id: "one", quote: "Fragment", text: "Note" }]
+    })} /></div>);
+    expect(surface).not.toHaveAttribute("data-resting");
+    expect(surface).not.toHaveAttribute("data-empty");
+
+    view.rerender(<div><button type="button">Outside</button><ComposerV2 {...props({ draft: "" })} /></div>);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.focus(field);
+    fireEvent.blur(field, { relatedTarget: screen.getByRole("button", { name: "Outside" }) });
+    expect(surface).toHaveAttribute("data-resting", "true");
+  });
+
+  it("counts only text as something to send in a follow-up", () => {
+    render(<ComposerV2 {...props({
+      draft: " ", activeRun: true, runId: "run", onFollowup: vi.fn(), onStop: vi.fn(),
+      comments: [{ id: "one", quote: "Fragment", text: "Note" }]
+    })} />);
+    expect(screen.getByTestId("composer-v2-surface")).toHaveAttribute("data-empty", "true");
+    expect(screen.getByRole("button", { name: "Stop answer" })).toHaveAttribute("data-action", "stop");
+    expect(screen.getByRole("button", { name: "Send follow-up" })).toHaveAttribute("data-action", "send");
+  });
+});
+
 describe("comment-aware composer send controls", () => {
   it("allows comment-only sends and counts the entire built follow-up", () => {
     const comments = [{ id: "one", quote: "Selected fragment", text: "My comment" }];

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
+import { engageComposer } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { e2eAssistantRows } from "./support/assistants";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
@@ -154,6 +155,7 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     await startChat(recipient).click();
     await expect(recipient.getByTestId("library-v2")).toHaveCount(0);
     // The Assistant's fixed Always Skill counts as pinned, and the chip says who fixed the row.
+    await engageComposer(recipient);
     await expect(recipient.getByRole("button", { name: "Change Skills mode" }))
       .toHaveAccessibleDescription(`Skills: Auto · 1 pinned (always loaded) · Fixed by ${name}`);
   } finally {

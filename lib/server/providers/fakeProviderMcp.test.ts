@@ -24,7 +24,7 @@ async function run(input: ProviderRunRequest): Promise<ProviderRunResult> {
 describe("fake provider MCP scenario", () => {
   it("calls the run's MCP tool once, then names the server's outcome", async () => {
     const asked = await run(request("Remove it [AIQSA_MCP_E2E:delete_record:r-1]"));
-    expect(asked.toolCalls).toEqual([{ arguments: { id: "r-1" }, id: "fake-mcp-delete_record-r-1", name: deleteRecord.name }]);
+    expect(asked.toolCalls).toEqual([{ arguments: { id: "r-1" }, id: "fake-mcp-delete_record-r-1-0", name: deleteRecord.name }]);
     const refused = { content: [{ type: "json", value: { error: "mcp_approval_required" } }], status: "error", type: "fake_tool_result" };
     expect((await run(request("Remove it [AIQSA_MCP_E2E:delete_record:r-1]", [refused]))).finalText)
       .toBe("MCP call finished: mcp_approval_required.");

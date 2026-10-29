@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { ChatDetailWire } from "../../lib/contracts/chats";
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
-import { chooseSearchStrategy, closeRunSetup, openRunSetup, selectModel } from "./shell/composer";
+import { chooseSearchStrategy, closeRunSetup, engageComposer, openRunSetup, selectModel } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
@@ -177,6 +177,7 @@ for (const width of [1440, 390]) {
       await expect(toggle).toHaveAttribute("aria-checked", "true");
     }
     await closeRunSetup(page);
+    await engageComposer(page);
     await page.getByRole("button", { name: "Change MCP mode" }).click();
     await page.getByRole("menuitemradio", { name: /^Load all/ }).click();
     await composer.fill("Initial unsent draft");

@@ -2051,7 +2051,8 @@ test("administrator saves a versioned Search recommendation that grants no acces
     },
     expectedVersion: 4
   });
-  await expect(policy.getByRole("button", { name: "Save default" })).toBeDisabled();
+  // The saved plan has no change left, so its footer shows no actions.
+  await expect(policy.getByRole("button", { name: "Save default" })).toHaveCount(0);
 
   await row.click();
   await expect(page).toHaveURL(/resource=search-source-1/u);
