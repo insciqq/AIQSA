@@ -471,6 +471,51 @@ class HostLeaseTests(unittest.IsolatedAsyncioTestCase):
             host._check_memory()
         self.assertEqual(raised.exception.code, _host.BROWSER_MEMORY_LOW_CODE)
 
+    async def test_commands_of_five_agents_interleave_without_sharing_locks(self) -> None:
+        host = _bare_host()
+        states = [_host.AgentState(f"thread-{index}") for index in range(5)]
+        events: List[str] = []
+
+        async def action(state: Any) -> None:
+            async with state.lock:
+                events.append(f"start:{state.agent_id}")
+                await asyncio.sleep(0)
+                events.append(f"end:{state.agent_id}")
+
+        await asyncio.gather(*(action(state) for state in states))
+        self.assertEqual({event.split(":", 1)[1] for event in events}, {state.agent_id for state in states})
+        self.assertLess(max(events.index(f"start:{state.agent_id}") for state in states), events.index("end:thread-0"))
+
+    async def test_close_gate_waits_for_other_active_commands(self) -> None:
+        host = _bare_host()
+        host._active_commands = 2
+        closing = asyncio.create_task(host._begin_browser_close())
+        await asyncio.sleep(0)
+        self.assertTrue(host._closing)
+        self.assertFalse(closing.done())
+        host._active_commands = 1
+        async with host.command_condition:
+            host.command_condition.notify_all()
+        await closing
+        self.assertTrue(host._closing)
+
+    async def test_download_callback_uses_the_page_owner(self) -> None:
+        host = _bare_host()
+        owner = _host.AgentState("thread-a", "amazon")
+        other = _host.AgentState("thread-b", "shop")
+        page = _HostPage("https://amazon.example/")
+        host._pages[page] = owner
+        host._states = {owner.agent_id: owner, other.agent_id: other}
+        host._agent_context.set(other.agent_id)
+        directory = tempfile.TemporaryDirectory()
+        host.downloads_dir = Path(directory.name)
+        try:
+            await host._on_download(_HostDownload(page))
+        finally:
+            directory.cleanup()
+        self.assertTrue(any("Downloaded" in note for note in owner.notes))
+        self.assertFalse(other.notes)
+
 
 class _HostPage:
     def __init__(self, url: str = "about:blank") -> None:
@@ -500,6 +545,15 @@ class _HostDialog:
 
     async def dismiss(self) -> None:
         self.accepted = False
+
+
+class _HostDownload:
+    def __init__(self, page: Any) -> None:
+        self.page = page
+        self.suggested_filename = "report.txt"
+
+    async def save_as(self, _path: str) -> None:
+        return None
 
 
 def _bare_host() -> Any:
