@@ -106,6 +106,44 @@ describe("PermanentChatDeletionSurface", () => {
     expect(screen.getByTestId("permanent-chat-deletion-notice").style.bottom).toBe("");
   });
 
+  it("keeps polling an unchanged status until the deletion completes, then lets the notice go", async () => {
+    vi.useFakeTimers();
+    const replies = ["IN_PROGRESS", "IN_PROGRESS", "COMPLETE"];
+    const fetchMock = vi.fn(async () => Response.json({ status: replies.shift() }));
+    vi.stubGlobal("fetch", fetchMock);
+    usePermanentChatDeletionStore.setState({
+      reference: { chatId: "chat-1" },
+      status: { status: "IN_PROGRESS" },
+      statusLoadState: "ready",
+      statusOpen: false
+    });
+    render(<PermanentChatDeletionSurface />);
+
+    for (const calls of [1, 2, 3]) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      expect(fetchMock).toHaveBeenCalledTimes(calls);
+    }
+    expect(screen.getByRole("status")).toHaveTextContent("Chat deletion completed");
+    await act(async () => { await vi.advanceTimersByTimeAsync(COMPLETED_NOTICE_DISMISS_MS); });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets the user dismiss a notice only an administrator can move on", () => {
+    usePermanentChatDeletionStore.setState({
+      reference: { chatId: "chat-1" },
+      status: { status: "NEEDS_ATTENTION" },
+      statusLoadState: "ready",
+      statusOpen: false
+    });
+    render(<PermanentChatDeletionSurface />);
+
+    expect(screen.getByRole("button", { name: "View progress" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(usePermanentChatDeletionStore.getState().reference).toBeNull();
+  });
+
   it("lets a completed notice go on its own, but not while it holds focus", () => {
     vi.useFakeTimers();
     usePermanentChatDeletionStore.setState({
