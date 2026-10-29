@@ -162,8 +162,12 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
       if (!alive.current) return;
       await reload();
       closeEditor(saved.id);
-      setLastSave({ definition: saved, kind: editor.original ? "updated" : "created" });
-      setNotice(editor.original ? `Saved “${saved.name}”.` : `Created “${saved.name}”. Ask the agent to use it by name.`);
+      // A save that changed nothing (the server compares after normalizing) leaves the version as it was: there is
+      // nothing to undo, and restoring the previous revision would reverse the last real edit.
+      const unchanged = editor.original !== null && saved.version === editor.original.version;
+      setLastSave(unchanged ? null : { definition: saved, kind: editor.original ? "updated" : "created" });
+      setNotice(unchanged ? `Saved “${saved.name}”. Nothing changed.` : editor.original ? `Saved “${saved.name}”.`
+        : `Created “${saved.name}”. Ask the agent to use it by name.`);
     });
   }
   function undo() {
