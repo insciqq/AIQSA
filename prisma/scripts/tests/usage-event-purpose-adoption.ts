@@ -130,12 +130,21 @@ CREATE TABLE "_UsagePurposeUpgradeFixture" AS SELECT id, to_jsonb(ue) AS snapsho
 
 const expected = fixtures.map(({ id, purpose }) => `('${id}', '${purpose}')`).join(",\n    ");
 
+/**
+ * Purposes that migrations after this proof's bound add (`20261029230000_subagent_contracts`,
+ * `20261029231000_mcp_guard_role`). The proof runs only up to the Project and Knowledge drop, so it compares the
+ * vocabulary as of that point: list a purpose here with the migration that adds it. The full current vocabulary is
+ * checked after every complete deploy (`prisma/schema-integrity-smoke.ts`).
+ */
+const LATER_USAGE_PURPOSES: readonly UsagePurpose[] = ["subagent", "mcp_guard"];
+const PURPOSES_AT_BOUND = USAGE_PURPOSES.filter((purpose) => !LATER_USAGE_PURPOSES.includes(purpose));
+
 /** Runs in a rolled-back transaction, so the repeated deploy runs it again. */
 export const usageEventPurposeProofSql = `
 BEGIN;
 DO $proof$ DECLARE mismatch TEXT; BEGIN
   IF (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder) FROM pg_enum WHERE enumtypid = '"UsagePurpose"'::regtype)
-    IS DISTINCT FROM '${USAGE_PURPOSES.join(",")}'
+    IS DISTINCT FROM '${PURPOSES_AT_BOUND.join(",")}'
     THEN RAISE EXCEPTION 'usage_purpose_vocabulary_mismatch'; END IF;
   IF (SELECT count(*) FROM pg_trigger WHERE tgrelid = '"UsageEvent"'::regclass AND tgenabled = 'O'
       AND tgname IN ('UsageEvent_optional_decision_owner_check', 'UsageEvent_knowledge_relevance_owner_check')) <> 2

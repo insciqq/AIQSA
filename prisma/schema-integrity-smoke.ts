@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { providerTemplateIds } from "../lib/domain/providerTemplates";
+import { USAGE_PURPOSES } from "../lib/domain/usagePurpose";
 
 const prisma = new PrismaClient();
 
@@ -1063,6 +1064,19 @@ async function assertSubagentRelations(): Promise<void> {
   });
 }
 
+/**
+ * After a complete deploy the stored usage vocabulary is the domain's, in its order (personal purposes first,
+ * `lib/domain/usagePurpose.ts`); the forward adoption proof of the purpose backfill checks only its own era.
+ */
+async function assertUsagePurposeVocabulary(): Promise<void> {
+  const [row] = await prisma.$queryRaw<Array<{ labels: string }>>`
+    SELECT string_agg(enumlabel::text, ',' ORDER BY enumsortorder) AS labels FROM pg_enum WHERE enumtypid = '"UsagePurpose"'::regtype
+  `;
+  if (row?.labels !== USAGE_PURPOSES.join(",")) {
+    throw new Error(`UsagePurpose vocabulary differs from lib/domain/usagePurpose.ts: ${row?.labels ?? "missing"}`);
+  }
+}
+
 async function assertStatusEnums(): Promise<void> {
   await expectDatabaseRejection('invalid MessageStatus', 'invalid input value for enum "MessageStatus"', async (tx) => {
     const { chats } = await createUserAndChats(tx, 1);
@@ -1130,6 +1144,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   await assertSubagentRelations();
+  await assertUsagePurposeVocabulary();
   console.log(
     "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, historical Knowledge usage index, six grant shapes, lifecycle enums, and sub-agent keys and cascades."
   );
