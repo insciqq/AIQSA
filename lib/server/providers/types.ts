@@ -280,6 +280,11 @@ export type NormalizedRunRequest = {
     userUrlDigests?: readonly string[];
   }>;
   searchPlan: NormalizedSearchPlan;
+  /** Server-owned admission marker: the user's tool-calling chat models this run may give its sub-agents
+   * (`call_subagent` `model`), frozen from the catalog that admitted the answer model. Absent on Assistant runs,
+   * on runs accepted before sub-agents and when the catalog could not be read: their sub-agents run on the
+   * parent's model only (`lib/server/engine/subagents/modelCatalog.ts`). Never set from a request field. */
+  subagentModels?: import("../engine/subagents/modelCatalog").FrozenSubagentModels;
   /** Server-owned admission marker of an interactive personal chat with
    * Workspace on: the model may save one Workspace folder per answer as a
    * personal Skill through `save_skill` (never a
