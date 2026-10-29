@@ -1,16 +1,16 @@
 import type { PrismaClient } from "@prisma/client";
-import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import { createMcpGuardPlanResolver, type AcceptedMcpGuardPlan } from "../providerRuntime/mcpGuardPlan";
 import { createAcceptedStructuredOutputSnapshotExecutor } from "../providerRuntime/structuredOutputExecutor";
-import type { ProviderConversationMessage } from "../providers/types";
 import { logEvent } from "../observability";
 import { reportedAnswerCost } from "../runs/usagePricing";
 import { collectMcpGuardUsage } from "./guardUsage";
-import { boundedMcpGuardMessages, decodeMcpGuardVerdict, MCP_GUARD_LIMITS, mcpGuardRequest,
+import { decodeMcpGuardVerdict, MCP_GUARD_LIMITS, mcpGuardRequest,
   type McpGuardToolInput, type McpGuardVerdict } from "./guardPrompt";
 
-export type McpGuardAdmission = Readonly<{ approvedBy?: string; plan: AcceptedMcpGuardPlan; userMessages: readonly string[] | null }>;
+import { freezeGuardAuthority, readGuardAuthority, type GuardAuthorityInput, type McpGuardAdmission } from "./guardAuthority";
+export type { McpGuardAdmission } from "./guardAuthority";
+export const MCP_GUARD_TOO_LONG_REASON = "The conversation is too long for the automatic check. Please review this call.";
 export const MCP_GUARD_UNAVAILABLE_REASON = "The automatic check could not verify this call. Please review it before allowing it.";
 export const mcpGuardAsk = (): McpGuardVerdict => ({ decision: "ask", reason: MCP_GUARD_UNAVAILABLE_REASON });
 export type McpGuardCheck = (input: Readonly<{ admission: McpGuardAdmission; tool: McpGuardToolInput;
@@ -25,36 +25,15 @@ export function createMcpGuardService(db: PrismaClient, options: Readonly<{
   const resolve = options.resolve ?? createMcpGuardPlanResolver(db);
   const execute = options.execute ?? createAcceptedStructuredOutputSnapshotExecutor(db, { disableRequestRetries: true });
   return {
-    async admit(input: Readonly<{ chatId: string; userId: string; messages: readonly ProviderConversationMessage[];
-      currentMessage?: string }>): Promise<McpGuardAdmission | undefined> {
-      const unavailable = (): McpGuardAdmission => ({ plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: null });
+    async admit(input: GuardAuthorityInput): Promise<McpGuardAdmission | undefined> {
+      const unavailable = (plan: AcceptedMcpGuardPlan): McpGuardAdmission => ({ version: 2, plan, messages: [], unavailable: true });
       try {
         const plan = await resolve();
-        if (!plan.available) return plan.code === "mcp_guard_model_absent" ? undefined : { plan, userMessages: null };
-        const branch = input.messages.filter(message => message.role === "user" && !message.purpose && message.id !== "current-user-message").reverse();
-        if (branch.length > MCP_GUARD_LIMITS.messages) return { plan, userMessages: null };
-        const ids = branch.map(message => message.id);
-        // Read original user text, never model-facing attachment/Skill enrichment, and prove authorship.
-        const [messages, followups] = await Promise.all([
-          // Historical personal sends have no per-message author. Their owner-private,
-          // non-imported chat proves authorship; an imported transcript never does.
-          db.message.findMany({ where: { id: { in: ids }, chatId: input.chatId,
-            OR: [{ authorUserId: input.userId }, { authorUserId: null, chat: { userId: input.userId, importSource: null } }],
-            role: "user", scheduledTaskPrompt: false, systemTurnKind: null, answerReviewSessionId: null }, select: { id: true, content: true } }),
-          db.runFollowup.findMany({ where: { id: { in: ids }, authorUserId: input.userId,
-            modelRun: { chatId: input.chatId, userId: input.userId } }, select: { id: true, text: true } })
-        ]);
-        const texts = new Map([...messages.map(row => [row.id, textFromContentBlocks(row.content as { blocks?: unknown[] })] as const),
-          ...followups.map(row => [row.id, row.text] as const)]);
-        // A copied follow-up whose original authorship cannot be proved may be a correction;
-        // do not silently drop it and authorize from an earlier message instead.
-        if (branch.some(message => message.followupOf && !texts.has(message.id))) return { plan, userMessages: null };
-        const userMessages = [...(input.currentMessage === undefined ? [] : [input.currentMessage]),
-          ...ids.flatMap(id => texts.has(id) ? [texts.get(id)!] : [])];
-        return { plan, userMessages: boundedMcpGuardMessages(userMessages) };
+        if (!plan.available) return plan.code === "mcp_guard_model_absent" ? undefined : unavailable(plan);
+        return await freezeGuardAuthority(db, input, plan);
       } catch {
         logEvent("service_operation", { action: "degrade", code: "mcp_guard_admission_unavailable", outcome: "degraded", subsystem: "mcp", stage: "prepare" });
-        return unavailable();
+        return unavailable({ version: 1, available: false, code: "mcp_guard_model_unavailable" });
       }
     },
     async check(input: Parameters<McpGuardCheck>[0]): Promise<McpGuardVerdict> {
@@ -75,18 +54,29 @@ export function createMcpGuardService(db: PrismaClient, options: Readonly<{
       let abort: (() => void) | undefined;
       try {
         const work = async () => {
-          // Only delivered, owner-authored follow-ups of this run extend its authority.
-          const followups = await db.runFollowup.findMany({ where: { modelRunId: input.runId, authorUserId: input.userId,
-            deliveredAt: { not: null }, modelRun: { userId: input.userId } }, orderBy: { ordinal: "desc" },
-            select: { text: true }, take: MCP_GUARD_LIMITS.messages + 1 });
+          const authority = await readGuardAuthority(db, input);
           signal.throwIfAborted();
-          const messages = input.admission.userMessages;
-          const request = mcpGuardRequest(messages && [...followups.map(row => row.text), ...messages], input.tool, plan.reasoningEffort);
+          if (!authority.ok) {
+            if (authority.code !== "too_long") return fail("mcp_guard_authority_unavailable");
+            fail("mcp_guard_conversation_too_long");
+            return { decision: "ask" as const, reason: MCP_GUARD_TOO_LONG_REASON };
+          }
+          const request = mcpGuardRequest(authority.messages, input.tool, plan.reasoningEffort);
           if (!request) return fail("mcp_guard_input_oversize");
-          const result = await execute(plan.snapshot, request, { signal, timeoutMs,
-            onUsage(update) { reported = true; usage = mergeTokenUsage(usage, update); }, onCostUsd(value) { costUsd = value; } });
-          signal.throwIfAborted();
-          return decodeMcpGuardVerdict(result) ?? fail("mcp_guard_output_invalid");
+          try {
+            const result = await execute(plan.snapshot, request, { signal, timeoutMs,
+              onUsage(update) { reported = true; usage = mergeTokenUsage(usage, update); }, onCostUsd(value) { costUsd = value; } });
+            signal.throwIfAborted();
+            return decodeMcpGuardVerdict(result) ?? fail("mcp_guard_output_invalid");
+          } finally {
+            // The transport may finish after the verdict timed out. Collect only once it
+            // settles so late provider-reported usage reaches the detached writer too.
+            if (reported || costUsd !== undefined) {
+              try { (options.collectUsage ?? collectMcpGuardUsage)(input.runId, { provider: plan.snapshot.providerFamily,
+                modelId: plan.snapshot.model.upstreamModelId, providerModelId: plan.snapshot.providerModelId,
+                purpose: "mcp_guard", usage, ...reportedAnswerCost(costUsd) }); } catch { /* Accounting cannot change a verdict. */ }
+            }
+          }
         };
         signal.throwIfAborted();
         return await Promise.race([work(), new Promise<never>((_, reject) => {
@@ -97,11 +87,6 @@ export function createMcpGuardService(db: PrismaClient, options: Readonly<{
       finally {
         clearTimeout(timer);
         if (abort) signal.removeEventListener("abort", abort);
-        if (reported || costUsd !== undefined) {
-          try { (options.collectUsage ?? collectMcpGuardUsage)(input.runId, { provider: plan.snapshot.providerFamily,
-            modelId: plan.snapshot.model.upstreamModelId, providerModelId: plan.snapshot.providerModelId,
-            purpose: "mcp_guard", usage, ...reportedAnswerCost(costUsd) }); } catch { /* Accounting cannot change a verdict. */ }
-        }
       }
     }
   };

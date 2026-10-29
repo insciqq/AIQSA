@@ -1,5 +1,5 @@
 import { decodeAcceptedMcpGuardPlan } from "../providerRuntime/mcpGuardPlan";
-import { boundedMcpGuardMessages, type McpGuardVerdict } from "./guardPrompt";
+import { boundedMcpGuardMessages, MCP_GUARD_LIMITS, type McpGuardVerdict } from "./guardPrompt";
 import type { McpGuardAdmission } from "./guard";
 import { hashCanonicalMcpValue } from "./definitions";
 
@@ -15,6 +15,7 @@ import { hashCanonicalMcpValue } from "./definitions";
  */
 export type McpApprovalAdmission = Readonly<{
   consentedServerIds: readonly string[];
+  approvedBy?: string;
   guard?: McpGuardAdmission;
   version: 1;
 }>;
@@ -65,15 +66,16 @@ export function mcpCallNeedsApproval(input: Readonly<{
 export function isMcpApprovalAdmission(value: unknown): value is McpApprovalAdmission {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).every(key => ["consentedServerIds", "guard", "version"].includes(key)) &&
+  return Object.keys(record).every(key => ["consentedServerIds", "approvedBy", "guard", "version"].includes(key)) &&
+    (record.approvedBy === undefined || typeof record.approvedBy === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(record.approvedBy)) &&
     (record.guard === undefined || isMcpGuardAdmission(record.guard)) && record.version === 1 &&
     Array.isArray(record.consentedServerIds) && record.consentedServerIds.length <= 256 &&
     record.consentedServerIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128) &&
     new Set(record.consentedServerIds).size === record.consentedServerIds.length;
 }
 
-export function mcpApprovalAdmission(consentedServerIds: readonly string[], guard?: McpGuardAdmission): McpApprovalAdmission {
-  return { consentedServerIds: [...new Set(consentedServerIds)].sort(), ...(guard ? { guard } : {}), version: 1 };
+export function mcpApprovalAdmission(consentedServerIds: readonly string[], guard?: McpGuardAdmission, approvedBy?: string): McpApprovalAdmission {
+  return { consentedServerIds: [...new Set(consentedServerIds)].sort(), ...(guard ? { guard } : {}), ...(approvedBy ? { approvedBy } : {}), version: 1 };
 }
 
 /** What an approval matches: the exact server, tool, definition and arguments. */
@@ -137,7 +139,22 @@ export function isMcpApprovalRequest(value: unknown): value is McpApprovalReques
 function isMcpGuardAdmission(value: unknown): value is McpGuardAdmission {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
+  const id = (entry: unknown): entry is string => typeof entry === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(entry);
+  if (row.approvedBy !== undefined && !id(row.approvedBy) || decodeAcceptedMcpGuardPlan(row.plan) === null) return false;
+  if (row.version === 2) {
+    if (Object.keys(row).some(key => !["version", "plan", "messages", "currentMessageId", "unavailable", "approvedBy"].includes(key)) ||
+      row.unavailable !== undefined && row.unavailable !== true || row.currentMessageId !== undefined && !id(row.currentMessageId) ||
+      !Array.isArray(row.messages) || row.messages.length > MCP_GUARD_LIMITS.messages) return false;
+    const seen = new Set<string>();
+    for (const ref of row.messages) {
+      if (!ref || typeof ref !== "object" || Array.isArray(ref) || !id(ref.id) ||
+        (ref.kind !== "message" && ref.kind !== "followup") ||
+        Object.keys(ref).sort().join(",") !== (ref.kind === "message" ? "id,kind" : "answerId,id,kind") ||
+        ref.kind === "followup" && !id(ref.answerId) || seen.has(`${ref.kind}:${ref.id}`)) return false;
+      seen.add(`${ref.kind}:${ref.id}`);
+    }
+    return row.currentMessageId === undefined || seen.has(`message:${row.currentMessageId}`);
+  }
   return Object.keys(row).every(key => ["plan", "userMessages", "approvedBy"].includes(key)) &&
-    (row.approvedBy === undefined || typeof row.approvedBy === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(row.approvedBy)) && decodeAcceptedMcpGuardPlan(row.plan) !== null &&
     (row.userMessages === null || Array.isArray(row.userMessages) && boundedMcpGuardMessages(row.userMessages) !== null);
 }

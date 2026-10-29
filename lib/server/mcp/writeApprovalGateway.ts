@@ -67,7 +67,7 @@ export async function gateMcpGatewayCall(input: Readonly<{
   let request = mcpApprovalRequest({ arguments: input.prepared.arguments, definitionHash: input.prepared.definitionHash,
     originalName: descriptor.name, serverId: input.prepared.serverId, serverName: descriptor.server_name,
     title: descriptor.title ?? descriptor.annotations?.title, toolName: input.toolName });
-  if (await input.store.consume(input.scope, request, input.admission.guard?.approvedBy, input.unknownAfter ?? undefined)) return "allowed";
+  if (await input.store.consume(input.scope, request, input.admission.approvedBy ?? input.admission.guard?.approvedBy, input.unknownAfter ?? undefined)) return "allowed";
   if (input.unknownAfter) {
     await input.store.request(input.scope, { ...request, source: input.source, toolCallId: input.toolCallId,
       guard: { decision: "ask", reason: "An earlier attempt may already have changed data. Please review before trying again." } });
