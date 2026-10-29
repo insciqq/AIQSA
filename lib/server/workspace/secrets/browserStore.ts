@@ -3,7 +3,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import type { WorkspaceOperation } from "../operationFence";
-import { lockWorkspaceSession, workspaceRunOperationOwner } from "../sessionOperation";
+import { lockWorkspaceSession } from "../sessionOperation";
+import { isWorkspaceRunOperation, workspaceRunHoldsOperation } from "../attachments";
 import { createWorkspaceSecretRevision, lockWorkspaceSecretOwner, pruneWorkspaceSecretRevisions, workspaceBrowserSessionBytes } from "./store";
 import { workspaceBrowserSessionChecksum, workspaceBrowserSessionError, type WorkspaceBrowserSaveReport, type WorkspaceBrowserSkipCode } from "./browserSession";
 import type { WorkspaceBrowserSaveItem } from "./browserCollection";
@@ -35,7 +36,8 @@ async function authorizedSequence(tx: Prisma.TransactionClient, input: Workspace
   } });
   if (!binding?.browserSessionSequence || binding.workspaceSessionId !== session.id || binding.modelRun.chatId !== session.chatId ||
     binding.modelRun.userId !== input.userId || binding.modelRun.chat.userId !== input.userId) return null;
-  const runOwner = input.operation.owner === workspaceRunOperationOwner(input.runId);
+  // The run holds the operation alone or attached beside the chat's other runs (`attachments.ts`).
+  const runOwner = isWorkspaceRunOperation(input.operation.owner) && await workspaceRunHoldsOperation(tx, session, input.runId);
   const handoffOwner = input.handoffToken && input.operation.owner === `export:${input.runId}:${input.handoffToken}` &&
     binding.exportLeaseToken === input.handoffToken && binding.exportLeaseExpiresAt && binding.exportLeaseExpiresAt > new Date() &&
     ["preparing", "queued", "in_progress", "streaming"].includes(binding.modelRun.status);

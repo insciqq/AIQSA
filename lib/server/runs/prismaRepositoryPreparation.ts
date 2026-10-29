@@ -151,6 +151,7 @@ import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
 import { workspaceRunOperationOwner } from "../workspace/sessionOperation";
+import { joinWorkspaceRunOperation, recordWorkspaceAttachment } from "../workspace/attachments";
 import {
   WORKSPACE_POLICY_ID,
   workspaceRunOutputDirectory
@@ -215,11 +216,13 @@ function assertWorkspaceAdmissionShape(
 async function reserveAcceptedWorkspaceSession(
   tx: Prisma.TransactionClient, plan: WorkspaceRunAdmissionPlan
 ): Promise<void> {
+  // Background sub-agent runs share the chat's Workspace: they are attached runs this run joins, never a conflict.
   const active = await tx.modelRun.count({
     where: {
       chatId: plan.chatId,
       id: { not: plan.runId },
       status: { in: activeModelRunStatuses },
+      subagentTurnId: null,
       workspaceRunBinding: { isNot: null }
     }
   });
@@ -242,8 +245,16 @@ async function reserveAcceptedWorkspaceSession(
       existing.id !== plan.sessionId ||
       existing.sandboxName !== plan.sandboxName ||
       (existing.imageRef !== plan.normalized.imageRef && !adoptsImage) ||
-      existing.internetEnabled !== plan.normalized.internetEnabled ||
-      existing.operationOwner !== null ||
+      existing.internetEnabled !== plan.normalized.internetEnabled
+    ) {
+      throw new WorkspaceRunConflictError("workspace_busy");
+    }
+    // Sub-agent runs of the chat hold a live run operation: this run attaches to that same VM and operation.
+    if (existing.operationOwner !== null) {
+      if (adoptsImage || !(await joinWorkspaceRunOperation(tx, existing, plan.runId))) throw new WorkspaceRunConflictError("workspace_busy");
+      return;
+    }
+    if (
       existing.state === "FAILED" ||
       existing.state === "RUNNING" ||
       existing.state === "CREATING" ||
@@ -278,6 +289,7 @@ async function reserveAcceptedWorkspaceSession(
       },
       where: { id: existing.id }
     });
+    await recordWorkspaceAttachment(tx, { chatId: plan.chatId, generation: existing.version + 1, runId: plan.runId });
   } else {
     await tx.workspaceSession.create({
       data: {
@@ -292,6 +304,7 @@ async function reserveAcceptedWorkspaceSession(
         state: "PENDING"
       }
     });
+    await recordWorkspaceAttachment(tx, { chatId: plan.chatId, generation: 1, runId: plan.runId });
   }
 }
 

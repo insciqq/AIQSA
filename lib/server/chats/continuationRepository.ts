@@ -11,6 +11,7 @@ import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sour
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "../../contracts/subagents";
 import {
   boundedChatTitle,
   decodeStoredChatAssistantOverrides,
@@ -58,10 +59,11 @@ async function lockedSource(tx: Prisma.TransactionClient, input: {
   if (!stored || !sameLeaf ||
     input.updatedAt && chat.updatedAt.getTime() !== input.updatedAt.getTime() ||
     input.lockAssistant && chat.assistantId !== assistantId) throw new ChatContinuationError("chat_changed");
-  const active = await tx.modelRun.findFirst({ select: { id: true }, where: {
+  const active = await tx.modelRun.findFirst({ select: { id: true, subagentTurnId: true }, where: {
     chatId: chat.id, status: { in: ["queued", "preparing", "streaming", "in_progress"] }
-  } });
-  if (active) throw new ChatContinuationError("chat_busy");
+  }, orderBy: { subagentTurnId: { nulls: "first", sort: "asc" } } });
+  // A seed copied under running sub-agents would be torn: the user stops them first, and is told so.
+  if (active) throw new ChatContinuationError(active.subagentTurnId ? WORKSPACE_SUBAGENTS_RUNNING_CODE : "chat_busy");
   return { chat, leafMessageId: stored };
 }
 
