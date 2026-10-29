@@ -19,17 +19,40 @@ import { branchPathMessageIds } from "../../toolObservations/repository";
 import { activeModelRunStatuses, dispatchableModelRunStatuses, json, lockRunSettlementScope, mapActiveRunConflict } from "../prismaRepositoryShared";
 import { cancelPendingToolLoopCallsInTransaction, closeRunningToolLoopCallsInTransaction, recoveredRunErrorPayload } from "../prismaRepositoryToolLoop";
 import { ActiveRunConflictError } from "../runRepositoryContract";
+import { followupTokenCost } from "../runFollowups";
+import { renderCallbackFollowup, SUBAGENT_CALLBACK_DEFAULT_RESERVE_TOKENS, SUBAGENT_CALLBACK_MIN_TOKENS } from "./render";
+
+/**
+ * The chat's sub-agent admission lock, shared with the engine's foreground
+ * admission (`lockChatSubagentAdmission` in the engine's thread store, same
+ * key), so the running cap counts both modes atomically. A transaction lock:
+ * it ends with the admission. Kept here until the two merge.
+ */
+export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, chatId: string): Promise<void> {
+  await tx.$queryRaw<Array<{ lock: string }>>(Prisma.sql`
+    SELECT pg_advisory_xact_lock(hashtextextended(${`aiqsa:subagent-admission:${chatId}`}, 0))::text AS "lock"
+  `);
+}
 
 /**
  * Persistence of background sub-agent runs (`SubagentTurn` with mode
  * `background` and its own `ModelRun`), their mailboxes and callbacks. Every
  * transaction takes the owner, chat, run lock order of run settlement
- * (`lockRunSettlementScope`), so admissions, settlements and deliveries of one
- * chat serialize on the chat row, which also makes the per-chat running cap
- * exact. A background run shares its parent's user message, never answers one,
- * and executes under its parent run's frozen bindings (`SubagentTurn.parentRunId`),
- * which outlive it: deleting the parent deletes the turn and its run, and the
- * deleting paths stop the run first.
+ * (`lockRunSettlementScope`), so settlements and deliveries of one chat
+ * serialize on the chat row. Admission first takes the chat's sub-agent
+ * admission lock the engine's foreground admission takes too
+ * (`aiqsa:subagent-admission:<chatId>`), so the 20-running cap is exact across
+ * both modes.
+ *
+ * Bindings (integrator decision 2026-10-30): a background run shares its
+ * parent's user message and never answers one. At admission it copies its
+ * parent's whole `normalizedRequest` into its own row, because the Workspace
+ * code-to-MCP grant, the Workspace coordinator and every whole-request decoder
+ * read the request by run id. Its provider, MCP and Skill binding rows stay
+ * by reference: the runner reads them from `SubagentTurn.parentRunId` (an
+ * interactive MCP write reaches the guard through the parent's
+ * `McpRunBinding` rows), and they outlive it, because deleting the parent
+ * deletes the turn and its run and the deleting paths stop the run first.
  */
 
 const ACTIVE_TURN_STATES: SubagentTurnState[] = ["running", "waiting"];
@@ -55,7 +78,7 @@ export type SubagentTurnRecord = Readonly<{
 }>;
 
 export type SubagentAdmission =
-  | Readonly<{ kind: "admitted"; runId: string; turnId: string; workspace: boolean }>
+  | Readonly<{ kind: "admitted"; runId: string; turnId: string }>
   | Readonly<{ code: SubagentErrorCode; kind: "refused" }>;
 
 export type SubagentAdmissionInput = SubagentChatScope & Readonly<{
@@ -63,7 +86,14 @@ export type SubagentAdmissionInput = SubagentChatScope & Readonly<{
   definitionRevisionId: string | null;
   parentRunId: string;
   parentToolCallId: string;
+  /**
+   * The ids the turn and its run take, chosen before admission so the
+   * process registers the turn's execution, and a Stop can find it, before
+   * the admission is visible (`control.ts`).
+   */
+  runId: string;
   threadId: string;
+  turnId: string;
 }>;
 
 export type SubagentSettlement = Readonly<{ result: EndedSubagentCallResult | null; settled: boolean }>;
@@ -85,6 +115,9 @@ export type CallbackIntoRunOutcome = "claimed" | "closed" | "delivered";
 
 export type BackgroundOrphan = Readonly<{ chatId: string; runId: string; turnId: string; userId: string }>;
 
+/** A chat with callbacks still owed and no main-agent run active: the turns that owe them. */
+export type OwedCallbackChat = SubagentChatScope & Readonly<{ turnIds: readonly string[] }>;
+
 export type SubagentBackgroundStore = Readonly<{
   /** Whether this main-agent run may start background turns: an active web or Assistant run, not scheduled, not Telegram. */
   callerAvailable(input: SubagentChatScope & Readonly<{ parentRunId: string }>): Promise<boolean>;
@@ -98,11 +131,19 @@ export type SubagentBackgroundStore = Readonly<{
   insertMailbox(input: SubagentChatScope & Readonly<{ nonce: string; runId: string; text: string }>): Promise<MailboxInsertOutcome>;
   markMailboxDelivered(input: SubagentChatScope & Readonly<{ nonce: string; runId: string }>): Promise<void>;
   owedCallbacks(input: SubagentChatScope): Promise<OwedCallbacks | null>;
-  deliverIntoRun(input: SubagentChatScope & Readonly<{ runId: string; text: string; turnId: string }>): Promise<CallbackIntoRunOutcome>;
+  /** Renders the turn's stored result bounded to the run's remaining follow-up reserve, then claims and inserts it. */
+  deliverIntoRun(input: SubagentChatScope & Readonly<{ runId: string; turnId: string }>): Promise<CallbackIntoRunOutcome>;
   /** The chat of a main-agent run, for its terminal flush; null for a background run or none. */
   mainRunScope(runId: string): Promise<SubagentChatScope | null>;
   findOrphans(input: Readonly<{ bootedBefore: Date; chatId?: string; limit: number; liveRunIds: readonly string[];
     staleBefore: Date; userId?: string }>): Promise<readonly BackgroundOrphan[]>;
+  /**
+   * Chats whose background turns ended at least `endedBefore` ago and still
+   * owe their callbacks (none claimed, or one left unread in an answer that
+   * ended) while no main-agent run of theirs is active: what recovery flushes.
+   */
+  findOwedCallbackChats(input: Readonly<{ chatId?: string; endedBefore: Date; limit: number; userId?: string }>):
+    Promise<readonly OwedCallbackChat[]>;
   /** Foreground turns still active whose parent run ended (a restart cut both): they end interrupted. */
   interruptStrandedForegroundTurns(input: Readonly<{ chatId?: string; userId?: string }>): Promise<number>;
 }>;
@@ -117,13 +158,23 @@ export class SubagentCallbackClaimConflictError extends Error {
 
 /**
  * Claims owed callbacks for a wake-up turn inside its admission transaction
- * (`createRun`), after the run row exists: only turns still unclaimed are
- * taken, and the admission is refused unless it takes every one it renders.
+ * (`createRun`, under its chat lock), after the run row exists: only turns
+ * still unclaimed whose parent answer is on the receiving branch (the wake-up
+ * message's own path) are taken, and the admission is refused unless it takes
+ * every one it renders. A branch switch since the callbacks were read is
+ * refused here and read again.
  */
 export async function claimSubagentCallbacksForRun(tx: Prisma.TransactionClient,
-  input: Readonly<{ chatId: string; runId: string; turnIds: readonly string[] }>): Promise<void> {
+  input: Readonly<{ chatId: string; runId: string; turnIds: readonly string[]; userMessageId: string }>): Promise<void> {
   const turnIds = [...new Set(input.turnIds)];
   if (turnIds.length === 0) throw new SubagentCallbackClaimConflictError();
+  const path = await branchPathMessageIds(tx, input.chatId, input.userMessageId);
+  const parents = await tx.subagentTurn.findMany({ select: { parentRun: { select: { assistantMessageId: true } } },
+    where: { chatId: input.chatId, id: { in: turnIds } } });
+  if (parents.length !== turnIds.length ||
+    parents.some((turn) => !turn.parentRun.assistantMessageId || !path.has(turn.parentRun.assistantMessageId))) {
+    throw new SubagentCallbackClaimConflictError();
+  }
   const claimed = await tx.$executeRaw(Prisma.sql`
     UPDATE "SubagentTurn" SET "callbackRunId" = ${input.runId}, "updatedAt" = CURRENT_TIMESTAMP
     WHERE "chatId" = ${input.chatId} AND "id" IN (${Prisma.join(turnIds)}) AND "callbackRunId" IS NULL
@@ -222,6 +273,8 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
     async admit(input) {
       try {
         return await mapActiveRunConflict(() => client.$transaction(async (tx): Promise<SubagentAdmission> => {
+          // First, as the engine's foreground admission takes it, so the two never wait on each other in reverse.
+          await lockChatSubagentAdmission(tx, input.chatId);
           const chat = await lockChatScope(tx, input);
           if (!chat || chat.permanentDeletionAt || chat.archived) {
             return { code: SUBAGENT_ERROR_CODES.backgroundUnavailable, kind: "refused" };
@@ -233,8 +286,9 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
               "status", "subagentTurnId", "userMessageId"
             FROM "ModelRun" WHERE "id" = ${input.parentRunId} AND "chatId" = ${input.chatId} AND "userId" = ${input.userId}
             FOR UPDATE`;
+          // A dispatchable run always has its request (`ModelRun_memory_request_shape_check`), which the background run copies.
           if (!parent || parent.engine !== "native" || parent.subagentTurnId !== null || parent.scheduledTaskId !== null ||
-            !dispatchableModelRunStatuses.includes(parent.status)) {
+            !dispatchableModelRunStatuses.includes(parent.status) || parent.normalizedRequest === null) {
             return { code: SUBAGENT_ERROR_CODES.backgroundUnavailable, kind: "refused" };
           }
           const thread = await tx.subagentThread.findFirst({ select: { id: true },
@@ -246,27 +300,24 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
           const running = await tx.subagentTurn.count({ where: { chatId: input.chatId, state: { in: ACTIVE_TURN_STATES } } });
           if (running >= SUBAGENT_LIMITS.runningPerChat) return { code: SUBAGENT_ERROR_CODES.limitReached, kind: "refused" };
           const turn = await tx.subagentTurn.create({ data: {
-            chatId: input.chatId, definitionRevisionId: input.definitionRevisionId, effortSource: input.binding.effortSource,
+            chatId: input.chatId, definitionRevisionId: input.definitionRevisionId, effortSource: input.binding.effortSource, id: input.turnId,
             mode: "background", modelId: input.binding.modelId, modelSource: input.binding.modelSource,
             parentRunId: input.parentRunId, parentToolCallId: input.parentToolCallId, provider: input.binding.provider,
             providerModelId: input.binding.providerModelId, reasoningEffort: input.binding.reasoningEffort, state: "running",
             threadId: input.threadId, userId: input.userId
           }, select: { id: true } });
           // Its own run beside the main agent's: one active run per thread (`ModelRun_one_active_per_chat_idx`), never the
-          // Workspace wait slot, and no binding rows of its own (the parent's frozen bindings stay its authority).
+          // Workspace wait slot, with its parent's request copied and its binding rows by reference (header).
           const run = await tx.modelRun.create({ data: {
             ...(parent.assistantId ? { assistantId: parent.assistantId } : {}),
             ...(parent.assistantIdentity !== null ? { assistantIdentity: json(parent.assistantIdentity) } : {}),
-            chatId: input.chatId, engine: "native", modelId: input.binding.modelId, provider: input.binding.provider,
-            status: "streaming", subagentThreadId: input.threadId, subagentTurnId: turn.id, userId: input.userId,
-            userMessageId: parent.userMessageId
+            chatId: input.chatId, engine: "native", id: input.runId, modelId: input.binding.modelId,
+            normalizedRequest: json(parent.normalizedRequest),
+            provider: input.binding.provider, status: "streaming", subagentThreadId: input.threadId, subagentTurnId: turn.id,
+            userId: input.userId, userMessageId: parent.userMessageId
           }, select: { id: true } });
           await tx.subagentThread.update({ data: { updatedAt: new Date() }, where: { id: input.threadId } });
-          const request = parent.normalizedRequest;
-          const workspace = typeof request === "object" && request !== null && !Array.isArray(request) &&
-            typeof (request as Record<string, unknown>).workspace === "object" &&
-            ((request as Record<string, { enabled?: unknown }>).workspace?.enabled === true);
-          return { kind: "admitted", runId: run.id, turnId: turn.id, workspace };
+          return { kind: "admitted", runId: run.id, turnId: turn.id };
         }));
       } catch (error) {
         // The thread got an active run meanwhile, or this call already started a turn (one turn per call): nothing runs twice.
@@ -410,14 +461,14 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       });
     },
 
-    async deliverIntoRun({ chatId, runId, text, turnId, userId }) {
+    async deliverIntoRun({ chatId, runId, turnId, userId }) {
       return client.$transaction(async (tx): Promise<CallbackIntoRunOutcome> => {
         await lockRunSettlementScope(tx, runId);
         const [run] = await tx.$queryRaw<Array<{ answerCompletedAt: Date | null; assistantMessageId: string | null;
-          followupClosedAt: Date | null; followupMode: string | null; followupRevision: number; scheduledTaskId: string | null;
-          status: ModelRunStatus; subagentTurnId: string | null }>>`
+          followupClosedAt: Date | null; followupMode: string | null; followupRevision: number; reserveTokens: unknown;
+          scheduledTaskId: string | null; status: ModelRunStatus; subagentTurnId: string | null }>>`
           SELECT "answerCompletedAt", "assistantMessageId", "followupClosedAt", "followupMode", "followupRevision", "scheduledTaskId",
-            "status", "subagentTurnId"
+            "status", "subagentTurnId", "normalizedRequest" -> 'followupContextReserveTokens' AS "reserveTokens"
           FROM "ModelRun" WHERE "id" = ${runId} AND "chatId" = ${chatId} AND "userId" = ${userId} FOR UPDATE`;
         // A scheduled occurrence's context stays as admission froze it: its callbacks wait for its end.
         if (!run || run.subagentTurnId !== null || run.scheduledTaskId !== null || !run.assistantMessageId || !run.followupMode ||
@@ -429,8 +480,18 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
           where: { chatId, id: turnId, userId } });
         const parentAnswer = turn?.parentRun.assistantMessageId;
         if (!parentAnswer || !(await branchPathMessageIds(tx, chatId, run.assistantMessageId)).has(parentAnswer)) return "closed";
-        const received = await tx.runFollowup.count({ where: { modelRunId: runId, origin: "subagent_callback" } });
-        if (received >= SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) return "closed";
+        const received = await tx.runFollowup.findMany({ select: { text: true }, where: { modelRunId: runId, origin: "subagent_callback" } });
+        if (received.length >= SUBAGENT_FOLLOWUP_LIMITS.callbacksPerRun) return "closed";
+        const result = await tx.subagentTurn.findFirst({ select: { result: true, thread: { select: { name: true } } },
+          where: { chatId, id: turnId } });
+        const ended = result && decodeSubagentCallResult(result.result);
+        if (!result || ended?.kind !== "ended") return "claimed";
+        // Bounded to what is left of the run's follow-up reserve, with a cut mark; the whole result stays on the turn.
+        const reserve = typeof run.reserveTokens === "number" && Number.isSafeInteger(run.reserveTokens) && run.reserveTokens > 0
+          ? run.reserveTokens : SUBAGENT_CALLBACK_DEFAULT_RESERVE_TOKENS;
+        const spent = received.reduce((sum, entry) => sum + followupTokenCost(entry.text), 0);
+        const text = renderCallbackFollowup({ name: result.thread.name, result: ended, turnId },
+          { tokens: Math.max(SUBAGENT_CALLBACK_MIN_TOKENS, reserve - spent) });
         const claimed = await tx.$executeRaw(Prisma.sql`
           UPDATE "SubagentTurn" SET "callbackRunId" = ${runId}, "updatedAt" = CURRENT_TIMESTAMP
           WHERE "id" = ${turnId} AND "chatId" = ${chatId} AND "callbackRunId" IS NULL AND "mode" = 'background'
@@ -465,6 +526,25 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       });
       return rows.flatMap((row) => row.subagentTurnId
         ? [{ chatId: row.chatId, runId: row.id, turnId: row.subagentTurnId, userId: row.userId }] : []);
+    },
+
+    async findOwedCallbackChats({ chatId, endedBefore, limit, userId }) {
+      const rows = await client.$queryRaw<Array<{ chatId: string; turnIds: string[]; userId: string }>>(Prisma.sql`
+        SELECT turn."chatId", turn."userId", array_agg(turn."id" ORDER BY turn."endedAt", turn."id") AS "turnIds"
+        FROM "SubagentTurn" turn
+        JOIN "Chat" chat ON chat."id" = turn."chatId" AND chat."userId" = turn."userId" AND chat."permanentDeletionAt" IS NULL
+        WHERE turn."mode" = 'background' AND turn."endedAt" IS NOT NULL AND turn."endedAt" < ${endedBefore}
+          ${chatId ? Prisma.sql`AND turn."chatId" = ${chatId}` : Prisma.empty}
+          ${userId ? Prisma.sql`AND turn."userId" = ${userId}` : Prisma.empty}
+          AND (turn."callbackRunId" IS NULL OR EXISTS (
+            SELECT 1 FROM "ModelRun" receiver JOIN "RunFollowup" followup ON followup."modelRunId" = receiver."id"
+            WHERE receiver."id" = turn."callbackRunId" AND followup."subagentTurnId" = turn."id" AND followup."deliveredAt" IS NULL
+              AND receiver."status" IN ('complete', 'cancelled', 'error')))
+          AND NOT EXISTS (SELECT 1 FROM "ModelRun" main WHERE main."chatId" = turn."chatId" AND main."subagentTurnId" IS NULL
+            AND main."status" IN ('preparing', 'queued', 'streaming', 'in_progress'))
+        GROUP BY turn."chatId", turn."userId"
+        LIMIT ${limit}`);
+      return rows.map((row) => ({ chatId: row.chatId, turnIds: row.turnIds, userId: row.userId }));
     },
 
     async interruptStrandedForegroundTurns({ chatId, userId }) {

@@ -1,6 +1,6 @@
 import type { SubagentCallback, SubagentCallbackDisposition, SubagentCallbackSink, SubagentChatScope } from "../../subagents/ports";
 import { logEvent } from "../../observability";
-import { renderCallbackFollowup, renderWakeUp } from "./render";
+import { renderWakeUp } from "./render";
 import type { SubagentBackgroundStore } from "./store";
 
 /**
@@ -74,7 +74,7 @@ export function createSubagentCallbacks(deps: Readonly<{
         let closed = false;
         for (const callback of callbacks) {
           const outcome = closed ? "closed" : await deps.store.deliverIntoRun({ ...scope, runId: owed.mainRun.id,
-            text: renderCallbackFollowup(callback), turnId: callback.turnId });
+            turnId: callback.turnId });
           // A claim another delivery won was delivered there.
           if (outcome === "closed") closed = true;
           dispositions.set(callback.turnId, outcome === "closed" ? "after_run" : "delivered");

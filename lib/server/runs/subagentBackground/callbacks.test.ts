@@ -51,6 +51,18 @@ describe("background sub-agent callbacks", () => {
     expect(wakeUps[0]!.turnIds).toEqual([turn.turnId]);
   });
 
+  it("wakes nothing when the user stops the main answer, yet a callback after the stop wakes the idle main agent", async () => {
+    const { admitWakeUp, callbacks, store, wakeUps } = setup();
+    store.mainRuns.push({ callbacks: [], chatId: scope.chatId, open: true, runId: "main-1", status: "streaming" });
+    // The user's Stop: the run ends cancelled and nothing calls the terminal flush.
+    store.mainRuns[0]!.status = "complete";
+    store.mainRuns[0]!.open = false;
+    expect(admitWakeUp).not.toHaveBeenCalled();
+    const later = store.addEnded({ ...scope, name: "late", result: endedSubagentResult("late") });
+    expect(await callbacks.sink.deliver(callbackOf(later))).toBe("wake_up");
+    expect(wakeUps[0]!.turnIds).toEqual([later.turnId]);
+  });
+
   it("coalesces callbacks that end close together into one wake-up turn", async () => {
     const { admitWakeUp, callbacks, store, wakeUps } = setup();
     const turns = ["one", "two", "three"].map((name) => store.addEnded({ ...scope, name, result: endedSubagentResult(name) }));

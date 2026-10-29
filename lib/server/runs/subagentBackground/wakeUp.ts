@@ -13,8 +13,9 @@ import type { SubagentWakeUpAdmitter, SubagentWakeUpOutcome } from "./callbacks"
  * (`systemTurnKind: subagent_callback`), never the user's speech, and its
  * admission claims the callbacks it renders in the same transaction.
  * The send mirrors the branch's latest main-agent turn: its model, Search
- * sources, tools, Skills and Workspace switch; an Assistant chat takes only
- * what the Assistant leaves to the chat.
+ * sources, MCP mode (Auto, Load all or Off), Skills mode and pinned Skills and
+ * Workspace switch, never a substitute; an Assistant chat takes only what the
+ * Assistant leaves to the chat.
  */
 
 export type SubagentWakeUpSend = (input: Readonly<{
@@ -50,10 +51,16 @@ export function wakeUpSendBody(input: Readonly<{
   const searchPlan = record(request.searchPlan) ? request.searchPlan : {};
   const options = Array.isArray(searchPlan.options) ? searchPlan.options : [];
   const skills = record(request.skills) && request.skills.mode === "off" ? "off" : "auto";
-  const mcp = request.mcp !== undefined || request.mcpDiscovery !== undefined ? "auto" : "off";
+  // Auto freezes a discovery catalog; Load all freezes the whole plan without one; Off freezes neither.
+  const mcp = request.mcpDiscovery !== undefined ? "auto" : request.mcp !== undefined ? "load_all" : "off";
+  // The Skills the turn pinned travel as the composer pins them, so admission binds each again or refuses visibly.
+  const pinned = record(request.skills) && Array.isArray(request.skills.pinned)
+    ? [...new Set(request.skills.pinned.flatMap((skill) => record(skill) && typeof skill.skillId === "string" ? [skill.skillId] : []))]
+    : [];
   return {
     ...common,
     mcp: { mode: mcp },
+    ...(pinned.length > 0 ? { skillIds: pinned } : {}),
     ...(input.answerBinding ? { modelId: input.answerBinding.providerModelId, provider: input.answerBinding.connectionId } : {}),
     ...(record(request.params) ? { params: request.params } : {}),
     searchPlan: {

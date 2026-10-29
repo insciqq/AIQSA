@@ -7,7 +7,7 @@ import { activeRunControllerRegistry } from "../activeRunControllerRegistry";
 import type { RunHandlerDeps } from "../handlers";
 import { createSubagentCallbacks, type SubagentCallbacks } from "./callbacks";
 import { createSubagentBackgroundControl, type SubagentBackgroundOperations } from "./control";
-import { reconcileSubagentRuns } from "./recovery";
+import { reconcileSubagentRuns, type SubagentDeferredCallbacks } from "./recovery";
 import { createPrismaSubagentBackgroundStore, type SubagentBackgroundStore } from "./store";
 import { createSubagentWakeUpAdmitter, type SubagentWakeUpSend } from "./wakeUp";
 
@@ -37,8 +37,9 @@ type Composition = Readonly<{
 type Wiring = { runner: SubagentRunner | null; workspace?: WorkspaceAttachments };
 
 const STATE = Symbol.for("aiqsa.subagent-background.v1");
-const globalState = globalThis as typeof globalThis & { [STATE]?: { composition: Composition | null; wiring: Wiring } };
-const state = globalState[STATE] ??= { composition: null, wiring: { runner: null } };
+type State = { composition: Composition | null; deferred: SubagentDeferredCallbacks; wiring: Wiring };
+const globalState = globalThis as typeof globalThis & { [STATE]?: State };
+const state = globalState[STATE] ??= { composition: null, deferred: new Map(), wiring: { runner: null } };
 
 function processBootedAt(): Date {
   return new Date(Date.now() - Math.round(process.uptime() * 1_000));
@@ -74,7 +75,7 @@ function compose(): Composition {
   return Object.freeze({
     callbacks,
     control,
-    reconcile: (input = {}) => reconcileSubagentRuns({ bootedAt: processBootedAt(), flush: callbacks.flush,
+    reconcile: (input = {}) => reconcileSubagentRuns({ bootedAt: processBootedAt(), deferred: state.deferred, flush: callbacks.flush,
       liveRunIds: () => activeRunControllerRegistry.ids(), staleMs: STALE_MS, store,
       ...(state.wiring.workspace ? { workspace: state.wiring.workspace } : {}) }, input),
     async stopUnderMessage({ messageId, userId }) {
