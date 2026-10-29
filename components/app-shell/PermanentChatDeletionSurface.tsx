@@ -2,6 +2,7 @@ import {
   closePermanentChatDeletionDialog,
   confirmPermanentChatDeletion,
   dismissCompletedPermanentChatDeletion,
+  dismissPermanentChatDeletionNotice,
   openPermanentChatDeletionStatus,
   permanentChatDeletionFocusReturnTarget,
   refreshPermanentChatDeletionStatus,
@@ -24,7 +25,10 @@ import {
   X
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+
+/** How long "Chat deletion completed" stays before it leaves on its own. */
+export const COMPLETED_NOTICE_DISMISS_MS = 5_000;
 
 const subscribeToBrowser = () => () => undefined;
 const browserSnapshot = () => true;
@@ -51,8 +55,8 @@ function closeSurface(): void {
   restoreSurfaceFocus();
 }
 
-function dismissCompletedSurface(): void {
-  dismissCompletedPermanentChatDeletion();
+function dismissNoticeSurface(): void {
+  dismissPermanentChatDeletionNotice();
   restoreSurfaceFocus();
 }
 
@@ -270,10 +274,7 @@ function StatusDialog() {
         <button
           className={`${button} ${completed ? "bg-proof text-proof-contrast hover:bg-proof-hover" : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
           type="button"
-          onClick={() => {
-            if (completed) dismissCompletedSurface();
-            else closeSurface();
-          }}
+          onClick={closeSurface}
         >
           {t("close")}
         </button>
@@ -282,21 +283,41 @@ function StatusDialog() {
   );
 }
 
-function ProgressNotice() {
+/** `composerInset`: how far a composer resting at the bottom reaches up; the notice sits above it. */
+function ProgressNotice({ composerInset }: Readonly<{ composerInset: number }>) {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const status = usePermanentChatDeletionStore((state) => state.status);
   const statusOpen = usePermanentChatDeletionStore((state) => state.statusOpen);
   const target = usePermanentChatDeletionStore((state) => state.target);
-  if (!reference || statusOpen || target) return null;
-  const blocked = status?.status === "NEEDS_ATTENTION";
+  // Focus inside the notice holds it, so a keyboard user never loses focus to its removal.
+  const [held, setHeld] = useState(false);
+  const visible = Boolean(reference) && !statusOpen && !target;
   const completed = status?.status === "COMPLETE";
+  useEffect(() => {
+    if (!visible || !completed || held) return;
+    const timer = window.setTimeout(
+      dismissCompletedPermanentChatDeletion,
+      COMPLETED_NOTICE_DISMISS_MS
+    );
+    return () => window.clearTimeout(timer);
+  }, [completed, held, visible]);
+  if (!visible) return null;
+  const blocked = status?.status === "NEEDS_ATTENTION";
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-[max(.75rem,env(safe-area-inset-bottom))] z-[85] flex justify-center px-3">
+    <div
+      className="pointer-events-none fixed inset-x-0 bottom-[max(.75rem,env(safe-area-inset-bottom))] z-[85] flex justify-center px-3"
+      data-testid="permanent-chat-deletion-notice"
+      style={composerInset > 0 ? { bottom: `calc(${composerInset}px + .5rem)` } : undefined}
+    >
       <div
         className={`pointer-events-auto flex w-full max-w-lg items-center gap-3 rounded-panel border bg-overlay-surface px-3 py-2 shadow-overlay ${
           blocked ? "border-critical/40" : "border-trace-subtle"
         }`}
         role={blocked ? "alert" : "status"}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHeld(false);
+        }}
+        onFocus={() => setHeld(true)}
       >
         {blocked
           ? <CircleAlert className="size-4 shrink-0 text-critical" aria-hidden="true" />
@@ -306,24 +327,41 @@ function ProgressNotice() {
         <p className="min-w-0 flex-1 text-sm font-medium text-ink-secondary">
           {t(blocked ? "noticeBlocked" : completed ? "noticeSucceeded" : "noticePending")}
         </p>
-        <button
-          data-testid="permanent-chat-deletion-notice-action"
-          className={`${button} shrink-0 bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
-          type="button"
-          onClick={() => openPermanentChatDeletionStatus(() =>
-            document.querySelector<HTMLElement>("[data-testid='permanent-chat-deletion-notice-action']")
-          )}
-        >
-          {t("noticeAction")}
-        </button>
+        {completed ? null : (
+          <button
+            data-testid="permanent-chat-deletion-notice-action"
+            className={`${button} shrink-0 bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
+            type="button"
+            onClick={() => openPermanentChatDeletionStatus(() =>
+              document.querySelector<HTMLElement>("[data-testid='permanent-chat-deletion-notice-action']")
+            )}
+          >
+            {t("noticeAction")}
+          </button>
+        )}
+        {completed || blocked ? (
+          <button
+            aria-label={t("dismiss")}
+            className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
+            type="button"
+            onClick={dismissNoticeSurface}
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
     </div>
   );
 }
 
-export function PermanentChatDeletionSurface() {
+export function PermanentChatDeletionSurface({
+  composerInset = 0
+}: Readonly<{ composerInset?: number }>) {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
-  const status = usePermanentChatDeletionStore((current) => current.status?.status ?? null);
+  // The snapshot itself, not its state: every refresh brings a new one, so an
+  // unchanged IN_PROGRESS still schedules the next poll.
+  const snapshot = usePermanentChatDeletionStore((current) => current.status);
+  const loadState = usePermanentChatDeletionStore((current) => current.statusLoadState);
   const portalReady = useSyncExternalStore(
     subscribeToBrowser,
     browserSnapshot,
@@ -331,19 +369,20 @@ export function PermanentChatDeletionSurface() {
   );
 
   useEffect(() => {
-    if (!reference || !status || status === "COMPLETE") return;
+    const status = snapshot?.status;
+    if (!reference || !status || status === "COMPLETE" || loadState === "loading") return;
     const timer = window.setTimeout(() => {
       void refreshPermanentChatDeletionStatus(reference).catch(() => undefined);
     }, status === "NEEDS_ATTENTION" ? 10_000 : 3_000);
     return () => window.clearTimeout(timer);
-  }, [reference, status]);
+  }, [loadState, reference, snapshot]);
 
   if (!portalReady) return null;
   return createPortal((
     <>
       <Confirmation />
       <StatusDialog />
-      <ProgressNotice />
+      <ProgressNotice composerInset={composerInset} />
     </>
   ), document.body);
 }

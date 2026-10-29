@@ -134,6 +134,15 @@ function writeReference(accountId: string, chatId: string | null): void {
   }
 }
 
+/** A completed deletion has nothing left to follow, so a reload does not bring it back. */
+function writeStatusReference(
+  accountId: string,
+  chatId: string,
+  status: MemoryConsumerPermanentChatDeleteResponse
+): void {
+  writeReference(accountId, status.status === "COMPLETE" ? null : chatId);
+}
+
 function errorReason(error: unknown): PermanentChatDeletionFailureReason {
   return error instanceof PermanentChatDeletionApiError
     ? error.reason
@@ -223,6 +232,9 @@ export function closePermanentChatDeletionDialog(): void {
     statusOpen: false,
     target: null
   });
+  // Closing a completed status any way (X, Escape, backdrop) ends it rather
+  // than leaving a notice behind.
+  dismissCompletedPermanentChatDeletion();
 }
 
 export function openPermanentChatDeletionStatus(
@@ -252,7 +264,7 @@ export async function confirmPermanentChatDeletion(): Promise<void> {
     if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
     activeController = null;
     const reference = { chatId: target.chatId };
-    writeReference(accountId, target.chatId);
+    writeStatusReference(accountId, target.chatId, status);
     usePermanentChatDeletionStore.setState({
       alsoForgetOriginMemories: false,
       busy: false,
@@ -277,7 +289,7 @@ export async function confirmPermanentChatDeletion(): Promise<void> {
         if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
         activeController = null;
         const reference = { chatId: target.chatId };
-        writeReference(accountId, target.chatId);
+        writeStatusReference(accountId, target.chatId, status);
         usePermanentChatDeletionStore.setState({
           alsoForgetOriginMemories: false,
           busy: false,
@@ -319,8 +331,7 @@ export async function refreshPermanentChatDeletionStatus(
     const status = await loadPermanentChatDeletionStatus(reference.chatId, controller.signal);
     if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
     activeController = null;
-    if (status.status === "COMPLETE") writeReference(accountId, null);
-    else writeReference(accountId, reference.chatId);
+    writeStatusReference(accountId, reference.chatId, status);
     usePermanentChatDeletionStore.setState({
       status,
       statusError: null,
@@ -337,10 +348,8 @@ export async function refreshPermanentChatDeletionStatus(
   }
 }
 
-export function dismissCompletedPermanentChatDeletion(): void {
-  const current = usePermanentChatDeletionStore.getState();
-  if (!current.accountId || current.status?.status !== "COMPLETE") return;
-  writeReference(current.accountId, null);
+function clearReference(accountId: string): void {
+  writeReference(accountId, null);
   usePermanentChatDeletionStore.setState({
     reference: null,
     status: null,
@@ -348,6 +357,24 @@ export function dismissCompletedPermanentChatDeletion(): void {
     statusLoadState: "idle",
     statusOpen: false
   });
+}
+
+export function dismissCompletedPermanentChatDeletion(): void {
+  const current = usePermanentChatDeletionStore.getState();
+  if (!current.accountId || current.status?.status !== "COMPLETE") return;
+  clearReference(current.accountId);
+}
+
+/**
+ * The notice's own Dismiss: a completed deletion, or one only an administrator
+ * can move on, which the user acknowledges instead of keeping it over the thread.
+ */
+export function dismissPermanentChatDeletionNotice(): void {
+  const current = usePermanentChatDeletionStore.getState();
+  const state = current.status?.status;
+  if (!current.accountId || (state !== "COMPLETE" && state !== "NEEDS_ATTENTION")) return;
+  abortActiveRequest();
+  clearReference(current.accountId);
 }
 
 export function resetPermanentChatDeletionStore(): void {
