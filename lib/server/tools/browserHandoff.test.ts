@@ -26,6 +26,31 @@ describe("a handoff's result", () => {
   });
 });
 
+describe("a handoff of one agent", () => {
+  const call = { arguments: { message: "Please sign in to the shop.", reason: "sign_in" }, id: "call-1", name: BROWSER_HANDOFF_TOOL_NAME };
+
+  it("asks the live browser for that agent's tab, and the main agent's when none is named", async () => {
+    const asked: unknown[] = [];
+    const live = { end: async () => undefined, handoff: async (input: { agent?: unknown }) => {
+      asked.push(input.agent);
+      return { kind: "busy" as const };
+    } };
+    const shopper = { id: "thread_1", name: "shopper" };
+    const busy = await executeBrowserHandoff(call, { agent: shopper, kind: "interactive", live, toolTimeLeftMs: () => 3_600_000 },
+      new AbortController().signal);
+    await executeBrowserHandoff(call, { kind: "interactive", live, toolTimeLeftMs: () => 3_600_000 }, new AbortController().signal);
+    expect(asked).toEqual([shopper, undefined]);
+    expect((busy.content[0] as unknown as { value: { error: string } }).value.error).toBe("browser_handoff_busy");
+  });
+
+  it("is unavailable for every agent of a Telegram turn or an unattended run", async () => {
+    for (const mode of [{ chatUrl: "https://aiqsa.test/c/1", kind: "telegram" as const }, { kind: "unattended" as const }]) {
+      const result = await executeBrowserHandoff(call, mode, new AbortController().signal);
+      expect((result.content[0] as unknown as { value: { error: string } }).value.error).toBe("browser_handoff_unavailable");
+    }
+  });
+});
+
 describe("a scheduled run's handoff calls", () => {
   it("count as a needed sign-in only for a sign-in, a code or a check nobody could take over", async () => {
     for (const reason of ["sign_in", "verification_code", "captcha"]) {

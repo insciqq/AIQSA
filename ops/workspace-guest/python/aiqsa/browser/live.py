@@ -3,8 +3,10 @@
     /opt/aiqsa-python/bin/python3 -I -m aiqsa.browser.live
 
 AIQSA starts it through the exec channel under the run's operation (`lib/server/workspace/browserLive.ts`),
-never as the agent's command. Each stdin line is one message for the host (`frames`, `input`, `control`,
-`handoff`, `ping`); each host message goes to stdout as one `@<length> <json>` line (`_live.encode_line`). It
+never as the agent's command. Each stdin line is one message for the host (`frames`, `select`, `input`,
+`control`, `handoff`, `ping`); each host message goes to stdout as one `@<length> <json>` line
+(`_live.encode_line`). The frame wish and the selected agent (`select`, `agents.py`) are kept and sent again to
+each host it reaches, so a restarted host streams the agent the view chose. It
 never starts the browser: while no host answers it reports `absent` and waits, and when the host goes away it
 says so and waits for the next one. AIQSA writes its first command right after starting it, so a command that
 comes before the first attempt to reach the host (and one retry) has resolved waits for that; only then is it
@@ -16,11 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import signal
 import sys
 import threading
 from typing import Any, Dict, Optional, TextIO
 
+from .. import agents as _agents
 from . import _live, _paths
 
 #: How often a missing host is looked for.
@@ -36,6 +40,8 @@ class Streamer:
     def __init__(self, out: TextIO):
         self.out = out
         self.frames = False
+        #: The agent whose tab the view streams; the main agent until AIQSA selects another.
+        self.agent = _agents.MAIN_AGENT_ID
         self.writer: Optional[asyncio.StreamWriter] = None
         self.inbox: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
         self.stopping = asyncio.Event()
@@ -80,6 +86,11 @@ class Streamer:
                 return
             if message.get("t") == "frames":
                 self.frames = message.get("on") is True
+            elif message.get("t") == _agents.LIVE_SELECT_MESSAGE:
+                agent = message.get(_agents.LIVE_AGENT_FIELD, _agents.MAIN_AGENT_ID)
+                if not isinstance(agent, str) or re.fullmatch(_agents.AGENT_ID_PATTERN, agent) is None:
+                    continue
+                self.agent = agent
             writer = self.writer
             if writer is None and message.get("t") in COMMANDS and not self.settled.is_set():
                 # Started a moment ago: the host may answer the first attempt, or the retry.
@@ -113,7 +124,8 @@ class Streamer:
                 await self.pause(HOST_RETRY_SECONDS)
                 continue
             try:
-                writer.write(json.dumps({"v": _live.PROTOCOL, "op": "live", "args": {"frames": self.frames}}).encode("ascii") + b"\n")
+                writer.write(json.dumps({"v": _live.PROTOCOL, "op": "live",
+                                         "args": {"frames": self.frames, _agents.LIVE_AGENT_FIELD: self.agent}}).encode("ascii") + b"\n")
                 await writer.drain()
                 self.writer = writer
                 self.settled.set()
