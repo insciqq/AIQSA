@@ -4,8 +4,16 @@ import { json } from "../runs/prismaRepositoryShared";
 import { decodeTranscriptItem, encodeTranscriptItem } from "./transcriptCodec";
 import type { TranscriptItem } from "./transcript";
 
-/** One native run, named with the owner and chat every read and write carries. */
-export type TranscriptRunScope = Readonly<{ chatId: string; runId: string; userId: string }>;
+/**
+ * One native run, named with the owner and chat every read and write carries.
+ * `thread`: a sub-agent thread's own transcript inside the run (`SubagentThread`,
+ * with the turn that writes), which keeps its own sequence; absent for the
+ * main agent, whose items carry no thread key.
+ */
+export type TranscriptRunScope = Readonly<{ chatId: string; runId: string; thread?: TranscriptThreadKey; userId: string }>;
+
+/** The thread key of a sub-agent's items: its thread and the turn that wrote them. */
+export type TranscriptThreadKey = Readonly<{ threadId: string; turnId: string }>;
 
 type TranscriptClient = Pick<PrismaClient, "message" | "modelRun" | "modelRunToolCall" | "runTranscriptItem">;
 
@@ -58,12 +66,13 @@ export const TRANSCRIPT_LOAD_RUN_LIMIT = 2_000;
  */
 export function createTranscriptRepository(client: TranscriptClient) {
   return {
-    /** The sequence the run's next item takes: 0 for a run without items. */
+    /** The sequence the run's next item of this agent (the main agent, or the scope's thread) takes: 0 for none yet. */
     async nextSequence(scope: TranscriptRunScope): Promise<number> {
       const last = await client.runTranscriptItem.findFirst({
         orderBy: { sequence: "desc" },
         select: { sequence: true },
-        where: { chatId: scope.chatId, modelRunId: scope.runId, userId: scope.userId }
+        where: { chatId: scope.chatId, modelRunId: scope.runId, subagentThreadId: scope.thread?.threadId ?? null,
+          userId: scope.userId }
       });
       return last ? last.sequence + 1 : 0;
     },
@@ -86,6 +95,8 @@ export function createTranscriptRepository(client: TranscriptClient) {
           kind: fields.kind,
           modelRunId: scope.runId,
           sequence: from + index,
+          subagentThreadId: scope.thread?.threadId ?? null,
+          subagentTurnId: scope.thread?.turnId ?? null,
           userId: scope.userId
         };
       });
@@ -94,13 +105,20 @@ export function createTranscriptRepository(client: TranscriptClient) {
       } catch (error) {
         if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
         const written = await client.runTranscriptItem.count({ where: { chatId: scope.chatId, modelRunId: scope.runId,
-          OR: rows.map((row) => ({ id: row.id, sequence: row.sequence })), userId: scope.userId } });
+          OR: rows.map((row) => ({ id: row.id, sequence: row.sequence })), subagentThreadId: scope.thread?.threadId ?? null,
+          userId: scope.userId } });
         if (written !== rows.length) throw error;
       }
     },
 
-    /** The items of these runs of one chat and owner, by run, each in sequence order. */
-    async loadRuns(input: Readonly<{ chatId: string; runIds: readonly string[]; userId: string }>): Promise<Map<string, TranscriptItem[]>> {
+    /**
+     * The items of these runs of one chat and owner, by run, each in sequence
+     * order: the main agent's (no thread key), or with `threadId` that
+     * sub-agent thread's own. A thread's items never enter the main agent's
+     * context, and another thread's never enter a thread's.
+     */
+    async loadRuns(input: Readonly<{ chatId: string; runIds: readonly string[]; threadId?: string; userId: string }>):
+      Promise<Map<string, TranscriptItem[]>> {
       const runIds = [...new Set(input.runIds)];
       const loaded = new Map<string, TranscriptItem[]>(runIds.map((runId) => [runId, []]));
       if (runIds.length === 0) return loaded;
@@ -108,7 +126,7 @@ export function createTranscriptRepository(client: TranscriptClient) {
       const rows = await client.runTranscriptItem.findMany({
         orderBy: [{ modelRunId: "asc" }, { sequence: "asc" }],
         select: { body: true, callId: true, createdAt: true, id: true, kind: true, modelRunId: true },
-        where: { chatId: input.chatId, modelRunId: { in: runIds }, userId: input.userId }
+        where: { chatId: input.chatId, modelRunId: { in: runIds }, subagentThreadId: input.threadId ?? null, userId: input.userId }
       });
       for (const row of rows) {
         const item = decodeTranscriptItem(row);
