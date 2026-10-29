@@ -228,13 +228,20 @@ class LiveBrowserTests(unittest.TestCase):
         """The guest launches headless Chromium with Playwright's default throttling flags."""
         from aiqsa import browser
 
-        self.quiet(browser.open, self.base + "/background")
-        self.quiet(browser.new_tab, self.base + "/background")
-        # Keep the second tab current while the first one loads and runs its timer.
-        time.sleep(1.5)
-        self.quiet(browser.switch_tab, 1)
-        self.assertEqual(browser.js("window.loaded"), "true")
-        self.assertGreaterEqual(int(browser.js("window.ticks")), 8)
+        try:
+            self.quiet(browser.open, self.base + "/background")
+            self.quiet(browser.new_tab, self.base + "/background")
+            # Keep the second tab current while the first one loads and runs its timer.
+            time.sleep(1.5)
+            self.quiet(browser.switch_tab, 1)
+            self.assertEqual(browser.js("window.loaded"), "true")
+            self.assertGreaterEqual(int(browser.js("window.ticks")), 8)
+        finally:
+            try:
+                browser.close()
+            except browser.BrowserError:
+                pass
+            self.wait_for_host_exit()
 
     def test_1_numbered_elements_describe_the_page(self) -> None:
         from aiqsa import browser

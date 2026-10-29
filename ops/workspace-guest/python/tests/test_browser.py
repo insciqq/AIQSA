@@ -7,6 +7,8 @@ The browser-backed tests live in test_browser_live.py.
 from __future__ import annotations
 
 import io
+import asyncio
+import contextvars
 import json
 import os
 import re
@@ -23,6 +25,10 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aiqsa.browser import _client, _format, _identity, _paths, _sessions, cli  # noqa: E402
+try:  # The standard guest image does not install Playwright; host fakes run where it is present.
+    from aiqsa.browser import _host  # noqa: E402
+except ModuleNotFoundError:  # pragma: no cover - exercised only in the slim guest test image
+    _host = None  # type: ignore[assignment]
 
 #: The parser of `features/run-lifecycle-v2/workspaceActivityPresentation.ts`, kept equal to it.
 UI_STEP_LINE = re.compile(r"^\[browser #(\d{1,5})\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$")
@@ -55,13 +61,16 @@ class IdentityTests(unittest.TestCase):
 
     def test_browser_environment_carries_the_user_zone_and_no_run_credentials(self) -> None:
         env = _identity.launch_env({"PATH": "/bin", "AIQSA_RUN_TOKEN": "t", "AIQSA_INVOCATION_ID": "i",
-                                    "AIQSA_GATEWAY_URL": "g", "SHOP_LOGIN": "user"}, "pt-BR", "America/Sao_Paulo")
+                                    "AIQSA_GATEWAY_URL": "g", "AIQSA_AGENT_ID": "thread-7", "AIQSA_AGENT_NAME": "shop",
+                                    "SHOP_LOGIN": "user"}, "pt-BR", "America/Sao_Paulo")
         self.assertEqual(env["TZ"], "America/Sao_Paulo")
         self.assertEqual(env["LANG"], "pt_BR.UTF-8")
         self.assertEqual(env["LANGUAGE"], "pt_BR")
         self.assertEqual(env["SHOP_LOGIN"], "user")
         for name in ("AIQSA_RUN_TOKEN", "AIQSA_INVOCATION_ID", "AIQSA_GATEWAY_URL"):
             self.assertNotIn(name, env)
+        self.assertNotIn("AIQSA_AGENT_ID", env)
+        self.assertNotIn("AIQSA_AGENT_NAME", env)
 
     def test_user_agent_drops_only_the_headless_product_name(self) -> None:
         headless = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36"
@@ -377,6 +386,137 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(_format.render_steps(steps), 'Browser steps of this turn:\n  [browser #1] open @ shop.example/\n'
                                                       '  [browser #2] click: button "Buy" @ shop.example/item')
         self.assertEqual(_format.render_steps([]), "No browser steps yet.")
+
+
+@unittest.skipUnless(_host is not None, "Playwright is not installed")
+class HostLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_page_callbacks_use_page_owner_and_popup_opener(self) -> None:
+        host = _bare_host()
+        owner = _host.AgentState("thread-a", "amazon")
+        other = _host.AgentState("thread-b", "shop")
+        host._states = {owner.agent_id: owner, other.agent_id: other}
+        setup = asyncio.get_running_loop().create_future()
+        setup.set_result(None)
+        host._setup_future = lambda _page: setup
+        page = _HostPage("https://amazon.example/")
+        host._pending_page_owner = owner
+        host._agent_context.set(other.agent_id)
+        host._on_page(page)
+        self.assertIs(host._pages[page], owner)
+        owner.acting = True
+        popup = _HostPage("https://amazon.example/popup")
+        host._on_popup(page, popup)
+        await asyncio.sleep(0)
+        self.assertIs(host._pages[popup], owner)
+        self.assertIs(owner.current, popup)
+        self.assertIsNone(other.current)
+        dialog = _HostDialog(page)
+        await host._on_dialog(dialog)
+        self.assertTrue(dialog.accepted)
+        self.assertTrue(any("from-page" in note for note in owner.notes))
+        self.assertFalse(other.notes)
+
+    async def test_sixth_agent_is_busy_and_release_waits_for_tab_close(self) -> None:
+        host = _bare_host()
+        host._states = {f"thread-{index}": _host.AgentState(f"thread-{index}") for index in range(6)}
+        for state in list(host._states.values())[:5]:
+            state.slot = True
+        with mock.patch.object(_host, "SLOT_WAIT_SECONDS", 0.01):
+            with self.assertRaises(_host.HostError) as raised:
+                await host._acquire_slot(host._states["thread-5"])
+        self.assertEqual(raised.exception.code, _host.BROWSER_BUSY_CODE)
+        state = host._states["thread-0"]
+        state.tabs = [_HostPage("https://example/")]
+        pending = asyncio.create_task(host.release_agent(state.agent_id))
+        await asyncio.sleep(0)
+        self.assertTrue(state.slot)
+        await pending
+        self.assertFalse(state.slot)
+        self.assertTrue(state.tabs[0].closed)
+
+    async def test_idle_expiry_rechecks_the_lease_and_honors_user_control(self) -> None:
+        host = _bare_host()
+        state = _host.AgentState("thread-a")
+        state.slot = True
+        state.last_used = 1
+        host._states = {state.agent_id: state}
+        with mock.patch.object(_host, "AGENT_IDLE_SECONDS", 0):
+            await host._expire_agent(state, state.last_used)
+        self.assertFalse(state.slot)
+        state.slot = True
+        state.last_used = 1
+        host.live.agent_held_by_user = lambda _agent: True
+        await host._expire_agent(state, state.last_used)
+        self.assertTrue(state.slot)
+
+    async def test_status_does_not_create_a_page_and_subagent_close_points_to_release(self) -> None:
+        host = _bare_host()
+        state = _host.AgentState("thread-a")
+        host._states[state.agent_id] = state
+        host._selected_agent_id = state.agent_id
+        host.version = "fixture"
+        host.user_agent = "Chrome"
+        host.store = type("Store", (), {"tracked": {}, "skipped": {}})()
+        with mock.patch.object(_host, "_pinned_chromium", return_value=None):
+            status = await host.op_status({})
+        self.assertEqual(status["data"]["tabs"], 0)
+        with self.assertRaises(_host.HostError) as raised:
+            await host.op_close({})
+        self.assertEqual(raised.exception.code, "browser_release_required")
+
+    async def test_memory_line_is_visible_before_a_new_tab(self) -> None:
+        host = _bare_host()
+        host._memory_available_mib = lambda: _host.MEMORY_SAFE_MIB + _host.TAB_MEMORY_RESERVE_MIB - 1
+        with self.assertRaises(_host.HostError) as raised:
+            host._check_memory()
+        self.assertEqual(raised.exception.code, _host.BROWSER_MEMORY_LOW_CODE)
+
+
+class _HostPage:
+    def __init__(self, url: str = "about:blank") -> None:
+        self.url = url
+        self.closed = False
+        self.handlers: Dict[str, Any] = {}
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _HostDialog:
+    def __init__(self, page: Any) -> None:
+        self.page = page
+        self.type = "alert"
+        self.message = "from-page"
+        self.accepted = False
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def dismiss(self) -> None:
+        self.accepted = False
+
+
+def _bare_host() -> Any:
+    host = _host.Host.__new__(_host.Host)
+    host._states = {}
+    host._pages = {}
+    host._setups = {}
+    host._page_creation_lock = asyncio.Lock()
+    host._pending_page_owner = None
+    host._agent_context = contextvars.ContextVar("test_browser_agent", default=None)
+    host._selected_agent_id = "main"
+    host.browser_lock = asyncio.Lock()
+    host.slot_condition = asyncio.Condition()
+    host.live = type("Live", (), {"agent_held_by_user": lambda _self, _agent: False})()
+    return host
+
+
 
 
 class FakeHost:
