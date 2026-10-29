@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { readToolResultTool as engineReadToolResultTool } from "../engine/toolResults";
 import { mcpFindToolsTool } from "../mcp/discovery";
 import { memorySearchTool } from "../memory/search/contract";
+import { SUBAGENT_TOOLS } from "../subagents/tools";
 import { analyzeConversationImageTool, analyzeImageTool } from "./analyzeImage";
 import { artifactTool, readArtifactTool } from "./artifact";
 import { browserHandoffTool } from "./browserHandoff";
@@ -65,6 +66,7 @@ function firstPartyTools(): RunTool[] {
   return [
     ...HARNESS_TOOLS.map((descriptor) => descriptor.tool),
     ...SELF_SERVICE_TOOLS.map((descriptor) => descriptor.tool),
+    ...SUBAGENT_TOOLS.map((descriptor) => descriptor.tool),
     createScheduledTaskTool("Europe/Moscow"),
     manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" }, userUrlDigests: [] }),
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
@@ -91,7 +93,8 @@ describe("tool schema portability", () => {
 
   it("writes every nullable list or object of a first-party tool as anyOf, never as a type list", () => {
     const tools = firstPartyTools();
-    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["create_scheduled_task", "manage_assistant", "save_skill"]));
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["call_subagent", "create_scheduled_task", "edit_subagent",
+      "manage_assistant", "save_skill"]));
     for (const tool of tools) expect(containerTypeLists(tool.inputSchema), tool.name).toEqual([]);
   });
 
