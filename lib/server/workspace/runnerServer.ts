@@ -16,6 +16,7 @@ import {
   type WorkspaceRuntime
 } from "./runtime";
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
+import { workspaceAgentStopRequest, type WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseBrowserLiveAction, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
@@ -115,6 +116,23 @@ function requiredString(value: unknown, maximum = 512): string {
     throw new Error("field_invalid");
   }
   return value;
+}
+
+/**
+ * One agent's processes of a shared guest, under the session's current operation (`agentProcessGuest.ts`). A
+ * runtime without the capability answers `unknown`, so the caller falls back to the VM stop.
+ */
+async function terminateAgentProcessesRoute(
+  body: Record<string, unknown>,
+  runtime: WorkspaceRuntime,
+  sessionId: string,
+  execute: <T>(operation: unknown, action: (signal: AbortSignal) => Promise<T>) => Promise<T>
+): Promise<WorkspaceAgentProcessTermination> {
+  const agentId = requiredString(body.agentId, 64);
+  workspaceAgentStopRequest(agentId);
+  const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+  if (!runtime.terminateAgentProcesses) return { outcome: "unknown" };
+  return execute(body.operation, (signal) => runtime.terminateAgentProcesses!({ agentId, runtimeSandboxId, sessionId, signal }));
 }
 
 function optionalString(value: unknown, maximum = 512): string | null {
@@ -484,6 +502,12 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
         sendJson(response, 200, await execute(body.operation, (signal) =>
           input.runtime.browserLive!({ ...action, modelRunId, runtimeSandboxId, sessionId, signal })));
+        return;
+      }
+
+      if (request.method === "POST" && suffix === "/agents/terminate") {
+        stage = "quiesce";
+        sendJson(response, 200, await terminateAgentProcessesRoute(await readJson(request), input.runtime, sessionId, execute));
         return;
       }
 
