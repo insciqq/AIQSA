@@ -20,6 +20,7 @@ import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCapture
 import { parseBrowserLiveAction, WORKSPACE_BROWSER_LIVE_LIMITS } from "./browserLiveChannel";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
+import { workspaceAgentEnvironment, type WorkspaceAgent } from "../subagents/guestProtocol";
 import { WORKSPACE_TURN_TIMEOUT_MAX_SECONDS } from "./config";
 import { RUNNER_GATEWAY_ORIGIN } from "./runnerGatewayRelay";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
@@ -131,6 +132,25 @@ function integer(value: unknown, minimum: number, maximum: number): number {
 function boolean(value: unknown): boolean {
   if (typeof value !== "boolean") throw new Error("field_invalid");
   return value;
+}
+
+function parseWorkspaceAgent(value: unknown): WorkspaceAgent | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("field_invalid");
+  try {
+    if (value.kind === "main" || value.kind === undefined) {
+      workspaceAgentEnvironment({ kind: "main" });
+      return { kind: "main" };
+    }
+    if (value.kind !== "subagent" || typeof value.name !== "string" || typeof value.threadId !== "string") {
+      throw new Error("field_invalid");
+    }
+    const agent: WorkspaceAgent = { kind: "subagent", name: value.name, threadId: value.threadId };
+    workspaceAgentEnvironment(agent);
+    return agent;
+  } catch {
+    throw new Error("field_invalid");
+  }
 }
 
 function incomingBody(request: IncomingMessage): ReadableStream<Uint8Array> {
@@ -334,6 +354,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const secrets = parseAcceptedWorkspaceSecrets(body.secrets);
         const modelRunId = requiredString(body.modelRunId, 128);
         const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+        const agent = parseWorkspaceAgent(body.agent);
         let runEnvironment: Readonly<Record<string, string>>;
         try {
           runEnvironment = parseWorkspaceRunEnvironment(body.runEnvironment, RUNNER_GATEWAY_ORIGIN);
@@ -342,7 +363,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         }
         if (body.boundUvCache !== undefined && typeof body.boundUvCache !== "boolean") throw new Error("field_invalid");
         await execute(body.operation, (signal) => input.runtime.syncPersonalSecrets({
-          secrets, modelRunId, ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
+          secrets, modelRunId, ...(agent ? { agent } : {}),
+          ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
           ...(body.boundUvCache === true ? { boundUvCache: true } : {}),
           runtimeSandboxId, sessionId, signal
         }));
@@ -461,8 +483,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         sendJson(response, 200, workspaceToolResultWire(await execute(body.operation, (signal) => {
           const modelRunId = requiredString(body.modelRunId, 128);
           const modelRunToolCallId = requiredString(body.modelRunToolCallId, 128);
+          const agent = parseWorkspaceAgent(body.agent);
           return runWithContext({ run_id: modelRunId, tool_call_id: modelRunToolCallId }, () => input.runtime.callBoundTool({
             arguments: toolArguments,
+            ...(agent ? { agent } : {}),
             ...(invocationId ? { invocationId } : {}),
             modelRunId,
             modelRunToolCallId,

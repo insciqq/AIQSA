@@ -35,8 +35,8 @@ describe("BrowserLiveStream", () => {
     sources[0]!.send("frame", liveFrame(1));
     sources[0]!.send("frame", liveFrame(2));
     expect(stream.getSnapshot().frame?.seq).toBe(2);
-    sources[0]!.send("steps", { steps: [{ n: 1, action: "open", target: "", host: "shop.example", path: "/" }] });
-    sources[0]!.send("steps", { steps: [{ n: 2, action: "click", target: "button \"Cart\"", host: "shop.example", path: "/" }] });
+    sources[0]!.send("steps", { agent: "main", steps: [{ n: 1, action: "open", target: "", host: "shop.example", path: "/" }] });
+    sources[0]!.send("steps", { agent: "main", steps: [{ n: 2, action: "click", target: "button \"Cart\"", host: "shop.example", path: "/" }] });
     expect(stream.getSnapshot().steps.map((step) => step.n)).toEqual([2]);
     sources[0]!.send("end", { reason: "run_finished" });
     expect(stream.getSnapshot()).toMatchObject({ connection: "ended", endReason: "run_finished" });

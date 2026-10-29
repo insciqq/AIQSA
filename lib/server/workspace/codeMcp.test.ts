@@ -77,6 +77,7 @@ describe("run environment for guest commands", () => {
     for (const value of [
       null, [], "AIQSA_RUN_TOKEN=x",
       { PATH: "/tmp" },
+      { AIQSA_AGENT_ID: "thread-7" },
       { [WORKSPACE_CODE_TOKEN_ENV]: "short", [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN },
       { [WORKSPACE_CODE_TOKEN_ENV]: token },
       { [WORKSPACE_CODE_GATEWAY_ENV]: RUNNER_GATEWAY_ORIGIN },

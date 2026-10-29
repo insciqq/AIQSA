@@ -550,6 +550,21 @@ describe("Microsandbox Workspace lifecycle", () => {
     }
   });
 
+  it("keeps the browser agent identity per command and out of the saved environment", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const agent = { kind: "subagent" as const, name: "shop-amazon", threadId: "thread-7" };
+    const runEnvironment = { AIQSA_BROWSER_LOCALE: "es-ES", AIQSA_BROWSER_TIMEZONE: "UTC" };
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, agent, runEnvironment, secrets: [] });
+    const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: Record<string, string> };
+    expect(bundle.environment).toEqual(runEnvironment);
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: {} }) }] });
+    await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", agent, arguments: { command: "env" } });
+    expect(sdk.callTool.mock.lastCall?.[0].arguments.env).toMatchObject({ AIQSA_AGENT_ID: "thread-7", AIQSA_AGENT_NAME: "shop-amazon" });
+    await value.runtime.callBoundTool({ ...callInput, modelRunToolCallId: "main_call", originalName: "sandbox_shell", arguments: { command: "env" } });
+    expect(sdk.callTool.mock.lastCall?.[0].arguments.env).not.toHaveProperty("AIQSA_AGENT_ID");
+  });
+
   it("stages a secret saved before the browser's names were reserved, without letting its reserved entries reach commands", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);

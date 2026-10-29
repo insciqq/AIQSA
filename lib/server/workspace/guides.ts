@@ -1,4 +1,4 @@
-import { WORKSPACE_BROWSER_GUIDANCE } from "./browserGuidance";
+import { workspaceBrowserGuidance, WORKSPACE_BROWSER_GUIDANCE } from "./browserGuidance";
 import { WORKSPACE_OFFICE_GUIDANCE } from "./officeGuidance";
 import { WORKSPACE_PSD_GUIDANCE } from "./psdGuidance";
 import { WORKSPACE_SKILLS_GUIDANCE } from "./skillsGuidance";
@@ -20,9 +20,10 @@ export const WORKSPACE_GUIDE_FILES = [
 
 export const WORKSPACE_GUIDE_INPUT_MAX_BYTES = 65_536;
 
-export function workspaceGuideInput(): Buffer {
+export function workspaceGuideInput(options: Readonly<{ agentKind?: "main" | "subagent"; imageRef?: string }> = {}): Buffer {
+  const browser = workspaceBrowserGuidance(options.agentKind, options.imageRef);
   const input = Buffer.from(JSON.stringify({ version: 1,
-    guides: WORKSPACE_GUIDE_FILES.map(({ name, content }) => ({ name, content })) }));
+    guides: WORKSPACE_GUIDE_FILES.map(({ name, content }) => ({ name, content: name === "browser.md" ? browser : content })) }));
   if (input.byteLength > WORKSPACE_GUIDE_INPUT_MAX_BYTES) throw new Error("workspace_guide_input_too_large");
   return input;
 }
