@@ -9,6 +9,7 @@ import {
 } from "@/tests/support/subagentViewFixtures";
 import {
   invalidateChatSubagents,
+  pruneSubagentChats,
   refreshChatSubagents,
   refreshSubagentSummary,
   refreshSubagentThreadView,
@@ -98,6 +99,49 @@ describe("sub-agent store", () => {
     first.resolve(jsonResponse(subagentView("chat-a", subagentThread("thread-alpha"))));
     await alpha;
     expect(useSubagentStore.getState().view?.view?.thread.id).toBe("thread-beta");
+  });
+
+  it("never shows a thread view sent before a branch switch on the new branch", async () => {
+    const oldBranch = deferred<Response>();
+    let call = 0;
+    const target = { chatId: "chat-a", threadId: "thread-alpha" };
+    const { fetch } = subagentFetch([
+      { path: "/api/chats/chat-a/subagents/thread-alpha", respond: () => {
+        call += 1;
+        return call === 1 ? oldBranch.promise
+          : jsonResponse(subagentView("chat-a", subagentThread("thread-alpha", "running", { name: "new-branch" })));
+      } },
+      { path: "/api/chats/chat-a/subagents", respond: () => jsonResponse(subagentChat("chat-a", [subagentThread("thread-alpha")])) }
+    ]);
+    vi.stubGlobal("fetch", fetch);
+    setOpenSubagentThread(target);
+    useSubagentStore.setState({ view: { key: "chat-a\0thread-alpha", status: "ready",
+      view: subagentView("chat-a", subagentThread("thread-alpha", "done", { name: "shown" })) } });
+    const before = refreshSubagentThreadView(target);
+    const switched = invalidateChatSubagents("chat-a");
+    // The old branch's view clears at once.
+    expect(useSubagentStore.getState().view).toMatchObject({ status: "loading", view: null });
+    oldBranch.resolve(jsonResponse(subagentView("chat-a", subagentThread("thread-alpha", "done", { name: "old-branch" }))));
+    await before;
+    expect(useSubagentStore.getState().view?.view?.thread.name).not.toBe("old-branch");
+    await switched;
+    expect(useSubagentStore.getState().view?.view?.thread.name).toBe("new-branch");
+  });
+
+  it("forgets chats that left the list, with what was in flight for them", async () => {
+    const slow = deferred<Response>();
+    vi.stubGlobal("fetch", subagentFetch([{ path: "/api/subagents", respond: () => slow.promise }]).fetch);
+    useSubagentStore.setState({
+      chats: { gone: subagentChat("gone", [subagentThread("thread-alpha")]), kept: subagentChat("kept", [subagentThread("thread-beta")]) },
+      disclosure: { gone: { expanded: true, whileRunning: true } }
+    });
+    const pending = refreshSubagentSummary(["gone", "kept"]);
+    pruneSubagentChats(new Set(["kept"]));
+    expect(Object.keys(useSubagentStore.getState().chats)).toEqual(["kept"]);
+    expect(useSubagentStore.getState().disclosure).toEqual({});
+    slow.resolve(jsonResponse({ chats: [subagentChat("gone", [subagentThread("thread-alpha")])] }));
+    await pending;
+    expect(useSubagentStore.getState().chats.gone).toBeUndefined();
   });
 
   it("shows the routes' one not-found answer as unavailable", async () => {

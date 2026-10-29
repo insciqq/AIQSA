@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId } from "react";
 import { UiV2Button, UiV2Icon, UiV2Skeleton } from "@/components/ui-v2";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
 import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
@@ -44,36 +44,27 @@ function runningStepLabel(activity: ThreadToolActivity | null): string | null {
 
 /**
  * Loads the thread view and refreshes it while the sub-agent is active, or
- * when the chat's rows say it changed since. A branch switch starts over:
- * the thread may not be on the branch now shown.
+ * when the chat's rows say it changed since. A branch switch is the store's
+ * (`invalidateChatSubagents`): it clears and reloads the view itself.
  */
-function useThreadViewLoader(target: SubagentThreadTarget, branchKey: string | null, summaryStamp: string | null): void {
+function useThreadViewLoader(target: SubagentThreadTarget, summaryStamp: string | null): void {
   const key = subagentThreadKey(target);
-  const startedRef = useRef<string | null>(null);
   useEffect(() => {
-    const scope = `${key}\0${branchKey ?? ""}`;
-    const reset = startedRef.current !== scope;
-    startedRef.current = scope;
-    let disposed = false;
-    let timer: number | undefined;
-    const load = async (first: boolean) => {
-      await refreshSubagentThreadView(target, { reset: first && reset });
-      if (disposed) return;
+    void refreshSubagentThreadView(target);
+    const timer = window.setInterval(() => {
       const entry = useSubagentStore.getState().view;
       if (entry?.key === key && entry.status === "ready" && entry.view && isActiveSubagentState(entry.view.thread.state)) {
-        timer = window.setTimeout(() => void load(false), SUBAGENT_POLL_INTERVAL_MS);
+        void refreshSubagentThreadView(target);
       }
-    };
+    }, SUBAGENT_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [key, target]);
+  useEffect(() => {
     const entry = useSubagentStore.getState().view;
-    // The chat's rows changing is a reason to refresh only when they are newer than the view.
-    if (!reset && entry?.key === key && entry.view && summaryStamp &&
-      Date.parse(summaryStamp) <= Date.parse(entry.view.thread.updatedAt) && !isActiveSubagentState(entry.view.thread.state)) return;
-    void load(true);
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-    };
-  }, [key, branchKey, summaryStamp, target]);
+    // Newer rows than the view (it ended, or the main agent continued it) are a reason to look again.
+    if (entry?.key === key && entry.status === "ready" && entry.view && summaryStamp &&
+      Date.parse(summaryStamp) > Date.parse(entry.view.thread.updatedAt)) void refreshSubagentThreadView(target);
+  }, [key, summaryStamp, target]);
 }
 
 function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boolean; turn: SubagentTurnView }>) {
@@ -154,12 +145,9 @@ function TurnV2({ chatId, latest, turn }: Readonly<{ chatId: string; latest: boo
  * back to the chat. It has no composer; writing to a sub-agent comes later.
  */
 export function SubagentThreadViewV2({
-  branchKey,
   onBack,
   target
 }: Readonly<{
-  /** Changes when the chat's shown branch does. */
-  branchKey: string | null;
   onBack(): void;
   target: SubagentThreadTarget;
 }>) {
@@ -170,7 +158,7 @@ export function SubagentThreadViewV2({
     state.chats[target.chatId]?.threads.find((thread) => thread.id === target.threadId) ?? null);
   const stopping = useSubagentStore((state) => Boolean(state.stopping[key]));
   const stopFailed = useSubagentStore((state) => Boolean(state.stopErrors[key]));
-  useThreadViewLoader(target, branchKey, listed?.updatedAt ?? null);
+  useThreadViewLoader(target, listed?.updatedAt ?? null);
 
   const view = entry?.view ?? null;
   const unavailable = entry?.status === "unavailable";
