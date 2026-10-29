@@ -46,6 +46,19 @@ describe("native tool registry", () => {
     expect(off.definitions().map((tool) => tool.name)).toEqual([READ_TOOL_RESULT_NAME]);
   });
 
+  it("shares the answer's page-reader session with a sub-agent's registry, so its cap and cache count every agent's reads", async () => {
+    const fetchRequest = request({ fetchUrl: { userUrlDigests: [], version: 1 } });
+    const main = await buildToolRegistry(input({ request: fetchRequest }));
+    expect(main.fetchUrlSession).toBeDefined();
+    const execute = vi.spyOn(main.fetchUrlSession!, "execute").mockResolvedValue({ callId: "c1", content: [], name: "fetch_url",
+      status: "complete" });
+    const sub = await buildToolRegistry(input({ fetchUrlSession: main.fetchUrlSession!, request: fetchRequest }));
+    expect(sub.fetchUrlSession).toBe(main.fetchUrlSession);
+    await sub.resolve("fetch_url")!.execute({ call: { arguments: { url: "https://news.example/" }, id: "c1", name: "fetch_url" },
+      ordinal: 0, persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps Memory search results within the run that searched", async () => {
     const memorySearch = { comparisonResultTokens: 12000, destinations: [], maxCalls: 3, memoryGeneration: 1, referenceChatHistory: true,
       resultTokens: 6000, timeoutSeconds: 30, version: "memory-search-v1" } as const;
