@@ -3,7 +3,7 @@
 
 Run this inside a disposable 4096 MiB Workspace guest, for example:
 
-    python3 browser_memory_probe.py --url https://www.amazon.es --agents 5 --tabs 2 --seconds 60
+    python3 browser_memory_probe.py --url https://www.amazon.es --url2 https://www.bbc.com --agents 5 --tabs 2 --seconds 60
 
 The child commands use the same browser socket, so this exercises per-agent
 tabs. Samples are JSON lines containing Chromium RSS and MemAvailable; the
@@ -52,16 +52,19 @@ def memory_sample() -> Dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="https://www.amazon.es")
+    parser.add_argument("--url2", help="Optional second site; each agent opens one tab at each site.")
     parser.add_argument("--agents", type=int, default=5)
     parser.add_argument("--tabs", type=int, default=2)
     parser.add_argument("--seconds", type=int, default=60)
     args = parser.parse_args()
     if not 1 <= args.agents <= 5 or not 1 <= args.tabs <= 3 or not 1 <= args.seconds <= 3600:
         parser.error("agents 1..5, tabs 1..3 and seconds 1..3600")
+    second_url = args.url2 or args.url
+    tab_url = second_url if args.url2 else args.url
     command = (
         "from aiqsa import browser as b; "
         f"b.open({args.url!r}); "
-        f"[b.new_tab({args.url!r}) for _ in range({args.tabs - 1})]; "
+        f"[b.new_tab({tab_url!r}) for _ in range({args.tabs - 1})]; "
         f"import time; time.sleep({args.seconds})"
     )
     children = []
