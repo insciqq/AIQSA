@@ -799,7 +799,9 @@ describe("native unknown-outcome approval freshness", () => {
     // Exercise hydration and unknown detection as a later run does, including the user's next message.
     const history = await createTranscriptRepository(client).loadRuns({ chatId: "chat", runIds: ["prior-run"], userId: "user" });
     expect(client.runTranscriptItem.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      select: expect.objectContaining({ createdAt: true }), where: { chatId: "chat", modelRunId: { in: ["prior-run"] }, userId: "user" }
+      select: expect.objectContaining({ createdAt: true }),
+      // The main agent's own items only: a sub-agent thread's never enter its context.
+      where: { chatId: "chat", modelRunId: { in: ["prior-run"] }, subagentThreadId: null, userId: "user" }
     }));
     const unknownEffects = unknownEffectsOf([...history.get("prior-run")!, { id: "new-message", kind: "user", text: "Continue" }], () => true);
     const store = createToolCallStore(client);

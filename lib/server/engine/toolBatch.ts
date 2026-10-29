@@ -110,7 +110,21 @@ export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
 export const TOOL_TIME_EXHAUSTED_OUTPUT =
   "Not run: this answer's time for tools has run out. Answer with what you have and say what you could not check.";
 
+/** What a sub-agent's call that needs the user's approval returns: it is not sent, and goes back to the main agent. */
+export const SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT =
+  "Not sent: this call can change data and needs the user's approval, which only the main agent can ask for. It goes " +
+  "back to the main agent with your report, exactly as you made it. Do not call it again; finish what you can without " +
+  "it and say in your report what it was for.";
+
 export type ToolBatchDeps = Readonly<{
+  /**
+   * A sub-agent's batch: a call that would wait for the user's approval
+   * (an MCP write the guard did not allow, or a repeat of an unknown effect)
+   * is not sent and gets no card of its own; it is handed back here, and the
+   * main agent makes it so the user sees the ordinary card. Absent for the
+   * main agent, whose calls are gated with their card.
+   */
+  approvalHandBack?(call: ModelToolCall, approval: McpApprovalRequest): void;
   chatId: string;
   history: ToolCallRepeatHistory;
   /** The run's call budget; null: no call count refuses a call (the repeat guard still does). */
@@ -132,6 +146,8 @@ export type ToolBatchDeps = Readonly<{
   signal: AbortSignal;
   sleep?(delayMs: number, signal: AbortSignal): Promise<void>;
   store: ToolCallStore;
+  /** A sub-agent's batch: every record carries its thread and turn (`ToolCallBegin.thread`). */
+  thread?: Readonly<{ threadId: string; turnId: string }>;
   /**
    * Whether the turn may still start this tool's call: the loop's tool time, and whether the call's own longest
    * duration still fits before the deadline (`toolCallBounds`). Asked as each call is about to start and before a
@@ -388,7 +404,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     // arguments, a blocked repeat) keeps it, so a corrected call still gets its reserved round.
     if (before.kind === "run" && before.exempt) state.reservedCalled = true;
     const record = { arguments: call.arguments, chatId: deps.chatId, ordinal, providerCallId: call.id, roundIndex: input.round,
-      runId: deps.runId, userId: deps.userId };
+      runId: deps.runId, ...(deps.thread ? { thread: deps.thread } : {}), userId: deps.userId };
     if (before.kind === "refuse") {
       if (before.budget) budgetExhausted = true;
       if (before.correctable) correctable += 1;
@@ -417,6 +433,17 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       userId: deps.userId, approval, approvalAfter, approvedBy });
     if (!before.retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
     deps.signal.throwIfAborted();
+    // A sub-agent never asks the user itself: the call that would wait goes back to the main agent, unsent and card-free.
+    if (deps.approvalHandBack && approval && !humanApproved && approval.guard?.decision !== "allow") {
+      const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
+      const row = await deps.store.refuse({ ...record, result, toolName: call.name });
+      if (!row) throw new ToolBatchInactiveError();
+      recordToolCall({ kind, settled: { kind: "awaiting_approval" } });
+      deps.history.record(row);
+      deps.approvalHandBack(call, approval);
+      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
+        output: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT };
+    }
     const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}),
       ...(approvalAfter ? { approvalAfter } : {}),
       ...(approvedBy ? { approvedBy } : {}), toolName: call.name });
