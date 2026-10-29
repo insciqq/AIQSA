@@ -185,7 +185,7 @@ export function modelAssignedRoles(modelId: string, sources: ProviderUsageSource
   const pinned: ReadonlyArray<readonly [AdminProviderAssignedRole, string | undefined]> = [
     ["memory", sources.systemModelPolicy?.memoryPolicy.model?.id], ["system_model", policy?.systemModel?.id],
     ["chat_titles", policy?.chatTitleModel?.id], ["vision", policy?.visionModel?.id],
-    ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
+    ["mcp_guard", policy?.mcpGuardModel?.id], ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
   ];
   return pinned.flatMap(([role, id]) => id === modelId ? [role] : []);
 }

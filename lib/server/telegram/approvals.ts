@@ -156,8 +156,10 @@ export function boundedTelegramApprovalDetails(text: string): string | null {
 
 function stateText(card: McpApprovalCard, expired: boolean): string {
   switch (card.state) {
+    case "allowed_automatically": return "Allowed automatically.";
     case "allowed_once": return TELEGRAM_COPY.allowedOnce;
-    case "allowed_server": return telegramAlwaysAllowedText(card.serverName);
+    case "allowed_server": return card.guardReason
+      ? "Standing consent saved for this server. Automatic checks still apply." : telegramAlwaysAllowedText(card.serverName);
     case "denied": return TELEGRAM_COPY.denied;
     case "pending":
       if (expired) return TELEGRAM_COPY.approvalExpired;
@@ -173,6 +175,7 @@ export function telegramApprovalMessage(input: Readonly<{
   const blocks: TelegramInputRichBlock[] = [
     { type: "paragraph", text: { type: "bold", text: telegramApprovalTitle(input.card.serverName, input.card.toolName) } },
     { type: "paragraph", text: stateText(input.card, input.expired === true) },
+    ...(input.card.guardReason ? [{ type: "paragraph" as const, text: input.card.guardReason }] : []),
     ...(input.details ? [{ type: "pre" as const, language: "json", text: input.details }] : []),
     ...(input.notice ? [{ type: "paragraph" as const, text: input.notice }] : [])
   ];

@@ -149,6 +149,7 @@ export function AdminSystemRolesTable({
     chatTitleProviderModelId: policy.chatTitleModel?.id ?? null,
     chatTitleReasoningEffort: policy.chatTitleReasoningEffort
   };
+  const mcpGuardUndo = { mcpGuardProviderModelId: policy.mcpGuardModel?.id ?? null, mcpGuardReasoningEffort: policy.mcpGuardReasoningEffort ?? null };
   const visionUndo = { visionProviderModelId: policy.visionModel?.id ?? null, visionReasoningEffort: policy.visionReasoningEffort ?? null };
   const pdfMode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
   const pdfFallback = policy.chatPdfFallbackMethod ?? "page_images";
@@ -331,6 +332,40 @@ export function AdminSystemRolesTable({
             />
           </div>
         </details>
+      </RoleRow>
+
+      <RoleRow
+        title="MCP guard"
+        testId="admin-role-mcp-guard"
+        menu={[{
+          disabled: !policy.mcpGuardModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null }, mcpGuardUndo)
+        }]}
+        status={roleStatus(policy.mcpGuardModel ?? null)}
+        statusLabel={policy.mcpGuardModel ? policy.mcpGuardModel.available ? "Model ready" : "Model unavailable" : "Not assigned"}
+        description="Checks data-changing MCP calls in interactive chats, including Always allow servers. Only calls needing your decision ask for approval. Changes apply to future messages."
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={generativeRoleItems(catalog, "chat_titles")}
+          label="MCP guard deployment"
+          onCheck={(id) => controller.checkAndAssign("mcp_guard", id)}
+          onSelect={(id) => void controller.assign({ mcpGuardProviderModelId: id, mcpGuardReasoningEffort: null }, mcpGuardUndo)}
+          roleName="MCP guard"
+          selectedId={policy.mcpGuardModel?.id ?? null}
+          selectedLabel={policy.mcpGuardModel ? label(policy.mcpGuardModel) : null}
+          testId="admin-mcp-guard-picker"
+        />
+        <p className="text-xs leading-5 text-ink-muted">Requires verified structured output. When unassigned, existing approval settings apply. An unavailable assigned model asks for approval.</p>
+        <ReasoningSelect
+          disabled={busy}
+          label="MCP guard reasoning"
+          model={policy.mcpGuardModel ?? null}
+          onChange={(effort) => void controller.assign({ mcpGuardProviderModelId: policy.mcpGuardModel?.id ?? null, mcpGuardReasoningEffort: effort }, mcpGuardUndo)}
+          value={policy.mcpGuardReasoningEffort ?? null}
+        />
       </RoleRow>
 
       <RoleRow

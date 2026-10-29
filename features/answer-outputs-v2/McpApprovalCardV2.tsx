@@ -18,6 +18,7 @@ type Decide = typeof decideMcpApproval;
 type Continue = (card: McpApprovalCard) => void | Promise<McpApprovalContinuationOutcome | void>;
 
 const HEADINGS: Readonly<Record<McpApprovalState, string>> = {
+  allowed_automatically: "Allowed automatically",
   allowed_once: "Allowed once",
   allowed_server: "Always allowed",
   denied: "Denied",
@@ -25,6 +26,7 @@ const HEADINGS: Readonly<Record<McpApprovalState, string>> = {
 };
 
 const TONES: Readonly<Record<McpApprovalState, "neutral" | "ok" | "warn">> = {
+  allowed_automatically: "ok",
   allowed_once: "ok",
   allowed_server: "ok",
   denied: "neutral",
@@ -42,9 +44,11 @@ function pendingText(card: McpApprovalCard): string {
 function stateText(card: McpApprovalCard, live: boolean, continuable: boolean): string {
   const waiting = continuable ? " The answer has not continued yet." : "";
   switch (card.state) {
+    case "allowed_automatically": return "The automatic check allowed this call as part of your request.";
     case "allowed_once": return `Allowed once: only this exact call may run, once.${waiting}`;
     case "allowed_server":
-      return `Tools of ${card.serverName} now run without asking. You can revoke this in Studio › MCP servers.${waiting}`;
+      return !card.guardReason ? `Tools of ${card.serverName} now run without asking. You can revoke this in Studio › MCP servers.${waiting}`
+        : `Standing consent saved for ${card.serverName}. Automatic checks still apply when configured. You can revoke consent in Studio › MCP servers.${waiting}`;
     case "denied": return "Nothing was sent.";
     case "pending":
       return !card.canDecide ? "Only the person who sent this message can allow this tool. Nothing was sent."
@@ -135,6 +139,7 @@ function McpApprovalCardV2({ card, decide, live, offerContinue, onContinue, runI
       <p className="v2-tool-approval-text" ref={statusRef} tabIndex={-1} role={current.state === "pending" ? undefined : "status"}>
         {stateText(current, live, continuable)}
       </p>
+      {current.guardReason ? <p className="v2-tool-approval-text">{current.guardReason}</p> : null}
       {current.details && runId ? (
         <McpCallDetailsV2 label="Review arguments" meta="The request the model prepared" reference={current.details}
           runId={runId} status="error" />

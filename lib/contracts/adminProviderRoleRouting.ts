@@ -1,8 +1,8 @@
 /** Installation roles that pin one answer deployment and stop when it cannot serve them. */
-export type AdminProviderAssignedRole = "memory" | "system_model" | "chat_titles" | "vision" | "chat_pdf" | "chat_pdf_native";
+export type AdminProviderAssignedRole = "mcp_guard" | "memory" | "system_model" | "chat_titles" | "vision" | "chat_pdf" | "chat_pdf_native";
 
 export const ADMIN_PROVIDER_ASSIGNED_ROLES: readonly AdminProviderAssignedRole[] = [
-  "memory", "system_model", "chat_titles", "vision", "chat_pdf", "chat_pdf_native"
+  "mcp_guard", "memory", "system_model", "chat_titles", "vision", "chat_pdf", "chat_pdf_native"
 ];
 
 /** A role the selected OpenRouter providers cannot serve, with the request

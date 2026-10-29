@@ -1251,5 +1251,15 @@
   "browser_handoff_busy",
   "browser_handoff_invalid",
   "browser_sign_in_required",
-  "workspace_browser_live_unavailable"
+  "workspace_browser_live_unavailable",
+  "mcp_guard_admission_unavailable",
+  "mcp_guard_authority_unavailable",
+  "mcp_guard_conversation_too_long",
+  "mcp_guard_unavailable",
+  "mcp_guard_input_oversize",
+  "mcp_guard_output_invalid",
+  "mcp_guard_timeout",
+  "mcp_guard_cancelled",
+  "mcp_guard_failed",
+  "mcp_guard_usage_unrecorded"
 ]

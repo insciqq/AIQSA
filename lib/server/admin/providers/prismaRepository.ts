@@ -1167,7 +1167,7 @@ export function createPrismaAdminProviderRepository(
           where: { connectionId: input.connectionId, id: input.modelId }
         }),
         prisma.systemModelPolicy.findUnique({
-          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true,
+          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true, mcpGuardProviderModelId: true,
             chatPdfProviderModelId: true, chatPdfNativeProviderModelId: true },
           where: { id: "installation" }
         }),
@@ -1176,7 +1176,7 @@ export function createPrismaAdminProviderRepository(
       if (!connection || connection.family === "fake" || !model) return null;
       const assignedRoles = ([
         ["memory", memoryPolicy?.providerModelId], ["system_model", systemPolicy?.providerModelId],
-        ["chat_titles", systemPolicy?.chatTitleProviderModelId], ["vision", systemPolicy?.visionProviderModelId],
+        ["chat_titles", systemPolicy?.chatTitleProviderModelId], ["vision", systemPolicy?.visionProviderModelId], ["mcp_guard", systemPolicy?.mcpGuardProviderModelId],
         ["chat_pdf", systemPolicy?.chatPdfProviderModelId], ["chat_pdf_native", systemPolicy?.chatPdfNativeProviderModelId]
       ] as const).flatMap(([role, providerModelId]) => providerModelId === model.id ? [role] : []);
       const credential = connection.defaultCredential;
@@ -2428,6 +2428,7 @@ export function createPrismaAdminProviderRepository(
                 { chatTitleProviderModelId: modelId },
                 { chatPdfProviderModelId: modelId },
                 { visionProviderModelId: modelId },
+                { mcpGuardProviderModelId: modelId },
                 { chatPdfNativeProviderModelId: modelId }
               ]
             }
@@ -2604,12 +2605,13 @@ export function createPrismaAdminProviderRepository(
           });
           // Clear only the deleted deployment's roles; other assignments
           // remain valid, including their explicit configuration timestamps.
-          for (const field of ["providerModelId", "rerankerProviderModelId", "visionProviderModelId", "chatPdfProviderModelId", "chatPdfNativeProviderModelId", "chatTitleProviderModelId"] as const) {
+          for (const field of ["providerModelId", "rerankerProviderModelId", "mcpGuardProviderModelId", "visionProviderModelId", "chatPdfProviderModelId", "chatPdfNativeProviderModelId", "chatTitleProviderModelId"] as const) {
             await tx.systemModelPolicy.updateMany({
               data: {
                 [field]: null,
                 ...(field === "providerModelId" ? { reasoningEffort: null } : {}),
                 ...(field === "chatTitleProviderModelId" ? { chatTitleReasoningEffort: null } : {}),
+                ...(field === "mcpGuardProviderModelId" ? { mcpGuardReasoningEffort: null } : {}),
                 ...(field === "visionProviderModelId" ? { visionReasoningEffort: null } : {}),
                 ...(field === "chatPdfProviderModelId" ? { chatPdfReasoningEffort: null } : {}),
                 ...(field === "chatPdfNativeProviderModelId" ? { chatPdfNativeReasoningEffort: null } : {}),

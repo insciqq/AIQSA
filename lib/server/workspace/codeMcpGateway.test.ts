@@ -1,3 +1,4 @@
+import { codeMcpEffectDigest } from "./codeMcpUnknownEffects";
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { McpCapabilityCatalog, McpRunPlanResult, McpRunPlanSnapshot } from "../mcp/runPlan";
@@ -44,6 +45,7 @@ function memoryStore(grant: WorkspaceCodeGatewayGrant) {
   const invocations = new Map([[invocationId, "open"]]);
   const receipts: Array<Record<string, unknown>> = [];
   const state = { refused: 0, revoked: false };
+  const settledAt = new Map<string, Date>();
   const store: WorkspaceCodeGatewayStore = {
     async load(hash) { return !state.revoked && hash === grant.tokenHash ? grant : null; },
     async assertActive(_grant, id) {
@@ -65,7 +67,17 @@ function memoryStore(grant: WorkspaceCodeGatewayGrant) {
         serverId: input.serverId, state: "dispatching", toolName: input.toolName });
       return { kind: "claimed", id, sequence: receipts.length - 1 };
     },
+    unknownEffect: vi.fn(async input => {
+      const current = receipts.find(receipt => receipt.id === input.callId)!;
+      const digest = codeMcpEffectDigest(input.key);
+      current.argumentHash = digest;
+      const previous = receipts.find(receipt => Number(receipt.sequence) < Number(current.sequence) &&
+        receipt.serverId === input.key.serverId && receipt.toolName === input.key.toolName &&
+        [digest, input.key.argumentsDigest].includes(String(receipt.argumentHash)) && ["unknown", "dispatching"].includes(String(receipt.state)));
+      return previous ? settledAt.get(String(previous.id)) ?? new Date() : null;
+    }),
     async settle(input) {
+      settledAt.set(input.id, new Date());
       const receipt = receipts.find((candidate) => candidate.id === input.id);
       if (receipt?.state === "dispatching") Object.assign(receipt, { durationMs: input.durationMs, errorCode: input.errorCode,
         resultBytes: input.resultBytes, state: input.state });
@@ -318,4 +330,94 @@ describe("Workspace code MCP gateway", () => {
       expect(deps.callRuntimeTool).not.toHaveBeenCalled();
     });
   });
+});
+
+describe("Workspace MCP automatic guard", () => {
+  const guardPlan = { plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: ["Create an issue"] } as const;
+  it.each(["allow", "ask"] as const)("guards Always allow before dispatch: %s", async decision => {
+    const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: ["server-gitlab"], guard: guardPlan } }));
+    const guard = vi.fn(async () => ({ decision, reason: "The request needs review." }));
+    const approvals = { consume: vi.fn(async () => false), request: vi.fn(async () => "approval") };
+    const deps = dependencies(memory.store, plan, { guard, approvals });
+    const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
+    expect(guard).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ admission: guardPlan, runId: "run-1", userId: "user-1",
+      tool: expect.objectContaining({ arguments: { project: "a" }, toolName: "list_commits" }) }));
+    expect(approvals.request).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ guard: { decision, reason: "The request needs review." } }));
+    if (decision === "allow") {
+      expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+      expect(body.result.isError).not.toBe(true);
+    } else {
+      expect(deps.callRuntimeTool).not.toHaveBeenCalled();
+      expect(body.result.structuredContent).toMatchObject({ code: "approval_required", dispatched: false });
+    }
+  });
+  it("refuses a configured guard without an executor and honors only an exact named approval", async () => {
+    const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: ["server-gitlab"],
+      guard: { ...guardPlan, approvedBy: "explicit-approval" } } }));
+    const approvals = { consume: vi.fn(async () => true), request: vi.fn(async () => "approval") };
+    const deps = dependencies(memory.store, plan, { approvals });
+    await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+    expect(approvals.consume).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1", chatId: "chat-1" }),
+      expect.objectContaining({ serverId: "server-gitlab", definitionHash }), "explicit-approval", undefined);
+    expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+it("dispatches a human-approved guest call without calling the paid guard", async () => {
+  const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: [], guard: {
+    plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: []
+  } } }));
+  const guard = vi.fn();
+  const deps = dependencies(memory.store, plan, { guard, approvals: { consume: async () => true, request: vi.fn() } });
+  await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+  expect(guard).not.toHaveBeenCalled();
+  expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+});
+
+
+it.each([false, true])("does not resend an unknown guest write without a fresh human decision (standing consent %s)", async standing => {
+  const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: standing ? ["server-gitlab"] : [],
+    guard: { plan: { version: 1, available: false, code: "mcp_guard_model_unavailable" }, userMessages: ["Make the change"] } } }));
+  const callRuntimeTool = vi.fn(async (request: Parameters<WorkspaceCodeMcpDependencies["callRuntimeTool"]>[0]) => {
+    await request.beforeDispatch();
+    throw new Error("response lost after effect");
+  });
+  const guard = vi.fn(async () => ({ decision: "allow" as const, reason: "Requested." }));
+  const approvals = { consume: vi.fn(async () => false), request: vi.fn(async () => "card") };
+  const deps = dependencies(memory.store, plan, { guard, approvals, callRuntimeTool });
+  await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+  const repeat = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
+  expect(callRuntimeTool).toHaveBeenCalledTimes(1);
+  expect(guard).toHaveBeenCalledTimes(1);
+  expect(memory.receipts.map(receipt => receipt.state)).toEqual(["unknown", "error"]);
+  expect(repeat.result.structuredContent).toMatchObject({ code: "approval_required", dispatched: false });
+  expect(approvals.request).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ guard: {
+    decision: "ask", reason: "An earlier attempt may already have changed data. Please review before trying again." } }));
+  expect(approvals.consume).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ definitionHash }), undefined, expect.any(Date));
+});
+
+it("carries earlier-run uncertainty into the gateway but leaves scheduled runs unchanged", async () => {
+  for (const interactive of [true, false]) {
+    const memory = memoryStore(grantOf(interactive ? { approval: { version: 1, consentedServerIds: ["server-gitlab"] } } : {}));
+    const after = new Date("2026-10-29T00:00:00Z");
+    const unknownEffect = vi.fn(async () => after);
+    const approvals = { consume: vi.fn(async () => false), request: vi.fn(async () => "card") };
+    const deps = dependencies({ ...memory.store, unknownEffect }, plan, { approvals });
+    await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+    expect(deps.callRuntimeTool).toHaveBeenCalledTimes(interactive ? 0 : 1);
+    expect(unknownEffect).toHaveBeenCalledTimes(interactive ? 1 : 0);
+    if (interactive) expect(approvals.consume).toHaveBeenCalledWith(expect.anything(), expect.anything(), undefined, after);
+  }
+});
+
+it("can apply a fresh exact Always allow decision to an unknown gateway call even with the guard unset", async () => {
+  const memory = memoryStore(grantOf({ approval: { version: 1, consentedServerIds: ["server-gitlab"], approvedBy: "fresh-card" } }));
+  const after = new Date("2026-10-29T00:00:00Z");
+  const approvals = { consume: vi.fn(async () => true), request: vi.fn() };
+  const deps = dependencies({ ...memory.store, unknownEffect: async () => after }, plan, { approvals });
+  await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps);
+  expect(approvals.consume).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ definitionHash }), "fresh-card", after);
+  expect(deps.callRuntimeTool).toHaveBeenCalledTimes(1);
+  expect(approvals.request).not.toHaveBeenCalled();
 });

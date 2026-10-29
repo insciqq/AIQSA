@@ -196,7 +196,7 @@ const assistantRunDetailSelect = {
   userId: true,
   status: true,
   // The answer's MCP approval cards; their decisions are read here, never from events.
-  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
+  mcpToolApprovals: { orderBy: [{ guardDecision: { sort: "desc", nulls: "first" } }, { createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
   toolCalls: {
     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
     select: {

@@ -1,3 +1,4 @@
+import { verifiedFollowups } from "./followupProvenance";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeRunFollowupInput, RUN_FOLLOWUP_MAX_COUNT, RUN_FOLLOWUP_MAX_TOTAL_CHARS } from "../../contracts/runFollowups";
 import { textMessageContent } from "../../domain/content";
@@ -28,9 +29,13 @@ export async function insertAdmittedRunFollowups(tx: Prisma.TransactionClient, i
     status: { notIn: ["streaming", "queued"] } }, select: messageFollowupSelect });
   const snapshot = source && projectMessageFollowups(source);
   if (!snapshot || snapshot.entries.length !== inherited.revision) throw new ActiveLeafConflictError();
+  const proven = await verifiedFollowups(tx, { chatId: input.chatId, userId: input.userId,
+    references: snapshot.entries.map(entry => ({ id: entry.id, answerId: inherited.messageId })) });
   for (const entry of snapshot.entries) await tx.runFollowup.create({ data: {
     chatId: input.chatId, modelRunId: runId, ordinal: entry.ordinal, nonce: `regeneration-${entry.ordinal}`,
-    text: entry.text, authorName: entry.author, createdAt: new Date(entry.createdAt)
+    text: entry.text, authorName: entry.author,
+    authorUserId: proven.get(`${inherited.messageId}:${entry.id}`)?.text === entry.text ? input.userId : null,
+    createdAt: new Date(entry.createdAt)
   } });
   await tx.modelRun.update({ where: { id: runId }, data: { followupRevision: inherited.revision } });
 }

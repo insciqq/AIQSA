@@ -52,3 +52,12 @@ describe("MCP approval contract", () => {
   });
 
 });
+
+it("keeps a refusal visible when automatic decisions have filled the card limit", () => {
+  const automatic = Array.from({ length: 16 }, (_, index) => ({ ...card, approvalId: `automatic-${index}`,
+    canDecide: undefined, state: "allowed_automatically" }));
+  const cards = foldMcpApprovalCards([...automatic, { ...card, guardReason: "You did not request this change." }]);
+  expect(cards).toHaveLength(16);
+  expect(cards.at(-1)).toEqual({ ...card, guardReason: "You did not request this change." });
+  expect(decodeMcpApprovalCard({ ...automatic[0], canDecide: true })).toBeNull();
+});

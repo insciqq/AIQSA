@@ -1,7 +1,7 @@
 /**
- * Client-safe contract of MCP write approval (operator decision 2026-10-08).
- * An interactive run never dispatches an MCP tool that may change data
- * without its initiator's consent: the call is refused undispatched and the
+ * Client-safe contract of MCP write approval (operator decision 2026-10-29).
+ * An interactive write is checked by the admitted guard, or by existing
+ * consents when no guard is assigned. Refused calls are never dispatched; the
  * answer shows an approval card (`ThreadArtifactSummary.mcpApprovals`). Allow
  * once and Always allow start a continuation turn; Deny starts nothing.
  */
@@ -18,7 +18,7 @@ export const MCP_APPROVAL_CARDS_LIMIT = 16;
 export type McpApprovalSource = "agent" | "code" | "model";
 
 /** A pending card or its decision. */
-export type McpApprovalState = "allowed_once" | "allowed_server" | "denied" | "pending";
+export type McpApprovalState = "allowed_automatically" | "allowed_once" | "allowed_server" | "denied" | "pending";
 
 /**
  * One refused call as its run initiator's card shows it. Display names are
@@ -31,6 +31,7 @@ export type McpApprovalState = "allowed_once" | "allowed_server" | "denied" | "p
  */
 export type McpApprovalCard = Readonly<{
   approvalId: string;
+  guardReason?: string;
   canContinue?: true;
   canDecide?: true;
   details?: Readonly<{ ordinal: number; roundIndex: number }>;
@@ -66,14 +67,16 @@ const display = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0 && Array.from(value).length <= 160 && !value.includes("\0");
 const ordinal = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const SOURCES: readonly unknown[] = ["agent", "code", "model"];
-const STATES: readonly unknown[] = ["allowed_once", "allowed_server", "denied", "pending"];
+const STATES: readonly unknown[] = ["allowed_automatically", "allowed_once", "allowed_server", "denied", "pending"];
 
 export function decodeMcpApprovalCard(value: unknown): McpApprovalCard | null {
   if (!record(value) || !only(value, ["approvalId", "canContinue", "canDecide", "details", "serverName", "source", "state",
-    "toolName"]) ||
+    "toolName", "guardReason"]) ||
     !id(value.approvalId) || !display(value.serverName) || !display(value.toolName) ||
     !SOURCES.includes(value.source) || !STATES.includes(value.state) ||
-    (value.canDecide !== undefined && value.canDecide !== true) ||
+    (value.guardReason !== undefined && (typeof value.guardReason !== "string" || !value.guardReason.trim() ||
+      Array.from(value.guardReason).length > 320 || /[\p{Cc}\p{Cf}]/u.test(value.guardReason))) ||
+    (value.canDecide !== undefined && (value.canDecide !== true || value.state !== "pending")) ||
     // Only an Allow continues.
     (value.canContinue !== undefined && (value.canContinue !== true ||
       (value.state !== "allowed_once" && value.state !== "allowed_server")))) return null;
@@ -85,6 +88,7 @@ export function decodeMcpApprovalCard(value: unknown): McpApprovalCard | null {
   }
   return {
     approvalId: value.approvalId,
+    ...(typeof value.guardReason === "string" ? { guardReason: value.guardReason } : {}),
     ...(value.canContinue === true ? { canContinue: true as const } : {}),
     ...(value.canDecide === true ? { canDecide: true as const } : {}),
     ...(details ? { details } : {}),
@@ -104,7 +108,12 @@ export function foldMcpApprovalCards(payloads: readonly unknown[]): McpApprovalC
   const cards = new Map<string, McpApprovalCard>();
   for (const payload of payloads) {
     const card = decodeMcpApprovalCard(payload);
-    if (!card || !cards.has(card.approvalId) && cards.size >= MCP_APPROVAL_CARDS_LIMIT) continue;
+    if (!card) continue;
+    if (!cards.has(card.approvalId) && cards.size >= MCP_APPROVAL_CARDS_LIMIT) {
+      const automatic = card.state === "pending" ? [...cards.values()].find(entry => entry.state === "allowed_automatically") : undefined;
+      if (!automatic) continue;
+      cards.delete(automatic.approvalId);
+    }
     cards.set(card.approvalId, card);
   }
   return [...cards.values()];

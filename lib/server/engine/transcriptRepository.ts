@@ -107,10 +107,14 @@ export function createTranscriptRepository(client: TranscriptClient) {
       if (runIds.length > TRANSCRIPT_LOAD_RUN_LIMIT) throw new Error("transcript_load_too_large");
       const rows = await client.runTranscriptItem.findMany({
         orderBy: [{ modelRunId: "asc" }, { sequence: "asc" }],
-        select: { body: true, callId: true, id: true, kind: true, modelRunId: true },
+        select: { body: true, callId: true, createdAt: true, id: true, kind: true, modelRunId: true },
         where: { chatId: input.chatId, modelRunId: { in: runIds }, userId: input.userId }
       });
-      for (const row of rows) loaded.get(row.modelRunId)?.push(decodeTranscriptItem(row));
+      for (const row of rows) {
+        const item = decodeTranscriptItem(row);
+        loaded.get(row.modelRunId)?.push(item.kind === "tool_call" || item.kind === "tool_result"
+          ? { ...item, recordedAt: row.createdAt } : item);
+      }
       return loaded;
     },
 
@@ -201,7 +205,8 @@ export function createTranscriptRepository(client: TranscriptClient) {
       if (runs.length === 0) return [];
       const runIds = runs.map((run) => run.id);
       const orderBy = [{ modelRunId: "asc" as const }, { roundIndex: "asc" as const }, { ordinal: "asc" as const }];
-      const select = { arguments: true, id: true, modelRunId: true, ordinal: true, roundIndex: true, toolName: true };
+      const select = { arguments: true, completedAt: true, createdAt: true, id: true, modelRunId: true, ordinal: true,
+        roundIndex: true, startedAt: true, toolName: true };
       const unknown = await client.modelRunToolCall.findMany({ orderBy, select, take: RETIRED_EFFECT_CALL_LIMIT,
         where: { modelRunId: { in: runIds }, ...unknownOldCoreCall } });
       if (unknown.length === 0) return [];
@@ -213,9 +218,11 @@ export function createTranscriptRepository(client: TranscriptClient) {
         const items = calls.filter((call) => call.modelRunId === run.id && isJsonObject(call.arguments)).flatMap((call) => {
           const callId = `retired-${call.id}`;
           return [
-            { arguments: JSON.stringify(call.arguments), callId, id: `${callId}-call`, kind: "tool_call", name: call.toolName },
+            { arguments: JSON.stringify(call.arguments), callId, id: `${callId}-call`, kind: "tool_call", name: call.toolName,
+              recordedAt: call.startedAt ?? call.createdAt },
             { callId, id: `${callId}-result`, kind: "tool_result", name: call.toolName,
-              outcome: unknownIds.has(call.id) ? "unknown" : "complete", output: "" }
+              outcome: unknownIds.has(call.id) ? "unknown" : "complete", output: "",
+              recordedAt: call.completedAt ?? call.startedAt ?? call.createdAt }
           ] satisfies TranscriptItem[];
         });
         return items.length > 0 && run.assistantMessageId

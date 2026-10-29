@@ -138,6 +138,10 @@ function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
             chatTitleModel: body.chatTitleProviderModelId ? { ...pick(body.chatTitleProviderModelId)!, available: true } : null,
             chatTitleReasoningEffort: body.chatTitleReasoningEffort as string | null
           } : {}),
+          ...(Object.hasOwn(body, "mcpGuardProviderModelId") ? {
+            mcpGuardModel: body.mcpGuardProviderModelId ? { ...pick(body.mcpGuardProviderModelId)!, available: true } : null,
+            mcpGuardReasoningEffort: body.mcpGuardReasoningEffort as string | null
+          } : {}),
           ...(Object.hasOwn(body, "visionProviderModelId") ? {
             visionModel: body.visionProviderModelId ? { ...pick(body.visionProviderModelId)!, available: true } : null,
             visionReasoningEffort: body.visionReasoningEffort as string | null
@@ -1082,4 +1086,21 @@ describe("Image generation role", () => {
     await waitFor(() => expect(within(row).getByTestId("admin-role-speech-to-text-status")).toHaveTextContent("Not assigned"));
     expect(calls.at(-1)?.body).toEqual({ action: "clear", expectedConfiguredAt: "2026-10-08T10:00:00.000Z" });
   });
+});
+
+it("shows an unavailable assigned MCP guard and clears only that independent role", async () => {
+  const catalog = rolesCatalog();
+  catalog.policy.mcpGuardModel = { ...titleModel, available: false };
+  catalog.policy.mcpGuardReasoningEffort = null;
+  const calls = server(catalog);
+  renderSection();
+  const row = await screen.findByTestId("admin-role-mcp-guard");
+  expect(within(row).getByTestId("admin-role-mcp-guard-status")).toHaveTextContent("Model unavailable");
+  expect(within(row).getByText(/including Always allow servers/)).toBeVisible();
+  fireEvent.click(within(row).getByRole("button", { name: "MCP guard actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
+  await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+    { expectedVersion: 1, mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null }
+  ]));
+  await waitFor(() => expect(within(row).getByTestId("admin-role-mcp-guard-status")).toHaveTextContent("Not assigned"));
 });

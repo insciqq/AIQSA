@@ -13,6 +13,8 @@ import type { TranscriptItem, TranscriptUserItem } from "./transcript";
  * of a later call does not settle whether the first one took effect.
  */
 export type UnknownEffect = Readonly<{
+  /** An exact human decision must be newer than this uncertain attempt's record. */
+  after: Date;
   /** The user wrote to the chat after the effect became unknown (a message or a follow-up). */
   userSpokeSince: boolean;
 }>;
@@ -21,7 +23,7 @@ export type UnknownEffects = Readonly<{
   /** The unknown effect an equivalent earlier call left, or null. */
   find(call: Pick<ModelToolCall, "arguments" | "name">): UnknownEffect | null;
   /** A call was sent (or may have been) with this outcome. */
-  record(call: Pick<ModelToolCall, "arguments" | "name">, outcome: "complete" | "error" | "unknown"): void;
+  record(call: Pick<ModelToolCall, "arguments" | "name">, outcome: "complete" | "error" | "unknown", after?: Date): void;
   /** The user wrote into the running turn (a delivered follow-up). */
   userSpoke(): void;
 }>;
@@ -99,16 +101,21 @@ export function withHiddenRunEffects(items: readonly TranscriptItem[],
 
 export function createUnknownEffects(): UnknownEffects {
   // Per effect: the user had spoken since it became unknown.
-  const unknown = new Map<string, { userSpokeSince: boolean }>();
+  const unknown = new Map<string, { after: Date; userSpokeSince: boolean }>();
   return {
     find(call) {
       const entry = unknown.get(effectKey(call));
-      return entry ? { userSpokeSince: entry.userSpokeSince } : null;
+      return entry ? { ...entry } : null;
     },
-    record(call, outcome) {
+    // Missing historical metadata fails closed: an already-issued decision cannot authorize the retry.
+    record(call, outcome, after = new Date()) {
       const key = effectKey(call);
-      if (outcome === "unknown") unknown.set(key, { userSpokeSince: false });
-      else if (outcome === "complete") unknown.delete(key);
+      if (outcome === "unknown") {
+        // Never move the fence backwards when concurrent uncertain calls settle out of order.
+        const timestamp = Number.isFinite(after.getTime()) ? after.getTime() : Date.now();
+        const latest = Math.max(unknown.get(key)?.after.getTime() ?? 0, timestamp);
+        unknown.set(key, { after: new Date(latest), userSpokeSince: false });
+      } else if (outcome === "complete") unknown.delete(key);
     },
     userSpoke() {
       for (const entry of unknown.values()) entry.userSpokeSince = true;
@@ -130,18 +137,21 @@ export function createUnknownEffects(): UnknownEffects {
 export function unknownEffectsOf(items: readonly TranscriptItem[],
   userAuthored: (item: TranscriptUserItem) => boolean): UnknownEffects {
   const effects = createUnknownEffects();
-  const calls = new Map<string, Readonly<{ arguments: Record<string, unknown>; name: string }>>();
+  const calls = new Map<string, { after?: Date; arguments: Record<string, unknown>; name: string }>();
   // Calls without any result yet; a result recorded later (an approved call that then ran) still counts.
   const open = new Set<string>();
   const cutOff = () => {
-    for (const callId of open) effects.record(calls.get(callId)!, "unknown");
+    for (const callId of open) {
+      const call = calls.get(callId)!;
+      effects.record(call, "unknown", call.after);
+    }
     open.clear();
   };
   for (const item of items) {
     if (item.kind === "tool_call") {
       const args = parsedArguments(item.arguments);
       if (args) {
-        calls.set(item.callId, { arguments: args, name: item.name });
+        calls.set(item.callId, { after: item.recordedAt, arguments: args, name: item.name });
         open.add(item.callId);
       }
       continue;
@@ -150,11 +160,13 @@ export function unknownEffectsOf(items: readonly TranscriptItem[],
       const call = calls.get(item.callId);
       if (!call) continue;
       if (item.inFlight) {
+        // A continuation is a new attempt, even though it reuses the original provider call id.
+        call.after = item.recordedAt;
         open.add(item.callId);
         continue;
       }
       open.delete(item.callId);
-      effects.record(call, item.outcome);
+      effects.record(call, item.outcome, item.recordedAt ?? call.after);
       continue;
     }
     if (item.kind === "user" && userAuthored(item)) {

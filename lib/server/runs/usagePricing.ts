@@ -15,7 +15,7 @@ type PricingRepository = Pick<RunRepository, "loadModelPricing" | "loadProviderM
  */
 function hasSettledRunUsageCost(attribution: RunUsageAttribution): boolean {
   if (attribution.estimatedCostMicros === undefined) return false;
-  return isChatModelUsagePurpose(attribution.purpose) ? attribution.costReported === true
+  return (isChatModelUsagePurpose(attribution.purpose) || attribution.purpose === "mcp_guard") ? attribution.costReported === true
     : attribution.purpose === "knowledge_retrieval" || attribution.purpose === "web_search";
 }
 

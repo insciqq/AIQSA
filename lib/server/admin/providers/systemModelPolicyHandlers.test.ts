@@ -10,6 +10,19 @@ function session(role: "admin" | "user" = "admin") {
 }
 
 describe("administrator system model policy handlers", () => {
+  it.each(["admin", "user"] as const)("guards independent MCP guard writes for %s", async (role) => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedVersion: 4, mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null })
+    }));
+    expect(response.status).toBe(role === "admin" ? 200 : 403);
+    if (role === "admin") expect(service.update).toHaveBeenCalledExactlyOnceWith({
+      expectedVersion: 4, mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null, userId: "user-1"
+    });
+    else expect(service.update).not.toHaveBeenCalled();
+  });
   it.each(["admin", "user"] as const)("guards independent Vision writes for %s", async (role) => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });

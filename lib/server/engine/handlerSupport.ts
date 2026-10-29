@@ -97,11 +97,12 @@ export function engineAdmissionRefusal(prepared: MaterializedPreparedRunData):
  * the previous answer's hand-off.
  */
 export function nativeRunServices(deps: Readonly<Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" |
-  "skillTools" | "vision">>): Omit<NativeRunServices, "searchRuntimes"> {
+  "skillTools" | "vision" | "mcpGuard">>): Omit<NativeRunServices, "searchRuntimes"> {
   return {
     ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
     ...(deps.images ? { images: deps.images } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
+    ...(deps.mcpGuard ? { mcpGuard: deps.mcpGuard } : {}),
     ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
     ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
     ...(deps.vision ? { vision: deps.vision } : {})

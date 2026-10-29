@@ -351,6 +351,7 @@ enum UsagePurpose {
   speech_to_text
   /// A sub-agent's model calls (`SubagentTurn`): personal, counted toward the user's allowance.
   subagent
+  mcp_guard
   chat_title
   chat_summary
   chat_vision
@@ -402,6 +403,7 @@ enum ProviderCredentialCheckStatus {
 }
 
 enum ProviderRunRole {
+  mcp_guard
   decision
   image
   answer
@@ -1649,6 +1651,8 @@ model SystemModelPolicy {
   chatTitleConfiguredAt   DateTime?
   chatPdfNativeProviderModelId String?
   chatPdfNativeReasoningEffort String? @db.VarChar(32)
+  mcpGuardProviderModelId String?
+  mcpGuardReasoningEffort String?        @db.VarChar(32)
   visionProviderModelId   String?
   visionReasoningEffort   String?        @db.VarChar(32)
   chatPdfProviderModelId   String?
@@ -1684,6 +1688,7 @@ model SystemModelPolicy {
   updatedAt               DateTime       @updatedAt
   chatTitleProviderModel  ProviderModel? @relation("ChatTitleProviderModel", fields: [chatTitleProviderModelId], references: [id], onDelete: Restrict)
   chatPdfNativeProviderModel ProviderModel? @relation("ChatPdfNativeProviderModel", fields: [chatPdfNativeProviderModelId], references: [id], onDelete: Restrict)
+  mcpGuardProviderModel   ProviderModel? @relation("McpGuardProviderModel", fields: [mcpGuardProviderModelId], references: [id], onDelete: Restrict)
   visionProviderModel     ProviderModel? @relation("VisionProviderModel", fields: [visionProviderModelId], references: [id], onDelete: Restrict)
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
@@ -1696,6 +1701,7 @@ model SystemModelPolicy {
   @@index([rerankerProviderModelId])
   @@index([decisionProviderModelId])
   @@index([chatTitleProviderModelId])
+  @@index([mcpGuardProviderModelId])
   @@index([visionProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
@@ -2138,6 +2144,7 @@ model ProviderModel {
   installationDefaults        ModelPolicy[]                   @relation("InstallationDefaultProviderModel")
   chatTitleRoles              SystemModelPolicy[]             @relation("ChatTitleProviderModel")
   chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
+  mcpGuardRoles               SystemModelPolicy[]             @relation("McpGuardProviderModel")
   visionRoles                 SystemModelPolicy[]             @relation("VisionProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
@@ -3447,6 +3454,9 @@ model McpToolApproval {
   toolTitle       String                   @db.VarChar(160)
   definitionHash  String                   @db.Char(64)
   argumentsDigest String                   @db.Char(64)
+  /// Guard verdict and bounded user-facing reason, never raw model output.
+  guardDecision   String?                  @db.VarChar(8)
+  guardReason     String?                  @db.VarChar(320)
   decision        McpToolApprovalDecision?
   decisionNonce   String?                  @db.VarChar(128)
   decidedAt       DateTime?

@@ -1,3 +1,4 @@
+import { createMcpGuardService, type McpGuardCheck } from "../mcp/guard";
 import { createMcpHandler, McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { prisma } from "../prisma";
 import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/requestBody";
@@ -11,7 +12,7 @@ import { resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor"
 import { filterMcpCatalog } from "../mcp/toolAccessProjection";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
 import { mcpCatalogFromSnapshot, type McpCapabilityCatalog, type McpCapabilityCatalogTool, type McpRunPlanResult } from "../mcp/runPlan";
-import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE } from "../mcp/writeApproval";
+import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE, mcpApprovalRequest, mcpToolMayChangeData } from "../mcp/writeApproval";
 import { createPrismaMcpGatewayApprovalStore, gateMcpGatewayCall, type McpGatewayApprovalStore } from "../mcp/writeApprovalGateway";
 import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from "./codeMcp";
 import {
@@ -31,6 +32,7 @@ type SelectedTools = readonly Readonly<{ namespacedName: string; revisionId: str
 export type WorkspaceCodeMcpDependencies = Readonly<{
   /** MCP write approval; without it a call that needs approval is refused. */
   approvals?: McpGatewayApprovalStore;
+  guard?: McpGuardCheck;
   callRuntimeTool: McpToolRuntimeCall;
   filterTools: McpToolAccessFilter;
   inspect(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
@@ -41,6 +43,7 @@ export type WorkspaceCodeMcpDependencies = Readonly<{
 export function defaultWorkspaceCodeMcpDependencies(): WorkspaceCodeMcpDependencies {
   return {
     approvals: createPrismaMcpGatewayApprovalStore(prisma),
+    guard: createMcpGuardService(prisma).check,
     callRuntimeTool: (request) => getDefaultMcpRuntimeCoordinator().callTool(request),
     filterTools: defaultMcpRunPlan.filterTools,
     inspect: (userId, tools) => defaultMcpRunPlan.inspect(userId, tools),
@@ -247,10 +250,16 @@ async function serve(
           toolVersion = descriptor.tool_version;
         }
         const prepared = await service.prepareToolCall({ arguments: args, authority, signal, toolId: tool.namespacedName, toolVersion });
-        // An interactive run's code asks the user before a tool that may
-        // change data runs: refused with a card unless a matching one-shot
-        // approval of a later run of the chat is consumed here.
-        const gate = await gateMcpGatewayCall({ admission: grant.approval, prepared, source: "code", store: dependencies.approvals,
+        // Guard and approval use the same frozen authority as model calls.
+        // A refusal creates the existing card before anything is dispatched.
+        const unknownAfter = grant.approval && mcpToolMayChangeData(prepared.descriptor.annotations)
+          ? dependencies.store.unknownEffect ? await dependencies.store.unknownEffect({ callId: claim.id, grant,
+            key: mcpApprovalRequest({ arguments: args, definitionHash: prepared.definitionHash, originalName: prepared.descriptor.name,
+              serverId: prepared.serverId, serverName: prepared.descriptor.server_name, toolName: tool.namespacedName }) })
+            : new Date() // Missing durable evidence cannot authorize a write.
+          : null;
+        const gate = await gateMcpGatewayCall({ admission: grant.approval, guard: dependencies.guard, signal, prepared, unknownAfter,
+          source: "code", store: dependencies.approvals,
           scope: { chatId: grant.chatId, runId: grant.runId, userId: grant.userId }, toolCallId: null, toolName: tool.namespacedName });
         if (gate === "refused") {
           await dependencies.store.settle({ durationMs: Date.now() - started, errorCode: MCP_APPROVAL_REFUSAL, id: claim.id,
