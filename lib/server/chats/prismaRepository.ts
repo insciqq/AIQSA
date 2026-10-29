@@ -33,7 +33,7 @@ import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { displayedToolCallState } from "../runs/toolLoopPersistence";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
-import { Prisma } from "@prisma/client";
+import { Prisma, type ModelRunStatus } from "@prisma/client";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import {
@@ -97,7 +97,7 @@ import { prisma } from "../prisma";
 import { isAssistantAvailable, type AssistantBindingScope } from "../assistants/bindingAccess";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
-import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { ActiveRunConflictError, SubagentsRunningConflictError } from "../runs/runRepositoryContract";
 import { resolveChatAccess } from "./access";
 import type {
   ChatBranchGraphRecord,
@@ -641,6 +641,19 @@ async function hydrateMessagePath(
   return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, parents, scheduledTasks,
     messages: ordered.map((message) => callbackNames.has(message.id)
       ? { ...message, subagentCallbackNames: callbackNames.get(message.id)! } : message) };
+}
+
+/**
+ * Archive and restore wait for every run of the chat. The main agent's answer
+ * refuses as `active_run_in_progress`; background sub-agents alone refuse as
+ * `subagents_running`, which the user resolves by stopping them.
+ */
+async function assertChatHasNoActiveRuns(tx: Prisma.TransactionClient, chatId: string): Promise<void> {
+  const status = { in: ["preparing", "streaming", "queued", "in_progress"] as ModelRunStatus[] };
+  if (await tx.modelRun.findFirst({ select: { id: true }, where: { chatId, status, subagentTurnId: null } })) {
+    throw new ActiveRunConflictError();
+  }
+  if (await tx.modelRun.findFirst({ select: { id: true }, where: { chatId, status } })) throw new SubagentsRunningConflictError();
 }
 
 /**
@@ -1745,20 +1758,7 @@ export function createPrismaChatRepository(
           return false;
         }
 
-        const activeRun = await tx.modelRun.findFirst({
-          select: {
-            id: true
-          },
-          where: {
-            chatId,
-            status: {
-              in: ["preparing", "streaming", "queued", "in_progress"]
-            }
-          }
-        });
-        if (activeRun) {
-          throw new ActiveRunConflictError();
-        }
+        await assertChatHasNoActiveRuns(tx, chatId);
 
         await applyMemorySourceMutations(tx, {
           chat: chats[0],
@@ -1792,14 +1792,7 @@ export function createPrismaChatRepository(
           chat.memorySourceRevision !== expectedChatRevision
         ) return { kind: "stale" };
 
-        const activeRun = await tx.modelRun.findFirst({
-          select: { id: true },
-          where: {
-            chatId,
-            status: { in: ["preparing", "streaming", "queued", "in_progress"] }
-          }
-        });
-        if (activeRun) throw new ActiveRunConflictError();
+        await assertChatHasNoActiveRuns(tx, chatId);
 
         const snapshot = await applyMemorySourceMutations(tx, {
           chat,

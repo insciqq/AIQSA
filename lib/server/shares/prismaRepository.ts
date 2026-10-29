@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
+import { omitSubagentCallbackTurns } from "../../domain/subagentCallbackTurns";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import {
   buildPublicShareSnapshot,
@@ -57,12 +58,17 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
           role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
         })));
+        // A sub-agent wake-up turn is the server's, never the user's speech: the share leaves it out.
+        const kept = path.filter((message) => !collapse.removed.has(message.id)).map((message) => ({ ...message,
+          parentMessageId: collapse.parents.has(message.id) ? collapse.parents.get(message.id) ?? null : message.parentMessageId }));
+        const wakeUps = omitSubagentCallbackTurns(kept.map((message) => ({ id: message.id, parentId: message.parentMessageId,
+          role: message.role, systemTurnKind: message.systemTurnKind })));
         const snapshot = buildPublicShareSnapshot({
-          activeLeafMessageId: collapse.replacements.get(leaf) ?? leaf,
-          messages: path.filter((message) => !collapse.removed.has(message.id)).map((message) => ({
+          activeLeafMessageId: wakeUps.resolve(collapse.replacements.get(leaf) ?? leaf) ?? leaf,
+          messages: kept.filter((message) => !wakeUps.removed.has(message.id)).map((message) => ({
             content: message.content,
             id: message.id,
-            parentMessageId: collapse.parents.has(message.id) ? collapse.parents.get(message.id) ?? null : message.parentMessageId,
+            parentMessageId: wakeUps.parents.has(message.id) ? wakeUps.parents.get(message.id) ?? null : message.parentMessageId,
             role: message.role as "assistant" | "system" | "tool" | "user",
             ...(followups.get(message.id) ? { followups: followups.get(message.id)! } : {})
           })),

@@ -27,6 +27,11 @@ describe("shell error formatting", () => {
       .toBe(`${message} (${code})`);
   });
 
+  it("asks to stop the sub-agents first when only they keep a chat from being archived", () => {
+    expect(humanizeErrorCode("subagents_running"))
+      .toBe("Sub-agents are still running in this chat. Stop the sub-agents first, then try again. (subagents_running)");
+  });
+
   it("explains a refused PDF admission in the same words as the blocked chip", async () => {
     expect(await responseErrorMessage(
       Response.json({ error: "pdf_processing_configuration_incomplete" }, { status: 409 }), "send_failed_409"

@@ -155,6 +155,17 @@ export class ActiveRunConflictError extends Error {
   }
 }
 
+/**
+ * Only background sub-agents run in the chat, and the change waits for them
+ * (archive, restore): the user stops them first (`subagents_running`).
+ */
+export class SubagentsRunningConflictError extends Error {
+  constructor() {
+    super("subagents_running");
+    this.name = "SubagentsRunningConflictError";
+  }
+}
+
 export class ActiveLeafConflictError extends Error {
   constructor() {
     super("active_leaf_changed");
