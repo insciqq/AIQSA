@@ -25,6 +25,8 @@ const timestamp = "2026-10-30T10:00:00.000Z";
 const longName = `long-${"x".repeat(38)}-name`;
 
 type ThreadScript = {
+  /** The answer that started its latest turn; the static chat's answer unless the script says otherwise. */
+  answer?: string;
   mode?: "background" | "foreground";
   name: string;
   state: SubagentThreadState;
@@ -43,7 +45,7 @@ function threadSummary(id: string, script: ThreadScript): SubagentThreadSummary 
   const active = script.state === "running" || script.state === "waiting";
   return {
     createdAt: timestamp, currentStep: active ? script.step ?? null : null, endedAt: active ? null : script.updatedAt, id,
-    mode: script.mode ?? "background", model: fakeModel, name: script.name,
+    latestAnswerMessageId: script.answer ?? "answer-1", mode: script.mode ?? "background", model: fakeModel, name: script.name,
     outcome: script.state === "done" ? "done" : null, reason: script.state === "stopped" ? "user_stop" : null,
     state: script.state, turnCount: 1, type: null, updatedAt: script.updatedAt
   };
@@ -68,7 +70,7 @@ function turnView(id: string, script: ThreadScript): SubagentTurnView {
 async function installSubagentRoutes(page: Page, initial: readonly (readonly [string, ThreadScript])[] = [
   ["thread-researcher", script("researcher", "running", { step: searching })],
   ["thread-browser", script("browser", "waiting")],
-  ["thread-long", script(longName, "done", { updatedAt: "2026-10-30T10:00:30.000Z" })]
+  ["thread-long", script(longName, "done", { answer: "answer-earlier", updatedAt: "2026-10-30T10:00:30.000Z" })]
 ]) {
   const threads = new Map<string, ThreadScript>(initial);
   const posts: string[] = [];
@@ -185,7 +187,7 @@ async function startLiveAnswer(page: Page, threads: readonly (readonly [string, 
 }
 
 const foreground = (name: string, state: SubagentThreadState, step?: SubagentCurrentStep) =>
-  [`thread-${name}`, script(name, state, { mode: "foreground", ...(step ? { step } : {}) })] as const;
+  [`thread-${name}`, script(name, state, { answer: "subagents-ui-answer", mode: "foreground", ...(step ? { step } : {}) })] as const;
 const background = (name: string, state: SubagentThreadState, step?: SubagentCurrentStep) =>
   [`thread-${name}`, script(name, state, step ? { step } : {})] as const;
 

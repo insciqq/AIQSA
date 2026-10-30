@@ -1393,7 +1393,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         actions={settled ? actions : undefined}
         actionsSlot={<>
               {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!temporarySession} /> : null}
-              <SubagentAnswerRowsV2 chatId={session.activeChatId} live={!settled} toolActivity={toolActivity} onOpen={openSubagent} />
+              <SubagentAnswerRowsV2 chatId={session.activeChatId} live={!settled} messageId={source.id} toolActivity={toolActivity} onOpen={openSubagent} />
               <AnswerOutputsV2
                 artifact={artifact}
                 live={!settled}

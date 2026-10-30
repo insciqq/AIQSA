@@ -22,6 +22,18 @@ export function activityName(value: unknown, fallback: string): string {
     : fallback;
 }
 
+/**
+ * Every top-level key of a run's frozen request that a tool activity projection
+ * reads (`summarizeMessageRunToolActivity` and what it calls). A poll selects
+ * only these (`lib/server/runs/subagentBackground/views.ts`): the rest of the
+ * request holds the admitted branch context, up to megabytes. A projection
+ * that reads another key adds it here.
+ */
+export const TOOL_ACTIVITY_REQUEST_KEYS = Object.freeze([
+  "agent", "answerReviewStep", "fetchUrl", "imagePlan", "mcp", "mcpDiscovery", "monitoringVerdictTool", "scheduledTaskManagementTool",
+  "scheduledTaskTool", "searchPlan", "skillSaveTool", "skills", "toolBudgets", "visionAnalysis", "workspace", "workspaceImageView"
+]);
+
 export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (value: string) => string = plainWorkspaceActivityText): Map<string, {
   origin: ThreadToolActivityOrigin;
   serverName?: string;
