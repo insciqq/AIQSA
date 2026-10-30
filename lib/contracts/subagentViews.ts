@@ -109,6 +109,11 @@ export type SubagentThreadSummary = Readonly<{
   /** When its latest turn on the branch ended; null while it is active. */
   endedAt: string | null;
   id: string;
+  /**
+   * The answer whose call started the latest turn: that answer's rows take the
+   * thread even before its saved steps name it. Null on an older row: unknown.
+   */
+  latestAnswerMessageId: string | null;
   /** The latest turn's mode. */
   mode: SubagentTurnMode;
   /** The latest turn's model; null on a row from before the summary carried it. */
@@ -212,11 +217,11 @@ function decodeTurnModel(value: unknown): SubagentTurnModel | null {
   return { displayName: value.displayName, effort: value.effort as string | null };
 }
 
-const SUMMARY_KEYS = ["createdAt", "currentStep", "endedAt", "id", "mode", "model", "name", "outcome", "reason", "state", "turnCount",
+const SUMMARY_KEYS = ["createdAt", "currentStep", "endedAt", "id", "latestAnswerMessageId", "mode", "model", "name", "outcome", "reason", "state", "turnCount",
   "type", "updatedAt"];
 
 /**
- * `currentStep` and `model` came later: a row without them still renders, as
+ * `currentStep`, `latestAnswerMessageId` and `model` came later: a row without them still renders, as
  * "not known" (null). One that has them malformed, or a step on a thread that
  * ended, is refused like any other broken field.
  */
@@ -234,8 +239,12 @@ export function decodeSubagentThreadSummary(value: unknown): SubagentThreadSumma
   const hasModel = value.model !== undefined && value.model !== null;
   const model = hasModel ? decodeTurnModel(value.model) : null;
   if (hasModel && !model) return null;
+  const hasAnswer = value.latestAnswerMessageId !== undefined && value.latestAnswerMessageId !== null;
+  const latestAnswerMessageId = isSubagentIdentifier(value.latestAnswerMessageId) ? value.latestAnswerMessageId : null;
+  if (hasAnswer && !latestAnswerMessageId) return null;
   return {
-    createdAt: value.createdAt as string, currentStep, endedAt: value.endedAt as string | null, id: value.id, mode: value.mode, model,
+    createdAt: value.createdAt as string, currentStep, endedAt: value.endedAt as string | null, id: value.id, latestAnswerMessageId,
+    mode: value.mode, model,
     name: value.name as string, outcome: value.outcome as SubagentOutcome | null, reason: value.reason, state: value.state,
     turnCount: value.turnCount as number, type: value.type as string | null, updatedAt: value.updatedAt as string
   };
