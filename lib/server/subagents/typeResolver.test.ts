@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { SubagentDefinitionDraft } from "@/lib/contracts/subagentDefinitions";
 import { MemorySubagentDefinitionStore } from "@/tests/support/subagentDefinitionStore";
-import { renderSubagentTypeCatalog } from "./typeCatalog";
+import { renderSubagentTypeCatalog, SUBAGENT_TYPE_CATALOG_LIMITS } from "./typeCatalog";
 import { createSubagentTypeResolver } from "./typeResolver";
 
 const draft = (name: string, patch: Partial<SubagentDefinitionDraft> = {}): SubagentDefinitionDraft => ({
@@ -64,5 +64,23 @@ describe("custom sub-agent catalog in run context", () => {
     expect(text).toContain("call_subagent");
     expect(text).toContain("<subagent name=\"browser\">Use &lt;b&gt;me&lt;/b&gt; &amp; &quot;quote&quot;</subagent>");
     expect(text).not.toContain("<b>");
+  });
+
+  it("stays bounded: the first line of each description, short, and at most the cap of types with a count of the rest", () => {
+    const long = `${"Compares shop offers carefully. ".repeat(20)}\nSecond line with more detail.`;
+    const entries = Array.from({ length: SUBAGENT_TYPE_CATALOG_LIMITS.types + 3 }, (_unused, index) => ({ description: long,
+      name: `type-${index}` }));
+    const text = renderSubagentTypeCatalog(entries)!;
+    const listed = [...text.matchAll(/<subagent name="[^"]+">([^<]*)<\/subagent>/gu)];
+    expect(listed).toHaveLength(SUBAGENT_TYPE_CATALOG_LIMITS.types);
+    for (const [, description] of listed) {
+      expect(Array.from(description!).length).toBeLessThanOrEqual(SUBAGENT_TYPE_CATALOG_LIMITS.descriptionCharacters);
+      expect(description).not.toContain("Second line");
+      expect(description!.endsWith("…")).toBe(true);
+    }
+    expect(text).toContain("3 more custom sub-agents are not listed here");
+    expect(text).not.toContain(`type-${SUBAGENT_TYPE_CATALOG_LIMITS.types}"`);
+    expect(text.length).toBeLessThan(16_000);
+    expect(renderSubagentTypeCatalog(entries.slice(0, 2))).not.toContain("more custom sub-agent");
   });
 });
