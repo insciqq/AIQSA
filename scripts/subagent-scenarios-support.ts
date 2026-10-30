@@ -199,7 +199,9 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       `1. ${SUBAGENT_NAMES.counter}: 8 раз подряд выполни в Workspace \`sleep 20\` и затем допиши в файл counter/log.txt строку ` +
         `«<номер шага> <слово>», где слово — ${secrets.correctionFrom}. Перед каждым шагом учитывай мои новые сообщения, если они пришли. ` +
         "В отчёте перечисли строки файла.",
-      `2. ${SUBAGENT_NAMES.idle.join(", ")}: каждый 8 раз подряд выполняет в Workspace \`sleep 120\` и затем коротко отчитывается.`,
+      `2. ${SUBAGENT_NAMES.idle.join(", ")}: каждый выполняет в Workspace одну команду \`sleep 900\` на переднем плане: не в фоне, ` +
+        "без `&`, nohup, timeout и других обёрток. Если команда завершится раньше, запусти её снова, пока с начала не пройдёт " +
+        "15 минут. Не заканчивай работу раньше и ничего не сокращай; коротко отчитайся только после этого.",
       "Не останавливай и не перезапускай их сам, пока я не попрошу.",
       laterResult(`Когда придёт результат ${SUBAGENT_NAMES.counter}`,
         '  "lines": [{"step": 1, "word": "..."}]\nВ "lines" перечисли все строки файла counter/log.txt по порядку')
@@ -409,7 +411,12 @@ export type TurnRow = Readonly<{
   parentEffort: string | null;
   /** The parent run's model id (`ModelRun.modelId`), the same field as the turn's `modelId`. */
   parentModelId: string;
-  parentProvider: string;
+  /**
+   * The connection the parent run is bound to: its `ProviderRunBinding` of role
+   * `answer` (`connectionId`), the same kind of id as the turn's `provider`.
+   * `ModelRun.provider` is the adapter kind and is never compared.
+   */
+  parentProvider: string | null;
   parentRunId: string;
   provider: string;
   /** The turn's catalog row id (`ProviderModel.id`); not comparable with the parent run's `modelId`. */
@@ -771,6 +778,29 @@ export function stopEvidence(turnsByPath: Readonly<{ stopAll: TurnRow | null; st
     stopRouteStopped: ok(turnsByPath.stopRoute, SUBAGENT_END_REASONS.stoppedByUser),
     stopToolStopped: ok(turnsByPath.stopTool, SUBAGENT_END_REASONS.stoppedByAgent)
   };
+}
+
+export type StopPath = "stopAll" | "stopRoute" | "stopTool";
+
+/**
+ * E's verdict on the three stops. A stop is judged only when its idle agent
+ * was still `running` (the thread view) right before it; one that had already
+ * ended on its own is `idle_agent_ended_early`, a model shortcut rather than a
+ * product failure.
+ */
+export function stopChecks(stops: ReturnType<typeof stopEvidence>, runningBefore: Readonly<Record<StopPath, boolean>>): string[] {
+  const checks: string[] = [];
+  const paths: readonly [StopPath, boolean, string][] = [
+    ["stopTool", stops.stopToolStopped, "stop_subagent_failed"],
+    ["stopRoute", stops.stopRouteStopped, "stop_route_failed"],
+    ["stopAll", stops.stopAllStopped, "stop_all_failed"]
+  ];
+  for (const [path, stopped, failure] of paths) {
+    if (!runningBefore[path]) {
+      if (!checks.includes("idle_agent_ended_early")) checks.push("idle_agent_ended_early");
+    } else if (!stopped) checks.push(failure);
+  }
+  return checks;
 }
 
 /** G: every background turn the restart cut off ended `interrupted` (`restart`), and one wake-up took all their callbacks. */
