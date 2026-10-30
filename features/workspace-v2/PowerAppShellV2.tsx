@@ -226,6 +226,13 @@ export {
 
 const NO_SCHEDULED_RUNS: readonly ScheduledTaskRenderedRun[] = [];
 
+/**
+ * When the open chat is read again after its sub-agents settled: at once, then past the server's callback coalescing
+ * window (1.5 s, `SUBAGENT_CALLBACK_COALESCE_MS`) and once more for a slow admission; a refresh that finds the
+ * wake-up answer streams it like any active run, and later rechecks then do nothing.
+ */
+const SUBAGENT_WAKE_UP_RECHECK_MS = [0, 2_500, 6_000] as const;
+
 const CHAT_ROUTE_UNAVAILABLE_COPY = {
   // One text for missing, foreign, archived and unusable Assistants alike.
   assistant: "This Assistant isn't available to you.",
@@ -1297,6 +1304,18 @@ export function PowerAppShellV2({
       }));
     }
   });
+  // A sub-agent of the open chat ended while its main agent was idle: the server may start a wake-up answer once its
+  // callbacks' coalescing window closed, so the chat is read again a few times until that answer streams in.
+  const refreshAfterSubagentsSettled = useEventCallback((chatId: string) => {
+    for (const delayMs of SUBAGENT_WAKE_UP_RECHECK_MS) {
+      window.setTimeout(() => {
+        if (useWorkspaceStore.getState().activeChatId !== chatId || activeStreamAbortRef.current.has(chatId) ||
+          useRunLifecycleStore.getState().activeStreams[chatId] || pendingBranchCheckouts.has(chatId) ||
+          pendingThreadMutations.has(chatId)) return;
+        void refreshActiveChat(chatId, { forceDetail: true, preserveControls: true });
+      }, delayMs);
+    }
+  });
   // Stable, so a caller that outlives its render (a Studio starter chip) sends from the current chat.
   const sendStarterEvent = useEventCallback((prompt: string) => void sendStarterPrompt(prompt));
 
@@ -1363,6 +1382,7 @@ export function PowerAppShellV2({
     telegramAvailable,
     dismissNotice: () => setNotice(null),
     notice,
+    onActiveChatSubagentsSettled: refreshAfterSubagentsSettled,
     shareActiveBranch
   } satisfies ShellSessionView;
 
