@@ -339,6 +339,12 @@ export interface WorkspaceAttachments {
   exclusive<T>(scope: SubagentChatScope & Readonly<{ operation: WorkspaceExclusiveOperation; signal?: AbortSignal }>,
     work: (lease: Readonly<{ sessionId: string }>) => Promise<T>): Promise<WorkspaceExclusiveResult<T>>;
   attached(scope: SubagentChatScope): Promise<readonly WorkspaceAttachment[]>;
+  /**
+   * A run whose guest authority could not be retired was settled anyway (recovery's bound): the run's session is
+   * marked failed, so no run joins or claims it, and the next send answers that the Workspace stopped working, until
+   * maintenance's backstop proves the VM stopped or the user resets it. Idempotent.
+   */
+  fence(input: SubagentChatScope & Readonly<{ modelRunId: string }>): Promise<void>;
 }
 
 export type BrowserAgentReleaseInput = SubagentChatScope & Readonly<{

@@ -261,7 +261,8 @@ describe("background sub-agent runs", () => {
       },
       attached: (scope) => inner.attached(scope),
       detach: (input) => inner.detach(input),
-      exclusive: (scope, work) => inner.exclusive(scope, work)
+      exclusive: (scope, work) => inner.exclusive(scope, work),
+      fence: (input) => inner.fence(input)
     };
     const control = createSubagentBackgroundControl({ callbacks: new FakeSubagentCallbackSink(), runner, stopWaitMs: 20, store,
       usageLimits: unlimited, workspace: slowAttach });

@@ -14,6 +14,7 @@ import {
   currentWorkspaceAttachments,
   evictOtherWorkspaceAttachments,
   joinWorkspaceRunOperation,
+  WORKSPACE_STOP_UNPROVEN_CODE,
   workspaceActiveRunsWhere,
   workspaceRunHoldsOperation,
   workspaceSubagentRunsAttached
@@ -25,6 +26,8 @@ import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { removeWorkspaceForDeletion } from "./removal";
 import { lockWorkspaceSession } from "./sessionOperation";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
+import { reserveAcceptedWorkspaceSession } from "@/lib/server/runs/prismaRepositoryPreparation";
+import type { WorkspaceRunAdmissionPlan } from "./admission";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 const prefix = "workspace-attachment-test-";
@@ -268,5 +271,51 @@ describe("Workspace attachments on PostgreSQL", () => {
     expect(await repository.detachRun!({ binding, stopProven: true })).toBe(true);
     expect(await repository.closeRunOperationIfLast!(binding)).toBe(false);
     expect((await sessionRow(f.sessionId)).operationExpiresAt).toBeNull();
+  });
+
+  it("refuses a successor only while the last leaver's operation closes, then lets it claim the settled session", async () => {
+    const f = await chatFixture(1);
+    expect(await attachments.attach(f.subagentAttachment(0))).toMatchObject({ kind: "attached" });
+    const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+    const binding = (await repository.binding({ runId: f.background[0]!.runId, userId: f.userId }))!;
+    expect(await repository.detachRun!({ binding, stopProven: true })).toBe(true);
+    expect(await repository.closeRunOperationIfLast!(binding)).toBe(true);
+    // The waiting successor (here the chat's main run, bound to the session and not attached) meets the closing operation:
+    // a transient refusal its follow-up tries again (`WORKSPACE_FOLLOWUP_BUSY_RETRY_MS`), never a failure.
+    const plan = { assistantMessageId: f.main.assistantMessageId!, chatId: f.chatId,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      normalized: { enabled: true, imageRef: config.imageRef, internetEnabled: false, outputDirectory: workspaceRunOutputDirectory(f.main.id),
+        sessionId: f.sessionId } as WorkspaceRunAdmissionPlan["normalized"], policyRevision: 1, runId: f.main.id,
+      sandboxName: f.session.sandboxName, sessionId: f.sessionId, toolDefinitions: FIXTURE_TOOL_DEFINITIONS,
+      userMessageId: f.main.userMessageId } satisfies WorkspaceRunAdmissionPlan;
+    await expect(prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan))).rejects
+      .toMatchObject({ code: "workspace_busy", reason: "workspace_busy_join_closing" });
+    // The leaver settles the session; the successor's next try claims it as its own operation.
+    const closing = await sessionRow(f.sessionId);
+    expect(await repository.settleSession({ operation: { generation: closing.version, owner: closing.operationOwner! }, outcome: "pending",
+      runtimeSandboxId: closing.runtimeSandboxId, sessionId: f.sessionId })).toBe(true);
+    await prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan));
+    expect((await sessionRow(f.sessionId)).operationOwner).toBe(`run:${f.main.id}`);
+  });
+
+  it("fences the session of a run whose processes could not be proven stopped, for its owner only", async () => {
+    const f = await chatFixture(2);
+    expect(await attachments.attach(f.subagentAttachment(0))).toMatchObject({ kind: "attached" });
+    // Another user's scope changes nothing.
+    await attachments.fence({ chatId: f.chatId, modelRunId: f.background[0]!.runId, userId: `${prefix}${randomUUID()}` });
+    expect((await sessionRow(f.sessionId)).state).not.toBe("FAILED");
+    await attachments.fence({ chatId: f.chatId, modelRunId: f.background[0]!.runId, userId: f.userId });
+    expect(await sessionRow(f.sessionId)).toMatchObject({ lastErrorCode: WORKSPACE_STOP_UNPROVEN_CODE, state: "FAILED" });
+    // No run joins it: neither another sub-agent nor the chat's next main run, whose send shows the failed Workspace.
+    const quick = createPrismaWorkspaceAttachments({ prisma, retire: retireNothing, waitMs: 0 });
+    expect(await quick.attach(f.subagentAttachment(1))).toMatchObject({ kind: "refused" });
+    const plan = { assistantMessageId: f.main.assistantMessageId!, chatId: f.chatId,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      normalized: { enabled: true, imageRef: config.imageRef, internetEnabled: false, outputDirectory: workspaceRunOutputDirectory(f.main.id),
+        sessionId: f.sessionId } as WorkspaceRunAdmissionPlan["normalized"], policyRevision: 1, runId: f.main.id,
+      sandboxName: f.session.sandboxName, sessionId: f.sessionId, toolDefinitions: FIXTURE_TOOL_DEFINITIONS,
+      userMessageId: f.main.userMessageId } satisfies WorkspaceRunAdmissionPlan;
+    await expect(prisma.$transaction((tx) => reserveAcceptedWorkspaceSession(tx, plan))).rejects
+      .toMatchObject({ code: "workspace_busy", reason: "workspace_busy_join_session_state" });
   });
 });
