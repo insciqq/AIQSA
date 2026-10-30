@@ -84,7 +84,7 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
 
   await test.step("three background sub-agents start in one answer, which ends at once, and the tree shows them live", async () => {
     const composer = page.getByRole("textbox", { name: "Message" });
-    await composer.fill("Compare three laptop shops. [AIQSA_SUBAGENT_E2E:bg:alpha,beta,gamma:write,wait25000]");
+    await composer.fill("Compare three laptop shops. [AIQSA_SUBAGENT_E2E:bg:alpha,beta,gamma:write,wait35000]");
     await composer.press("Enter");
     await expect(lastAnswer(page)).toContainText("Sub-agents started: alpha started; beta started; gamma started.", { timeout: 90_000 });
     // The main agent's run ends with its answer: its background sub-agents never hold it open (RUN_CONTRACTS).
@@ -111,6 +111,12 @@ test("background sub-agents run, stop, wake the main agent and share the chat's 
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 10_000 });
     const list = await navigation(page);
     for (const name of ["alpha", "beta", "gamma"]) await expect(list.getByRole("treeitem", { name: `${name}, Running` })).toBeVisible();
+    // Only the main agent's answer marks the chat busy in the list (read again from the server); its sub-agents show
+    // through their own rows.
+    await page.reload();
+    const reloaded = await navigation(page);
+    await expect(reloaded.getByRole("treeitem", { name: "alpha, Running" })).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(reloaded.getByLabel("Answer in progress")).toHaveCount(0);
   });
 
   await test.step("each runs as its own run on the chat's one Workspace, its file in its own folder", async () => {
