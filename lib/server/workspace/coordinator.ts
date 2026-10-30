@@ -76,7 +76,7 @@ import type { WorkspaceOperation } from "./operationFence";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import {
   acknowledgeWorkspaceRunCommandsStopped, closeWorkspaceRunOperation, currentWorkspaceAttachments, evictOtherWorkspaceAttachments,
-  isWorkspaceRunOperation, withWorkspaceSessionExclusive,
+  isWorkspaceRunOperation, recordWorkspaceAttachment, withWorkspaceSessionExclusive, WORKSPACE_ATTACHMENT_ACTIVE_RUN_STATUSES,
   workspaceActiveRunsWhere, workspaceRunAgentIds, workspaceRunHoldsOperation, type WorkspaceAttachedRun
 } from "./attachments";
 import type { WorkspaceDetachInput, WorkspaceDetachResult } from "../subagents/ports";
@@ -964,13 +964,19 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, binding.sessionId);
         if (!session || session.operationOwner !== owner || session.version !== binding.operationGeneration) return false;
-        // Rows, not the owner's own run: a run operation with no row left is held by nobody.
+        // Rows of other active runs, never the owner's own run: a run operation no active run is attached to is held by
+        // nobody. A row of an ended run is stale (a detach that failed, a recovery that gave up) and goes with the
+        // session's settlement.
         const left = await tx.workspaceRunAttachment.count({ where: { chatId: session.chatId,
-          modelRunId: { not: binding.runId }, operationGeneration: session.version } });
+          modelRun: { status: { in: [...WORKSPACE_ATTACHMENT_ACTIVE_RUN_STATUSES] } }, modelRunId: { not: binding.runId },
+          operationGeneration: session.version } });
         // Exactly one leaver closes it: a run that finds it closing already leaves the settlement to that one.
         if (left > 0 || session.operationExpiresAt !== null) return false;
         await tx.workspaceSession.update({ data: { operationExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS) },
           where: { id: session.id } });
+        // The leaver holds the closing operation again until the session settles (which removes every row), so a
+        // retry after a failed VM stop still finds its authority; the expiry already refuses joins.
+        await recordWorkspaceAttachment(tx, { chatId: session.chatId, generation: session.version, runId: binding.runId });
         return true;
       });
     },

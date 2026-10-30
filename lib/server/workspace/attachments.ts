@@ -31,6 +31,8 @@ import { WORKSPACE_OPERATION_LEASE_MS, lockWorkspaceSession, workspaceRunOperati
 
 const RUN_OWNER_PREFIX = "run:";
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
+/** The run statuses whose attachment still holds guest authority; a row of a run in any other status is stale. */
+export const WORKSPACE_ATTACHMENT_ACTIVE_RUN_STATUSES = ACTIVE_RUN_STATUSES;
 /** How long a background attach waits for an exclusive operation (an export, a maintenance stop) to end. */
 export const WORKSPACE_ATTACH_WAIT_MS = 120_000;
 const WORKSPACE_ATTACH_RETRY_MS = 1_000;
@@ -57,6 +59,11 @@ function isActive(status: string): boolean {
 /**
  * The runs attached under the session's current run operation, oldest first. A session that a previous release
  * claimed (an owner `run:<id>` and no row yet, as during the upgrade) has that one run attached.
+ *
+ * That fallback cannot tell an upgrade's row-less owner from a current operation whose rows were all just removed
+ * while its owner run still runs, so a join in that moment records a row for the owner too. Such a row is harmless:
+ * the operation's close counts only rows of active runs (`closeRunOperationIfLast`), and the settlement removes every
+ * row of the session.
  */
 export async function currentWorkspaceAttachments(
   tx: Prisma.TransactionClient | PrismaClient, session: SessionFence
