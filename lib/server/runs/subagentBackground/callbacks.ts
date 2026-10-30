@@ -13,11 +13,13 @@ import type { SubagentBackgroundStore } from "./store";
  *   share one, and the admission claims them in its own transaction;
  * - refused by usage limits, they stay owed for the next main-agent turn;
  * - for a branch that is not the active one, they stay owed there and wake nothing;
- * - an answer that is running but already closed to follow-ups (published, and
- *   still finishing its Workspace hand-off) is behind them as the user's own
- *   next message would be: the wake-up is offered to the send handler at once,
- *   which admits it behind that answer or answers busy, and then the answer's
- *   terminal flush delivers them;
+ * - an answer that is running but already closed to follow-ups: the wake-up
+ *   is tried at once through the send handler, which admits it only where it
+ *   would admit the user's own next message: behind a published answer still
+ *   handing off its Workspace (the handler's Workspace follow-up, which the
+ *   handler adds itself, never the wake-up's body), or after that answer
+ *   ended meanwhile. Otherwise it answers busy, and the answer's terminal
+ *   flush delivers them;
  * - left owed for a reason that clears (that closed answer, a busy or failed
  *   admission), the chat is flushed again a few times shortly after
  *   (`SUBAGENT_CALLBACK_RECHECK_MS`), so no wake-up waits for recovery's sweep.
@@ -101,8 +103,9 @@ export function createSubagentCallbacks(deps: Readonly<{
           if (outcome === "closed") closed = true;
           dispositions.set(callback.turnId, outcome === "closed" ? "after_run" : "delivered");
         }
-        // The answer closed to follow-ups and its run is still ending: the wake-up goes behind it, as the user's own
-        // next message would; a busy refusal leaves them for the answer's terminal flush.
+        // The answer closed to follow-ups and its run is still ending: the wake-up is tried, and admitted only where the
+        // user's own next message would be (behind a published answer's Workspace hand-off, or once it ended); a busy
+        // refusal leaves them for the answer's terminal flush.
         waiting = callbacks.filter((callback) => dispositions.get(callback.turnId) === "after_run");
         if (waiting.length === 0) return { chatGone: false, dispositions, retryable };
       }

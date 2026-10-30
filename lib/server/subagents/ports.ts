@@ -239,10 +239,11 @@ export type SubagentCallbackDisposition =
   /**
    * The branch's main-agent answer is running but already closed to follow-ups
    * (it lost the close-to-publish race, or it is published and still ends
-   * its Workspace hand-off). A wake-up is offered behind it first, as the
-   * user's own next message would be (`wake_up` when the send admits it);
-   * when the send refuses it, the callback stays owed, and that run's terminal
-   * flush delivers it (a wake-up turn) when it ends.
+   * its Workspace hand-off). A wake-up is tried first and admitted only where
+   * the user's own next message would be: behind a published answer still
+   * handing off its Workspace, or once that answer ended (`wake_up`). When the
+   * send refuses it, the callback stays owed, and that run's terminal flush
+   * delivers it (a wake-up turn) when it ends.
    */
   | "after_run"
   /** Usage limits refused the wake-up; it stays owed and goes with the next main-agent turn. */
