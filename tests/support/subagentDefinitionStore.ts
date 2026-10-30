@@ -1,6 +1,7 @@
-import { SUBAGENT_DEFINITION_LIMITS } from "@/lib/contracts/subagents";
+import { SUBAGENT_BUILT_IN_TYPE, SUBAGENT_DEFINITION_LIMITS } from "@/lib/contracts/subagents";
 import type { SubagentDefinitionDraft } from "@/lib/contracts/subagentDefinitions";
 import type {
+  SubagentDefaultRef,
   SubagentDefinitionRecord,
   SubagentDefinitionStore,
   SubagentStoreRefusal,
@@ -10,7 +11,8 @@ import type {
 /**
  * An in-memory double of the custom sub-agent store
  * (`lib/server/subagents/definitionStore.ts`) with the same owner scoping,
- * version guard, per-user limit, name uniqueness and append-only revisions.
+ * version guard, per-user limit, name uniqueness, reserved name, append-only
+ * revisions and default pointer, which deleting its definition clears.
  * The Prisma store has its own stateful test (`definitionStore.prisma.test.ts`).
  */
 
@@ -19,6 +21,8 @@ type Row = { id: string; ownerUserId: string; version: number; current: string; 
 
 export class MemorySubagentDefinitionStore {
   readonly rows = new Map<string, Row>();
+  /** Each user's default definition, as `UserSettings.defaultSubagentDefinitionId`. */
+  readonly defaults = new Map<string, string>();
   threads = new Map<string, number>();
   private sequence = 0;
 
@@ -53,6 +57,7 @@ export class MemorySubagentDefinitionStore {
     if (current.name === draft.name && current.description === draft.description && current.instructions === draft.instructions &&
       current.providerModelId === draft.modelId && current.reasoningEffort === draft.effort &&
       JSON.stringify(current.toolGroups) === JSON.stringify(draft.tools)) return { kind: "unchanged", record: current };
+    if (draft.name !== current.name && draft.name === SUBAGENT_BUILT_IN_TYPE) return refused("subagent_name_invalid");
     if (draft.name !== current.name && this.find(userId, { name: draft.name })) return refused("subagent_definition_exists", current);
     const revision = { draft: { ...draft }, id: this.nextId("rev"), number: current.revisionNumber + 1 };
     row.revisions.push(revision);
@@ -60,6 +65,22 @@ export class MemorySubagentDefinitionStore {
     row.version += 1;
     row.updatedAt = new Date(row.updatedAt.getTime() + 1_000);
     return { kind: "written", previous: current, record: this.record(row) };
+  }
+
+  private currentDefault(userId: string): SubagentDefaultRef | null {
+    const id = this.defaults.get(userId);
+    const row = id ? this.find(userId, { id }) : null;
+    return row ? { definitionId: row.id, name: this.record(row).name } : null;
+  }
+
+  private writeDefault(userId: string, target: string | null): void {
+    if (target === null) this.defaults.delete(userId);
+    else this.defaults.set(userId, target);
+  }
+
+  private removeRow(id: string): void {
+    this.rows.delete(id);
+    for (const [userId, target] of this.defaults) if (target === id) this.defaults.delete(userId);
   }
 
   /** The store seam the service and resolver take. */
@@ -70,6 +91,7 @@ export class MemorySubagentDefinitionStore {
       return row ? this.record(row) : null;
     },
     create: async (_tx, userId, draft) => {
+      if (draft.name === SUBAGENT_BUILT_IN_TYPE) return refused("subagent_name_invalid");
       if (this.owned(userId).length >= SUBAGENT_DEFINITION_LIMITS.perUser) return refused("subagent_definition_limit");
       if (this.find(userId, { name: draft.name })) return refused("subagent_definition_exists");
       const revision = { draft: { ...draft }, id: this.nextId("rev"), number: 1 };
@@ -90,10 +112,34 @@ export class MemorySubagentDefinitionStore {
       if (!row) return refused("subagent_not_found");
       if (row.version !== expectedVersion) return refused("subagent_definition_conflict", this.record(row));
       const record = this.record(row);
-      this.rows.delete(id);
+      this.removeRow(id);
       return { kind: "deleted", record };
     },
-    threadCount: async (_db, userId, id) => this.find(userId, { id }) ? this.threads.get(id) ?? 0 : 0
+    threadCount: async (_db, userId, id) => this.find(userId, { id }) ? this.threads.get(id) ?? 0 : 0,
+    readDefault: async (_db, userId) => this.currentDefault(userId),
+    setDefault: async (_tx, userId, input) => {
+      const current = this.currentDefault(userId);
+      const currentId = current?.definitionId ?? null;
+      if (input.expected !== undefined && input.expected !== currentId) return refused("subagent_default_conflict");
+      if (input.target !== null && !this.find(userId, { id: input.target })) return refused("subagent_not_found");
+      if (input.target === currentId) return { kind: "unchanged" };
+      this.writeDefault(userId, input.target);
+      return { kind: "moved", previous: current };
+    },
+    undoDefaultChange: async (tx, userId, input) => {
+      const left = this.currentDefault(userId)?.definitionId ?? null;
+      if (input.definition) {
+        const { expectedVersion, id, revisionId } = input.definition;
+        const write = revisionId === null ? await this.store.remove(tx, userId, id, expectedVersion)
+          : await this.store.restore(tx, userId, id, expectedVersion, revisionId);
+        if (write.kind === "refused") return write;
+      }
+      if (left !== input.restore.expected) return { kind: "undone", outcome: "changed" };
+      const { target } = input.restore;
+      const gone = target !== null && !this.find(userId, { id: target });
+      this.writeDefault(userId, gone ? null : target);
+      return { kind: "undone", outcome: gone ? "target_gone" : "restored" };
+    }
   };
 }
 

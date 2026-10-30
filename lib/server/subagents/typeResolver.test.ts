@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { SubagentDefinitionDraft } from "@/lib/contracts/subagentDefinitions";
 import { MemorySubagentDefinitionStore } from "@/tests/support/subagentDefinitionStore";
-import { renderSubagentTypeCatalog, SUBAGENT_TYPE_CATALOG_LIMITS } from "./typeCatalog";
+import { decodeFrozenSubagentDefault, freezeSubagentDefault, renderSubagentTypeCatalog, SUBAGENT_TYPE_CATALOG_LIMITS } from "./typeCatalog";
 import { createSubagentTypeResolver } from "./typeResolver";
 
 const draft = (name: string, patch: Partial<SubagentDefinitionDraft> = {}): SubagentDefinitionDraft => ({
@@ -82,5 +82,64 @@ describe("custom sub-agent catalog in run context", () => {
     expect(text).not.toContain(`type-${SUBAGENT_TYPE_CATALOG_LIMITS.types}"`);
     expect(text.length).toBeLessThan(16_000);
     expect(renderSubagentTypeCatalog(entries.slice(0, 2))).not.toContain("more custom sub-agent");
+  });
+
+  const ENTRY = { description: "Long research.", name: "browser" };
+  const DEFAULT = { definitionId: "def-1", name: "gemini-helper", version: 1 } as const;
+
+  it("says what no type starts without a default, and steers no one toward dropping a type", () => {
+    const text = renderSubagentTypeCatalog([ENTRY])!;
+    expect(text).toContain("A call with no type starts the built-in sub-agent, which runs on your model with your tools. " +
+      "When the user asks for a custom one, pass its name; when none matches, tell the user instead of starting the built-in one.");
+    expect(text).not.toMatch(/omit/iu);
+    expect(text).not.toContain("default");
+  });
+
+  it("names the default and the reserved value, and adds no default's name to the list of types", () => {
+    const text = renderSubagentTypeCatalog([ENTRY], DEFAULT)!;
+    expect(text).toContain("The user's default sub-agent is \"gemini-helper\": a call with no type starts it, with its own model and tools. " +
+      "Another custom one starts by its name, and type \"built-in\" starts the built-in sub-agent, which runs on your model with your tools; " +
+      "pass it only when the user asks for it. When the default cannot start, tell the user instead of starting another one.");
+    expect([...text.matchAll(/<subagent name="([^"]+)">/gu)].map((match) => match[1])).toEqual(["browser"]);
+  });
+
+  it("still names a default past the cut of the list", () => {
+    const entries = Array.from({ length: SUBAGENT_TYPE_CATALOG_LIMITS.types + 2 }, (_unused, index) => ({ description: "d", name: `type-${String(index).padStart(2, "0")}` }));
+    const last = entries.at(-1)!.name;
+    const text = renderSubagentTypeCatalog(entries, { definitionId: "def-last", name: last, version: 1 })!;
+    expect(text).not.toContain(`<subagent name="${last}">`);
+    expect(text).toContain(`The user's default sub-agent is "${last}"`);
+  });
+
+  it("renders the default with no list at all: its definition went or the list could not be read", () => {
+    const text = renderSubagentTypeCatalog([], DEFAULT)!;
+    expect(text).toContain("The user's default sub-agent is \"gemini-helper\"");
+    expect(text).not.toContain("<subagent ");
+    expect(renderSubagentTypeCatalog([], null)).toBeNull();
+  });
+
+  it("says a default that could not be read refuses, instead of claiming the built-in", () => {
+    const text = renderSubagentTypeCatalog([ENTRY], { unreadable: true, version: 1 })!;
+    expect(text).toContain("The user's default sub-agent could not be read for this answer, so a call with no type is refused");
+    expect(text).not.toContain("A call with no type starts");
+  });
+});
+
+describe("the default sub-agent as admission freezes it", () => {
+  it("freezes the current pointer, nothing when there is none, and an unread pointer as unreadable", async () => {
+    expect(await freezeSubagentDefault(async () => ({ definitionId: "def-1", name: "gemini" }))).toEqual({ definitionId: "def-1", name: "gemini", version: 1 });
+    expect(await freezeSubagentDefault(async () => null)).toBeUndefined();
+    expect(await freezeSubagentDefault(async () => { throw new Error("database down"); })).toEqual({ unreadable: true, version: 1 });
+  });
+
+  it("decodes what it froze; anything else refuses like an unread pointer, never as no default", () => {
+    expect(decodeFrozenSubagentDefault(undefined)).toBeNull();
+    expect(decodeFrozenSubagentDefault(null)).toBeNull();
+    const frozen = { definitionId: "def-1", name: "gemini", version: 1 };
+    expect(decodeFrozenSubagentDefault(JSON.parse(JSON.stringify(frozen)))).toEqual(frozen);
+    expect(decodeFrozenSubagentDefault({ unreadable: true, version: 1 })).toEqual({ unreadable: true, version: 1 });
+    for (const malformed of [{ definitionId: 1, name: "x", version: 1 }, { name: "x", version: 1 }, { definitionId: "d", name: "x", version: 2 }, "def-1", []]) {
+      expect(decodeFrozenSubagentDefault(malformed)).toEqual({ unreadable: true, version: 1 });
+    }
   });
 });

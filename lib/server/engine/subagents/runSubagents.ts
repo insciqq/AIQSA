@@ -17,6 +17,7 @@ import type {
   SubagentTurnInput,
   SubagentTypeResolver
 } from "../../subagents/ports";
+import { decodeFrozenSubagentDefault, type FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { RunTool } from "../../tools/types";
 import type { BrowserLiveRunHandle } from "../../workspace/browserLive";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
@@ -64,6 +65,8 @@ export type SubagentEngineDeps = Readonly<{
 export type RunSubagents = Readonly<{
   /** The user's custom sub-agents for the run's context (`renderSubagentTypeCatalog`), never the system prompt. */
   catalog: SubagentPromptFacts["types"];
+  /** The user's default sub-agent as admission froze it, named in that same context item. */
+  defaultType: FrozenSubagentDefault | null;
   prompt: SubagentPromptFacts;
   /** Keeps the run's background host for the turns it admitted (`backgroundRunner.ts`); called once the run ended. */
   releaseBackgroundHost(): void;
@@ -134,7 +137,6 @@ export type PrepareRunSubagentsInput = Readonly<{
   /** The run's admitted request before its native system prompt. */
   admittedRequest: ProviderRunRequest;
   answerTimeoutMs: number;
-  assistantRun: boolean;
   /** The native runs of the branch's earlier answers, in branch order. */
   branchRunIds: readonly string[];
   buildRegistry(input: Readonly<{ agent: WorkspaceAgent; followupTexts(): readonly string[];
@@ -180,7 +182,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   const store = input.engine.subagentThreads;
   const request = input.admittedRequest;
   if (!store || request.toolMode === "none" || request.monitoringVerdictTool === true) return null;
-  const catalog: FrozenSubagentModels | null = input.assistantRun ? null : decodeSubagentModels(request.subagentModels);
+  const catalog: FrozenSubagentModels | null = decodeSubagentModels(request.subagentModels);
+  const defaultType = decodeFrozenSubagentDefault(request.subagentDefault);
   const snapshot = input.snapshot;
   const parentEntry = catalog?.models.find((entry) => entry.connectionId === snapshot.connectionId &&
     entry.providerModelId === snapshot.providerModelId);
@@ -264,18 +267,18 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     }, stop: port.stop.bind(port) } : port;
   const releaseBackgroundHost = () => host?.release();
   const deps: SubagentCallDeps = {
-    assistantRun: input.assistantRun,
     backgroundAllowed: input.backgroundAllowed,
     ...(background ? { background } : {}),
     branchRunIds: [...input.branchRunIds, input.runId],
     catalog,
     chatId: input.chatId,
     deadlineAt: () => new Date(input.deadlineAt),
+    defaultType,
     parent,
     runId: input.runId,
     runner,
     store,
-    ...(input.ports?.types && !input.assistantRun ? { types: input.ports.types } : {}),
+    ...(input.ports?.types ? { types: input.ports.types } : {}),
     userMessage: input.userMessage,
     userId: input.scope.userId
   };
@@ -296,8 +299,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
       id: entry.providerModelId, name: entry.displayName })),
     types
   };
-  // The custom sub-agents ride in run context, so the system prompt stays the same when the user edits them.
-  return { catalog: types, prompt: { ...prompt, types: [] }, releaseBackgroundHost, runner, tools: subagentEngineTools(deps) };
+  // The custom sub-agents and the default ride in run context, so the system prompt stays the same when the user changes them.
+  return { catalog: types, defaultType, prompt: { ...prompt, types: [] }, releaseBackgroundHost, runner, tools: subagentEngineTools(deps) };
 }
 
 /**
