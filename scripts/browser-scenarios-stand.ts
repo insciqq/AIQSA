@@ -9,7 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Client as PostgresClient } from "pg";
+import { Client as PostgresClient, types as pgTypes, type CustomTypesConfig } from "pg";
 import { decodeCatalogResponse, type CatalogModel } from "../lib/contracts/catalog";
 import { decodeChatSummaryResponse } from "../lib/contracts/chats";
 import {
@@ -39,6 +39,34 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 export const safeCode = (value: unknown): string | null =>
   typeof value === "string" && /^[a-z0-9_]{1,64}$/u.test(value) ? value : null;
+
+// The stand's database ------------------------------------------------------------
+
+/** PostgreSQL's `timestamp without time zone`, which Prisma's `DateTime` columns are. */
+export const TIMESTAMP_WITHOUT_TIME_ZONE_OID = 1114;
+const TIMESTAMP_TEXT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/u;
+
+/**
+ * A `timestamp without time zone` as Prisma writes it: UTC. node-pg would
+ * read it in the harness host's local zone, which shifts every stored time
+ * against `Date.now()` by the host's offset (3 h on a `Europe/Istanbul` host).
+ * Anything else (`infinity`, BC dates) keeps node-pg's own parser.
+ */
+export function parseUtcTimestamp(value: string): Date {
+  if (!TIMESTAMP_TEXT.test(value)) return pgTypes.getTypeParser(TIMESTAMP_WITHOUT_TIME_ZONE_OID, "text")(value) as Date;
+  return new Date(`${value.replace(" ", "T")}Z`);
+}
+
+/** The harnesses' type parsers: node-pg's own, with stored timestamps read as UTC. Per client, never global. */
+export const STAND_DATABASE_TYPES: CustomTypesConfig = {
+  getTypeParser: ((id: number, format?: "binary" | "text") => Number(id) === TIMESTAMP_WITHOUT_TIME_ZONE_OID && format !== "binary"
+    ? parseUtcTimestamp : pgTypes.getTypeParser(id, format)) as CustomTypesConfig["getTypeParser"]
+};
+
+/** The read-only evidence connection both harnesses use. */
+export function standDatabase(connectionString: string): PostgresClient {
+  return new PostgresClient({ connectionString, types: STAND_DATABASE_TYPES });
+}
 
 export type Api = Readonly<{ baseUrl: URL; cookie: string }>;
 export type CallInit = Readonly<{ body?: unknown; method?: string; signal?: AbortSignal; timeoutMs?: number }>;
