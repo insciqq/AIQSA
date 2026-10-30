@@ -365,6 +365,13 @@ export type WorkspaceCoordinatorRepository = Readonly<{
    */
   closeRunOperation?(input: Readonly<{ binding: WorkspaceExecutionBinding; force: boolean }>): Promise<boolean>;
   /**
+   * A run that just detached from its shared run operation: when no attachment of any other run is left under it
+   * (whatever their runs' status, which each writes after its own detach), the operation closes to joins in the same
+   * step, and true says this run is the last to leave and settles the session. False when another run is attached
+   * or the operation is no longer this binding's.
+   */
+  closeRunOperationIfLast?(binding: WorkspaceExecutionBinding): Promise<boolean>;
+  /**
    * The run's VM is about to stop under the other attached runs: the operation closes to joins and the others lose
    * their attachments in one step, so none dispatches under the stop. Returns the runs that ended with it.
    */
@@ -950,6 +957,22 @@ export function createPrismaWorkspaceCoordinatorRepository(
       const owner = binding.operationOwner;
       return prisma.$transaction((tx) => closeWorkspaceRunOperation(tx, { force, generation: binding.operationGeneration,
         owner, runId: binding.runId, sessionId: binding.sessionId }));
+    },
+    async closeRunOperationIfLast(binding) {
+      if (!isWorkspaceRunOperation(binding.operationOwner)) return false;
+      const owner = binding.operationOwner;
+      return prisma.$transaction(async (tx) => {
+        const session = await lockWorkspaceSession(tx, binding.sessionId);
+        if (!session || session.operationOwner !== owner || session.version !== binding.operationGeneration) return false;
+        // Rows, not the owner's own run: a run operation with no row left is held by nobody.
+        const left = await tx.workspaceRunAttachment.count({ where: { chatId: session.chatId,
+          modelRunId: { not: binding.runId }, operationGeneration: session.version } });
+        // Exactly one leaver closes it: a run that finds it closing already leaves the settlement to that one.
+        if (left > 0 || session.operationExpiresAt !== null) return false;
+        await tx.workspaceSession.update({ data: { operationExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS) },
+          where: { id: session.id } });
+        return true;
+      });
     },
     async markSessionFailed({ code, operation, sessionId }) {
       await prisma.workspaceSession.updateMany({
@@ -2344,22 +2367,33 @@ export function createWorkspaceCoordinator(input: Readonly<{
         !(await input.repository.closeRunOperation({ binding: current, force: false }).catch(() => true))) {
         others = await otherAttachedRuns(current);
       }
+      let browserSaved = false;
       if (others.length > 0) {
         if (await stopRunProcesses(current)) {
           if (!skipBrowserSave) await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
+          browserSaved = true;
           const detached = await input.repository.detachRun?.({ binding: current, stopProven: true }).catch(() => false) ?? false;
-          forgetRun(runId);
-          await receipt(detached, detached ? undefined : "workspace_execution_settlement_failed");
-          return { quiesced: true, remainingRuns: others.length, sessionSettled: detached, stoppedVm: false };
+          // Runs that end together each saw the others still attached (a run's status is written after its detach), so
+          // none would take the last run's path: the one whose detach leaves no attachment closes the operation, in one
+          // step under the session lock the detaches and joins take, and settles the session below.
+          const lastToLeave = detached && input.repository.closeRunOperationIfLast !== undefined &&
+            await input.repository.closeRunOperationIfLast(current).catch(() => false);
+          if (!lastToLeave) {
+            forgetRun(runId);
+            await receipt(detached, detached ? undefined : "workspace_execution_settlement_failed");
+            return { quiesced: true, remainingRuns: others.length, sessionSettled: detached, stoppedVm: false };
+          }
+          others = [];
+        } else {
+          // Not proven: the VM stops below as it does for a single run, and every other attached run ends with it.
+          logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", outcome: "degraded",
+            code: "workspace_agent_stop_unproven", action: "stop" });
+          // Fence first: no run joins the closing operation and none dispatches under it while the VM stops.
+          others = await input.repository.evictAttachedRuns?.({ binding: current }).catch(() => null) ?? others;
         }
-        // Not proven: the VM stops below as it does for a single run, and every other attached run ends with it.
-        logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", outcome: "degraded",
-          code: "workspace_agent_stop_unproven", action: "stop" });
-        // Fence first: no run joins the closing operation and none dispatches under it while the VM stops.
-        others = await input.repository.evictAttachedRuns?.({ binding: current }).catch(() => null) ?? others;
       }
       let quiescence = await quiesceRun(current);
-      if (quiescence.proven && !skipBrowserSave && isWorkspaceRunOperation(current.operationOwner)) {
+      if (quiescence.proven && !skipBrowserSave && !browserSaved && isWorkspaceRunOperation(current.operationOwner)) {
         await persistBrowserSessions(current, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS));
       }
       try {
