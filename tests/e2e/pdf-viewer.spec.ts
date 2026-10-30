@@ -107,7 +107,7 @@ async function openPdf(page: Page, id: DocumentId) {
   return { card, dialog: page.getByRole("dialog", { name: `File preview: ${label(id)}` }) };
 }
 
-const firstPage = (page: Page) => page.locator('.pdfViewer .page[data-page-number="1"] canvas');
+const firstPage = (page: Page) => page.locator('.pdfViewer .page[data-page-number="1"] .canvasWrapper canvas');
 const zoomValue = (page: Page) => page.getByRole("button", { name: /^Fit page/u });
 
 async function closePdf(page: Page) {
@@ -176,7 +176,7 @@ test.describe("the PDF viewer", () => {
       await expectNoHorizontalOverflow(page);
       await expect(dialog.getByRole("button", { name: "Zoom in" })).toBeInViewport();
       await expect(dialog.getByRole("button", { name: "Search in document" })).toBeInViewport();
-      await expect(dialog.getByRole("button", { name: "Save to Files" })).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "Save to Files" })).toBeInViewport();
       await expect(dialog.getByRole("link", { name: `Download ${label("long")}` })).toBeInViewport();
     } });
 
