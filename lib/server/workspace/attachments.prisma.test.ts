@@ -240,4 +240,33 @@ describe("Workspace attachments on PostgreSQL", () => {
     await prisma.modelRun.update({ data: { status: "streaming" }, where: { id: f.background[0]!.runId } });
     expect(await attachments.attach(f.subagentAttachment(0))).toEqual({ code: "workspace_unavailable", kind: "refused" });
   });
+
+  it("lets the last active leaver close the operation over a stale row, and keeps its authority until it settles", async () => {
+    const f = await chatFixture(2);
+    for (const index of [0, 1]) expect(await attachments.attach(f.subagentAttachment(index))).toMatchObject({ kind: "attached" });
+    // The second run ended without its detach (a failed one, a recovery that gave up): its row is stale.
+    await prisma.modelRun.update({ data: { status: "error" }, where: { id: f.background[1]!.runId } });
+    const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+    const binding = (await repository.binding({ runId: f.background[0]!.runId, userId: f.userId }))!;
+    expect(await repository.detachRun!({ binding, stopProven: true })).toBe(true);
+    expect(await repository.closeRunOperationIfLast!(binding)).toBe(true);
+    const closing = await sessionRow(f.sessionId);
+    expect(closing.operationExpiresAt).not.toBeNull();
+    // The leaver holds the closing operation again, so a retry after a failed VM stop still finds its authority.
+    expect(await workspaceRunHoldsOperation(prisma, closing, f.background[0]!.runId)).toBe(true);
+    // Exactly one leaver closes it, and no run joins a closing operation.
+    expect(await repository.closeRunOperationIfLast!(binding)).toBe(false);
+    expect(await prisma.$transaction(async (tx) => joinWorkspaceRunOperation(tx, (await lockWorkspaceSession(tx, f.sessionId))!,
+      f.main.id))).toBe(false);
+  });
+
+  it("keeps the operation open while another attached run is active", async () => {
+    const f = await chatFixture(2);
+    for (const index of [0, 1]) expect(await attachments.attach(f.subagentAttachment(index))).toMatchObject({ kind: "attached" });
+    const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+    const binding = (await repository.binding({ runId: f.background[0]!.runId, userId: f.userId }))!;
+    expect(await repository.detachRun!({ binding, stopProven: true })).toBe(true);
+    expect(await repository.closeRunOperationIfLast!(binding)).toBe(false);
+    expect((await sessionRow(f.sessionId)).operationExpiresAt).toBeNull();
+  });
 });
