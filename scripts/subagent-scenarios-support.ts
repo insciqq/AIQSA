@@ -140,7 +140,8 @@ export function notaryValue(nonce: string): string {
 export const SUBAGENT_NAMES = Object.freeze({
   background: ["bg-1", "bg-2", "bg-3", "bg-4", "bg-5"],
   counter: "counter",
-  idle: ["idle-1", "idle-2", "idle-3"],
+  hold: ["hold-1", "hold-2"],
+  idle: ["idle-1", "idle-2"],
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
@@ -165,6 +166,15 @@ const S6_SUBAGENTS = "Сделай это задание с помощью су�
 const D_TASK = "Найди 5 лучших беспроводных наушников (auriculares inalámbricos) на amazon.es по соотношению цены, рейтинга и числа отзывов.";
 const D_BANDS = "ценовые диапазоны до 30 €, 30–60 €, 60–100 €, 100–200 € и дороже 200 €";
 const D_FIELDS = '  "products": [{"name": "...", "price": 49.99, "rating": 4.5, "reviews": 1234, "url": "https://www.amazon.es/dp/..."}]';
+
+/**
+ * Work that keeps a sub-agent running for `minutes` without a long single
+ * command: one Workspace command can hit the tool's own timeout, after which
+ * a model tends to report instead of going on.
+ */
+const HOLD_WORK = (minutes: number) => `каждый ${minutes} минут подряд выполняет в Workspace команду \`sleep 60\`, по одной ` +
+  "команде за раз, на переднем плане (без `&`, nohup, timeout и других обёрток), и не заканчивает работу раньше; " +
+  "коротко отчитывается только после этого.";
 
 export const SUBAGENT_PROMPTS = Object.freeze({
   A: () => [
@@ -194,14 +204,14 @@ export const SUBAGENT_PROMPTS = Object.freeze({
     resultInstruction(D_FIELDS)
   ].join("\n\n"),
   E: Object.freeze({
+    holds: () => `Запусти в фоне (background: true) два суб-агента, ${SUBAGENT_NAMES.hold.join(" и ")}: ${HOLD_WORK(10)} ` +
+      `${NO_WEB} ${START_AND_REPLY} Не останавливай их сам.`,
     start: (secrets: RunSecrets) => [
-      `Запусти в фоне (background: true) четыре суб-агента. ${NO_WEB} ${START_AND_REPLY}`,
+      `Запусти в фоне (background: true) три суб-агента. ${NO_WEB} ${START_AND_REPLY}`,
       `1. ${SUBAGENT_NAMES.counter}: 8 раз подряд выполни в Workspace \`sleep 20\` и затем допиши в файл counter/log.txt строку ` +
         `«<номер шага> <слово>», где слово — ${secrets.correctionFrom}. Перед каждым шагом учитывай мои новые сообщения, если они пришли. ` +
         "В отчёте перечисли строки файла.",
-      `2. ${SUBAGENT_NAMES.idle.join(", ")}: каждый выполняет в Workspace одну команду \`sleep 900\` на переднем плане: не в фоне, ` +
-        "без `&`, nohup, timeout и других обёрток. Если команда завершится раньше, запусти её снова, пока с начала не пройдёт " +
-        "15 минут. Не заканчивай работу раньше и ничего не сокращай; коротко отчитайся только после этого.",
+      `2. ${SUBAGENT_NAMES.idle.join(" и ")}: ${HOLD_WORK(15)}`,
       "Не останавливай и не перезапускай их сам, пока я не попрошу.",
       laterResult(`Когда придёт результат ${SUBAGENT_NAMES.counter}`,
         '  "lines": [{"step": 1, "word": "..."}]\nВ "lines" перечисли все строки файла counter/log.txt по порядку')
@@ -771,10 +781,15 @@ export function progressionSaw(series: readonly StateCounts[], state: SubagentTh
 // Stops (E) and the restart (G) -----------------------------------------------------
 
 /** How each way of stopping ended its thread: the expected reason per path, from the turns of that thread. */
-export function stopEvidence(turnsByPath: Readonly<{ stopAll: TurnRow | null; stopRoute: TurnRow | null; stopTool: TurnRow | null }>) {
+export function stopEvidence(turnsByPath: Readonly<{
+  /** Every agent Stop all had to reach (E's two holds); all must end `stopped` with `stop_all`. */
+  stopAll: readonly TurnRow[];
+  stopRoute: TurnRow | null;
+  stopTool: TurnRow | null;
+}>) {
   const ok = (turn: TurnRow | null, reason: string) => turn !== null && turn.state === "stopped" && turn.reasonCode === reason;
   return {
-    stopAllStopped: ok(turnsByPath.stopAll, SUBAGENT_END_REASONS.stoppedAll),
+    stopAllStopped: turnsByPath.stopAll.length > 0 && turnsByPath.stopAll.every((turn) => ok(turn, SUBAGENT_END_REASONS.stoppedAll)),
     stopRouteStopped: ok(turnsByPath.stopRoute, SUBAGENT_END_REASONS.stoppedByUser),
     stopToolStopped: ok(turnsByPath.stopTool, SUBAGENT_END_REASONS.stoppedByAgent)
   };
