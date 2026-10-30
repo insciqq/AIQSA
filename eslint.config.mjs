@@ -16,6 +16,7 @@ const eslintConfig = [
       "coverage/**",
       "node_modules/**",
       "playwright-report/**",
+      "public/pdfjs/**",
       "scripts/longmemeval-qualification.test.ts",
       "test-results/**"
     ]

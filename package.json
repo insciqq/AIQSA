@@ -14,10 +14,11 @@
   },
   "packageManager": "npm@10.9.4",
   "scripts": {
-    "dev": "npm run build:skills-client && node --require ./scripts/dev-bootstrap.cjs ./node_modules/next/dist/bin/next dev --hostname 0.0.0.0",
+    "dev": "npm run build:skills-client && npm run build:pdf-viewer-assets && node --require ./scripts/dev-bootstrap.cjs ./node_modules/next/dist/bin/next dev --hostname 0.0.0.0",
     "build:skills-client": "node scripts/skills-client/build.mjs",
+    "build:pdf-viewer-assets": "node scripts/pdf-viewer-assets.mjs",
     "build:connect": "node scripts/connect-build.mjs",
-    "build": "npm run build:skills-client && next build && node scripts/pack-server-source-maps.cjs",
+    "build": "npm run build:skills-client && npm run build:pdf-viewer-assets && next build && node scripts/pack-server-source-maps.cjs",
     "check": "npm run check:hermetic",
     "check:connect": "node scripts/connect-check.mjs",
     "check:container": "AIQSA_APP_MEMORY_LIMIT=2g AIQSA_APP_CPU_LIMIT=2 docker compose -f docker-compose.dev.yml run --rm -T --no-deps -e NODE_OPTIONS=--max-old-space-size=1536 app npm run check:container:inner",

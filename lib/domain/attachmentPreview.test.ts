@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IMAGE_MAX_BYTES } from "@/lib/contracts/imageGeneration";
-import { attachmentPreviewKind, TEXT_PREVIEW_MAX_BYTES } from "./attachmentPreview";
+import { attachmentPreviewKind, isPdfFileName, PDF_PREVIEW_MAX_BYTES, TEXT_PREVIEW_MAX_BYTES } from "./attachmentPreview";
 
 describe("attachment preview eligibility", () => {
   const ready = { byteSize: 12, fileName: "result.bin", mimeType: "application/octet-stream", status: "ready" };
@@ -24,7 +24,7 @@ describe("attachment preview eligibility", () => {
     expect(attachmentPreviewKind({ ...ready, fileName: "page.html", mimeType: "text/html" })).toBe("text");
     expect(attachmentPreviewKind({ ...ready, fileName: "shape.svg", mimeType: "image/svg+xml" })).toBe("text");
     expect(attachmentPreviewKind({ ...ready, fileName: `${"記録".repeat(60)}.md` })).toBe("text");
-    for (const fileName of ["report.pdf", "report.docx", "report.xlsx", "report.pptx", "image.tiff", "unknown", "opaque.bin"]) {
+    for (const fileName of ["report.docx", "report.xlsx", "report.pptx", "image.tiff", "unknown", "opaque.bin"]) {
       expect(attachmentPreviewKind({ ...ready, fileName })).toBeNull();
     }
     for (const byteSize of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -33,5 +33,14 @@ describe("attachment preview eligibility", () => {
     for (const status of ["pending", "processing", "failed"]) {
       expect(attachmentPreviewKind({ ...ready, fileName: "note.txt", status })).toBeNull();
     }
+  });
+
+  it("opens a PDF in its viewer by type or name, up to the hard upload ceiling", () => {
+    expect(attachmentPreviewKind({ ...ready, fileName: "report.PDF" })).toBe("pdf");
+    expect(attachmentPreviewKind({ ...ready, fileName: "report", mimeType: "application/pdf" })).toBe("pdf");
+    expect(attachmentPreviewKind({ ...ready, fileName: "report.pdf", byteSize: PDF_PREVIEW_MAX_BYTES })).toBe("pdf");
+    expect(attachmentPreviewKind({ ...ready, fileName: "report.pdf", byteSize: PDF_PREVIEW_MAX_BYTES + 1 })).toBeNull();
+    expect(attachmentPreviewKind({ ...ready, fileName: "report.pdf", status: "processing" })).toBeNull();
+    expect(isPdfFileName(".pdf")).toBe(false);
   });
 });
