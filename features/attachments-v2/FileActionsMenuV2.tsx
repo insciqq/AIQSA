@@ -57,8 +57,9 @@ export function SaveToFilesButtonV2({ attachmentId }: Readonly<{ attachmentId: s
       {saving ? <small role="status">Saving…</small> : null}
       {saved ? <small className="v2-sr-only" role="status">Saved</small> : null}
       {state === "error" ? <small role="alert">Could not save</small> : null}
-      <button aria-busy={saving || undefined} className="v2-focusable v2-save-to-files" disabled={saving || saved}
-        onClick={() => void saveFileToLibrary(attachmentId)} type="button">
+      {/* Not `disabled`: that would drop the viewer's focus to the page the moment the save lands. */}
+      <button aria-busy={saving || undefined} aria-disabled={saving || saved || undefined} className="v2-focusable v2-save-to-files"
+        onClick={() => { if (!saving && !saved) void saveFileToLibrary(attachmentId); }} type="button">
         <UiV2Icon name={saved ? "check" : "folder-plus"} />
         {saved ? "Saved to Files" : "Save to Files"}
       </button>

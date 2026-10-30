@@ -321,8 +321,9 @@ export type AnswerProcessV2Props = Readonly<{
  * The one disclosure above an answer. While the run works it is the live
  * status ("Thinking…", "Searching the web…") in the same 28px slot; settled
  * it folds Thinking → Steps and independent Past chats/Memory disclosures
- * under a factual label ("Worked for 8s · Past chats · 2"); search counts and
- * PDF routes stay in the fold. A reached tool limit stays visible outside it.
+ * under a line that says only the work time ("Worked for 8s"); search counts,
+ * PDF routes and context counts stay in the fold and speak on the line only
+ * when there is no work to name. A reached tool limit stays visible outside it.
  */
 export function AnswerProcessV2({
   connectionLost = false,

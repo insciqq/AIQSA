@@ -794,7 +794,13 @@ describe("answer process label", () => {
     })).toBe("Thought for 12s");
     expect(answerProcessLabelV2({
       hasReasoning: true, memoryCount: 2, stepCount: 3, workDurationMs: 8_000
-    })).toBe("Worked for 8s · Memory · 2");
+    })).toBe("Worked for 8s");
+    expect(answerProcessLabelV2({
+      hasReasoning: true, memoryCount: 2, pastChatCount: 1, stepCount: 0, workDurationMs: null
+    })).toBe("Thought process");
+    expect(answerProcessLabelV2({
+      hasReasoning: false, memoryCount: 2, pastChatCount: 1, stepCount: 0, workDurationMs: 8_000
+    })).toBe("Past chats · 1 · Memory · 2");
     expect(answerProcessLabelV2({
       hasReasoning: false, memoryCount: 1, stepCount: 0, workDurationMs: null
     })).toBe("Memory · 1");

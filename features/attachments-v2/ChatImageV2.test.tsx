@@ -38,7 +38,8 @@ describe("chat images", () => {
     afterEach(() => { resetFileLibraryStoreForTest(); vi.unstubAllGlobals(); });
 
     it("keeps Download and Save to Files in the viewer", async () => {
-      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ attachment: { fileName: "photo.png", id: "copy", kind: "file", status: "ready" } })));
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => Response.json({ attachment: { fileName: "photo.png", id: "copy", kind: "file", status: "ready" } }));
+      vi.stubGlobal("fetch", fetchMock);
       render(<ChatImageV2 attachmentId="sent-image" canSave label="photo.png" thumbnail />);
       expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Save to Files" })).toBeNull();
@@ -47,8 +48,19 @@ describe("chat images", () => {
 
       const dialog = screen.getByRole("dialog", { name: "photo.png" });
       expect(within(dialog).getByRole("link", { name: "Download" })).toHaveAttribute("download");
-      fireEvent.click(within(dialog).getByRole("button", { name: "Save to Files" }));
-      expect(await within(dialog).findByRole("button", { name: "Saved to Files" })).toBeDisabled();
+      const save = within(dialog).getByRole("button", { name: "Save to Files" });
+      save.focus();
+      fireEvent.click(save);
+      // The same button stays focused through the save and refuses a second one.
+      const saved = await within(dialog).findByRole("button", { name: "Saved to Files" });
+      expect(saved).toBe(save);
+      expect(saved).toHaveAttribute("aria-disabled", "true");
+      expect(saved).not.toBeDisabled();
+      expect(saved).toHaveFocus();
+      const postCount = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+      expect(postCount()).toBe(1);
+      fireEvent.click(saved);
+      expect(postCount()).toBe(1);
     });
 
     it("offers no save in a temporary chat", () => {

@@ -292,7 +292,7 @@ test("v2 memory recall and the saved-memory notice keep their verbs behind menus
   await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=memory");
   const answer = page.locator('article[data-role="assistant"]').first();
   const process = answer.getByTestId("tool-activity-disclosure");
-  await expect(process.locator(":scope > summary")).toHaveText("Worked for 8s · Memory · 2");
+  await expect(process.locator(":scope > summary")).toHaveText("Worked for 8s");
   await expect(answer.getByTestId("memory-action-confirmation")).toContainText("Memory saved.");
   await expect(answer.getByRole("button", { name: "Edit" })).toHaveCount(0);
   await process.locator(":scope > summary").click();
