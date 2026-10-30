@@ -134,6 +134,7 @@ describe("Studio > Sub-agents", () => {
     list = { ...list, definitions: [{ ...summary(VIEW), modelAvailable: false, modelDisplayName: null }] };
     render(<SubagentsPanelV2 />);
     expect(await screen.findByText(/Its model is no longer available to you/u)).toBeVisible();
+    expect(screen.getByRole("switch", { name: /the default sub-agent/u })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "More actions for browser" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
     const question = screen.getByRole("alert");

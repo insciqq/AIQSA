@@ -63,7 +63,7 @@ Operator decisions 2026-10-29, Claude Code's Agent tool the reference (`lib/serv
 - Only the user's message, passed verbatim, authorizes irreversible website actions; a brief or report is never user speech.
 - Thread rows stay out of the main context, Memory and exports. Threads branch with their anchor run; a bounded number run at once per chat (`SUBAGENT_LIMITS`), none replayed.
 - A new thread with no `type` runs the custom sub-agent of its name, else the user's default frozen at admission, else the built-in; `type: "built-in"` always runs the built-in. A wrong `type` or a default that cannot run refuses visibly, never the built-in (operator decisions 2026-10-30, `lib/server/engine/subagents/callTools.ts`).
-- Assistant chats work the same (operator decision 2026-10-30, replacing the 2026-10-29 limit): the runner's custom sub-agents, default, `model` and `effort`. Their tools stay the run's, which tool groups only narrow. Accepted risk: a model the author fixed no longer binds sub-agents, and the Assistant's instructions reach the provider of the runner's chosen sub-agent model.
+- Assistant chats work the same (operator decision 2026-10-30, replacing the 2026-10-29 limit): the runner's custom sub-agents, default, `model` and `effort`. Their tools stay the run's, which tool groups only narrow, and a custom sub-agent's instructions apply. Accepted risk: a model the author fixed no longer binds sub-agents, and the Assistant's instructions reach the provider of the runner's chosen sub-agent model.
 
 ## Scheduled tasks
 

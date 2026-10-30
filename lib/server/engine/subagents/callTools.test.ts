@@ -280,6 +280,14 @@ describe("call_subagent choosing a sub-agent for a new thread", () => {
 });
 
 describe("call_subagent with a default that cannot run", () => {
+  it("says the models could not be read when admission froze none, and starts nothing", async () => {
+    const ctx = setup({ defaultType: frozenDefault(GEMINI), types: new FakeSubagentTypeResolver({ user: [GEMINI] }) });
+    const result = await executeCallSubagent({ ...ctx.deps, catalog: null }, execution({ message: "Go", name: "work" }));
+    expect(value(result)).toMatchObject({ error: SUBAGENT_ERROR_CODES.typeUnavailable,
+      message: expect.stringContaining("could not read the user's models") });
+    expect(ctx.store.admitForeground).not.toHaveBeenCalled();
+  });
+
   it("refuses a default whose model left the frozen list, never replacing it, and tells the model to tell the user", async () => {
     const gone = { ...GEMINI, providerModelId: "pm-gone" };
     const ctx = setup({ defaultType: frozenDefault(gone), types: new FakeSubagentTypeResolver({ user: [gone] }) });

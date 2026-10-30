@@ -326,7 +326,7 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
           <span className="v2-instructions-description">{modelLine(row)}</span>
           {!row.modelAvailable ? <span className="text-xs text-critical">Its model is no longer available to you; the agent cannot start it until you choose another.</span> : null}
           <label className="v2-subagent-default-control">
-            <UiV2Switch id={defaultSwitchId(panelId, row.id)} checked={state.defaultDefinitionId === row.id} disabled={busy}
+            <UiV2Switch id={defaultSwitchId(panelId, row.id)} checked={state.defaultDefinitionId === row.id} disabled={busy || (!row.modelAvailable && state.defaultDefinitionId !== row.id)}
               label={`Make ${row.name} the default sub-agent`} onChange={(next) => moveDefault(row, next)} />
             <span>Default sub-agent</span>
           </label>
