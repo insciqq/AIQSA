@@ -54,12 +54,12 @@ export type SubagentRecoveryDeps = Readonly<{
    * `SUBAGENT_RECOVERY_RETIRE_ATTEMPTS` failed ones. Kept across passes by the composition; absent, every pass retries.
    */
   retireFailures?: Map<string, number>;
-  workspace?: Pick<WorkspaceAttachments, "attached" | "detach">;
+  workspace?: Pick<WorkspaceAttachments, "attached" | "detach" | "fence">;
 }>;
 
 /**
- * Passes that may fail to retire an orphan's Workspace authority before it is settled anyway, its attachment then
- * left to the session's own maintenance (which retries the VM's backstop): a turn never stays running for good.
+ * Passes that may fail to retire an orphan's Workspace authority before it is settled anyway, behind a fenced session
+ * (`WorkspaceAttachments.fence`) whose VM stop maintenance's backstop then proves: a turn never stays running for good.
  */
 export const SUBAGENT_RECOVERY_RETIRE_ATTEMPTS = 10;
 
@@ -113,10 +113,11 @@ export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
     // A run that started executing here after the query keeps its execution.
     if (deps.liveRunIds().includes(orphan.runId)) continue;
     const scope = { chatId: orphan.chatId, userId: orphan.userId };
+    let unproven = false;
     try {
       // Its guest authority is retired first: its processes are unknown, so they are proven stopped or the VM stops.
       // Until that is confirmed (the run no longer attached) the turn stays as it is and the next pass tries again, so
-      // no dead run keeps the chat's Workspace operation; past the bound it is settled all the same.
+      // no dead run keeps the chat's Workspace operation; past the bound it is settled behind a fenced Workspace.
       if (deps.workspace && !(await retired(deps, scope, orphan.runId))) {
         const failures = (deps.retireFailures?.get(orphan.runId) ?? 0) + 1;
         if (failures < SUBAGENT_RECOVERY_RETIRE_ATTEMPTS) {
@@ -125,13 +126,19 @@ export async function reconcileSubagentRuns(deps: SubagentRecoveryDeps,
             run_id: orphan.runId, stage: "recovery", subsystem: "run_recovery" });
           continue;
         }
-        logEvent("run_recovery", { action: "degrade", attempt: failures, code: "subagent_workspace_detach_failed", outcome: "degraded",
+        // Settled without proof, only once the chat's Workspace is fenced (a failed fence write retries next pass): no run
+        // joins or claims a VM where this run's processes may still run, and the next send says it stopped working,
+        // until maintenance's backstop proves the VM stopped or the user resets it.
+        await deps.workspace.fence({ ...scope, modelRunId: orphan.runId });
+        unproven = true;
+        logEvent("run_recovery", { action: "degrade", attempt: failures, code: "subagent_workspace_stop_unproven", outcome: "degraded",
           run_id: orphan.runId, stage: "recovery", subsystem: "run_recovery" });
       }
       deps.retireFailures?.delete(orphan.runId);
       const turn = await deps.store.findTurn({ ...scope, turnId: orphan.turnId });
       const result = impliedResult({ modelId: turn?.model.id ?? "unknown", name: turn?.name ?? "subagent",
-        reason: SUBAGENT_END_REASONS.restart, reasoningEffort: turn?.model.effort ?? null, state: "interrupted" });
+        reason: unproven ? SUBAGENT_END_REASONS.workspaceStopUnproven : SUBAGENT_END_REASONS.restart,
+        reasoningEffort: turn?.model.effort ?? null, state: "interrupted" });
       const done = await deps.store.settle({ ...scope, result, turnId: orphan.turnId });
       logEvent("job_persistence", { outcome: done.settled ? "confirmed" : "not_applied", run_id: orphan.runId, stage: "fail",
         subsystem: "run_recovery" });

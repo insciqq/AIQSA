@@ -229,7 +229,12 @@ export const SUBAGENT_END_REASONS = Object.freeze({
   deadline: "deadline",
   chatDeleted: "chat_deleted",
   /** A restart or crash ended the turn; it is never replayed (`interrupted`). */
-  restart: "restart"
+  restart: "restart",
+  /**
+   * A restart or crash ended the turn and its processes could not be proven stopped: its chat's Workspace is fenced
+   * until the VM stop is proven or the user resets it (`lib/server/runs/subagentBackground/recovery.ts`).
+   */
+  workspaceStopUnproven: "workspace_stop_unproven"
 } as const);
 
 /** Browser lease refusals of the Workspace guest helper (`ops/workspace-guest/python/aiqsa/agents.py`). */

@@ -38,6 +38,8 @@ export const WORKSPACE_ATTACH_WAIT_MS = 120_000;
 const WORKSPACE_ATTACH_RETRY_MS = 1_000;
 export const WORKSPACE_BUSY_CODE = "workspace_busy";
 export const WORKSPACE_UNAVAILABLE_CODE = "workspace_unavailable";
+/** A session fenced because a run's processes could not be proven stopped (`WorkspaceAttachments.fence`). */
+export const WORKSPACE_STOP_UNPROVEN_CODE = "workspace_stop_unproven";
 
 type SessionFence = Pick<WorkspaceSession, "chatId" | "operationOwner" | "version">;
 
@@ -454,6 +456,13 @@ export function createPrismaWorkspaceAttachments(input: Readonly<{
       }
     },
     detach: (detach) => input.retire(detach),
+    async fence({ chatId, modelRunId, userId }) {
+      // The run's own session, of its owner's chat; one being deleted is left to its deletion.
+      await input.prisma.workspaceSession.updateMany({
+        data: { lastErrorCode: WORKSPACE_STOP_UNPROVEN_CODE, state: "FAILED" },
+        where: { chat: { id: chatId, userId }, runBindings: { some: { modelRunId } }, state: { not: "DELETING" } }
+      });
+    },
     async exclusive<T>(scope: SubagentChatScope & Readonly<{ operation: WorkspaceExclusiveOperation; signal?: AbortSignal }>,
       work: (lease: Readonly<{ sessionId: string }>) => Promise<T>): Promise<WorkspaceExclusiveResult<T>> {
       const session = await input.prisma.workspaceSession.findFirst({

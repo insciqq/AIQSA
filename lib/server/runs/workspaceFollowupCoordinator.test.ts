@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { activeRunControllerRegistry as registry } from "./activeRunControllerRegistry";
-import { createWorkspaceFollowupCoordinator, type WorkspaceFollowupCoordinatorDependencies, type WorkspaceFollowupLoaded } from "./workspaceFollowupCoordinator";
+import {
+  createWorkspaceFollowupCoordinator, WORKSPACE_FOLLOWUP_BUSY_RETRY_MS, type WorkspaceFollowupCoordinatorDependencies, type WorkspaceFollowupLoaded
+} from "./workspaceFollowupCoordinator";
+import { WorkspaceRunConflictError } from "./runRepositoryContract";
 import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 
 function fixture() {
@@ -65,6 +68,31 @@ describe("Workspace follow-up coordinator", () => {
     await exported.coordinator.runOne();
     expect(exported.deps.continueRun).not.toHaveBeenCalled();
     expect(exported.deps.fail).toHaveBeenCalledWith(exported.claim, expect.objectContaining({ code: "workspace_followup_predecessor_failed" }));
+  });
+
+  it("tries an activation again while the chat's Workspace operation settles, never failing the accepted message", async () => {
+    vi.useFakeTimers();
+    const { claim, coordinator, deps } = fixture();
+    vi.mocked(deps.repository.claim).mockReset().mockResolvedValueOnce(claim).mockResolvedValueOnce(claim).mockResolvedValue(null);
+    // The last background run is leaving: its closing operation refuses the successor's reservation once.
+    vi.mocked(deps.continueRun).mockRejectedValueOnce(new WorkspaceRunConflictError("workspace_busy", "workspace_busy_join_closing"))
+      .mockResolvedValueOnce(undefined);
+    const first = coordinator.runOne();
+    await vi.advanceTimersByTimeAsync(WORKSPACE_FOLLOWUP_BUSY_RETRY_MS);
+    expect(await first).toBe(true);
+    expect(deps.fail).not.toHaveBeenCalled();
+    expect(deps.repository.release).toHaveBeenCalledWith(claim);
+    // Released, it is claimed again and activates.
+    expect(await coordinator.runOne()).toBe(true);
+    expect(deps.continueRun).toHaveBeenCalledTimes(2);
+    expect(deps.fail).not.toHaveBeenCalled();
+  });
+
+  it("fails a successor whose Workspace refuses for good, such as a failed session", async () => {
+    const { claim, coordinator, deps } = fixture();
+    vi.mocked(deps.continueRun).mockRejectedValueOnce(new WorkspaceRunConflictError("workspace_busy", "workspace_busy_session_failed"));
+    await coordinator.runOne();
+    expect(deps.fail).toHaveBeenCalledWith(claim, expect.objectContaining({ code: "workspace_followup_interrupted" }));
   });
 
   it("leaves explicit Stop to the cancellation writer", async () => {
