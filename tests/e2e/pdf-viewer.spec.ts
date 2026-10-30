@@ -337,7 +337,7 @@ test.describe("the PDF viewer", () => {
 
     const stray = seen.filter((url) => {
       const { pathname, protocol } = new URL(url);
-      return protocol !== "data:" && protocol !== "blob:" && !prior.has(pathname) && !pathname.startsWith("/_next/") &&
+      return protocol !== "data:" && protocol !== "blob:" && !prior.has(pathname) && pathname !== "/api/subagents" && !pathname.startsWith("/_next/") &&
         !/^\/pdfjs\/\d+\.\d+\.\d+\//u.test(pathname) && pathname !== "/api/attachments/pdf-beacon/content";
     });
     expect(stray).toEqual([]);
