@@ -1,3 +1,4 @@
+import { modelWithConnectionLabel } from "@/lib/contracts/providerConnectionLabels";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "@/lib/server/workspace/browserGuidance";
 
@@ -10,8 +11,11 @@ import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "@/lib/server/workspace/browserG
  * chat's turns, so provider prompt caches keep reading them.
  */
 
-/** One model the main agent may give a sub-agent, as the run froze it (`modelCatalog.ts`). */
-export type SubagentPromptModel = Readonly<{ efforts: readonly string[]; id: string; name: string }>;
+/**
+ * One model the main agent may give a sub-agent, as the run froze it (`modelCatalog.ts`): its exact catalog id, its
+ * name and its connection's label (null in lists frozen before labels were kept).
+ */
+export type SubagentPromptModel = Readonly<{ connection: string | null; efforts: readonly string[]; id: string; name: string }>;
 
 /** What the main agent's section lists: the models for `model`, and the user's custom sub-agents for `type`. */
 export type SubagentPromptFacts = Readonly<{
@@ -43,8 +47,13 @@ export function subagentsPromptSection(facts: SubagentPromptFacts | undefined): 
   ];
   const models = (facts?.models ?? []).slice(0, MODELS_SHOWN);
   if (models.length > 0) {
-    lines.push(`- Models for \`model\`, only when the user asks for one (otherwise a sub-agent runs on your model and effort): ${models.map((model) =>
-      `${JSON.stringify(model.id)} (${oneLine(model.name, 80)}${model.efforts.length ? `; effort: ${model.efforts.join(", ")}` : ""})`).join(", ")}.`);
+    const listed = models.map((model) => {
+      const label = modelWithConnectionLabel(oneLine(model.name, 80), model.connection === null ? null : oneLine(model.connection, 80));
+      return `${JSON.stringify(model.id)} (${label}${model.efforts.length ? `; effort: ${model.efforts.join(", ")}` : ""})`;
+    });
+    lines.push("- Models for `model`, only when the user asks for one (otherwise a sub-agent runs on your model and effort), " +
+      `each as its id, then its name and connection: ${listed.join(", ")}. Pass the id. Several connections can serve models ` +
+      "of the same name: when the user names a connection, take the model on it; when the user's words fit several, ask which one.");
   }
   const types = (facts?.types ?? []).slice(0, TYPES_SHOWN);
   if (types.length > 0) {

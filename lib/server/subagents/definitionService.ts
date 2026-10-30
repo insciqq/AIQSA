@@ -8,6 +8,7 @@ import {
   type SubagentDefinitionListResponse,
   type SubagentDefinitionSummary,
   type SubagentDefinitionView,
+  subagentModelLabel,
   type SubagentModelOption
 } from "../../contracts/subagentDefinitions";
 import {
@@ -56,7 +57,9 @@ export function subagentDefinitionSummary(record: SubagentDefinitionRecord, mode
     description: record.description, effort: record.reasoningEffort, id: record.id,
     // An unreadable catalog is not proof the model is gone.
     modelAvailable: record.providerModelId === null || models === null || model !== null,
-    modelDisplayName: model?.displayName ?? null, modelId: record.providerModelId, name: record.name, revisionNumber: record.revisionNumber,
+    // Named with its connection, like the picker lists it: two connections may serve models of the same name.
+    modelDisplayName: model ? Array.from(subagentModelLabel(model)).slice(0, 256).join("") : null,
+    modelId: record.providerModelId, name: record.name, revisionNumber: record.revisionNumber,
     tools: record.toolGroups, updatedAt: record.updatedAt.toISOString(), version: record.version
   };
 }

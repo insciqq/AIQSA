@@ -34,7 +34,7 @@ function distinctReferenceLength(references: readonly string[]): number | null {
 }
 
 const endpointHostFragmentPattern =
-  /(?:[a-z][a-z0-9+.-]*:\/\/)?(?:(?:[\w-]+\.)+[a-z]{2,}|localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/[^\s·•|]*)?/giu;
+  /(?:[a-z][a-z0-9+.-]*:\/\/)?(?:(?:[\w-]+\.)+[a-z]{2,}|localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/[^\s·•|()[\]]*)?/giu;
 
 /**
  * Removes endpoint-host fragments (domains, host:port pairs, URLs) from an
@@ -97,4 +97,28 @@ export function resolveProviderConnectionLabels(
   }
 
   return labels;
+}
+
+/**
+ * The connection labels ordinary UI shows, as `decodeCatalogResponse` gives
+ * them to the chat's model picker: endpoint hosts stripped first, then
+ * colliding names separated by "· ref". Server surfaces that name a model's
+ * connection (sub-agent model lists) resolve labels over the same catalog
+ * providers, so they match what the user sees in the chat.
+ */
+export function catalogConnectionLabels(
+  providers: readonly ProviderConnectionLabelSource[]
+): ReadonlyMap<string, string> {
+  return resolveProviderConnectionLabels(
+    providers.map((provider) => ({ id: provider.id, name: stripEndpointHostFragments(provider.name) }))
+  );
+}
+
+/**
+ * A model named with its connection, as the chat's command palette and the
+ * Assistant editor's model picker list it: "GPT-6 Luna · Codex LB". Without a
+ * connection label the model's name stands alone.
+ */
+export function modelWithConnectionLabel(modelName: string, connectionLabel: string | null | undefined): string {
+  return connectionLabel ? `${modelName} · ${connectionLabel}` : modelName;
 }

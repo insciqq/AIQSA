@@ -1,6 +1,13 @@
 import type { CatalogWireModel } from "../../contracts/catalog";
-import { SUBAGENT_DEFINITION_CODES, type SubagentDefinitionDraft, type SubagentModelOption } from "../../contracts/subagentDefinitions";
-import { resolveCurrentUserCatalogSelection, type CatalogData } from "../catalog/currentUserCatalog";
+import { stripEndpointHostFragments } from "../../contracts/providerConnectionLabels";
+import {
+  SUBAGENT_DEFINITION_CODES,
+  subagentModelLabel,
+  subagentModelReferenceKey,
+  type SubagentDefinitionDraft,
+  type SubagentModelOption
+} from "../../contracts/subagentDefinitions";
+import { currentUserConnectionLabels, resolveCurrentUserCatalogSelection, type CatalogData } from "../catalog/currentUserCatalog";
 
 /**
  * The models a custom sub-agent may name: the user's current, server-filtered
@@ -14,11 +21,18 @@ import { resolveCurrentUserCatalogSelection, type CatalogData } from "../catalog
 /** The user's sub-agent model options, or null when the catalog cannot be read now. */
 export type SubagentModelSource = (userId: string) => Promise<readonly SubagentModelOption[] | null>;
 
-export function subagentModelOptions(models: readonly CatalogWireModel[]): SubagentModelOption[] {
+/**
+ * The options over the user's catalog models, each named with its connection's
+ * label (`currentUserConnectionLabels`), since two connections may serve
+ * models of the same name.
+ */
+export function subagentModelOptions(models: readonly CatalogWireModel[], connectionLabels: ReadonlyMap<string, string>): SubagentModelOption[] {
   return models.filter((model) => model.capabilities.toolCalling).map((model) => {
     const effort = model.parameterControls.reasoningEffort;
     const efforts = effort.supported ? [...new Set(effort.options)].filter((option) => option.length > 0) : [];
     return {
+      // The labels cover every catalog connection; the fallback is the label ordinary UI gives a nameless one.
+      connectionName: connectionLabels.get(model.provider) ?? stripEndpointHostFragments(""),
       defaultEffort: efforts.includes(effort.defaultValue) ? effort.defaultValue : null,
       displayName: model.displayName,
       efforts,
@@ -31,7 +45,9 @@ export function subagentModelOptions(models: readonly CatalogWireModel[]): Subag
 export function catalogSubagentModelSource(loadCatalogData: (userId: string) => Promise<CatalogData | null>): SubagentModelSource {
   return async (userId) => {
     const data = await loadCatalogData(userId);
-    return data ? subagentModelOptions(resolveCurrentUserCatalogSelection(data).models) : null;
+    if (!data) return null;
+    const models = resolveCurrentUserCatalogSelection(data).models;
+    return subagentModelOptions(models, currentUserConnectionLabels(data.models, models));
   };
 }
 
@@ -57,15 +73,25 @@ export function subagentModelRefusal(draft: Pick<SubagentDefinitionDraft, "effor
   return null;
 }
 
-const fold = (value: string) => value.trim().toLocaleLowerCase("en-US");
+/** What a model reference names: one model, several (refused, never guessed), or none. */
+export type SubagentModelMatch =
+  | Readonly<{ kind: "found"; option: SubagentModelOption }>
+  | Readonly<{ candidates: readonly SubagentModelOption[]; kind: "ambiguous" }>
+  | Readonly<{ kind: "none" }>;
 
 /**
- * The model a tool call names: its catalog id, or its display name when that
- * names exactly one of the user's models. Null when it names none or several.
+ * The model a tool call names: its catalog id exactly, else the one model
+ * whose id, name or labelled name ("GPT-6 Luna · Codex LB", as the lists show
+ * it) it names, case- and whitespace-insensitively. A name several models
+ * share is ambiguous: the refusal lists them, so the next call can be exact.
  */
-export function findSubagentModel(options: readonly SubagentModelOption[], reference: string): SubagentModelOption | null {
+export function findSubagentModel(options: readonly SubagentModelOption[], reference: string): SubagentModelMatch {
   const exact = options.find((option) => option.modelId === reference);
-  if (exact) return exact;
-  const named = options.filter((option) => fold(option.displayName) === fold(reference) || fold(option.modelId) === fold(reference));
-  return named.length === 1 ? named[0]! : null;
+  if (exact) return { kind: "found", option: exact };
+  const key = subagentModelReferenceKey(reference);
+  if (!key) return { kind: "none" };
+  const named = options.filter((option) => [option.modelId, option.displayName, subagentModelLabel(option)]
+    .some((name) => subagentModelReferenceKey(name) === key));
+  if (named.length === 1) return { kind: "found", option: named[0]! };
+  return named.length > 1 ? { candidates: named, kind: "ambiguous" } : { kind: "none" };
 }
