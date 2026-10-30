@@ -588,7 +588,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const subagents = await prepareRunSubagents({
           ...(backgroundParts ? { backgroundParts } : {}),
           admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
-          assistantRun: Boolean(input.prepared.assistant || input.prepared.chatAssistant),
           branchRunIds,
           // One page-reader session for the answer: its cap and cache count every agent's reads (integrator decision).
           // A background turn's registry acts as its own run (its Workspace attachment, calls and usage), over the
@@ -627,8 +626,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
           secrets: input.services.secrets, snapshot, ...(subagents ? { subagents: subagents.prompt } : {}), tools: registry.definitions() });
         base = native.request;
-        // The user's custom sub-agents ride in run context like the Skills index, never in the system prompt.
-        const subagentCatalog = subagents ? renderSubagentTypeCatalog(subagents.catalog) : null;
+        // The user's custom sub-agents and default ride in run context like the Skills index, never in the system prompt.
+        const subagentCatalog = subagents ? renderSubagentTypeCatalog(subagents.catalog, subagents.defaultType) : null;
         items.splice(turnContextIndex(items, conversation.currentInputId), 0,
           ...(subagentCatalog ? [subagentCatalogItem(subagentCatalog)] : []), turnContextItem(native.turnContext));
         // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.

@@ -15,7 +15,7 @@ let calls: Array<[string, string, unknown]>;
 let next: Record<string, () => Response>;
 
 beforeEach(() => {
-  list = { definitions: [], limit: 50, models: MODELS };
+  list = { defaultDefinitionId: null, definitions: [], limit: 50, models: MODELS };
   calls = [];
   next = {};
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -144,5 +144,116 @@ describe("Studio > Sub-agents", () => {
     expect(await screen.findByText(/Deleted “browser”/u)).toBeVisible();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Edit browser" })).toBeNull());
     expect(mutations()).toEqual([["DELETE", "/api/me/subagents/def_1", { expectedVersion: 1 }]]);
+    expect(screen.queryByText(/go back to the built-in/u)).toBeNull();
+  });
+});
+
+describe("Studio > Sub-agents: the default", () => {
+  const OTHER = { ...summary(VIEW), id: "def_2", name: "shopper" };
+  const two = () => ({ ...list, definitions: [summary(VIEW), OTHER] });
+  const moveTo = (id: string | null) => () => { list = { ...list, defaultDefinitionId: id }; return Response.json({ defaultDefinitionId: id }); };
+  const toggle = (name: string) => screen.findByRole("switch", { name: `Make ${name} the default sub-agent` });
+
+  it("offers a switch on every sub-agent and marks none without a default", async () => {
+    list = two();
+    render(<SubagentsPanelV2 />);
+    expect(await toggle("browser")).toHaveAttribute("aria-checked", "false");
+    expect(await toggle("shopper")).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByText("Default")).toBeNull();
+  });
+
+  it("makes one the default under the default it read, marks it and keeps focus on its switch", async () => {
+    list = two();
+    next["PUT /api/me/subagents/default"] = moveTo("def_1");
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await toggle("browser"));
+    expect(await screen.findByText(/“browser” is your default sub-agent from your next message on/u)).toBeVisible();
+    expect(mutations()).toEqual([["PUT", "/api/me/subagents/default", { definitionId: "def_1", expected: null }]]);
+    const row = screen.getByRole("button", { name: "Edit browser" }).closest("li")!;
+    expect(within(row).getByText("Default")).toBeVisible();
+    expect(await toggle("browser")).toHaveAttribute("aria-checked", "true");
+    expect(await toggle("browser")).toHaveFocus();
+  });
+
+  it("holds at most one default: turning on another moves it, and turning it off goes back to the built-in", async () => {
+    list = { ...two(), defaultDefinitionId: "def_1" };
+    next["PUT /api/me/subagents/default"] = moveTo("def_2");
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await toggle("shopper"));
+    await waitFor(async () => expect(await toggle("shopper")).toHaveAttribute("aria-checked", "true"));
+    expect(await toggle("browser")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getAllByText("Default")).toHaveLength(1);
+    expect(mutations()).toEqual([["PUT", "/api/me/subagents/default", { definitionId: "def_2", expected: "def_1" }]]);
+    next["PUT /api/me/subagents/default"] = moveTo(null);
+    fireEvent.click(await toggle("shopper"));
+    expect(await screen.findByText(/New sub-agents use the built-in from your next message on/u)).toBeVisible();
+    expect(mutations().at(-1)).toEqual(["PUT", "/api/me/subagents/default", { definitionId: null, expected: "def_2" }]);
+    expect(screen.queryByText("Default")).toBeNull();
+  });
+
+  it("shows where the default is now when it moved elsewhere, beside the refusal", async () => {
+    list = two();
+    next["PUT /api/me/subagents/default"] = () => { list = { ...list, defaultDefinitionId: "def_2" };
+      return Response.json({ error: "subagent_default_conflict" }, { status: 409 }); };
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await toggle("browser"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your default sub-agent changed in another tab or chat");
+    expect(await toggle("shopper")).toHaveAttribute("aria-checked", "true");
+    expect(await toggle("browser")).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("names the refusal of a model the user lost and keeps the default where it was", async () => {
+    list = { ...two(), defaultDefinitionId: "def_2" };
+    next["PUT /api/me/subagents/default"] = () => Response.json({ error: "subagent_model_unavailable" }, { status: 400 });
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await toggle("browser"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("That model is not available to you");
+    expect(await toggle("shopper")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("fails visibly on a malformed response instead of guessing the default", async () => {
+    list = two();
+    next["PUT /api/me/subagents/default"] = () => Response.json({ defaultDefinitionId: 7 });
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await toggle("browser"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be saved");
+    expect(await toggle("browser")).toHaveAttribute("aria-checked", "false");
+    cleanup();
+    list = { ...two(), defaultDefinitionId: "def_gone" };
+    render(<SubagentsPanelV2 />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your sub-agents could not be loaded");
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("says deleting the default sends new sub-agents back to the built-in", async () => {
+    list = { ...two(), defaultDefinitionId: "def_1" };
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for browser" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    const question = screen.getByRole("alert");
+    expect(question).toHaveTextContent("It is your default sub-agent, so new sub-agents go back to the built-in.");
+    next["DELETE /api/me/subagents/def_1"] = () => { list = { ...list, defaultDefinitionId: null, definitions: [OTHER] }; return new Response(null, { status: 204 }); };
+    fireEvent.click(within(question).getByRole("button", { name: "Delete sub-agent" }));
+    expect(await screen.findByText(/Deleted “browser”. New sub-agents go back to the built-in/u)).toBeVisible();
+    expect(screen.queryByText("Default")).toBeNull();
+  });
+
+  it("asks for no such thing when deleting another sub-agent", async () => {
+    list = { ...two(), defaultDefinitionId: "def_2" };
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for browser" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("alert")).not.toHaveTextContent("go back to the built-in");
+  });
+
+  it("names the reserved word when the server refuses a name", async () => {
+    render(<SubagentsPanelV2 />);
+    fireEvent.click(await screen.findByRole("button", { name: "New sub-agent" }));
+    fireEvent.change(screen.getByLabelText(/^Name/u), { target: { value: "built-in" } });
+    fireEvent.change(screen.getByLabelText(/^Description/u), { target: { value: "Again." } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Instructions" }), { target: { value: "Go." } });
+    next["POST /api/me/subagents"] = () => Response.json({ error: "subagent_name_invalid", field: "name" }, { status: 400 });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("“main” and “built-in” are reserved");
   });
 });

@@ -59,9 +59,9 @@ export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
 }
 
 /**
- * The sub-agent ports one run gets: background turns only in a web or Assistant chat, the custom types (the engine
- * never offers them in an Assistant chat), and the browser identity of its Workspace coordinator, whose release
- * frees an agent's browser slot when its turn ends. Absent ports are unavailable (`callTools.ts`).
+ * The sub-agent ports one run gets: background turns only in a web or Assistant chat, the runner's custom types in
+ * every run, and the browser identity of its Workspace coordinator, whose release frees an agent's browser slot when
+ * its turn ends. Absent ports are unavailable (`callTools.ts`).
  */
 export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonly<{ scheduled: boolean; telegram: boolean;
   workspace?: WorkspaceCoordinator }>): SubagentRunPorts {
