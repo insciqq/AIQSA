@@ -51,6 +51,35 @@ describe("sub-agent model routes on PostgreSQL", () => {
     await expect(prisma.providerRunBinding.count({ where: { modelRunId: run.runId } })).resolves.toBe(1);
   });
 
+  it("routes a background turn's model after its parent answered, from the parent's binding, only while the turn's run runs", async () => {
+    const run = await streamingRun();
+    // The parent's call admits the model before the background turn is admitted (`call_subagent` resolves its route first).
+    expect((await catalog.route({ chatId: run.chatId, effort: null, entry, runId: run.runId, userId: run.userId })).ok).toBe(true);
+    const parent = await prisma.modelRun.findUniqueOrThrow({ select: { userMessageId: true }, where: { id: run.runId } });
+    const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: run.runId, ordinal: 0, providerCallId: "call-0",
+      roundIndex: 1, state: "complete", toolName: "call_subagent" } });
+    const thread = await prisma.subagentThread.create({ data: { anchorRunId: run.runId, chatId: run.chatId, name: "watcher", userId: run.userId } });
+    const turn = await prisma.subagentTurn.create({ data: { chatId: run.chatId, mode: "background", modelId: "fake-qsa", parentRunId: run.runId,
+      parentToolCallId: call.id, provider: entry.connectionId, providerModelId: entry.providerModelId, threadId: thread.id, userId: run.userId } });
+    const background = await prisma.modelRun.create({ data: { chatId: run.chatId, engine: "native", modelId: "fake-qsa", normalizedRequest: {},
+      provider: "fake", status: "streaming", subagentThreadId: thread.id, subagentTurnId: turn.id, userId: run.userId,
+      userMessageId: parent.userMessageId } });
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: run.runId } });
+    const routed = { chatId: run.chatId, effort: null, entry, hostRunId: background.id, runId: run.runId, userId: run.userId };
+    await expect(catalog.route(routed)).resolves.toMatchObject({ ok: true, route: { snapshot: { providerModelId: entry.providerModelId } } });
+    // Another owner, or a run that is not this parent's background turn, gets nothing.
+    await expect(catalog.route({ ...routed, userId: "someone-else" })).resolves.toEqual({ code: "subagent_model_unavailable", ok: false });
+    await expect(catalog.route({ ...routed, hostRunId: run.runId, runId: background.id }))
+      .resolves.toEqual({ code: "subagent_model_unavailable", ok: false });
+    // A model the parent's call never admitted is not admitted by the background run.
+    await expect(catalog.route({ ...routed, entry: { ...entry, providerModelId: `${entry.providerModelId}-other` } }))
+      .resolves.toEqual({ code: "subagent_model_unavailable", ok: false });
+    // Once the turn's own run ended, its model is refused too.
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: background.id } });
+    await expect(catalog.route(routed)).resolves.toEqual({ code: "subagent_model_unavailable", ok: false });
+    await expect(prisma.providerRunBinding.count({ where: { modelRunId: run.runId } })).resolves.toBe(1);
+  });
+
   it("refuses a model for a run that is not its owner's or no longer runs, and binds nothing", async () => {
     const run = await streamingRun();
     await expect(catalog.route({ chatId: run.chatId, effort: null, entry, runId: run.runId, userId: "someone-else" }))
