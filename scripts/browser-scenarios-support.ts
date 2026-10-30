@@ -628,15 +628,17 @@ export type BrowserScenario = Readonly<{
   secret?: "saucedemo";
 }>;
 
-const SAFETY = "Ничего не покупай, не оформляй и не подтверждай заказы, ничего не оплачивай.";
+/** The no-purchase rule every prompt carries (the sub-agent scenarios too, `scripts/subagent-scenarios-support.ts`). */
+export const SAFETY = "Ничего не покупай, не оформляй и не подтверждай заказы, ничего не оплачивай.";
 
 /** S5 signs in through the user, so its sign-in page is not a block to report. */
 const BLOCKED_ANY = "Если сайт показал капчу, страницу проверки на робота, потребовал войти в аккаунт " +
   'или ввести код подтверждения, перечисли это в "blocked" кодами captcha, bot_wall, sign_in_required, code_required';
-const BLOCKED_AFTER_USER_SIGN_IN = "Если вход не удался или сайт показал капчу или страницу проверки на робота, перечисли это " +
+export const BLOCKED_AFTER_USER_SIGN_IN = "Если вход не удался или сайт показал капчу или страницу проверки на робота, перечисли это " +
   'в "blocked" кодами sign_in_required, captcha, bot_wall';
 
-function resultInstruction(fields: string, blocked: string = BLOCKED_ANY): string {
+/** A prompt's closing instruction: save `browser-result.json` with `fields` beside `status` and `blocked`. */
+export function resultInstruction(fields: string, blocked: string = BLOCKED_ANY): string {
   return [
     `В конце обязательно сохрани файл ${BROWSER_RESULT_FILE} в папку выходных файлов этого ответа, чтобы я мог его скачать. Это JSON строго такого вида:`,
     "{",
@@ -655,6 +657,9 @@ const S6_FIELDS = [
   '  "cart": {"lines": [{"category": "juice", "name": "...", "url": "https://www.amazon.es/dp/...", "quantity": 1, "line_total": 2.49}],',
   '    "subtotal": 12.45}'
 ].join("\n");
+
+/** S5's checkout section; also the result of the sub-agent handoff scenario. */
+export const S5_CHECKOUT_FIELDS = '  "checkout": {"url": "https://...", "item_total": 0.0, "tax": 0.0, "total": 0.0, "finished": false}';
 
 const ITEM_FIELDS = '  "items": [{"name": "...", "price": 2.49, "currency": "EUR", "url": "https://...", "offer": true}]';
 
@@ -732,8 +737,7 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
         "значениями и дойди до страницы обзора заказа (Checkout: Overview).",
       `Кнопку Finish не нажимай: заказ должен остаться незавершённым. ${SAFETY}`,
       "Запиши адрес страницы обзора, Item total, Tax и Total. Не пиши ни в ответе, ни в файле, под каким логином я вошёл.",
-      resultInstruction('  "checkout": {"url": "https://...", "item_total": 0.0, "tax": 0.0, "total": 0.0, "finished": false}',
-        BLOCKED_AFTER_USER_SIGN_IN)
+      resultInstruction(S5_CHECKOUT_FIELDS, BLOCKED_AFTER_USER_SIGN_IN)
     ].join("\n\n")
   },
   S6: {
