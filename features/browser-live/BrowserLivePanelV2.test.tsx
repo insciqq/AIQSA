@@ -141,6 +141,27 @@ describe("BrowserLivePanelV2", () => {
     expect(screen.queryByRole("button", { name: "Return control" })).toBeNull();
   });
 
+  it("shows a waiting background sub-agent's handoff without browsing of its own, naming the agent, and answers it", async () => {
+    // A settled answer: no activity of its own, only the chat's sub-agent that waits for the user.
+    renderPanel({ toolActivity: null, waitingKey: "thread-signer", workspaceActivity: null });
+    expect(screen.getByRole("button", { name: /Hide/u })).toHaveTextContent("Needs your help");
+    expect(sources).toHaveLength(1);
+    const signer = handoff("sign_in", { agent: { id: "thread-signer", name: "signer" } });
+    send("state", liveState({ agents: [liveAgent("thread-signer", "signer", { controller: "user", waitingForUser: true })],
+      controller: "user", handoff: signer, selected: "thread-signer" }));
+    const card = screen.getByTestId("browser-live-handoff");
+    // Alone in the browser, a sub-agent is still named.
+    expect(card).toHaveTextContent("Asked by signer");
+    fireEvent.click(within(card).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]));
+  });
+
+  it("shows nothing for a settled answer once no sub-agent waits", () => {
+    renderPanel({ toolActivity: null, waitingKey: null, workspaceActivity: null });
+    expect(screen.queryByRole("region", { name: "Browser" })).toBeNull();
+    expect(sources).toHaveLength(0);
+  });
+
   it("answers the handoff with Done or Cancel, says when it will not be remembered, and shows a stale answer", async () => {
     renderPanel({ toolActivity: handoffCall });
     send("state", liveState({ controller: "user", signInRemembered: false, handoff: handoff("sign_in") }));

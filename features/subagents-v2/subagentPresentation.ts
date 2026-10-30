@@ -74,6 +74,16 @@ export function subagentReasonText(reason: string | null): string | null {
  * The chat's live sub-agent phase, from the server's states only: how many
  * work and how many wait for the user. Null when none is active.
  */
+/**
+ * The background sub-agents of a chat that wait for the user now (only a `browser_handoff` makes one wait), as a stable
+ * key for the live browser panel: it changes when another starts waiting, so the panel opens once for each. Null when
+ * none waits.
+ */
+export function subagentWaitingKeyV2(threads: readonly Pick<SubagentThreadSummary, "id" | "state">[]): string | null {
+  const waiting = threads.filter((thread) => thread.state === "waiting").map((thread) => thread.id).sort();
+  return waiting.length > 0 ? waiting.join(",") : null;
+}
+
 export function subagentWorkingPhrase(threads: readonly Pick<SubagentThreadSummary, "state">[]): string | null {
   const running = threads.filter((thread) => thread.state === "running").length;
   const waiting = threads.filter((thread) => thread.state === "waiting").length;
