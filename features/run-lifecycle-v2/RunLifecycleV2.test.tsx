@@ -290,6 +290,45 @@ describe("Run lifecycle v2", () => {
     expect(screen.queryByText("This message has no text.")).toBeNull();
   });
 
+  describe("PDF documents", () => {
+    const document = { answerModelName: "Sonnet", completedPages: 3, limitedReadingQuality: true, longDocument: true,
+      pageCount: 40, phase: "preparing", retryable: false, route: "local_text" } as const;
+
+    it("shows Stop, progress and the long-document advice only while preparing, outside any fold", () => {
+      const onStop = vi.fn();
+      render(<RunAnswerV2 content="" onStop={onStop} pdfPreparation={[document]} presentation={presentation({
+        activity: { kind: "preparing", label: "Preparing document · 3 of 40 pages…" }, kind: "activity"
+      })} />);
+      expect(screen.getByTestId("run-status-line")).toHaveTextContent("Preparing document · 3 of 40 pages…");
+      expect(screen.getByText("This may take a while")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(screen.queryByTestId("tool-activity-disclosure")).toBeNull();
+      expect(screen.queryByText(/reading quality|text extraction/iu)).toBeNull();
+    });
+
+    it("leaves a settled answer only a line and a Documents row, with no warning anywhere", () => {
+      render(<RunAnswerV2 content="Answer" pdfPreparation={[{ ...document, phase: "ready" }]}
+        presentation={presentation({ kind: "complete" })} />);
+      expect(screen.queryByTestId("pdf-preparation-notices")).toBeNull();
+      expect(screen.queryByText("This may take a while")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+      const fold = screen.getByTestId("tool-activity-disclosure");
+      expect(fold.querySelector("summary")).toHaveTextContent(/^Read 1 PDF$/u);
+      expect(fold).not.toHaveAttribute("open");
+      expect(screen.getByTestId("answer-documents")).toHaveTextContent("Read with basic text extraction · Sonnet");
+      expect(screen.queryByText(/reading quality/iu)).toBeNull();
+    });
+
+    it("does not claim a PDF was read by an answer that failed", () => {
+      render(<RunAnswerV2 content="" pdfPreparation={[{ ...document, phase: "ready" }]} presentation={presentation({
+        failure: { code: "provider_error", message: "The provider failed.", recovery: "retry" }, kind: "terminal_error"
+      })} />);
+      expect(screen.queryByText(/Read 1 PDF/u)).toBeNull();
+      expect(screen.queryByTestId("answer-documents")).toBeNull();
+    });
+  });
+
   it("keeps tool history inline, collapsed, and leaves a visible budget warning", () => {
     render(
       <RunAnswerV2
@@ -360,9 +399,10 @@ describe("Run lifecycle v2", () => {
         workDurationMs={64_000}
       />
     );
-    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(
-      "Worked for 1m 4s · Memory · 1"
-    );
+    const fold = screen.getByTestId("tool-activity-disclosure");
+    // The line says only the work time; the count stays in the fold's own disclosure.
+    expect(fold.querySelector(":scope > summary")).toHaveTextContent(/^Worked for 1m 4s$/u);
+    expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
   });
 
   it("shows the model's reasoning heading as plain text whatever the Reasoning blocks setting", () => {

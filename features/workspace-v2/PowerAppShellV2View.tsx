@@ -1295,18 +1295,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       return <SubagentCallbackTurnV2 anchorId={source.id} names={source.subagentCallback?.names ?? []} />;
     }
     if (source.role === "user") {
-      // Owner-only quiet line of the files sent with this exact message,
+      // Owner-only files sent with this exact message, above its bubble,
       // rendered from the labels the thread snapshot already exposes.
       const sentAttachments = attachmentBlocksFromThreadContent(source.content);
       return (
         <ConversationTurnV2
+          aboveContent={sentAttachments.length > 0
+            ? <SentAttachmentsV2 blocks={sentAttachments} canSave={!temporarySession} /> : undefined}
           actions={actions}
-          afterContent={(
-            <>
-              <SentAttachmentsV2 blocks={sentAttachments} canSave={!temporarySession} />
-              {pagerSlot}
-            </>
-          )}
+          afterContent={pagerSlot}
           anchorId={source.id}
           beforeContent={source.scheduledTask ? (
             <ScheduledMessageChipV2

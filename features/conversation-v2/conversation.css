@@ -139,6 +139,13 @@ html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversa
   line-height: 1.55;
 }
 
+/* A file-only question has its files and no bubble; a pager or chip stays plain. */
+.v2-conversation-turn[data-role="user"] .v2-conversation-turn-content[data-bubbleless] {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .v2-conversation-turn[data-role="user"][data-editing="true"] .v2-conversation-turn-content {
   width: min(42rem, 100%);
   max-width: 100%;
