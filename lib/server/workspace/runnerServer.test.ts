@@ -108,7 +108,7 @@ describe("Workspace runner lifecycle diagnostics", () => {
 
   it("passes a code invocation id and run environment only in their exact shapes", async () => {
     const callBoundTool = vi.fn(async () => ({ content: [], status: "complete" as const }));
-    const syncPersonalSecrets = vi.fn(async () => undefined);
+    const syncPersonalSecrets = vi.fn<WorkspaceRuntime["syncPersonalSecrets"]>(async () => undefined);
     const request = fixture({ callBoundTool, syncPersonalSecrets, stopSession: vi.fn(async () => undefined),
       ensureSession: vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const })) });
     await request("/v1/sessions/ensure", body);
