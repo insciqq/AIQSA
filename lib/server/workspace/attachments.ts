@@ -117,6 +117,17 @@ export async function joinWorkspaceRunOperation(
   return true;
 }
 
+/** Why `joinWorkspaceRunOperation` refused this session, as a stable log code (content-free). */
+export async function workspaceJoinRefusal(
+  tx: Prisma.TransactionClient | PrismaClient, session: SessionFence & Pick<WorkspaceSession, "operationExpiresAt" | "state">
+): Promise<string> {
+  if (!isWorkspaceRunOperation(session.operationOwner)) return "workspace_busy_join_not_run_operation";
+  if (session.operationExpiresAt !== null) return "workspace_busy_join_closing";
+  if (session.state === "DELETING" || session.state === "FAILED") return "workspace_busy_join_session_state";
+  const attached = await currentWorkspaceAttachments(tx, session);
+  return attached.length === 0 ? "workspace_busy_join_no_attachment" : "workspace_busy_join_no_active_run";
+}
+
 /**
  * The last run of a run operation is about to stop the VM: from now on no run joins it, so none is attached to a
  * VM that stops under it. The expiry marks the closing operation, and lets maintenance take a crashed one over.
