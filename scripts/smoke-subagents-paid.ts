@@ -584,11 +584,13 @@ async function scenarioF(ctx: Context, run: Run): Promise<Outcome> {
 /** The restart hook, with a minimal environment and its output discarded. */
 function runRestartHook(hook: RestartHook): Promise<Readonly<{ exitCode: number | null; seconds: number; timedOut: boolean }>> {
   const started = Date.now();
-  const env: Record<string, string> = {};
+  const picked: Record<string, string> = {};
   for (const key of ["PATH", "HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK"]) {
     const value = process.env[key];
-    if (value) env[key] = value;
+    if (value) picked[key] = value;
   }
+  // Next's global types make `NODE_ENV` required on `ProcessEnv`; the hook's shell needs none, so none is passed.
+  const env = picked as NodeJS.ProcessEnv;
   return new Promise((resolve) => {
     let timedOut = false;
     const child = spawn("/bin/sh", ["-c", hook.command], { env, stdio: "ignore" });
