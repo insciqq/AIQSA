@@ -165,6 +165,19 @@ describe("a Workspace session shared by attached runs", () => {
     expect(vi.mocked(f.runtime.callBoundTool).mock.calls.map(([input]) => input.modelRunId).sort()).toEqual([MAIN, SUBAGENT].sort());
   });
 
+  it("releases one agent's browser slot in the run's guest, and nothing once the run no longer holds the Workspace", async () => {
+    const f = sharedFixture();
+    const agent = { kind: "subagent" as const, name: "shop", threadId: THREAD };
+    await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
+    expect(f.runtime.callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ agent, arguments: { args: ["release"], command: "aiqsa-browser" },
+      modelRunId: SUBAGENT, operation: { generation: 3, owner: `run:${MAIN}` }, originalName: "sandbox_exec", runtimeSandboxId: "runtime_1",
+      sessionId: SESSION }));
+    vi.mocked(f.runtime.callBoundTool).mockClear();
+    f.attached.delete(SUBAGENT);
+    await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
+    expect(f.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
   it("ends one run by stopping only its own processes, and the VM and the other run go on", async () => {
     const f = sharedFixture();
     const result = await f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" });
