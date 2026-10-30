@@ -275,6 +275,11 @@ export type RunAnswerV2Props = Readonly<{
   artifact?: ThreadArtifactSummary | null;
   /** The chat of the live run whose Workspace browser the answer may show (`BrowserLivePanelV2`). */
   browserLiveChatId?: string | null;
+  /**
+   * Background sub-agents of the chat that wait for the user (`subagentWaitingKeyV2`): the answer shows the chat's
+   * live browser for their handoffs even after it settled, so nothing waits for the user unseen.
+   */
+  browserLiveWaitingKey?: string | null;
   content: string;
   /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
@@ -308,6 +313,7 @@ export function RunAnswerV2({
   processDisclosureId,
   artifact = null,
   browserLiveChatId = null,
+  browserLiveWaitingKey = null,
   content,
   leadingSlot = null,
   noticeSlot = null,
@@ -405,8 +411,9 @@ export function RunAnswerV2({
         <>
           {leadingSlot}
           {process}
-          {browserLiveChatId && !settled ? (
-            <BrowserLivePanelV2 chatId={browserLiveChatId} live toolActivity={toolActivity} workspaceActivity={workspaceActivity} />
+          {browserLiveChatId && (!settled || browserLiveWaitingKey) ? (
+            <BrowserLivePanelV2 chatId={browserLiveChatId} live toolActivity={settled ? null : toolActivity} waitingKey={browserLiveWaitingKey}
+              workspaceActivity={settled ? null : workspaceActivity} />
           ) : null}
           {pdfPreparation?.length ? (
             <div className="v2-pdf-preparation" data-testid="pdf-preparation-notices">

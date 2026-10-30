@@ -101,8 +101,9 @@ import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
 import { SubagentCallbackTurnV2, SubagentCardsV2, SubagentChatStatusV2 } from "@/features/conversation-v2/SubagentChatV2";
 import { SubagentLivenessV2 } from "@/features/subagents-v2/SubagentLivenessV2";
+import { subagentWaitingKeyV2 } from "@/features/subagents-v2/subagentPresentation";
 import { SubagentThreadViewV2 } from "@/features/subagents-v2/SubagentThreadViewV2";
-import type { SubagentThreadTarget } from "@/features/subagents-v2/subagentStore";
+import { useSubagentStore, type SubagentThreadTarget } from "@/features/subagents-v2/subagentStore";
 import { closeSubagentThread, openSubagentThread, useOpenSubagentThread } from "@/features/subagents-v2/subagentThreadAddress";
 import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
@@ -787,6 +788,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     skillId, isCurrentScope: () => skillScopeRef.current === skillScopeKey
   });
   const latestMessage = thread.visibleMessages.at(-1);
+  // Background sub-agents of the open chat that wait for the user: the latest answer shows the chat's live browser
+  // for their handoffs, after it settled too.
+  const subagentWaitingKey = useSubagentStore((state) => session.activeChatId
+    ? subagentWaitingKeyV2(state.chats[session.activeChatId]?.threads ?? []) : null);
   function openSkillLibrary() { setSkillLibraryScope(skillScopeKey); }
   // The composer's `/` palette pins through the Skill library's own selection
   // path and switches Assistants as the header selector does.
@@ -1425,7 +1430,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             </>}
         anchorId={source.id}
         artifact={artifact}
-        browserLiveChatId={ownsLiveRun ? session.activeChatId : null}
+        browserLiveChatId={ownsLiveRun || (subagentWaitingKey && source.id === latestMessage?.id) ? session.activeChatId : null}
+        browserLiveWaitingKey={source.id === latestMessage?.id ? subagentWaitingKey : null}
         onPinSkill={pinLoadedSkill}
         pinnedSkillIds={pinnedSkillIds}
         content={messageText(source)}

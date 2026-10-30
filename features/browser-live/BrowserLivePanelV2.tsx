@@ -16,7 +16,8 @@ import { createPortal } from "react-dom";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
-import type { BrowserLiveAgent, BrowserLiveHandoff, BrowserLiveInput, BrowserLiveStep } from "@/lib/contracts/browserLive";
+import { BROWSER_LIVE_MAIN_AGENT, type BrowserLiveAgent, type BrowserLiveHandoff, type BrowserLiveInput,
+  type BrowserLiveStep } from "@/lib/contracts/browserLive";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import type { BrowserLiveEventSourceFactory, BrowserLiveSnapshot } from "./browserLiveClient";
@@ -544,7 +545,8 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
   };
   const handoffCard = handoff ? (
     // In full screen the card never scrolls the page behind the layer.
-    <HandoffCardV2 asker={several ? browserLiveAgentLabelV2(handoff.agent) : null} claimScroll={expanded ? () => false : claimScroll}
+    // A sub-agent's request always names it; the main agent's only beside others.
+    <HandoffCardV2 asker={several || handoff.agent.id !== BROWSER_LIVE_MAIN_AGENT ? browserLiveAgentLabelV2(handoff.agent) : null} claimScroll={expanded ? () => false : claimScroll}
       handoff={handoff} host={handoffHost} live={live}
       onAnswer={(action) => handoff.agent.id === selected ? endControl(() => live.answerHandoff(handoff.id, action))
         : void live.answerHandoff(handoff.id, action)}
@@ -686,6 +688,11 @@ export type BrowserLivePanelV2Props = Readonly<{
   live: boolean;
   toolActivity: ThreadToolActivity | null;
   workspaceActivity: ThreadWorkspaceActivity | null;
+  /**
+   * The chat's background sub-agents that wait for the user now (`subagentWaitingKeyV2`): their handoffs come
+   * through the same chat stream, so the bar shows and opens once for them too, whether or not this answer browsed.
+   */
+  waitingKey?: string | null;
   /** Tests inject a fake `EventSource`. */
   openEventSource?: BrowserLiveEventSourceFactory;
 }>;
@@ -695,8 +702,11 @@ export type BrowserLivePanelV2Props = Readonly<{
  * while the agent browses, expanded on demand (frames stream only then) or
  * automatically when the agent hands the browser to the user.
  */
-export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, toolActivity, workspaceActivity }: BrowserLivePanelV2Props) {
-  const activity = browserLiveActivityV2(toolActivity, workspaceActivity);
+export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, toolActivity, waitingKey = null,
+  workspaceActivity }: BrowserLivePanelV2Props) {
+  const answerActivity = browserLiveActivityV2(toolActivity, workspaceActivity);
+  const activity = waitingKey ? { ...answerActivity, visible: true,
+    pendingHandoffKey: answerActivity.pendingHandoffKey ?? `subagents:${waitingKey}` } : answerActivity;
   const visible = runLive && activity.visible;
   const [expanded, setExpanded] = useState(false);
   const autoOpenedRef = useRef<string | null>(null);
