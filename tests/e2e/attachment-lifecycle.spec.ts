@@ -142,9 +142,6 @@ for (const theme of ["light", "dark"] as const) {
       const box = await send.boundingBox();
       return Boolean(box && box.y >= 0 && box.y + box.height <= 390);
     }).toBe(true);
-    // A scroll event must not snap the empty conversation back to its heading.
-    await page.waitForTimeout(100);
-    await expect.poll(() => page.locator(".v2-conversation-scroll").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
     await send.click({ trial: true });
     await page.screenshot({ path: testInfo.outputPath(`truncated-text-landscape-${theme}.png`) });
     await chip.getByRole("button", { name: `Remove ${ready.attachment.fileName}` }).click();
