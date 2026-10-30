@@ -461,7 +461,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         ...(host.secrets ? { secrets: host.secrets } : {}), selfService: role, snapshot: route.snapshot, tools: registry.definitions() });
       const base = native.request;
       const inputItem: TranscriptUserItem = { id: `sub-${input.turnId}`, kind: "user",
-        text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", userMessage: input.userMessage }) };
+        text: subagentTurnText({ brief: input.brief, continued: turn.kind === "continue", name: input.name, userMessage: input.userMessage }) };
       // The run's one fence (`SubagentHost.unknownEffects`): only the user's own words count as them speaking, never the
       // main agent's brief or messages.
       const unknownEffects = host.unknownEffects(input.threadId);
@@ -482,7 +482,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
             unknownEffects.userSpoke();
           } else {
             // The main agent's message is no user speech: it never releases an unknown effect or authorizes a link.
-            added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true,
+            added.push({ id: randomUUID(), kind: "user", text: subagentTurnText({ brief: message.text, continued: true, name: input.name,
               userMessage: input.userMessage }) });
           }
         }
