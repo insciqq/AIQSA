@@ -40,6 +40,7 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
   let operationOwner: string | null = `run:${MAIN}`;
   let operationGeneration = 3;
   let exportPending = false;
+  let closing = false;
   const settled: string[] = [];
   const detached: Array<Readonly<{ runId: string; stopProven: boolean }>> = [];
   const binding = (runId: string): WorkspaceExecutionBinding => ({
@@ -78,6 +79,12 @@ function sharedFixture(options: Readonly<{ agentStop?: "closed" | "unknown" | "a
     // The main run's capture while the sub-agent stays attached: leased on its binding under the shared operation.
     claimExport: async (request) => ({ operation: request.operation, status: "claimed", token: "lease_token_1" }),
     claimExportForRecovery: async () => ({ status: "busy" }),
+    // The detach left no attachment of another run: the operation closes, and this run settles the session.
+    closeRunOperationIfLast: vi.fn(async (current: WorkspaceExecutionBinding) => {
+      if (closing || [...attached].some((runId) => runId !== current.runId)) return false;
+      closing = true;
+      return true;
+    }),
     detachRun: vi.fn(async ({ binding: current, stopProven }) => {
       if (!attached.delete(current.runId)) return false;
       detached.push({ runId: current.runId, stopProven });
@@ -218,6 +225,31 @@ describe("a Workspace session shared by attached runs", () => {
     expect(last).toEqual({ interruptedRunIds: [], kind: "detached", remainingRuns: 0 });
     expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
     expect(f.settled).toEqual(["stopped"]);
+  });
+
+  it("releases the operation when the attached runs end together, each having seen the other still attached", async () => {
+    const f = sharedFixture();
+    // Both runs read the other as attached before either has detached (a run's status is written after its detach).
+    let waiting = 0;
+    let release: () => void = () => undefined;
+    const bothStopping = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(f.runtime.terminateAgentProcesses!).mockImplementation(async () => {
+      waiting += 1;
+      if (waiting === 2) release();
+      await bothStopping;
+      return { outcome: "closed" };
+    });
+    const [main, subagent] = await Promise.all([
+      f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" }),
+      f.coordinator.settle({ outcome: "completed", runId: SUBAGENT, userId: "user_1" })
+    ]);
+    expect(f.detached.map((entry) => entry.runId).sort()).toEqual([MAIN, SUBAGENT].sort());
+    // The one that left last retired the operation and settled the session: no owner stays with no run under it.
+    expect(f.repository.closeRunOperationIfLast).toHaveBeenCalledTimes(2);
+    expect(f.runtime.retireSessionOperation).toHaveBeenCalledOnce();
+    expect(f.settled).toHaveLength(1);
+    expect([main, subagent].filter((result) => result.sessionSettled)).toHaveLength(2);
+    expect(f.interrupted).not.toHaveBeenCalled();
   });
 
   it.each(["unknown", "absent"] as const)("stops the VM and ends every attached run as interrupted when a stop is %s", async (agentStop) => {
