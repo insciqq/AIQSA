@@ -196,13 +196,20 @@ test.describe("sub-agents · desktop and tablet", () => {
     await page.goForward();
     await expect(page.getByTestId("subagent-thread-view")).toHaveCount(0);
 
-    // Stop all while a sub-agent runs.
+    // Stop all while a sub-agent runs. Nothing runs now, so nothing polls (by
+    // design): a new sub-agent starts only with a main-agent turn, whose
+    // stream end refreshes the chat, so the step reopens the chat instead.
     routes.set("thread-researcher", "running");
+    await page.reload();
+    const listRunning = await navigation(page);
     await expect(status).toBeVisible({ timeout: 10_000 });
     await status.getByRole("button", { name: "Stop all" }).click();
     await expect(status).toHaveCount(0);
     expect(routes.posts).toContain(`/api/chats/${chatId}/subagents/stop-all`);
-    await expect(list.getByRole("treeitem", { name: "researcher, Stopped" })).toBeVisible();
+    // Nothing runs any more: the rows close by themselves and the disclosure counts no active one.
+    await expect(listRunning.getByRole("treeitem", { name: "Laptop research", exact: true })).toHaveAttribute("aria-expanded", "false");
+    await expect(listRunning.getByRole("button", { name: "Show sub-agents of Laptop research: 3 sub-agents", exact: true }))
+      .toBeVisible();
 
     // The wake-up answer: no user bubble, one line naming the sub-agents.
     chatState.wakeUp = true;
