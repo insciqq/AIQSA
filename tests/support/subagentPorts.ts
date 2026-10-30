@@ -224,12 +224,15 @@ export class FakeSubagentCallbackSink implements SubagentCallbackSink {
 export class FakeWorkspaceAttachments implements WorkspaceAttachments {
   readonly sessions = new Map<string, WorkspaceAttachment[]>();
   readonly operations: Array<Readonly<{ chatId: string; operation: WorkspaceExclusiveOperation }>> = [];
+  /** Chats whose session `fence` marked failed: they refuse every attach, as a failed session does. */
+  readonly fenced = new Set<string>();
   private readonly busy = new Set<string>();
 
   constructor(private readonly options: Readonly<{ refuseAttach?: string; unknownExecutionStopsVm?: boolean }> = {}) {}
 
   async attach(attachment: WorkspaceAttachment): Promise<WorkspaceAttachResult> {
     if (this.options.refuseAttach) return { code: this.options.refuseAttach, kind: "refused" };
+    if (this.fenced.has(attachment.chatId)) return { code: "workspace_busy", kind: "refused" };
     const runs = this.sessions.get(attachment.chatId) ?? [];
     if (!runs.some((run) => run.modelRunId === attachment.modelRunId)) runs.push(attachment);
     this.sessions.set(attachment.chatId, runs);
@@ -264,6 +267,10 @@ export class FakeWorkspaceAttachments implements WorkspaceAttachments {
 
   async attached(scope: SubagentChatScope): Promise<readonly WorkspaceAttachment[]> {
     return [...this.sessions.get(scope.chatId) ?? []];
+  }
+
+  async fence(input: SubagentChatScope & Readonly<{ modelRunId: string }>): Promise<void> {
+    this.fenced.add(input.chatId);
   }
 }
 

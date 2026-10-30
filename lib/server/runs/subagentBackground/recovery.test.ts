@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SUBAGENT_END_REASONS } from "@/lib/contracts/subagents";
 import { FakeWorkspaceAttachments, endedSubagentResult } from "@/tests/support/subagentPorts";
 import { MemorySubagentStore } from "@/tests/support/subagentBackgroundStore";
 import { createSubagentCallbacks, type SubagentWakeUpOutcome } from "./callbacks";
@@ -83,7 +84,30 @@ describe("background sub-agent recovery", () => {
         liveRunIds: () => [], retireFailures, staleMs: 60_000, store, workspace }, { chatId: "chat-x" });
     }
     expect(settled).toBe(1);
-    expect(store.turns[0]).toMatchObject({ state: "interrupted" });
+    // Settled behind a fenced Workspace: its result says why, the callback is owed, and the chat's Workspace refuses joins.
+    expect(store.turns[0]).toMatchObject({ callbackRunId: null, result: { reason: SUBAGENT_END_REASONS.workspaceStopUnproven },
+      state: "interrupted" });
+    expect(workspace.fenced.has("chat-x")).toBe(true);
+    expect(await workspace.attach({ agent: { kind: "main" }, chatId: "chat-x", modelRunId: "run-next", userId: "user-1" }))
+      .toMatchObject({ kind: "refused" });
+  });
+
+  it("keeps a cut-off run past the bound unsettled while its Workspace cannot be fenced", async () => {
+    const store = new MemorySubagentStore();
+    orphan(store, "chat-y", "stuck");
+    const workspace = new FakeWorkspaceAttachments();
+    vi.spyOn(workspace, "detach").mockRejectedValue(new Error("runner_unreachable"));
+    const fence = vi.spyOn(workspace, "fence").mockRejectedValueOnce(new Error("database_unavailable"));
+    const callbacks = createSubagentCallbacks({ coalesceMs: 1, recheckMs: [], store, admitWakeUp: async () => "usage_limited" });
+    const retireFailures = new Map<string, number>();
+    const pass = () => reconcileSubagentRuns({ backoff: new Map(), bootedAt: new Date(), deferred: new Map(), flush: callbacks.flush,
+      liveRunIds: () => [], retireFailures, staleMs: 60_000, store, workspace }, { chatId: "chat-y" });
+    for (let index = 1; index < SUBAGENT_RECOVERY_RETIRE_ATTEMPTS; index += 1) expect(await pass()).toBe(0);
+    expect(await pass()).toBe(0);
+    expect(store.turns[0]?.state).not.toBe("interrupted");
+    expect(await pass()).toBe(1);
+    expect(fence).toHaveBeenCalledTimes(2);
+    expect(store.turns[0]).toMatchObject({ result: { reason: SUBAGENT_END_REASONS.workspaceStopUnproven }, state: "interrupted" });
   });
 
   it("flushes callbacks a restart or a failed flush left owed, and keeps a usage-limited wake-up deferred until a new callback", async () => {
