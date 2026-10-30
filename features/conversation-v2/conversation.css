@@ -906,10 +906,7 @@ html[data-motion="off"] .v2-skeleton {
 }
 
 .v2-subagent-answer-rows {
-  /* A long name's nowrap line must not widen the answer's track: it ellipsizes within the column. */
-  width: 100%;
   margin-top: 0.5rem;
-  contain: inline-size;
 }
 
 .v2-subagent-answer-rows > ul {
@@ -919,8 +916,10 @@ html[data-motion="off"] .v2-skeleton {
   list-style: none;
 }
 
+/* A start-aligned grid item never shrinks below its min-content, which a long name's nowrap line makes wide. */
 .v2-subagent-answer-rows li {
   min-width: 0;
+  max-width: 100%;
 }
 
 .v2-subagent-answer-row,
