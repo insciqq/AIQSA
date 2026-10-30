@@ -525,19 +525,17 @@ export function stepDurationSumV2(activity: ThreadToolActivity | null | undefine
 
 /**
  * The settled process line reads the way a person would say it — "Thought
- * for 12s", "Worked for 1m 4s" — followed by separate context counts.
- * Only facts that exist appear; none at all means no line.
+ * for 12s", "Worked for 1m 4s" — and says nothing else. Context counts stay in
+ * the fold and speak here only when there is no work to name; none at all
+ * means no line.
  */
 export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null {
-  const segments: string[] = [];
   if (facts.stepCount > 0 || facts.hasReasoning) {
-    if (facts.workDurationMs === null) {
-      segments.push(facts.stepCount > 0 ? "Steps" : "Thought process");
-    } else {
-      const verb = facts.stepCount > 0 ? "Worked" : "Thought";
-      segments.push(`${verb} for ${formatWorkDurationV2(facts.workDurationMs)}`);
-    }
+    if (facts.workDurationMs === null) return facts.stepCount > 0 ? "Steps" : "Thought process";
+    const verb = facts.stepCount > 0 ? "Worked" : "Thought";
+    return `${verb} for ${formatWorkDurationV2(facts.workDurationMs)}`;
   }
+  const segments: string[] = [];
   if ((facts.pastChatCount ?? 0) > 0) {
     segments.push(formatMemoryUiCopy("source.pastChatsHeading", { count: facts.pastChatCount! }));
   }

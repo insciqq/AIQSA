@@ -399,9 +399,10 @@ describe("Run lifecycle v2", () => {
         workDurationMs={64_000}
       />
     );
-    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(
-      "Worked for 1m 4s · Memory · 1"
-    );
+    const fold = screen.getByTestId("tool-activity-disclosure");
+    // The line says only the work time; the count stays in the fold's own disclosure.
+    expect(fold.querySelector(":scope > summary")).toHaveTextContent(/^Worked for 1m 4s$/u);
+    expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
   });
 
   it("shows the model's reasoning heading as plain text whatever the Reasoning blocks setting", () => {
