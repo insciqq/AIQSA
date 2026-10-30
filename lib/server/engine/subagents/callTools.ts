@@ -187,7 +187,9 @@ const typeWho = (resolved: Extract<TypeResolution, { ok: true }>) =>
   `${resolved.fromDefault ? "The user's default sub-agent" : "The custom sub-agent"} ${JSON.stringify(resolved.type?.name)}`;
 
 /** What the type itself asks for cannot run: the model tells the user, and never reaches for another model or sub-agent. */
-function typeModelGoneMessage(resolved: Extract<TypeResolution, { ok: true }>): string {
+function typeModelGoneMessage(resolved: Extract<TypeResolution, { ok: true }>, deps: Pick<SubagentCallDeps, "catalog">): string {
+  if (deps.catalog === null) return `${typeWho(resolved)} could not start, because this answer could not read the user's models. ` +
+    "Tell the user to try again in a new message. Do not start another sub-agent or model in its place unless they ask.";
   return `${typeWho(resolved)} runs on a model that is not available in this chat, so nothing started. ` +
     "Tell the user; they can choose another model in Studio > Sub-agents. Do not start another sub-agent or model in its place unless they ask.";
 }
@@ -244,7 +246,7 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
   if (!chosen.ok) {
     // A type whose model is gone is the type's refusal, never another model.
     if (type.type && args.model === undefined && chosen.code === SUBAGENT_ERROR_CODES.modelUnavailable) {
-      return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, type.type.providerModelId ? typeModelGoneMessage(type) : chosen.message);
+      return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, type.type.providerModelId ? typeModelGoneMessage(type, deps) : chosen.message);
     }
     // The type's own effort: omitting effort, as the general refusal says, would only meet it again.
     if (type.type?.reasoningEffort && args.effort === undefined && chosen.code === SUBAGENT_ERROR_CODES.effortUnsupported) {
@@ -257,7 +259,7 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
   const route = await deps.runner.prepareRoute(binding, execution.signal);
   if (!route.ok) {
     if (route.code === SUBAGENT_ERROR_CODES.modelUnavailable && binding.modelSource === "type") {
-      return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, typeModelGoneMessage(type));
+      return refusal(call, SUBAGENT_ERROR_CODES.typeUnavailable, typeModelGoneMessage(type, deps));
     }
     return refusal(call, route.code, route.code === SUBAGENT_ERROR_CODES.effortUnsupported
       ? "That effort is not one this model takes; pick another or tell the user."
