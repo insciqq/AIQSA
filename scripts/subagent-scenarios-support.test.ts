@@ -78,7 +78,11 @@ describe("per-run secrets and prompts", () => {
     expect(SUBAGENT_PROMPTS.B()).toContain(SUBAGENT_NAMES.background.join(", "));
     expect(SUBAGENT_PROMPTS.E.start(secrets)).toContain(secrets.correctionFrom);
     expect(SUBAGENT_PROMPTS.E.correction(secrets)).toContain(secrets.correctionTo);
-    expect(SUBAGENT_PROMPTS.E.start(secrets)).toContain("`sleep 900`");
+    // Long work as many short commands: one long command hits the Workspace tool's timeout.
+    expect(SUBAGENT_PROMPTS.E.start(secrets)).toContain("15 минут подряд выполняет в Workspace команду `sleep 60`");
+    expect(SUBAGENT_PROMPTS.E.start(secrets)).not.toContain("sleep 900");
+    expect(SUBAGENT_PROMPTS.E.holds()).toContain(SUBAGENT_NAMES.hold.join(" и "));
+    expect(SUBAGENT_PROMPTS.E.holds()).toContain("10 минут подряд");
     expect(SUBAGENT_PROMPTS.F.start(secrets)).toContain(secrets.nonce);
     expect(SUBAGENT_PROMPTS.F.start(secrets)).not.toContain(notaryValue(secrets.nonce));
     expect(SUBAGENT_PROMPTS.C("gpt-6-luna")).toContain("gpt-6-luna");
@@ -281,10 +285,13 @@ describe("evidence from stored rows", () => {
   });
 
   it("checks each stop path against its own end reason", () => {
-    expect(stopEvidence({ stopAll: turn({ reasonCode: "stop_all", state: "stopped" }),
+    expect(stopEvidence({ stopAll: [turn({ reasonCode: "stop_all", state: "stopped" }), turn({ reasonCode: "stop_all", state: "stopped" })],
       stopRoute: turn({ reasonCode: "user_stop", state: "stopped" }), stopTool: turn({ reasonCode: "stop_subagent", state: "stopped" }) }))
       .toEqual({ stopAllStopped: true, stopRouteStopped: true, stopToolStopped: true });
-    const failed = stopEvidence({ stopAll: null, stopRoute: turn({ reasonCode: "stop_all", state: "stopped" }), stopTool: turn() });
+    const failed = stopEvidence({ stopAll: [], stopRoute: turn({ reasonCode: "stop_all", state: "stopped" }), stopTool: turn() });
+    // Stop all must reach every hold: one that ended otherwise fails it.
+    expect(stopEvidence({ stopAll: [turn({ reasonCode: "stop_all", state: "stopped" }), turn()], stopRoute: null, stopTool: null })
+      .stopAllStopped).toBe(false);
     expect(failed).toEqual({ stopAllStopped: false, stopRouteStopped: false, stopToolStopped: false });
     const running = { stopAll: true, stopRoute: true, stopTool: true };
     expect(stopChecks(failed, running)).toEqual(["stop_subagent_failed", "stop_route_failed", "stop_all_failed"]);
