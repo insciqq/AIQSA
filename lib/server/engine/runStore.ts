@@ -30,6 +30,12 @@ import { encodeTranscriptItem } from "./transcriptCodec";
  */
 export type NativeRunScope = Readonly<{ assistantMessageId: string; chatId: string; runId: string; userId: string }>;
 
+/**
+ * The `assistantMessageId` of a background sub-agent run's scope: it answers no message, so its usage totals touch
+ * none and its thread's late compaction is matched by the thread's turn instead (`recordDetachedCompaction`).
+ */
+export const SUBAGENT_RUN_NO_ANSWER = "";
+
 type LockedRun = Readonly<{
   answerCompletedAt: Date | null;
   assistantMessageId: string | null;
@@ -124,9 +130,14 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
           SELECT "permanentDeletionAt" FROM "Chat" WHERE "id" = ${scope.chatId} AND "userId" = ${scope.userId} FOR UPDATE
         `);
         if (!chat || chat.permanentDeletionAt !== null) return false;
+        // A background sub-agent run answers nothing: it is matched by the thread's turn it executes.
+        const owner = scope.assistantMessageId === SUBAGENT_RUN_NO_ANSWER
+          ? input.thread ? Prisma.sql`"assistantMessageId" IS NULL AND "subagentTurnId" = ${input.thread.turnId}` : null
+          : Prisma.sql`"assistantMessageId" = ${scope.assistantMessageId}`;
+        if (!owner) return false;
         const [run] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "ModelRun" WHERE "id" = ${scope.runId} AND "chatId" = ${scope.chatId} AND "userId" = ${scope.userId}
-            AND "engine" = 'native' AND "assistantMessageId" = ${scope.assistantMessageId}
+            AND "engine" = 'native' AND ${owner}
           FOR UPDATE
         `);
         if (!run) return false;

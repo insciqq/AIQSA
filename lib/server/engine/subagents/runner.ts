@@ -99,6 +99,11 @@ export type SubagentHost = Readonly<{
   }>): Promise<ToolRegistry>;
   /** The native runs of the branch's earlier answers, in branch order. */
   branchRunIds: readonly string[];
+  /**
+   * The runs that hold a thread's items on this branch, in turn order: its foreground turns' parent runs and its
+   * background turns' own runs (`threadStore.ts`). Absent: the branch's answers and the host run.
+   */
+  threadRunIds?(threadId: string): Promise<readonly string[]>;
   /** Releases a sub-agent's browser slot when its turn ends (`BrowserAgentIdentity`, the browser lease task's). */
   browserIdentity?: BrowserAgentIdentity;
   /** The Workspace tool calls of this agent may start until then (`toolCallBounds`). */
@@ -445,7 +450,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const registry = waitingDuringHandoff(subagentToolRegistry(await host.buildRegistry({ agent,
         followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request }), input.type?.toolGroups ?? null),
       (state) => host.setTurnState?.({ state, turnId: input.turnId }).then(() => undefined, () => undefined) ?? Promise.resolve());
-      const runIds = [...new Set([...host.branchRunIds, input.hostRunId])];
+      // A thread's earlier turns may have run in the background, in runs of their own that answer nothing.
+      const runIds = [...new Set([...(host.threadRunIds ? await host.threadRunIds(input.threadId) : host.branchRunIds),
+        input.hostRunId])];
       const loaded = await host.transcripts.loadRuns({ chatId: host.chatId, runIds, threadId: input.threadId, userId: host.userId });
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
       const role = input.type?.instructions.trim()

@@ -81,6 +81,8 @@ function engine(options: Readonly<{ earlierRun?: boolean; threadEffects?: Readon
     endOrphanedTurns: vi.fn(async () => 0),
     setActiveState: vi.fn(async () => true),
     threadEffectItems: vi.fn(async () => options.threadEffects ?? []),
+    backgroundRunIds: vi.fn(async () => []),
+    threadRunIds: vi.fn(async (input: { parentRunIds: readonly string[] }) => [...input.parentRunIds]),
     settle: vi.fn(async (input) => { settled.push(input); return true; })
   } as unknown as SubagentThreadStore;
   const deps: NativeEngineDeps = {

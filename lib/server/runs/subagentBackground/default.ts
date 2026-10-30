@@ -1,7 +1,10 @@
+import { backgroundSubagentRunner } from "../../engine/subagents/backgroundRunner";
 import { prisma } from "../../prisma";
 import { logEvent } from "../../observability";
 import { registerSubagentCallbackFlushListener } from "../../push/runTerminalSignal";
-import type { SubagentChatScope, SubagentRunner, WorkspaceAttachments } from "../../subagents/ports";
+import type { SubagentChatScope, SubagentRunner, WorkspaceAttachments, WorkspaceDetachInput, WorkspaceDetachResult } from "../../subagents/ports";
+import { createPrismaWorkspaceAttachments } from "../../workspace/attachments";
+import type { WorkspaceCoordinator } from "../../workspace/coordinator";
 import { usageLimitsRepository } from "../../usageLimits/defaultRepository";
 import { activeRunControllerRegistry } from "../activeRunControllerRegistry";
 import type { RunHandlerDeps } from "../handlers";
@@ -14,11 +17,14 @@ import { createSubagentWakeUpAdmitter, type SubagentWakeUpSend } from "./wakeUp"
 /**
  * The installation's background sub-agents: one store, one callback sink
  * with its coalescing, the control the engine's `call_subagent` and
- * `stop_subagent` handlers use, and recovery (the routes build their views). Until
- * the integration wires the engine's runner (`configureSubagentBackground`),
- * background mode is unavailable (a visible refusal), while stops, recovery,
- * callbacks and views work. Process-global like the run registry, because
- * routes run in several bundles.
+ * `stop_subagent` handlers use, and recovery (the routes build their views).
+ * Its production wiring (`defaultSubagentBackgroundWiring`) is the engine's
+ * background runner and the shared Workspace's attachments, whose retirement
+ * is the Workspace coordinator's per-run detach; tests replace it with
+ * `configureSubagentBackground`. Without a runner background mode is
+ * unavailable (a visible refusal), while stops, recovery, callbacks and views
+ * work. Process-global like the run registry, because routes run in several
+ * bundles.
  */
 
 /** The stale window of the main agent's recovery (`NATIVE_RUN_STALE_MS`), kept here so this module loads without the engine. */
@@ -36,10 +42,38 @@ type Composition = Readonly<{
 
 type Wiring = { runner: SubagentRunner | null; workspace?: WorkspaceAttachments };
 
+let coordinator: Promise<WorkspaceCoordinator> | undefined;
+
+/** The Workspace coordinator a background run's attachment retires through, imported on first use like the routes'. */
+function workspaceCoordinator(): Promise<WorkspaceCoordinator> {
+  return coordinator ??= Promise.all([import("../../workspace/defaultServices"), import("../../uploads/storage")])
+    .then(([services, storage]) => services.workspaceCoordinatorForStorage(storage.createS3StorageAdapter()))
+    .catch((error: unknown) => {
+      coordinator = undefined;
+      throw error;
+    });
+}
+
+/**
+ * The production wiring: the engine's runner for background turns (`backgroundRunner.ts`) and the shared
+ * Workspace's attachments, retired by the coordinator's per-run detach (proof of the run's processes stopped, or
+ * the VM stopped with the other attached runs interrupted).
+ */
+export function defaultSubagentBackgroundWiring(): Readonly<{ runner: SubagentRunner; workspace: WorkspaceAttachments }> {
+  return {
+    runner: backgroundSubagentRunner,
+    workspace: createPrismaWorkspaceAttachments({ prisma, retire: async (input: WorkspaceDetachInput): Promise<WorkspaceDetachResult> => {
+      const current = await workspaceCoordinator();
+      return current.detach ? current.detach(input) : { interruptedRunIds: [], kind: "detached", remainingRuns: 0 };
+    } })
+  };
+}
+
 const STATE = Symbol.for("aiqsa.subagent-background.v1");
 type State = { backoff: SubagentFlushBackoff; composition: Composition | null; deferred: SubagentDeferredCallbacks; wiring: Wiring };
 const globalState = globalThis as typeof globalThis & { [STATE]?: State };
-const state: State = globalState[STATE] ??= { backoff: new Map(), composition: null, deferred: new Map(), wiring: { runner: null } };
+const state: State = globalState[STATE] ??= { backoff: new Map(), composition: null, deferred: new Map(),
+  wiring: defaultSubagentBackgroundWiring() };
 
 function processBootedAt(): Date {
   return new Date(Date.now() - Math.round(process.uptime() * 1_000));

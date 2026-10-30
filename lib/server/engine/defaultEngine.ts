@@ -17,6 +17,9 @@ import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createNativeRunStore } from "./runStore";
 import { createPrismaSubagentModelCatalog } from "./subagents/modelRoutes";
 import { createSubagentThreadStore } from "./subagents/threadStore";
+import { getDefaultSubagentBackground } from "../runs/subagentBackground/default";
+import type { SubagentModelSource } from "../subagents/definitionModels";
+import { createSubagentTypeResolver } from "../subagents/typeResolver";
 import { createToolCallStore } from "./toolCallStore";
 import type { ToolRegistryServices } from "./toolRegistry";
 import { createSavedToolResultReader } from "./toolResults";
@@ -94,6 +97,20 @@ function lazyAssistantOwners(): AssistantOwners {
   };
 }
 
+/** The user's catalog models a custom sub-agent may name, its loader imported on first use as the Assistant owners are. */
+function lazySubagentModels(client: PrismaClient): SubagentModelSource {
+  let loading: Promise<SubagentModelSource> | null = null;
+  return async (userId) => {
+    loading ??= Promise.all([import("../catalog/prismaCatalogData"), import("../subagents/definitionModels")])
+      .then(([catalog, models]) => models.catalogSubagentModelSource(catalog.createPrismaCatalogDataLoader({ prisma: client })))
+      .catch((error: unknown) => {
+        loading = null;
+        throw error;
+      });
+    return (await loading)(userId);
+  };
+}
+
 /**
  * The owners behind the harness and self-service tools: the saved secrets
  * `read_secret` reads in any chat, and the Studio paths the self-service
@@ -103,7 +120,8 @@ export function defaultNativeToolServices(storage: StorageAdapter, client: Prism
   Required<Pick<ToolRegistryServices, "secrets" | "selfService">> {
   return {
     secrets: createRunSecretSource(client),
-    selfService: { assistants: lazyAssistantOwners(), db: client, storage }
+    selfService: { assistants: lazyAssistantOwners(), db: client, storage,
+      subagents: { db: client, models: lazySubagentModels(client) } }
   };
 }
 
@@ -114,6 +132,8 @@ export function defaultNativeEngineHandlerDeps(storage: StorageAdapter, client: 
     findOrphans: createNativeOrphanFinder(client),
     findRetiredRuns: createRetiredEngineRunFinder(client),
     mcpRuntime: () => getDefaultMcpRuntimeCoordinator(),
+    // The real ports of the other sub-agent slices: background turns (`configureSubagentBackground`) and custom types.
+    subagents: { background: () => getDefaultSubagentBackground().control, types: createSubagentTypeResolver(client) },
     tools: defaultNativeToolServices(storage, client)
   };
 }
