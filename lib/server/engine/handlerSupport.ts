@@ -24,6 +24,8 @@ export type NativeEngineHandlerDeps = Readonly<{
   /** The old core's runs still active (`retiredEngineRuns.ts`), which admission ends like orphans. */
   findRetiredRuns: RetiredEngineRunDeps["findRuns"];
   mcpRuntime?: ToolRegistryServices["mcpRuntime"];
+  /** Background sub-agent runs' own recovery pass (`lib/server/runs/subagentBackground/recovery.ts`). */
+  subagentRecovery?: NativeRecoveryDeps["subagents"];
   /** The owners of the harness and self-service tools (`defaultNativeToolServices`). */
   tools?: Pick<ToolRegistryServices, "secrets" | "selfService">;
 }>;
@@ -57,6 +59,7 @@ export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps, dep
     ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}) }, { userId });
   await reconcileNativeRuns({ bootedAt: processBootedAt(), findOrphans: native.findOrphans,
     liveRunIds: () => activeRunControllerRegistry.ids(), repository: deps.repository, runs: native.engine.runs,
+    ...(native.subagentRecovery ? { subagents: native.subagentRecovery } : {}),
     ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}) }, { userId }).catch((error: unknown) => {
     logEvent("run_recovery", { action: "retry", code: "native_run_recovery_failed", error, outcome: "failed", stage: "recovery",
       subsystem: "run_recovery" });

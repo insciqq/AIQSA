@@ -105,6 +105,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
+  subagentFollowupBoundsFixtureSql,
+  subagentFollowupBoundsProofSql
+} from "./subagent-followup-bounds-adoption";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
@@ -7931,6 +7936,9 @@ function main(
   // claiming sessions by owner alone, which the application still accepts while a session has no attachment.
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_RUN_ATTACHMENTS_MIGRATION,
     workspaceRunAttachmentsFixtureSql, workspaceRunAttachmentsProofSql, workspaceRunAttachmentsProofSql);
+  // Widen only: rows at the old follow-up bound stay, the widened bound holds, and the completion guard still refuses.
+  runForwardAdoptionProof(shadowDatabase, migrations, SUBAGENT_FOLLOWUP_BOUNDS_MIGRATION,
+    subagentFollowupBoundsFixtureSql, subagentFollowupBoundsProofSql, subagentFollowupBoundsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

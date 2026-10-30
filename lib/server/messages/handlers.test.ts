@@ -422,6 +422,27 @@ describe("message branch route handlers", () => {
     });
   });
 
+  it("stops the background sub-agents under a message before deleting its subtree", async () => {
+    const { messages, repository } = createMemoryRepository();
+    const order: string[] = [];
+    const deleteSubtree = repository.deleteMessageSubtree.bind(repository);
+    repository.deleteMessageSubtree = async (input) => {
+      order.push("delete");
+      return deleteSubtree(input);
+    };
+    const stopUnderMessage = vi.fn(async () => {
+      order.push("stop");
+      return 2;
+    });
+    const DELETE = createDeleteMessageHandler({ repository, resolveAuth: auth.resolveAuth, subagents: { stopUnderMessage } });
+    const response = await DELETE(new Request("http://app.local/api/messages/user-1", { headers: { cookie: authCookie() },
+      method: "DELETE" }), { params: { messageId: "user-1" } });
+    expect(response.status).toBe(200);
+    expect(stopUnderMessage).toHaveBeenCalledWith({ messageId: "user-1", userId: expect.any(String) });
+    expect(order).toEqual(["stop", "delete"]);
+    expect(messages.has("user-1")).toBe(false);
+  });
+
   it("deletes a message subtree and returns the next active leaf", async () => {
     const { messages, repository, state } = createMemoryRepository();
     const DELETE = createDeleteMessageHandler({

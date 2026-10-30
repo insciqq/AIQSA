@@ -165,6 +165,28 @@ describe("native run execution", () => {
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text"]);
   });
 
+  it("takes a sub-agent's callback into the running turn as the server's item, never as the user's speech", async () => {
+    const { adapter, requests } = scriptedAdapter([{ text: "First." }, { text: "With the research." }]);
+    const memory = memoryEngine();
+    let delivered = false;
+    const callback = { author: "Sub-agent", createdAt: "2026-10-30T10:00:00.000Z", id: "f1", ordinal: 1, origin: "subagent_callback" as const,
+      text: "[Sub-agent callback, written by the server, not by the user] researcher ended" };
+    const followups = {
+      accept: vi.fn(),
+      close: vi.fn(async () => delivered),
+      deliver: vi.fn(async () => { delivered = true; return true; }),
+      load: vi.fn(async () => ({ entries: [{ ...callback, delivery: delivered ? "delivered" as const : "accepted" as const }], revision: 1 }))
+    };
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+      prepared: { ...prepared(), followupAdmission: { budgetTokens: 1_000 } },
+      repository: { ...repository(), followups } as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(result.at(-1)).toMatchObject({ type: "done" });
+    expect(memory.published()).toBe("With the research.");
+    expect(memory.transcriptRows).toContainEqual(expect.objectContaining({ callback: true, followup: true, kind: "user",
+      text: callback.text }));
+    expect(requests).toHaveLength(2);
+  });
+
   it("reports the whole run as its work duration once the answer is published, however early it talked", async () => {
     // A preamble, a tool round, then the rest of the answer.
     const { adapter } = scriptedAdapter([

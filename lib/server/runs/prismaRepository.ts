@@ -450,6 +450,9 @@ export function createPrismaRunRepository(
               where: {
                 id: input.runId,
                 status: { in: dispatchableModelRunStatuses },
+                // A background sub-agent run stops only through its own paths, which settle its turn
+                // (`subagentBackground/control.ts`); here it reads as not found.
+                subagentTurnId: null,
                 userId: input.userId
               }
             })).count;
@@ -465,6 +468,7 @@ export function createPrismaRunRepository(
           },
           where: {
             id: input.runId,
+            subagentTurnId: null,
             userId: input.userId
           }
         });
@@ -783,7 +787,8 @@ export function createPrismaRunRepository(
           workspaceRunBinding: { select: { modelRunId: true } }
         },
         orderBy: { updatedAt: "desc" },
-        where: { chatId, status: { in: activeModelRunStatuses }, updatedAt: { gt: since } }
+        // The main agent's runs only: background sub-agents run beside them (one active run per thread).
+        where: { chatId, status: { in: activeModelRunStatuses }, subagentTurnId: null, updatedAt: { gt: since } }
       }).catch(retainRunPrismaCode);
       return run ? { assistantMessageId: run.assistantMessageId, chatId: run.chatId, id: run.id, modelId: run.modelId,
         provider: run.provider, providerResponseId: run.providerResponseId, status: run.status,
@@ -858,7 +863,8 @@ export function createPrismaRunRepository(
 
       if (sourceMessage.role === "user") {
         const sourceRun = await prismaClient.modelRun.findFirst({
-          where: { userMessageId: sourceMessage.id, userId },
+          // A background sub-agent run shares its parent's user message; the message's own answer runs are the main agent's.
+          where: { subagentTurnId: null, userMessageId: sourceMessage.id, userId },
           orderBy: { createdAt: "desc" },
           select: { normalizedRequest: true }
         }).catch(retainRunPrismaCode);

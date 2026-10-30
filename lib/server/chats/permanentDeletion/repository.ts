@@ -111,10 +111,12 @@ export function createPrismaPermanentChatDeletionRepository(
         }
       });
       if (!chat) return null;
+      // The main agent's answer holds deletion off; background sub-agents are stopped once the chat is fenced.
       const activeRunCount = await client.modelRun.count({
         where: {
           chatId,
           status: { in: [...activeRunStatuses] },
+          subagentTurnId: null,
           userId
         }
       });
@@ -157,10 +159,13 @@ export function createPrismaPermanentChatDeletionRepository(
         // Under the chat lock, before any change: the caller's own condition.
         if (input.condition && !(await input.condition(tx))) return { kind: "stale" as const };
 
+        // Under the chat lock: the main agent's answer refuses; background sub-agents are stopped after the fence
+        // (`stopSubagents`), and cleanup waits until no run of the chat is active.
         const activeRunCount = await tx.modelRun.count({
           where: {
             chatId: input.chatId,
             status: { in: [...activeRunStatuses] },
+            subagentTurnId: null,
             userId: input.userId
           }
         });

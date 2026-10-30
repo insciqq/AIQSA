@@ -181,6 +181,12 @@ export function createPermanentChatDeletionService(input: Readonly<{
   kick: () => void;
   now?: () => Date;
   repository: PermanentChatDeletionRepository;
+  /**
+   * Stops every background sub-agent of the chat once its fence holds (no new
+   * one can start), before cleanup deletes its rows; cleanup retries until no
+   * run of the chat is active.
+   */
+  stopSubagents?: (scope: Readonly<{ chatId: string; userId: string }>) => Promise<unknown>;
 }>) {
   const now = input.now ?? (() => new Date());
   async function admitInternal(
@@ -224,6 +230,7 @@ export function createPermanentChatDeletionService(input: Readonly<{
         case "active_run": fail("active_run_in_progress");
       }
     }
+    await input.stopSubagents?.({ chatId, userId }).catch(() => undefined);
     input.kick();
     return serializeAdmission(result.admission);
   }

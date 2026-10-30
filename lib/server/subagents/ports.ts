@@ -68,6 +68,12 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
   /**
    * The run whose rows hold the turn's transcript items and tool calls: the
    * parent run for a foreground turn, the turn's own run for a background one.
+   * A background run carries a copy of its parent's `normalizedRequest` (the
+   * Workspace grant, coordinator and request decoders read it by run id),
+   * while its provider, MCP and Skill binding rows stay by reference: the
+   * runner reads them from `parentRunId` (an MCP write reaches the guard
+   * through the parent's `McpRunBinding` rows), never from `hostRunId`
+   * (integrator decision 2026-10-30).
    */
   hostRunId: string;
   mode: SubagentTurnMode;
@@ -253,14 +259,22 @@ export type SubagentCallbackDisposition =
  *   The turn's end and a main run's terminal flush may both try; the one whose
  *   update finds the row unclaimed delivers, the other does nothing, so no
  *   callback is delivered twice.
- * - The flush: every main-agent run's terminal path delivers the owed
- *   callbacks of its active branch (a wake-up turn), so one that lost the
- *   close-to-publish race (`after_run`) is never left waiting for a user turn.
+ * - The flush: every main-agent run's terminal path except a user's Stop
+ *   flushes the owed callbacks of its active branch (a wake-up turn), so one
+ *   that lost the close-to-publish race (`after_run`) is never left waiting
+ *   for a user turn. A user's Stop wakes nothing (integrator decision
+ *   2026-10-30): callbacks left unread in the stopped run are owed again and
+ *   go with the next main-agent turn or the next wake-up another sub-agent's
+ *   end triggers; recovery flushes callbacks left owed by a restart or a
+ *   failed flush.
  * - The budget: `subagent_callback` and `main_agent` follow-ups never count
  *   toward the user's follow-ups (`RUN_FOLLOWUP_MAX_COUNT`) or the run's
  *   `followupBudgetTokens`; they have their own bounds
- *   (`SUBAGENT_FOLLOWUP_LIMITS`). A callback too large for its run's room is
- *   delivered by reference to the turn's stored result, never refused.
+ *   (`SUBAGENT_FOLLOWUP_LIMITS`). A callback is cut to what is left of the
+ *   receiving run's follow-up reserve (`followupContextReserveTokens`) with a
+ *   cut mark, never refused; a wake-up turn shares a fixed room among its
+ *   callbacks the same way. The whole result stays on the turn and in the
+ *   thread view.
  * Owner: `20261029221046686-sub-agent-background-runs`.
  */
 export interface SubagentCallbackSink {
