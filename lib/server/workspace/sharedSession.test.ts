@@ -5,7 +5,9 @@ import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import type { WorkspaceAgentProcessTermination } from "./agentProcessGuest";
 import type { WorkspaceAttachedRun } from "./attachments";
 import { getWorkspaceConfig } from "./config";
-import { createWorkspaceCoordinator, type WorkspaceCoordinatorRepository, type WorkspaceExecutionBinding } from "./coordinator";
+import {
+  createWorkspaceCoordinator, WORKSPACE_BROWSER_RELEASE_WAIT_MS, type WorkspaceCoordinatorRepository, type WorkspaceExecutionBinding
+} from "./coordinator";
 import { workspaceSyncCleanupId, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
 import { WorkspaceRuntimeError, type WorkspaceBoundTool, type WorkspaceRuntime } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
@@ -172,6 +174,23 @@ describe("a Workspace session shared by attached runs", () => {
     expect(f.runtime.callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ agent, arguments: { args: ["release"], command: "aiqsa-browser" },
       modelRunId: SUBAGENT, operation: { generation: 3, owner: `run:${MAIN}` }, originalName: "sandbox_exec", runtimeSandboxId: "runtime_1",
       sessionId: SESSION }));
+    // Two agents of one run that end together never share the release's active-call key.
+    await f.coordinator.releaseBrowserAgent!({ agent: { kind: "subagent", name: "notes", threadId: "thread_2" }, runId: SUBAGENT, userId: "user_1" });
+    const keys = vi.mocked(f.runtime.callBoundTool).mock.calls.map(([call]) => call.modelRunToolCallId);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys[0]).toContain(THREAD);
+    // A guest that never answers holds the turn's end only for the bound, after which the idle release frees the slot.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(f.runtime.callBoundTool).mockImplementationOnce(() => new Promise<never>(() => undefined));
+      let done = false;
+      const pending = f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" }).then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(WORKSPACE_BROWSER_RELEASE_WAIT_MS + 1);
+      await pending;
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     vi.mocked(f.runtime.callBoundTool).mockClear();
     f.attached.delete(SUBAGENT);
     await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });

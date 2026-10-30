@@ -1,5 +1,5 @@
 import type { WorkspaceAgent } from "../subagents/guestProtocol";
-import { workspaceAgentEnvironment } from "../subagents/guestProtocol";
+import { workspaceAgentEnvironment, workspaceAgentId } from "../subagents/guestProtocol";
 import type { BrowserAgentIdentity, BrowserAgentReleaseInput } from "../subagents/ports";
 import { workspaceBrowserAgentAvailable } from "./browserGuidance";
 import type { WorkspaceRuntime } from "./runtime";
@@ -27,7 +27,8 @@ export class WorkspaceBrowserAgentIdentity implements BrowserAgentIdentity {
         sessionId: this.context.sessionId,
         runtimeSandboxId: this.context.runtimeSandboxId,
         modelRunId: input.modelRunId,
-        modelRunToolCallId: `browser-release-${input.modelRunId}`.slice(0, 128),
+        // One key per agent: two turns of one run that end together never share an active call.
+        modelRunToolCallId: `browser-release-${input.modelRunId}-${workspaceAgentId(input.agent)}`.slice(0, 128),
         originalName: "sandbox_exec",
         arguments: { command: "aiqsa-browser", args: ["release"] },
         agent: input.agent,
