@@ -8,7 +8,9 @@ import {
   decodeSubagentDefinitionUpdateRequest,
   decodeSubagentDefinitionView,
   subagentDefinitionPath,
-  subagentDefinitionRestorePath
+  subagentDefinitionRestorePath,
+  subagentModelLabel,
+  subagentModelReferenceKey
 } from "./subagentDefinitions";
 import { SUBAGENT_DEFINITION_LIMITS } from "./subagents";
 
@@ -53,9 +55,14 @@ describe("custom sub-agent wire contract", () => {
     expect(decodeSubagentDefinitionView({ ...VIEW, ownerUserId: "u" })).toBeNull();
     expect(decodeSubagentDefinitionView({ ...VIEW, name: "Browser" })).toBeNull();
     const { instructions: _i, previousRevisionId: _p, revisionId: _r, ...summary } = VIEW;
-    const models = [{ defaultEffort: null, displayName: "Cheap", efforts: ["low"], modelId: "model-cheap" }];
+    const models = [{ connectionName: "Codex LB", defaultEffort: null, displayName: "Cheap", efforts: ["low"], modelId: "model-cheap" }];
     expect(decodeSubagentDefinitionListResponse({ definitions: [summary], limit: 50, models })).toEqual({ definitions: [summary], limit: 50, models });
     expect(decodeSubagentDefinitionListResponse({ definitions: [VIEW], limit: 50, models })).toBeNull();
+    // A model always comes with its connection, so same-named models stay distinguishable.
+    const { connectionName: _c, ...unlabelled } = models[0]!;
+    expect(decodeSubagentDefinitionListResponse({ definitions: [summary], limit: 50, models: [unlabelled] })).toBeNull();
+    expect(subagentModelLabel(models[0]!)).toBe("Cheap · Codex LB");
+    expect(subagentModelReferenceKey(" GPT-6  Luna · Codex LB ")).toBe("gpt-6luna·codexlb");
     expect(subagentDefinitionPath("def/1")).toBe("/api/me/subagents/def%2F1");
     expect(subagentDefinitionRestorePath("def_1")).toBe("/api/me/subagents/def_1/restore");
   });

@@ -254,14 +254,14 @@ describe("native run with sub-agents", () => {
   });
 
   it("routes a background turn's model override as its own run, after the parent answered", async () => {
-    const { adapter } = scriptedAdapter([
+    const { adapter, requests } = scriptedAdapter([
       { calls: [{ arguments: { background: true, message: "Watch the shop.", model: "fake-other", name: "cheap" }, id: "call-model",
         name: CALL_SUBAGENT_TOOL_NAME }] },
       { text: "The cheap watcher runs." },
       { text: "Outcome: done\nWatched." }
     ]);
     const memory = engine();
-    const other = { connectionId: "connection-2", contextWindow: null, defaultEffort: null, displayName: "Fake other", imageInput: false,
+    const other = { connectionId: "connection-2", connectionName: "Codex LB", contextWindow: null, defaultEffort: null, displayName: "Fake other", imageInput: false,
       providerFamily: "fake", providerModelId: "model-2", reasoningEfforts: [], upstreamModelId: "fake-other" };
     const routes: Array<{ hostRunId?: string; runId: string }> = [];
     const subagentModels = { route: vi.fn(async (input: { hostRunId?: string; runId: string }) => {
@@ -278,6 +278,8 @@ describe("native run with sub-agents", () => {
     await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-model" }, engine: { ...memory.deps, subagentModels },
       prepared: withModels, repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
       userId: "user" }).text();
+    // The main agent's context lists the frozen model by its exact id, named with its connection.
+    expect(requests[0]!.prompt.system).toContain("\"model-2\" (Fake other · Codex LB)");
     const [started] = background.turns;
     expect(started?.input.binding).toMatchObject({ modelSource: "call", provider: "connection-2", providerModelId: "model-2" });
     // The call admitted the model on the parent run while it ran; the turn's own run reads it after the parent ended.

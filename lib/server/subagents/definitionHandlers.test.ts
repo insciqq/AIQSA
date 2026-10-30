@@ -6,7 +6,7 @@ import type { AuthenticatedSession } from "../auth/requestAuth";
 import { createSubagentDefinitionHandlers } from "./definitionHandlers";
 import { createSubagentDefinitionService, type SubagentDefinitionDb } from "./definitionService";
 
-const MODELS: SubagentModelOption[] = [{ defaultEffort: null, displayName: "Cheap Model", efforts: ["low"], modelId: "model-cheap" }];
+const MODELS: SubagentModelOption[] = [{ connectionName: "Codex LB", defaultEffort: null, displayName: "Cheap Model", efforts: ["low"], modelId: "model-cheap" }];
 
 function session(userId: string, status = "active", role = "user"): AuthenticatedSession {
   return { expiresAt: new Date("2030-01-01"), id: `session-${userId}`, user: { displayName: userId, email: null, id: userId, role, status }, userId };

@@ -1,4 +1,6 @@
 import type { CatalogWireModel } from "../../../contracts/catalog";
+import { modelWithConnectionLabel } from "../../../contracts/providerConnectionLabels";
+import { subagentModelReferenceKey } from "../../../contracts/subagentDefinitions";
 import { SUBAGENT_ERROR_CODES, SUBAGENT_LIMITS, type SubagentBindingSource } from "../../../contracts/subagents";
 
 /**
@@ -22,6 +24,11 @@ const TEXT_LIMIT = 256;
 export type SubagentModelEntry = Readonly<{
   /** The catalog's provider: the connection that serves the model. */
   connectionId: string;
+  /**
+   * That connection's label as the chat's model picker shows it
+   * (`currentUserConnectionLabels`); absent in lists frozen before it was kept.
+   */
+  connectionName?: string;
   contextWindow: number | null;
   /** Null: the model has no reasoning control, or its default is its own. */
   defaultEffort: string | null;
@@ -38,11 +45,21 @@ export type SubagentModelEntry = Readonly<{
 
 export type FrozenSubagentModels = Readonly<{ models: readonly SubagentModelEntry[]; version: 1 }>;
 
+/** What admission freezes from: the user's catalog models and their connections' labels by connection id. */
+export type SubagentModelCatalogSource = Readonly<{
+  connectionLabels: ReadonlyMap<string, string>;
+  models: readonly CatalogWireModel[];
+}>;
+
 const text = (value: unknown, max = TEXT_LIMIT): value is string =>
   typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/u.test(value);
 
-/** The user's tool-calling chat models, in catalog order and bounded, as admission freezes them. */
-export function freezeSubagentModels(models: readonly CatalogWireModel[]): FrozenSubagentModels {
+/**
+ * The user's tool-calling chat models, in catalog order and bounded, as admission freezes them, each with its
+ * connection's label (`currentUserConnectionLabels`) so the main agent can tell same-named models apart.
+ */
+export function freezeSubagentModels(models: readonly CatalogWireModel[],
+  connectionLabels: ReadonlyMap<string, string> = new Map()): FrozenSubagentModels {
   const frozen: SubagentModelEntry[] = [];
   const seen = new Set<string>();
   for (const model of models) {
@@ -52,11 +69,13 @@ export function freezeSubagentModels(models: readonly CatalogWireModel[]): Froze
     if (seen.has(key)) continue;
     seen.add(key);
     const control = model.parameterControls.reasoningEffort;
+    const connectionName = connectionLabels.get(model.provider);
     const efforts = control.supported
       ? [...new Set(control.options.filter((option) => text(option, SUBAGENT_LIMITS.effortCharacters)))].slice(0, EFFORT_OPTIONS_LIMIT)
       : [];
     frozen.push({
       connectionId: model.provider,
+      ...(text(connectionName) ? { connectionName } : {}),
       contextWindow: Number.isSafeInteger(model.contextWindow) && Number(model.contextWindow) > 0 ? model.contextWindow : null,
       defaultEffort: control.supported && efforts.includes(control.defaultValue) ? control.defaultValue : null,
       displayName: text(model.displayName) ? model.displayName : model.modelId,
@@ -74,14 +93,16 @@ function decodeEntry(value: unknown): SubagentModelEntry | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const entry = value as Record<string, unknown>;
   const efforts = entry.reasoningEfforts;
-  if (!text(entry.connectionId) || !text(entry.providerModelId) || !text(entry.displayName) || !text(entry.providerFamily) ||
+  if (!text(entry.connectionId) || !(entry.connectionName === undefined || text(entry.connectionName)) ||
+    !text(entry.providerModelId) || !text(entry.displayName) || !text(entry.providerFamily) ||
     !text(entry.upstreamModelId) || typeof entry.imageInput !== "boolean" ||
     !(entry.contextWindow === null || Number.isSafeInteger(entry.contextWindow) && Number(entry.contextWindow) > 0) ||
     !Array.isArray(efforts) || efforts.length > EFFORT_OPTIONS_LIMIT ||
     !efforts.every((effort) => text(effort, SUBAGENT_LIMITS.effortCharacters)) ||
     !(entry.defaultEffort === null || typeof entry.defaultEffort === "string" && efforts.includes(entry.defaultEffort))) return null;
   return {
-    connectionId: entry.connectionId, contextWindow: entry.contextWindow as number | null,
+    connectionId: entry.connectionId, ...(entry.connectionName === undefined ? {} : { connectionName: entry.connectionName as string }),
+    contextWindow: entry.contextWindow as number | null,
     defaultEffort: entry.defaultEffort as string | null, displayName: entry.displayName, imageInput: entry.imageInput,
     providerFamily: entry.providerFamily, providerModelId: entry.providerModelId, reasoningEfforts: [...efforts as string[]],
     upstreamModelId: entry.upstreamModelId
@@ -131,16 +152,39 @@ export type SubagentModelChoiceResult =
   | Readonly<{ code: typeof SUBAGENT_ERROR_CODES.effortUnsupported | typeof SUBAGENT_ERROR_CODES.modelUnavailable;
     message: string; ok: false }>;
 
-/** A requested model, by the names the context lists: the catalog id exactly, else one upstream id or display name. */
-export function findSubagentModel(catalog: FrozenSubagentModels | null, requested: string): SubagentModelEntry | null | "ambiguous" {
+/** A frozen model as the main agent's context names it: "GPT-6 Luna · Codex LB" (`modelWithConnectionLabel`). */
+export function subagentModelEntryLabel(entry: Pick<SubagentModelEntry, "connectionName" | "displayName">): string {
+  return modelWithConnectionLabel(entry.displayName, entry.connectionName);
+}
+
+/** What a requested model names in the frozen list: one model, several (refused, never guessed), or none. */
+export type SubagentModelLookup =
+  | Readonly<{ entry: SubagentModelEntry; kind: "found" }>
+  | Readonly<{ candidates: readonly SubagentModelEntry[]; kind: "ambiguous" }>
+  | Readonly<{ kind: "none" }>;
+
+/**
+ * A requested model, by the names the context lists: the catalog id exactly, else the one model whose catalog id,
+ * upstream id, name or labelled name ("GPT-6 Luna · Codex LB") it names, case- and whitespace-insensitively.
+ */
+export function findSubagentModel(catalog: FrozenSubagentModels | null, requested: string): SubagentModelLookup {
   const models = catalog?.models ?? [];
   const exact = models.find((entry) => entry.providerModelId === requested);
-  if (exact) return exact;
-  const wanted = requested.trim().toLowerCase();
-  const matches = models.filter((entry) => entry.upstreamModelId.toLowerCase() === wanted ||
-    entry.displayName.toLowerCase() === wanted);
-  if (matches.length > 1) return "ambiguous";
-  return matches[0] ?? null;
+  if (exact) return { entry: exact, kind: "found" };
+  const wanted = subagentModelReferenceKey(requested);
+  if (!wanted) return { kind: "none" };
+  const matches = models.filter((entry) => [entry.providerModelId, entry.upstreamModelId, entry.displayName, subagentModelEntryLabel(entry)]
+    .some((name) => subagentModelReferenceKey(name) === wanted));
+  if (matches.length === 1) return { entry: matches[0]!, kind: "found" };
+  return matches.length > 1 ? { candidates: matches, kind: "ambiguous" } : { kind: "none" };
+}
+
+const CANDIDATES_SHOWN = 16;
+
+/** Models a refusal offers: the exact id to pass, then the name with its connection. */
+function modelChoices(entries: readonly SubagentModelEntry[]): string {
+  const shown = entries.slice(0, CANDIDATES_SHOWN).map((entry) => `${JSON.stringify(entry.providerModelId)} (${subagentModelEntryLabel(entry)})`);
+  return `${shown.join(", ")}${entries.length > shown.length ? ` and ${entries.length - shown.length} more` : ""}`;
 }
 
 const sameModel = (entry: SubagentModelEntry, parent: SubagentParentModel) =>
@@ -172,10 +216,14 @@ export function chooseSubagentModel(input: Readonly<{
   let entry: SubagentModelEntry | null = null;
   let modelSource: SubagentBindingSource = "parent";
   const pick = (requested: string, source: SubagentBindingSource): SubagentModelChoiceResult | null => {
-    const found = findSubagentModel(input.catalog, requested);
+    const lookup = findSubagentModel(input.catalog, requested);
     const parentNamed = requested === input.parent.providerModelId || requested.trim().toLowerCase() ===
       input.parent.upstreamModelId.toLowerCase();
-    if (found === "ambiguous") return unavailable(`Several of the user's models are named ${JSON.stringify(requested)}; name one by its id from the list.`);
+    if (lookup.kind === "ambiguous") {
+      return unavailable(`Several of the user's models are named ${JSON.stringify(requested)}: ${modelChoices(lookup.candidates)}. ` +
+        "Pass the exact id of the one the user means; if their words do not tell which, ask them.");
+    }
+    const found = lookup.kind === "found" ? lookup.entry : null;
     if (!found && !parentNamed) {
       return unavailable(`${JSON.stringify(requested)} is not one of the user's models for sub-agents; pick one from the list or omit model.`);
     }
