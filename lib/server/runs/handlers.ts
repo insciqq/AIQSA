@@ -133,6 +133,7 @@ export type RunHandlerDeps = {
   skillCatalogRelevance?: RunPreparationDeps["skillCatalogRelevance"];
   skillTools?: import("../skills/toolService").SkillToolService;
   storage?: StorageAdapter;
+  subagentModels?: RunPreparationDeps["subagentModels"];
   /**
    * Server-only: the sends come from the Telegram bridge. Their native runs
    * take no self-service tools, whose confirmation cards and Undo the bridge

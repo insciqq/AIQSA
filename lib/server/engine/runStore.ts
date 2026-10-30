@@ -115,6 +115,8 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
      */
     async recordDetachedCompaction(scope: NativeRunScope, input: Readonly<{
       item: TranscriptItem; sequence: number; status: ContextCompactionStatus | null;
+      /** A sub-agent thread's compaction: its item takes the thread's key and sequence, and the answer gets no marker. */
+      thread?: Readonly<{ threadId: string; turnId: string }>;
     }>): Promise<boolean> {
       const fields = encodeTranscriptItem(input.item);
       return client.$transaction(async (tx) => {
@@ -132,8 +134,9 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
           where: { chatId: scope.chatId, id: input.item.id, modelRunId: scope.runId, userId: scope.userId } });
         if (recorded) return true;
         await tx.runTranscriptItem.create({ data: { body: json(fields.body), callId: fields.callId, chatId: scope.chatId,
-          id: input.item.id, kind: fields.kind, modelRunId: scope.runId, sequence: input.sequence, userId: scope.userId } });
-        if (input.status) {
+          id: input.item.id, kind: fields.kind, modelRunId: scope.runId, sequence: input.sequence,
+          subagentThreadId: input.thread?.threadId ?? null, subagentTurnId: input.thread?.turnId ?? null, userId: scope.userId } });
+        if (input.status && !input.thread) {
           await appendRunOutputEvents(tx, scope.runId, [{ data: { artifactType: "context_compaction", payload: input.status },
             type: "artifact" }]);
         }

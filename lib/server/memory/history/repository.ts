@@ -894,6 +894,8 @@ async function scanChangedToolCalls(
             : { updatedAt: { gte: input.since } }
         ],
         completedAt: { not: null },
+        // A sub-agent's calls never become Memory sources: its thread stays out of Memory.
+        subagentThreadId: null,
         modelRun: {
           chatId: source.id,
           status: "complete",
@@ -963,6 +965,7 @@ async function forEachSettledToolCall(
             : [])
         ],
         modelRunId: { in: [...modelRunIds] },
+        subagentThreadId: null,
         state: { in: ["complete", "error"] }
       }
     });
@@ -994,7 +997,8 @@ async function forEachSettledToolCallById(
       where: {
         completedAt: { not: null },
         id: { in: ids.slice(offset, offset + MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) },
-        state: { in: ["complete", "error"] }
+        state: { in: ["complete", "error"] },
+        subagentThreadId: null
       }
     });
     for (const call of batch) visit(call);

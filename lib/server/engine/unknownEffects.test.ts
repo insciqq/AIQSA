@@ -143,3 +143,24 @@ describe("unknown effects the old core left on a branch", () => {
     expect(withHiddenRunEffects(branch, [])).toEqual(branch);
   });
 });
+
+describe("one fence fed by several agents' records", () => {
+  const earlier = new Date("2026-10-29T10:00:00Z");
+  const later = new Date("2026-10-29T11:00:00Z");
+
+  it("keeps a later unknown attempt when an earlier completion of the same call arrives after it", () => {
+    const fence = createUnknownEffects();
+    // The main agent's records first: its latest attempt was lost.
+    unknownEffectsOf([{ ...create("m1"), recordedAt: later }], () => false, fence);
+    // Then a sub-agent thread's, whose equivalent call completed before that.
+    unknownEffectsOf([{ ...create("t1"), recordedAt: earlier }, { ...result("t1", "complete"), recordedAt: earlier }], () => false, fence);
+    expect(fence.find(call())).toEqual({ after: later, userSpokeSince: false });
+  });
+
+  it("lets a later completion settle an earlier unknown attempt that arrives after it", () => {
+    const fence = createUnknownEffects();
+    unknownEffectsOf([{ ...create("m1"), recordedAt: later }, { ...result("m1", "complete"), recordedAt: later }], () => false, fence);
+    unknownEffectsOf([{ ...create("t1"), recordedAt: earlier }], () => false, fence);
+    expect(fence.find(call())).toBeNull();
+  });
+});
