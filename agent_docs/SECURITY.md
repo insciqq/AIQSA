@@ -51,7 +51,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 
 - `fetch_url` sends only URLs found in the run's frozen link authority (user-authored branch text and delivered follow-ups) or in that run's own Search evidence, so injected text cannot exfiltrate context through it. Fetched pages are data, never instructions or link authority.
 - A scheduled prompt authorizes no link by itself. Its task keeps a link snapshot with explicit authorship (`lib/server/scheduledTasks/promptUrls.ts`): links the owner writes, and for prompts a chat tool writes, only links that run's user text authorized. Search results never enter it, and neither does a webhook event's body.
-- Requests are GET only, to public addresses on ports 80 and 443, with no administrator exception and no credentials or cookies. Parsing happens only in the disposable parser process, never in the application.
+- Parsing happens only in the disposable parser process, never in the application.
 
 ## Automation webhooks
 
@@ -94,7 +94,7 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 ## Deployment
 
 - A persistent deployment binds the app to loopback; private services publish no host ports. Liveness has no dependencies; a security contradiction or a failed required data service blocks readiness.
-- Images run as non-root with role-specific configuration, build inputs are digest-pinned, and releases record digests. Fake providers never make implicit real calls.
+- Fake providers never make implicit real calls.
 
 ## Dependencies
 
@@ -112,5 +112,4 @@ The trust model: what is untrusted, where secrets may go, and the risks the oper
 | `@mozilla/readability`, `linkedom` | Extract page text for `fetch_url`, only inside the parser process, because parse5 is quadratic on hostile markup. |
 | `markdown-it` | Parses untrusted Markdown under input, node and depth bounds; raw HTML and images never reach the DOM. |
 | `@xterm/xterm`, `@xterm/addon-fit` | Exact pins for the Connect session page; output is rendered by xterm, never as HTML, with no clipboard addon. |
-| `github.com/creack/pty` | The Go client's only dependency. |
 | `mermaid` | Strict security level, no HTML labels or links, bounded input, then DOMPurify and an SVG allowlist; CSP needs no `unsafe-eval`. |
