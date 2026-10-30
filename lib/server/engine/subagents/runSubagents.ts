@@ -195,7 +195,11 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     providerModelId: snapshot.providerModelId,
     upstreamModelId: snapshot.model.upstreamModelId
   };
-  const route = async (binding: SubagentBinding, signal?: AbortSignal): Promise<SubagentRouteResult> => {
+  /**
+   * The route of a binding from the run's frozen catalog. A background turn's own run (`hostRunId`) reads the binding
+   * its parent's call recorded, while that turn's run is active, so it outlives its parent's answer (`modelRoutes.ts`).
+   */
+  const routeFor = (hostRunId: string | null) => async (binding: SubagentBinding, signal?: AbortSignal): Promise<SubagentRouteResult> => {
     if (binding.provider === snapshot.connectionId && binding.providerModelId === snapshot.providerModelId) {
       return parentSubagentRoute({ adapter: input.adapter, effort: binding.reasoningEffort, modelConfiguration: input.modelConfiguration,
         request, snapshot, timeoutMs: input.answerTimeoutMs });
@@ -203,9 +207,10 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     const entry = catalog?.models.find((candidate) => candidate.connectionId === binding.provider &&
       candidate.providerModelId === binding.providerModelId);
     if (!entry || !input.engine.subagentModels) return { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false };
-    return input.engine.subagentModels.route({ chatId: input.chatId, effort: binding.reasoningEffort, entry, runId: input.runId,
-      ...(signal ? { signal } : {}), userId: input.scope.userId });
+    return input.engine.subagentModels.route({ chatId: input.chatId, effort: binding.reasoningEffort, entry,
+      ...(hostRunId ? { hostRunId } : {}), runId: input.runId, ...(signal ? { signal } : {}), userId: input.scope.userId });
   };
+  const route = routeFor(null);
   const foregroundHost: SubagentHost = {
     buildRegistry: input.buildRegistry,
     branchRunIds: input.branchRunIds,
@@ -247,7 +252,8 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
   const parts = input.backgroundParts;
   const port = input.ports?.background;
   const host = parts && port && input.backgroundAllowed
-    ? registerSubagentBackgroundHost(input.runId, (turn) => backgroundSubagentRunner(input, foregroundHost, parts, turn))
+    ? registerSubagentBackgroundHost(input.runId, (turn) => backgroundSubagentRunner(input, { ...foregroundHost,
+      route: routeFor(turn.hostRunId) }, parts, turn))
     : null;
   // Only a run that asked for a background start keeps its host past its end (`SubagentBackgroundHostRegistration`).
   const background: SubagentBackgroundControl | undefined = port && host ? { availability: port.availability.bind(port),

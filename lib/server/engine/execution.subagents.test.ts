@@ -229,6 +229,42 @@ describe("native run with sub-agents", () => {
     expect(memory.settled).toEqual([]);
   });
 
+  it("routes a background turn's model override as its own run, after the parent answered", async () => {
+    const { adapter } = scriptedAdapter([
+      { calls: [{ arguments: { background: true, message: "Watch the shop.", model: "fake-other", name: "cheap" }, id: "call-model",
+        name: CALL_SUBAGENT_TOOL_NAME }] },
+      { text: "The cheap watcher runs." },
+      { text: "Outcome: done\nWatched." }
+    ]);
+    const memory = engine();
+    const other = { connectionId: "connection-2", contextWindow: null, defaultEffort: null, displayName: "Fake other", imageInput: false,
+      providerFamily: "fake", providerModelId: "model-2", reasoningEfforts: [], upstreamModelId: "fake-other" };
+    const routes: Array<{ hostRunId?: string; runId: string }> = [];
+    const subagentModels = { route: vi.fn(async (input: { hostRunId?: string; runId: string }) => {
+      routes.push({ ...(input.hostRunId ? { hostRunId: input.hostRunId } : {}), runId: input.runId });
+      return { ok: true as const, route: { adapter, request: { modelCapabilities: prepared().providerRequest.modelCapabilities,
+        modelId: "fake-other", params: {}, provider: "fake", reasoningEffort: null }, snapshot: { connection: { responseTimeoutMs: 300_000 },
+        connectionId: "connection-2", model: { adapterKind: "fake", upstreamModelId: "fake-other" }, providerFamily: "fake",
+        providerModelId: "model-2" } as never, timeoutMs: 300_000 } };
+    }) };
+    const base = prepared();
+    const withModels = { ...base, providerRequest: { ...base.providerRequest, subagentModels: { models: [other], version: 1 } } } as
+      MaterializedPreparedRunData;
+    const background = new FakeSubagentBackgroundControl();
+    await createNativeRunExecutionResponse({ adapter, created: { ...created, runId: "run-model" }, engine: { ...memory.deps, subagentModels },
+      prepared: withModels, repository: repository() as unknown as RunRepository, services: {}, subagents: { background },
+      userId: "user" }).text();
+    const [started] = background.turns;
+    expect(started?.input.binding).toMatchObject({ modelSource: "call", provider: "connection-2", providerModelId: "model-2" });
+    // The call admitted the model on the parent run while it ran; the turn's own run reads it after the parent ended.
+    expect(routes).toEqual([{ runId: "run-model" }]);
+    const turn = { ...started!.input, deadlineAt: new Date(Date.now() + 60_000), hostRunId: "run-model-bg", mode: "background" as const,
+      signal: new AbortController().signal, turnId: "turn-model-bg" };
+    const result = await backgroundSubagentRunner.wait(await backgroundSubagentRunner.start(turn));
+    expect(result).toMatchObject({ model: { id: "fake-other" }, state: "done" });
+    expect(routes).toEqual([{ runId: "run-model" }, { hostRunId: "run-model-bg", runId: "run-model" }]);
+  });
+
   it("keeps nothing of a run that started no background turn once it ended", async () => {
     const { adapter } = scriptedAdapter([{ text: "No sub-agents needed." }]);
     const background = new FakeSubagentBackgroundControl();
