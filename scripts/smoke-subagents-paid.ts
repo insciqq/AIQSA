@@ -313,8 +313,39 @@ async function wallCodes(db: PostgresClient, chatId: string, turns: readonly Tur
   return { handoffReasons, resultBlocked: result?.ok ? [...result.blocked] : [], turnWalls };
 }
 
-/** The scenario's common evidence, assigned into its line. */
+/** Attachments of the chat's runs to its shared Workspace, of the given runs when named. */
+async function attachmentCount(db: PostgresClient, chatId: string, runIds?: readonly string[]): Promise<number> {
+  const { rows } = await db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "WorkspaceRunAttachment"
+    WHERE "chatId" = $1 AND ($2::text[] IS NULL OR "modelRunId" = ANY($2::text[]))`, [chatId, runIds ? [...runIds] : null]);
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * Waits, within a bound, until no ended background turn of the chat owes its
+ * callback and every wake-up turn has a terminal run: the server starts a
+ * wake-up after its coalescing window, so evidence read earlier misses it.
+ * With `wakeUpAfter` (G: the restart), a wake-up created at or after that
+ * time must exist too, allowing a few seconds of clock skew between the
+ * harness host and the database. False when the bound passed
+ * (`callbacks_still_owed`).
+ */
+async function settleCallbacks(ctx: Context, chatId: string, timeoutMs = 120_000, wakeUpAfter: number | null = null): Promise<boolean> {
+  let quiet = 0;
+  return poll(timeoutMs, async () => {
+    const owed = await owedCallbacks(ctx.db, chatId);
+    const wakeUps = await wakeUpRows(ctx.db, chatId);
+    const open = wakeUps.some((wakeUp) => wakeUp.runId === null || !TERMINAL_RUN_STATES.has(wakeUp.runStatus ?? ""));
+    const awaited = wakeUpAfter === null ||
+      wakeUps.some((wakeUp) => new Date(wakeUp.createdAt).getTime() >= wakeUpAfter - 5_000);
+    quiet = owed === 0 && !open && awaited ? quiet + 1 : 0;
+    return quiet >= 2 ? true : null;
+  }, "callbacks_still_owed", 3_000).catch(() => false);
+}
+
+/** The scenario's common evidence, assigned into its line, once owed callbacks have settled. */
 async function commonEvidence(ctx: Context, run: Run, chatId: string) {
+  const settled = await settleCallbacks(ctx, chatId);
+  run.line.callbacksSettled = settled;
   const now = Date.now();
   const turns = await turnRows(ctx.db, chatId);
   const tools = await toolRows(ctx.db, chatId);
@@ -333,7 +364,7 @@ async function commonEvidence(ctx: Context, run: Run, chatId: string) {
     turnOutcomes: turnOutcomes(turns),
     usage
   });
-  return { tools, turns, usage, wakeUps };
+  return { settled, tools, turns, usage, wakeUps };
 }
 
 /** Waits for the exports of the chat's main-agent runs, then reads the newest result file among them. */
@@ -458,14 +489,15 @@ async function scenarioB(ctx: Context, run: Run): Promise<Outcome> {
   await waitMainIdle(ctx, chat.id);
   const watched = await watch.stop();
   run.line.threadViews = watched;
-  const { turns, usage, wakeUps } = await commonEvidence(ctx, run, chat.id);
+  const { settled, turns, usage, wakeUps } = await commonEvidence(ctx, run, chat.id);
   const callbacks = callbackEvidence(turns, wakeUps);
   run.line.wallSeconds = seconds(started);
   const checks = judge(run, await resultOf(ctx, chat.id), (read) => oracleB(read.value));
   if (callbacks.backgroundTurns !== SUBAGENT_NAMES.background.length) checks.push("background_turns_not_5");
   if (activeAtSecond === 0) checks.push("none_running_at_second_message");
   if (secondTerminal.status !== "complete" || run.line.secondAnswerRight !== true) checks.push("second_message_not_answered");
-  if (callbacks.callbacksOwed > 0) checks.push("callbacks_owed");
+  if (!settled) checks.push("callbacks_still_owed");
+  else if (callbacks.callbacksOwed > 0) checks.push("callbacks_owed");
   if (callbacks.wakeUpTurns === 0) checks.push("no_wake_up");
   if (!usage.split) checks.push("usage_not_split");
   if (watched.progression.length < 2) checks.push("states_not_progressing");
@@ -509,13 +541,38 @@ async function scenarioE(ctx: Context, run: Run): Promise<Outcome> {
   run.chats.push(chat.id);
   const watch = watchThreads(ctx, chat.id);
   const started = Date.now();
+  // Each stop is judged only on agents the thread view still shows running right before it.
+  const stateBeforeStop: Record<StopPath, string | null> = { stopAll: null, stopRoute: null, stopTool: null };
+  // Stop all first, in its own step: two background agents that hold, stopped as soon as both run.
+  const holds = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.E.holds());
+  run.line.holdsTerminal = (await waitRun(ctx, holds)).status;
+  const holdStates = async () => Promise.all(SUBAGENT_NAMES.hold.map((name) => threadViewState(ctx, chat.id, name)));
+  const bothRunning = await poll(3 * 60_000, async () => (await holdStates()).every((state) => state === "running") ? true : null,
+    "holds_not_running", 2_000).catch(() => false);
+  const beforeAll = await holdStates();
+  stateBeforeStop.stopAll = bothRunning ? "running" : beforeAll.find((state) => state !== "running") ?? null;
+  const stoppedAll = decodeSubagentStopAllResponse(await json(ctx.session.api, SUBAGENT_API_PATHS.stopAll(chat.id),
+    { body: {}, method: "POST" }));
+  run.line.stopAllStopped = stoppedAll ? stoppedAll.stopped : null;
+  const stopAllAt = Date.now();
+  const stopAll = await poll(30_000, async () => {
+    const turns = await Promise.all(SUBAGENT_NAMES.hold.map((name) => latestTurnOf(ctx.db, chat.id, name)));
+    return turns.every((turn) => turn !== null && turn.state !== "running" && turn.state !== "waiting")
+      ? turns.filter((turn): turn is TurnRow => turn !== null) : null;
+  }, "stop_all_timeout", 1_000).catch(async () => (await Promise.all(SUBAGENT_NAMES.hold.map((name) => latestTurnOf(ctx.db, chat.id, name))))
+    .filter((turn): turn is TurnRow => turn !== null));
+  run.line.stopAllSeconds = seconds(stopAllAt);
+  // No stopped hold may keep its run attached to the shared Workspace.
+  const holdRuns = stopAll.flatMap((turn) => turn.executionRunId ? [turn.executionRunId] : []);
+  const attachmentsAfterStopAll = await poll(30_000, async () => await attachmentCount(ctx.db, chat.id, holdRuns) === 0 ? 0 : null,
+    "attachments_left", 1_000).catch(() => attachmentCount(ctx.db, chat.id, holdRuns));
+  run.line.attachmentsAfterStopAll = attachmentsAfterStopAll;
+  // Then the correction to a running sub-agent, `stop_subagent` and the thread view's Stop.
   const first = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.E.start(secrets));
   run.line.firstTerminal = (await waitRun(ctx, first)).status;
   const correction = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.E.correction(secrets));
   run.line.correctionTerminal = (await waitRun(ctx, correction)).status;
-  const [idleTool, idleRoute, idleAll] = SUBAGENT_NAMES.idle;
-  // Each stop is judged only on an idle agent the thread view still shows running right before it.
-  const stateBeforeStop: Record<StopPath, string | null> = { stopAll: null, stopRoute: null, stopTool: null };
+  const [idleTool, idleRoute] = SUBAGENT_NAMES.idle;
   await waitMainIdle(ctx, chat.id);
   stateBeforeStop.stopTool = await threadViewState(ctx, chat.id, idleTool);
   const byTool = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.E.stopByTool());
@@ -530,17 +587,10 @@ async function scenarioE(ctx: Context, run: Run): Promise<Outcome> {
     run.line.stopRouteResponse = stopped ? stopped.thread.state : "invalid";
   }
   const stopRoute = await waitTurnEnded(ctx, chat.id, idleRoute, 120_000);
-  // The correction's sub-agent ends on its own and its wake-up answer writes the file, before "Stop all" could reach it.
+  // The correction's sub-agent ends on its own and its wake-up answer writes the file.
   const counter = await waitTurnEnded(ctx, chat.id, SUBAGENT_NAMES.counter, 30 * 60_000);
   run.line.counterState = counter?.state ?? null;
   await waitMainIdle(ctx, chat.id);
-  stateBeforeStop.stopAll = await threadViewState(ctx, chat.id, idleAll);
-  const stoppedAll = decodeSubagentStopAllResponse(await json(ctx.session.api, SUBAGENT_API_PATHS.stopAll(chat.id),
-    { body: {}, method: "POST" }));
-  run.line.stopAllStopped = stoppedAll ? stoppedAll.stopped : null;
-  const stopAll = await waitTurnEnded(ctx, chat.id, idleAll, 120_000);
-  await waitMainIdle(ctx, chat.id);
-  run.line.threadViews = await watch.stop();
   const { rows } = await ctx.db.query<{ delivered: number; total: number }>(`SELECT count(*)::int AS "total",
       count(*) FILTER (WHERE "deliveredAt" IS NOT NULL)::int AS "delivered"
     FROM "RunFollowup" WHERE "chatId" = $1 AND "origin"::text = 'main_agent'`, [chat.id]);
@@ -554,11 +604,14 @@ async function scenarioE(ctx: Context, run: Run): Promise<Outcome> {
   const stops = stopEvidence({ stopAll, stopRoute, stopTool });
   Object.assign(run.line, { correctionFollowups: rows[0] ?? null, stateBeforeStop, stops, threadViewDeliveries: deliveries,
     threadViewRead: view !== null, wallSeconds: seconds(started) });
-  const { usage } = await commonEvidence(ctx, run, chat.id);
+  const { settled, usage } = await commonEvidence(ctx, run, chat.id);
+  run.line.threadViews = await watch.stop();
   const checks = judge(run, await resultOf(ctx, chat.id), (read) => oracleE(read.value, secrets));
   if ((rows[0]?.delivered ?? 0) === 0) checks.push("correction_not_delivered");
   checks.push(...stopChecks(stops, { stopAll: stateBeforeStop.stopAll === "running",
     stopRoute: stateBeforeStop.stopRoute === "running", stopTool: stateBeforeStop.stopTool === "running" }));
+  if (attachmentsAfterStopAll !== 0) checks.push("attachments_left_after_stop_all");
+  if (!settled) checks.push("callbacks_still_owed");
   run.line.checksFailed = checks;
   return { success: checks.length === 0, usage };
 }
@@ -677,9 +730,9 @@ async function scenarioG(ctx: Context, run: Run): Promise<Outcome> {
     return turns.length > 0 && turns.every((turn) => turn.state !== "running" && turn.state !== "waiting") ? true : null;
   }, "interrupted_timeout", 5_000).catch(() => { run.line.interruptedTimeout = true; });
   await waitMainIdle(ctx, chat.id);
-  const { rows: attached } = await ctx.db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "WorkspaceRunAttachment"
-    WHERE "chatId" = $1`, [chat.id]);
-  run.line.attachmentsLeft = attached[0]?.count ?? null;
+  // The interrupted callbacks reach one wake-up after the server's coalescing window, not at once.
+  const restartSettled = await settleCallbacks(ctx, chat.id, 120_000, restartedAt);
+  run.line.attachmentsLeft = await attachmentCount(ctx.db, chat.id);
   const evidence = restartEvidence(await turnRows(ctx.db, chat.id), await wakeUpRows(ctx.db, chat.id), restartedAt);
   run.line.restartEvidence = evidence;
   const sleeperBefore = (await threadIdsByName(ctx.db, chat.id)).get(SUBAGENT_NAMES.restart.sleeper)?.at(-1) ?? null;
@@ -694,7 +747,8 @@ async function scenarioG(ctx: Context, run: Run): Promise<Outcome> {
   if (restart.exitCode !== 0) checks.push(restart.timedOut ? "restart_timeout" : "restart_failed");
   if (!readyAgain) checks.push("app_not_ready");
   if (!evidence.allInterrupted) checks.push("not_all_interrupted");
-  if (!evidence.oneCoalescedWakeUp) checks.push("wake_up_not_one_coalesced");
+  if (!restartSettled) checks.push("callbacks_still_owed");
+  else if (!evidence.oneCoalescedWakeUp) checks.push("wake_up_not_one_coalesced");
   if (run.line.attachmentsLeft !== 0) checks.push("attachments_left");
   if (!resumed || resumed.state !== "done") checks.push("not_continued_by_name");
   run.line.checksFailed = checks;
@@ -726,8 +780,9 @@ async function scenarioH(ctx: Context, run: Run): Promise<Outcome> {
   const handoffs = await handoffCalls(ctx.db, runIds, true);
   const leaks = await typedValueLeaks(ctx.db, chat.id, runIds, marker).catch(() => null);
   run.line.subagentHandoffOutcomes = handoffs.map((call) => handoffOutcome(call.result) ?? "none");
-  const { usage } = await commonEvidence(ctx, run, chat.id);
+  const { settled, usage } = await commonEvidence(ctx, run, chat.id);
   const checks = judge(run, await resultOf(ctx, chat.id), (read) => oracleH(read.value, { handoffs, leaks }));
+  if (!settled) checks.push("callbacks_still_owed");
   const interaction = isRecord(run.line.interaction) ? run.line.interaction : {};
   const count = (key: string): number => {
     const value = interaction[key];
