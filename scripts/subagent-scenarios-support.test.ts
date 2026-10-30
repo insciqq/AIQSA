@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, appendProgression,
-  bindingEvidence, browserEvidence, callbackEvidence, cleanUpScenario, notaryValue, oracleA, oracleB, oracleC, oracleD, oracleE,
+  bindingEvidence, browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, notaryValue, stableCode,
+  stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE,
   oracleFBranched, oracleFContinued, oracleH, oracleI, peakConcurrency, peakConcurrentTurns, progressionSaw, requestedModelEvidence,
   restartEvidence, roundsPerAgent, runSecrets, s6BaselineRows, selectedSubagentScenarios, stateCounts, stopEvidence,
   subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
@@ -16,7 +17,7 @@ const ms = (seconds: number) => at(seconds).getTime();
 function turn(overrides: Partial<TurnRow> = {}): TurnRow {
   return {
     callbackRunId: null, effortSource: "parent", endedAt: at(60), executionRunId: null, mode: "foreground", modelId: "gpt-upstream",
-    modelSource: "parent", outcome: "done", parentEffort: "medium", parentModelId: "catalog-model", parentProvider: "connection-1",
+    modelSource: "parent", outcome: "done", parentEffort: "medium", parentModelId: "gpt-upstream", parentProvider: "connection-1",
     parentRunId: "run-1", provider: "connection-1", providerModelId: "catalog-model", reasonCode: null, reasoningEffort: "medium",
     startedAt: at(0), state: "done", threadId: "thread-1", turnId: "turn-1", ...overrides
   };
@@ -24,8 +25,9 @@ function turn(overrides: Partial<TurnRow> = {}): TurnRow {
 
 function tool(overrides: Partial<ToolRow> = {}): ToolRow {
   return {
-    backgroundRefused: false, browser: false, busy: false, completedAt: at(10), memoryLow: false, roundIndex: 1, runId: "run-1",
-    startedAt: at(0), state: "complete", threadId: null, toolName: "call_subagent", turnId: null, ...overrides
+    backgroundRefused: false, browser: false, busy: false, completedAt: at(10), memoryLow: false, resultCode: null, resultReason: null,
+    roundIndex: 1, runId: "run-1", startedAt: at(0), state: "complete", stopTarget: null, threadId: null, toolName: "call_subagent",
+    turnId: null, ...overrides
   };
 }
 
@@ -161,17 +163,24 @@ describe("result-file oracles", () => {
 });
 
 describe("evidence from stored rows", () => {
-  it("counts turns on the parent's binding by catalog model and effort", () => {
+  it("counts turns on the parent's binding by the run's model id and effort, not the catalog row id", () => {
     expect(bindingEvidence([turn(), turn({ mode: "background", threadId: "thread-2", turnId: "turn-2" })])).toEqual({
       allOnParentBinding: true, backgroundTurns: 1, foregroundTurns: 1, onParentEffort: 2, onParentModel: 2, parentSourced: 2, threads: 2,
       turns: 2 });
-    const overridden = bindingEvidence([turn({ modelSource: "call", providerModelId: "other" }), turn({ reasoningEffort: "high" })]);
+    // The catalog row id differs from the run's model id and is not what is compared.
+    expect(bindingEvidence([turn({ providerModelId: "catalog-row" })]).onParentModel).toBe(1);
+    const overridden = bindingEvidence([turn({ modelId: "other", modelSource: "call" }), turn({ reasoningEffort: "high" })]);
     expect(overridden).toMatchObject({ allOnParentBinding: false, onParentEffort: 1, onParentModel: 1, parentSourced: 1 });
     expect(bindingEvidence([]).allOnParentBinding).toBe(false);
-    expect(requestedModelEvidence([turn({ modelSource: "call", provider: "c2", providerModelId: "m2" }), turn()],
-      { modelId: "m2", provider: "c2" })).toEqual({ allOnRequestedModel: false, callSourced: 1, onRequestedModel: 1 });
-    expect(turnOutcomes([turn(), turn({ reasonCode: "user_stop", state: "stopped" }), turn({ reasonCode: "Not A Code", state: "failed" })]))
-      .toEqual({ reasons: { user_stop: 1 }, states: { done: 1, failed: 1, stopped: 1 } });
+    expect(requestedModelEvidence([turn({ modelId: "gpt-second", modelSource: "call", provider: "c2" }), turn()],
+      { modelIds: ["gpt-second", "row-2"], provider: "c2" })).toEqual({ allOnRequestedModel: false, callSourced: 1, onRequestedModel: 1 });
+    expect(requestedModelEvidence([turn({ modelId: "gpt-second", provider: "c1" })], { modelIds: ["gpt-second"], provider: "c2" })
+      .onRequestedModel).toBe(0);
+    expect(turnOutcomes([turn(), turn({ mode: "background", reasonCode: "stop_subagent", state: "stopped" }),
+      turn({ reasonCode: "user_stop", state: "stopped" }), turn({ reasonCode: "Not A Code", state: "failed" })])).toEqual({
+      reasons: { other: 1, stop_subagent: 1, user_stop: 1 },
+      reasonsByMode: { background: { stop_subagent: 1 }, foreground: { other: 1, user_stop: 1 } },
+      states: { done: 1, failed: 1, stopped: 2 } });
   });
 
   it("finds the most keys open at once, back-to-back intervals not overlapping", () => {
@@ -196,6 +205,31 @@ describe("evidence from stored rows", () => {
     expect(roundsPerAgent(rows)).toEqual({ failedToolCalls: 1, mainRounds: 4, subagentRounds: [4, 3], toolCalls: 8 });
     expect(subagentCallEvidence(rows)).toEqual({ backgroundRefusals: 1, callSubagentCalls: 3, maxCallSubagentPerRound: 2,
       stopSubagentCalls: 1 });
+  });
+
+  it("breaks failed tool calls down by agent, tool and stable code only", () => {
+    const rows = [
+      tool({ resultCode: "subagent_busy", state: "error" }),
+      tool({ resultCode: "subagent_busy", state: "error" }),
+      tool({ resultCode: "ended_failed", resultReason: "deadline", state: "error" }),
+      tool({ resultCode: "ended_stopped", resultReason: "stop_subagent", state: "error", stopTarget: "background",
+        toolName: "stop_subagent" }),
+      tool({ resultCode: "ended_done", resultReason: null, state: "error", stopTarget: "none", toolName: "stop_subagent" }),
+      tool({ resultCode: "subagent_not_found", state: "error", stopTarget: "foreground", toolName: "stop_subagent" }),
+      tool({ resultCode: "workspace_command_failed", state: "error", threadId: "t1", toolName: "workspace__sandbox_exec" }),
+      tool({ resultCode: "Some page text", state: "error", threadId: "t1", toolName: "fetch_url" }),
+      tool({ resultCode: null, state: "error", threadId: "t1", toolName: "a tool with spaces" }),
+      tool({ resultCode: "subagent_busy", state: "complete" })
+    ];
+    expect(failedToolCalls(rows)).toEqual({
+      main: { call_subagent: { ended_failed: 1, subagent_busy: 2 },
+        stop_subagent: { ended_done: 1, ended_stopped: 1, subagent_not_found: 1 } },
+      subagent: { fetch_url: { other: 1 }, other: { none: 1 }, workspace__sandbox_exec: { workspace_command_failed: 1 } }
+    });
+    expect(stopSubagentCalls(rows)).toEqual({ calls: 3, resultCodes: { ended_done: 1, ended_stopped: 1, subagent_not_found: 1 },
+      stoppedRunningTurn: 1, targetedActiveBackground: 1, targetedActiveForeground: 1, targetedNothingActive: 1 });
+    expect(callSubagentOutcomes(rows)).toEqual({ endedNotDone: { ended_failed: 1 }, refusals: { subagent_busy: 2 } });
+    expect([stableCode(null), stableCode(""), stableCode("bot_wall"), stableCode("Bot wall!")]).toEqual(["none", "none", "bot_wall", "other"]);
   });
 
   it("splits usage by purpose and keeps unknown sums unknown", () => {
