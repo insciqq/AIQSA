@@ -92,7 +92,7 @@ const turnSelect = {
 } as const;
 const threadSelect = { anchorRunId: true, definitionId: true, id: true, name: true, typeName: true } as const;
 
-type StoreClient = Pick<PrismaClient, "$transaction" | "modelRunToolCall" | "runTranscriptItem" | "subagentThread" | "subagentTurn">;
+type StoreClient = Pick<PrismaClient, "$transaction" | "modelRun" | "modelRunToolCall" | "runTranscriptItem" | "subagentThread" | "subagentTurn">;
 
 /** Runs one fence read takes: a branch longer than this is beyond any context window (`TRANSCRIPT_LOAD_RUN_LIMIT`). */
 const EFFECT_RUN_LIMIT = 2_000;
@@ -276,6 +276,31 @@ export function createSubagentThreadStore(client: StoreClient) {
       }
       return runIds.flatMap((runId) => [...lists].filter(([key]) => key.startsWith(`${runId}\n`))
         .map(([key, items]) => ({ items, threadId: key.slice(runId.length + 1) })));
+    },
+
+    /**
+     * The runs that hold one thread's items on a branch, in turn order: a foreground turn's parent run, a background
+     * turn's own run. `parentRunIds` are the branch's main-agent runs; a turn started elsewhere is not on it.
+     */
+    async threadRunIds(input: Readonly<{ chatId: string; parentRunIds: readonly string[]; threadId: string; userId: string }>):
+      Promise<string[]> {
+      const parentRunIds = [...new Set(input.parentRunIds)];
+      if (parentRunIds.length === 0) return [];
+      const turns = await client.subagentTurn.findMany({ orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+        select: { executionRun: { select: { id: true } }, mode: true, parentRunId: true },
+        where: { chatId: input.chatId, parentRunId: { in: parentRunIds }, threadId: input.threadId, userId: input.userId } });
+      return [...new Set(turns.flatMap((turn) => turn.mode === "foreground" ? [turn.parentRunId]
+        : turn.executionRun ? [turn.executionRun.id] : []))];
+    },
+
+    /** The background turns' own runs started by these main-agent runs, oldest first: their threads' records. */
+    async backgroundRunIds(input: Readonly<{ chatId: string; parentRunIds: readonly string[]; userId: string }>): Promise<string[]> {
+      const parentRunIds = [...new Set(input.parentRunIds)];
+      if (parentRunIds.length === 0) return [];
+      const runs = await client.modelRun.findMany({ orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
+        where: { chatId: input.chatId, subagentTurn: { is: { mode: "background", parentRunId: { in: parentRunIds } } },
+          userId: input.userId } });
+      return runs.map((run) => run.id);
     },
 
     /** The stored result of an ended turn of the chat; null while it runs or when it is not the chat's. */

@@ -43,8 +43,13 @@ export type SubagentRouteResult =
  * port. Implementations recheck the run and its owner.
  */
 export interface SubagentModelCatalog {
-  route(input: Readonly<{ chatId: string; effort: string | null; entry: SubagentModelEntry; runId: string; signal?: AbortSignal;
-    userId: string }>): Promise<SubagentRouteResult>;
+  route(input: Readonly<{ chatId: string; effort: string | null; entry: SubagentModelEntry;
+    /**
+     * A background turn's own run, which runs on after its parent `runId` answered: it may only read the binding the
+     * parent's call recorded while the parent was active, and only while this run itself is active.
+     */
+    hostRunId?: string;
+    runId: string; signal?: AbortSignal; userId: string }>): Promise<SubagentRouteResult>;
 }
 
 /** The parameter dialect a model's params are written in (as `runPreparation.ts` admits them). */
@@ -161,14 +166,22 @@ export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: Catal
   const unavailable = { code: SUBAGENT_ERROR_CODES.modelUnavailable, ok: false } as const;
   const active = { in: ["queued", "streaming", "in_progress"] as ModelRunStatus[] };
   return {
-    async route({ effort, entry, runId, userId }) {
+    async route({ chatId, effort, entry, hostRunId, runId, userId }) {
       try {
         const bindingKey = subagentBindingKey(entry);
-        const owned = await input.prisma.modelRun.findFirst({ select: { id: true }, where: { id: runId, status: active, userId } });
+        const background = hostRunId !== undefined && hostRunId !== runId;
+        // A background turn's own active run, started by this parent's call; the parent itself may have answered.
+        const owned = background
+          ? await input.prisma.modelRun.findFirst({ select: { id: true }, where: { chatId, id: hostRunId, status: active,
+            subagentTurn: { is: { mode: "background", parentRunId: runId } }, userId } })
+          : await input.prisma.modelRun.findFirst({ select: { id: true }, where: { id: runId, status: active, userId } });
         if (!owned) return unavailable;
         const stored = () => input.prisma.providerRunBinding.findUnique({ select: { executionSnapshot: true },
           where: { modelRunId_bindingKey: { bindingKey, modelRunId: runId } } });
         let binding = await stored();
+        // The parent's call admitted the model before the background turn was (`call_subagent` resolves its route first),
+        // so a background run reads that binding and never admits a model of its own.
+        if (!binding && background) return unavailable;
         if (!binding) {
           const role = (await loadProviderAdmissionPlan(input.prisma, { providerConnectionId: entry.connectionId,
             providerModelId: entry.providerModelId, requiresClientToolCoexistence: true, searchPlan: { mode: "all_selected", optionIds: [] },

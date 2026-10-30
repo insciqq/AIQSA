@@ -152,6 +152,40 @@ describe("native tool registry", () => {
     expect(coordinator.execute).not.toHaveBeenCalled();
   });
 
+  it("runs each agent's Workspace calls as that agent, and refuses a sub-agent's browser on an older image", async () => {
+    const execute = vi.fn(async () => ({ callId: "c1", content: [], name: "workspace_shell", status: "complete" as const }));
+    const coordinator = { accepts: () => true, execute,
+      tools: vi.fn(async () => [{ capability: "workspace" as const, description: "Run a command", inputSchema: { type: "object" },
+        name: "workspace_shell" }]) } as unknown as WorkspaceCoordinator;
+    const build = (agent: ToolRegistryInput["agent"], imageRef: string) => buildToolRegistry(input({ ...(agent ? { agent } : {}),
+      request: request({ workspace: { enabled: true, imageRef } as ProviderRunRequest["workspace"] }),
+      services: { repository: {} as never, savedResults: { read: vi.fn(async () => null) }, workspace: coordinator } }));
+    const execution = (command: string) => ({ call: { arguments: { command }, id: "c1", name: "workspace_shell" }, ordinal: 0,
+      persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
+    const subagent = { kind: "subagent" as const, name: "shop", threadId: "thread-1" };
+    await (await build(subagent, "aiqsa-workspace:0.1.40")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open https://shop.example"));
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ agent: subagent, runId: "run" }));
+    await (await build({ kind: "main" }, "aiqsa-workspace:0.1.39")).resolve("workspace_shell")!.execute(execution("aiqsa-browser open x"));
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { kind: "main" } }));
+    execute.mockClear();
+    const old = await build(subagent, "aiqsa-workspace:0.1.39");
+    const refused = await old.resolve("workspace_shell")!.execute(execution("aiqsa-browser open https://shop.example"));
+    expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "browser_unavailable_for_subagents" } }] });
+    await old.resolve("workspace_shell")!.execute(execution("ls /workspace/project"));
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the custom sub-agent management tools with the self-service owners the chat takes", async () => {
+    const selfService = { assistants: {} as never, db: {} as never, storage: {} as never,
+      subagents: { db: {} as never, models: vi.fn(async () => []) } };
+    const secrets = { list: vi.fn(async () => []), read: vi.fn() } as never;
+    const names = async (tools?: readonly string[]) => (await buildToolRegistry(input({ request: request(), services: {
+      repository: {} as never, savedResults: { read: vi.fn(async () => null) }, secrets,
+      selfService: { ...selfService, ...(tools ? { tools } : {}) } } }))).definitions().map((tool) => tool.name);
+    expect(await names()).toEqual(expect.arrayContaining(["create_subagent", "edit_subagent", "delete_subagent"]));
+    expect(await names(["read_aiqsa_guide"])).not.toContain("create_subagent");
+  });
+
   it("offers direct view only where admission froze it, the same tool list every turn of a fixed model", async () => {
     const coordinator = { accepts: () => true, execute: vi.fn(), tools: vi.fn(async () => []) } as unknown as WorkspaceCoordinator;
     const workspace = { enabled: true, outputDirectory: "/workspace/output/run" } as ProviderRunRequest["workspace"];

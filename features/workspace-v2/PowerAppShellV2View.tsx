@@ -1541,7 +1541,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     <AnnouncementsProvider accountId={session.accountId}>
     <main className="v2-live-root" data-testid="app-shell">
       <UiV2IconSprite />
-      <SubagentLivenessV2 />
+      <SubagentLivenessV2 onActiveChatSettled={session.onActiveChatSubagentsSettled} />
       {/* The Library renders inside the same shell as a rail section: the
           rail stays, the chat list column yields to the Library's section
           column (PRD §4.1/§4.10, FRONTEND "Chat Composition"). */}
