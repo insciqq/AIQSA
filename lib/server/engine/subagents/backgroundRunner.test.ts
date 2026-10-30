@@ -20,7 +20,7 @@ afterEach(() => vi.useRealTimers());
 describe("the engine's background runner", () => {
   it("runs a background turn on its parent run's host and answers for it until it ended", async () => {
     const runner = new FakeSubagentRunner();
-    const release = registerSubagentBackgroundHost("parent-run", () => runner, 1_000);
+    const host = registerSubagentBackgroundHost("parent-run", () => runner, 1_000);
     const input = turn();
     const handle = await backgroundSubagentRunner.start(input);
     expect(runner.turns.get(input.turnId)?.input.hostRunId).toBe("run-bg");
@@ -28,7 +28,9 @@ describe("the engine's background runner", () => {
       .resolves.toMatchObject({ kind: "delivered" });
     runner.finish(input.turnId, endedSubagentResult("watcher"));
     await expect(backgroundSubagentRunner.wait(handle)).resolves.toMatchObject({ name: "watcher", state: "done" });
-    release();
+    // A host a turn began on is used: it outlives its run for the grace.
+    host.release();
+    expect(hasSubagentBackgroundHost("parent-run")).toBe(true);
   });
 
   it("refuses a turn without its parent's host, and a foreground turn", async () => {
@@ -41,10 +43,17 @@ describe("the engine's background runner", () => {
       .resolves.toEqual({ kind: "not_found" });
   });
 
-  it("keeps a parent's host for its grace after the parent ended, then drops it", async () => {
+  it("drops a host no background start was asked for as soon as its run ended", () => {
+    registerSubagentBackgroundHost("parent-unused", () => new FakeSubagentRunner(), 5_000).release();
+    expect(hasSubagentBackgroundHost("parent-unused")).toBe(false);
+  });
+
+  it("keeps a used parent's host for its grace after the parent ended, then drops it", async () => {
     vi.useFakeTimers();
-    const release = registerSubagentBackgroundHost("parent-grace", () => new FakeSubagentRunner(), 5_000);
-    release();
+    const host = registerSubagentBackgroundHost("parent-grace", () => new FakeSubagentRunner(), 5_000);
+    // The call asked for a background start before its admission, which may outlast the run.
+    host.use();
+    host.release();
     expect(hasSubagentBackgroundHost("parent-grace")).toBe(true);
     await vi.advanceTimersByTimeAsync(5_001);
     expect(hasSubagentBackgroundHost("parent-grace")).toBe(false);
