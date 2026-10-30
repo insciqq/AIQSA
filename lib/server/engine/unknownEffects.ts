@@ -162,14 +162,14 @@ export function createAgentUnknownEffects(): AgentUnknownEffects {
       const mine = own(key);
       return {
         find(call) {
-          let found: UnknownEffect | null = null;
-          for (const fence of fences.values()) {
+          const entries: UnknownEffect[] = [...fences.values()].flatMap((fence) => {
             const entry = fence.find(call);
-            if (!entry) continue;
-            found = found ? { after: entry.after > found.after ? entry.after : found.after,
-              userSpokeSince: found.userSpokeSince && entry.userSpokeSince } : entry;
-          }
-          return found;
+            return entry ? [entry] : [];
+          });
+          if (entries.length === 0) return null;
+          // The latest attempt's fence; the user has spoken since only if they have since every agent's attempt.
+          return { after: new Date(Math.max(...entries.map((entry) => entry.after.getTime()))),
+            userSpokeSince: entries.every((entry) => entry.userSpokeSince) };
         },
         record(call, outcome, after) {
           mine.record(call, outcome, after);
