@@ -28,6 +28,8 @@ import {
   planCallHiddenV2,
   runWaitingPhraseV2,
   settledRunPresentationV2,
+  subagentCallV2,
+  SUBAGENT_WAIT_LABEL_V2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
   type AnnouncedRunPresentationV2,
@@ -43,16 +45,12 @@ type ToolCallV2 = ThreadToolActivity["calls"][number];
 const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "results"]);
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
-  let call: ToolCallV2 | undefined;
-  for (let index = activity.calls.length - 1; index >= 0; index -= 1) {
-    // A plan update is the plan's own progress, not a step the answer waits on.
-    if (activity.calls[index]?.status === "running" && !planCallHiddenV2(activity.calls[index]!)) {
-      call = activity.calls[index];
-      break;
-    }
-  }
-  if (!call) return null;
-  return `${describeToolCallV2(call, "running")}…`;
+  // A plan update is the plan's own progress, not a step the answer waits on.
+  const running = activity.calls.filter((call) => call.status === "running" && !planCallHiddenV2(call));
+  if (running.length === 0) return null;
+  // A sub-agent has its own row in the answer, so the line names only the answer's other work.
+  const own = running.filter((call) => !subagentCallV2(call) && !call.subagentThreadId).at(-1);
+  return own ? `${describeToolCallV2(own, "running")}…` : SUBAGENT_WAIT_LABEL_V2;
 }
 
 function RunConnectionLossV2({

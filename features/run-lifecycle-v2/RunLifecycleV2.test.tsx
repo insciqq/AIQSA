@@ -205,6 +205,19 @@ describe("Run lifecycle v2", () => {
     expect(useLoadAll).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
   });
+  it("keeps the live line neutral while only sub-agents run, and names the answer's own other work", () => {
+    const live = presentation({ kind: "activity", activity: { kind: "tool", label: "Thinking…" } });
+    const subagent = { origin: "tool" as const, round: 1, serverName: "shop", status: "running" as const, toolName: "call_subagent" };
+    const inner = { origin: "web_search" as const, round: 1, status: "running" as const, subagentThreadId: "t", subagentTurnId: "u", toolName: "search_web" };
+    const { rerender } = render(<RunAnswerV2 content="" presentation={{ ...live, activity: { kind: "provider", label: "Thinking…" } }}
+      toolActivity={{ calls: [subagent, inner] }} />);
+    expect(screen.getByText("Waiting for sub-agents…")).toBeVisible();
+    expect(screen.queryByText(/Sub-agent shop/u)).toBeNull();
+    rerender(<RunAnswerV2 content="" presentation={{ ...live, activity: { kind: "provider", label: "Thinking…" } }}
+      toolActivity={{ calls: [subagent, { origin: "mcp", round: 1, serverName: "Logs", status: "running", toolName: "tail" }] }} />);
+    expect(screen.queryByText("Waiting for sub-agents…")).toBeNull();
+  });
+
   it("prioritizes final synthesis over stale running steps and keeps partial work after its failure", () => {
     const onRegenerate = vi.fn();
     const toolActivity = { calls: [{ origin: "mcp" as const, round: 8, serverName: "Repository Tools", status: "running" as const, toolName: "search" }],

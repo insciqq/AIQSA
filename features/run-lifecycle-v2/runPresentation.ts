@@ -572,13 +572,19 @@ export function runWaitingPhraseV2(runId: string | null): string {
   return RUN_WAITING_PHRASES_V2[(hash >>> 0) % RUN_WAITING_PHRASES_V2.length]!;
 }
 
+export const SUBAGENT_WAIT_LABEL_V2 = "Waiting for sub-agents…";
+
 /** A `call_subagent` step of the main agent: its answer is waiting on the sub-agent, which has a place of its own in the answer. */
+export function subagentCallV2(call: ToolActivityIdentity): boolean {
+  return call.toolName === "call_subagent" && toolActivityOriginV2(call) === "tool";
+}
+
 function subagentWaitSignal(signal: Pick<ActivitySignal, "kind" | "origin" | "serverName" | "toolName">): boolean {
-  return signal.kind === "tool" && signal.toolName === "call_subagent" && toolActivityOriginV2(signal) === "tool";
+  return signal.kind === "tool" && subagentCallV2(signal);
 }
 
 function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null): string {
-  if (subagentWaitSignal(signal)) return "Waiting for sub-agents…";
+  if (subagentWaitSignal(signal)) return SUBAGENT_WAIT_LABEL_V2;
   switch (signal.kind) {
     case "synthesis":
       return signal.budget
