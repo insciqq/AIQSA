@@ -220,7 +220,7 @@ function assertWorkspaceAdmissionShape(
  */
 function workspaceBusy(plan: Pick<WorkspaceRunAdmissionPlan, "runId">, reason: string): WorkspaceRunConflictError {
   logEvent("run_preparation", { code: reason, outcome: "failed", run_id: plan.runId, stage: "preparing" });
-  return new WorkspaceRunConflictError("workspace_busy");
+  return new WorkspaceRunConflictError("workspace_busy", reason);
 }
 
 export async function reserveAcceptedWorkspaceSession(

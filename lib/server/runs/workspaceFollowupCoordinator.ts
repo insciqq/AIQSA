@@ -2,11 +2,45 @@ import { bindContext, logEvent, runInBackground, runWithContext } from "../obser
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailure } from "../providers/providerObservability";
 import type { ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
+import { WorkspaceRunConflictError } from "./runRepositoryContract";
 import {
   predecessorReleasesSuccessor, WorkspaceFollowupError, type createWorkspaceFollowupRepository, type WorkspaceFollowupClaim
 } from "./workspaceFollowupPersistence";
 
 type Repository = ReturnType<typeof createWorkspaceFollowupRepository>;
+
+/** How long a successor waits before trying its activation again, while its chat's Workspace operation settles. */
+export const WORKSPACE_FOLLOWUP_BUSY_RETRY_MS = 1_000;
+
+/**
+ * Refusals of the successor's own Workspace reservation that only mean the chat's run operation is in passing: its
+ * last run is leaving (the operation closes, then settles) or has just left it held (`workspaceJoinRefusal`).
+ */
+const WORKSPACE_OPERATION_IN_PASSING: ReadonlySet<string> = new Set([
+  "workspace_busy_join_closing", "workspace_busy_join_no_active_run", "workspace_busy_join_no_attachment"
+]);
+
+/**
+ * A transient refusal: the activation is tried again, never failed, and its admission's deadline bounds the retries
+ * (`workspace_followup_expired`). Every other refusal, a failed session included, still fails the successor visibly.
+ */
+function workspaceBusyForNow(error: unknown): boolean {
+  return error instanceof WorkspaceRunConflictError && error.code === "workspace_busy" &&
+    error.reason !== undefined && WORKSPACE_OPERATION_IN_PASSING.has(error.reason);
+}
+
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
 export type WorkspaceFollowupLoaded = NonNullable<Awaited<ReturnType<Repository["load"]>>>;
 export type WorkspaceFollowupContinuationInput = Readonly<{
   claim: WorkspaceFollowupClaim;
@@ -57,6 +91,13 @@ export function createWorkspaceFollowupCoordinator(deps: WorkspaceFollowupCoordi
       signal.throwIfAborted();
       await deps.continueRun({ claim, loaded, releaseRegistry: registration.release, signal });
     } catch (error) {
+      if (workspaceBusyForNow(error) && !signal.aborted) {
+        logEvent("job_attempt", { subsystem: "workspace", stage: "process", outcome: "failed", action: "wait",
+          code: "workspace_followup_workspace_busy" });
+        // Released after the pause, so the next pump claims it again.
+        await pause(WORKSPACE_FOLLOWUP_BUSY_RETRY_MS, signal);
+        return;
+      }
       report(error, "process");
       // Stop owns its cancellation transaction; a lost lease grants no writes.
       if (!signal.aborted) await deps.fail(claim, error instanceof WorkspaceFollowupError ? error
