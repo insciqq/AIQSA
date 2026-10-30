@@ -4,8 +4,9 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const detach = vi.fn(async () => ({ interruptedRunIds: [], kind: "detached" as const, remainingRuns: 1 }));
+const coordinatorStub: { detach?: typeof detach } = { detach };
 vi.mock("../prisma", () => ({ prisma: {} }));
-vi.mock("../workspace/defaultServices", () => ({ workspaceCoordinatorForStorage: () => ({ detach }) }));
+vi.mock("../workspace/defaultServices", () => ({ workspaceCoordinatorForStorage: () => coordinatorStub }));
 vi.mock("../uploads/storage", () => ({ createS3StorageAdapter: () => ({}) }));
 
 /**
@@ -40,6 +41,13 @@ describe("sub-agent production wiring", () => {
     const input = { chatId: "chat", execution: "settled" as const, modelRunId: "run-bg", userId: "user" };
     await expect(wiring.workspace.detach(input)).resolves.toMatchObject({ kind: "detached", remainingRuns: 1 });
     expect(detach).toHaveBeenCalledWith(input);
+    // A coordinator that cannot detach never answers detached: the control logs the failure.
+    delete coordinatorStub.detach;
+    try {
+      await expect(wiring.workspace.detach(input)).rejects.toThrow("workspace_detach_unavailable");
+    } finally {
+      coordinatorStub.detach = detach;
+    }
   });
 
   it("gives the engine the real background control, type resolver and custom sub-agent owners", async () => {
