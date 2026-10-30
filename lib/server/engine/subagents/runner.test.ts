@@ -173,6 +173,8 @@ describe("sub-agent runner", () => {
     // The brief and the user's message verbatim, the run's own context, and never the main transcript.
     const texts = userTexts(first);
     expect(texts[0]).toBe("Skills index: research");
+    // Under its own thread's name, so the user's words to the main agent ("call the sub-agent shop") never read as its own task.
+    expect(texts.at(-1)).toMatch(/^You are the sub-agent `shop`\.\n/u);
     expect(texts.at(-1)).toContain("<main_agent_brief>\nCompare laptops on shop.example.\n</main_agent_brief>");
     expect(texts.at(-1)).toContain("<user_message>\nBuy the cheapest one with my card.\n</user_message>");
     // The run's registry, filtered: no resource change, load_skill kept.
